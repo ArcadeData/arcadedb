@@ -276,6 +276,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    ComponentFile.MODE                        mode;
   protected final    ContextConfiguration                      configuration;
   protected final    String                                    databasePath;
+  // #12025: tells the instances of one path apart in DatabaseFactory's list of closes that left pages to the recovery
+  private static final AtomicLong                                INSTANCE_SEQUENCE         = new AtomicLong();
+  private final      long                                      instanceSequence          = INSTANCE_SEQUENCE.incrementAndGet();
   protected final    BinarySerializer                          serializer;
   protected final    RecordFactory                             recordFactory             = new RecordFactory();
   protected final    GraphEngine                               graphEngine;
@@ -4540,6 +4543,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!open)
         return null;
 
+      // #12025: listed BEFORE the instance reports itself closed, and unlisted below only once the close forced the files
+      // (or deleted them). A Raft checkpoint that finds the instance closed therefore finds it listed too, whichever way the
+      // close is going to end, and does not declare its pages durable on the strength of a close that may not force them
+      DatabaseFactory.markClosingWithPagesAtRisk(this);
+
       try {
         if (async != null)
           async.close();
@@ -4734,6 +4742,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
+      // #12025: a clean close forced every file (the sync above succeeded and no WAL was left to the recovery), and a drop
+      // deleted them: either way nothing of this path is at risk any more. A close that left pages to the recovery stays
+      // listed until a later instance forces the files, and so does one whose teardown failed
+      if (teardownFailure == null && (drop || (!walPreservedForRecovery && dataSafeOnDisk)))
+        DatabaseFactory.releasePagesLeftToRecovery(this, true);
+
       if (teardownFailure instanceof RuntimeException runtime)
         throw runtime;
       if (teardownFailure instanceof Error error)
@@ -4771,6 +4785,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
   private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
+
+  /** Increases with every instance created in this JVM, so a later open of a path has a higher one (issue #12025). */
+  long getInstanceSequence() {
+    return instanceSequence;
+  }
 
   boolean isPageManagerReferenceReleased() {
     return pageManagerReferenceReleased.get();

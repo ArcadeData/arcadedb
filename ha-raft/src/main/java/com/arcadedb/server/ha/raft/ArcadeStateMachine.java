@@ -1972,6 +1972,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return RaftLog.INVALID_LOG_INDEX;
     }
 
+    // A database that is not open was forced when it closed, unless the close was crash-equivalent (issue #12025): the
+    // flush wait gave up, an fsync failed, the database was fenced. Such a close leaves its pages to the next open's
+    // recovery, but the WAL of a replicated commit is not forced (#11746) and a follower writes none, so the pages of the
+    // entries it applied since the previous marker may be in the OS cache only. lastAppliedIndex is node-global, and the
+    // entries of another database carry it past them: checkpointing it would authorise Ratis to purge the only copy a power
+    // loss leaves. Refused until a later instance of that database has forced its files (the sync pass above releases it)
+    // or the database is gone. Checked AFTER the sync pass: a close lists its database before it reports itself closed, so
+    // an instance the pass skipped as closed is always listed here.
+    final List<String> leftToRecovery = databasesClosedWithPagesLeftToRecovery();
+    if (!leftToRecovery.isEmpty()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Skipping snapshot checkpoint at index %d: database(s) %s closed without making their pages durable, so the log must "
+              + "stay replayable until they are reopened and forced (issue #12025)", currentIndex, leftToRecovery);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
     // The columnar marks of every entry up to the checkpoint go to disk before the marker does (plan 3, Task 22). A follower
     // writes no local WAL, so the cleanWALFiles hook that persists the recovery set never covers a replicated change, and a
     // restart replays only what follows the marker: the pages an applied entry marked would otherwise live only in memory.
@@ -2005,7 +2021,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
    * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
    * the asynchronous flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
-   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed.
+   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed,
+   * except after a crash-equivalent close, which {@link #databasesClosedWithPagesLeftToRecovery()} reports (issue #12025).
    *
    * @return false when a database still had pages pending at the deadline or an fsync failed
    */
@@ -2025,6 +2042,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return false;
       }
     return true;
+  }
+
+  /**
+   * The databases of this server whose last close left their pages to the next open's recovery without forcing them, and
+   * that no later instance has forced since (issue #12025), for {@link #takeSnapshot()}. Read from the engine's list, which
+   * covers every database of the JVM: only the ones under this server's database directory are this node's, since a JVM
+   * hosting several servers must not have one server's close hold another's log.
+   */
+  List<String> databasesClosedWithPagesLeftToRecovery() {
+    if (this.server == null)
+      return List.of();
+    final List<Path> listed = DatabaseFactory.getDatabasesClosedWithPagesLeftToRecovery();
+    if (listed.isEmpty())
+      return List.of();
+    final String dbDir = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (dbDir == null)
+      return List.of();
+    final Path databasesDirectory = Path.of(dbDir).toAbsolutePath().normalize();
+    final List<String> result = new ArrayList<>();
+    for (final Path path : listed)
+      if (path.startsWith(databasesDirectory))
+        result.add(databasesDirectory.relativize(path).toString());
+    return result;
   }
 
   /**
