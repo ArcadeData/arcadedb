@@ -1992,6 +1992,12 @@ public class PostgresNetworkExecutor extends Thread {
         atLeastOneElement = true;
       }
 
+      // THE ROW'S PROPERTIES ARE READ ONCE, NOT ONCE PER COLUMN: A COLUMN'S VALUE IS ASKED OF THE ROW, AND A ROW BACKED BY A
+      // STORED RECORD ANSWERS A NAME BY WALKING THE RECORD HEADER FROM ITS FIRST BYTE UNTIL IT MEETS THE NAME, SO A ROW OF
+      // P COLUMNS COST P WALKS OF THE SAME RECORD. THE COLUMNS ARE TYPED FROM EVERY ROW (issue #9009), SO THE WALK WAS PAID
+      // ONCE PER ROW PER COLUMN (#12558).
+      final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
+
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
         // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
@@ -2000,7 +2006,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = propertyOf(row, p);
+        final Object value = propertyOf(row, p, rowProperties);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -3071,9 +3077,10 @@ public class PostgresNetworkExecutor extends Thread {
     bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
     int colIndex = 0;
+    final Map<String, Object> properties = ResultInternal.propertiesOf(row);
     for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
       final String propertyName = postgresTypeEntry.getKey();
-      final Object value = columnValue(row, propertyName);
+      final Object value = columnValue(row, propertyName, properties);
 
       final PostgresType columnType = postgresTypeEntry.getValue();
       if (resolveResultFormat(resultFormats, colIndex++) == 1)
@@ -3108,6 +3115,15 @@ public class PostgresNetworkExecutor extends Thread {
    * the same column.
    */
   private static Object columnValue(final Result row, final String propertyName) {
+    return columnValue(row, propertyName, ResultInternal.propertiesOf(row));
+  }
+
+  /**
+   * The value a row carries for a column, with the row's properties already read: the columns of a row are read
+   * ONCE, not once per column. Asking the record for every column walked the record header once per column, so a
+   * record of P columns cost P walks and the time per row grew with P squared (#12558).
+   */
+  static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
     if (row.isElement() && isExcludedFromElement(row, propertyName))
       return propertyOf(row, propertyName);
@@ -3147,10 +3163,10 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = propertyOf(row, propertyName);
+        Object v = propertyOf(row, propertyName, properties);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
-        if (v == null && row.isElement())
+        if (v == null && row.isElement() && !properties.containsKey(propertyName))
           v = row.getElement().get().get(propertyName);
         yield v;
       }
@@ -3163,7 +3179,18 @@ public class PostgresNetworkExecutor extends Thread {
    * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
    */
   private static Object propertyOf(final Result row, final String name) {
-    final Object value = row.getProperty(name);
+    return propertyOf(row, name, null);
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   *
+   * @param properties the row's properties already read, or null to read the one property the name asks for
+   */
+  private static Object propertyOf(final Result row, final String name, final Map<String, Object> properties) {
+    final Object value = properties != null && properties.containsKey(name) ? properties.get(name) : row.getProperty(name);
     final Object list = PostgresType.materializeLazyMultiValue(value);
     if (list != value && !row.isElement() && row instanceof ResultInternal internal)
       internal.setProperty(name, list);
@@ -3306,14 +3333,15 @@ public class PostgresNetworkExecutor extends Thread {
 
       checkRowFitsAnnouncedColumns(row, columns);
 
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
       if (binary) {
         payload.putShort((short) names.length);
         for (int i = 0; i < names.length; i++)
-          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i], properties));
         appendCopyData(out, payload);
       } else {
         for (int i = 0; i < names.length; i++)
-          texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+          texts[i] = types[i].toText(types[i], columnValue(row, names[i], properties));
         copy.appendRow(line, texts, names);
         encoded = appendCopyData(out, line, encoder, encoded);
       }
