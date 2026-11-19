@@ -405,9 +405,11 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
-   * Builds the unique index on a derived key property; a failed build (a duplicate) leaves no partial index behind.
+   * Builds the unique index on a derived key property; a failed build (a duplicate) leaves no partial index behind. Only an index
+   * this call created is dropped on failure: one that already existed on the property is left as it was.
    */
   static void createKeyIndex(final Database database, final String collectionName, final String property) {
+    final List<String> before = keyIndexNames(database, collectionName, property);
     try {
       final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, new String[] { property });
       builder.withType(Schema.INDEX_TYPE.LSM_TREE);
@@ -416,14 +418,19 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
       builder.create();
     } catch (final RuntimeException e) {
-      final List<String> partial = new ArrayList<>();
-      for (final TypeIndex index : database.getSchema().getType(collectionName).getAllIndexes(false))
-        if (index.getPropertyNames().size() == 1 && property.equals(index.getPropertyNames().getFirst()))
-          partial.add(index.getName());
-      for (final String name : partial)
-        database.getSchema().dropIndex(name);
+      for (final String name : keyIndexNames(database, collectionName, property))
+        if (!before.contains(name))
+          database.getSchema().dropIndex(name);
       throw e;
     }
+  }
+
+  private static List<String> keyIndexNames(final Database database, final String collectionName, final String property) {
+    final List<String> names = new ArrayList<>();
+    for (final TypeIndex index : database.getSchema().getType(collectionName).getAllIndexes(false))
+      if (index.getPropertyNames().size() == 1 && property.equals(index.getPropertyNames().getFirst()))
+        names.add(index.getName());
+    return names;
   }
 
   /**

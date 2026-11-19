@@ -232,6 +232,52 @@ class Issue12073MongoTypedKeysTest {
     assertThat(MongoKeys.key(date.toInstant())).isEqualTo(MongoKeys.key(date));
   }
 
+  @Test
+  void aRecordWrittenThroughSqlHasNoKeySoAnIdFilterDoesNotSeeIt() {
+    // the documented gap of MongoKeys: only the plugin writes the derived keys, and an _id filter selects through the key index
+    insert("Mixed", new Document("_id", 1).append("k", "mongo"));
+    database.transaction(() -> database.newDocument("Mixed").set("_id", 2).set("k", "sql").save());
+
+    assertThat(ks("Mixed", new Document())).containsExactlyInAnyOrder("mongo", "sql");
+    assertThat(ks("Mixed", new Document("_id", 1))).containsExactly("mongo");
+    assertThat(ks("Mixed", new Document("_id", 2))).isEmpty();
+    // nor is it checked for uniqueness
+    insert("Mixed", new Document("_id", 2).append("k", "mongo2"));
+    assertThat(ks("Mixed", new Document("_id", 2))).containsExactly("mongo2");
+  }
+
+  @Test
+  void anArrayIsOneKeyNotOneKeyPerElement() {
+    // the documented gap of MongoKeys: mongod's multikey unique index refuses the second document, this plugin accepts it
+    command("createIndexes", "Arr", new Document("indexes", List.of(new Document("key", new Document("a", 1)).append("name", "a_1")
+        .append("unique", true))));
+    insert("Arr", new Document("_id", 1).append("a", List.of(1, 2)));
+    insert("Arr", new Document("_id", 2).append("a", 2));
+    assertThatThrownBy(() -> insert("Arr", new Document("_id", 3).append("a", List.of(1, 2)))).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(find("Arr", new Document())).hasSize(2);
+  }
+
+  @Test
+  void aFailedKeyIndexBuildLeavesAnIndexThatExistedBefore() {
+    database.getSchema().createDocumentType("Kept");
+    final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("Kept", new String[] { "p" });
+    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    builder.withUnique(false);
+    builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
+    builder.create();
+    database.transaction(() -> {
+      database.newDocument("Kept").set("p", "x").save();
+      database.newDocument("Kept").set("p", "x").save();
+    });
+
+    // the engine refuses a unique index next to the non-unique one: the cleanup must not drop the index it did not create
+    assertThatThrownBy(() -> MongoDBCollectionWrapper.createKeyIndex(database, "Kept", "p")).isInstanceOf(IllegalArgumentException.class);
+    final List<String> left = new ArrayList<>();
+    for (final TypeIndex index : database.getSchema().getType("Kept").getAllIndexes(false))
+      left.add(index.getPropertyNames().getFirst());
+    assertThat(left).containsExactly("p");
+  }
+
   private void insert(final String collection, final Document... documents) {
     database.getSchema().getOrCreateDocumentType(collection);
     new MongoDBCollectionWrapper(database, collection).insertDocuments(List.of(documents));
