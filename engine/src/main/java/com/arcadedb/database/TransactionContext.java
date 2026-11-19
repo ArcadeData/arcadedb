@@ -59,6 +59,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -4746,9 +4747,11 @@ public class TransactionContext implements Transaction {
       final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
+        FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4760,6 +4763,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index
@@ -4808,6 +4814,7 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().commitPublished();
         countPublicationInEnclosingTransactions();
       }
+      FailPoints.hit(FailPoints.COMMIT_AFTER_PUBLISH);
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
