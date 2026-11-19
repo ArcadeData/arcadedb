@@ -155,4 +155,28 @@ class Issue12018ComparabilityTest {
     assertThat(GremlinValueComparator.COMPARABILITY.equals(new byte[] { 1, 2 }, new byte[] { 1, 3 })).isFalse();
     assertThat(GremlinValueComparator.COMPARABILITY.equals(new int[] { 1, 2 }, List.of(1, 2, 3))).isFalse();
   }
+
+  /**
+   * {@code comparable()} sorts the contents of a Set or a Map before it tests them. A value whose {@code compareTo()} raises
+   * there must still reduce to false for {@code eq}, as it did when only the comparator sorted them.
+   */
+  @Test
+  void eqStaysFalseWhenSortingTheContentsRaises() {
+    final Set<Object> first = Set.of(new RaisingComparable(1), new RaisingComparable(2));
+    final Set<Object> second = Set.of(new RaisingComparable(3), new RaisingComparable(4));
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(first, second)).isFalse();
+    assertThat(GremlinValueComparator.COMPARABILITY.equals(Map.of(new RaisingComparable(1), 1, new RaisingComparable(2), 2),
+        Map.of(new RaisingComparable(3), 1, new RaisingComparable(4), 2))).isFalse();
+
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.inject(first).is(P.eq(second)).count().next()).isZero();
+    assertThat(g.inject(first).is(P.neq(second)).count().next()).isEqualTo(1L);
+  }
+
+  private record RaisingComparable(int id) implements Comparable<RaisingComparable> {
+    @Override
+    public int compareTo(final RaisingComparable other) {
+      throw new IllegalStateException("not ordered");
+    }
+  }
 }

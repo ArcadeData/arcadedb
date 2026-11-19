@@ -144,11 +144,12 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
       if (containersOfDifferentSize(f, s))
         return false;
 
-      // For Compare we do not cross type boundaries, including null, nor compare NaN
-      if (!comparable(f, s))
-        return false;
-
       try {
+        // For Compare we do not cross type boundaries, including null, nor compare NaN. Asked inside the try because
+        // comparable() sorts the contents of a Set or a Map, and a compareTo() that raises there is reduced to false too
+        if (!comparable(f, s))
+          return false;
+
         // comparable(f, s) assures that type(f) == type(s)
         final Type type = Type.type(f);
         return comparator(type).compare(f, s) == 0;
@@ -160,7 +161,7 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
          * compare(NaN, anything) -> ERROR -> FALSE for equality
          * compare(Type1, Type2) -> ERROR -> FALSE for equality
          *
-         * Can also happen for elements nested inside of collections.
+         * Can also happen for elements nested inside of collections, and while comparable() sorts them.
          */
         return false;
       }
@@ -284,8 +285,6 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     public static Type type(final Object o) {
       if (o == null)
         return Nulltype;
-      if (o.getClass().isArray())
-        return List;
 
       if (o instanceof Boolean)
         return Boolean;
@@ -315,6 +314,9 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
         return Map;
       if (o instanceof Map.Entry)
         return MapEntry;
+      // an array is a List, as in TinkerPop. Tested last: no type above is an array, and the scalars do not pay for it
+      if (o.getClass().isArray())
+        return List;
 
       return Unknown;
     }
@@ -368,26 +370,35 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     final Type ft = Type.type(f);
     final Type st = Type.type(s);
 
+    // different types are never comparable: decided here, so the scalars do not walk the composite cases below
+    if (ft != st)
+      return false;
+
     // if objects are collections or composites, their contents must be mutually comparable
-    if (ft == Type.List && st == Type.List)
+    switch (ft) {
+    case List:
       return contentsComparable(IteratorUtils.asIterator(f), IteratorUtils.asIterator(s));
-    else if (ft == Type.Path && st == Type.Path)
+    case Path:
       return contentsComparable(((Path) f).iterator(), ((Path) s).iterator());
-    else if (ft == Type.Set && st == Type.Set)
+    case Set:
       return contentsComparable(sortedIterator((Set) f), sortedIterator((Set) s));
-    else if (ft == Type.Map && st == Type.Map)
+    case Map:
       return contentsComparable(sortedIterator(((Map) f).entrySet()), sortedIterator(((Map) s).entrySet()));
-    else if (ft == Type.MapEntry && st == Type.MapEntry)
+    case MapEntry:
       return comparable(((Map.Entry) f).getKey(), ((Map.Entry) s).getKey()) && comparable(((Map.Entry) f).getValue(),
           ((Map.Entry) s).getValue());
-    else if (ft == Type.Vertex && st == Type.Vertex || ft == Type.Edge && st == Type.Edge
-        || ft == Type.VertexProperty && st == Type.VertexProperty)
+    case Vertex:
+    case Edge:
+    case VertexProperty:
       return comparable(((Element) f).id(), ((Element) s).id());
-    else if (ft == Type.Property && st == Type.Property)
+    case Property:
       return comparable(((Property) f).key(), ((Property) s).key()) && comparable(((Property) f).value(), ((Property) s).value());
-
-    // Check for same type. If they're both the unknown type then return true iff they are naturally Comparable
-    return ft == Type.Unknown && st == Type.Unknown ? naturallyComparable(f, s) : ft == st;
+    case Unknown:
+      // both of the unknown type: comparable iff they are naturally Comparable
+      return naturallyComparable(f, s);
+    default:
+      return true;
+    }
   }
 
   /**
