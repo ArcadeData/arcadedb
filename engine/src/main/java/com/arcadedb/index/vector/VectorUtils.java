@@ -609,6 +609,67 @@ public final class VectorUtils {
   }
 
   /**
+   * A vector prepared for the cosine: its float[] form and the two checks the cosine makes on it.
+   * <p>
+   * The checks are the zero-vector test and the scorable-norm test, and the cosine makes both on every vector it is
+   * given. A scan that scores every record against one query vector makes them on that one vector once per record, even
+   * though the vector is the same every time. Preparing the vector once turns them into a property of the vector rather
+   * than of the call.
+   */
+  public static final class PreparedVector {
+    private final float[] values;
+    private final boolean  zero;
+    private final boolean  scorableNorm;
+
+    private PreparedVector(final float[] values, final boolean zero, final boolean scorableNorm) {
+      this.values = values;
+      this.zero = zero;
+      this.scorableNorm = scorableNorm;
+    }
+
+    /**
+     * The float[] form of the vector.
+     */
+    public float[] values() {
+      return values;
+    }
+
+    /**
+     * Whether the vector is all zeros, which the cosine answers with a zero score.
+     */
+    public boolean isZero() {
+      return zero;
+    }
+
+    /**
+     * Whether the float cosine can score the vector: a squared norm that does not overflow or underflow a float.
+     */
+    public boolean hasScorableNorm() {
+      return scorableNorm;
+    }
+  }
+
+  /**
+   * The vector, prepared for the cosine: its float[] form and the checks the cosine makes on it.
+   *
+   * @param values the float[] form of the vector
+   *
+   * @return the prepared vector
+   */
+  public static PreparedVector prepare(final float[] values) {
+    // Issue #4583: a zero-magnitude vector yields an undefined cosine (0/0). The JVector SIMD path
+    // returns NaN (and throws an AssertionError when run with -ea) while the scalar fallback below
+    // returns 0.0f, so the same query could rank differently depending on whether the JVM has the
+    // Vector API enabled, and NaN would poison Float.compare ordering. Guard up front and return a
+    // consistent 0.0f sentinel (distance 1.0 for the 1 - score callers). isZeroVector short-circuits
+    // on the first non-zero element, so this is O(1) for the common non-degenerate case.
+    final boolean zero = isZeroVector(values);
+    // The float cosine cannot score a vector too small or too large: the double one below can (issue #11635)
+    final boolean scorableNorm = zero || hasCosineScorableNorm(values);
+    return new PreparedVector(values, zero, scorableNorm);
+  }
+
+  /**
    * Calculates cosine similarity between two vectors.
    * Uses JVector's SIMD-optimized implementation when available, with a scalar fallback.
    *
@@ -618,25 +679,33 @@ public final class VectorUtils {
    * @return cosine similarity value between -1 and 1
    */
   public static float cosineSimilarity(final float[] v1, final float[] v2) {
-    // Issue #4583: a zero-magnitude vector yields an undefined cosine (0/0). The JVector SIMD path
-    // returns NaN (and throws an AssertionError when run with -ea) while the scalar fallback below
-    // returns 0.0f, so the same query could rank differently depending on whether the JVM has the
-    // Vector API enabled, and NaN would poison Float.compare ordering. Guard up front and return a
-    // consistent 0.0f sentinel (distance 1.0 for the 1 - score callers). isZeroVector short-circuits
-    // on the first non-zero element, so this is O(1) for the common non-degenerate case.
-    if (isZeroVector(v1) || isZeroVector(v2))
+    return cosineSimilarity(prepare(v1), prepare(v2));
+  }
+
+  /**
+   * Calculates cosine similarity between two vectors, both already prepared.
+   * <p>
+   * The checks the cosine makes on its arguments - the zero-vector test and the scorable-norm test - are made by
+   * {@link #prepare(float[])}, so a vector prepared once does not pay for them again on every call.
+   *
+   * @param v1 first vector
+   * @param v2 second vector
+   *
+   * @return cosine similarity value between -1 and 1
+   */
+  public static float cosineSimilarity(final PreparedVector v1, final PreparedVector v2) {
+    if (v1.isZero() || v2.isZero())
       return 0.0f;
-    // The float cosine cannot score a vector too small or too large: the double one below can (issue #11635)
-    if (!hasCosineScorableNorm(v1) || !hasCosineScorableNorm(v2))
-      return scalarCosineSimilarity(v1, v2);
+    if (!v1.hasScorableNorm() || !v2.hasScorableNorm())
+      return scalarCosineSimilarity(v1.values(), v2.values());
     try {
       final VectorizationProvider vp = VectorApiSupport.jvectorProvider();
-      final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
-      final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2);
+      final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1.values());
+      final VectorFloat<?> jv2 = vp.getVectorTypeSupport().createFloatVector(v2.values());
       return cosine(jv1, jv2);
     } catch (final Exception e) {
       // Fallback to scalar implementation
-      return scalarCosineSimilarity(v1, v2);
+      return scalarCosineSimilarity(v1.values(), v2.values());
     }
   }
 
