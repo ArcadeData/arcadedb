@@ -176,6 +176,12 @@ public class ContinuousAggregateBuilder {
     final String tsColumnInQuery = bucketMatcher.group(2);
     // The function's own parser, so the aggregate cannot accept an interval the query it stores would refuse (issue #11986)
     final long bucketIntervalMs = SQLFunctionTimeBucket.parseInterval(intervalStr);
+    // ...and the same positivity the function applies to the parsed amount (issue #6388): over an empty source type the initial
+    // refresh evaluates no row, so '0s' was stored although the stored query refuses it on the first row it evaluates
+    if (bucketIntervalMs <= 0)
+      throw new SchemaException(
+          "Continuous aggregate ts.timeBucket interval '" + intervalStr + "' must be a positive amount of time, but resolves to "
+              + bucketIntervalMs + "ms");
 
     // Validate that the timestamp column name doesn't contain backticks (SQL injection prevention)
     if (tsColumnInQuery.contains("`"))

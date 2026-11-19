@@ -93,6 +93,20 @@ class Issue11986TimeBucketIntervalOverflowTest extends TestHelper {
     assertThat(database.getSchema().existsType("CA")).isFalse();
   }
 
+  @Test
+  void aContinuousAggregateWithAZeroIntervalIsRefusedEvenOverAnEmptyType() {
+    // over an empty type the initial refresh evaluates no row, so nothing used to refuse '0s': the aggregate was created with a
+    // query that ts.timeBucket refuses ('must be a positive amount of time') on the first row it evaluates
+    database.command("sql", "CREATE TIMESERIES TYPE M TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE)");
+
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE CONTINUOUS AGGREGATE CA AS SELECT ts.timeBucket('0s', ts) AS b, count(*) AS c FROM M GROUP BY b"))
+        .hasMessageContaining("must be a positive amount of time");
+
+    assertThat(database.getSchema().existsContinuousAggregate("CA")).isFalse();
+    assertThat(database.getSchema().existsType("CA")).isFalse();
+  }
+
   private void createType() {
     database.command("sql", "CREATE TIMESERIES TYPE M TIMESTAMP ts TAGS (host STRING) FIELDS (v DOUBLE)");
     database.transaction(() -> {
