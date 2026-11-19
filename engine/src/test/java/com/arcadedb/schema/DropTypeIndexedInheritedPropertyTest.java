@@ -111,6 +111,63 @@ class DropTypeIndexedInheritedPropertyTest extends TestHelper {
     assertThat(database.getSchema().existsIndex("P[q]")).isFalse();
   }
 
+  /**
+   * DROP MATERIALIZED VIEW drops the backing type after unregistering the view: the refusal comes before, so the view stays. A sub
+   * type linked to the backing type before #11204 is the only way an index can stand below one.
+   */
+  @Test
+  void dropOfAViewIsRefusedBeforeTheViewIsUnregistered() {
+    database.command("sql", "CREATE DOCUMENT TYPE Sale");
+    database.transaction(() -> database.newDocument("Sale").set("region", "EU").set("amount", 10).save());
+    database.command("sql", "CREATE MATERIALIZED VIEW mv AS SELECT region, sum(amount) AS total FROM Sale GROUP BY region");
+    linkLegacySubTypeIndexedOnBackingProperty("mv");
+
+    assertThatThrownBy(() -> database.command("sql", "DROP MATERIALIZED VIEW mv"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("Cannot drop the type 'mv'")//
+        .hasMessageContaining("'Legacy[k]'");
+
+    assertThat(database.getSchema().existsMaterializedView("mv")).isTrue();
+    assertThat(database.getSchema().existsType("mv")).isTrue();
+    assertThat(database.getSchema().existsIndex("Legacy[k]")).isTrue();
+
+    database.command("sql", "DROP INDEX `Legacy[k]`");
+    database.command("sql", "DROP MATERIALIZED VIEW mv");
+    assertThat(database.getSchema().existsMaterializedView("mv")).isFalse();
+  }
+
+  /** Same as {@link #dropOfAViewIsRefusedBeforeTheViewIsUnregistered()} for DROP CONTINUOUS AGGREGATE. */
+  @Test
+  void dropOfAContinuousAggregateIsRefusedBeforeTheAggregateIsUnregistered() {
+    database.command("sql", "CREATE TIMESERIES TYPE SR TIMESTAMP ts TAGS (sid STRING) FIELDS (v DOUBLE)");
+    database.command("sql", "INSERT INTO SR SET ts = 1700000000000, sid = 's1', v = 1.0");
+    database.command("sql",
+        "CREATE CONTINUOUS AGGREGATE ca AS SELECT sid, ts.timeBucket('1h', ts) AS hour, avg(v) AS av FROM SR GROUP BY sid, hour");
+    linkLegacySubTypeIndexedOnBackingProperty("ca");
+
+    assertThatThrownBy(() -> database.command("sql", "DROP CONTINUOUS AGGREGATE ca"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("Cannot drop the type 'ca'")//
+        .hasMessageContaining("'Legacy[k]'");
+
+    assertThat(database.getSchema().existsContinuousAggregate("ca")).isTrue();
+    assertThat(database.getSchema().existsType("ca")).isTrue();
+
+    database.command("sql", "DROP INDEX `Legacy[k]`");
+    database.command("sql", "DROP CONTINUOUS AGGREGATE ca");
+    assertThat(database.getSchema().existsContinuousAggregate("ca")).isFalse();
+  }
+
+  /** A schema written before #11204: Legacy extends the backing type, which alone declares k, and Legacy indexes k. */
+  private void linkLegacySubTypeIndexedOnBackingProperty(final String backingTypeName) {
+    final LocalDocumentType backing = (LocalDocumentType) database.getSchema().getType(backingTypeName);
+    backing.createProperty("k", Type.INTEGER);
+    final LocalDocumentType legacy = (LocalDocumentType) database.getSchema().createDocumentType("Legacy");
+    // the re-establishing linkage of the schema load, which a database written before the check went through
+    legacy.addSuperType(backing, false);
+    legacy.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "k");
+  }
+
   private void assertUnchanged() {
     final Schema schema = database.getSchema();
     assertThat(schema.existsType("P")).isTrue();

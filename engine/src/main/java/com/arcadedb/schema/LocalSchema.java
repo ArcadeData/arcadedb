@@ -3828,8 +3828,11 @@ public class LocalSchema implements Schema {
     final List<Integer> filesOfTheDrop = new ArrayList<>();
     final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
     final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
-    if (backingType != null)
+    if (backingType != null) {
+      // #12318: a sub type linked to the backing type before #11204 can hold an index on a property only the backing type declares
+      checkNoSubTypeIndexLosesItsProperty(backingType);
       collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    }
     return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
   }
 
