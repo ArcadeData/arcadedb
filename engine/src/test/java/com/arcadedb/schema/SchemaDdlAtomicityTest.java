@@ -23,14 +23,15 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.parser.AlterBucketStatement;
 import com.arcadedb.query.sql.parser.AlterDatabaseStatement;
 import com.arcadedb.query.sql.parser.AlterGraphAnalyticalViewStatement;
 import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
@@ -85,6 +86,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
@@ -442,7 +444,6 @@ class SchemaDdlAtomicityTest {
       DELETES_INDEX_FILES.put(TruncateTypeStatement.class, List.of(new Scenario("TRUNCATE TYPE B", db -> subIndexes(db, "B[p]"))));
       DELETES_INDEX_FILES.put(RebuildIndexStatement.class, List.of(new Scenario("REBUILD INDEX `B[p]`", db -> subIndexes(db, "B[p]"))));
 
-      DELETES_NO_INDEX_FILE.put(AlterBucketStatement.class, "changes a bucket's name or settings");
       DELETES_NO_INDEX_FILE.put(AlterDatabaseStatement.class, "changes a database setting");
       DELETES_NO_INDEX_FILE.put(AlterGraphAnalyticalViewStatement.class, "changes the definition of a graph analytical view");
       DELETES_NO_INDEX_FILE.put(AlterMaterializedViewStatement.class, "changes the refresh mode of a materialized view");
@@ -1263,6 +1264,147 @@ class SchemaDdlAtomicityTest {
 
       assertThat(database.getSchema().existsIndex("PreExisting[a]")).isTrue();
       assertThat(database.getSchema().existsIndex("FromScratch[a]")).isTrue();
+    }
+  }
+
+  /**
+   * Regression for issue #12034: {@code DROP PROPERTY S.p FORCE} dropped {@code S}'s own indexes on {@code p}, then refused the property
+   * drop because an index a SUBTYPE declared on the inherited {@code p} still used it. The refused statement left the property in
+   * place and its UNIQUE index gone, so duplicates were accepted afterwards.
+   */
+  @Nested
+  class DropPropertyForceWithASubTypeIndex extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE DOCUMENT TYPE S");
+      database.command("sql", "CREATE DOCUMENT TYPE T EXTENDS S");
+      database.command("sql", "CREATE PROPERTY S.p INTEGER");
+      database.command("sql", "CREATE PROPERTY S.u STRING");
+      database.command("sql", "CREATE INDEX ON S (p) UNIQUE");
+      database.command("sql", "CREATE INDEX ON T (p, u) NOTUNIQUE");
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO S SET p = 1");
+        database.command("sql", "INSERT INTO T SET p = 2, u = 'x'");
+      });
+    }
+
+    @Test
+    void forceDropsTheSubTypeIndexTooAndThenTheProperty() {
+      final ResultSet rs = database.command("sql", "DROP PROPERTY S.p FORCE");
+      assertThat(rs.stream().map(r -> r.<String>getProperty("indexName")).filter(Objects::nonNull).toList())
+          .containsExactlyInAnyOrder("S[p]", "T[p,u]");
+
+      assertThat(database.getSchema().existsIndex("S[p]")).isFalse();
+      assertThat(database.getSchema().existsIndex("T[p,u]")).isFalse();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isFalse();
+    }
+
+    @Test
+    void withoutForceTheRefusalNamesTheSubTypeIndexAndNothingChanges() {
+      assertThatThrownBy(() -> database.command("sql", "DROP PROPERTY S.p"))
+          .hasMessageContaining("S[p]")
+          .hasMessageContaining("T[p,u]");
+
+      assertThat(database.getSchema().existsIndex("S[p]")).isTrue();
+      assertThat(database.getSchema().existsIndex("T[p,u]")).isTrue();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isTrue();
+    }
+
+    /**
+     * A refusal the FORCE list cannot answer - an index of a SUPER type on a property of the same name, which DROP PROPERTY does not drop -
+     * comes before the first index goes, so the type keeps its UNIQUE index.
+     */
+    @Test
+    void aRefusalForceCannotAnswerComesBeforeAnyIndexIsDropped() {
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.command("sql", "CREATE PROPERTY P.p INTEGER");
+      database.command("sql", "CREATE INDEX ON P (p) NOTUNIQUE");
+      database.command("sql", "CREATE DOCUMENT TYPE Q");
+      database.command("sql", "CREATE PROPERTY Q.p INTEGER");
+      database.command("sql", "CREATE INDEX ON Q (p) UNIQUE");
+      database.transaction(() -> database.command("sql", "INSERT INTO Q SET p = 1"));
+      // Q declares p itself; linking P above it is accepted with a warning about the shared name
+      database.command("sql", "ALTER TYPE Q SUPERTYPE +P");
+
+      assertThatThrownBy(() -> database.command("sql", "DROP PROPERTY Q.p FORCE"))
+          .isInstanceOf(SchemaException.class)
+          .hasMessageContaining("P[p]");
+
+      assertThat(database.getSchema().existsIndex("Q[p]")).isTrue();
+      assertThat(database.getSchema().getType("Q").existsProperty("p")).isTrue();
+      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO Q SET p = 1")))
+          .isInstanceOf(DuplicatedKeyException.class);
+    }
+
+    @Test
+    void forceDropsTheIndexOfASubTypeAtAnyDepth() {
+      database.command("sql", "CREATE DOCUMENT TYPE G EXTENDS T");
+      database.command("sql", "CREATE INDEX ON G (u, p) NOTUNIQUE");
+
+      final ResultSet rs = database.command("sql", "DROP PROPERTY S.p FORCE");
+      assertThat(rs.stream().map(r -> r.<String>getProperty("indexName")).filter(Objects::nonNull).toList())
+          .containsExactlyInAnyOrder("S[p]", "T[p,u]", "G[u,p]");
+
+      assertThat(database.getSchema().existsIndex("G[u,p]")).isFalse();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isFalse();
+    }
+
+    /**
+     * A sub type that declares a property of the same name shadows the inherited one: its index is on ITS property, so FORCE leaves it
+     * alone and it does not refuse the drop either.
+     */
+    @Test
+    void forceLeavesTheIndexOfAShadowingSubTypeAlone() {
+      database.command("sql", "CREATE DOCUMENT TYPE H");
+      database.command("sql", "CREATE PROPERTY H.p INTEGER");
+      database.command("sql", "CREATE INDEX ON H (p) UNIQUE");
+      // H declares p itself; linking S above it is accepted with a warning about the shared name
+      database.command("sql", "ALTER TYPE H SUPERTYPE +S");
+
+      final ResultSet rs = database.command("sql", "DROP PROPERTY S.p FORCE");
+      assertThat(rs.stream().map(r -> r.<String>getProperty("indexName")).filter(Objects::nonNull).toList())
+          .containsExactlyInAnyOrder("S[p]", "T[p,u]");
+
+      assertThat(database.getSchema().existsIndex("H[p]")).isTrue();
+      assertThat(database.getSchema().getType("H").existsProperty("p")).isTrue();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isFalse();
+    }
+  }
+
+  /**
+   * Issue #12034, the property only a SUBTYPE indexes: the type has no index of its own on it, so the sub type's index is the only one
+   * the drop refuses for.
+   */
+  @Nested
+  class DropPropertyOnlyASubTypeIndexes extends TestHelper {
+
+    @Override
+    protected void beginTest() {
+      database.command("sql", "CREATE DOCUMENT TYPE S");
+      database.command("sql", "CREATE DOCUMENT TYPE T EXTENDS S");
+      database.command("sql", "CREATE PROPERTY S.p INTEGER");
+      database.command("sql", "CREATE INDEX ON T (p) UNIQUE");
+    }
+
+    @Test
+    void withoutForceTheSubTypeIndexIsNamedAndNothingChanges() {
+      assertThatThrownBy(() -> database.command("sql", "DROP PROPERTY S.p"))
+          .isInstanceOf(ObjectInUseException.class)
+          .hasMessageContaining("T[p]");
+
+      assertThat(database.getSchema().existsIndex("T[p]")).isTrue();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isTrue();
+    }
+
+    @Test
+    void forceDropsTheSubTypeIndexAndTheProperty() {
+      final ResultSet rs = database.command("sql", "DROP PROPERTY S.p FORCE");
+      assertThat(rs.stream().map(r -> r.<String>getProperty("indexName")).filter(Objects::nonNull).toList())
+          .containsExactly("T[p]");
+
+      assertThat(database.getSchema().existsIndex("T[p]")).isFalse();
+      assertThat(database.getSchema().getType("S").existsProperty("p")).isFalse();
     }
   }
 }

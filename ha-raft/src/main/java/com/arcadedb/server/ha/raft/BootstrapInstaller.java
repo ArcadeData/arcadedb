@@ -233,6 +233,8 @@ final class BootstrapInstaller {
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
+      // A copy of the leader's now, not the one the previous session left (issue #11946)
+      sm.appliedIndexes.forgetPositionOfPreviousSession(databaseName);
       LogManager.instance().log(sm, Level.INFO, "Database '%s' reinstalled via forceSnapshot from leader", databaseName);
       sm.baselines.clearBootstrapUnreconciled(databaseName);
       settleBootstrapReplacement(databaseName);
@@ -246,6 +248,8 @@ final class BootstrapInstaller {
     }
 
     sm.server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
+    // A new copy: the position the previous session reached on a database of this name was another copy's (issue #11946)
+    sm.appliedIndexes.forgetPositionOfPreviousSession(databaseName);
     LogManager.instance().log(sm, Level.INFO, "Database '%s' created via Raft install-database entry", databaseName);
   }
 

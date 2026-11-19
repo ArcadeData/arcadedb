@@ -125,10 +125,12 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       }
     });
 
+    // The catch branch hands back nodeCount too, so a layout that throws must be refused through
+    // `error`, not by nodeCount, which stays positive either way
     expect(layoutTest).toBeTruthy();
-    if (layoutTest) {
-      expect(layoutTest.nodeCount).toBeGreaterThan(0);
-    }
+    expect(layoutTest.error).toBeUndefined();
+    expect(layoutTest.success).toBe(true);
+    expect(layoutTest.nodeCount).toBeGreaterThan(0);
   });
 
   test('should support zoom and pan operations', async ({ graphReady }) => {
@@ -166,11 +168,13 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       }
     });
 
+    // A failure inside the page comes back as a truthy `{ error }`, so the error is asserted absent
+    // rather than letting it skip the assertions that follow
     expect(zoomTest).toBeTruthy();
-    if (zoomTest && !zoomTest.error) {
-      expect(zoomTest.success).toBe(true);
-      expect(zoomTest.initialZoom).toBeGreaterThan(0);
-    }
+    expect(zoomTest.error).toBeUndefined();
+    expect(zoomTest.success).toBe(true);
+    expect(zoomTest.initialZoom).toBeGreaterThan(0);
+    expect(zoomTest.fittedZoom).toBeGreaterThan(0);
   });
 
   test('should support basic export functionality', async ({ graphReady }) => {
@@ -180,16 +184,14 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     // Test export functionality via canvas API
     const exportTest = await page.evaluate(() => {
       try {
-        const canvas = document.querySelector('#graph canvas');
-        if (!canvas) return { error: 'Canvas not found' };
+        const canvas = document.querySelector<HTMLCanvasElement>('#graph canvas');
 
-        // Test that canvas can generate image data
-        const dataURL = canvas.toDataURL('image/png');
-        const hasImageData = dataURL && dataURL.startsWith('data:image/png');
+        // Test that canvas can generate image data: a zero-sized canvas answers "data:,"
+        const dataURL = canvas ? canvas.toDataURL('image/png') : null;
 
         return {
-          hasCanvas: true,
-          hasImageData,
+          hasCanvas: canvas !== null,
+          hasImageData: dataURL !== null && dataURL.startsWith('data:image/png'),
           dataURLLength: dataURL ? dataURL.length : 0
         };
       } catch (error) {
@@ -198,9 +200,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
     });
 
     expect(exportTest).toBeTruthy();
-    if (exportTest && !exportTest.error) {
-      expect(exportTest.hasCanvas).toBe(true);
-    }
+    expect(exportTest.error).toBeUndefined();
+    expect(exportTest.hasCanvas).toBe(true);
+    expect(exportTest.hasImageData).toBe(true);
   });
 
   test('should handle moderate sized graphs efficiently', async ({ authenticatedHelper }) => {
@@ -263,9 +265,9 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       if (!globalCy) return null;
 
       try {
-        // Test if fcose layout can be created
+        // Test if fcose layout can be created: cytoscape throws on a layout it has no extension for
         const fcoseTest = globalCy.layout({ name: 'fcose', animate: false });
-        const hasFcoseExtension = fcoseTest !== null;
+        const hasFcoseExtension = fcoseTest != null;
 
         // Test cxtmenu extension
         const hasCxtMenuExtension = typeof globalCy.cxtmenu === 'function';
@@ -283,9 +285,12 @@ test.describe('Cytoscape 3.33.1 Validation Tests', () => {
       }
     });
 
+    // A missing extension surfaces either as the in-page error (unknown layout name) or as a false
+    // flag: both must red the test
     expect(extensionInfo).toBeTruthy();
-    if (extensionInfo && !extensionInfo.error) {
-      expect(extensionInfo.globalCyAvailable).toBe(true);
-    }
+    expect(extensionInfo.error).toBeUndefined();
+    expect(extensionInfo.globalCyAvailable).toBe(true);
+    expect(extensionInfo.hasFcoseExtension).toBe(true);
+    expect(extensionInfo.hasCxtMenuExtension).toBe(true);
   });
 });

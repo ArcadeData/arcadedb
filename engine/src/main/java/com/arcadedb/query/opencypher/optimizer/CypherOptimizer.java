@@ -1627,6 +1627,11 @@ public class CypherOptimizer {
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, scan::pushDownFilter);
         else if (anchorOperator instanceof NodeIndexSeek seek)
           filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, seek::pushDownFilter);
+        // An adaptive range scan that is the whole pattern too (issue #11873): when it gives way to a label scan, the workers of
+        // a parallel scan evaluate them, where a Filter above evaluated them on every vertex of the label on the calling thread.
+        // Under an expansion the hops keep placing them, as before
+        else if (anchorOperator instanceof NodeIndexRangeScan rangeScan && rangeScan.isAdaptive() && rangeScan == rootOperator)
+          filterExpression = pushAnchorOnlyConjuncts(filterExpression, anchorVariable, logicalPlan, rangeScan::pushDownFilter);
       }
 
       if (filterExpression != null)

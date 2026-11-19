@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -40,10 +39,19 @@ public class SQLFunctionVectorL2Distance extends SQLFunctionVectorAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 2;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 2)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object vector1 = params[0];
     final Object vector2 = params[1];

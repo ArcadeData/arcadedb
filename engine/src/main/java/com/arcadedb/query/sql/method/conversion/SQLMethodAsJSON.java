@@ -20,11 +20,13 @@ package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Map;
@@ -68,10 +70,16 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
     else if (me instanceof String string) {
       if (string.isEmpty())
         return new JSONObject();
-      if (string.charAt(0) == '[')
-        return new JSONArray(string);
-      else
-        return new JSONObject(string);
+      try {
+        if (string.charAt(0) == '[')
+          return new JSONArray(string);
+        else
+          return new JSONObject(string);
+      } catch (final JSONException e) {
+        // a text that is no JSON is the caller's receiver: VALIDATION on every protocol, where only HTTP answered it as the
+        // caller's mistake and every other wire as a server fault (issue #12020)
+        throw new InvalidArgumentException(getName() + "(): " + e.getMessage(), e);
+      }
     } else if (MultiValue.isMultiValue(me)) {
       final JSONArray json = new JSONArray();
       for (final Object o : MultiValue.getMultiValueIterable(me, false))

@@ -37,8 +37,12 @@ import java.util.stream.Stream;
  * which it participates in a k-truss subgraph (a subgraph where every edge is supported by
  * at least k-2 triangles), over the simple undirected graph: the direction, the multiplicity of
  * the edges and self-loops do not count. The decomposition peels the edges in support order over
- * sorted neighbour sets, O(E^1.5) time and O(V + E) memory (issue #12173). The optional
- * {@code k} is validated but selects nothing: every node is listed with its truss number.
+ * sorted neighbour sets, O(E^1.5) time and O(V + E) memory (issue #12173).
+ * </p>
+ * <p>
+ * The optional {@code k} (at least 2) selects the k-truss: only the nodes whose truss number is at least {@code k}, the nodes of
+ * the k-truss, are listed. Without it, or with {@code null}, every node is listed with its truss number, 0 for a node in no edge
+ * (issue #12303). The truss numbers are those of the full decomposition either way, so the filter costs nothing.
  * </p>
  * <p>
  * Example:
@@ -71,7 +75,7 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
 
   @Override
   public String getDescription() {
-    return "Computes k-truss decomposition assigning each vertex its maximum truss number";
+    return "Computes k-truss decomposition assigning each vertex its maximum truss number, only the vertices of the k-truss when k is passed";
   }
 
   @Override
@@ -84,9 +88,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final String[] relTypes = extractRelTypes(argOrDefault(args, 0, null), context);
-    // Validated as before, but it selects nothing: every node gets its truss number from the full decomposition, which is what the
-    // documented yield (the maximum k of a k-truss the node belongs to) asks for
-    extractInt(optionalNumberArg(args, 1, "k", 3), "k");
+    // k selects the k-truss (issue #12303); without it every node is listed. Every edge is in the 2-truss, so a smaller k names no
+    // truss and is refused rather than read as "every node", which would include the nodes in no edge that no k-truss holds
+    final Number kArg = optionalNumberArg(args, 1, "k", null);
+    final int k = kArg != null ? extractInt(kArg, "k", 2) : 0;
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
@@ -104,8 +109,10 @@ public class AlgoKTruss extends AbstractAlgoProcedure {
 
     final int[] nodeTruss = trussNumbers(graph.memory(), guard, adj);
 
-    final List<Result> results = new ArrayList<>(n);
+    final List<Result> results = new ArrayList<>(k > 0 ? 16 : n);
     for (int i = 0; i < n; i++) {
+      if (nodeTruss[i] < k)
+        continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("nodeId", graph.getRID(i));
       r.setProperty("trussNumber", nodeTruss[i]);
