@@ -102,3 +102,14 @@ direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an un
   unique STRING key that reads as a number or a list (`12345`, `2.5`, `[1.5, 2]`) loads one record at commit; a version, an
   address, a date or any other text pays nothing. Run `REBUILD INDEX <name>` (or `REBUILD INDEX *`) once after upgrading to
   write every entry under its canonical key and drop that cost: an index this build creates or rebuilds pays nothing.
+- **#12162** A multi-property `FULL_TEXT` index no longer mixes its field-qualified keys (`title:java`) with its unqualified
+  ones. An unqualified prefix, wildcard, fuzzy or regexp clause (`ti*`) also matched the `title:...` and `body:...` keys of
+  every field whose name starts with the prefix, so it returned every record with a non-empty `title` and scored each such key
+  as an extra term. A token that itself reads `<property>:...` (the StandardTokenizer keeps `title:java` as one token) was
+  stored under the very key of the `title` posting of `java`, so `title:java` also matched a record holding that text in
+  `body`. Such a token is now stored behind one `:` escape, and a qualified clause reads only its own `field:` keys. A
+  one-property index, which has no qualified keys, keeps every key and now also matches its tokens that hold a colon
+  (`note:this`) by wildcard, regexp and fuzzy clauses, which it used to skip. **Upgrade note:** an index written before this
+  release keeps those few tokens (a token that reads `<property>:...`) unescaped until `REBUILD INDEX <name>`: until then
+  `title:java` can still match a record that holds that text in another field, and an unqualified search for that literal
+  token misses it. The wrong prefix, wildcard, fuzzy and regexp answers are fixed at once, with no rebuild.
