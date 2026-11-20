@@ -74,6 +74,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -1871,24 +1872,84 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     // toMap() hands back a fresh LinkedHashMap nobody else holds, so the row is typed and stripped in place.
     final Map<String, Object> map = result.toMap();
-    if (map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
-      // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
-      // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
-      // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
-      // behavior of the gRPC client, which already routes the value through a typed channel.
-      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY));
-      // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
-      // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
-      // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
-      // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        final ColumnTypeHint hint = propTypes.get(entry.getKey());
-        final Object value = entry.getValue();
-        if (hint != null && value != null)
-          entry.setValue(convertWithHint(value, hint));
+    // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
+    // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
+    // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
+    // behavior of the gRPC client, which already routes the value through a typed channel.
+    final Map<String, ColumnTypeHint> propTypes = map.containsKey(Property.PROPERTY_TYPES_PROPERTY) ?
+        propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY)) :
+        Collections.emptyMap();
+    // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
+    // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
+    // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
+    // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = entry.getValue();
+      if (value == null)
+        continue;
+      // Issue #12184: a column holding a record (Cypher RETURN a, r, b; SQL @this, first(out())), or a list, map or path holding
+      // records (collect(a), {who: a}, a path's nodes and relationships), arrives as the records' JSON with their @cat, and is
+      // rebuilt as the records a whole-row record is. The column's hint must not touch what was rebuilt: it is written for the
+      // JSON, and a LINK hint converted the record's map to an Identifiable, which kept the strings that parse as RIDs (@rid,
+      // @in, @out) and dropped every property.
+      final Record record = recordOf(value);
+      if (record != null) {
+        entry.setValue(record);
+        continue;
       }
+      if (rebuildRecordsIn(value))
+        continue;
+      final ColumnTypeHint hint = propTypes.get(entry.getKey());
+      if (hint != null)
+        entry.setValue(convertWithHint(value, hint));
     }
     return new ResultInternal(map);
+  }
+
+  /**
+   * The record a value of a projection column describes as JSON, or null when the value is not one: a map that carries a record's
+   * {@code @cat} and the {@code @type} that names its type (issue #12184). A map with the key and no type is a map the query built,
+   * and building it as a record would ask the schema for a type it does not have.
+   */
+  private Record recordOf(final Object value) {
+    return value instanceof Map<?, ?> map && map.get(Property.TYPE_PROPERTY) instanceof String ? map2Record(map) : null;
+  }
+
+  /**
+   * Replaces, in place, every record held as JSON by the list or map {@code container} - at any depth, in the lists, maps and
+   * path objects it holds - with the record it describes, and tells whether it replaced any (issue #12184). Nothing is allocated for
+   * a container that holds none. In place is safe: a row is converted by {@code toMap()}, which hands back a tree of fresh
+   * {@code LinkedHashMap}s and {@code ArrayList}s that nobody else holds. A record's own map is never walked: it is the record's
+   * attributes, and the record reads its nested values itself.
+   *
+   * @return false when {@code container} is not a list or a map, or holds no record
+   */
+  @SuppressWarnings("unchecked")
+  private boolean rebuildRecordsIn(final Object container) {
+    boolean rebuilt = false;
+    if (container instanceof List<?> list) {
+      final ListIterator<Object> iterator = ((List<Object>) list).listIterator();
+      while (iterator.hasNext()) {
+        final Object item = iterator.next();
+        final Record record = recordOf(item);
+        if (record != null) {
+          iterator.set(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
+      }
+    } else if (container instanceof Map<?, ?> map) {
+      for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) map).entrySet()) {
+        final Object item = entry.getValue();
+        final Record record = recordOf(item);
+        if (record != null) {
+          entry.setValue(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
+      }
+    }
+    return rebuilt;
   }
 
   /**
@@ -2007,11 +2068,28 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (!result.has(CAT_PROPERTY))
       return null;
 
+    // A category no record has is answered on the parsed JSON too, so the projection it falls back to is converted once (#8332)
     final String cat = result.getString(CAT_PROPERTY);
+    if (!"d".equals(cat) && !"v".equals(cat) && !"e".equals(cat))
+      return null;
+
+    return map2Record(result.toMap());
+  }
+
+  /**
+   * Builds the record a parsed record JSON describes, or returns null when its {@code @cat} names no record category: the
+   * shared step of a whole-row record ({@link #json2Record}) and a record held by a projection column (issue #12184).
+   */
+  @SuppressWarnings("unchecked")
+  private Record map2Record(final Map<?, ?> map) {
+    if (!(map.get(CAT_PROPERTY) instanceof String cat))
+      return null;
+
+    final Map<String, Object> attributes = (Map<String, Object>) map;
     return switch (cat) {
-      case "d" -> new RemoteImmutableDocument(this, result.toMap());
-      case "v" -> new RemoteImmutableVertex(this, result.toMap());
-      case "e" -> new RemoteImmutableEdge(this, result.toMap());
+      case "d" -> new RemoteImmutableDocument(this, attributes);
+      case "v" -> new RemoteImmutableVertex(this, attributes);
+      case "e" -> new RemoteImmutableEdge(this, attributes);
       default -> null; // Or throw an exception for unknown category
     };
   }
