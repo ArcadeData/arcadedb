@@ -26,30 +26,22 @@ public class LockStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();
 
-    TransactionExplicitLock explicitLock = null;
-    if ("TYPE".equals(mode)) {
-      if (identifiers != null && !identifiers.isEmpty()) {
-        explicitLock = context.getDatabase().acquireLock();
-
-        for (Identifier typeName : identifiers)
-          explicitLock.type(typeName.getStringValue());
-      }
-    } else {
-      if (identifiers != null && !identifiers.isEmpty()) {
-        explicitLock = context.getDatabase().acquireLock();
-
-        for (Identifier bucketName : identifiers)
-          explicitLock.bucket(bucketName.getStringValue());
-      }
-    }
-
-    if (explicitLock != null)
+    if (identifiers != null && !identifiers.isEmpty())
       try {
+        final TransactionExplicitLock explicitLock = database.acquireLock();
+
+        if ("TYPE".equals(mode))
+          for (final Identifier typeName : identifiers)
+            explicitLock.type(typeName.getStringValue());
+        else
+          for (final Identifier bucketName : identifiers)
+            explicitLock.bucket(bucketName.getStringValue());
+
         explicitLock.lock();
       } catch (final TransactionException e) {
-        // The transaction refuses the lock for where the statement stands in it - after a modification, or a second LOCK -
-        // which is the script's mistake, not the server's (issue #11893). A lock timeout or a conflict is no
-        // TransactionException and keeps its own type
+        // The transaction refuses the lock for where the statement stands in it - after a modification, a second LOCK, or after
+        // the script ended its transaction - which is the script's mistake, not the server's (issue #11893). A lock timeout or a
+        // conflict is no TransactionException and keeps its own type
         throw new CommandSemanticException("Cannot execute " + this + ": " + e.getMessage(), e);
       }
 

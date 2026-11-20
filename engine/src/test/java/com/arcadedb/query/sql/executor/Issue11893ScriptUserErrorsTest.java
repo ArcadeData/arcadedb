@@ -19,10 +19,16 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.LtOperator;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,6 +119,17 @@ class Issue11893ScriptUserErrorsTest extends TestHelper {
   }
 
   @Test
+  void lockAfterTheScriptEndedItsTransactionIsASemanticError() {
+    // the COMMIT inside the IF ends the caller's transaction, so the LOCK finds none: the script's order, as for a second LOCK
+    database.begin();
+    try {
+      assertClientError("IF (1 = 1) { COMMIT; } LOCK TYPE S;", CommandSemanticException.class, "Transaction not begun");
+    } finally {
+      rollbackAll();
+    }
+  }
+
+  @Test
   void lessThanBetweenRowsIsATypeMismatch() {
     assertClientError("LET $x = SELECT FROM S LIMIT 1; IF ($x[0] < $x[0]) { RETURN 1; }", TypeMismatchException.class,
         "Cannot compare a record with a record using '<'");
@@ -130,6 +147,29 @@ class Issue11893ScriptUserErrorsTest extends TestHelper {
   void lessThanBetweenRowsInAWhereIsATypeMismatch() {
     assertThatThrownBy(() -> database.query("sql", "SELECT FROM S WHERE $current < $current").stream().count())
         .isInstanceOf(TypeMismatchException.class);
+  }
+
+  @Test
+  void betweenTwoRowsIsATypeMismatch() {
+    // x BETWEEN a AND b is x >= a AND x <= b, so it refuses rows as >= and <= do
+    database.transaction(() -> assertClientError(
+        "INSERT INTO S SET k = 2; LET $x = SELECT FROM S ORDER BY k; IF ($x[0] BETWEEN $x[1] AND $x[1]) { RETURN 1; }",
+        TypeMismatchException.class, "using 'BETWEEN'"));
+  }
+
+  @Test
+  void aClassCastExceptionOfAnOperatorWithNoOrderIsATypeMismatch() {
+    final BinaryCondition condition = conditionOver(new LtOperator());
+    assertThatThrownBy(() -> condition.evaluate((Identifiable) null, null)).isInstanceOf(TypeMismatchException.class)
+        .hasMessageContaining("using '<'").hasCauseInstanceOf(ClassCastException.class);
+  }
+
+  @Test
+  void aClassCastExceptionOfAnOperatorThatIsNoOrderingIsNotRelabelled() {
+    // a ClassCastException out of = or LIKE is a fault of the engine, not a statement comparing what has no order
+    final BinaryCondition condition = conditionOver(new FaultyOperator());
+    assertThatThrownBy(() -> condition.evaluate((Identifiable) null, null)).isExactlyInstanceOf(ClassCastException.class)
+        .hasMessage("a fault of the operator");
   }
 
   @Test
@@ -173,6 +213,56 @@ class Issue11893ScriptUserErrorsTest extends TestHelper {
           "Exceeded number of 3 nested transactions");
     } finally {
       rollbackAll();
+    }
+  }
+
+  /** A condition over two operands that have no order: one object each, which nothing can compare. */
+  private static BinaryCondition conditionOver(final BinaryCompareOperator operator) {
+    final BinaryCondition condition = new BinaryCondition();
+    condition.left = new ObjectExpression();
+    condition.right = new ObjectExpression();
+    condition.operator = operator;
+    return condition;
+  }
+
+  /** An operand that evaluates to a new plain object, whatever the record. */
+  private static class ObjectExpression extends Expression {
+    @Override
+    public Object execute(final Identifiable currentRecord, final CommandContext context) {
+      return new Object();
+    }
+
+    @Override
+    public Object execute(final Result currentRecord, final CommandContext context) {
+      return new Object();
+    }
+  }
+
+  /** An operator that is not an ordering one and fails with a ClassCastException of its own. */
+  private static class FaultyOperator implements BinaryCompareOperator {
+    @Override
+    public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
+      throw new ClassCastException("a fault of the operator");
+    }
+
+    @Override
+    public BinaryCompareOperator copy() {
+      return this;
+    }
+
+    @Override
+    public boolean isLess() {
+      return false;
+    }
+
+    @Override
+    public boolean isGreater() {
+      return false;
+    }
+
+    @Override
+    public boolean isInclude() {
+      return false;
     }
   }
 
