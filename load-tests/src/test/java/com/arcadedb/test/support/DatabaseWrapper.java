@@ -57,6 +57,10 @@ public class DatabaseWrapper {
   private final        Timer             friendshipTimer;
   private final        Timer             likeTimer;
 
+  // How long a loop that draws ids may wait for the writers to insert the next ones before it fails, and the pause between two attempts
+  private static final long ID_WAIT_TIMEOUT_MS = 5 * 60_000L;
+  private static final long ID_WAIT_POLL_MS    = 250L;
+
   private static final double GEO_LON_MIN   = -180.0;
   private static final double GEO_LON_RANGE = 360.0;
   private static final double GEO_LAT_MIN   = -90.0;
@@ -191,7 +195,7 @@ public class DatabaseWrapper {
         if (attempt == maxAttempts)
           throw e;
         // "does not exist": a follower that has not applied the database creation yet answers 404 for the first command
-        if (!e.getMessage().contains("not available") && !(e instanceof DatabaseNotFoundException)) {
+        if (!isRetryableSchemaFailure(e)) {
           logger.warn("Schema creation failed with unexpected error on attempt {}: {}", attempt, e.getMessage());
           throw e;
         }
@@ -376,6 +380,23 @@ public class DatabaseWrapper {
     }
   }
 
+  /**
+   * Whether a schema-creation failure is the cluster not being ready yet, so the statement did not run and can be sent again: a follower
+   * that has not opened the database answers {@code Database '...' is not available}, or {@link DatabaseNotFoundException} before it has
+   * applied the creation. Any other failure, one with no message included, is unexpected and must reach the caller as it is (#11652).
+   */
+  static boolean isRetryableSchemaFailure(final Exception e) {
+    if (e instanceof DatabaseNotFoundException)
+      return true;
+    final String message = e.getMessage();
+    return message != null && message.contains("not available");
+  }
+
+  /** How many operations of a run of {@code total} pass between two progress pauses: a tenth, and never 0, which the callers take a modulo of. */
+  static int pauseInterval(final int total) {
+    return Math.max(1, total / 10);
+  }
+
   /** Whether the failure is the client giving up waiting, which says nothing about whether the server applied the command. */
   static boolean isClientTimeout(final Throwable failure) {
     for (Throwable t = failure; t != null; t = t.getCause())
@@ -437,7 +458,10 @@ public class DatabaseWrapper {
    * @param numOfFriendships the number of iterations to create friendships
    */
   public void createFriendships(int numOfFriendships) {
-    int pauseEvery = numOfFriendships / 10;
+    final int pauseEvery = pauseInterval(numOfFriendships);
+    // the writers fill the User table while this runs, so the first answers are empty by design: wait for them, and fail with the reason
+    // if no pair of users ever shows up
+    final StallGuard noUsers = new StallGuard("two distinct User ids to make friends", ID_WAIT_TIMEOUT_MS, ID_WAIT_POLL_MS);
     int count = 0;
     TypeIdSupplier userIdSupplier = new TypeIdSupplier(db, "User");
     while (count < numOfFriendships) {
@@ -445,8 +469,10 @@ public class DatabaseWrapper {
       Integer userId2 = userIdSupplier.get();
       if (userId1 == null || userId2 == null || userId1.equals(userId2)) {
         userIdSupplier = new TypeIdSupplier(db, "User", count);
+        noUsers.stall();
         continue;// Skip if no more users or same user
       }
+      noUsers.progress();
       addFriendship(userId1, userId2);
       count++;
       if (count % pauseEvery == 0) {
@@ -461,20 +487,37 @@ public class DatabaseWrapper {
     logger.info("Created {} friendships", count);
   }
 
+  /**
+   * Creates {@code numOfLikes} likes, each from a distinct user to a distinct photo, drawing the ids in ascending order.
+   * <p>
+   * The users and photos are inserted by other threads that start together with this one, so the first draws find nothing. This waits for
+   * them with a pause between two attempts instead of re-querying in a tight loop, and fails with the reason when no new id shows up for
+   * long: every id is drawn once, so asking for more likes than users or photos were ever inserted would otherwise wait for the class
+   * timeout (#11653). An id already drawn is kept while the other kind is awaited, not thrown away.
+   *
+   * @param numOfLikes the number of likes to create
+   */
   public void createLike(int numOfLikes) {
-    int pauseEvery = numOfLikes / 10;
+    final int pauseEvery = pauseInterval(numOfLikes);
+    final StallGuard noIds = new StallGuard("a User id and a Photo id to like", ID_WAIT_TIMEOUT_MS, ID_WAIT_POLL_MS);
     int count = 0;
-    TypeIdSupplier userIdSupplier = new TypeIdSupplier(db, "User");
-    TypeIdSupplier photoIdSupplier = new TypeIdSupplier(db, "Photo");
+    final TypeIdSupplier userIdSupplier = new TypeIdSupplier(db, "User");
+    final TypeIdSupplier photoIdSupplier = new TypeIdSupplier(db, "Photo");
+    Integer userId = null;
+    Integer photoId = null;
     while (count < numOfLikes) {
-      Integer userId = userIdSupplier.get();
-      Integer photoId = photoIdSupplier.get();
+      if (userId == null)
+        userId = userIdSupplier.get();
+      if (photoId == null)
+        photoId = photoIdSupplier.get();
       if (userId == null || photoId == null) {
-//        userIdSupplier = new TypeIdSupplier(db, "User", count);
-//        photoIdSupplier = new TypeIdSupplier(db, "Phote", count);
-        continue; // No more users or photos available
+        noIds.stall(); // not inserted yet, or all used
+        continue;
       }
+      noIds.progress();
       addLike(userId, photoId);
+      userId = null;
+      photoId = null;
       count++;
       if (count % pauseEvery == 0) {
         try {

@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.ast.CypherTypeName;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
@@ -51,14 +52,17 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
@@ -87,6 +91,21 @@ public final class CypherFunctionHelper {
    * the value {@code timestamp()} answers with.
    */
   public static final String TIMESTAMP = "timestamp";
+
+  /**
+   * The type names Neo4j renders a union of list element types in, from the first to the last: the union of the element
+   * types of {@code [1,'a']} is rendered {@code "STRING NOT NULL | INTEGER NOT NULL"} and the union of the element types
+   * of {@code [1,'a',true]} adds BOOLEAN before the other two, whatever order the elements came in (issue #12395).
+   */
+  private static final List<String> TYPE_ORDER = List.of("BOOLEAN", "STRING", "INTEGER", "FLOAT", "DATE", "LOCAL TIME",
+      "ZONED TIME", "LOCAL DATETIME", "ZONED DATETIME", "DURATION", "POINT", "NODE", "RELATIONSHIP", "MAP", "LIST", "PATH");
+
+  /**
+   * The place every type of {@link #TYPE_ORDER} takes in it, so that the order is looked up and not searched.
+   */
+  private static final Map<String, Integer> TYPE_ORDER_INDEX = IntStream.range(0, TYPE_ORDER.size())
+      .boxed()
+      .collect(Collectors.toMap(TYPE_ORDER::get, index -> index));
 
   /**
    * A numeric Cypher function: its canonical spelling - the one the runtime check uses, so both the parse-time and the
@@ -192,6 +211,149 @@ public final class CypherFunctionHelper {
       case Map<?, ?> map -> CypherValues.isPointShaped(map) ? "POINT" : "MAP";
       default -> value.getClass().isArray() ? "LIST<ANY>" : value.getClass().getSimpleName().toUpperCase(Locale.ROOT);
     };
+  }
+
+  /**
+   * The type of a value, as Neo4j's {@code valueType()} renders it: the name of the type, followed by
+   * {@code " NOT NULL"} when the value is not null. A list reports the type of its elements the way Neo4j reports it:
+   * {@code LIST<INTEGER NOT NULL> NOT NULL} for {@code [1,2]}, {@code LIST<NOTHING> NOT NULL} for an empty list,
+   * {@code LIST<INTEGER> NOT NULL} for {@code [1,null]} and {@code LIST<STRING NOT NULL | INTEGER NOT NULL> NOT NULL}
+   * for {@code [1,'a']} (issue #12395).
+   */
+  public static String cypherValueType(final Object value) {
+    if (value == null)
+      return "NULL";
+    final List<?> list = listOrNull(value);
+    if (list != null)
+      return "LIST<" + listElementTypes(list).rendered + "> NOT NULL";
+    return cypherTypeName(value) + " NOT NULL";
+  }
+
+  /**
+   * The value as the list valueType() reports on: a List, or an array, which {@link #asListOrNull} already reads as a list
+   * (primitive arrays reach the engine as the value of a numeric-array parameter, issue #4284) and which {@link #cypherTypeName}
+   * already names a list. A Set or another collection keeps the name it had.
+   */
+  private static List<?> listOrNull(final Object value) {
+    if (value instanceof List<?> list)
+      return list;
+    return value != null && value.getClass().isArray() ? asListOrNull(value) : null;
+  }
+
+  /**
+   * The types of the elements of a list, as Neo4j renders the union of them: the member types joined with
+   * {@code " | "}, each one carrying its own {@code " NOT NULL"} suffix unless the list holds a null element - a list
+   * holding one has a nullable element type, and so has every member of it.
+   * <p>
+   * The member types are rendered in the order Neo4j renders a union of them, which is not the order the elements
+   * come in: the union of the element types of {@code [1,'a']} is {@code "STRING NOT NULL | INTEGER NOT NULL"}, and
+   * the union of the element types of {@code [1,'a',true]} adds BOOLEAN before the other two.
+   */
+  private static ElementTypes listElementTypes(final List<?> list) {
+    if (list.isEmpty())
+      return new ElementTypes("NOTHING", List.of());
+
+    final List<Member> members = new ArrayList<>();
+    boolean nullable = false;
+    for (final Object element : list) {
+      if (element == null) {
+        nullable = true;
+        continue;
+      }
+      members.add(elementMember(element));
+    }
+
+    // A list of null elements only: the element type is the null type itself
+    if (members.isEmpty())
+      return new ElementTypes("NULL", List.of());
+
+    // The same type twice is one member of the union, and the members are the ones Neo4j renders, in its order
+    final Map<String, Member> distinct = new LinkedHashMap<>();
+    for (final Member member : members)
+      distinct.putIfAbsent(member.rendered, member);
+    final List<Member> ordered = new ArrayList<>(distinct.values());
+    // Two members can share a key and differ in what they render - [1] and [1,null] are both a list of INTEGER, one with a nullable
+    // element type - so the key alone leaves their order to the order the elements came in, and the union would depend on it. The
+    // rendered text breaks the tie: ' ' sorts before '>', so the member with the NOT NULL element comes first, as Neo4j renders
+    // [[[1]],[[1,null]]] and [[[1,null]],[[1]]] alike
+    ordered.sort((first, second) -> {
+      final int byKey = compareKeys(first.key, second.key);
+      return byKey != 0 ? byKey : first.rendered.compareTo(second.rendered);
+    });
+
+    final StringBuilder rendered = new StringBuilder();
+    final List<Integer> key = new ArrayList<>();
+    boolean first = true;
+    for (final Member member : ordered) {
+      if (!first)
+        rendered.append(" | ");
+      first = false;
+      rendered.append(member.rendered);
+      if (!nullable)
+        rendered.append(" NOT NULL");
+      key.addAll(member.key);
+    }
+    return new ElementTypes(rendered.toString(), key);
+  }
+
+  /**
+   * The member a list element contributes to the union of the element types: the type it is rendered as, and the key
+   * that orders it. A list element is ordered by the types it holds, so that the union of the element types of
+   * {@code [[1],['a']]} renders {@code "LIST<STRING NOT NULL> NOT NULL | LIST<INTEGER NOT NULL> NOT NULL"}.
+   */
+  private static Member elementMember(final Object element) {
+    final List<?> nested = listOrNull(element);
+    if (nested != null) {
+      final ElementTypes inner = listElementTypes(nested);
+      final List<Integer> key = new ArrayList<>();
+      key.add(typeOrderIndex(CypherTypeName.LIST));
+      key.addAll(inner.key);
+      return new Member("LIST<" + inner.rendered + ">", key);
+    }
+    final String type = cypherTypeName(element);
+    return new Member(type, List.of(typeOrderIndex(type)));
+  }
+
+  /**
+   * Compares two type keys: the one whose first type comes first in the order wins, and a key that is a prefix of the
+   * other comes first.
+   */
+  private static int compareKeys(final List<Integer> first, final List<Integer> second) {
+    final int shared = Math.min(first.size(), second.size());
+    for (int i = 0; i < shared; i++) {
+      final int comparison = Integer.compare(first.get(i), second.get(i));
+      if (comparison != 0)
+        return comparison;
+    }
+    return Integer.compare(first.size(), second.size());
+  }
+
+  /**
+   * The place a type name takes in the order Neo4j renders a union of types: BOOLEAN, STRING, INTEGER, FLOAT, DATE,
+   * LOCAL TIME, ZONED TIME, LOCAL DATETIME, ZONED DATETIME, DURATION, POINT, NODE, RELATIONSHIP, MAP, LIST and PATH. A
+   * type the order does not name keeps its place at the end.
+   */
+  private static int typeOrderIndex(final String typeName) {
+    final Integer index = TYPE_ORDER_INDEX.get(typeName);
+    return index != null ? index : TYPE_ORDER.size();
+  }
+
+  /**
+   * A member of the union of the element types of a list: the type it is rendered as, and the key that orders it.
+   *
+   * @param rendered the type, without the {@code " NOT NULL"} suffix the union adds to it
+   * @param key      the place the member takes in the order Neo4j renders a union of types
+   */
+  private record Member(String rendered, List<Integer> key) {
+  }
+
+  /**
+   * The types of the elements of a list, and the key that orders them in a union.
+   *
+   * @param rendered the types, joined the way Neo4j joins them
+   * @param key      the place the types take in the order Neo4j renders a union of types
+   */
+  private record ElementTypes(String rendered, List<Integer> key) {
   }
 
   /**
@@ -532,6 +694,89 @@ public final class CypherFunctionHelper {
       pieces.add(str.substring(from, at));
       from = end;
       at = str.indexOf(delimiter, from);
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
+   * Splits {@code str} around every occurrence of any of the literal {@code delimiters}, as openCypher
+   * {@code split(original, splitDelimiters)} does (issue #12396): the text is cut at the leftmost place where any
+   * delimiter of the list is found and, when two of them are found at the same place, the first of the list wins. The
+   * delimiters are literals, never patterns, and the empty pieces are kept.
+   * <ul>
+   *   <li>An empty list of delimiters splits nothing: the text is the one piece.</li>
+   *   <li>An empty delimiter splits the text into its characters and the other delimiters of the list are cut out of
+   *   the text before that, as Neo4j 5 does: {@code split('abc', ['','a'])} is {@code ["b","c"]}.</li>
+   * </ul>
+   * As the single-delimiter split, a surrogate pair is never cut.
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final List<String> delimiters) {
+    if (delimiters.isEmpty())
+      return List.of(str);
+
+    boolean withEmptyDelimiter = false;
+    for (final String delimiter : delimiters)
+      if (delimiter.isEmpty()) {
+        withEmptyDelimiter = true;
+        break;
+      }
+
+    if (withEmptyDelimiter) {
+      String text = str;
+      for (final String delimiter : delimiters)
+        if (!delimiter.isEmpty())
+          text = replaceLiteral(text, delimiter, "");
+      // Cutting the other delimiters out of a text can leave nothing, and the characters of nothing are no piece, as in Neo4j 5:
+      // split('aaa', ['','a']) is [], while the empty text itself is the one empty piece, split('', ['']) is [""]
+      if (text.isEmpty() && !str.isEmpty())
+        return List.of();
+      return splitLiteral(text, "");
+    }
+
+    final String[] candidates = delimiters.toArray(new String[0]);
+    // The next place each delimiter is found at or after 'at': searched again only once 'at' has passed it, and never again once it
+    // is not found any more. Searching every delimiter from 'at' on each cut scanned the rest of the text for a delimiter that is
+    // absent after every cut, which was quadratic on a long text with a list like [",", ";"] (review of #12403)
+    final int[] nextIndex = new int[candidates.length];
+    Arrays.fill(nextIndex, -1);
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = 0;
+    while (true) {
+      int foundAt = -1;
+      String found = null;
+      for (int i = 0; i < candidates.length; i++) {
+        final String delimiter = candidates[i];
+        if (nextIndex[i] < at) {
+          final int looked = str.indexOf(delimiter, at);
+          nextIndex[i] = looked < 0 ? Integer.MAX_VALUE : looked;
+        }
+        final int index = nextIndex[i];
+        if (index == Integer.MAX_VALUE)
+          continue;
+        if (foundAt < 0 || index < foundAt) {
+          foundAt = index;
+          found = delimiter;
+        } else if (index == foundAt && splitsSurrogatePair(str, foundAt, foundAt + found.length())
+            && !splitsSurrogatePair(str, index, index + delimiter.length()))
+          // the delimiter that comes first in the list would cut a surrogate pair, this one at the same place does not
+          found = delimiter;
+      }
+      if (foundAt < 0)
+        break;
+
+      final int end = foundAt + found.length();
+      if (splitsSurrogatePair(str, foundAt, end)) {
+        // no delimiter of the list can be used here: look for the next one
+        at = foundAt + 1;
+        continue;
+      }
+      pieces.add(str.substring(from, foundAt));
+      from = end;
+      at = end;
     }
     pieces.add(str.substring(from));
     return Collections.unmodifiableList(pieces);

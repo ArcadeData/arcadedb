@@ -209,7 +209,7 @@ public enum GlobalConfiguration {
       Class.class, LocalDate.class),
 
   SERIALIZER_FIXED_WIDTH_FLOAT_ARRAYS("arcadedb.serializer.fixedWidthFloatArrays", SCOPE.DATABASE,
-      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so set it to false to keep the files readable by such a build, for a rollback. Read when the database opens; records already written keep their form until they are updated. A replicated database writes the fixed-width form only once every peer reads it",
+      "Write float and double arrays (vector embeddings) in their fixed-width form, 4 bytes per float and 8 per double, instead of the varint form, 5 bytes per float and 9-10 per double. A build before 26.11.1 cannot read the fixed-width form, so while this is on a database opened read-write has its dictionary labelled format version 2, which builds from 26.8.1 to 26.11.x refuse to open. Set it to false before the database is first opened by this build to keep the files openable by an older build, for a rollback; turning it off later does not remove the label. A replicated database writes the fixed-width form only once every peer reads it",
       Boolean.class, true),
 
   DATE_FORMAT("arcadedb.dateFormat", SCOPE.DATABASE, "Default date format using Java SimpleDateFormat syntax", String.class,
@@ -1559,7 +1559,9 @@ public enum GlobalConfiguration {
   VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.searchCacheMaxHeapPercent", SCOPE.DATABASE,
       """
       Upper bound, as a percentage of the JVM heap currently AVAILABLE rather than of the ceiling (issue #6503), \
-      on the RAM an automatically sized per-index search cache may use (see arcadedb.vectorIndex.searchCacheSize). \
+      on the RAM the automatically sized search caches of a database may use TOGETHER (see \
+      arcadedb.vectorIndex.searchCacheSize): a type has one vector index per bucket, and an index that finds the share \
+      taken by the others' caches gets no cache, so its searches read the vectors from the pages (issue #12391). \
       Ignored when the cache size is set explicitly. Values above 90 are clamped to 90: no cache is allowed to \
       plan on the whole heap.""",
       Integer.class, 25),
@@ -1572,15 +1574,20 @@ public enum GlobalConfiguration {
       second full copy of the corpus in RAM, and a 4.2M x 768-dimension load died of it at -Xmx16g (issue #7357). \
       The vector is already persisted before the entry is buffered, so entries past this cap keep only their id \
       and RID and the delta scan reads the payload back from the pages. \
-      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes. \
-      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent. -1 keeps every \
-      buffered payload on the heap, which is the pre-#7357 behaviour and is unbounded.""",
+      RAM usage = deltaCacheSize * (dimensions * 4 + 64) bytes PER INDEX: a type has one vector index per bucket, \
+      so an explicit size is multiplied by the number of buckets of every type with a vector index. \
+      0 (default) sizes it automatically from arcadedb.vectorIndex.deltaCacheMaxHeapPercent, which bounds all the \
+      vector indexes of the database together. -1 keeps every buffered payload on the heap, which is the pre-#7357 \
+      behaviour and is unbounded.""",
       Integer.class, 0),
 
   VECTOR_INDEX_DELTA_CACHE_MAX_HEAP_PERCENT("arcadedb.vectorIndex.deltaCacheMaxHeapPercent", SCOPE.DATABASE,
       """
-      Share of the JVM heap ceiling (percentage) the automatically sized delta payload cache may use (see \
-      arcadedb.vectorIndex.deltaCacheSize). Ignored when that size is set explicitly. Taken as this percent of \
+      Share of the JVM heap ceiling (percentage) the automatically sized delta payload caches of ALL the vector \
+      indexes of a database may use together (see arcadedb.vectorIndex.deltaCacheSize). A type has one vector index \
+      per bucket and they draw on the same share, so the bound does not grow with the number of buckets or of \
+      vector properties (issue #12379); an index that finds the share used up keeps no payload and reads its \
+      buffered vectors back from the pages. Ignored when that size is set explicitly. Taken as this percent of \
       -Xmx and then capped at 90% of the heap currently AVAILABLE, the same denominator the graph-build cache \
       uses, so a rebuild holding the old graph and an ingest filling the buffer cannot both plan on the same \
       free heap. Values above 90 are clamped to 90.""",

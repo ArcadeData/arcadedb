@@ -41,6 +41,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -52,6 +53,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -90,13 +92,13 @@ public enum PostgresType {
   JSON(114, "json", 0, 199, JSONObject.class, -1, PostgresType::parseJsonText),
   // The types a driver binds a zoned datetime, a time of day, a duration or a Jsonb wrapper as (issue #11960): each one used to
   // fail the Bind with "not supported for deserializing". They are read as parameters only, into the engine's ZONED_DATETIME,
-  // LOCAL_TIME, OFFSET_TIME, DURATION and the json value; this protocol never announces a column under them. typarray is 0, as
-  // for the catalog-only types below: no array of them is read, and a typarray must name a row pg_type has (issue #10592).
-  TIMESTAMPTZ(1184, "timestamptz", 0, 0, ZonedDateTime.class, 8, value -> parseTimestampTzText(value)),
-  TIME(1083, "time", 0, 0, LocalTime.class, 8, value -> parseTimeText(value)),
-  TIMETZ(1266, "timetz", 0, 0, OffsetTime.class, 12, value -> parseTimeTzText(value)),
-  INTERVAL(1186, "interval", 0, 0, CypherDuration.class, 16, value -> parseIntervalText(value)),
-  JSONB(3802, "jsonb", 0, 0, JSONObject.class, -1, PostgresType::parseJsonText),
+  // LOCAL_TIME, OFFSET_TIME, DURATION and the json value; this protocol never announces a column under them. typarray names the
+  // array type PostgreSQL builds on each, which is a row of pg_type too (issue #12449).
+  TIMESTAMPTZ(1184, "timestamptz", 0, 1185, ZonedDateTime.class, 8, value -> parseTimestampTzText(value)),
+  TIME(1083, "time", 0, 1183, LocalTime.class, 8, value -> parseTimeText(value)),
+  TIMETZ(1266, "timetz", 0, 1270, OffsetTime.class, 12, value -> parseTimeTzText(value)),
+  INTERVAL(1186, "interval", 0, 1187, CypherDuration.class, 16, value -> parseIntervalText(value)),
+  JSONB(3802, "jsonb", 0, 3807, JSONObject.class, -1, PostgresType::parseJsonText),
   // The type PostgreSQL has for a blob, and the only honest answer for a byte[] (issue #6411). A byte[] used
   // to be typed as "char"[] (OID 1002) by getTypeForValue and as varchar (OID 1043) by getTypeFromArcade, so
   // a BINARY column's OID depended on whether the result set happened to be empty - and neither answer was
@@ -134,13 +136,23 @@ public enum PostgresType {
       value -> parseArrayFromString(value, PostgresType::parseTimestampText)),
   // The types a client looks up in pg_type by name while it sets up a connection or reads metadata, though this protocol never announces
   // a column under them (issue #11027): every identifier column of the real catalog is name, and pgjdbc answers getMax*NameLength()
-  // and getClientInfoProperties() from the typlen of the row called "name". Each is a scalar here (typelem 0) whatever PostgreSQL says
-  // of name and int2vector, so that none of them is taken for an array; the announced OID of an identifier column stays varchar.
-  // typarray is 0 for all three, where PostgreSQL has 1003, 1028 and 1006: this protocol reads no array of them, and a typarray must
-  // name a row pg_type has (issue #10592).
-  NAME(19, "name", 0, 0, String.class, 64, value -> value),
-  OID(26, "oid", 0, 0, Long.class, 4, value -> Long.parseLong(value)),
-  INT2VECTOR(22, "int2vector", 0, 0, String.class, -1, value -> value);
+  // and getClientInfoProperties() from the typlen of the row called "name"; the announced OID of an identifier column stays varchar.
+  // name and int2vector carry the typelem PostgreSQL gives them, "char" and int2 (issue #12449), without being arrays of this protocol:
+  // name is a fixed-length string, int2vector a vector with a text format of its own, so neither is read or written as one.
+  NAME(19, "name", 18, 1003, String.class, 64, value -> value, false),
+  OID(26, "oid", 0, 1028, Long.class, 4, value -> Long.parseLong(value)),
+  INT2VECTOR(22, "int2vector", 21, 1006, String.class, -1, value -> value, false),
+  // The array types of the scalars above that had none (issue #12449), each named by its scalar's typarray. As the ones of #10592,
+  // this protocol never announces them for a column: it reads them as parameters and lists them in pg_type.
+  ARRAY_TIMESTAMPTZ(1185, "_timestamptz", 1184, 0, Collection.class, -1,
+      value -> parseArrayFromString(value, PostgresType::parseTimestampTzText)),
+  ARRAY_TIME(1183, "_time", 1083, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseTimeText)),
+  ARRAY_TIMETZ(1270, "_timetz", 1266, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseTimeTzText)),
+  ARRAY_INTERVAL(1187, "_interval", 1186, 0, Collection.class, -1, value -> parseArrayFromString(value, PostgresType::parseIntervalText)),
+  ARRAY_JSONB(3807, "_jsonb", 3802, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_NAME(1003, "_name", 19, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s)),
+  ARRAY_OID(1028, "_oid", 26, 0, Collection.class, -1, value -> parseArrayFromString(value, Long::parseLong)),
+  ARRAY_INT2VECTOR(1006, "_int2vector", 22, 0, Collection.class, -1, value -> parseArrayFromString(value, s -> s));
 
   private static final Map<Integer, PostgresType> CODE_MAP = Arrays.stream(values())
       .collect(Collectors.toMap(type -> type.code, type -> type));
@@ -195,6 +207,14 @@ public enum PostgresType {
       .optionalStart().append(OFFSET_FORMATTER).optionalEnd().toFormatter().withResolverStyle(ResolverStyle.STRICT);
   private static final DateTimeFormatter TIMETZ_FORMATTER          = new DateTimeFormatterBuilder()
       .append(DateTimeFormatter.ISO_LOCAL_TIME).append(OFFSET_FORMATTER).toFormatter();
+  // What PostgreSQL writes for a time, a timetz and a timestamptz (issue #12449): the seconds always, a fraction of at most six digits
+  // without trailing zeros, and an offset of hours, with the minutes only when there are some (+02, +05:30)
+  private static final DateTimeFormatter POSTGRES_TIME_OUTPUT        = new DateTimeFormatterBuilder().appendPattern("HH:mm:ss")
+      .appendFraction(ChronoField.NANO_OF_SECOND, 0, 6, true).toFormatter();
+  private static final DateTimeFormatter POSTGRES_TIMETZ_OUTPUT      = new DateTimeFormatterBuilder().append(POSTGRES_TIME_OUTPUT)
+      .appendOffset("+HH:mm", "+00").toFormatter();
+  private static final DateTimeFormatter POSTGRES_TIMESTAMPTZ_OUTPUT = new DateTimeFormatterBuilder().appendPattern("uuuu-MM-dd ")
+      .append(POSTGRES_TIMETZ_OUTPUT).toFormatter();
 
   /**
    * A timestamptz parameter (issue #11960): {@code 2024-02-29 13:14:15.123456+02} as PostgreSQL and pgjdbc write it, or the ISO
@@ -776,16 +796,26 @@ public enum PostgresType {
   public final  int                      code;
   /** pg_type.typname, the name PostgreSQL itself gives {@link #code}. */
   public final  String                   typeName;
-  /** pg_type.typelem: the OID of the element type for an array type, 0 for a scalar. */
+  /**
+   * pg_type.typelem: the OID of the element type for an array type, 0 for a scalar except {@link #NAME} and {@link #INT2VECTOR}, which
+   * PostgreSQL also gives one. {@link #isArrayType()} says which types are arrays of this protocol.
+   */
   public final  int                      elementCode;
   /** pg_type.typarray: the OID of the array type built on a scalar, 0 for an array type. */
   public final  int                      arrayCode;
   public final  Class<?>                 cls;
   public final  int                      size;
   private final Function<String, Object> textParser;
+  private final boolean                  array;
 
+  /** A type that is an array exactly when it names an element type, which is every type but {@link #NAME} and {@link #INT2VECTOR}. */
   PostgresType(final int code, final String typeName, final int elementCode, final int arrayCode, final Class<?> cls,
       final int size, Function<String, Object> textParser) {
+    this(code, typeName, elementCode, arrayCode, cls, size, textParser, elementCode != 0);
+  }
+
+  PostgresType(final int code, final String typeName, final int elementCode, final int arrayCode, final Class<?> cls,
+      final int size, Function<String, Object> textParser, final boolean array) {
     this.code = code;
     this.typeName = typeName;
     this.elementCode = elementCode;
@@ -793,6 +823,7 @@ public enum PostgresType {
     this.cls = cls;
     this.size = size;
     this.textParser = textParser;
+    this.array = array;
   }
 
   /**
@@ -1070,7 +1101,10 @@ public enum PostgresType {
   public String toText(final PostgresType pgType, final Object value) {
     String serializedValue = null;
     final byte[] byteaValue = pgType == BYTEA ? byteaValueOf(value) : null;
-    if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
+    final String temporalText = temporalText(pgType, value);
+    if (temporalText != null) {
+      serializedValue = temporalText;
+    } else if (pgType == JSON && value != null && (value instanceof Collection<?> || value.getClass().isArray())) {
       // The column was announced as a json document holding an array (issue #5366): emit a real JSON array
       // instead of a Postgres array literal, so the payload matches the announced OID.
       serializedValue = serializeCollectionAsJson(
@@ -1119,6 +1153,79 @@ public enum PostgresType {
       serializedValue = value.toString();
     }
     return serializedValue;
+  }
+
+  /**
+   * The text PostgreSQL writes for a value of a time, timetz, timestamptz or interval type (issue #12449), or null when {@code type}
+   * is none of them or the value is not one it can be read as, so that every other value keeps the text it had.
+   */
+  private static String temporalText(final PostgresType type, final Object value) {
+    if (value == null || type == null)
+      return null;
+    return switch (type) {
+      case TIME -> value instanceof LocalTime time ? time.format(POSTGRES_TIME_OUTPUT) : null;
+      case TIMETZ -> value instanceof OffsetTime time ? time.format(POSTGRES_TIMETZ_OUTPUT) : null;
+      case TIMESTAMPTZ -> value instanceof ZonedDateTime zoned ? zoned.format(POSTGRES_TIMESTAMPTZ_OUTPUT)
+          : value instanceof OffsetDateTime offset ? offset.format(POSTGRES_TIMESTAMPTZ_OUTPUT) : null;
+      case INTERVAL -> value instanceof CypherDuration duration ? intervalText(duration) : null;
+      default -> null;
+    };
+  }
+
+  /**
+   * An interval in PostgreSQL's default output style ({@code IntervalStyle = postgres}): {@code 1 year 2 mons 3 days 04:05:06.5}, each
+   * field only when it is not zero, {@code 00:00:00} for the empty interval, a unit in the plural unless its amount is exactly 1, and
+   * each field carrying its own sign, which is what {@link #parseIntervalText} and every driver read back.
+   */
+  static String intervalText(final CypherDuration duration) {
+    final StringBuilder text = new StringBuilder(32);
+    appendIntervalField(text, duration.getMonths() / 12, "year");
+    appendIntervalField(text, duration.getMonths() % 12, "mon");
+    appendIntervalField(text, duration.getDays(), "day");
+    final long micros = intervalMicros(duration);
+    if (micros != 0 || text.isEmpty()) {
+      if (!text.isEmpty())
+        text.append(' ');
+      if (micros < 0)
+        text.append('-');
+      final long magnitude = Math.abs(micros);
+      final long hours = magnitude / 3_600_000_000L;
+      final long minutes = magnitude / 60_000_000L % 60;
+      final long seconds = magnitude / 1_000_000L % 60;
+      final long fraction = magnitude % 1_000_000L;
+      if (hours < 10)
+        text.append('0');
+      text.append(hours).append(':');
+      if (minutes < 10)
+        text.append('0');
+      text.append(minutes).append(':');
+      if (seconds < 10)
+        text.append('0');
+      text.append(seconds);
+      if (fraction != 0) {
+        final String digits = Long.toString(1_000_000L + fraction).substring(1);
+        int end = digits.length();
+        while (digits.charAt(end - 1) == '0')
+          --end;
+        text.append('.').append(digits, 0, end);
+      }
+    }
+    return text.toString();
+  }
+
+  private static void appendIntervalField(final StringBuilder text, final long amount, final String unit) {
+    if (amount == 0)
+      return;
+    if (!text.isEmpty())
+      text.append(' ');
+    text.append(amount).append(' ').append(unit);
+    if (amount != 1)
+      text.append('s');
+  }
+
+  /** The part of an interval below a day, in microseconds, as PostgreSQL stores it (the nanoseconds past a microsecond are dropped). */
+  private static long intervalMicros(final CypherDuration duration) {
+    return duration.getSeconds() * 1_000_000L + Math.floorDiv(duration.getNanosAdjustment(), 1_000);
   }
 
   /**
@@ -1183,8 +1290,47 @@ public enum PostgresType {
       final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
       typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
     }
+    // the binary formats of the types whose array types #12449 adds, which a binary array of them is made of: the reverse of
+    // deserializeBinary
+    case TIME -> {
+      typeBuffer.putInt(8);
+      typeBuffer.putLong(toLocalTimeValue(value).toNanoOfDay() / 1_000L);
+    }
+    case TIMETZ -> {
+      final OffsetTime time = toOffsetTimeValue(value);
+      typeBuffer.putInt(12);
+      typeBuffer.putLong(time.toLocalTime().toNanoOfDay() / 1_000L);
+      // seconds WEST of UTC, the sign PostgreSQL stores
+      typeBuffer.putInt(-time.getOffset().getTotalSeconds());
+    }
+    case TIMESTAMPTZ -> {
+      final OffsetDateTime instant = toOffsetDateTimeValue(value);
+      typeBuffer.putInt(8);
+      typeBuffer.putLong((instant.toEpochSecond() - POSTGRES_EPOCH_SECONDS) * 1_000_000L + instant.getNano() / 1_000L);
+    }
+    case INTERVAL -> {
+      final CypherDuration duration = value instanceof CypherDuration d ? d : parseIntervalText(value.toString());
+      typeBuffer.putInt(16);
+      typeBuffer.putLong(intervalMicros(duration));
+      typeBuffer.putInt((int) duration.getDays());
+      typeBuffer.putInt((int) duration.getMonths());
+    }
+    case JSONB -> {
+      // jsonb_send: a version byte (1) ahead of the json text
+      final byte[] json = (value instanceof String text ? text : toText(JSON, value)).getBytes(DatabaseFactory.getDefaultCharset());
+      typeBuffer.putInt(json.length + 1);
+      typeBuffer.putByte((byte) 1);
+      typeBuffer.putByteArray(json);
+    }
+    case OID -> {
+      // an unsigned 32-bit number: 4294967295 travels as the bits of -1
+      typeBuffer.putInt(4);
+      typeBuffer.putInt((int) toNumber(value).longValue());
+    }
+    case INT2VECTOR -> putInt2VectorBinary(typeBuffer, value);
     case ARRAY_INT, ARRAY_CHAR, ARRAY_LONG, ARRAY_REAL, ARRAY_DOUBLE, ARRAY_TEXT, ARRAY_JSON, ARRAY_BOOLEAN, ARRAY_NUMERIC, ARRAY_SMALLINT,
-         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> {
+         ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP, ARRAY_TIMESTAMPTZ, ARRAY_TIME, ARRAY_TIMETZ, ARRAY_INTERVAL,
+         ARRAY_JSONB, ARRAY_NAME, ARRAY_OID, ARRAY_INT2VECTOR -> {
       final Collection<?> elements = value instanceof Collection<?> collection ? collection
           : value.getClass().isArray() ? convertPrimitiveArrayToCollection(value) : null;
       if (elements == null)
@@ -1242,6 +1388,54 @@ public enum PostgresType {
     typeBuffer.putInt(lengthPosition, typeBuffer.position() - lengthPosition - 4);
   }
 
+  /**
+   * An int2vector in binary, which is what int2vectorsend writes: the array format of its int2 elements, with a lower bound of 0. The
+   * value is the {@code 1 3} text this protocol reads one as, or a collection of numbers.
+   */
+  private void putInt2VectorBinary(final Binary typeBuffer, final Object value) {
+    final List<Short> elements = new ArrayList<>();
+    if (value instanceof Collection<?> collection)
+      for (final Object element : collection)
+        elements.add(toNumber(element).shortValue());
+    else
+      for (final String element : value.toString().trim().split("\\s+"))
+        if (!element.isEmpty())
+          elements.add(Short.parseShort(element));
+
+    typeBuffer.putInt(20 + elements.size() * 6 - (elements.isEmpty() ? 8 : 0));
+    typeBuffer.putInt(elements.isEmpty() ? 0 : 1);
+    typeBuffer.putInt(0);
+    typeBuffer.putInt(SMALLINT.code);
+    if (!elements.isEmpty()) {
+      typeBuffer.putInt(elements.size());
+      typeBuffer.putInt(0);
+      for (final Short element : elements) {
+        typeBuffer.putInt(2);
+        typeBuffer.putShort(element);
+      }
+    }
+  }
+
+  private static LocalTime toLocalTimeValue(final Object value) {
+    return value instanceof LocalTime time ? time : parseTimeText(value.toString());
+  }
+
+  private static OffsetTime toOffsetTimeValue(final Object value) {
+    return value instanceof OffsetTime time ? time : parseTimeTzText(value.toString());
+  }
+
+  private static OffsetDateTime toOffsetDateTimeValue(final Object value) {
+    return switch (value) {
+      case OffsetDateTime offset -> offset;
+      case ZonedDateTime zoned -> zoned.toOffsetDateTime();
+      case Instant instant -> instant.atOffset(ZoneOffset.UTC);
+      case Date date -> date.toInstant().atOffset(ZoneOffset.UTC);
+      // a timestamp without a zone is the UTC wall time this protocol reports for the session
+      case LocalDateTime local -> local.atOffset(ZoneOffset.UTC);
+      default -> parseTimestampTzText(value.toString()).toOffsetDateTime();
+    };
+  }
+
   /** The element type of an array type: its {@code typelem}, the one place the pairing is declared. */
   private static PostgresType elementTypeOf(final PostgresType arrayType) {
     final PostgresType element = arrayType.isArrayType() ? byCode(arrayType.elementCode) : null;
@@ -1290,6 +1484,8 @@ public enum PostgresType {
       return "{}";
 
     StringBuilder sb = new StringBuilder("{");
+    // the element of a time[], timetz[], timestamptz[] or interval[] is written as the scalar is (issue #12449)
+    final PostgresType elementType = pgType != null && pgType.isArrayType() ? byCode(pgType.elementCode) : null;
     boolean first = true;
     for (Object element : collection) {
       if (!first) {
@@ -1315,6 +1511,8 @@ public enum PostgresType {
       } else if (pgType == ARRAY_DATE && element instanceof Date date) {
         // a date[] element is the date alone, as the scalar DATE is written: the time of day is not part of the value
         appendQuoted(sb, date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE));
+      } else if (elementType != null && temporalText(elementType, element) instanceof String temporal) {
+        appendQuoted(sb, temporal);
       } else if (element instanceof Character) {
         // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
         // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
@@ -1709,10 +1907,14 @@ public enum PostgresType {
         yield parseJsonText(new String(valueAsBytes, 1, valueAsBytes.length - 1, DatabaseFactory.getDefaultCharset()));
       }
       case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON, ARRAY_NUMERIC,
-           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP -> deserializeBinaryArray(buffer);
-      // catalog-only types (issue #11027): listed in pg_type for clients to look up, never bound as a parameter, as before they existed
-      case NAME, OID, INT2VECTOR ->
-          throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
+           ARRAY_SMALLINT, ARRAY_BYTEA, ARRAY_BPCHAR, ARRAY_VARCHAR, ARRAY_DATE, ARRAY_TIMESTAMP, ARRAY_TIMESTAMPTZ, ARRAY_TIME,
+           ARRAY_TIMETZ, ARRAY_INTERVAL, ARRAY_JSONB, ARRAY_NAME, ARRAY_OID, ARRAY_INT2VECTOR -> deserializeBinaryArray(buffer);
+      // namesend writes the bytes of the name, as text does
+      case NAME -> new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
+      // an oid is an UNSIGNED 32-bit number: read into a long, as the text format reads it, so 4294967295 is not -1
+      case OID -> Integer.toUnsignedLong(buffer.getInt());
+      // int2vectorsend writes the array format of int2[], and the text format reads it as its "1 2 3" text: read the same way
+      case INT2VECTOR -> deserializeBinaryArray(buffer).stream().map(String::valueOf).collect(Collectors.joining(" "));
     };
   }
 
@@ -1784,9 +1986,17 @@ public enum PostgresType {
     // a "char"[] element is the single byte the scalar is, read as the Character the text format reads (issue #10870)
     if (elemOid == CHAR.code)
       return (char) (buf.get() & 0xFF);
-    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592): read as the scalar is, not as its bytes' text
-    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code)
+    // the elements of the date[], timestamp[] and bytea[] a client binds (issue #10592), and of the temporal, oid and int2vector
+    // arrays (issue #12449): read as the scalar is, not as its bytes' text
+    if (elemOid == DATE.code || elemOid == TIMESTAMP.code || elemOid == BYTEA.code || elemOid == TIMESTAMPTZ.code || elemOid == TIME.code
+        || elemOid == TIMETZ.code || elemOid == INTERVAL.code || elemOid == OID.code || elemOid == INT2VECTOR.code)
       return deserializeBinary(elemOid, bytes);
+    // a jsonb[] element is its json text, as a json[] element and the text format of both read it, after jsonb_send's version byte
+    if (elemOid == JSONB.code) {
+      if (bytes.length == 0 || bytes[0] != 1)
+        throw new PostgresProtocolException("Unsupported binary jsonb version " + (bytes.length == 0 ? "(empty)" : bytes[0]));
+      return new String(bytes, 1, bytes.length - 1, DatabaseFactory.getDefaultCharset());
+    }
     // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
     return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
@@ -1795,9 +2005,9 @@ public enum PostgresType {
    * Checks if this type is an array type.
    */
   public boolean isArrayType() {
-    // an array type is the one that names an element type: read off the pairing every constant declares, so a new array constant
-    // cannot be left out of a list of them (issue #10592)
-    return elementCode != 0;
+    // an array type is one that names an element type, read off the pairing every constant declares so that a new array constant
+    // cannot be left out of a list of them (issue #10592); name and int2vector name one without being arrays (issue #12449)
+    return array;
   }
 
   /**

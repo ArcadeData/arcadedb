@@ -196,6 +196,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String     IN_FLIGHT_ERROR_LABEL         =
       "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
   private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
+  // The Retry-After of a retryable 503 (issues #12440, #12441). At once for a refusal that clears by itself - a conflict whose
+  // competing commit has already landed, a lock wait that ran out, a read a downsample overtook, a database reopened under the
+  // request - so a client that reads the header, and not only the status, retries the way the Java client always has. One second,
+  // the floor of the in-flight refusal above, for a server too busy to start the request, which is not helped by an immediate retry.
+  static final         String     RETRY_AT_ONCE                 = "0";
+  static final         String     RETRY_WHEN_LESS_BUSY          = "1";
   // The same back-off in band, on the error line of a streamed response that can no longer send the header (#8899).
   public static final  String     STREAMED_RETRY_AFTER_MEMBER   = "retryAfter";
   // Tags the forward-ordinal section of an idempotency key (issue #8323).
@@ -1363,7 +1369,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // auto-commit wrapper as well since #6201, which is where the engine raises most of them.
     final NeedRetryException retryable = firstOf(e, cause, NeedRetryException.class);
     if (retryable != null) {
-      return retryable(retryable);
+      return retryable(retryable, RETRY_AT_ONCE);
     }
 
     // 503: a TimeSeries read was overtaken by a DOWNSAMPLE, which replaced the rows it had not reached yet with
@@ -1375,7 +1381,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // answering short was that the caller be able to act on it.
     final TimeSeriesWalkCoarsenedException coarsened = firstOf(e, cause, TimeSeriesWalkCoarsenedException.class);
     if (coarsened != null) {
-      return retryable(coarsened);
+      return retryable(coarsened, RETRY_AT_ONCE);
     }
 
     // 503: the queries running at the same time hold the heap budget all the queries share, and this one was refused
@@ -1386,7 +1392,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // plain CommandExecutionException instead, since no retry can help it.
     final QueryHeapBudgetExceededException heapBudget = firstOf(e, cause, QueryHeapBudgetExceededException.class);
     if (heapBudget != null) {
-      return retryable(heapBudget);
+      return retryable(heapBudget, RETRY_WHEN_LESS_BUSY);
     }
 
     // 503: the query admission gate did not start the query, because it waited in the queue too long or found the queue
@@ -1394,7 +1400,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // CommandExecutionException arm below for the same reason as the arm above.
     final QueryAdmissionException admission = firstOf(e, cause, QueryAdmissionException.class);
     if (admission != null) {
-      return retryable(admission);
+      return retryable(admission, RETRY_WHEN_LESS_BUSY);
     }
 
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
@@ -1411,7 +1417,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // UNAVAILABLE, not a server fault, for the plain close (issue #10692).
     final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
     if (databaseReopening != null) {
-      return retryable(databaseReopening);
+      return retryable(databaseReopening, RETRY_AT_ONCE);
     }
 
     // 404: the caller named a database this server does not have - permanent, and the caller's to correct. The resolver raises
@@ -1443,7 +1449,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
       if (isServerShuttingDown())
-        return retryable(databaseClosed);
+        // no Retry-After: how long the server takes to come back is not known here
+        return retryable(databaseClosed, null);
       final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
       final String closedName = databaseClosed.getDatabaseName();
       // Reported as the typed refusal the resolver gives the next request, with its reason: an untyped 503 would reach the remote
@@ -1818,10 +1825,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * A 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read a
    * downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
    * {@link DatabaseIsReopeningException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}, and
-   * by a database closed by a shutdown.
+   * by a database closed by a shutdown. {@code retryAfter} is the {@code Retry-After} the answer carries ({@link #RETRY_AT_ONCE},
+   * {@link #RETRY_WHEN_LESS_BUSY}), null for none: a commit that lost a race used to answer without one, so a client reading the
+   * status alone could not tell a conflict that clears by itself from a busy server (issues #12440, #12441).
    */
-  private static ErrorClassification retryable(final Throwable retryable) {
-    return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE);
+  private static ErrorClassification retryable(final Throwable retryable, final String retryAfter) {
+    return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE, retryAfter);
   }
 
   /**

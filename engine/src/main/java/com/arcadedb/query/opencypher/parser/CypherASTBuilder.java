@@ -646,22 +646,37 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<RemoveClause.RemoveItem> items = new ArrayList<>();
 
     for (final Cypher25Parser.RemoveItemContext itemCtx : ctx.removeItem()) {
-      if (itemCtx instanceof Cypher25Parser.RemovePropContext) {
-        // REMOVE n.property
-        final Cypher25Parser.RemovePropContext propCtx = (Cypher25Parser.RemovePropContext) itemCtx;
-        final String propExpr = propCtx.propertyExpression().getText();
-
-        // Parse property expression: variable.property
-        if (propExpr.contains(".")) {
-          final String[] parts = propExpr.split("\\.", 2);
-          items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+      if (itemCtx instanceof Cypher25Parser.RemovePropContext propCtx) {
+        // REMOVE n.property / REMOVE (expr).property. The base is read from the parse tree, as SET reads it: splitting
+        // the source text on its first '.' named a variable "(head(ns))" for REMOVE (head(ns)).s, which no row binds, so
+        // the clause silently did nothing (issue #11754)
+        final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
+        final StringBuilder propertyName = new StringBuilder();
+        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property()) {
+          if (!propertyName.isEmpty())
+            propertyName.append('.');
+          propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
         }
+        final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
+        final Expression target = removeTarget(baseExpr1);
+        if (target == null)
+          items.add(new RemoveClause.RemoveItem(stripBackticks(baseExpr1.variable().getText()), propertyName.toString()));
+        else if (target instanceof VariableExpression variable)
+          items.add(new RemoveClause.RemoveItem(variable.getVariableName(), propertyName.toString()));
+        else
+          items.add(new RemoveClause.RemoveItem(null, target, propertyName.toString(), null));
       } else if (itemCtx instanceof Cypher25Parser.RemoveDynamicPropContext dynCtx) {
-        // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
+        // REMOVE n[keyExpr] — dynamic property removal (issue #5141), or REMOVE (expr)[keyExpr] (issue #11754)
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
-        final String variable = dynPropExpr.expression1().getText();
+        final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
-        items.add(new RemoveClause.RemoveItem(variable, keyExpr));
+        final Expression target = removeTarget(baseExpr1);
+        if (target == null)
+          items.add(new RemoveClause.RemoveItem(stripBackticks(baseExpr1.variable().getText()), keyExpr));
+        else if (target instanceof VariableExpression variable)
+          items.add(new RemoveClause.RemoveItem(variable.getVariableName(), keyExpr));
+        else
+          items.add(new RemoveClause.RemoveItem(null, target, null, keyExpr));
       } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext labelsCtx) {
         // REMOVE n:Label / REMOVE n:$(expr)
         final List<String> labels = new ArrayList<>();
@@ -682,6 +697,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return new RemoveClause(items);
   }
 
+  /**
+   * The target of a REMOVE property item, read the way {@link #visitSetClause} reads the target of a SET property item:
+   * null for a plain variable ({@code REMOVE n.p}), otherwise the expression - a {@link VariableExpression} when a
+   * parenthesised one is only a variable ({@code REMOVE (n).p}).
+   */
+  private Expression removeTarget(final Cypher25Parser.Expression1Context baseExpr1) {
+    if (baseExpr1.variable() != null)
+      return null;
+    if (baseExpr1.parenthesizedExpression() != null)
+      return expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+    return expressionBuilder.parseExpressionFromText(baseExpr1);
+  }
+
   @Override
   public MergeClause visitMergeClause(final Cypher25Parser.MergeClauseContext ctx) {
     final String previous = writeClause;
@@ -694,23 +722,20 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
     validateNoParameterProperties(List.of(pathPattern), "MERGE");
 
-    // Parse ON CREATE SET and ON MATCH SET actions
-    SetClause onCreateSet = null;
-    SetClause onMatchSet = null;
+    // Parse ON CREATE SET and ON MATCH SET actions: each repetition stays a SET of its own, applied in order
+    final List<SetClause> onCreateActions = new ArrayList<>(1);
+    final List<SetClause> onMatchActions = new ArrayList<>(1);
 
     for (final Cypher25Parser.MergeActionContext actionCtx : ctx.mergeAction()) {
       final SetClause setClause = visitSetClause(actionCtx.setClause());
 
-      if (actionCtx.CREATE() != null) {
-        // ON CREATE SET
-        onCreateSet = setClause;
-      } else if (actionCtx.MATCH() != null) {
-        // ON MATCH SET
-        onMatchSet = setClause;
-      }
+      if (actionCtx.CREATE() != null)
+        onCreateActions.add(setClause);
+      else if (actionCtx.MATCH() != null)
+        onMatchActions.add(setClause);
     }
 
-    return new MergeClause(pathPattern, onCreateSet, onMatchSet);
+    return new MergeClause(pathPattern, onCreateActions, onMatchActions);
   }
 
   @Override

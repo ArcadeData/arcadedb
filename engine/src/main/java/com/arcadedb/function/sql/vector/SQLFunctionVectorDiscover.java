@@ -83,10 +83,19 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 3 || params.length > 4)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // An index is not a value a row can lack: a NULL one is the caller's mistake, refused rather than a NullPointerException
     validateNotNull(params[0], NAME + " index name");

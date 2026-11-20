@@ -64,6 +64,7 @@ import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.RegexExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.ast.ShortestPathExpression;
@@ -327,6 +328,7 @@ public final class CypherExpressionWalker {
       walkSet(mergeClause.getOnMatchSet(), after);
     }
     case SET -> walkSet(entry.getTypedClause(), after);
+    case REMOVE -> walkRemove(entry.getTypedClause(), after);
     case DELETE -> {
       final DeleteClause deleteClause = entry.getTypedClause();
       if (deleteClause.getExpressions() != null)
@@ -375,8 +377,7 @@ public final class CypherExpressionWalker {
     }
     case LOAD_CSV -> walk(((LoadCSVClause) entry.getTypedClause()).getUrlExpression(), after);
     default -> {
-      // RETURN is walked from the statement, and REMOVE / FINISH name variables, properties and labels rather than
-      // carrying an expression of their own.
+      // RETURN is walked from the statement, and FINISH carries no expression of its own.
     }
     }
   }
@@ -422,6 +423,20 @@ public final class CypherExpressionWalker {
       walk(item.getValueExpression(), visitor);
       // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row like any other right-hand side, so every
       // visitor that reasons about what a SET reads has to see it too (issue #7059).
+      walkAll(item.getLabelExpressions(), visitor);
+    }
+  }
+
+  /**
+   * The expressions of a REMOVE are reads of the row like those of a SET: the target of {@code REMOVE (head(ns)).p}
+   * (issue #11754), the key of {@code REMOVE n[k]} and the Cypher 25 dynamic label of {@code REMOVE n:$(expr)}.
+   */
+  private static void walkRemove(final RemoveClause removeClause, final Visitor visitor) {
+    if (removeClause == null)
+      return;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
+      walk(item.getTargetExpression(), visitor);
+      walk(item.getKeyExpression(), visitor);
       walkAll(item.getLabelExpressions(), visitor);
     }
   }

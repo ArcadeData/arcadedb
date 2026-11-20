@@ -144,6 +144,16 @@ public class CoreApiSpec implements OpenApiContributor {
       Database not found, or the session id header names a transaction that no longer resolves \
       ("Remote transaction session not found or expired"): it was rolled back, terminated, expired or never \
       existed, and nothing was committed""";
+  // Issues #12440, #12441: the commit is where a conflict with a concurrent commit surfaces, and the route did not list it
+  private static final String COMMIT_503_DESCRIPTION = """
+      The commit lost a race with a concurrent commit that changed the same records (ConcurrentModificationException \
+      in 'exception'), or another retryable refusal. Nothing was committed and the session is closed: begin a new \
+      transaction, read the records again and re-apply the change. The Retry-After header says how long to wait, \
+      0 for a conflict, which clears as soon as the competing commit has landed""";
+  private static final String RETRY_AFTER_DESCRIPTION = """
+      Seconds to wait before retrying: 0 for a refusal that clears by itself (a conflict with a concurrent commit), \
+      1 or more for a server too busy to start the request. It is a floor, not a schedule: a client that retries in a \
+      loop still backs off, with jitter, when the same refusal comes back""";
 
   // Shared by the POST query and command operations, which both reach the stale-session branch of
   // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:
@@ -514,6 +524,9 @@ public class CoreApiSpec implements OpenApiContributor {
     // A fresh set: rollback shares createTransactionResponses() and keeps its plain 404 (issue #10164)
     postOp.setResponses(createTransactionResponses());
     postOp.getResponses().addApiResponse("404", SpecBuilders.errorResponse(COMMIT_404_DESCRIPTION));
+    final ApiResponse conflict = SpecBuilders.errorResponse(COMMIT_503_DESCRIPTION);
+    conflict.addHeaderObject("Retry-After", SpecBuilders.stringHeader(RETRY_AFTER_DESCRIPTION));
+    postOp.getResponses().addApiResponse("503", conflict);
     pathItem.setPost(postOp);
 
     return pathItem;

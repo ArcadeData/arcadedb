@@ -19,8 +19,11 @@ package com.arcadedb.function.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.misc.SQLFunctionIf;
 import com.arcadedb.function.sql.misc.SQLStaticReflectiveFunction;
@@ -34,6 +37,7 @@ import com.arcadedb.query.sql.executor.SQLFunction;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -668,6 +672,82 @@ class SQLFunctionArgumentRegressionTest {
       try (final ResultSet rs = database.query("sql", sql)) {
         return rs.next().getProperty("v");
       }
+    }
+  }
+
+  /**
+   * Regression for #12445: a fault raised BY the method a reflective function invokes was reported as a
+   * {@link CommandParsingException}, although the statement parsed and the overload was picked. {@code Method.invoke}
+   * wraps it in an {@link InvocationTargetException}, a {@code ReflectiveOperationException}, and that whole family was
+   * answered as a parsing error, so over HTTP an overflow read as "your query text is invalid".
+   * <p>
+   * An arithmetic fault of the target is now the {@link ArithmeticErrorException} the operators raise for the same
+   * fault ({@code 9223372036854775807 + 1}), an engine exception of the target is propagated as itself, and anything
+   * else is a {@link CommandExecutionException} that carries the target's exception as its cause.
+   */
+  @Nested
+  class ReflectiveFunctionRuntimeFault extends TestHelper {
+
+    @Test
+    void anOverflowOfTheTargetIsAnArithmeticErrorNotAParsingError() {
+      assertThatThrownBy(() -> single("select math_addExact(2147483647, 1) as v"))
+          .isInstanceOf(ArithmeticErrorException.class)
+          .isInstanceOf(CommandExecutionException.class)
+          .isNotInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("math_addExact")
+          .hasMessageContaining("integer overflow")
+          .hasRootCauseInstanceOf(ArithmeticException.class);
+
+      assertThatThrownBy(() -> single("select math_floorDiv(1, 0) as v"))
+          .isInstanceOf(ArithmeticErrorException.class)
+          .hasRootCauseInstanceOf(ArithmeticException.class);
+    }
+
+    @Test
+    void theSameCallWithinRangeStillAnswers() {
+      assertThat(single("select math_addExact(1, 2) as v")).isEqualTo(3);
+      assertThat(single("select math_floorDiv(7, 2) as v")).isEqualTo(3);
+    }
+
+    @Test
+    void aNonArithmeticFaultOfTheTargetIsAnExecutionErrorCarryingIt() throws Exception {
+      final SQLStaticReflectiveFunction function = new SQLStaticReflectiveFunction("test_fails",
+          ReflectiveTargets.class.getMethod("fails"));
+
+      assertThatThrownBy(() -> function.execute(null, null, null, new Object[0], null))
+          .isExactlyInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("Error executing function test_fails()")
+          .hasMessageContaining("target state is broken")
+          .cause()
+          .isExactlyInstanceOf(IllegalStateException.class)
+          .hasMessage("target state is broken");
+    }
+
+    @Test
+    void anEngineExceptionOfTheTargetIsPropagatedAsItself() throws Exception {
+      final SQLStaticReflectiveFunction function = new SQLStaticReflectiveFunction("test_refuses",
+          ReflectiveTargets.class.getMethod("refuses"));
+
+      assertThatThrownBy(() -> function.execute(null, null, null, new Object[0], null))
+          .isExactlyInstanceOf(RecordNotFoundException.class)
+          .hasMessageContaining("refused by the target");
+    }
+
+    private Object single(final String sql) {
+      try (final ResultSet rs = database.query("sql", sql)) {
+        return rs.next().getProperty("v");
+      }
+    }
+  }
+
+  /** Static methods a reflective function is built over directly, so the shared function registry stays untouched. */
+  public static class ReflectiveTargets {
+    public static Object fails() {
+      throw new IllegalStateException("target state is broken");
+    }
+
+    public static Object refuses() {
+      throw new RecordNotFoundException("refused by the target", null);
     }
   }
 }

@@ -27,6 +27,7 @@ import com.arcadedb.engine.MergedEdgeRegistry;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
@@ -58,6 +59,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -211,6 +213,8 @@ public class TransactionContext implements Transaction {
   // check addUpdatedRecord would have refused them with is made by the commit instead, under the lock, against the newest
   // committed image: the write is merged onto it when it changed only edge-list heads, refused otherwise.
   private       RidHashSet                            staleEdgeListWrites;
+  // #12472: records written to their page at once (the asynchronous executor) rather than deferred to the commit
+  private       RidHashSet                            immediateWrites;
   // #12320: the vertices whose outgoing / incoming edge-list head a traversal read off a vertex loaded from this transaction's
   // own image of its page, see trackEdgeListHeadReadFromOwnImage()
   private       RidHashSet                            outHeadsReadFromOwnImage;
@@ -418,14 +422,14 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
-  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the keys of the relationships it created by a
   // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
   private       long                                 mergedEdgeEpoch;
-  private       int[]                                mergedEdgeChecked;
+  private       long[]                               mergedEdgeChecked;
   private       int                                  mergedEdgeCheckedCount;
-  private       int[]                                mergedEdgeMarked;
+  private       long[]                               mergedEdgeMarked;
   private       int                                  mergedEdgeMarkedCount;
-  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  // #11482: the keys are reserved in the registry, so they have to be marked committed or released when the transaction ends
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
@@ -772,6 +776,32 @@ public class TransactionContext implements Transaction {
    */
   public boolean hasWrittenRecords() {
     return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
+  }
+
+  /**
+   * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
+   * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
+   * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
+   * update leaves the slot alone until the commit, so a slot that differs from the image is never its doing, whatever the record
+   * caches hold. Records nothing in the running statement: it answers a question and hands out no record.
+   */
+  public boolean isSlotWrittenInTransaction(final RID rid) {
+    if (immediateWrites != null && immediateWrites.contains(rid))
+      return true;
+    return isCreatedInTransaction(rid);
+  }
+
+  /**
+   * Remembers a record written to its page at once inside this transaction (the asynchronous executor), see
+   * {@link #isSlotWrittenInTransaction(RID)}. The writes of the commit itself (the flush of the deferred updates, the merges) are
+   * not remembered: they run after every delete of the transaction.
+   */
+  public void trackImmediateWrite(final RID rid) {
+    if (status != STATUS.BEGUN)
+      return;
+    if (immediateWrites == null)
+      immediateWrites = new RidHashSet();
+    immediateWrites.add(rid);
   }
 
   /**
@@ -2142,7 +2172,7 @@ public class TransactionContext implements Transaction {
         // below into a hard failure on this read path instead (code review on #6013). The cast is safe
         // because PaginatedComponent is the only direct subclass of Component in the codebase.
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
+        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
         if (!isNewPage)
           // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
           immutablePages.put(pageId, (ImmutablePage) page);
@@ -4438,6 +4468,15 @@ public class TransactionContext implements Transaction {
 
       reserveMergedEdges();
 
+      // #11921: every file lock of this commit is held from here on and no page version has been read yet, which is where an
+      // ordering authority (the Raft leader's page-version ledger) that must see the checks below and the publication as one
+      // step takes its own lock. One volatile read on a standalone database, nothing on a replica.
+      if (isLeader && database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          reservations.beforeVersionChecks();
+      }
+
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
       final PageManager pageManager = database.getPageManager();
@@ -4708,9 +4747,11 @@ public class TransactionContext implements Transaction {
       final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
+        FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4722,6 +4763,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index
@@ -4770,6 +4814,7 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().commitPublished();
         countPublicationInEnclosingTransactions();
       }
+      FailPoints.hit(FailPoints.COMMIT_AFTER_PUBLISH);
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -5389,6 +5434,7 @@ public class TransactionContext implements Transaction {
     lightEdgeEntryChanges = null;
     newRecordRIDs = null;
     staleEdgeListWrites = null;
+    immediateWrites = null;
     outHeadsReadFromOwnImage = null;
     inHeadsReadFromOwnImage = null;
     mergedEdgeListBases = null;
@@ -5717,12 +5763,12 @@ public class TransactionContext implements Transaction {
     // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
     if (from == null || to == null || !isActive())
       return;
-    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    final long own = MergedEdgeRegistry.keyOf(from, to, type, matchedBy);
     mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
-      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5733,7 +5779,7 @@ public class TransactionContext implements Transaction {
   public void checkMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5744,7 +5790,7 @@ public class TransactionContext implements Transaction {
   public void markMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5762,9 +5808,9 @@ public class TransactionContext implements Transaction {
     markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
-  private static int[] append(int[] array, final int index, final int value) {
+  private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
-      array = new int[4];
+      array = new long[4];
     else if (index == array.length)
       array = Arrays.copyOf(array, index * 2);
     array[index] = value;

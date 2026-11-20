@@ -45,6 +45,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -1251,7 +1252,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int txPageCount = getTotalPages();
+    final int txPageCount = getReadablePageCount();
 
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
@@ -1420,7 +1421,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private long placeholderContentFingerprint(final RID contentRID) {
     try {
       final int contentPageId = (int) (contentRID.getPosition() / maxRecordsInPage);
-      if (contentPageId >= getTotalPages())
+      if (contentPageId >= getReadablePageCount())
         return NO_OFF_PAGE_FINGERPRINT;
 
       final BasePage contentPage = database.getTransaction()
@@ -1515,7 +1516,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return EMPTY_OFF_PAGE_FINGERPRINT;
 
     long fingerprint = FNV_OFFSET_BASIS;
-    final int totalPages = getTotalPages();
+    final int totalPages = getReadablePageCount();
     // Exact loop detection, as in findBrokenChunkChain and for the same reason: a chain can legitimately hold more
     // chunks than the bucket has pages (chunks share pages after reuse), so any count-based bound either bails on a
     // valid chain or lets a corrupted one walk for a very long time first. Revisiting a pointer is the only certain
@@ -1618,6 +1619,47 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
 
     return database.getTransaction().getPageToModify(new PageId(database, file.getFileId(), pageId), pageSize, false);
+  }
+
+  /**
+   * Pins, for the delete about to remove {@code rid}, the pages a concurrent change of the record has to write, so that the
+   * commit-time version check refuses the delete when such a change commits after the delete chose the image it cleans the
+   * index entries up with (#11733).
+   * <p>
+   * The record's own page covers a plain record and a multi-page one: a rewrite of the chain goes through its head chunk. It
+   * does not cover a placeholder: the slot holds a pointer that an update absorbed by the content record never touches, and
+   * the delete pins the content's page only when it frees it, after the cleanup. A content-only update committed in between
+   * was deleted with the record while the index entries removed were those of the content read before it. Pinning the
+   * content's page here, before the comparison, leaves no such window: the delete of a placeholder poisons its pages for the
+   * slot merge, so a newer version of either is a retryable conflict. It is the page the delete is about to modify anyway.
+   *
+   * @return the page of the record, as {@link #fetchPageInTransaction(RID)}
+   */
+  public MutablePage pinRecordForDelete(final RID rid) throws IOException {
+    final MutablePage page = fetchPageInTransaction(rid);
+    if (page == null)
+      return null;
+
+    try {
+      final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
+      if (positionInPage >= page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+        return page;
+      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
+      if (recordPositionInPage == 0)
+        return page;
+
+      if (page.readNumber(recordPositionInPage) == RECORD_PLACEHOLDER_POINTER) {
+        final long contentPosition = page.readLong(recordPositionInPage + page.readNumberSize(recordPositionInPage));
+        if (contentPosition >= 0 && contentPosition / maxRecordsInPage < getTotalPages())
+          fetchPageInTransaction(new RID(fileId, contentPosition));
+      }
+    } catch (final IOException e) {
+      throw e;
+    } catch (final Exception e) {
+      // A SLOT THAT CANNOT BE READ IS THE DELETE'S TO REPORT (OR TO FORCE THROUGH), NOT THIS PIN'S
+      LogManager.instance().log(this, Level.FINE, "Unable to read the slot of record %s while pinning it for delete", e, rid);
+    }
+    return page;
   }
 
   /**
@@ -1839,7 +1881,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       long total = 0;
       int undecodableSlots = 0;
 
-      final int txPageCount = getTotalPages();
+      final int txPageCount = getReadablePageCount();
 
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final PageId pageIdToLoad = new PageId(database, file.getFileId(), pageId);
@@ -2973,10 +3015,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * The record as its slot holds it now, for the delete that is about to remove it and has to know which index entries and
+   * EXTERNAL values go with it (#11733). Read without the before-read events: the delete was granted, the image is handed
+   * to no caller and to no listener, and a listener hiding the record from users must not decide which entries the delete
+   * removes. Not a way to read a record: {@link #getRecord(RID)} is.
+   *
+   * @return {@code null} when the slot holds no record
+   */
+  public Binary getRecordForDeleteCleanup(final RID rid) {
+    return getRecordInternal(rid, false, false);
+  }
+
+  /**
    * @param fireEvents {@code false} to read the content a placeholder points to: the before-read events are about the
    *                   record the caller asked for, under the RID it knows, and already ran for it. Firing them again for
    *                   the internal position of its content notified a listener twice, the second time with a RID no
-   *                   user ever sees (#8312)
+   *                   user ever sees (#8312). And for {@link #getRecordForDeleteCleanup(RID)}
    */
   Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
     // INVOKE EVENT CALLBACKS
@@ -3089,7 +3143,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final int pageId = (int) (position / maxRecordsInPage);
     final int positionInPage = (int) (position % maxRecordsInPage);
-    if (position < 0 || pageId >= getTotalPages())
+    if (position < 0 || pageId >= getReadablePageCount())
       return null;
 
     final PageId id = recentPageId != null && recentPageId.getPageNumber() == pageId && recentPageId.getFileId() == file.getFileId()
@@ -3123,7 +3177,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public void forEachRecordPosition(final LongConsumer consumer) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
-    final int txPageCount = getTotalPages();
+    final int txPageCount = getReadablePageCount();
     try {
       for (int pageId = 0; pageId < txPageCount; ++pageId) {
         final TransactionContext transaction = database.getTransaction();
@@ -3333,6 +3387,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * (#10637, {@link #relocateANeighbourOffPage}).
    */
   private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
+    // a placeholder's content is the engine moving the bytes of an existing record, not a record created
+    if (!isPlaceHolder)
+      FailPoints.hit(FailPoints.BUCKET_CREATE_RECORD);
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
@@ -4927,6 +4984,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           continue;
         }
 
+        // a record the allocator placed reached the point in createRecordInternal, one appended here reaches it now
+        FailPoints.hit(FailPoints.BUCKET_CREATE_RECORD);
+
         if (availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > currentPage.getMaxContentSize()) {
           leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
           currentPage = addNewPage();
@@ -4968,6 +5028,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
                                        final boolean discardRecordAfter) {
+    // the content behind a placeholder pointer is rewritten by the update that already reached the point
+    if (!updatePlaceholderContent)
+      FailPoints.hit(FailPoints.BUCKET_UPDATE_RECORD);
     if (rid.getPosition() < 0)
       throw new IllegalArgumentException("Cannot update a record with invalid RID");
 
@@ -5616,7 +5679,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       BasePage chunkPage = firstPage;
       int chunkPositionInPage = firstRecordPositionInPage;
       long[] chunkHeader = firstPage.readNumberAndSize(firstRecordPositionInPage); // [FIRST_CHUNK, headerBytes]
-      final int totalPages = getTotalPages();
+      final int totalPages = getReadablePageCount();
 
       // Exact loop detection: a chain can legitimately hold more chunks than the bucket has pages (chunk slots can
       // share pages after chain reuse/fragmentation), so any count-based heuristic risks a false positive - fatal
@@ -5780,6 +5843,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent, final boolean deleteChunks,
       final boolean force) {
+    // once per record deleted: not again for the placeholder content or the chunks the delete frees, nor for a corrupted slot
+    // CHECK DATABASE FIX clears (it passes both flags)
+    if (!deletePlaceholderContent && !deleteChunks)
+      FailPoints.hit(FailPoints.BUCKET_DELETE_RECORD);
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -5881,7 +5948,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // still has one.
             String chainProblem = null;
             try {
-              if (chunkPageId >= getTotalPages())
+              if (chunkPageId >= getReadablePageCount())
                 chainProblem = "next chunk pointer out of range";
               else {
                 chunkPage = database.getTransaction()
@@ -6750,7 +6817,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
           // Every reason below names the chunk the failing HOP LEFT, which is the numbering findBrokenChunkChain
           // already uses - the two walks report the same break in the same words.
-          if (chunkPageId >= getTotalPages()) {
+          if (chunkPageId >= getReadablePageCount()) {
             brokenChainReason = "next chunk pointer out of range at chunk " + (chunks - 1);
             break;
           }
@@ -7311,7 +7378,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
 
         final int chunkPageId = (int) (nextChunkPointer / maxRecordsInPage);
-        if (chunkPageId >= getTotalPages())
+        if (chunkPageId >= getReadablePageCount())
           break;
         if (visitedChunks == null)
           visitedChunks = new LongHashSet();
@@ -7633,7 +7700,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private String findBrokenChunkChainInNewestCommitted(final RID rid, final ChunkChainWalk walk) throws IOException {
     final int pageNumber = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
-    if (pageNumber >= getTotalPages())
+    if (pageNumber >= getReadablePageCount())
       return null;
 
     final BasePage head = database.getPageManager()

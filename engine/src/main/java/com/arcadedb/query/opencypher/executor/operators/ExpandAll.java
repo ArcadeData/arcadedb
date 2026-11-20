@@ -104,10 +104,18 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return expand(context, nRecords, child.execute(context, nRecords));
+  }
+
+  /**
+   * Expands the rows of {@code inputResults} instead of the rows of the child, which is not executed: an operator that
+   * decides per row how the hop is answered hands each row it walks to this hop (issue #11715). Closing the result closes
+   * {@code inputResults}.
+   */
+  public ResultSet expand(final CommandContext context, final int nRecords, final ResultSet inputResults) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    final ResultSet inputResults = child.execute(context, nRecords);
     // A hop that reaches the incoming side of a unidirectional edge type asks the query's lookup for it, since no vertex
     // stores it (issue #8625)
     final boolean incomingLookup = IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(),
