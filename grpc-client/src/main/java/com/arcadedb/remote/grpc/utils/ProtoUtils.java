@@ -418,7 +418,10 @@ public class ProtoUtils {
     }
     case LINK_VALUE:
       // A RID, as the embedded engine answers a link and the HTTP driver answers a LINK column: the rid TEXT read a link back
-      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195)
+      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195).
+      // A plain RID on purpose: this decoder is static, with no database to bind it to, and the HTTP driver's links are plain
+      // RIDs too (Type.convertOrKeep with no database). Binding them is a change of both clients (issue #12603). The rid text is
+      // always RID.toString() of the server, so a malformed one is a server bug and fails here instead of reading back as text.
       return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()));
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
