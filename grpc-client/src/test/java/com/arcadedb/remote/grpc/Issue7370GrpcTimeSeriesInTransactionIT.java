@@ -532,7 +532,7 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
    * cannot tell the two apart: a time-series append is already committed and already global whether or not the
    * read joined the transaction. The behavioural consequences of the binding - the echoed session id, the
    * refusal of a write naming an unresolvable session - are asserted over HTTP in
-   * {@code Issue7402TimeSeriesHttpSessionIT}; what this test keeps is the cross-protocol statement that the two
+   * {@code TimeSeriesHttpSessionIT.TimeSeriesRoutes}; what this test keeps is the cross-protocol statement that the two
    * premises of #7370 have now been separated, one closed and one still open.
    */
   @Test

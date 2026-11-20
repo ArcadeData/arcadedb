@@ -2168,7 +2168,7 @@ class MaterializedViewRegressionTest {
    * These are the engine-side half of the acceptance criteria: that executing the rendered SQL yields the same
    * declaration as calling {@code create()} on the very same builder state - the local-to-local parity the remote path
    * rides on - and that a state the grammar cannot express fails at build time rather than as invalid DDL on the server.
-   * The end-to-end embedded-vs-remote comparison lives in {@code Issue7688RemoteViewBuildersIT}.
+   * The end-to-end embedded-vs-remote comparison lives in {@code RemoteViewBuildersIT.ViewBuilders}.
    */
   @Nested
   class ViewBuilderSQL extends TestHelper {

@@ -514,7 +514,7 @@ public class TimeSeriesTypeBuilder {
     // declared, and two paths depend on it not being rewritten: JsonlImporterFormat rebuilds a type from an
     // export's own column list and then maps each exported sample ARRAY onto the type's current order, so a
     // restore of a type whose FIELD precedes its TAGs would have landed every value in the wrong column; and
-    // Issue7371PromQLDiscoveryProjectionIT builds exactly that layout on purpose, because it is the one that
+    // PromQLLabelDiscoveryIT.DiscoveryProjection builds exactly that layout on purpose, because it is the one that
     // catches a projection indexing bug. toSQL() now preserves the same order rather than regrouping it, so the
     // two paths agree on it instead of one of them having to refuse (issue #7702).
     for (final ColumnDefinition col : columns)

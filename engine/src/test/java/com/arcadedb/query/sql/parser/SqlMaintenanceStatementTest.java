@@ -60,7 +60,7 @@ class SqlMaintenanceStatementTest {
    * {@link DatabaseOperationInProgressException} and stops the statement dead, and that a database with NO
    * coordinator - an embedded process with no server in it - is left exactly as it was. The other half, that the
    * server binds its real {@code BackupCoordinator} to every database it opens and that the refusal reaches an HTTP
-   * client as a 409, is {@code Issue7443SqlMaintenanceSlotIT} in the server module.
+   * client as a 409, is {@code SqlMaintenanceSlotIT.BackupAndImport} in the server module.
    * <p>
    * Neither statement can complete here: the integration module is not on the engine's test classpath, so both fail
    * at their reflective boundary with "libs not found in classpath". That is what makes this a sharp test of the
@@ -217,7 +217,7 @@ class SqlMaintenanceStatementTest {
    * caller as a {@link DatabaseOperationInProgressException} and stops the statement dead, and that a database with
    * NO coordinator - an embedded process with no server in it - is left exactly as it was. The admission policy
    * itself ({@code EXPORT} excludes only {@code RESTORE}, and two exports coexist) is
-   * {@code Issue7450ExportAdmissionTest}, and the server binding is {@code Issue7450SqlExportMaintenanceSlotIT},
+   * {@code BackupCoordinatorTest.ExportAdmission}, and the server binding is {@code SqlMaintenanceSlotIT.Export},
    * both in the server module.
    * <p>
    * The statement cannot complete here: the integration module is not on the engine's test classpath, so it fails at
@@ -347,7 +347,7 @@ class SqlMaintenanceStatementTest {
      * run's timestamp for the life of the database - and two concurrent executions raced on that one field.
      * <p>
      * Asserting on the cached instance rather than on two exports' file names is what makes this independent of the
-     * integration module, which is not on the engine's test classpath. {@code Issue7450SqlExportMaintenanceSlotIT}
+     * integration module, which is not on the engine's test classpath. {@code SqlMaintenanceSlotIT.Export}
      * asserts the visible consequence - two successive default-named exports produce two different archives.
      */
     @Test
@@ -538,7 +538,7 @@ class SqlMaintenanceStatementTest {
    * The engine half of issue #9844: {@code BACKUP DATABASE} hands the retention of the directory it wrote into to the
    * server through the {@link BackupDirectoryResolver} the server binds to the database, and only AFTER a backup that
    * succeeded. The server half - that the real resolver prunes, and that an unscheduled database stops growing its archive
-   * directory - is {@code Issue9844SqlBackupAppliesRetentionIT}.
+   * directory - is {@code BackupRetentionIT.SqlBackupRetention}.
    * <p>
    * The statement cannot complete here: the integration module is not on the engine's test classpath, so it fails at its
    * reflective boundary with "libs not found in classpath". That is what makes the failure case sharp - a backup that

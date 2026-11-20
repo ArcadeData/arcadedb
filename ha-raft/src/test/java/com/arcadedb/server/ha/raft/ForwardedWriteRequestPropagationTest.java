@@ -505,7 +505,7 @@ class ForwardedWriteRequestPropagationTest {
    * the SERVER configuration, and which no command context reads - and the leader enforced its own database setting. The
    * forward now resolves the budget from this database's configuration, the rule every command context applies, and
    * sends it to the leader so both sides enforce the same number. The leader's half is
-   * {@code Issue8313ForwardedCommandTimeoutTest} in the server module.
+   * {@code LeaderForwardTimeoutTest.ForwardedCommandTimeoutBudget} in the server module.
    */
   @Nested
   class CommandBudget {

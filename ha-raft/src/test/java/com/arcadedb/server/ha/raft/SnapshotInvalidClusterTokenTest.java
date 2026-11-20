@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #10827: the snapshot route read a present but INVALID {@code X-ArcadeDB-Cluster-Token} as if the header were absent and
  * fell through to the {@code Authorization} check, so a wrong token sent with valid root Basic credentials was served the
  * snapshot. The shared HTTP gate ({@code AbstractServerHttpHandler}) refuses that request with 401 before it looks at any
- * credential ({@code Issue7516ClusterTokenHopProofTest}); the two cluster-token checks now agree.
+ * credential ({@code ClusterTokenHopProofTest.HopProof}); the two cluster-token checks now agree.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
