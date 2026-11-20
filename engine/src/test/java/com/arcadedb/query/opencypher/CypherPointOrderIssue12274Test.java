@@ -68,6 +68,20 @@ class CypherPointOrderIssue12274Test extends TestHelper {
         + "WITH p ORDER BY p DESC RETURN collect(p.crs) AS v")).isEqualTo(List.of("custom", "cartesian", "wgs-84"));
   }
 
+  // Two unknown crs names carry no srid to tell them apart: the name does, so the order of equal coordinates does not depend on the
+  // order of the input
+  @Test
+  void pointsOfDifferentUnknownCrsOrderByTheirName() {
+    for (final String list : List.of("[point({x:1,y:1,crs:'b'}), point({x:1,y:1,crs:'a'})]",
+        "[point({x:1,y:1,crs:'a'}), point({x:1,y:1,crs:'b'})]")) {
+      assertThat(value("UNWIND " + list + " AS p WITH p ORDER BY p RETURN collect(p.crs) AS v")).isEqualTo(List.of("a", "b"));
+      assertThat(value("UNWIND " + list + " AS p WITH min(p) AS lo, max(p) AS hi RETURN [lo.crs, hi.crs] AS v")).isEqualTo(List.of("a", "b"));
+    }
+    // The system comes before the coordinates: all the points of one name sort together
+    assertThat(value("UNWIND [point({x:5,y:5,crs:'a'}), point({x:1,y:1,crs:'b'}), point({x:9,y:9,crs:'a'})] AS p "
+        + "WITH p ORDER BY p RETURN collect([p.crs, p.x]) AS v")).isEqualTo(List.of(List.of("a", 5.0), List.of("a", 9.0), List.of("b", 1.0)));
+  }
+
   // Equal srid, x and y: the points of one srid order by z
   @Test
   void pointsOfOneCrsTieBreakByZ() {

@@ -759,10 +759,14 @@ public final class CypherFunctionHelper {
   /**
    * The Cypher order of two points, as Neo4j orders them: by coordinate reference system (srid 4326, 4979, 7203, 9157), then
    * by x, y and z. A point is a map in ArcadeDB, and the map order put a WGS-84 point's latitude before its longitude and
-   * points of different systems in the order of their key counts (issue #12274).
+   * points of different systems in the order of their key counts (issue #12274). A crs name that is not one of the four, on a point
+   * with no srid, sorts after them, and two such names order by the name: it is all there is to tell the systems apart.
    */
   public static int comparePoints(final Map<?, ?> a, final Map<?, ?> b) {
-    int cmp = BinaryComparator.compareDoubles(pointSrid(a), pointSrid(b));
+    final double sridA = pointSrid(a);
+    int cmp = BinaryComparator.compareDoubles(sridA, pointSrid(b));
+    if (cmp == 0 && sridA == UNKNOWN_SRID)
+      cmp = BinaryComparator.compareStrings(String.valueOf(a.get("crs")), String.valueOf(b.get("crs")));
     if (cmp != 0)
       return cmp;
     cmp = BinaryComparator.compareDoubles(((Number) a.get("x")).doubleValue(), ((Number) b.get("x")).doubleValue());
@@ -778,11 +782,14 @@ public final class CypherFunctionHelper {
     return Boolean.compare(za instanceof Number, zb instanceof Number);
   }
 
+  /** The srid of a point whose crs is not one of the four and that carries none: after every srid there is. */
+  private static final double UNKNOWN_SRID = Double.MAX_VALUE;
+
   private static double pointSrid(final Map<?, ?> point) {
     if (point.get("srid") instanceof Number srid)
       return srid.doubleValue();
     final Integer srid = point.get("crs") instanceof String crs ? CypherPointFunction.sridOfCrs(crs) : null;
-    return srid != null ? srid : Double.MAX_VALUE;
+    return srid != null ? srid : UNKNOWN_SRID;
   }
 
   // The original keys sorted by their string form: a Java parameter map may hold non-String keys, and looking its values up by
