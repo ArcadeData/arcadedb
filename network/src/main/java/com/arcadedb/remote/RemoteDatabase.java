@@ -82,7 +82,6 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase
@@ -2019,15 +2018,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   protected RID saveRecord(final MutableDocument record) {
     RID rid = record.getIdentity();
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // Each value travels as a PARAMETER of the CONTENT document, not as JSON text spliced into the statement: the parameter
+    // encoding keeps the Java type of every value (a link, a decimal, binary, a date-time), which a JSON literal cannot, so an
+    // undeclared property is stored as the embedded API stores it (issue #12186)
+    final Content content = Content.of(record);
     if (rid != null) {
       // SQL UPDATE matches zero records both when the RID no longer exists (e.g. the record was deleted or the transaction
       // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
       // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
       // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
       final long updated;
-      try (final ResultSet result = command("sql", "update " + rid + " content " + json)) {
+      try (final ResultSet result = command("sql", "update " + rid + " content " + content.json(), content.params())) {
         updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
       }
       if (updated == 0) {
@@ -2039,7 +2040,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
-          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
+          "insert into " + Identifier.quote(record.getTypeName()) + " content " + content.json(), content.params());
       rid = insertedRID(result, record);
       trackCreatedRecord(record);
       stats.createRecord.incrementAndGet();
@@ -2052,17 +2053,68 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    final Content content = Content.of(record);
     // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
     // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
         "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
-            + " content " + json);
+            + " content " + content.json(), content.params());
     final RID newRID = insertedRID(result, record);
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * The CONTENT document of the INSERT/UPDATE that saves a record: its property names as JSON keys, each value bound to its
+   * own top-level parameter ({@code {"name": :p0, ...}}), metadata left out. One parameter per property rather than the whole
+   * document as one map parameter: the server reads a numeric array nested in a map parameter as a primitive array, which
+   * would store a schemaless LIST as an ARRAY_OF_LONGS, while a top-level parameter's array stays a list (#9002). A null
+   * value is written as the literal {@code null}.
+   */
+  private record Content(String json, Map<String, Object> params) {
+    static Content of(final MutableDocument record) {
+      final Map<String, Object> properties = record.toMap(false);
+      final Map<String, Object> params = new HashMap<>((int) (properties.size() / 0.75f) + 1);
+      final StringBuilder json = new StringBuilder(16 + properties.size() * 16).append('{');
+      for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+        if (json.length() > 1)
+          json.append(", ");
+        appendJsonString(json, entry.getKey()).append(": ");
+        if (entry.getValue() == null)
+          json.append("null");
+        else {
+          final String param = "p" + params.size();
+          json.append(':').append(param);
+          params.put(param, entry.getValue());
+        }
+      }
+      return new Content(json.append('}').toString(), params);
+    }
+
+    /** A property name as a double-quoted JSON string, escaped the way the SQL parser reads a JSON key back. */
+    private static StringBuilder appendJsonString(final StringBuilder buffer, final String text) {
+      buffer.append('"');
+      for (int i = 0; i < text.length(); i++) {
+        final char c = text.charAt(i);
+        switch (c) {
+        case '"' -> buffer.append("\\\"");
+        case '\\' -> buffer.append("\\\\");
+        case '\n' -> buffer.append("\\n");
+        case '\r' -> buffer.append("\\r");
+        case '\t' -> buffer.append("\\t");
+        case '\b' -> buffer.append("\\b");
+        case '\f' -> buffer.append("\\f");
+        default -> {
+          if (c < 0x20)
+            buffer.append("\\u00").append(Character.forDigit(c >> 4, 16)).append(Character.forDigit(c & 0xF, 16));
+          else
+            buffer.append(c);
+        }
+        }
+      }
+      return buffer.append('"');
+    }
   }
 
   /**
