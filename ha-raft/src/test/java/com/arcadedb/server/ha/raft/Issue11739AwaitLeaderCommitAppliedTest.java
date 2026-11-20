@@ -22,8 +22,13 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.StallAwareStopwatch;
+import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.client.api.AsyncApi;
+import org.apache.ratis.protocol.RaftClientReply;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * leader had committed. {@link RaftHAPlugin#awaitLeaderCommitApplied()} is that wait: it asks the leader for its commit index, then
  * waits for the local applied index to reach it. It is best effort, so it answers {@code false} where it cannot confirm, and never
  * fails the command, which the leader has already made. The 3-node case is {@code RaftCreateDatabaseOnFollowerIT}; these tests pin
- * the outcomes that one cannot reach cheaply: nothing to wait for, a leader that cannot be asked, a follower that catches up while
- * waiting, one that does not, and one inside a snapshot resync gap.
+ * the outcomes that one cannot reach cheaply: nothing to wait for, a leader that cannot be asked or never answers, a follower that
+ * catches up while waiting, one that does not, and one inside a snapshot resync gap.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
@@ -135,6 +140,45 @@ class Issue11739AwaitLeaderCommitAppliedTest {
     watch.assertGaveUpWithin(TRIPWIRE_MS, "a wait that skips a gap only a resync can fill from one that sits out the quorum timeout");
   }
 
+  /**
+   * The ReadIndex round is bounded by the quorum timeout too: the shared Raft client retries up to 60 times, one second apart, when
+   * no leader answers, and a forwarded command must not hold its HTTP worker thread that long.
+   */
+  @Test
+  void aLeaderThatNeverAnswersTheReadIndexIsGivenUpOnAtTheQuorumTimeoutAndTheRequestIsCancelled() {
+    final LaggingFollower raft = new LaggingFollower(QUORUM_TIMEOUT_MS);
+    final CompletableFuture<RaftClientReply> request = new CompletableFuture<>();
+    raft.raftClient = clientSending(request);
+    raft.askTheClient = true;
+    final RaftHAPlugin plugin = pluginOf(raft);
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThat(plugin.awaitLeaderCommitApplied()).as("no leader answered: nothing is confirmed").isFalse();
+    watch.assertGaveUpWithin(TRIPWIRE_MS, "a ReadIndex round bounded by arcadedb.ha.quorumTimeout from the minute of the client's retries");
+    assertThat(request.isCancelled()).as("the request stops retrying once the wait gave up").isTrue();
+    assertThat(plugin.localWaiters()).isZero();
+  }
+
+  /** A Raft client whose unordered read-only request is {@code request}, which a test completes, or leaves pending. */
+  private static RaftClient clientSending(final CompletableFuture<RaftClientReply> request) {
+    final AsyncApi async = (AsyncApi) Proxy.newProxyInstance(AsyncApi.class.getClassLoader(), new Class<?>[] { AsyncApi.class },
+        (proxy, method, args) -> {
+          if ("sendReadOnlyUnordered".equals(method.getName()))
+            return request;
+          if ("toString".equals(method.getName()))
+            return "AsyncApi stand-in of issue #11739";
+          throw new UnsupportedOperationException(method.getName());
+        });
+    return (RaftClient) Proxy.newProxyInstance(RaftClient.class.getClassLoader(), new Class<?>[] { RaftClient.class },
+        (proxy, method, args) -> {
+          if ("async".equals(method.getName()))
+            return async;
+          if ("toString".equals(method.getName()))
+            return "RaftClient stand-in of issue #11739";
+          throw new UnsupportedOperationException(method.getName());
+        });
+  }
+
   private static RaftHAPlugin pluginOf(final RaftHAServer raft) {
     final RaftHAPlugin plugin = new RaftHAPlugin();
     plugin.setRaftHAServer(raft);
@@ -145,6 +189,8 @@ class Issue11739AwaitLeaderCommitAppliedTest {
   private static final class LaggingFollower extends RaftHAServer {
     final    AtomicLong applied = new AtomicLong(-1L);
     volatile boolean    readIndexFails;
+    /** Reads the leader's commit index through {@link #raftClient}, as the real server does, instead of answering it. */
+    volatile boolean    askTheClient;
 
     LaggingFollower(final long quorumTimeoutMs) {
       super(TestServerHelper.unstartedServer("localhost"), configuration(quorumTimeoutMs));
@@ -158,7 +204,9 @@ class Issue11739AwaitLeaderCommitAppliedTest {
     }
 
     @Override
-    public long fetchReadIndex(final boolean expectSelfIsLeader) {
+    public long fetchReadIndex(final boolean expectSelfIsLeader, final long timeoutMs) {
+      if (askTheClient)
+        return super.fetchReadIndex(expectSelfIsLeader, timeoutMs);
       if (readIndexFails)
         throw new ReplicationException("ReadIndex failed: leader unavailable");
       return LEADER_COMMIT_INDEX;

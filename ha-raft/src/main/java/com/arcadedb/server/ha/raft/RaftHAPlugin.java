@@ -57,6 +57,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -569,10 +570,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       return true;
     localWaiters.incrementAndGet();
     try {
-      // The leader's commit index, confirmed by a ReadIndex round: at or past every entry committed before this call, whichever
-      // node leads by now. Then the lenient apply wait, which gives up at once inside a snapshot resync gap
-      final long leaderCommitIndex = raft.fetchReadIndex(false);
-      raft.waitForAppliedIndex(leaderCommitIndex, false);
+      // One deadline, the quorum timeout, for both phases. The leader's commit index, confirmed by a ReadIndex round: at or past
+      // every entry committed before this call, whichever node leads by now. Then the lenient apply wait on what is left of the
+      // deadline, which gives up at once inside a snapshot resync gap
+      final long budgetMs = raft.getQuorumTimeout();
+      final long startNanos = System.nanoTime();
+      final long leaderCommitIndex = raft.fetchReadIndex(false, budgetMs);
+      final long remainingMs = budgetMs - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+      if (remainingMs > 0)
+        raft.waitForAppliedIndex(leaderCommitIndex, false, remainingMs);
       return raft.getTrustedAppliedIndex() >= leaderCommitIndex;
     } catch (final RuntimeException e) {
       // Best effort: the caller's command is done on the leader whatever happens here

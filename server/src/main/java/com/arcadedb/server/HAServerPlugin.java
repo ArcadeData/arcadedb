@@ -897,9 +897,8 @@ public interface HAServerPlugin extends ServerPlugin {
    * when this node is inside a snapshot resync gap that waiting cannot close. The default, for non-HA setups, has nothing to
    * wait for.
    * <p>
-   * The wait for the local apply is bounded by the quorum timeout ({@code arcadedb.ha.quorumTimeout}). Asking the leader for its
-   * commit index is the ReadIndex round a LINEARIZABLE follower read makes, and is bounded as that read is: by the Raft client's
-   * request timeout and retry policy, which a leader that answered a command a moment ago has no reason to use up.
+   * Bounded as a whole by the quorum timeout ({@code arcadedb.ha.quorumTimeout}): asking the leader for its commit index (the
+   * ReadIndex round a LINEARIZABLE follower read makes) and the wait for the local apply share that one deadline.
    *
    * @return whether this node has applied the leader's commit index
    */
