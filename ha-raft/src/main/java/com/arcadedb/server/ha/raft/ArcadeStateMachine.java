@@ -1627,6 +1627,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
             index, decoded.databaseName(), installGate.installedIndex());
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
       }
+      // An entry of an incarnation of this database that a drop removed and a later create replaced (issue #11919): the
+      // replay of a log from a snapshot marker older than that drop. Its effect is superseded by the drop, and applied it
+      // would reach the copy the later create made - the old create is skipped because the name exists, its schema
+      // entries reload the old schema over the new files, and its drop renames the new copy away. Skipped like an entry
+      // the copy already carries (issue #8579): nothing is applied, the applied position still advances. Decided under the
+      // install gate: an install that acquires a copy records its boundary before it releases the gate, so an entry that
+      // waited for that install reads the boundary the install recorded, not the one before it
+      final boolean ofEarlierIncarnation = !namesNoDatabase && appliedIndexes.isOfEarlierIncarnation(decoded.databaseName(), index);
       // Already in the copy an install just put in place (issue #8579): the leader that served it had applied this
       // entry before capturing the copy, so applying it again would at best redo what the copy carries, and at worst
       // roll a newer copy back to an older state until the replay catches up (a schema document is written whole).
@@ -1657,7 +1665,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       };
       boolean staleNoDatabaseEntry = false;
       try {
-        if (carriedByServedCopy)
+        if (ofEarlierIncarnation)
+          logEntryOfEarlierIncarnation(decoded, index);
+        else if (carriedByServedCopy)
           LogManager.instance().log(this, Level.FINE,
               "Not re-applying entry %d to database '%s': the copy installed from the leader, served at applied index %d, "
                   + "already carries it (issue #8579)", index, decoded.databaseName(), installGate.servedCopyIndex());
@@ -1685,7 +1695,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
       // After the apply, so the proposer persists its swap over a state the entry is already applied to (issue #11240)
-      if (decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
+      if (!ofEarlierIncarnation && decoded.type() == RaftLogEntryType.SCHEMA_ENTRY && !pendingPublications.isEmpty())
         confirmPublication(decoded, termIndex.getTerm(), index);
 
       final long previousApplied;
@@ -1704,12 +1714,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // position advances and its per-database entry is evicted in a single atomic write (avoids
         // growing the map for the node lifetime with names of dropped databases).
         final boolean drop = decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY;
-        if (belowInstall)
+        if (ofEarlierIncarnation) {
+          // Issue #11919: the database's own position, and its create index, stay those of the copy the later create made
+          if (!belowInstall)
+            appliedIndexes.writePersistedAppliedIndex(index, null);
+        } else if (belowInstall)
           appliedIndexes.writePersistedDatabaseAppliedIndex(index, decoded.databaseName(), drop);
         else if (drop)
           appliedIndexes.writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
         else
           appliedIndexes.writePersistedAppliedIndex(index, decoded.databaseName());
+        // What a replay tells the entries of an earlier incarnation apart by (issue #11919)
+        if (!ofEarlierIncarnation && createdDatabase(decoded))
+          appliedIndexes.recordDatabaseCreated(index, decoded.databaseName());
       }
 
       // A security document pinned by a failed write is written again from time to time, on this thread, so a volume
@@ -1719,6 +1736,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
         securityDurabilityFloor.retryIfDue(srv.getSecurity());
       // The same for a database configuration whose configuration.json could not be written (issue #10124)
       configurationEntries.retryHeldConfigurationsIfDue();
+      // And the creation boundaries, whose last write failed (issue #11919)
+      if (appliedIndexes.isCreatedIndexFilePending())
+        appliedIndexes.retryCreatedIndexFile();
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -4039,6 +4059,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   void setConfigurationRetryClock(final LongSupplier clock) {
     configurationEntries.setConfigurationRetryClock(clock);
+  }
+
+  /** Whether {@code decoded} is a create (not a restore) whose database exists here once it is applied (issue #11919). */
+  private boolean createdDatabase(final RaftLogEntryCodec.DecodedEntry decoded) {
+    final ArcadeDBServer srv = server;
+    return decoded.type() == RaftLogEntryType.INSTALL_DATABASE_ENTRY && !decoded.forceSnapshot() && srv != null
+        && srv.existsDatabase(decoded.databaseName());
+  }
+
+  /**
+   * Says why an entry of a dropped incarnation is not applied (issue #11919): the drop, whose replay used to rename the
+   * current copy away, at INFO, the rest of what that incarnation wrote at FINE.
+   */
+  private void logEntryOfEarlierIncarnation(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+    LogManager.instance().log(this, decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY ? Level.INFO : Level.FINE,
+        "Not applying the %s entry at index %d to database '%s': it is below the index %d the copy this node holds starts "
+            + "at, created there or acquired from the leader (issue #11919)", decoded.type(), index, decoded.databaseName(),
+        appliedIndexes.createdIndex(decoded.databaseName()));
   }
 
   // DropDatabaseApplier holds the implementation of these; they stay here for the callers outside this class.
