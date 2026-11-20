@@ -156,7 +156,8 @@ class ProtoUtilsTest {
     assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
     assertThat(value.getLinkValue().getRid()).isEqualTo("#10:5");
     assertThat(value.getLogicalType()).isEqualTo("rid");
-    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo("#10:5");
+    // read back as a RID, the encoding of a link (issue #12195)
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo(new RID(10, 5));
   }
 
   @Test
@@ -429,6 +430,24 @@ class ProtoUtilsTest {
     final Object result = ProtoUtils.fromGrpcValue(value);
     // a RID, not its text: the embedded engine answers a link as one (issue #12195)
     assertThat(result).isEqualTo(new RID(10, 5));
+  }
+
+  @Test
+  void fromGrpcValueListAndMapOfLinksAreRids() {
+    // a list and a map of links, as a record property carries them (issue #12195)
+    final GrpcValue link = GrpcValue.newBuilder().setLinkValue(GrpcLink.newBuilder().setRid("#10:5").build()).build();
+    final GrpcValue list = GrpcValue.newBuilder().setListValue(GrpcList.newBuilder().addValues(link).addValues(link).build()).build();
+    final GrpcValue map = GrpcValue.newBuilder().setMapValue(GrpcMap.newBuilder().putEntries("x", link).build()).build();
+
+    assertThat((List<?>) ProtoUtils.fromGrpcValue(list)).containsExactly(new RID(10, 5), new RID(10, 5));
+    assertThat((Map<?, ?>) ProtoUtils.fromGrpcValue(map)).containsEntry("x", new RID(10, 5));
+  }
+
+  @Test
+  void fromGrpcValueTextThatLooksLikeARidStaysText() {
+    // only a LINK_VALUE is a link: a string that merely looks like a rid is text
+    final GrpcValue value = GrpcValue.newBuilder().setStringValue("#10:5").build();
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo("#10:5");
   }
 
   @Test
