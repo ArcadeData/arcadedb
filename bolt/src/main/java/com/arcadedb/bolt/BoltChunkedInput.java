@@ -22,10 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
-import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -35,6 +35,8 @@ import java.util.logging.Level;
  * Messages are received as: [chunk_size (2 bytes)][chunk_data]...[0x00 0x00]
  */
 public class BoltChunkedInput {
+  private static final byte[] EMPTY = new byte[0];
+
   private final DataInputStream in;
   private final int             maxMessageSize;
 
@@ -88,9 +90,12 @@ public class BoltChunkedInput {
   /**
    * Read a complete message by dechunking.
    * Reads chunks until a zero-length chunk is encountered.
+   * <p>
+   * The chunks are read straight into one array that doubles as it fills, instead of each into an array of its own that a
+   * ByteArrayOutputStream then copies, grows and copies again: a bulk write of a few MB arrives in chunks of at most 64 KB (#12641).
    */
   public byte[] readMessage() throws IOException {
-    final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    byte[] message = EMPTY;
     int totalSize = 0;
 
     while (true) {
@@ -109,15 +114,16 @@ public class BoltChunkedInput {
       // Integer.MAX_VALUE, since chunkSize is only bounded by the 16-bit chunk-size field, not by this check.
       if (chunkSize > maxMessageSize - totalSize)
         throw new IOException("BOLT message too large: exceeds " + maxMessageSize + " bytes after chunk reassembly");
-      totalSize += chunkSize;
 
-      // Read chunk data
-      final byte[] chunk = new byte[chunkSize];
-      in.readFully(chunk);
-      buffer.write(chunk);
+      final int required = totalSize + chunkSize;
+      if (required > message.length)
+        // Never past the bound: what a doubling would add beyond it the message cannot use
+        message = Arrays.copyOf(message, (int) Math.min(Math.max(required, 2L * message.length), maxMessageSize));
+      in.readFully(message, totalSize, chunkSize);
+      totalSize = required;
     }
 
-    return buffer.toByteArray();
+    return totalSize == message.length ? message : Arrays.copyOf(message, totalSize);
   }
 
   /**
