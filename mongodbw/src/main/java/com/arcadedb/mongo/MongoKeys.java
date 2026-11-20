@@ -137,6 +137,22 @@ final class MongoKeys {
     return result != null ? result : List.of();
   }
 
+  /**
+   * Whether an update that writes the top-level properties {@code touched} can change a key of {@code unique}: only when it writes
+   * the first segment of a field the key is made of.
+   */
+  static boolean affects(final List<String[]> unique, final String[] touched) {
+    for (final String[] paths : unique)
+      for (final String path : paths) {
+        final int dot = path.indexOf('.');
+        final int head = dot < 0 ? path.length() : dot;
+        for (final String property : touched)
+          if (property.length() == head && path.startsWith(property))
+            return true;
+      }
+    return false;
+  }
+
   static boolean hasIdKeyIndex(final DocumentType type) {
     return findIdKeyIndex(type) != null;
   }

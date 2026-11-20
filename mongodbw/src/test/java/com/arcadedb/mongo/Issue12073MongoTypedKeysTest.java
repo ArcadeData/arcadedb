@@ -433,6 +433,41 @@ class Issue12073MongoTypedKeysTest {
   }
 
   @Test
+  void anUpdateOfOtherFieldsLeavesTheKeysAsTheyAreAndOneOfTheirFieldsRewritesThem() {
+    createUniqueIndex("Skip", new Document("a", 1).append("b.c", 1));
+    insert("Skip", new Document("_id", 1).append("a", 1).append("b", new Document("c", 2)).append("k", 0));
+    final String key = storedKey("Skip", "$unique:a,b.c");
+    assertThat(key).isEqualTo(MongoKeys.key(new Document("a", 1).append("b", new Document("c", 2)), new String[] { "a", "b.c" }));
+
+    // a key this test put there is a key the update did not compute
+    database.transaction(() -> database.command("sql", "UPDATE Skip SET `$unique:a,b.c` = 'sentinel'"));
+    command("update", "Skip", new Document("updates", List.of(new Document("q", new Document("_id", 1)).append("u", new Document("$set", new Document("k", 1))))));
+    assertThat(storedKey("Skip", "$unique:a,b.c")).isEqualTo("sentinel");
+    // a field of the key, whether it is the first segment of a dotted one or not
+    command("update", "Skip", new Document("updates", List.of(new Document("q", new Document("_id", 1)).append("u", new Document("$set", new Document("b.d", 1))))));
+    assertThat(storedKey("Skip", "$unique:a,b.c")).isEqualTo(key);
+
+    database.transaction(() -> database.command("sql", "UPDATE Skip SET `$unique:a,b.c` = 'sentinel'"));
+    command("update", "Skip", new Document("updates", List.of(new Document("q", new Document("_id", 1)).append("u", new Document("$inc", new Document("a", 1))))));
+    assertThat(storedKey("Skip", "$unique:a,b.c")).isEqualTo(
+        MongoKeys.key(new Document("a", 2).append("b", new Document("c", 2).append("d", 1)), new String[] { "a", "b.c" }));
+
+    final List<String[]> unique = List.of(new String[] { "a" }, new String[] { "x.y", "z" });
+    assertThat(MongoKeys.affects(unique, new String[] { "k" })).isFalse();
+    assertThat(MongoKeys.affects(unique, new String[] {})).isFalse();
+    assertThat(MongoKeys.affects(unique, new String[] { "ab" })).as("a name that starts like a field is not the field").isFalse();
+    assertThat(MongoKeys.affects(unique, new String[] { "k", "a" })).isTrue();
+    assertThat(MongoKeys.affects(unique, new String[] { "x" })).as("the head of x.y").isTrue();
+    assertThat(MongoKeys.affects(unique, new String[] { "z" })).isTrue();
+  }
+
+  private String storedKey(final String collection, final String property) {
+    try (final ResultSet rs = database.query("sql", "select `" + property + "` as keyValue from `" + collection + "`")) {
+      return rs.next().getProperty("keyValue");
+    }
+  }
+
+  @Test
   void aUniqueCreateIndexesOnTheIdIsTheIdIndex() {
     database.getSchema().createDocumentType("OnId");
     database.transaction(() -> {

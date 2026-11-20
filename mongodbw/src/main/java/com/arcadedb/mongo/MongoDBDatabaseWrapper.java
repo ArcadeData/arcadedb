@@ -1321,6 +1321,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final boolean replacement = isReplacement(u);
     // the top-level properties the operators touch: only their values can change
     final String[] touched = replacement ? null : touchedProperties(u);
+    // an operator never changes the _id, so only the keys of the createIndexes unique indexes can change, and only when the update
+    // writes a field they are made of (issue #12073): any other update skips converting the document
+    final boolean keysAffected = !replacement && !unique.isEmpty() && MongoKeys.affects(unique, touched);
     int vanished = 0;
     int modified = 0;
     for (final RID rid : rids) {
@@ -1358,9 +1361,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // matched, but modified only when the update changed the document, as on mongod (issue #11445): a document left as it was is not
       // written at all. And only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
       if (changed) {
-        // the derived keys follow the fields they are made of (issue #12073). An operator never changes the _id, so only the keys of
-        // the createIndexes unique indexes can change, and a collection without one skips converting the document
-        if (!replacement && !unique.isEmpty())
+        // the derived keys follow the fields they are made of
+        if (keysAffected)
           MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), unique);
         if (record.saveReportingVeto())
           ++modified;
