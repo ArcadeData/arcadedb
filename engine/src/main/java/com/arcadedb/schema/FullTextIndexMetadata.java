@@ -307,6 +307,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+    // A missing key is NOT the field's default of true: a definition written before per-field analyzers were applied (issue #12163)
+    // has no such key, and its postings were not written with them, so it is read as the legacy mode until a rebuild writes them
     this.fieldAnalyzersApplied = metadata.getBoolean(FIELD_ANALYZERS_APPLIED, false);
   }
 
