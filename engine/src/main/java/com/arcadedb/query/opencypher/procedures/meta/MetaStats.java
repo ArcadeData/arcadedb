@@ -40,6 +40,11 @@ import java.util.stream.Stream;
  * keyed by type.
  * </p>
  * <p>
+ * Cost: ArcadeDB keeps no per-label relationship counts, so the relationship records of every readable edge type are scanned
+ * once (linear in the number of relationships, where Neo4j reads its count store), and {@code propertyKeyCount} reads a sample
+ * of each vertex type. The scan stops at the command's timeout, on termination and on interrupt.
+ * </p>
+ * <p>
  * Example Cypher usage:
  * <pre>
  * CALL meta.stats()
