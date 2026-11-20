@@ -44,6 +44,11 @@ import java.util.stream.Stream;
  * it for this procedure, does not narrow the answer.
  * </p>
  * <p>
+ * Cost: the relationship records of every readable edge type are scanned once (linear in the number of relationships, where
+ * Neo4j reads its count store), because ArcadeDB keeps no per-label relationship counts. The scan stops at the command's
+ * timeout, on termination and on interrupt.
+ * </p>
+ * <p>
  * Example Cypher usage:
  * <pre>
  * CALL meta.graph()

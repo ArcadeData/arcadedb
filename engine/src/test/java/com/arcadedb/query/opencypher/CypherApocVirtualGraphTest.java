@@ -19,8 +19,11 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.meta.MetaGraph;
 import com.arcadedb.query.opencypher.procedures.meta.MetaNodeTypeProperties;
@@ -267,6 +270,29 @@ class CypherApocVirtualGraphTest {
       assertThat(longOf(single("MATCH ()-[r:R]->() RETURN count(r) AS c").getProperty("c"))).isZero();
       assertThat(longOf(single("MATCH (n) RETURN count(n) AS c").getProperty("c"))).isEqualTo(2L);
       assertThat(longOf(single("MATCH ()-[r]->() RETURN count(r) AS c").getProperty("c"))).isEqualTo(3L);
+    }
+
+    @Test
+    void aVirtualIdentityNamesNoStoredRecordAndPrintsItsProperties() {
+      createGraph();
+      final Vertex virtual = single("RETURN apoc.create.vNode(['P'], {uid: 1, tags: ['a', 'b']}) AS n").<Vertex>getProperty("n");
+      final String text = virtual.getIdentity().toString();
+      assertThat(text).startsWith("#-1:");
+      assertThat(virtual.toString()).startsWith("(" + text + ":P").contains("uid=1");
+
+      // the text of the identity parses back to it...
+      final RID parsed = new RID(text);
+      assertThat(parsed).isEqualTo(virtual.getIdentity());
+      // ...and the identity is no record of the database: bucket -1 does not exist, whatever an unrelated stored node holds
+      assertThatThrownBy(() -> database.lookupByRID(parsed, true)).isInstanceOfAny(RecordNotFoundException.class, SchemaException.class);
+      // asked by text, it is refused or answers nothing, never a NullPointerException out of a null type
+      try (final ResultSet rs = database.query("sql", "SELECT FROM " + text)) {
+        assertThat(rs.hasNext()).isFalse();
+      } catch (final Exception e) {
+        assertThat(stackTraceOf(e)).doesNotContain("NullPointerException", "ClassCastException");
+      }
+      // a stored node answers its own id, never a virtual one
+      assertThat(longOf(single("MATCH (n:P {uid: 1}) RETURN id(n) AS id").getProperty("id"))).isNotNegative();
     }
 
     @Test
