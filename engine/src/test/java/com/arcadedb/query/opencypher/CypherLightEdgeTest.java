@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.opencypher.traversal.VariableLengthPathTraverser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -1099,6 +1100,35 @@ class CypherLightEdgeTest {
       try (final ResultSet rs = database.query("sql", "SELECT DISTINCT @this FROM (SELECT expand(bothE('L')) FROM W)")) {
         assertThat(rs.stream().count()).isEqualTo(3L);
       }
+    }
+
+    /**
+     * The element id of a lightweight edge names its twin number, which {@code LightEdgeRID.getOccurrence()} reads off the
+     * list the edge was read from. Asked of every edge of a super-node, one walk of the list per edge is quadratic in its
+     * degree; the census of the iteration turns them into two walks of the list, whatever the side the edges are read from.
+     */
+    @Test
+    void theElementIdOfEveryEdgeOfASuperNodeCostsNoWalkOfTheListPerEdge() {
+      final int leaves = 20_000;
+      database.transaction(() -> {
+        final MutableVertex hub = database.newVertex("A").set("k", "hub").save();
+        for (int i = 0; i < leaves; i++)
+          hub.newLightEdge("L", database.newVertex("B").set("k", "leaf" + i).save());
+      });
+
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      final List<String> outgoing = elementIds("MATCH (:A {k:'hub'})-[r:L]->(:B) RETURN elementId(r) AS e");
+      final List<String> undirected = elementIds("MATCH (:A {k:'hub'})-[r:L]-(:B) RETURN elementId(r) AS e");
+      final List<String> incoming = elementIds("MATCH (:B)<-[r:L]-(:A {k:'hub'}) RETURN elementId(r) AS e");
+      final long found = single("MATCH ()-[r:L]->() WHERE elementId(r) = '" + outgoing.get(leaves / 2) + "' RETURN count(r) AS n");
+      // measured at 20 000 edges: about 0.1 s for the four queries with the census, 6.7 s with it bypassed, and the second
+      // grows with the square of the degree
+      stopwatch.assertGaveUpWithin(3_000, "two walks of the list for all of its edges from one walk of a stripe of it per edge");
+
+      assertThat(outgoing).hasSize(leaves).doesNotHaveDuplicates();
+      assertThat(undirected).containsExactlyInAnyOrderElementsOf(outgoing);
+      assertThat(incoming).containsExactlyInAnyOrderElementsOf(outgoing);
+      assertThat(found).isEqualTo(1L);
     }
 
     private List<String> elementIds(final String query) {
