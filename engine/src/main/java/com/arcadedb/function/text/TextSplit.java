@@ -70,7 +70,7 @@ public class TextSplit extends AbstractTextFunction {
   }
 
   /**
-   * {@code Pattern.split(str, limit)}, except that a match of no characters between the two halves of a surrogate pair is not a
+   * {@code Pattern.split(str, limit)}, except that a match that starts or ends between the two halves of a surrogate pair is not a
    * separator: the empty regex splits {@code 'a😀'} into {@code ['a', '😀']}, not into the two halves of the emoji (issue #10485).
    */
   private static List<String> split(final Matcher matcher, final String str, final int limit) {
@@ -78,16 +78,17 @@ public class TextSplit extends AbstractTextFunction {
     int index = 0;
     while (matcher.find()) {
       final int start = matcher.start();
+      final int end = matcher.end();
       // no leading empty piece for a match of no characters at the start, as Pattern.split
-      if (start == matcher.end() && (start == 0 || insideSurrogatePair(str, start)))
+      if (start == end && start == 0 || splitsSurrogatePair(str, start, end))
         continue;
       if (limit > 0 && pieces.size() == limit - 1) {
         pieces.add(str.substring(index));
-        index = matcher.end();
+        index = end;
         break;
       }
       pieces.add(str.substring(index, start));
-      index = matcher.end();
+      index = end;
     }
 
     if (index == 0)
@@ -96,12 +97,9 @@ public class TextSplit extends AbstractTextFunction {
     if (limit <= 0 || pieces.size() < limit)
       pieces.add(str.substring(index));
 
-    if (limit == 0) {
-      int size = pieces.size();
-      while (size > 0 && pieces.get(size - 1).isEmpty())
-        size--;
-      return pieces.subList(0, size);
-    }
+    if (limit == 0)
+      while (!pieces.isEmpty() && pieces.get(pieces.size() - 1).isEmpty())
+        pieces.remove(pieces.size() - 1);
     return pieces;
   }
 }

@@ -20,6 +20,8 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.regex.Matcher;
+
 /**
  * text.replace(string, regex, replacement) - Replace every match of a regular expression, as {@code apoc.text.replace} does
  * ({@code String.replaceAll}): the replacement refers to groups as {@code $1} or {@code ${name}}, and a null argument answers null
@@ -56,12 +58,12 @@ public class TextReplace extends AbstractTextFunction {
     if (str == null || regex == null || replacement == null)
       return null;
 
-    // A match of no characters is never put between the two halves of a surrogate pair (issue #10485): '' puts the replacement
-    // before every character and after the last, an emoji being one character
+    // A match never starts or ends between the two halves of a surrogate pair (issue #10485): '' puts the replacement before every
+    // character and after the last, an emoji being one character, and the text of a match that does is kept as it is
     return applyRegex(regex, str, context, (pattern, input) -> {
       try {
-        return pattern.matcher(input)
-            .replaceAll(match -> match.start() == match.end() && insideSurrogatePair(str, match.start()) ? "" : replacement);
+        return pattern.matcher(input).replaceAll(
+            match -> splitsSurrogatePair(str, match.start(), match.end()) ? Matcher.quoteReplacement(match.group()) : replacement);
       } catch (final IndexOutOfBoundsException | IllegalArgumentException e) {
         // a group the pattern does not have ($2), or a lone '$' or '\' at the end of the replacement
         throw new IllegalArgumentException("text.replace() cannot apply the replacement '" + replacement + "': " + e.getMessage(), e);

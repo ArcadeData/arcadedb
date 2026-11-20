@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -74,6 +75,29 @@ class CypherApocTextFunctionsTest {
     }
 
     @Test
+    void replaceNeverCutsASurrogatePair() {
+      // the empty match at 0 is followed by a match of the second half of the emoji, which starts between the two halves
+      assertThat(value("apoc.text.replace($s, '^|.', '-')", "s", EMOJI)).isEqualTo("-" + EMOJI);
+      assertThat(value("apoc.text.replace($s, '(?<=a)|.', '-')", "s", "a" + EMOJI + "b")).isEqualTo("--" + EMOJI + "-");
+      // a match of one half of the emoji ends or starts between the two halves: the text is kept as it was
+      assertThat(value("apoc.text.replace($s, $r, '-')", "s", "a" + EMOJI + "b", "r", "\uD83D")).isEqualTo("a" + EMOJI + "b");
+      assertThat(value("apoc.text.replace($s, $r, '-')", "s", "a" + EMOJI + "b", "r", "\uDE00")).isEqualTo("a" + EMOJI + "b");
+      // a lone surrogate that is not half of a pair is a character of its own
+      assertThat(value("apoc.text.replace($s, $r, '-')", "s", "a\uD83Db", "r", "\uD83D")).isEqualTo("a-b");
+    }
+
+    @Test
+    void replaceAnswersTheRightResultWhenTheRegexChangesFromOneRowToTheNext() {
+      try (final ResultSet rs = database.query("opencypher",
+          "UNWIND [['a1', '1'], ['b2', '2'], ['a1', '1'], ['b2', '[a-z]'], ['c3', '3']] AS p RETURN apoc.text.replace(p[0], p[1], '#') AS r")) {
+        final List<Object> answers = new ArrayList<>();
+        while (rs.hasNext())
+          answers.add(rs.next().getProperty("r"));
+        assertThat(answers).containsExactly("a#", "b#", "a#", "#2", "c#");
+      }
+    }
+
+    @Test
     void replaceAnswersNullForANullArgument() {
       assertThat(value("apoc.text.replace(null, 'a', 'b')")).isNull();
       assertThat(value("apoc.text.replace('hello world', null, 'X')")).isNull();
@@ -121,6 +145,18 @@ class CypherApocTextFunctionsTest {
       assertThat(value("apoc.text.split('', ',', -1)")).isEqualTo(List.of(""));
       // deliberate difference: APOC splits the emoji into its two halves
       assertThat(value("apoc.text.split($s, '')", "s", "a" + EMOJI + "b")).isEqualTo(List.of("a", EMOJI, "b"));
+    }
+
+    @Test
+    void splitNeverCutsASurrogatePair() {
+      // the empty match at 0 is followed by a match of the second half of the emoji, which starts between the two halves
+      assertThat(value("apoc.text.split($s, '^|.')", "s", EMOJI)).isEqualTo(List.of(EMOJI));
+      assertThat(value("apoc.text.split($s, '(?<=a)|.')", "s", "a" + EMOJI + "b")).isEqualTo(List.of("", "", EMOJI));
+      // a match of one half of the emoji ends or starts between the two halves: it is not a separator
+      assertThat(value("apoc.text.split($s, $r)", "s", "a" + EMOJI + "b", "r", "\uD83D")).isEqualTo(List.of("a" + EMOJI + "b"));
+      assertThat(value("apoc.text.split($s, $r)", "s", "a" + EMOJI + "b", "r", "\uDE00")).isEqualTo(List.of("a" + EMOJI + "b"));
+      // a lone surrogate that is not half of a pair is a character of its own
+      assertThat(value("apoc.text.split($s, $r)", "s", "a\uD83Db", "r", "\uD83D")).isEqualTo(List.of("a", "b"));
     }
 
     @Test
@@ -202,6 +238,9 @@ class CypherApocTextFunctionsTest {
       assertThat(value("apoc.text.format('%,.2f', [1234567.891], 'fr')")).isEqualTo("1\u202f234\u202f567,89");
       assertThat(value("apoc.text.format('%,d', [1234567])")).isEqualTo("1,234,567");
       assertThat(value("apoc.text.format('%s', ['a'], '')")).isEqualTo("a");
+      // a tag that is not a language never fails: its numbers are written as the root locale writes them
+      assertThat(value("apoc.text.format('%,.2f', [1234567.891], 'xx_YY')")).isEqualTo("1,234,567.89");
+      assertThat(value("apoc.text.format('%,d', [1234567], 'not a language tag')")).isEqualTo("1,234,567");
       // deliberate difference: APOC fails with a NullPointerException on a null language
       assertThat(value("apoc.text.format('%,d', [1234567], null)")).isEqualTo("1,234,567");
     }

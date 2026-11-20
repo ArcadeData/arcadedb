@@ -43,6 +43,14 @@ public abstract class AbstractTextFunction implements StatelessFunction {
   protected static final int    MAX_PATTERN_LENGTH = 500;
 
   /**
+   * A pattern with the text it was compiled from. Immutable, so that the field below is read and replaced without a lock.
+   */
+  private record CompiledRegex(String regex, Pattern pattern) {
+  }
+
+  private volatile CompiledRegex lastRegex;
+
+  /**
    * Returns the simple name without namespace prefix.
    */
   protected abstract String getSimpleName();
@@ -90,10 +98,12 @@ public abstract class AbstractTextFunction implements StatelessFunction {
    * #5886): one deadline is shared by every row the function runs against in the same query, so a pathological pattern cannot cost
    * the row count times the timeout. {@code context} is null in some direct invocations, which then get a deadline of their own. The
    * operation has to read the text only through the sequence it is given, which is what carries the deadline.
+   * <p>
+   * The pattern of the last call is kept, as a query runs the function with the same pattern for every row.
    *
    * @throws IllegalArgumentException when the pattern is too long, does not compile, or backtracks past the deadline
    */
-  protected static <T> T applyRegex(final String regex, final String text, final CommandContext context,
+  protected <T> T applyRegex(final String regex, final String text, final CommandContext context,
       final BiFunction<Pattern, CharSequence, T> operation) {
     if (regex.length() > MAX_PATTERN_LENGTH)
       throw new IllegalArgumentException(
@@ -103,12 +113,7 @@ public abstract class AbstractTextFunction implements StatelessFunction {
         context.getRegexDeadline() :
         TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(null));
 
-    final Pattern pattern;
-    try {
-      pattern = Pattern.compile(regex);
-    } catch (final PatternSyntaxException e) {
-      throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
-    }
+    final Pattern pattern = compile(regex);
 
     try {
       return TimeBoundRegex.applyUntil(pattern, text, regexDeadline, bounded -> operation.apply(pattern, bounded));
@@ -121,13 +126,37 @@ public abstract class AbstractTextFunction implements StatelessFunction {
     }
   }
 
+  private Pattern compile(final String regex) {
+    final CompiledRegex last = lastRegex;
+    if (last != null && last.regex.equals(regex))
+      return last.pattern;
+
+    final Pattern pattern;
+    try {
+      pattern = Pattern.compile(regex);
+    } catch (final PatternSyntaxException e) {
+      throw new IllegalArgumentException("Invalid regex pattern: " + e.getMessage(), e);
+    }
+    lastRegex = new CompiledRegex(regex, pattern);
+    return pattern;
+  }
+
   /**
    * Answers whether the UTF-16 offset {@code index} of {@code text} falls between the two halves of a surrogate pair, where a regex
-   * match of no characters can land but a character boundary cannot (issue #10485).
+   * match can start or end but a character boundary cannot (issue #10485).
    */
   protected static boolean insideSurrogatePair(final String text, final int index) {
     return index > 0 && index < text.length() && Character.isHighSurrogate(text.charAt(index - 1))
         && Character.isLowSurrogate(text.charAt(index));
+  }
+
+  /**
+   * Answers whether a regex match from {@code start} to {@code end} (UTF-16 offsets of {@code text}) begins or ends between the two
+   * halves of a surrogate pair, so that it is not a whole number of characters (issue #10485). The engine moves one UTF-16 unit past
+   * a match of no characters, which lands inside a pair, and a pattern can match one half of an emoji.
+   */
+  protected static boolean splitsSurrogatePair(final String text, final int start, final int end) {
+    return insideSurrogatePair(text, start) || end != start && insideSurrogatePair(text, end);
   }
 
   /**
