@@ -34,7 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #12044: the XML importer kept the text of the last character event of an element, and its parser was not coalescing,
  * so the text was split at every entity or character reference and around a CDATA section: {@code Al &amp; Bo &lt;3} was
- * stored as {@code 3}, {@code Montr&#233;al} as {@code al}, with result OK.
+ * stored as {@code 3}, {@code Montr&#233;al} as {@code al}, with result OK. The same parser also split a long plain text
+ * node, with no entity at all, into several events (about 16K characters each), so the tail was all that was stored.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12044XmlEntityTextTest {
 
@@ -73,8 +76,41 @@ class Issue12044XmlEntityTextTest {
     } finally {
       db.drop();
       xmlFile.delete();
-      TestHelper.checkActiveDatabases();
     }
+    TestHelper.checkActiveDatabases();
+  }
+
+  /**
+   * The parser also cuts a long text node that holds no entity or CDATA at all: one element of 30000 characters used to be
+   * stored as its last 13672. A reference in the middle of a long text splits it at both ends.
+   */
+  @Test
+  void longElementTextIsStoredWhole() throws Exception {
+    final String databasePath = "target/databases/test-import-12044-long-text";
+    final File xmlFile = new File("target/importer-12044-long-text.xml");
+    final String chunk = "0123456789abcdefghij";
+    final String longText = chunk.repeat(1500);
+    final String longTextWithReference = chunk.repeat(1000) + "&amp;" + chunk.repeat(1000);
+    Files.writeString(xmlFile.toPath(), "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<items>\n  <item id=\"1\"><body>" + longText
+        + "</body><tail>" + longTextWithReference + "</tail></item>\n</items>", StandardCharsets.UTF_8);
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath());
+      assertThat(db.countType("v_item", true)).isEqualTo(1);
+
+      final Result item = selectById(db, "1");
+      assertThat(item.<String>getProperty("body")).isEqualTo(longText);
+      assertThat(item.<String>getProperty("tail")).isEqualTo(chunk.repeat(1000) + "&" + chunk.repeat(1000));
+    } finally {
+      db.drop();
+      xmlFile.delete();
+    }
+    TestHelper.checkActiveDatabases();
   }
 
   private static Result selectById(final Database db, final String id) {
