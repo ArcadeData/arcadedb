@@ -119,7 +119,24 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
+      # One commit for every job: `build` and `docker` check out minutes apart, and a branch `ref` that moves in
+      # between would put a binary of one commit in an image labelled with another
+      - name: Resolve the commit to build
+        id: commit
+        shell: bash
+        env:
+          REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REF}" ]; then
+            sha="${GITHUB_SHA}"
+          else
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${REF}" --jq .sha)"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
       - name: Assemble matrix (add paid macOS leg only on release / opt-in dispatch)
         id: set
         shell: bash
@@ -159,11 +176,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
-      # `ref` is empty on `release` and `schedule`, which is checkout's "use the ref that triggered
-      # this run" - so those two behave exactly as they did before the input existed.
+      # `setup` resolved `inputs.ref` to a commit; an empty `ref` (`release`, `schedule`) resolves to the commit that
+      # triggered this run, so those two behave exactly as they did before the input existed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.setup.outputs.sha }}
 
       # `java-version`, which fetches the `jdk-<version>` release and so reaches GraalVM's MAINLINE
       # builds only. That is deliberate and is the point of the pin: mainline is the line the OS
@@ -498,7 +515,7 @@ jobs:
   # nothing: it exercises the Dockerfiles and build context end-to-end and stops there.
   docker:
     name: docker-${{ matrix.arch }}
-    needs: build
+    needs: [setup, build]
     runs-on: ${{ matrix.runner }}
     # The tag prefixes the per-arch images were pushed under ("26.9.1", or "latest 26.10.1-SNAPSHOT"
     # on a nightly). Both legs derive it from the same event and the same pom-named tarball, so
@@ -516,7 +533,7 @@ jobs:
       # tree the binary was built from, not from whichever branch the run was dispatched on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.setup.outputs.sha }}
 
       - name: Download binary artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -603,9 +620,14 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "channels=$CHANNELS" >> "$GITHUB_OUTPUT"
           echo "[docker] event=$EVENT_NAME attach_to_release=$ATTACH_TO_RELEASE publish_nightly=$PUBLISH_NIGHTLY channels='${CHANNELS:-none (local only)}'"
+          # HEAD of the checked-out tree, not github.sha: a workflow_dispatch can build another ref.
+          REVISION="$(git rev-parse HEAD)"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker buildx build --platform "linux/${{ matrix.arch }}" \
             -f "${{ matrix.dockerfile }}" \
             "${TAG_ARGS[@]}" \
+            --label "org.opencontainers.image.revision=${REVISION}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
             --load ctx
 
       # The container is validated with the same Java e2e battery mvn-test.yml runs against the JVM image (e2e module,
@@ -689,3 +711,34 @@ jobs:
               "arcadedata/arcadedb:${c}-native-amd64" \
               "arcadedata/arcadedb:${c}-native-arm64"
           done
+
+  # Starts the release benchmark in ArcadeData/arcadedb-perf-infra (#12431). That workflow runs the bench and LDBC
+  # against `arcadedata/arcadedb:<tag>` and `arcadedata/arcadedb:<tag>-native`, so it is dispatched only once both
+  # exist: the JVM image is pushed by mvn-release.yml before the tag, and the native manifest by the job above. A
+  # published release only, never a recovery dispatch (`attach_to_release`), which republishes images of a release
+  # whose benchmark already ran, and never a prerelease. The benchmark is not part of the release: a missing token
+  # or a refused dispatch is a warning, and the benchmark can still be started by hand from the infra repo
+  # (workflow_dispatch with `tag`).
+  perf-benchmark:
+    needs: manifest
+    if: ${{ github.event_name == 'release' && !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the release benchmark
+        env:
+          # fine-grained token, Contents: read and write on ArcadeData/arcadedb-perf-infra only (repository_dispatch)
+          GH_TOKEN: ${{ secrets.PERF_DISPATCH_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::PERF_DISPATCH_TOKEN is not set - the release benchmark of ${TAG} was not started"
+            exit 0
+          fi
+          payload="$(jq -n --arg tag "${TAG}" '{event_type: "arcadedb-release", client_payload: {tag: $tag}}')"
+          if gh api --method POST repos/ArcadeData/arcadedb-perf-infra/dispatches --input - <<< "${payload}"; then
+            echo "[perf] release benchmark of ${TAG} dispatched"
+          else
+            echo "::warning::the release benchmark of ${TAG} could not be dispatched - start it by hand from ArcadeData/arcadedb-perf-infra"
+          fi

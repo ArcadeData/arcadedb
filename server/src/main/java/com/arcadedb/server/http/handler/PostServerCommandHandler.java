@@ -106,11 +106,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else
       checkRootUser(user);
 
-    // Write commands that must run on the leader: forward if this node is a replica
-    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
-        command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
-        command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
-        command_lc.startsWith(IMPORT_DATABASE)) {
+    // Commands that must run on the leader: forward if this node is a replica
+    if (isForwardedToLeader(command_lc)) {
       final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user,
           isLongRunningForwardedCommand(command_lc));
       // The leader's progress stream was relayed straight to the client (issue #7603): the response is already on
@@ -814,20 +811,43 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Which commands a replica hands to the leader instead of running them itself.
+   * <p>
+   * The first group writes cluster state, which only the leader may do. The backup commands are here for another
+   * reason (issue #12417): a backup directory is local to its node, and {@code restore backup} reads the leader's.
+   * While {@code trigger backup}, {@code list backups} and {@code delete backup} ran where the request landed, a
+   * follower wrote an archive of its own copy of the database into its own directory, answered OK, and no restore
+   * could reach the file; its listing named archives the restore refused as not found. Forwarded, the four commands
+   * act on one directory, and the archive is taken from the leader's copy, like the scheduled one is by default
+   * ({@code runOnServer: $leader}).
+   *
+   * @param command_lc the command, already lower-cased and trimmed the way {@link #execute} does it
+   */
+  static boolean isForwardedToLeader(final String command_lc) {
+    return command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
+        command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
+        command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
+        command_lc.startsWith(IMPORT_DATABASE) ||
+        command_lc.startsWith(TRIGGER_BACKUP) || command_lc.startsWith(LIST_BACKUPS) ||
+        command_lc.startsWith(DELETE_BACKUP);
+  }
+
+  /**
    * Which of the forwarded commands gets the long response deadline rather than the ordinary one (issue #7507).
    * <p>
    * Every forward is bounded, because it is an Undertow worker thread that waits for the leader's answer. These
-   * three legitimately run for minutes though, so bounding them with {@code HA_PROXY_READ_TIMEOUT} would abort
+   * legitimately run for minutes though, so bounding them with {@code HA_PROXY_READ_TIMEOUT} would abort
    * exactly the operations that most need to reach the leader; they get
-   * {@code HA_PROXY_LONG_COMMAND_TIMEOUT} instead. The set is a subset of the commands that forward at all -
-   * see the guard in {@link #execute} - so a command added to one list and not the other simply keeps the
-   * ordinary deadline.
+   * {@code HA_PROXY_LONG_COMMAND_TIMEOUT} instead. {@code trigger backup} is one of them since issue #12417: the
+   * leader answers when the archive is written, however large the database. The set is a subset of the commands
+   * that forward at all - see {@link #isForwardedToLeader} - so a command added to one list and not the other
+   * simply keeps the ordinary deadline.
    *
    * @param command_lc the command, already lower-cased and trimmed the way {@link #execute} does it
    */
   static boolean isLongRunningForwardedCommand(final String command_lc) {
     return command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
-        command_lc.startsWith(IMPORT_DATABASE);
+        command_lc.startsWith(IMPORT_DATABASE) || command_lc.startsWith(TRIGGER_BACKUP);
   }
 
   private void checkServerIsLeaderIfInHA() {

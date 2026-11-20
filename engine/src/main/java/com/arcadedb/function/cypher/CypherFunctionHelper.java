@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.TemporalMapFields;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -49,8 +50,8 @@ import java.time.Period;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.temporal.WeekFields;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -538,6 +539,89 @@ public final class CypherFunctionHelper {
   }
 
   /**
+   * Splits {@code str} around every occurrence of any of the literal {@code delimiters}, as openCypher
+   * {@code split(original, splitDelimiters)} does (issue #12396): the text is cut at the leftmost place where any
+   * delimiter of the list is found and, when two of them are found at the same place, the first of the list wins. The
+   * delimiters are literals, never patterns, and the empty pieces are kept.
+   * <ul>
+   *   <li>An empty list of delimiters splits nothing: the text is the one piece.</li>
+   *   <li>An empty delimiter splits the text into its characters and the other delimiters of the list are cut out of
+   *   the text before that, as Neo4j 5 does: {@code split('abc', ['','a'])} is {@code ["b","c"]}.</li>
+   * </ul>
+   * As the single-delimiter split, a surrogate pair is never cut.
+   *
+   * @return an unmodifiable list
+   */
+  public static List<String> splitLiteral(final String str, final List<String> delimiters) {
+    if (delimiters.isEmpty())
+      return List.of(str);
+
+    boolean withEmptyDelimiter = false;
+    for (final String delimiter : delimiters)
+      if (delimiter.isEmpty()) {
+        withEmptyDelimiter = true;
+        break;
+      }
+
+    if (withEmptyDelimiter) {
+      String text = str;
+      for (final String delimiter : delimiters)
+        if (!delimiter.isEmpty())
+          text = replaceLiteral(text, delimiter, "");
+      // Cutting the other delimiters out of a text can leave nothing, and the characters of nothing are no piece, as in Neo4j 5:
+      // split('aaa', ['','a']) is [], while the empty text itself is the one empty piece, split('', ['']) is [""]
+      if (text.isEmpty() && !str.isEmpty())
+        return List.of();
+      return splitLiteral(text, "");
+    }
+
+    final String[] candidates = delimiters.toArray(new String[0]);
+    // The next place each delimiter is found at or after 'at': searched again only once 'at' has passed it, and never again once it
+    // is not found any more. Searching every delimiter from 'at' on each cut scanned the rest of the text for a delimiter that is
+    // absent after every cut, which was quadratic on a long text with a list like [",", ";"] (review of #12403)
+    final int[] nextIndex = new int[candidates.length];
+    Arrays.fill(nextIndex, -1);
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = 0;
+    while (true) {
+      int foundAt = -1;
+      String found = null;
+      for (int i = 0; i < candidates.length; i++) {
+        final String delimiter = candidates[i];
+        if (nextIndex[i] < at) {
+          final int looked = str.indexOf(delimiter, at);
+          nextIndex[i] = looked < 0 ? Integer.MAX_VALUE : looked;
+        }
+        final int index = nextIndex[i];
+        if (index == Integer.MAX_VALUE)
+          continue;
+        if (foundAt < 0 || index < foundAt) {
+          foundAt = index;
+          found = delimiter;
+        } else if (index == foundAt && splitsSurrogatePair(str, foundAt, foundAt + found.length())
+            && !splitsSurrogatePair(str, index, index + delimiter.length()))
+          // the delimiter that comes first in the list would cut a surrogate pair, this one at the same place does not
+          found = delimiter;
+      }
+      if (foundAt < 0)
+        break;
+
+      final int end = foundAt + found.length();
+      if (splitsSurrogatePair(str, foundAt, end)) {
+        // no delimiter of the list can be used here: look for the next one
+        at = foundAt + 1;
+        continue;
+      }
+      pieces.add(str.substring(from, foundAt));
+      from = end;
+      at = end;
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
+  }
+
+  /**
    * Replaces every occurrence of the literal {@code search} in {@code str}, as {@code String.replace(CharSequence, CharSequence)}
    * does, except that a surrogate pair is never cut (issue #10485, #10484): an empty {@code search} puts the replacement before
    * every character and after the last - {@code "-a-😀-"} for {@code ("a😀", "", "-")}, never between the two halves of the emoji -
@@ -914,57 +998,40 @@ public final class CypherFunctionHelper {
   }
 
   /**
-   * Apply a map of adjustments to a truncated date.
-   * The map can contain: year, month, day, dayOfWeek, ordinalDay, dayOfQuarter.
+   * Apply a map of adjustments to a truncated date: every date field, the week, quarter and ordinal ones included, applied
+   * as a selection on the truncated value applies them ({@link TemporalMapFields}). Only the calendar fields and
+   * {@code dayOfWeek} used to apply, the rest were dropped (issue #12297).
    */
-  public static LocalDate applyDateMap(LocalDate date, final Map<String, Object> map) {
+  public static LocalDate applyDateMap(final LocalDate date, final Map<String, Object> map) {
     if (map == null || map.isEmpty())
       return date;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("year");
-    if (value != null)
-      date = date.withYear(TemporalUtil.toIntField("year", value));
-    value = map.get("month");
-    if (value != null)
-      date = date.withMonth(TemporalUtil.toIntField("month", value));
-    value = map.get("day");
-    if (value != null)
-      date = date.withDayOfMonth(TemporalUtil.toIntField("day", value));
-    value = map.get("dayOfWeek");
-    if (value != null)
-      date = date.with(WeekFields.ISO.dayOfWeek(), TemporalUtil.toIntField("dayOfWeek", value));
-    return date;
+    TemporalMapFields.checkAdjustmentKeys(map, true, false, false);
+    return TemporalMapFields.resolveDate(map, date, false);
   }
 
   /**
    * Apply a map of adjustments to a truncated time.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalTime applyTimeMap(LocalTime time, final Map<String, Object> map) {
+  public static LocalTime applyTimeMap(final LocalTime time, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return time;
-    // Optimized: single map lookup instead of containsKey() + get()
-    Object value = map.get("hour");
-    if (value != null)
-      time = time.withHour(TemporalUtil.toIntField("hour", value));
-    value = map.get("minute");
-    if (value != null)
-      time = time.withMinute(TemporalUtil.toIntField("minute", value));
-    value = map.get("second");
-    if (value != null)
-      time = time.withSecond(TemporalUtil.toIntField("second", value));
-    time = time.withNano(TemporalUtil.computeNanos(map, time.getNano(), true));
-    return time;
+    TemporalMapFields.checkAdjustmentKeys(map, false, true, zoned);
+    return TemporalMapFields.adjustTruncatedTime(time, map);
   }
 
   /**
    * Apply a map of adjustments to a truncated local datetime.
+   *
+   * @param zoned whether the truncated value has a zone, which the map's {@code timezone} then replaces
    */
-  public static LocalDateTime applyDateTimeMap(LocalDateTime dt, final Map<String, Object> map) {
+  public static LocalDateTime applyDateTimeMap(final LocalDateTime dt, final Map<String, Object> map, final boolean zoned) {
     if (map == null || map.isEmpty())
       return dt;
-    final LocalDate date = applyDateMap(dt.toLocalDate(), map);
-    final LocalTime time = applyTimeMap(dt.toLocalTime(), map);
-    return LocalDateTime.of(date, time);
+    TemporalMapFields.checkAdjustmentKeys(map, true, true, zoned);
+    return LocalDateTime.of(TemporalMapFields.resolveDate(map, dt.toLocalDate(), false),
+        TemporalMapFields.adjustTruncatedTime(dt.toLocalTime(), map));
   }
 
 }

@@ -495,9 +495,10 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
-    // the table the RESP wire path uses (#9161): a surplus argument is no longer an amount, a missing one no longer defaults
+    // the table the RESP wire path uses (#9161): a surplus argument is no longer an amount, a missing one no longer defaults, and
+    // a hash command takes the count of the form it is written in (#11783)
     try {
-      RedisCommandArity.checkRam(cmd, parts.size());
+      RedisCommandArity.checkQueryLanguage(cmd, parts);
     } catch (final RedisException e) {
       throw badRequest(e);
     }

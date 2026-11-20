@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -119,7 +120,7 @@ public class SearchIndexesTest {
     @Test
     void fullTextQueryByAnUnknownNameStillFails() {
       assertThatThrownBy(() -> FullTextQuery.search(database, new JSONObject().put("indexName", "nope").put("queryText", "graph")))
-          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("does not exist");
+          .isInstanceOf(SchemaException.class).hasMessageContaining("does not exist");
     }
 
     @Test
@@ -133,7 +134,7 @@ public class SearchIndexesTest {
     @Test
     void vectorSearchBySparseFlagOnALogicalNameIsRefused() {
       assertThatThrownBy(() -> VectorSearch.search(database, new JSONObject().put("indexName", "emb")
-          .put("queryVector", new JSONArray(List.of(1.0, 0.0))).put("sparse", true))).isInstanceOf(IllegalArgumentException.class);
+          .put("queryVector", new JSONArray(List.of(1.0, 0.0))).put("sparse", true))).isInstanceOf(SchemaException.class);
     }
 
     @Test

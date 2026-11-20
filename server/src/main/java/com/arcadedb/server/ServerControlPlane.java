@@ -204,7 +204,7 @@ public class ServerControlPlane {
    * {@code ArcadeDbGrpcAdminService}.
    * <p>
    * <b>Reported, not thrown</b>, because the older contract this had to be reconciled with is the stronger one:
-   * {@code Issue7401ServerControlPlaneConnectClusterTest.aFailingUsersSeedDoesNotFailTheJoin} pins that the join
+   * {@code ConnectClusterTest.Outcomes#aFailingUsersSeedDoesNotFailTheJoin} pins that the join
    * does not fail on a seed, and it must not - by the time the seed runs the peer is a committed member, and a
    * caller that retried a failed join would be retrying something that already happened. A return value says
    * "the join happened AND part of the follow-up did not" without ever saying the join failed, which an
