@@ -24,7 +24,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * valueType() function - returns a string representation of the type of a value.
- * Returns Cypher type names: INTEGER, FLOAT, STRING, BOOLEAN, NULL, LIST, MAP, NODE, RELATIONSHIP, PATH, etc.
+ * Returns Cypher type names: INTEGER, FLOAT, STRING, BOOLEAN, NULL, LIST, MAP, NODE, RELATIONSHIP, PATH, etc. A list
+ * reports the type of its elements, the way Neo4j reports it: LIST&lt;INTEGER NOT NULL&gt; NOT NULL for [1,2] and
+ * LIST&lt;NOTHING&gt; NOT NULL for an empty list (issue #12395).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -47,9 +49,6 @@ public class ValueTypeFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     checkArity(args);
-    final Object value = args[0];
-    if (value == null)
-      return "NULL";
-    return CypherFunctionHelper.cypherTypeName(value) + " NOT NULL";
+    return CypherFunctionHelper.cypherValueType(args[0]);
   }
 }

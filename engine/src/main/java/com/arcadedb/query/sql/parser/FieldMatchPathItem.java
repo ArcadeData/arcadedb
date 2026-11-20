@@ -48,11 +48,16 @@ public class FieldMatchPathItem extends MatchPathItem {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(".");
-    field.toString(params, builder);
+    traversalToString(params, builder);
     if (filter != null) {
       filter.toString(params, builder);
     }
+  }
+
+  @Override
+  public void traversalToString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append(".");
+    field.toString(params, builder);
   }
 
   protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,

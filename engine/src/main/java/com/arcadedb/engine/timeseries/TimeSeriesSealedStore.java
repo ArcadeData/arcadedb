@@ -53,13 +53,14 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -283,6 +284,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * leaves it unable to produce a consistent answer at all (issue #8166).
    */
   private          long             downsampleEpoch;
+  /**
+   * The most (tag set, bucket) accumulators the latest {@link #downsampleBlocks} pass that selected a block held at once (issue
+   * #12586). It is what the heap of a pass is proportional to, and the tests read it through
+   * {@link #getDownsamplePeakAccumulators()} to assert that the pass holds a block's worth of buckets and not the history's. Written
+   * under the directory WRITE lock and read under the read lock.
+   */
+  private          long             downsamplePeakAccumulators;
   /**
    * Counts the merges of small blocks that landed ({@link #commitMerge}, issue #8794). Same role as
    * {@link #downsampleEpoch} for a walk in flight (kept apart from it because {@link #getDownsampleRewriteCount} counts
@@ -3066,59 +3074,141 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   /**
    * Same as above on a bucket grid shifted by {@code gridOffsetMs} from the epoch (issue #8798), as
    * {@link TimeBucketGrid#normalizeOffset} returns it.
+   * <p>
+   * The selected blocks are folded as a SWEEP, not all at once (issue #12586): they are read in the order of their first sample, and
+   * a bucket becomes its row - and its accumulator is dropped - as soon as no block still to come can reach it. Every sample of a
+   * block is at or after the block's {@code minTimestamp}, so once block {@code k} is folded, every bucket that ends before the
+   * {@code minTimestamp} of block {@code k + 1} is final. What the pass holds at once is the buckets one block adds plus those the
+   * blocks that overlap it still reach into, not one accumulator per bucket of the whole history; the rows are compressed into the
+   * output blocks as they come out, so no list of every row exists either; and a block is decoded once. The rewrite is the same single
+   * atomic swap, under the same directory write lock, as it was.
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     directoryLock.writeLock().lock();
     try {
+      final List<BlockEntry> toDownsample = new ArrayList<>();
+      final List<BlockEntry> toKeep = new ArrayList<>();
 
-    final List<BlockEntry> toDownsample = new ArrayList<>();
-    final List<BlockEntry> toKeep = new ArrayList<>();
+      for (final BlockEntry entry : blockDirectory) {
+        if (entry.maxTimestamp >= cutoffTs) {
+          toKeep.add(entry);
+          continue;
+        }
+        // Check if block must be left untouched (idempotency).
+        // 1. A single-sample block can never be reduced further.
+        // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
+        //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
+        //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
+        //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
+        // A raw block is downsampled whatever its average sample spacing: an average at or above the granularity says nothing about
+        // how the samples are spread, and the density test that read it as "already at the target resolution" left a block whose
+        // samples share a bucket raw forever as soon as one of them was far from the others (issue #11984). The marker the rewrite
+        // leaves makes the next pass skip it.
+        if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs) {
+          toKeep.add(entry);
+          continue;
+        }
+        toDownsample.add(entry);
+      }
 
-    for (final BlockEntry entry : blockDirectory) {
-      if (entry.maxTimestamp >= cutoffTs) {
-        toKeep.add(entry);
-        continue;
+      if (toDownsample.isEmpty())
+        return;
+
+      // The sweep needs the blocks in the order of their first sample. The directory is kept in that order, so this changes nothing,
+      // and a pass does not depend on it (the sort is stable: blocks that start together keep the order the directory has them in)
+      toDownsample.sort(Comparator.comparingLong(entry -> entry.minTimestamp));
+
+      final DownsampleSweep sweep = new DownsampleSweep(granularityMs, gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
+      final DownsampledBlocks output = new DownsampledBlocks(tsColIdx, granularityMs);
+      final int last = toDownsample.size() - 1;
+      for (int b = 0; b <= last; b++) {
+        sweep.add(toDownsample.get(b));
+        if (b < last)
+          sweep.closeBucketsBefore(toDownsample.get(b + 1).minTimestamp, output.pending);
+        else
+          sweep.closeAllBuckets(output.pending);
+        output.sealFullBlocks();
       }
-      // Check if block must be left untouched (idempotency).
-      // 1. A single-sample block can never be reduced further.
-      // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
-      //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
-      //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
-      //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
-      // A raw block is downsampled whatever its average sample spacing: an average at or above the granularity says nothing about
-      // how the samples are spread, and the density test that read it as "already at the target resolution" left a block whose
-      // samples share a bucket raw forever as soon as one of them was far from the others (issue #11984). The marker the rewrite
-      // leaves makes the next pass skip it.
-      if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs) {
-        toKeep.add(entry);
-        continue;
-      }
-      toDownsample.add(entry);
+      output.sealRemainder();
+      downsamplePeakAccumulators = sweep.peakAccumulators();
+
+      // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
+      downsampleEpoch++;
+      rewriteWithBlocks(toKeep, output);
+    } finally {
+      directoryLock.writeLock().unlock();
     }
+  }
 
-    if (toDownsample.isEmpty())
-      return;
+  /**
+   * The sum and the count of every numeric field of one (tag set, bucket) a downsampling pass is folding, and the exact total of
+   * every integral one.
+   */
+  private static final class Fold {
+    /** {@code [sum0, count0, sum1, count1, ...]}: the sum is the double one for a floating-point field and unused for an integral one. */
+    final double[] acc;
+    /** Per integral field, the two words of its exact total (issue #9718); allocated by the first integral sample. */
+    long[]         exact;
 
-    // Decompress all qualifying blocks and aggregate per (bucketTs, tagKey)
-    // Use List<String> as map key (not null-byte-joined String) since tag values may contain null bytes.
-    // The key holds the value in its STORED form, not its text: the row rebuilt from it below is handed straight
-    // back to compressColumn, which reads a SIMPLE8B or GORILLA_XOR column's value as a Number (issue #7711).
-    final Map<List<Object>, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
-    final int numFields = numericColIndices.size();
-    final int accSize = numFields * 2; // sum + count per numeric field
+    Fold(final int accSize) {
+      acc = new double[accSize];
+    }
+  }
+
+  /**
+   * The state of one {@link #downsampleBlocks} pass (issue #12586): the (tag set, bucket) accumulators that a block still to come can
+   * reach, in ascending bucket order, folded from the blocks read so far. A bucket leaves it - as a row, in ascending order - when it
+   * is closed, so what it holds is bounded by the blocks that overlap in time, not by the length of the history.
+   */
+  private final class DownsampleSweep {
+    private final long                                   granularityMs;
+    private final long                                   gridOffsetMs;
+    private final int                                    tsColIdx;
+    private final int[]                                  tagCols;
+    private final ColumnDefinition[]                     tagDefs;
+    private final int[]                                  numericCols;
     // An integral field is averaged exactly, as longs (issue #9718): the double sum rounded a total past 2^53, and the mean of
-    // such samples - epoch nanoseconds, 64-bit ids - came out as a different sample. Per (tagKey, bucket), parallel to the
-    // double accumulator, the two words of the total of every integral field.
-    final boolean[] integralField = new boolean[numFields];
-    boolean anyIntegralField = false;
-    for (int n = 0; n < numFields; n++) {
-      integralField[n] = columns.get(numericColIndices.get(n)).storesExactIntegers();
-      anyIntegralField |= integralField[n];
-    }
-    final Map<double[], long[]> exactSums = anyIntegralField ? new IdentityHashMap<>() : null;
+    // such samples - epoch nanoseconds, 64-bit ids - came out as a different sample
+    private final boolean[]                              integralField;
+    private final int                                    accSize;
+    // bucket start -> tag values -> fold. The tag values are held in their STORED form, not their text: the row rebuilt from them is
+    // handed straight back to compressColumn, which reads a SIMPLE8B or GORILLA_XOR column's value as a Number (issue #7711). A List
+    // is the key because a tag value may contain a null byte, which a joined String would not tell apart
+    private final TreeMap<Long, Map<List<Object>, Fold>> open = new TreeMap<>();
+    private       int                                    live;
+    private       int                                    peak;
+    // the start of the first bucket that may still be open: a sample below it means a block lied about its first timestamp
+    private       long                                   closedBelow = Long.MIN_VALUE;
 
-    for (final BlockEntry entry : toDownsample) {
+    DownsampleSweep(final long granularityMs, final long gridOffsetMs, final int tsColIdx, final List<Integer> tagColIndices,
+        final List<Integer> numericColIndices) {
+      this.granularityMs = granularityMs;
+      this.gridOffsetMs = gridOffsetMs;
+      this.tsColIdx = tsColIdx;
+      tagCols = new int[tagColIndices.size()];
+      tagDefs = new ColumnDefinition[tagCols.length];
+      for (int t = 0; t < tagCols.length; t++) {
+        tagCols[t] = tagColIndices.get(t);
+        tagDefs[t] = columns.get(tagCols[t]);
+      }
+      numericCols = new int[numericColIndices.size()];
+      integralField = new boolean[numericCols.length];
+      for (int n = 0; n < numericCols.length; n++) {
+        numericCols[n] = numericColIndices.get(n);
+        integralField[n] = columns.get(numericCols[n]).storesExactIntegers();
+      }
+      accSize = numericCols.length * 2; // sum + count per numeric field
+    }
+
+    /** The most accumulators the pass held at once. */
+    int peakAccumulators() {
+      return peak;
+    }
+
+    /** Folds every sample of {@code entry} into the accumulator of its (tag set, bucket). */
+    void add(final BlockEntry entry) throws IOException {
+      final int numFields = numericCols.length;
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
 
       // Decompress tag columns THROUGH THE CODEC EACH WAS WRITTEN WITH (issue #7711). This used to decode only a
@@ -3127,44 +3217,56 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // explicit SIMPLE8B or GORILLA_XOR codec collapsed into ONE group and the rewritten blocks carried "" where
       // the tag value had been. The recomputed distinct-value declaration was built from those same rewritten
       // rows, so it agreed with the damage and checkDictionaryColumn could not see it either.
-      final Object[][] tagData = new Object[tagColIndices.size()][];
-      for (int t = 0; t < tagColIndices.size(); t++) {
-        final int ci = tagColIndices.get(t);
-        tagData[t] = decodeColumn(columns.get(ci), readBytes(entry.columnOffsets[ci], entry.columnSizes[ci]));
-      }
+      final Object[][] tagData = new Object[tagCols.length][];
+      for (int t = 0; t < tagCols.length; t++)
+        tagData[t] = decodeColumn(tagDefs[t], readBytes(entry.columnOffsets[tagCols[t]], entry.columnSizes[tagCols[t]]));
 
       // Decompress numeric columns: an integral one as longs, nulls included
       final double[][] numData = new double[numFields][];
       final IntegralColumn[] intData = new IntegralColumn[numFields];
       for (int n = 0; n < numFields; n++) {
-        final int ci = numericColIndices.get(n);
         if (integralField[n])
-          intData[n] = (IntegralColumn) rawColumnValues(entry, ci);
+          intData[n] = (IntegralColumn) rawColumnValues(entry, numericCols[n]);
         else
-          numData[n] = decompressDoubleColumn(entry, ci);
+          numData[n] = decompressDoubleColumn(entry, numericCols[n]);
       }
 
-      // Group samples by (tagValues list, bucketTs)
+      // Group samples by (tag values, bucket). Consecutive samples of a block mostly belong to the group the previous one did, and
+      // then share its accumulator without building a key
+      Fold fold = null;
+      long foldBucket = 0L;
+      List<Object> foldKey = null;
       for (int i = 0; i < timestamps.length; i++) {
         final long bucketTs = TimeBucketGrid.bucketStart(timestamps[i], granularityMs, gridOffsetMs);
 
-        // Build tag key as a List to avoid ambiguity with null bytes in tag values. Each element is the value
-        // CANONICALISED the way its column stores it, so two rows that would be written identically are one
-        // group: without that a DICTIONARY column's null and "" - which compressColumn writes the same way -
-        // would produce two groups whose rewritten rows are indistinguishable.
-        final List<Object> tagKey = new ArrayList<>(tagData.length);
-        for (int t = 0; t < tagData.length; t++)
-          tagKey.add(canonicalStoredValue(columns.get(tagColIndices.get(t)), tagData[t][i]));
+        if (fold == null || bucketTs != foldBucket || !sameTagValues(foldKey, tagData, i)) {
+          if (bucketTs < closedBelow)
+            throw new IOException("Sealed block at offset " + entry.blockStartOffset + " declares " + entry.minTimestamp
+                + " as its first timestamp but holds the sample " + timestamps[i] + ": downsampling, which folds the blocks in the order of"
+                + " their first timestamp, cannot fold it into a bucket it has already closed");
 
-        final Map<Long, double[]> buckets = groupedData.computeIfAbsent(tagKey, k -> new HashMap<>());
-        final double[] acc = buckets.computeIfAbsent(bucketTs, k -> new double[accSize]);
+          // Build tag key as a List to avoid ambiguity with null bytes in tag values. Each element is the value
+          // CANONICALISED the way its column stores it, so two rows that would be written identically are one
+          // group: without that a DICTIONARY column's null and "" - which compressColumn writes the same way -
+          // would produce two groups whose rewritten rows are indistinguishable.
+          final List<Object> tagKey = new ArrayList<>(tagCols.length);
+          for (int t = 0; t < tagCols.length; t++)
+            tagKey.add(canonicalStoredValue(tagDefs[t], tagData[t][i]));
+          fold = foldOf(bucketTs, tagKey);
+          foldBucket = bucketTs;
+          foldKey = tagKey;
+        }
+
+        final double[] acc = fold.acc;
         // The downsampled value is the mean of the REAL samples (issue #7089): a NaN sample neither poisons the
         // sum nor counts toward the denominator, the same policy the aggregation push-down applies.
         for (int n = 0; n < numFields; n++) {
           if (integralField[n]) {
             if (intData[n].isNull(i))
               continue;
-            ExactLongSum.add(exactSums.computeIfAbsent(acc, k -> new long[accSize]), n * 2, intData[n].values[i]);
+            if (fold.exact == null)
+              fold.exact = new long[accSize];
+            ExactLongSum.add(fold.exact, n * 2, intData[n].values[i]);
             acc[n * 2 + 1] += 1.0;
             continue;
           }
@@ -3175,59 +3277,132 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           acc[n * 2 + 1] += 1.0;             // count
         }
       }
+      // the most a block adds: draining only ever takes accumulators away
+      peak = Math.max(peak, live);
     }
 
-    // Build new downsampled samples from grouped data
-    final List<Object[]> newSamples = new ArrayList<>();
-    for (final Map.Entry<List<Object>, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
-      final List<Object> tagParts = tagEntry.getKey();
-      for (final Map.Entry<Long, double[]> bucketEntry : tagEntry.getValue().entrySet()) {
-        final long bucketTs = bucketEntry.getKey();
-        final double[] acc = bucketEntry.getValue();
+    private boolean sameTagValues(final List<Object> key, final Object[][] tagData, final int row) {
+      for (int t = 0; t < tagCols.length; t++)
+        if (!Objects.equals(key.get(t), canonicalStoredValue(tagDefs[t], tagData[t][row])))
+          return false;
+      return true;
+    }
 
-        // Build a full row: [timestamp, tag0, tag1, ..., field0, field1, ...]
-        // ordered by column index
-        final Object[] row = new Object[columns.size()];
-        row[tsColIdx] = bucketTs;
-        // tagParts has one entry per tag column by construction, in the same order.
-        for (int t = 0; t < tagColIndices.size(); t++)
-          row[tagColIndices.get(t)] = tagParts.get(t);
-        for (int n = 0; n < numFields; n++) {
-          final double count = acc[n * 2 + 1];
-          if (integralField[n]) {
-            // The exact mean of the samples that carry a value, truncated toward zero as the double mean's long was, and a
-            // sample with no value - not a zero - when none did (issue #9721)
-            final long[] exactAcc = exactSums.get(acc);
-            row[numericColIndices.get(n)] = count > 0 ? ExactLongSum.truncatedAverage(exactAcc[n * 2], exactAcc[n * 2 + 1], (long) count) : null;
-            continue;
-          }
-          // A bucket that held no real sample is downsampled to the absent marker, not to a zero that would read
-          // as a measurement.
-          row[numericColIndices.get(n)] = count > 0 ? acc[n * 2] / count : TimeSeriesNaN.ABSENT;
+    private Fold foldOf(final long bucketTs, final List<Object> tagKey) {
+      final Long bucket = bucketTs;
+      Map<List<Object>, Fold> tags = open.get(bucket);
+      if (tags == null) {
+        tags = new HashMap<>();
+        open.put(bucket, tags);
+      }
+      Fold fold = tags.get(tagKey);
+      if (fold == null) {
+        fold = new Fold(accSize);
+        tags.put(tagKey, fold);
+        live++;
+      }
+      return fold;
+    }
+
+    /**
+     * Turns into rows, ascending by bucket, every bucket that no block starting at {@code nextMinTimestamp} or later can reach: those
+     * that end at or before the start of the bucket {@code nextMinTimestamp} falls in.
+     */
+    void closeBucketsBefore(final long nextMinTimestamp, final List<Object[]> rows) {
+      final long start = TimeBucketGrid.bucketStart(nextMinTimestamp, granularityMs, gridOffsetMs);
+      // A bucket start the grid cannot represent - a timestamp within one bucket of Long.MIN_VALUE - is answered modulo 2^64: it sorts
+      // AFTER every other bucket, so no bucket is known to be final before it
+      if (start > nextMinTimestamp)
+        return;
+      closedBelow = Math.max(closedBelow, start);
+      while (!open.isEmpty() && open.firstKey() < start)
+        closeFirstBucket(rows);
+    }
+
+    /** Turns into rows, ascending by bucket, every bucket that is still open: the last block has been read. */
+    void closeAllBuckets(final List<Object[]> rows) {
+      while (!open.isEmpty())
+        closeFirstBucket(rows);
+    }
+
+    private void closeFirstBucket(final List<Object[]> rows) {
+      final Map.Entry<Long, Map<List<Object>, Fold>> bucket = open.pollFirstEntry();
+      final long bucketTs = bucket.getKey();
+      for (final Map.Entry<List<Object>, Fold> tag : bucket.getValue().entrySet())
+        rows.add(row(tag.getKey(), bucketTs, tag.getValue()));
+      live -= bucket.getValue().size();
+    }
+
+    /** The row {@code fold} downsamples to: {@code [timestamp, tag0, tag1, ..., field0, field1, ...]}, ordered by column index. */
+    private Object[] row(final List<Object> tagParts, final long bucketTs, final Fold fold) {
+      final Object[] row = new Object[columns.size()];
+      row[tsColIdx] = bucketTs;
+      // tagParts has one entry per tag column by construction, in the same order.
+      for (int t = 0; t < tagCols.length; t++)
+        row[tagCols[t]] = tagParts.get(t);
+      for (int n = 0; n < numericCols.length; n++) {
+        final double count = fold.acc[n * 2 + 1];
+        if (integralField[n]) {
+          // The exact mean of the samples that carry a value, truncated toward zero as the double mean's long was, and a
+          // sample with no value - not a zero - when none did (issue #9721)
+          row[numericCols[n]] = count > 0 ? ExactLongSum.truncatedAverage(fold.exact[n * 2], fold.exact[n * 2 + 1], (long) count) : null;
+          continue;
         }
-        newSamples.add(row);
+        // A bucket that held no real sample is downsampled to the absent marker, not to a zero that would read
+        // as a measurement.
+        row[numericCols[n]] = count > 0 ? fold.acc[n * 2] / count : TimeSeriesNaN.ABSENT;
+      }
+      return row;
+    }
+  }
+
+  /**
+   * The blocks a downsampling pass writes (issue #12586), built from the rows the sweep closes as they come: a row waits in
+   * {@link #pending} only until it has {@code MAX_BLOCK_SIZE - 1} others to be compressed with, so the pass holds the compressed
+   * blocks and less than one block of rows, never every row. The rows come in ascending bucket order, so the blocks are cut exactly
+   * where they were when the rows were sorted once at the end.
+   */
+  private final class DownsampledBlocks implements NewBlocks {
+    private final int             tsColIdx;
+    private final long            granularityMs;
+    /** The rows closed and not yet in a block, in ascending timestamp order: the sweep appends to it. */
+    final         List<Object[]>  pending = new ArrayList<>();
+    private final List<NewBlock>  blocks  = new ArrayList<>();
+    private final List<long[]>    metas   = new ArrayList<>(); // [minTs, maxTs, sampleCount]
+
+    DownsampledBlocks(final int tsColIdx, final long granularityMs) {
+      this.tsColIdx = tsColIdx;
+      this.granularityMs = granularityMs;
+    }
+
+    /** Compresses every full block of {@code pending} and keeps the rows that are left. */
+    void sealFullBlocks() throws IOException {
+      int from = 0;
+      while (pending.size() - from >= MAX_BLOCK_SIZE) {
+        seal(from, from + MAX_BLOCK_SIZE);
+        from += MAX_BLOCK_SIZE;
+      }
+      if (from > 0)
+        pending.subList(0, from).clear();
+    }
+
+    /** Compresses the rows that are left once the last block has been read: the one block that may be short. */
+    void sealRemainder() throws IOException {
+      if (!pending.isEmpty()) {
+        seal(0, pending.size());
+        pending.clear();
       }
     }
 
-    // Sort by timestamp
-    newSamples.sort(Comparator.comparingLong(row -> (long) row[tsColIdx]));
-
-    // Build new sealed blocks from downsampled data
-    final int colCount = columns.size();
-    final List<byte[][]> newBlocksCompressed = new ArrayList<>();
-    final List<long[]> newBlocksMeta = new ArrayList<>(); // [minTs, maxTs, sampleCount]
-    final List<BlockStats> newBlocksStats = new ArrayList<>();
-    final List<String[][]> newBlocksTagDV = new ArrayList<>();
-
-    int chunkStart = 0;
-    while (chunkStart < newSamples.size()) {
-      final int chunkEnd = Math.min(chunkStart + MAX_BLOCK_SIZE, newSamples.size());
-      final int chunkLen = chunkEnd - chunkStart;
+    /** Builds the block of {@code pending[from, to)}. */
+    private void seal(final int from, final int to) throws IOException {
+      final int colCount = columns.size();
+      final int chunkLen = to - from;
 
       // Extract timestamps for this chunk
       final long[] chunkTs = new long[chunkLen];
       for (int i = 0; i < chunkLen; i++)
-        chunkTs[i] = (long) newSamples.get(chunkStart + i)[tsColIdx];
+        chunkTs[i] = (long) pending.get(from + i)[tsColIdx];
 
       // Per-column stats
       final StatsBuilder stats = new StatsBuilder(columns);
@@ -3239,7 +3414,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         } else {
           final Object[] chunkValues = new Object[chunkLen];
           for (int i = 0; i < chunkLen; i++)
-            chunkValues[i] = newSamples.get(chunkStart + i)[c];
+            chunkValues[i] = pending.get(from + i)[c];
           compressedCols[c] = compressColumn(columns.get(c), chunkValues);
 
           // Compute stats for numeric columns
@@ -3253,26 +3428,32 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int c = 0; c < colCount; c++) {
         if (columns.get(c).getRole() == ColumnDefinition.ColumnRole.TAG) {
           final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
-          for (int i = chunkStart; i < chunkEnd; i++) {
-            final Object val = newSamples.get(i)[c];
+          for (int i = from; i < to; i++) {
+            final Object val = pending.get(i)[c];
             distinctSet.add(val != null ? val.toString() : "");
           }
           chunkTagDV[c] = distinctSet.toArray(new String[0]);
         }
       }
 
-      newBlocksCompressed.add(compressedCols);
-      newBlocksMeta.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
-      newBlocksStats.add(stats.build());
-      newBlocksTagDV.add(chunkTagDV);
-      chunkStart = chunkEnd;
+      // Mark the block so future cycles at the same (or finer) granularity skip it
+      blocks.add(new NewBlock(compressedCols, stats.build(), chunkTagDV, granularityMs));
+      metas.add(new long[] { chunkTs[0], chunkTs[chunkLen - 1], chunkLen });
     }
 
-    // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-    downsampleEpoch++;
-    rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
-    } finally {
-      directoryLock.writeLock().unlock();
+    @Override
+    public int size() {
+      return blocks.size();
+    }
+
+    @Override
+    public long[] meta(final int index) {
+      return metas.get(index);
+    }
+
+    @Override
+    public NewBlock build(final int index) {
+      return blocks.get(index);
     }
   }
 
@@ -5084,6 +5265,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     directoryLock.readLock().lock();
     try {
       return downsampleEpoch;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Returns the most (tag set, bucket) accumulators the latest {@link #downsampleBlocks} pass that rewrote the file held at once.
+   * Used by regression tests to assert that the heap of a pass does not grow with the history it folds (issue #12586).
+   */
+  long getDownsamplePeakAccumulators() {
+    directoryLock.readLock().lock();
+    try {
+      return downsamplePeakAccumulators;
     } finally {
       directoryLock.readLock().unlock();
     }

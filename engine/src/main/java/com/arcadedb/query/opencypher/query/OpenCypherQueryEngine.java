@@ -34,6 +34,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
@@ -165,7 +166,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          return statement instanceof CypherDDLStatement;
+          // A CALL of a schema-changing procedure is the Cypher spelling of a SQL DDL statement (issue #11438)
+          return statement instanceof CypherDDLStatement || statement.hasSchemaProcedureCall();
+        }
+
+        /**
+         * START TRANSACTION, COMMIT and ROLLBACK (issue #12232), also behind EXPLAIN or PROFILE: command() runs a transaction
+         * control whichever prefix it carries. A level the engine cannot provide is left to the execution, which refuses it with
+         * its own words (issue #10386).
+         */
+        @Override
+        public boolean isTransactionControl() {
+          if (!(statement instanceof CypherTransactionStatement transaction))
+            return false;
+          if (transaction.getIsolationLevel() == null)
+            return true;
+          try {
+            IsolationLevels.parse(transaction.getIsolationLevel().toUpperCase(Locale.ENGLISH));
+            return true;
+          } catch (final IllegalArgumentException e) {
+            return false;
+          }
         }
 
         @Override
@@ -186,6 +207,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
             return CollectionUtils.singletonSet(OperationType.READ);
 
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
+          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
+          // below; data writes next to it keep their own types (issue #11438)
+          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
+          if (schemaProcedureCall)
+            ops.add(OperationType.SCHEMA);
           if (statement.hasCreate())
             ops.add(OperationType.CREATE);
           if (statement.hasMerge()) {
@@ -198,9 +224,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
             ops.add(OperationType.UPDATE);
           if (statement.hasRemove())
             ops.add(OperationType.UPDATE);
-          return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
+          if (ops.isEmpty())
+            return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
         }
       };
+    } catch (final CommandParsingException e) {
+      // The parser's own exception carries its kind (a CommandSemanticException is an undefined variable, not a syntax error) and
+      // its reason: a wrapper would hide both from every caller that analyzes before executing (an HA follower, apoc.do.when), as
+      // the execution path does not (issue #11785). GremlinQueryEngine.analyze() rethrows it the same way
+      throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error analyzing Cypher query: " + query, e);
     }
@@ -334,8 +367,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution name it,
    * and the parse is the cached one.
    * <p>
-   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN, in the order the statement
-   * binds them (the order a row of it carries them in), followed by any item written after the star; for a standalone
+   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN sorted by name, as Neo4j sorts
+   * them and as a row of it carries them (issue #11557), followed by any item written after the star; for a standalone
    * {@code CALL} the fields it yields (its YIELD items, or every output of the procedure under {@code YIELD *} or no YIELD).
    * <p>
    * A {@code RETURN *} reached through a {@code CALL { ... }} subquery that itself returns {@code *} declares the names of the
@@ -635,7 +668,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
       // request keeps running it.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
-        throw new CommandExecutionException(
+        throw new ImplicitTransactionRequiredException(
             "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
       return executeWrite(plan, execDb, profile, timeExecution);
     }

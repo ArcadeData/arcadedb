@@ -97,7 +97,11 @@ public class ArcadeGremlin extends ArcadeQuery {
             if (runningQuery != null)
               runningQuery.checkNotTerminated("the gremlin traversal");
             return resultSet.hasNext();
-          } catch (final RuntimeException | Error e) {
+          } catch (final RuntimeException e) {
+            refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
+            // a traversal TinkerPop refuses while it runs is the request's fault, not the server's (issue #11886)
+            throw GremlinTraversalErrors.translate(e);
+          } catch (final Error e) {
             refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
             throw e;
           }
@@ -115,7 +119,10 @@ public class ArcadeGremlin extends ArcadeQuery {
               return mapToResult((Map<Object, Object>) next);
             // A list, a path or a set can hold maps (fold(), path().by(elementMap())), which follow the naming of the row's own (#9781)
             return new ResultInternal(CollectionUtils.singletonMap("result", normalizeNested(next)));
-          } catch (final RuntimeException | Error e) {
+          } catch (final RuntimeException e) {
+            refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
+            throw GremlinTraversalErrors.translate(e);
+          } catch (final Error e) {
             refuseCommitOfHalfAppliedTraversal(internalDatabase, txAtStart, writesBefore, e);
             throw e;
           }
@@ -148,6 +155,10 @@ public class ArcadeGremlin extends ArcadeQuery {
       // syntax. See issues #5201 (parse) and #5219 (runtime NoSuchElementException misclassified as parse).
       if (isParsingFailure(e))
         throw new CommandParsingException("Error on parsing gremlin query: " + e.getMessage(), e);
+      // A traversal TinkerPop refuses while it is built or verified, or for a value an eager terminal step met (issue #11886)
+      final RuntimeException clientError = GremlinTraversalErrors.asClientError(e);
+      if (clientError != null)
+        throw clientError;
       final Throwable root = getRootCause(e);
       final String reason = root.getMessage() != null ? root.getMessage() : root.getClass().getName();
       throw new CommandExecutionException("Error on executing gremlin query: " + reason, e);
@@ -156,6 +167,9 @@ public class ArcadeGremlin extends ArcadeQuery {
       // ATN-mismatch message: rethrow as-is instead of burying it under a second, generic wrapper.
       throw e;
     } catch (final Exception e) {
+      final RuntimeException clientError = GremlinTraversalErrors.asClientError(e);
+      if (clientError != null)
+        throw clientError;
       throw new CommandExecutionException("Error on executing command", e);
     }
   }

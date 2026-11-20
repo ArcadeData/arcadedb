@@ -19,12 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.graph.SQLFunctionAstar;
+import com.arcadedb.graph.EdgeWeight;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -33,9 +35,11 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.aStar(startNode, endNode, relTypes, weightProperty, latProperty, lonProperty)
+ * Procedure: algo.aStar(startNode, endNode, relTypesAndDirections, weightProperty, latProperty, lonProperty)
  * <p>
  * Finds the shortest path between two nodes using the A* algorithm with geographic heuristics.
+ * {@code relTypesAndDirections} is APOC's relationship pattern ({@code 'ROAD>|<RAIL'}, {@code '>'}, a blank one for every
+ * relationship, issue #12103).
  * </p>
  * <p>
  * Example Cypher usage:
@@ -82,18 +86,15 @@ public class AlgoAStar extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final String relType = extractString(args[2], "relTypes");
-    requireEdgeTypes(context.getDatabase(), relType);
+    final RelationshipPattern pattern = extractRelationshipPattern(args[2], context);
     final String weightProperty = extractString(args[3], "weightProperty");
 
     // Build options map for A*
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
     // Same default as algo.dijkstra: without the geographic properties A* behaves identically to it
-    options.put("direction", "BOTH");
-
-    if (relType != null && !relType.isEmpty())
-      options.put("edgeTypeNames", new String[] { relType });
+    final SQLFunctionAstar astar = new SQLFunctionAstar();
+    configureSearch(astar, options, pattern);
 
     // Geographic heuristic coordinates
     if (args.length > 4 && args[4] != null && args.length > 5 && args[5] != null) {
@@ -104,7 +105,6 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     }
 
     // Use ArcadeDB's existing A* implementation
-    final SQLFunctionAstar astar = new SQLFunctionAstar();
     final Object[] params = new Object[] { startNode, endNode, weightProperty, options };
     final LinkedList<RID> pathRids = astar.execute(null, null, null, params, context);
 
@@ -113,7 +113,7 @@ public class AlgoAStar extends AbstractAlgoProcedure {
     }
 
     // The A* function returns vertex RIDs only: rebuild the edges between them for the weight and the relationships
-    final WeightedPath weighted = attachEdges(pathRids, relType, Vertex.DIRECTION.BOTH, weightProperty);
+    final WeightedPath weighted = attachEdges(pathRids, pattern, weightProperty, EdgeWeight.MISSING);
     final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());
     final double totalWeight = weighted.weight();
 

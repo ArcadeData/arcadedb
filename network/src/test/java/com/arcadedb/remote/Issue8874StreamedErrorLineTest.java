@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * <p>
  * Drives the result set the driver actually builds ({@link RemoteDatabase#newStreamingResultSet}) over a scripted
  * body: one row, then the error line. No server is contacted; the end-to-end path against a real server is covered by
- * {@code Issue8874RemoteStreamedTypedErrorIT} in the server module.
+ * {@code HttpStreamedErrorIT.RemoteTypedError} in the server module.
  */
 class Issue8874StreamedErrorLineTest {
   private static final String ROW = "{\"record\":{\"n\":0}}\n";

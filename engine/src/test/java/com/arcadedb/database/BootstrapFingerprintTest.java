@@ -69,6 +69,24 @@ class BootstrapFingerprintTest {
         .isEqualTo(BootstrapFingerprint.compute(tmp.toFile()));
   }
 
+  /**
+   * Issue #12234: a build with the fixed-width float array fence relabels the dictionary of a database it opens, a build
+   * without it does not, and the bytes are the same. Two peers staged from the same files must still read as identical, and a
+   * peer that did not relabel must hash exactly what it always hashed.
+   */
+  @Test
+  void aRelabelledDictionaryFingerprintsAsItDidBeforeTheRelabel(@TempDir final Path staged, @TempDir final Path opened,
+      @TempDir final Path changed) throws Exception {
+    Files.writeString(staged.resolve("dictionary.0.65536.v1.dict"), "names", StandardCharsets.UTF_8);
+    Files.writeString(opened.resolve("dictionary.0.65536.v2.dict"), "names", StandardCharsets.UTF_8);
+    Files.writeString(changed.resolve("dictionary.0.65536.v2.dict"), "other", StandardCharsets.UTF_8);
+    for (final Path dir : List.of(staged, opened, changed))
+      Files.writeString(dir.resolve("v_0.bucket"), "alpha", StandardCharsets.UTF_8);
+
+    assertThat(BootstrapFingerprint.compute(opened.toFile())).isEqualTo(BootstrapFingerprint.compute(staged.toFile()));
+    assertThat(BootstrapFingerprint.compute(changed.toFile())).isNotEqualTo(BootstrapFingerprint.compute(staged.toFile()));
+  }
+
   @Test
   void identicalContentTwoDirectoriesSameDigest(@TempDir final Path dirA, @TempDir final Path dirB) throws Exception {
     Files.writeString(dirA.resolve("v_0.bucket"), "alpha", StandardCharsets.UTF_8);
