@@ -77,6 +77,16 @@ class CypherMergeRelationshipByIndexIssue12483Test extends TestHelper {
   }
 
   @Test
+  void anotherRelationshipCreatedConcurrentlyBetweenTheSameNodesDoesNotRefuseTheMerge() throws Exception {
+    database.begin();
+    database.command("opencypher", MERGE).close();
+    // the same two nodes and type, another key: a relationship the MERGE was not looking for
+    commitFromAnotherThread("MATCH (a:V {id: 1}), (b:V {id: 2}) CREATE (a)-[:E {uuid: 'y'}]->(b)");
+    database.commit();
+    assertThat(count("MATCH (a:V {id: 1})-[e:E]->(b:V {id: 2}) RETURN count(e) AS c")).isEqualTo(2L);
+  }
+
+  @Test
   void theSameRelationshipMergedConcurrentlyRefusesTheMerge() throws Exception {
     database.begin();
     database.command("opencypher", MERGE).close();
