@@ -132,7 +132,7 @@
         <!-- Issue #10554: the defaults ConfigDirectorySeeder seeds a configuration directory with, and the built-in
              server groups, are bundled in the jar so a volume mounted over <root>/config (which hides the files the
              image ships there) still gets them. package/src/main/config stays the single source: the files are copied
-             from it, unfiltered, and Issue10554BundledConfigDefaultsTest fails if a copy drifts or is missing. An
+             from it, unfiltered, and ServerConfigDirectoryTest.BundledDefaults fails if a copy drifts or is missing. An
              execution rather than a <resources> entry, which would replace the parent's list (issue #8058). -->
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-resources-plugin</artifactId>

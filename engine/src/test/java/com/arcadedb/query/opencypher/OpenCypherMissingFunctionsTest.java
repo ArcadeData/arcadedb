@@ -413,7 +413,7 @@ class OpenCypherMissingFunctionsTest extends TestHelper {
   void valueTypeList() {
     try (final ResultSet rs = database.command("opencypher", "RETURN valueType([1,2,3]) AS val")) {
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.next().<String>getProperty("val")).isEqualTo("LIST<ANY> NOT NULL");
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("LIST<INTEGER NOT NULL> NOT NULL");
     }
   }
 

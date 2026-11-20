@@ -312,7 +312,8 @@ class AlgoGraphAnalyticalViewTest {
       });
 
       final double oltp = maxFlowValue(newContext());
-      assertThat(oltp).isGreaterThan(0.0);
+      // S sends 3 to A and 2 to B; A passes 2 to T and 1 to B; B passes 3 to T.
+      assertThat(oltp).isEqualTo(5.0);
 
       final GraphAnalyticalView view = buildView("maxflow-view");
       try {

@@ -18,14 +18,18 @@
  */
 package com.arcadedb.function.node;
 
-import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collection;
-
 /**
  * node.degree.in(node, [relTypes]) - Get the in-degree of a node.
+ * <p>
+ * {@code relTypes} is APOC's relationship pattern, read as {@link NodeDegree} reads it with the direction fixed to
+ * {@code IN} (issue #12103): a blank one counts every incoming relationship, {@code 'KNOWS|LIKES'} sums the incoming
+ * relationships of each alternative, and an alternative whose marker agrees with the direction ({@code '<KNOWS'}) counts like
+ * a bare {@code 'KNOWS'}. An alternative marked the other way ({@code 'KNOWS>'}) names no incoming relationship and counts 0,
+ * as it does in {@code node.degree(n, 'KNOWS>', 'IN')}. APOC itself reads the argument as one type name, so a plain type name
+ * answers the same in both.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -56,34 +60,7 @@ public class NodeDegreeIn extends AbstractNodeFunction {
     if (vertex == null)
       return 0L;
 
-    final String[] relTypes = extractRelTypes(args);
-
     // The incoming side of a unidirectional edge type is counted from the edges that end in the node (issue #8629)
-    long count = 0;
-    if (relTypes != null && relTypes.length > 0) {
-      for (final String relType : relTypes) {
-        count += IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN, relType);
-      }
-    } else {
-      count = IncomingEdgeLookup.countEdges(context, vertex, Vertex.DIRECTION.IN);
-    }
-
-    return count;
-  }
-
-  @SuppressWarnings("unchecked")
-  private String[] extractRelTypes(final Object[] args) {
-    if (args.length < 2 || args[1] == null)
-      return null;
-
-    if (args[1] instanceof String)
-      return new String[] { (String) args[1] };
-
-    if (args[1] instanceof Collection) {
-      final Collection<?> coll = (Collection<?>) args[1];
-      return coll.stream().map(Object::toString).toArray(String[]::new);
-    }
-
-    return new String[] { args[1].toString() };
+    return countEdges(context, vertex, patternArgument(args, 1), Vertex.DIRECTION.IN);
   }
 }

@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.log.LogManager;
 
@@ -99,8 +101,19 @@ final class TruncateRecordDeleter {
     // before that swallowing catch sees it, stop the scan and hand it back to the caller to surface.
     final RuntimeException[] failure = { null };
     final long[] count = { 0 };
+    // looked up once per transaction, not per record: only a batch commit below changes the transaction under the scan
+    final long[] readIn = { beginSequence(db) };
     scan.run(record -> {
       try {
+        // The scan read this record from its bucket in the transaction the delete runs in, and says so: scanType and scanBucket
+        // leave the read marker unset, so a record a concurrent transaction deleted and committed after the scan found it
+        // failed the statement with a RecordNotFoundException naming a record the statement never named, which nothing
+        // retries (issue #11731). Marked, its delete raises the retryable ConcurrentModificationException a DELETE FROM
+        // gets in the same position (#8984, #10263 for an edge). It is not skipped instead: by the time the slot is found
+        // empty the before-delete listeners ran and the index removals of the record are in the transaction, and a skip
+        // would commit them for a record this transaction did not delete
+        if (record instanceof ImmutableDocument document)
+          document.setReadInTransaction(readIn[0]);
         record.delete();
         if (own != null && batchSize > 0 && ++count[0] % batchSize == 0) {
           // ownership is dropped BEFORE the commit and taken back after it, as RepairTransaction does: a commit that throws has
@@ -109,6 +122,7 @@ final class TruncateRecordDeleter {
           own[0] = null;
           inFlight.commit();
           own[0] = OwnTransaction.begin((DatabaseInternal) db);
+          readIn[0] = beginSequence(db);
         }
         return true;
       } catch (final RuntimeException e) {
@@ -117,6 +131,12 @@ final class TruncateRecordDeleter {
       }
     });
     return failure[0];
+  }
+
+  /** The begin sequence of the transaction the deletes run in, -1 when there is none. */
+  private static long beginSequence(final Database db) {
+    final TransactionContext transaction = ((DatabaseInternal) db).getTransactionIfExists();
+    return transaction != null ? transaction.getBeginSequence() : -1;
   }
 
   /**
