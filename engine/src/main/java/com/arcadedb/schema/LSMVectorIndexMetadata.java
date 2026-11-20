@@ -105,8 +105,14 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public int                      inactivityRebuildTimeoutMs = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
-  public boolean                  addHierarchy             = false;
-  public String                   buildState               = "READY"; // BUILDING, READY, or INVALID
+  /**
+   * Whether the graph has hierarchical (HNSW) layers above the base layer. True for every index created since issue #12092:
+   * a flat graph starts every search from one entry node, and on clustered data a greedy walk from it could settle in the
+   * cluster next to the query's own. A persisted definition that does not carry the key describes an index built flat, and
+   * {@link #fromJSON(JSONObject)} keeps it flat.
+   */
+  public boolean                  addHierarchy             = true;
+  public String                   buildState              = "READY"; // BUILDING, READY, or INVALID
 
   // Product Quantization (PQ) configuration - used when quantizationType=PRODUCT
   public int                      pqSubspaces              = -1;    // Number of subspaces (M), -1 = auto (dimensions/4, capped at 512)
@@ -498,8 +504,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("storeVectorsInGraph"))
       this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
 
-    if (metadata.has("addHierarchy"))
-      this.addHierarchy = metadata.getBoolean("addHierarchy");
+    // An absent key is an index built before the default turned hierarchical (issue #12092): it was built flat, and reading
+    // it with the creation default would rebuild it as a different graph on its next rebuild
+    this.addHierarchy = metadata.getBoolean("addHierarchy", false);
 
     if (metadata.has("buildState"))
       this.buildState = metadata.getString("buildState");
