@@ -58,6 +58,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * they sat in the integration module's importer package, so a helper in another module was out of sight one level down from
  * where #11388 left the formats. The walk stops at the database: it does not step into the engine module, nor into an
  * implementation of {@code BasicDatabase}, whose own commits are the database's and not a row loop's.
+ * <p>
+ * What the walk cannot see is a class that no walked method constructs, calls or hands round as a method reference, and that
+ * only an engine callback (a dispatch the walk does not follow) would reach, as when a container or a service lookup builds it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -93,12 +96,13 @@ class ImporterCommitsThroughOneProtocolCensusTest {
   @Test
   void everyImporterRowLoopCommitsThroughImporterTransactions() throws Exception {
     final Map<String, byte[]> classes = CompiledClasses.ofEveryModule();
-    final Set<String> importer = importerOf(classes);
+    final Set<String> databases = CompiledClasses.implementationsOf(BASIC_DATABASE, classes);
+    final Set<String> importer = importerOf(classes, databases);
 
     assertThat(importer).as("the census must reach every FormatImporter implementation, also outside the integration module: "
         + GREMLIN_FORMAT).contains(GREMLIN_FORMAT);
 
-    final Map<String, Set<String>> callSites = commitsOf(classes, importer);
+    final Map<String, Set<String>> callSites = commitsOf(classes, importer, databases);
 
     assertThat(callSites).as("the census must reach the commit of the protocol it requires, " + PROTOCOL).containsKey(PROTOCOL);
     assertThat(callSites).as("the census must follow a format into the classes it delegates to, in any module: " + GREMLIN_DELEGATE)
@@ -113,29 +117,35 @@ class ImporterCommitsThroughOneProtocolCensusTest {
   }
 
   /**
-   * The control (#11623): a format outside every importer package that hands its rows to a helper calling {@code commit()} by
-   * hand, and to another reached only through the interface it implements, committing on a {@code BasicDatabase}, is caught in
-   * both; a class that commits but no importer reaches is not.
+   * The control (#11623): a format outside every importer package that hands its rows to helpers calling {@code commit()} by
+   * hand is caught in each, whichever way it reaches them: directly, as a method reference, or through the interface or the
+   * abstract base the helper implements. A class that commits but no importer reaches is not caught, nor is an implementation
+   * of the database.
    */
   @Test
   void theCensusFollowsAFormatIntoEveryHelperItDelegatesTo() throws Exception {
     final Map<String, byte[]> classes = new HashMap<>(CompiledClasses.ofEveryModule());
     classes.putAll(CompiledClasses.ofTheProbes());
+    final Set<String> databases = CompiledClasses.implementationsOf(BASIC_DATABASE, classes);
 
-    final Map<String, Set<String>> callSites = commitsOf(classes, importerOf(classes));
+    final Map<String, Set<String>> callSites = commitsOf(classes, importerOf(classes, databases), databases);
 
     assertThat(CompiledClasses.unreviewed(callSites, REVIEWED)).as("the probes of org.acme.loader.DelegatingFormatProbe")
         .containsExactlyInAnyOrder("org/acme/loader/HandRolledRowLoopProbe#run (Database.commit)",
-            "org/acme/loader/CommittingRowSinkProbe#accept (BasicDatabase.commit)");
-    assertThat(callSites).doesNotContainKey("org/acme/loader/UnreachedCommitProbe#run");
+            "org/acme/loader/MethodReferencedRowLoopProbe#run (Database.commit)",
+            "org/acme/loader/CommittingRowSinkProbe#accept (BasicDatabase.commit)",
+            "org/acme/loader/CommittingRowSourceProbe#drain (Database.commit)");
+    assertThat(callSites).as("a class no importer reaches is not an importer's").doesNotContainKey("org/acme/loader/UnreachedCommitProbe#run");
+    assertThat(callSites).as("the walk stops at an implementation of the database, whose commits are the database's")
+        .doesNotContainKey("org/acme/loader/DatabaseImplementationProbe#flush");
   }
 
   /**
    * The classes the importer is made of, keyed as {@link CompiledClasses} keys them: its formats, its importers and the classes
-   * of its package, and every class the walk of their calls reaches short of the database.
+   * of its package, and every class the walk of their calls reaches short of the database ({@code databases} and the engine).
    */
-  private static Set<String> importerOf(final Map<String, byte[]> classes) throws IOException, URISyntaxException {
-    final Set<String> databases = CompiledClasses.implementationsOf(BASIC_DATABASE, classes);
+  private static Set<String> importerOf(final Map<String, byte[]> classes, final Set<String> databases)
+      throws IOException, URISyntaxException {
     final Set<String> engine = new HashSet<>();
     for (final String classFile : CompiledClasses.byModule().get("engine").keySet())
       engine.add(internalNameOf(classFile));
@@ -153,9 +163,9 @@ class ImporterCommitsThroughOneProtocolCensusTest {
     return importer;
   }
 
-  /** Every call of {@code commit()} on a database in a class of {@code importer}. */
-  private static Map<String, Set<String>> commitsOf(final Map<String, byte[]> classes, final Set<String> importer) {
-    final Set<String> databases = CompiledClasses.implementationsOf(BASIC_DATABASE, classes);
+  /** Every call of {@code commit()} on a database ({@code databases}) in a class of {@code importer}. */
+  private static Map<String, Set<String>> commitsOf(final Map<String, byte[]> classes, final Set<String> importer,
+      final Set<String> databases) {
     return CompiledClasses.callSitesOf(classes,
             (owner, name, desc) -> databases.contains(owner) && "commit".equals(name) && "()V".equals(desc))//
         .entrySet().stream().filter(site -> importer.contains(classOf(site.getKey())))

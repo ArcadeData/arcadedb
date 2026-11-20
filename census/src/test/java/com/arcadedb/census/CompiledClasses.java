@@ -329,7 +329,8 @@ final class CompiledClasses {
    * <p>
    * {@code enters} decides which classes the walk may step into: a call into a class it refuses is not followed, and neither
    * is a dispatch from an owner it refuses, so the walk can stop at the boundary of what it describes (an importer stops at
-   * the database it writes to rather than descending into the engine).
+   * the database it writes to rather than descending into the engine). A class that only a refused owner would dispatch to,
+   * and that no reached method constructs, calls or hands round as a method reference, is therefore not reached.
    */
   static Set<String> methodsReachableFrom(final Map<String, byte[]> classes, final Set<String> roots, final Predicate<String> enters) {
     final Map<String, List<String>> supertypes = new HashMap<>();

@@ -29,11 +29,17 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.importer.format.FormatImporter;
 
+import java.util.function.Consumer;
+
 /**
  * Never run: compiled only so the control of {@code ImporterCommitsThroughOneProtocolCensusTest} can show that a format
  * handing its rows to helpers outside any importer package, in a module of its own, is followed into them (#11623). The
  * census once kept a helper's commit only when the helper sat in the integration module's importer package, and every class
  * here was invisible to it.
+ * <p>
+ * Every helper is reached by one way of calling and no other, so that taking that way out of the walk
+ * ({@code CompiledClasses#methodsReachableFrom}) leaves its class unreached and the control red: a census scope is per
+ * class, and a helper the format also constructed itself would be in scope whatever the walk did with the call.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -41,10 +47,20 @@ public final class DelegatingFormatProbe implements FormatImporter {
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser,
       final DatabaseInternal database, final ImporterContext context, final ImporterSettings settings) {
-    // A HELPER CALLED DIRECTLY, AND ONE REACHED ONLY THROUGH THE INTERFACE IT IMPLEMENTS
+    // CALLED DIRECTLY
     HandRolledRowLoopProbe.run(database);
-    final RowSinkProbe sink = new CommittingRowSinkProbe();
-    sink.accept(database);
+
+    // HANDED ROUND AS A METHOD REFERENCE
+    final Consumer<Database> loop = MethodReferencedRowLoopProbe::run;
+    loop.accept(database);
+
+    // REACHED ONLY BY DISPATCH, THROUGH THE INTERFACE AND THROUGH THE ABSTRACT BASE THE CLASS EXTENDS: THE REGISTRY HOLDS THEM
+    // WHERE NO WALKED METHOD CREATES THEM, AS A CONTAINER OR A SERVICE LOOKUP WOULD
+    UnwalkedRegistryProbe.SINK.accept(database);
+    UnwalkedRegistryProbe.SOURCE.drain(database);
+
+    // AN IMPLEMENTATION OF THE DATABASE: THE WALK DOES NOT STEP INTO IT
+    DatabaseImplementationProbe.flush(database);
   }
 
   @Override
@@ -70,6 +86,16 @@ final class HandRolledRowLoopProbe {
   }
 }
 
+/** A row loop a format hands round as a method reference, as it does with a reader factory: the walk follows the handle. */
+final class MethodReferencedRowLoopProbe {
+  private MethodReferencedRowLoopProbe() {
+  }
+
+  static void run(final Database database) {
+    database.commit();
+  }
+}
+
 /** What a format hands its rows to, as an interface: the walk must follow the call into its implementation. */
 interface RowSinkProbe {
   void accept(BasicDatabase database);
@@ -79,6 +105,35 @@ interface RowSinkProbe {
 final class CommittingRowSinkProbe implements RowSinkProbe {
   @Override
   public void accept(final BasicDatabase database) {
+    database.commit();
+  }
+}
+
+/** What a format hands its rows to, as an abstract base: the walk must follow the call into its override. */
+abstract class RowSourceProbe {
+  abstract void drain(Database database);
+}
+
+/** Commits by hand in the override of the abstract base. */
+final class CommittingRowSourceProbe extends RowSourceProbe {
+  @Override
+  void drain(final Database database) {
+    database.commit();
+  }
+}
+
+/** Creates the helpers that only a dispatch may reach: no call of a walked method runs this initializer. */
+final class UnwalkedRegistryProbe {
+  static final RowSinkProbe   SINK   = new CommittingRowSinkProbe();
+  static final RowSourceProbe SOURCE = new CommittingRowSourceProbe();
+
+  private UnwalkedRegistryProbe() {
+  }
+}
+
+/** An implementation of the database: its commits are the database's, and the walk must not descend into it. */
+abstract class DatabaseImplementationProbe implements BasicDatabase {
+  static void flush(final BasicDatabase database) {
     database.commit();
   }
 }
