@@ -5782,9 +5782,17 @@ public class TransactionContext implements Transaction {
    * with {@link #addMergedEdge}, which makes the commit consult the registry at all.
    */
   public void checkMergedEdge(final RID from, final RID to, final String type) {
+    checkMergedEdge(from, to, type, null);
+  }
+
+  /**
+   * {@link #checkMergedEdge(RID, RID, String)} of the key of the pair, the type and {@code properties}: the key a relationship of the
+   * pair and the type carrying those values is marked under ({@link #markMergedEdge(RID, RID, String, Map)}).
+   */
+  public void checkMergedEdge(final RID from, final RID to, final String type, final Map<String, ?> properties) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, properties));
   }
 
   /**
@@ -5794,9 +5802,14 @@ public class TransactionContext implements Transaction {
    * index (#12483) - publishes them all the same.
    */
   public void markMergedEdge(final RID from, final RID to, final String type) {
+    markMergedEdge(from, to, type, null);
+  }
+
+  /** {@link #markMergedEdge(RID, RID, String)} of the key of the pair, the type and {@code properties}. */
+  public void markMergedEdge(final RID from, final RID to, final String type, final Map<String, ?> properties) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, properties));
   }
 
   /**

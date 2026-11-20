@@ -115,8 +115,12 @@ public class MergeStep extends AbstractExecutionStep {
   // the step, read by prettyPrint after it
   private       String              usedIndexName;
   // Whether the existence check of the row being merged was answered by an index on the relationship's properties, which reads no
-  // edge list: a relationship it creates then checks the registry key any relationship of the pair and the type marks (#12483)
+  // edge list: a relationship it creates then checks the registry key a relationship of the pair and the type holding the same values
+  // of the index's properties marks (#12483). The properties are those of the whole key the index was read by, null for a prefix
   private       boolean             existenceAnsweredByIndex;
+  private       List<String>        existenceIndexKey;
+  // The properties of the whole key the last lookup of tryFindByIndex read, null when it read a prefix
+  private       List<String>        lastIndexWholeKey;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -516,6 +520,7 @@ public class MergeStep extends AbstractExecutionStep {
     final Iterator<Identifiable> candidates = tryFindByIndex(type, relType, relProps);
     if (candidates == null)
       return false;
+    existenceIndexKey = lastIndexWholeKey;
     if (!matchesNodePattern(left, leftPattern, baseResult) || !matchesNodePattern(right, rightPattern, baseResult))
       return true;
     final Direction dir = relPattern.getDirection();
@@ -1428,6 +1433,7 @@ public class MergeStep extends AbstractExecutionStep {
     }
     usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", bestWholeKey ? propertyNames :
         indexProperties.toArray(new String[0])) + "]" + (bestWholeKey ? "" : ", prefix: " + String.join(", ", propertyNames));
+    lastIndexWholeKey = bestWholeKey ? List.of(propertyNames) : null;
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1729,9 +1735,10 @@ public class MergeStep extends AbstractExecutionStep {
         // Also marks the keys a MERGE from either end that creates its far node checks (#11660)
         tx.addMergedEdgeBetweenExistingNodes(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
         if (existenceAnsweredByIndex)
-          // No edge list was read: a relationship of the type created between the same two nodes by a concurrent transaction, which
-          // the walk would have been refused by, refuses the commit through the key it marked (GraphEngine)
-          tx.checkMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), type);
+          // No edge list was read: a relationship of the type created between the same two nodes by a concurrent transaction with
+          // the values the index was read by, which the walk would have been refused by, refuses the commit through the key it
+          // marked (GraphEngine). A lookup by a prefix of the index checks the pair and the type alone
+          tx.checkMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), type, indexKeyOf(evaluatedProperties));
       }
     }
 
@@ -1740,6 +1747,20 @@ public class MergeStep extends AbstractExecutionStep {
     stats.addPropertiesSet(edge.getPropertyNames().size());
 
     return edge;
+  }
+
+  /** The values of the properties {@link #existenceIndexKey} names, or null (the pair and the type alone) for a prefix lookup. */
+  private Map<String, Object> indexKeyOf(final Map<String, Object> properties) {
+    if (existenceIndexKey == null || properties == null)
+      return null;
+    final Map<String, Object> key = new HashMap<>(existenceIndexKey.size() * 2);
+    for (final String property : existenceIndexKey) {
+      final Object value = properties.get(property);
+      if (value == null)
+        return null;
+      key.put(property, value);
+    }
+    return key;
   }
 
   /**
