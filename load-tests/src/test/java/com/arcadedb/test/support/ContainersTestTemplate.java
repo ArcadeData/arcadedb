@@ -762,8 +762,9 @@ public abstract class ContainersTestTemplate {
    * Checks the health status of all containers and logs diagnostics for any that have stopped.
    */
   protected void diagnoseContainers() {
-    for (final GenericContainer<?> container : containers) {
-      final String name = container.getContainerName();
+    for (int i = 0; i < containers.size(); i++) {
+      final GenericContainer<?> container = containers.get(i);
+      final String name = containerLabel(container, i);
       final boolean running = container.isRunning();
 
       if (!running) {
@@ -779,8 +780,8 @@ public abstract class ContainersTestTemplate {
           final String[] logLines = logs.split("\n");
           final int start = Math.max(0, logLines.length - 50);
           logger.error("Last 50 log lines for container {}:", name);
-          for (int i = start; i < logLines.length; i++)
-            logger.error("  {}", logLines[i]);
+          for (int line = start; line < logLines.length; line++)
+            logger.error("  {}", logLines[line]);
         } catch (final Exception e) {
           logger.error("Failed to get diagnostics for container {}: {}", name, e.getMessage());
         }
@@ -806,8 +807,14 @@ public abstract class ContainersTestTemplate {
       logger.warn("Could not create {}: {}", target, e.getMessage());
       return;
     }
-    for (final GenericContainer<?> container : containers) {
-      final String name = containerLabel(container);
+    for (int i = 0; i < containers.size(); i++) {
+      final GenericContainer<?> container = containers.get(i);
+      final String name = containerLabel(container, i);
+      // a stopped container is removed with its log: nothing left to write
+      if (!container.isRunning()) {
+        logger.info("Container {} is not running, no log to write", name);
+        continue;
+      }
       final Path file = target.resolve(label + "-" + name + ".log");
       try {
         Files.writeString(file, container.getLogs());
@@ -866,8 +873,9 @@ public abstract class ContainersTestTemplate {
     for (final String marker : markers)
       totals.put(marker, 0);
 
-    for (final GenericContainer<?> container : containers) {
-      final String name = containerLabel(container);
+    for (int i = 0; i < containers.size(); i++) {
+      final GenericContainer<?> container = containers.get(i);
+      final String name = containerLabel(container, i);
       final String logs;
       try {
         logs = container.getLogs();
@@ -888,10 +896,26 @@ public abstract class ContainersTestTemplate {
 
   /**
    * Container name without the leading slash Docker prefixes it with, so log lines and dumped file names agree.
+   * <p>
+   * Never throws: a container that was never started, or that a test stopped ({@code stop()} removes it), has no inspect
+   * info, and {@link GenericContainer#getContainerName()} then fails with a NullPointerException. The label is used in
+   * the diagnostics a test writes from its finally block, right after it killed a node on purpose, where a throw would
+   * replace the test's real failure. Such a container is labelled by its network alias (the node name the harness gives
+   * it), else by its position.
+   *
+   * @param index position of the container in {@link #containers}, the last-resort label
    */
-  private String containerLabel(final GenericContainer<?> container) {
-    final String name = container.getContainerName();
-    return name != null && name.startsWith("/") ? name.substring(1) : name;
+  static String containerLabel(final GenericContainer<?> container, final int index) {
+    if (container.getContainerInfo() != null) {
+      final String name = container.getContainerName();
+      if (name != null)
+        return name.startsWith("/") ? name.substring(1) : name;
+    }
+    // Testcontainers adds a random "tc-" alias of its own to every container
+    for (final String alias : container.getNetworkAliases())
+      if (!alias.startsWith("tc-"))
+        return alias;
+    return "container-" + index;
   }
 
   /**

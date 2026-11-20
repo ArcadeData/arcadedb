@@ -48,6 +48,7 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
@@ -211,7 +212,8 @@ final class CypherStepBuilder {
           if (!setClause.isEmpty() && (barrierFirst || !EagerBarriers.absorbsSet(currentStep, setClause))) {
             if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
-            final SetStep setStep = new SetStep(setClause, context, functionFactory);
+            final SetStep setStep = new SetStep(setClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
@@ -242,7 +244,8 @@ final class CypherStepBuilder {
             if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
                 || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
-            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
+            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, removeClause));
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
             eagerness.observeWriteClause();
@@ -752,7 +755,7 @@ final class CypherStepBuilder {
             if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
-                new SetStep(setClause, context, functionFactory);
+                new SetStep(setClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
           }
@@ -769,7 +772,7 @@ final class CypherStepBuilder {
               || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
-              new RemoveStep(removeClause, context, functionFactory);
+              new RemoveStep(removeClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, removeClause));
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
@@ -858,7 +861,9 @@ final class CypherStepBuilder {
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
             || (EagerBarriers.subqueryBodyDetachDeletes(subqueryBody)
             && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
-            || eagerness.needsBarrierForPropertyWrites(subqueryBody)))
+            || eagerness.needsBarrierForPropertyWrites(subqueryBody)
+            // a body that writes what a MERGE before it matches on runs after the MERGE of every row (issue #12520)
+            || eagerness.needsBarrierAfterMerge(subqueryBody)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
@@ -1410,9 +1415,16 @@ final class CypherStepBuilder {
                   ("  nd" + matchSteps.nextAnonymousId());
               matchVariables.add(variable); // Track variable for OPTIONAL MATCH
 
-              // Check if this variable was already bound in a previous MATCH clause
-              if (legacyBoundVariables.contains(variable)) {
-                // Variable already bound - skip creating a new MatchNodeStep
+              // A variable already bound in a previous MATCH clause needs no scan: with no label and no property to check,
+              // the binding is the match as long as it is a node, and a null one an OPTIONAL MATCH left cannot match
+              // (issue #11761). With labels or properties the MatchNodeStep below checks them against the bound vertex.
+              if (legacyBoundVariables.contains(variable) && !nodePattern.hasLabels() && !nodePattern.hasProperties()) {
+                final BoundNodeCheckStep checkStep = new BoundNodeCheckStep(variable, context);
+                if (currentStep != null && !(isOptional && matchChainStart == null))
+                  checkStep.setPrevious(currentStep);
+                currentStep = checkStep;
+                if (isOptional && matchChainStart == null)
+                  matchChainStart = checkStep;
                 continue;
               }
 

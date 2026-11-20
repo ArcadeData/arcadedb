@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
 import com.arcadedb.query.opencypher.rewriter.ProjectedExpressionSubstituter;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
@@ -184,6 +185,9 @@ public class OrderByStep extends AbstractExecutionStep {
           heapLimit = OperationHeapLimit.of(context, "ORDER BY");
           try {
             materializeAndSort();
+            // Every input row has made its writes by now: the records the sorted rows hold are read as those writes left
+            // them (issue #12565)
+            WrittenCopy.resolveRows(context, sortedResults);
           } catch (final RuntimeException e) {
             releaseBuffer();
             throw e;
@@ -290,6 +294,8 @@ public class OrderByStep extends AbstractExecutionStep {
         final List<Result> inParallel = topKInParallel(k, comparator);
         if (inParallel != null)
           return inParallel;
+        // The heap lets rows go one at a time: each row it keeps is estimated, so a row that leaves gives back what it held
+        heapLimit.estimateEachElement();
 
         // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
         // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
@@ -376,7 +382,8 @@ public class OrderByStep extends AbstractExecutionStep {
         final List<PartialTopK> workerPartials = new CopyOnWriteArrayList<>();
         try {
           final List<PartialTopK> partials = scan.aggregate(context, workerContext -> {
-            final PartialTopK partial = new PartialTopK(k, comparator, OperationHeapLimit.of(workerContext, "ORDER BY"));
+            final PartialTopK partial = new PartialTopK(k, comparator,
+                OperationHeapLimit.of(workerContext, "ORDER BY").estimateEachElement());
             workerPartials.add(partial);
             return partial;
           }, (partial, row, position, workerContext) -> {
@@ -682,17 +689,10 @@ public class OrderByStep extends AbstractExecutionStep {
   /**
    * Adjusts the charge of a top-K heap for {@code added} taking the place of {@code removed}, rows and keys in one step:
    * charging a larger row before giving back a larger key would hold both for a moment, which the budget may refuse although
-   * the heap holds less after the replacement.
+   * the heap holds less after the replacement. A large container another kept row still holds stays charged once (issue #11812).
    */
   private static void chargeReplacement(final OperationHeapLimit heapLimit, final Keyed removed, final Keyed added) {
-    if (!heapLimit.isCharging())
-      return;
-    final long delta = HeapEstimator.estimate(added.row()) + added.keyBytes() - HeapEstimator.estimate(removed.row())
-        - removed.keyBytes();
-    if (delta > 0)
-      heapLimit.charge(delta);
-    else
-      heapLimit.release(-delta);
+    heapLimit.replace(removed.row(), added.row(), added.keyBytes() - removed.keyBytes());
   }
 
   /** One worker's top K rows of a parallel scan (issue #11873). Not thread-safe: one worker fills it, the caller merges it after. */

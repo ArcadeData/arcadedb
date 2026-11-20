@@ -675,7 +675,7 @@ final class MongoFilter {
     return converted;
   }
 
-  private static boolean isOperatorDocument(final Document document) {
+  static boolean isOperatorDocument(final Document document) {
     return !document.isEmpty() && document.keySet().iterator().next().startsWith("$");
   }
 

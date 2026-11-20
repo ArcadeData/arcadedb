@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BackupRefusedException;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ErrorConcealment;
@@ -1559,6 +1560,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final JSONException invalidJson = firstOf(e, cause, JSONException.class);
     if (invalidJson != null) {
       return new ErrorClassification(400, "Invalid JSON payload", invalidJson, null, ErrorLogKind.USER);
+    }
+
+    // A backup command refused for what the caller asked: a file name it does not accept, an archive that is not there, a target
+    // database that is taken without overwrite, an archive that cannot be read (issue #12406). The reason goes in the label, not
+    // only in 'detail': detail is concealed in production mode, and the generic "Cannot execute command" left the operator unable
+    // to tell the four apart. Ahead of the IllegalArgumentException arm below, which it extends
+    final BackupRefusedException backupRefused = firstOf(e, cause, BackupRefusedException.class);
+    if (backupRefused != null) {
+      return new ErrorClassification(400, backupRefused.getMessage(), backupRefused, null, ErrorLogKind.USER);
     }
 
     // Bad client input (malformed parameter, unparseable marker, ...).

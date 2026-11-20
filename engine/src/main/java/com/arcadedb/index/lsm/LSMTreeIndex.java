@@ -95,6 +95,15 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    */
   private volatile     boolean                       awaitingFill;
   /**
+   * Whether this index may hold entries an older build wrote under the old spelling of a key, which a seek, a removal and the
+   * uniqueness check then read too (issues #12160 and #12233, {@link LSMTreeIndexLegacyKeys}). Off for an index this build creates,
+   * whose schema entry carries {@link #CANONICAL_KEYS}; on for one a schema load finds without it, which an older build wrote; off
+   * again once {@code REBUILD INDEX} has written every entry under its canonical key.
+   */
+  private volatile     boolean                       mayHoldLegacyKeys;
+  /** The schema entry key of an LSM_TREE index whose entries are all under their canonical key, see {@link #mayHoldLegacyKeys}. */
+  static final         String                        CANONICAL_KEYS = "canonicalKeys";
+  /**
    * Compacted files replaced by a FULL compaction, awaiting their physical drop. The swap (under the write
    * lock) guarantees no NEW cursor can reach them, but live series cursors load pages lazily and may still
    * read them: each file is dropped only once its active-cursor count drains to zero (checked at every
@@ -339,6 +348,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (collationsJSON != null)
       metadata.collations = collationsJSON.toListOfStrings();
 
+    // #12160, #12233: the entry of a plain LSM_TREE index an older build wrote has no marker, and its entries may still spell a key
+    // as that build did. The kinds stored in an LSM tree of their own (full-text, geospatial...) key it by tokens, which no build
+    // spelled another way
+    mayHoldLegacyKeys = Schema.INDEX_TYPE.LSM_TREE.name().equals(indexJSON.getString("type", Schema.INDEX_TYPE.LSM_TREE.name()))
+        && !indexJSON.getBoolean(CANONICAL_KEYS, false);
     updateCaseInsensitiveKeys();
   }
 
@@ -480,6 +494,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     json.put("unique", isUnique());
     if (metadata.hasAnyCaseInsensitive())
       json.put("collations", metadata.collations);
+    if (!mayHoldLegacyKeys)
+      json.put(CANONICAL_KEYS, true);
     return json;
   }
 
@@ -714,6 +730,72 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (!areReadAsKeys(keys, convertedKeys))
       return EMPTY_CURSOR;
 
+    if (mayHoldLegacyKeys) {
+      final IndexCursor withLegacyEntries = LSMTreeIndexLegacyKeys.get(this, keys, convertedKeys, limit);
+      if (withLegacyEntries != null)
+        return withLegacyEntries;
+    }
+    return getConverted(convertedKeys, limit);
+  }
+
+  /**
+   * Whether this index may hold entries an older build wrote under the old spelling of a key (issues #12160 and #12233, see
+   * {@link LSMTreeIndexAbstract#legacyKeys}): true for an index whose schema entry an older build wrote, false for one this build
+   * created or rebuilt. Only such an index pays for the second read of a seek, of a removal and of the uniqueness check
+   * ({@link LSMTreeIndexLegacyKeys}).
+   */
+  public boolean mayHoldLegacyKeys() {
+    return mayHoldLegacyKeys;
+  }
+
+  /**
+   * Records that every entry of this index is under its canonical key, as after a {@code REBUILD INDEX} wrote them all again: the
+   * next schema save persists it ({@link #CANONICAL_KEYS}).
+   */
+  public void markKeysCanonical() {
+    mayHoldLegacyKeys = false;
+  }
+
+  /**
+   * The entries of keys already converted ({@link #convertLookupKeys}), as they are: no old spelling is read and no holder is dropped
+   * (issues #12160 and #12233). For the checks that judge the entries themselves, such as CHECK DATABASE and the uniqueness check
+   * under an old spelling.
+   */
+  public IndexCursor getStored(final Object[] storedKeys) {
+    checkIsValid();
+    return getConverted(storedKeys, -1);
+  }
+
+  /**
+   * Whether the record at {@code rid} holds {@code convertedKeys} in this index, as its put() converted them: false for a record that
+   * is gone.
+   */
+  public boolean holdsKey(final RID rid, final Object[] convertedKeys) {
+    return LSMTreeIndexLegacyKeys.holdsKey(this, rid, convertedKeys);
+  }
+
+  /**
+   * The keys an older build wrote for {@code keys}, or null when it wrote them as {@code convertedKeys} or this index holds canonical
+   * keys only (issues #12160 and #12233, see {@link LSMTreeIndexAbstract#legacyKeys}).
+   *
+   * @param convertedKeys {@code keys} after {@link #convertLookupKeys}
+   */
+  public Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
+    return mayHoldLegacyKeys ? mutable.legacyKeys(keys, convertedKeys) : null;
+  }
+
+  /**
+   * The keys an older build wrote for the value the record at {@code rid} holds under {@code convertedKeys}, or null when it wrote
+   * them the same way or the record holds no such value (issues #12160 and #12233). For a caller that has only the converted keys,
+   * as the uniqueness check at commit has, and has found an index of the type that {@link #mayHoldLegacyKeys() may hold} old
+   * entries: the record is loaded only for a key that can be the canonical key of a list or a number.
+   */
+  public Object[] legacyKeysOf(final Object[] convertedKeys, final RID rid) {
+    return LSMTreeIndexLegacyKeys.legacyKeysOf(this, convertedKeys, rid);
+  }
+
+  /** The entries of keys already converted to the declared types: the pending changes of the transaction over the pages. */
+  IndexCursor getConverted(final Object[] convertedKeys, final int limit) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
       // what the pending entries of this key hide from the disk result, or null when they hide nothing (#6970)
@@ -861,13 +943,26 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         mutable.remove(convertedKeys);
         return null;
       });
+
+    // #12160, #12233: the entries an older build wrote for this value go too, and only those: the old text is also the key of a
+    // STRING
+    if (mayHoldLegacyKeys)
+      LSMTreeIndexLegacyKeys.removeLegacyEntries(this, keys, convertedKeys);
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     checkIsValid();
     final Object[] convertedKeys = convertKeys(keys);
+    removeConverted(convertedKeys, rid);
 
+    // #12160, #12233: the entry an older build wrote for this record's value goes too
+    if (mayHoldLegacyKeys && rid != null)
+      LSMTreeIndexLegacyKeys.removeLegacyEntry(this, keys, convertedKeys, rid);
+  }
+
+  /** Removes the entry of {@code rid} under keys already converted. */
+  void removeConverted(final Object[] convertedKeys, final Identifiable rid) {
     if (getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
@@ -1274,7 +1369,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
   }
 
-  private DatabaseInternal getDatabase() {
+  DatabaseInternal getDatabase() {
     return mutable.getDatabase();
   }
 }
