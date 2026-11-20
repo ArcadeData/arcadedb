@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -680,7 +681,13 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread != null && !waitPagesPendingNowOfDatabaseAreFlushed(database, thread.isSuspended(database) ? 0L : maxWaitMillis))
       return false;
-    return database.getFileManager().syncFiles();
+    if (!database.getFileManager().syncFiles())
+      return false;
+    // #12025: an earlier instance of this path that closed without forcing its pages is answered for now: this instance
+    // opened after it, so its open ran the recovery, which leaves every file to be forced by the first sync
+    if (database instanceof LocalDatabase local)
+      DatabaseFactory.releasePagesLeftToRecoveryByEarlierInstances(local);
+    return true;
   }
 
   /**
