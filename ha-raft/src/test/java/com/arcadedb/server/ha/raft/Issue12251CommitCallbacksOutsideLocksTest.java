@@ -22,10 +22,14 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -188,6 +192,38 @@ class Issue12251CommitCallbacksOutsideLocksTest extends BaseRaftHATest {
     leaderDb.rollback();
 
     probe.assertCompletedWhileTheCallbackRan("rollback");
+  }
+
+  /**
+   * The rollback of every nested level, which the HTTP handler runs for a request that ends with a transaction open, owes the same
+   * after the one read lock it takes for all of them: the callbacks of each level run in the order the levels were rolled back, the
+   * innermost first, and no level is left deferring what it owes.
+   */
+  @Test
+  void aSchemaChangeMadeWhileTheCallbacksOfARollbackOfAllNestedLevelsRunIsNotHeldOffByThem() {
+    final Database leaderDb = leaderDatabase();
+    final SchemaChangeFromCallback outer = new SchemaChangeFromCallback(leaderDb, "Issue12251OuterLevel");
+    final SchemaChangeFromCallback inner = new SchemaChangeFromCallback(leaderDb, "Issue12251InnerLevel");
+    final List<String> order = Collections.synchronizedList(new ArrayList<>());
+
+    leaderDb.begin();
+    ((DatabaseInternal) leaderDb).getTransaction().addAfterCompletionCallbackIfAbsent("issue12251-outer", () -> {
+      order.add("outer");
+      outer.callback().run();
+    });
+    leaderDb.begin();
+    ((DatabaseInternal) leaderDb).getTransaction().addAfterCompletionCallbackIfAbsent("issue12251-inner", () -> {
+      order.add("inner");
+      inner.callback().run();
+    });
+    leaderDb.rollbackAllNested();
+
+    inner.assertCompletedWhileTheCallbackRan("rollback of the inner level");
+    outer.assertCompletedWhileTheCallbackRan("rollback of the outer level");
+    assertThat(order).containsExactly("inner", "outer");
+    assertThat(leaderDb.isTransactionActive()).isFalse();
+    final TransactionContext left = ((DatabaseInternal) leaderDb).getTransactionIfExists();
+    assertThat(left == null || !left.isDeferringCallbacks()).as("nothing is left deferring").isTrue();
   }
 
   /**

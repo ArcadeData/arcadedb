@@ -2508,41 +2508,74 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void rollback() {
-    final TransactionContext rolledBack = transactionRolledBackDeferringCallbacks();
-    if (rolledBack == null) {
-      proxied.rollback();
+    rollbackDeferringCallbacks(false);
+  }
+
+  @Override
+  public void rollbackAllNested() {
+    rollbackDeferringCallbacks(true);
+  }
+
+  /**
+   * {@link #rollback()} or {@link #rollbackAllNested()} of the engine, with the callbacks the rolled back transactions owe run once
+   * it has released the database read lock it takes (issue #12251): a rollback owes the after-completion ones (#10687, the refresh
+   * of a continuous aggregate over samples a rolled back transaction wrote beside itself), and the engine runs them under that lock,
+   * which the schema session a refresh commit waits for is waiting to be rid of, as it is for the one of a commit (see
+   * {@link #commitCountedAtTheRecordingSessionGate}). On the leader only, and not for a rollback inside a commit, whose callbacks
+   * that commit runs.
+   */
+  private void rollbackDeferringCallbacks(final boolean allNested) {
+    final List<TransactionContext> deferred = deferCallbacksOfTransactionsToRollBack(allNested);
+    if (deferred.isEmpty()) {
+      rollbackLevels(allNested);
       return;
     }
     try {
-      proxied.rollback();
+      rollbackLevels(allNested);
     } catch (final Throwable failure) {
       try {
-        runOwedCallbacks(rolledBack);
+        runOwedCallbacks(deferred);
       } catch (final Throwable fromCallbacks) {
         failure.addSuppressed(fromCallbacks);
       }
       throw failure;
     }
-    runOwedCallbacks(rolledBack);
+    runOwedCallbacks(deferred);
+  }
+
+  private void rollbackLevels(final boolean allNested) {
+    if (allNested)
+      proxied.rollbackAllNested();
+    else
+      proxied.rollback();
   }
 
   /**
-   * The transaction of this thread when a leader rolls it back, with its callbacks deferred (issue #12251): a rollback owes the
-   * after-completion ones (#10687, the refresh of a continuous aggregate over samples a rolled back transaction wrote beside
-   * itself), and the rollback of the engine runs them under the database read lock, which the schema session a refresh commit
-   * waits for is waiting to be rid of, as it is for the one of a commit (see {@link #commitCountedAtTheRecordingSessionGate}). They
-   * run here, once the rollback has released it. {@code null} when there is nothing to defer: a replica, no transaction active, or a
-   * rollback inside a commit, whose callbacks that commit runs.
+   * Defers the callbacks of the transactions of this thread that a rollback is about to roll back, innermost first: the innermost
+   * one, or every active level for {@code allNested}, which stops at the first level that is not active. A level whose callbacks
+   * something else defers already (a commit that is rolling back what it refused) is left to it, and ends the walk.
+   *
+   * @return the transactions whose callbacks are deferred, empty on a replica or when there is nothing to roll back
    */
-  private TransactionContext transactionRolledBackDeferringCallbacks() {
+  private List<TransactionContext> deferCallbacksOfTransactionsToRollBack(final boolean allNested) {
     if (!isLeader())
-      return null;
+      return Collections.emptyList();
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
-    final TransactionContext tx = context != null ? context.getLastTransaction() : null;
-    if (tx == null || !tx.isActive() || tx.isDeferringCallbacks())
-      return null;
-    tx.deferCallbacks();
-    return tx;
+    if (context == null)
+      return Collections.emptyList();
+    List<TransactionContext> deferred = null;
+    for (int level = context.transactions.size() - 1; level > -1; --level) {
+      final TransactionContext tx = context.transactions.get(level);
+      if (!tx.isActive() || tx.isDeferringCallbacks())
+        break;
+      tx.deferCallbacks();
+      if (deferred == null)
+        deferred = new ArrayList<>(2);
+      deferred.add(tx);
+      if (!allNested)
+        break;
+    }
+    return deferred != null ? deferred : Collections.emptyList();
   }
 
   private static void runOwedCallbacks(final TransactionContext tx) {
@@ -2551,9 +2584,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       owed.run();
   }
 
-  @Override
-  public void rollbackAllNested() {
-    proxied.rollbackAllNested();
+  /** The callbacks of every one of the transactions, innermost first: a failure of one does not take the others' from them. */
+  private static void runOwedCallbacks(final List<TransactionContext> transactions) {
+    for (int i = 0; i < transactions.size(); ++i)
+      try {
+        runOwedCallbacks(transactions.get(i));
+      } catch (final Throwable failure) {
+        for (int next = i + 1; next < transactions.size(); ++next)
+          try {
+            runOwedCallbacks(transactions.get(next));
+          } catch (final Throwable fromNext) {
+            failure.addSuppressed(fromNext);
+          }
+        throw failure;
+      }
   }
 
   @Override

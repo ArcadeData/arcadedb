@@ -531,9 +531,11 @@ public class TransactionContext implements Transaction {
   // Read by begin() on the thread that runs the callbacks, which is the one that sets it
   private       boolean                              runningAfterCompletion      = false;
   // Issue #12251: a commit that runs the callbacks its transaction owes somewhere else than where the transaction concludes, see
-  // deferCallbacks(). Volatile like commitPointReached, for the same reason: the conclusion of a commit is not always one thread's
+  // deferCallbacks(). Written by the thread that drives the commit and by the one that concludes it, which is the same thread
+  // today (the apply thread only publishes the pages), but volatile like commitPointReached all the same: the phases of one commit
+  // can be driven from different threads, and a conclusion on another one must not lose the deferral or what it deferred
   private volatile boolean                           callbacksDeferred           = false;
-  private       Runnable                             deferredCallbacks           = null;
+  private volatile Runnable                          deferredCallbacks           = null;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
