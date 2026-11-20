@@ -127,6 +127,34 @@ class Issue12417BackupCommandsOnFollowerIT extends BaseRaftHATest {
     assertThat(fileNamesOf(listAfterDelete.body())).isEmpty();
   }
 
+  /**
+   * Issue #12406: a refusal of a backup command answers its reason as the label. A follower forwards these commands to
+   * the leader (#12417), and the reason the leader gives must reach the client through the follower unchanged.
+   */
+  @Test
+  void aRefusalAnsweredByTheLeaderReachesTheClientOfAFollowerWithItsReason() throws Exception {
+    final int leader = requireLeaderIndex();
+    final int follower = firstFollowerOf(leader);
+    waitForAllServers();
+
+    final String database = getDatabaseName();
+    final HttpResponse<String> trigger = postCommand(follower, "trigger backup " + database);
+    assertThat(trigger.statusCode()).as(trigger.body()).isEqualTo(200);
+    final String archive = new File(new JSONObject(trigger.body()).getString("backupFile")).getName();
+
+    final String[][] cases = {
+        { "restore backup " + database + " nothere12406.zip as " + RESTORED, "Backup file not found: nothere12406.zip" },
+        { "restore backup " + database + " " + archive + " as " + database, "already exists" },
+        { "delete backup " + database + " nothere12406.zip", "Backup file not found: nothere12406.zip" } };
+
+    for (final String[] c : cases) {
+      final HttpResponse<String> response = postCommand(follower, c[0]);
+      assertThat(response.statusCode()).as("%s -> %s", c[0], response.body()).isEqualTo(400);
+      assertThat(new JSONObject(response.body()).getString("error")).as(c[0]).contains(c[1]);
+    }
+    assertThat(existsOnAnyServer(RESTORED)).as("a refused restore leaves no database behind").isFalse();
+  }
+
   private Path backupDirectoryOf(final int serverIndex) {
     return new ServerControlPlane(getServer(serverIndex)).resolveBackupDirectory();
   }
