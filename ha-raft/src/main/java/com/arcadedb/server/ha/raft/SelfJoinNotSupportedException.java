@@ -31,7 +31,7 @@ import com.arcadedb.GlobalConfiguration;
  * Before this, that request was accepted and did nothing: {@code RaftClusterManager.buildAddArgs} sees the id
  * already in the committed configuration and returns {@code null}, which the retry loop treats as success, so the
  * operator was answered {@code Peer ... added} and the cluster they meant to join never heard of them. The
- * idempotence that produces is deliberate and is pinned by {@code Issue7401ConnectClusterJoinsPeerIT} - but it is
+ * idempotence that produces is deliberate and is pinned by {@code ClusterRejoinMembershipIT} - but it is
  * meaningful only for <em>another</em> peer, where re-issuing a join that already committed must not fail. Adding
  * this node to its own configuration is not a join that already happened; it is a different request that has no
  * meaning, and answering it {@code 200} is what let the mistake pass as done.

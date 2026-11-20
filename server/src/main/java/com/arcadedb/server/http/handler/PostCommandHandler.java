@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -115,6 +116,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
           e.getMessage());
       return false;
     }
+  }
+
+  @Override
+  protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
+    if (payload != null)
+      StandaloneTransactionControl.refuse(database, payload.getString("language", null), payload.getString("command", null));
   }
 
   /**
@@ -574,6 +581,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
         rows.add(source.next());
 
       final Optional<ExecutionPlan> plan = source.getExecutionPlan();
+      final int statementLimit = source.getStatementLimit();
       final Optional<QueryStatistics> stats = source.getStatistics();
       // Before the source is closed: the facets count the matches the drain above did not reach as well
       final FacetResults facets = source.getFacets();
@@ -581,6 +589,11 @@ public class PostCommandHandler extends AbstractQueryHandler {
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
           return plan;
+        }
+
+        @Override
+        public int getStatementLimit() {
+          return statementLimit;
         }
       };
       stats.ifPresent(materialized::setStatistics);

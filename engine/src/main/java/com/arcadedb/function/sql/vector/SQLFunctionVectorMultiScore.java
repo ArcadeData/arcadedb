@@ -58,10 +58,19 @@ public class SQLFunctionVectorMultiScore extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 2)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     final Object scoresObj = params[0];
     final Object methodObj = params[1];
@@ -139,26 +148,26 @@ public class SQLFunctionVectorMultiScore extends SQLFunctionVectorAbstract {
   }
 
   private float avg(final float[] scores) {
-    float sum = 0.0f;
-    for (final float score : scores) {
+    // Summed in double: a float running sum overflows to Infinity before an ordinary float average is reached (#12023)
+    double sum = 0.0;
+    for (final float score : scores)
       sum += score;
-    }
-    return sum / scores.length;
+    return (float) (sum / scores.length);
   }
 
   private float weightedAverage(final float[] scores, final float[] weights) {
-    float weightedSum = 0.0f;
-    float weightSum = 0.0f;
+    double weightedSum = 0.0;
+    double weightSum = 0.0;
 
     for (int i = 0; i < scores.length; i++) {
-      weightedSum += scores[i] * weights[i];
+      weightedSum += (double) scores[i] * weights[i];
       weightSum += weights[i];
     }
 
-    if (weightSum == 0.0f)
+    if (weightSum == 0.0)
       throw new CommandSQLParsingException("Sum of weights cannot be zero");
 
-    return weightedSum / weightSum;
+    return (float) (weightedSum / weightSum);
   }
 
   public String getSyntax() {

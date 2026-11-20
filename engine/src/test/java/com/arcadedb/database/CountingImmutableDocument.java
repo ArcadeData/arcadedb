@@ -31,6 +31,8 @@ import java.util.Set;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CountingImmutableDocument extends ImmutableDocument {
+  private int      selectiveMaps;
+  private String[] lastSelectedNames;
   private int gets;
   private int names;
   private int maps;
@@ -63,19 +65,43 @@ public class CountingImmutableDocument extends ImmutableDocument {
     return super.toMap(includeMetadata);
   }
 
+  @Override
+  public Map<String, Object> propertiesAsMap(final String... fieldNames) {
+    ++selectiveMaps;
+    lastSelectedNames = fieldNames;
+    return super.propertiesAsMap(fieldNames);
+  }
+
+  /** Reads of the whole record into a map, each decoding every value it holds. */
+  public int wholeReads() {
+    return maps;
+  }
+
+  /** Reads of the record restricted to some names, each decoding only the values of those names (issue #12558). */
+  public int selectiveReads() {
+    return selectiveMaps;
+  }
+
+  /** The names the last selective read asked for, or null if there was none. */
+  public String[] lastSelectedNames() {
+    return lastSelectedNames;
+  }
+
   /** Reads of a single property by name, each a walk over the record header. */
   public int propertyReads() {
     return gets;
   }
 
-  /** Every read that walked the record header: by name, the name list, and the whole map. */
+  /** Every read that walked the record header: by name, the name list, the whole map and a selective map. */
   public int headerWalks() {
-    return gets + names + maps;
+    return gets + names + maps + selectiveMaps;
   }
 
   public void resetCounters() {
     gets = 0;
     names = 0;
     maps = 0;
+    selectiveMaps = 0;
+    lastSelectedNames = null;
   }
 }

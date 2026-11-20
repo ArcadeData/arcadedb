@@ -44,6 +44,25 @@ public interface QueryEngine {
     }
 
     /**
+     * Whether the statement is a transaction control (SQL {@code BEGIN}, {@code COMMIT}, {@code ROLLBACK}, openCypher
+     * {@code START TRANSACTION}, {@code COMMIT}, {@code ROLLBACK}), which an entry point refuses as a request of its own outside the
+     * caller's transaction or session (issues #12202, #12232). A statement that asks for an isolation level the engine cannot
+     * provide is not one: its execution refuses it with its own words (issue #10386). False unless the language says otherwise.
+     */
+    default boolean isTransactionControl() {
+      return false;
+    }
+
+    /**
+     * Whether the statement reports on the files of the node that runs it and writes nothing, so a replica runs it itself instead
+     * of forwarding it to the leader, which would answer for its own files (issues #12347, #12348). False unless the language says
+     * otherwise.
+     */
+    default boolean inspectsTheLocalNode() {
+      return false;
+    }
+
+    /**
      * Returns the set of operation types this query performs.
      * Provides semantic, parser-based classification of query operations
      * for fine-grained permission checking.

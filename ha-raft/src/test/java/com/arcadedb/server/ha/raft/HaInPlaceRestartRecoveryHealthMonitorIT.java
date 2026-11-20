@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Merged from {@code Issue5271ClosedDivisionRecoveryIT} and {@code Issue8652DeadUpdaterRecoveryIT}, which ran on the same
  * fixture: three servers, volatile Raft storage, health check every 500 ms. The in-place restarts the test drives with
  * the health monitor off live in {@link HaInPlaceRestartRecoveryIT}; the pause-monitor close on persistent storage in
- * {@code Issue8900ClosedServerInPlaceRestartIT}.
+ * {@code ClosedServerInPlaceRestartIT}.
  * <ul>
  * <li><b>#5271</b>: a node whose Ratis DIVISION (the per-group {@code RaftServerImpl}) died was invisible to the health
  * monitor, because {@link RaftHAServer#getRaftLifeCycleState()} only read the {@code RaftServer} proxy lifecycle, which

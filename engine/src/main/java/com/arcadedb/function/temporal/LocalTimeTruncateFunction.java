@@ -79,7 +79,7 @@ public class LocalTimeTruncateFunction implements StatelessFunction {
     if (CypherFunctionHelper.isExplicitNull(args, 2))
       return null;
     if (args.length >= 3 && args[2] instanceof Map)
-      truncated = CypherFunctionHelper.applyTimeMap(truncated, (Map<String, Object>) args[2]);
+      truncated = CypherFunctionHelper.applyTimeMap(truncated, (Map<String, Object>) args[2], false);
     return new CypherLocalTime(truncated);
   }
 }
