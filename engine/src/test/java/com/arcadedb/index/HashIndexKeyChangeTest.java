@@ -175,10 +175,10 @@ class HashIndexKeyChangeTest {
     }
 
     @Test
-    void indexFollowsTheLastSaveNotALaterUnsavedMutation() {
-      // Pins the contract documented on LocalDatabase.updateRecordNoLock: the commit flush no longer re-indexes, so a property
-      // changed after the last save() is not indexed (it used to be, through the very double write this issue removes)
-      for (final String kind : new String[] { "NOTUNIQUE", "NOTUNIQUE_HASH" }) {
+    void indexFollowsTheRecordWhenAPropertyIsAssignedAfterTheLastSave() {
+      // Issue #11751: the commit writes the record as it is THEN, so a key assigned after the last save() reaches the record and has to
+      // reach the index too (the flush of the deferred update does not index, since #8983)
+      for (final String kind : new String[] { "NOTUNIQUE", "NOTUNIQUE_HASH", "UNIQUE", "UNIQUE_HASH" }) {
         final String t = create("U_" + kind, kind);
         final RID[] rid = new RID[1];
         database.transaction(() -> rid[0] = database.newDocument(t).set("k", 0).save().getIdentity());
@@ -188,17 +188,19 @@ class HashIndexKeyChangeTest {
           d.set("k", 2);
         });
         assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(1);
-        assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 0")).as(kind).isZero();
+        assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 2")).as(kind).isEqualTo(1);
+        for (final int gone : new int[] { 0, 1 })
+          assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = " + gone)).as(kind + " k=" + gone).isZero();
+        assertThat(database.lookupByRID(rid[0], true).asDocument().getInteger("k")).as(kind).isEqualTo(2);
       }
 
-      // The record committed k = 2 while its LSM entry says 1: CHECK DATABASE compares the two and reports it (issue #11734). The
-      // HASH index has no entry walk, so only the LSM one is compared
+      // CHECK DATABASE compares the entries of an LSM index with the records (issue #11734) and finds nothing to report. The HASH index
+      // has no entry walk, so only the LSM ones are compared
       try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
         final Result check = rs.next();
-        assertThat(check.<Long>getProperty("staleIndexEntries")).isEqualTo(1L);
-        assertThat(check.<Long>getProperty("missingIndexEntries")).isEqualTo(1L);
+        assertThat(check.<Long>getProperty("staleIndexEntries")).isZero();
+        assertThat(check.<Long>getProperty("missingIndexEntries")).isZero();
       }
-      rebuildIndexesFromRecords();
     }
   }
 
