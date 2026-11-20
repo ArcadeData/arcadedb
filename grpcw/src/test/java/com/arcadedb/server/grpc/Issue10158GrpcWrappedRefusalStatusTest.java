@@ -21,6 +21,8 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
@@ -31,6 +33,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.sql.parser.AlignDatabaseStatement;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ServerControlPlane;
@@ -106,6 +109,11 @@ class Issue10158GrpcWrappedRefusalStatusTest {
     refusals.put(new IllegalArgumentException("Database name is empty"), Status.Code.INVALID_ARGUMENT);
     refusals.put(new ServerControlPlane.OperationNotAvailableException("HA is not enabled on this server"),
         Status.Code.FAILED_PRECONDITION);
+    // The statement an admin RPC runs, refused by the database (issue #12464): the ALIGN DATABASE refusal of #11796 and its
+    // supertype, which is what the arm names
+    refusals.put(new CommandSemanticException(AlignDatabaseStatement.ALIGN_DATABASE_NOT_SUPPORTED, new UnsupportedOperationException()),
+        Status.Code.INVALID_ARGUMENT);
+    refusals.put(new CommandParsingException("Statement 'align database' is not valid here"), Status.Code.INVALID_ARGUMENT);
     refusals.put(new NeedRetryException("Resync in progress"), Status.Code.UNAVAILABLE);
     refusals.put(new QuorumNotReachedException("Quorum not reached"), Status.Code.UNAVAILABLE);
     refusals.put(new ConcurrentModificationException("Concurrent modification on page 3"), Status.Code.UNAVAILABLE);

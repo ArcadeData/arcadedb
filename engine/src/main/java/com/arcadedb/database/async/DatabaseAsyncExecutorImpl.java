@@ -39,6 +39,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
@@ -2193,10 +2194,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (sourceRID == null && destinationRID == null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source and destination vertices with respectively key " + Arrays.toString(sourceVertexKeyNames) + "="
                 + Arrays.toString(sourceVertexKeyValues) + " and " + Arrays.toString(destinationVertexKeyNames) + "="
-                + Arrays.toString(destinationVertexKeyValues));
+                + Arrays.toString(destinationVertexKeyValues), null);
 
       // SOURCE AND DESTINATION VERTICES BOTH DON'T EXIST: CREATE 2 VERTICES + EDGE IN THE SAME TASK PICKING THE BEST
       // SLOT
@@ -2209,9 +2210,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     } else if (sourceRID != null && destinationRID == null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
 
       // ONLY SOURCE VERTEX EXISTS, CREATE DESTINATION VERTEX + EDGE IN SOURCE'S SLOT
       scheduleTask(getSlot(sourceRID.getBucketId()),
@@ -2222,9 +2223,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     } else if (sourceRID == null && destinationRID != null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source vertex with key " + Arrays.toString(sourceVertexKeyNames) + "=" + Arrays.toString(
-                sourceVertexKeyValues));
+                sourceVertexKeyValues), null);
 
       // ONLY DESTINATION VERTEX EXISTS
       scheduleTask(getSlot(destinationRID.getBucketId()),

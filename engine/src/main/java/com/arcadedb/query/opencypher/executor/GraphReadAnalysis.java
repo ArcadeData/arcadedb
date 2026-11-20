@@ -206,10 +206,11 @@ final class GraphReadAnalysis {
     return false;
   }
 
-  /** {@link #setItemsReadGraph(SetClause)}, for the dynamic key and dynamic label of a REMOVE clause. */
+  /** {@link #setItemsReadGraph(SetClause)}, for the target expression, dynamic key and dynamic label of a REMOVE clause. */
   private static boolean removeItemsReadGraph(final RemoveClause removeClause) {
     for (final RemoveClause.RemoveItem removeItem : removeClause.getItems())
       if (expressionReadsGraph(removeItem.getKeyExpression())
+          || expressionReadsGraph(removeItem.getTargetExpression())
           || expressionsReadGraph(removeItem.getLabelExpressions()))
         return true;
     return false;
@@ -490,6 +491,8 @@ final class GraphReadAnalysis {
 
     @Override
     protected BooleanExpression visitLabelCheck(final LabelCheckExpression expr) {
+      for (final Expression dynamicLabel : expr.getDynamicLabels())
+        rewrite(dynamicLabel);
       return descend(expr, expr.getVariableExpression());
     }
 
