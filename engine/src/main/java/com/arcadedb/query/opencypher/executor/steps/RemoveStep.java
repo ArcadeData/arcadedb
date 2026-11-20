@@ -28,6 +28,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
@@ -356,6 +357,9 @@ public class RemoveStep extends AbstractExecutionStep {
     DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
+    // A virtual node (create.vNode) has no stored type to rewrite under a smaller composite one (issue #12109)
+    if (vertex instanceof VirtualVertex virtual)
+      throw virtual.unsupported("relabelled");
 
     // If a prior row already relabelled this node, work on the replacement so the idempotency check below reads
     // the current type. The per-row redirect() reaches this alias too, so today this only re-confirms it; it stays

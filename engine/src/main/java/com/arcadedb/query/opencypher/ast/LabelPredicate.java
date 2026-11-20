@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -75,6 +76,18 @@ public abstract sealed class LabelPredicate {
         return true;
     return false;
   }
+
+  /**
+   * True when the predicate holds for a node that has no schema type and carries exactly these labels: a virtual node
+   * ({@code create.vNode}, {@code meta.graph}), whose labels are its own list and have no hierarchy behind them.
+   */
+  public abstract boolean matchesLabels(Collection<String> labels, Result row, CommandContext context);
+
+  /**
+   * True when the predicate holds for a relationship that has no schema type and is named {@code typeName}: a virtual
+   * relationship ({@code create.vRelationship}, {@code meta.graph}).
+   */
+  public abstract boolean matchesTypeName(String typeName, Result row, CommandContext context);
 
   /**
    * The label names every match must carry: the plain positive names among the top-level conjuncts. A node that
@@ -149,6 +162,16 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      return labels.contains(label);
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      return label.equals(typeName);
+    }
+
+    @Override
     public String toString() {
       return label;
     }
@@ -178,6 +201,16 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      return !labels.isEmpty();
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      return typeName != null;
+    }
+
+    @Override
     public String toString() {
       return "%";
     }
@@ -204,6 +237,16 @@ public abstract sealed class LabelPredicate {
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType, final Result row, final CommandContext context) {
       return !operand.matchesEdgeType(edgeType, row, context);
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      return !operand.matchesLabels(labels, row, context);
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      return !operand.matchesTypeName(typeName, row, context);
     }
 
     @Override
@@ -248,6 +291,32 @@ public abstract sealed class LabelPredicate {
       boolean result = true;
       for (final LabelPredicate operand : operands)
         if (!operand.matchesEdgeType(edgeType, row, context)) {
+          if (!dynamic)
+            return false;
+          result = false;
+        }
+      return result;
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      // with a dynamic operand every operand is evaluated, see matchesVertexType
+      boolean result = true;
+      for (final LabelPredicate operand : operands)
+        if (!operand.matchesLabels(labels, row, context)) {
+          if (!dynamic)
+            return false;
+          result = false;
+        }
+      return result;
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      // with a dynamic operand every operand is evaluated, see matchesVertexType
+      boolean result = true;
+      for (final LabelPredicate operand : operands)
+        if (!operand.matchesTypeName(typeName, row, context)) {
           if (!dynamic)
             return false;
           result = false;
@@ -301,6 +370,17 @@ public abstract sealed class LabelPredicate {
       return edgeType != null && matches(edgeType, row, context);
     }
 
+    @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      return Labels.matchesDynamicLabels(labels, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context), any);
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      return typeName != null && Labels.matchesDynamicLabels(List.of(typeName),
+          OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context), any);
+    }
+
     private boolean matches(final DocumentType type, final Result row, final CommandContext context) {
       return Labels.matchesDynamicLabels(type, OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, row, context), any);
     }
@@ -345,6 +425,32 @@ public abstract sealed class LabelPredicate {
       boolean result = false;
       for (final LabelPredicate operand : operands)
         if (operand.matchesEdgeType(edgeType, row, context)) {
+          if (!dynamic)
+            return true;
+          result = true;
+        }
+      return result;
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels, final Result row, final CommandContext context) {
+      // with a dynamic operand every operand is evaluated, see matchesVertexType
+      boolean result = false;
+      for (final LabelPredicate operand : operands)
+        if (operand.matchesLabels(labels, row, context)) {
+          if (!dynamic)
+            return true;
+          result = true;
+        }
+      return result;
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName, final Result row, final CommandContext context) {
+      // with a dynamic operand every operand is evaluated, see matchesVertexType
+      boolean result = false;
+      for (final LabelPredicate operand : operands)
+        if (operand.matchesTypeName(typeName, row, context)) {
           if (!dynamic)
             return true;
           result = true;

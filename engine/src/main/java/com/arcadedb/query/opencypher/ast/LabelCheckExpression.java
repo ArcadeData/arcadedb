@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -119,7 +121,13 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value == null)
       return null; // null:Label -> null in Cypher 3VL
 
+    // A virtual node or relationship (create.vNode, create.vRelationship, meta.graph) has no schema type: its labels, or its
+    // type name, are its own, and reading the null type as "matches nothing" made n:!B true for a node labelled B (issue #12109)
     if (predicate != null) {
+      if (value instanceof VirtualVertex virtual)
+        return predicate.matchesLabels(virtual.getLabels(), result, context);
+      if (value instanceof VirtualEdge virtual)
+        return predicate.matchesTypeName(virtual.getTypeName(), result, context);
       if (value instanceof Vertex vertex)
         return predicate.matchesVertexType(vertex.getType(), result, context);
       if (value instanceof Edge edge)
@@ -135,6 +143,11 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value instanceof Vertex vertex)
       // Same meaning a disjunction has when it is written on the pattern instead of in the WHERE (issue #6338).
       return Labels.matches(vertex, labels, operator == LabelOperator.OR);
+
+    if (value instanceof VirtualEdge virtual)
+      // A virtual relationship has one type name and no hierarchy behind it: the same rule as a stored one, where a
+      // conjunction holds only when every operand is that type
+      return Labels.matchesTypeName(virtual.getTypeName(), labels, operator == LabelOperator.OR);
 
     if (value instanceof Edge edge) {
       // Polymorphic like the pattern [r:Type]: an edge of a type that extends the label matches (issue #9124). A disjunction
@@ -181,7 +194,11 @@ public class LabelCheckExpression implements BooleanExpression {
    * issues #9124 and #12339). The empty operand holds.
    */
   private static boolean matchesOperand(final Object value, final List<String> operand) {
-    return Labels.matches(value instanceof Vertex vertex ? vertex.getType() : ((Edge) value).getType(), operand, false);
+    if (value instanceof Vertex vertex)
+      return Labels.matches(vertex, operand, false);
+    if (value instanceof VirtualEdge virtual)
+      return Labels.matchesTypeName(virtual.getTypeName(), operand, false);
+    return Labels.matches(((Edge) value).getType(), operand, false);
   }
 
   private List<String> resolveLabels(final Result result, final CommandContext context) {
