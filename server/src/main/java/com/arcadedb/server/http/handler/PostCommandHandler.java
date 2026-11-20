@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -47,28 +48,31 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import org.antlr.v4.runtime.BaseErrorListener;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.Token;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
   private static final Pattern LINE_BREAK = Pattern.compile("\\R");
-  /** The INTEGER_LITERAL and FLOATING_POINT_LITERAL tokens of the SQL lexer (SQLLexer.g4), the values a TIMEOUT clause takes. */
-  private static final Pattern[] NUMBER_LITERAL_FORMS = { //
-      Pattern.compile("[1-9][0-9]*[lL]?"), //
-      Pattern.compile("0[xX][0-9a-fA-F]+[lL]?"), //
-      Pattern.compile("0[0-7]*[lL]?"), //
-      Pattern.compile("[0-9]+\\.[0-9]*(?:[eE][+-]?[0-9]+)?[fFdD]?"), //
-      Pattern.compile("\\.[0-9]+(?:[eE][+-]?[0-9]+)?[fFdD]?"), //
-      Pattern.compile("[0-9]+(?:[eE][+-]?[0-9]+[fFdD]?|(?:[eE][+-]?[0-9]+)?[fFdD])"), //
-      Pattern.compile("0[xX](?:[0-9a-fA-F]+\\.?|[0-9a-fA-F]*\\.[0-9a-fA-F]+)[pP][+-]?[0-9]+[fFdD]?") };
+  /** Ends the lexing of a text the SQL lexer refuses: the parser reports it with its own message, so the text is left as it came. */
+  private static final BaseErrorListener LEXER_ERROR_LISTENER = new BaseErrorListener() {
+    @Override
+    public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol, final int line, final int charPositionInLine,
+        final String msg, final RecognitionException e) {
+      throw LexerError.INSTANCE;
+    }
+  };
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -171,9 +175,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ((!isSelect && !isMatch) || command.endsWith(";"))
       return false;
 
-    // The clauses before a trailing TIMEOUT decide whether the statement has a LIMIT of its own (issue #11804)
-    final String clauses = withoutTrailingTimeout(command);
-    if (StringUtils.containsIgnoreCase(clauses, " limit ") || StringUtils.containsIgnoreCase(clauses, "\nlimit ")) {
+    // The clauses before a trailing TIMEOUT or PARALLEL decide whether the statement has a LIMIT of its own (issue #11804)
+    final String body = withoutTrailingClauses(command);
+    if (StringUtils.containsIgnoreCase(body, " limit ") || StringUtils.containsIgnoreCase(body, "\nlimit ")) {
       // Both words in the text decide nothing on their own (a property, a literal or a subquery can carry them): only the parsed
       // statement tells a SELECT with a FACETS clause, the one shape the last-line heuristic below can get wrong.
       if (StringUtils.containsIgnoreCase(command, " facets ") || StringUtils.containsIgnoreCase(command, "\nfacets ")) {
@@ -182,7 +186,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           return facetsQuery;
       }
       // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
-      final String[] lines = LINE_BREAK.split(clauses);
+      final String[] lines = LINE_BREAK.split(body);
       final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
       if (words.length <= 1 //
           || "limit".equals(words[words.length - 2]) //
@@ -193,119 +197,110 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
   }
 
-  /** {@code command} without the TIMEOUT clause it ends with, or {@code command} itself when it ends with none. */
-  private static String withoutTrailingTimeout(final String command) {
-    final int[] timeout = trailingTimeout(command);
-    return timeout == null ? command : command.substring(0, timeout[1]);
+  /** {@code command} without the TIMEOUT and PARALLEL clauses it ends with, or {@code command} itself when it ends with none. */
+  private static String withoutTrailingClauses(final String command) {
+    final int[] clauses = trailingClauses(command);
+    return clauses == null ? command : command.substring(0, clauses[1]);
   }
 
   /**
-   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed right before the keyword of the TIMEOUT clause
-   * the statement ends with, where a LIMIT has to stand (issue #11804: appended after it, the statement no longer parsed). Placed
-   * at the keyword, the LIMIT stays out of a line comment that precedes the clause.
+   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed right before the first of the TIMEOUT and
+   * PARALLEL clauses the statement ends with, where a LIMIT has to stand (issue #11804: appended after them, the statement no longer
+   * parsed). Placed at the keyword, the LIMIT stays out of a line comment that precedes the clauses.
    */
   static String withAutomaticLimit(final String command, final int probeLimit) {
-    final int[] timeout = trailingTimeout(command);
-    if (timeout == null)
+    final int[] clauses = trailingClauses(command);
+    if (clauses == null)
       return command + " limit " + probeLimit;
-    return command.substring(0, timeout[0]) + "limit " + probeLimit + " " + command.substring(timeout[0]);
+    return command.substring(0, clauses[0]) + "limit " + probeLimit + " " + command.substring(clauses[0]);
   }
 
   /**
-   * The TIMEOUT clause a SELECT ends with ({@code TIMEOUT <ms> [RETURN | EXCEPTION]}), read on the SQL tokens so that whitespace and
-   * comments between its words are skipped as the lexer skips them: {start of the TIMEOUT keyword, end of the token before it}, or
-   * null when the text ends with no such clause. A word inside a string literal, a quoted identifier or a comment is not a token,
-   * and a number is one token in every spelling the lexer reads as one ({@code 5000L}, {@code 0x1388}, {@code 5e3}, {@code 5000.0}),
-   * ending where the lexer ends it: {@code 5000RETURN} is the number {@code 5000} and the keyword {@code RETURN}. One pass over the
-   * text.
+   * Where the clauses a statement ends with begin, the ones that follow its LIMIT in the grammar: {@code [TIMEOUT <ms> [RETURN |
+   * EXCEPTION]] [PARALLEL]} (selectStatement of SQLParser.g4, whose last clauses a MATCH shares up to the TIMEOUT). The answer is
+   * {start of the first of them, end of the token before it}, or null when the text ends with none, or with nothing before them.
+   * <p>
+   * The text is read on the tokens of the SQL lexer itself, not on a second reading of its rules kept beside it, so the clauses are
+   * what the parser will see: whitespace and comments between their words are hidden, a word inside a string literal, a quoted
+   * identifier or a comment is no token, and a number ends where the lexer ends it ({@code 5000RETURN} is the number {@code 5000}
+   * and the keyword {@code RETURN}). A last token PARALLEL is the keyword: the identifier rule does not take the word (only a map
+   * key may be one, and a key is followed by a colon). The TIMEOUT value is a number literal, the only one the engine reads
+   * ({@code SQLASTBuilder.visitTimeout}): a clause with a parameter or an expression for value is left where it is, which is the
+   * cap that stops rewriting the statement text to fix (issue #12016).
+   * <p>
+   * A text that holds neither word is not lexed, which is nearly every statement: it pays one pass of character probes, and the
+   * probe cannot miss a clause, whose keyword is one of the words spelled out in full.
    */
-  static int[] trailingTimeout(final String command) {
-    final int length = command.length();
-    // THE LAST FOUR TOKENS, IN A RING INDEXED BY THE TOKEN COUNT, AND WHETHER EACH IS A NUMBER LITERAL
-    final int[] starts = new int[4];
-    final int[] ends = new int[4];
-    final boolean[] numbers = new boolean[4];
-    Matcher numberMatcher = null;
+  static int[] trailingClauses(final String command) {
+    if (!mentionsATrailingKeyword(command))
+      return null;
+
+    final SQLLexer lexer = new SQLLexer(CharStreams.fromString(command));
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(LEXER_ERROR_LISTENER);
+
+    // THE LAST EIGHT TOKENS OF THE DEFAULT CHANNEL, IN A RING INDEXED BY THE TOKEN COUNT: THE CLAUSES ARE AT MOST FOUR, AND THE ONE BEFORE
+    final int[] types = new int[8];
+    final int[] starts = new int[8];
+    final int[] stops = new int[8];
     int tokens = 0;
-    int pos = 0;
-    while (pos < length) {
-      final char c = command.charAt(pos);
-      final int start = pos;
-      if (Character.isWhitespace(c)) {
-        ++pos;
-        continue;
+    try {
+      for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
+        if (token.getChannel() != Token.DEFAULT_CHANNEL)
+          continue;
+        types[tokens & 7] = token.getType();
+        starts[tokens & 7] = token.getStartIndex();
+        stops[tokens & 7] = token.getStopIndex();
+        ++tokens;
       }
-      if (command.startsWith("/*", pos)) {
-        final int end = command.indexOf("*/", pos + 2);
-        pos = end < 0 ? length : end + 2;
-        continue;
-      }
-      if (command.startsWith("-- ", pos)) {
-        pos += 3;
-        while (pos < length && command.charAt(pos) != '\r' && command.charAt(pos) != '\n')
-          ++pos;
-        continue;
-      }
-      boolean number = false;
-      if (c == '\'' || c == '"' || c == '`') {
-        ++pos;
-        while (pos < length && command.charAt(pos) != c)
-          pos += command.charAt(pos) == '\\' ? 2 : 1;
-        pos = Math.min(pos + 1, length);
-      } else if (isAsciiDigit(c) || (c == '.' && pos + 1 < length && isAsciiDigit(command.charAt(pos + 1)))) {
-        if (numberMatcher == null)
-          numberMatcher = NUMBER_LITERAL_FORMS[0].matcher(command);
-        pos = numberEnd(numberMatcher, start, length);
-        number = true;
-      } else if (isWordChar(c)) {
-        while (pos < length && isWordChar(command.charAt(pos)))
-          ++pos;
-      } else
-        ++pos;
-      starts[tokens & 3] = start;
-      ends[tokens & 3] = pos;
-      numbers[tokens & 3] = number;
-      ++tokens;
+    } catch (final LexerError e) {
+      return null;
     }
 
-    if (tokens < 3)
+    // Peeled from the end: PARALLEL, then TIMEOUT <number> [RETURN | EXCEPTION]. 'rest' counts the tokens before what was peeled
+    int rest = tokens;
+    int first = -1;
+    if (rest > 0 && types[(rest - 1) & 7] == SQLLexer.PARALLEL)
+      first = --rest;
+    if (rest >= 3) {
+      final int last = types[(rest - 1) & 7];
+      final int clauseTokens = last == SQLLexer.RETURN || last == SQLLexer.EXCEPTION ? 3 : 2;
+      final int value = types[(rest - clauseTokens + 1) & 7];
+      if (rest > clauseTokens && types[(rest - clauseTokens) & 7] == SQLLexer.TIMEOUT && (value == SQLLexer.INTEGER_LITERAL
+          || value == SQLLexer.FLOATING_POINT_LITERAL)) {
+        rest -= clauseTokens;
+        first = rest;
+      }
+    }
+    if (first < 0 || rest == 0)
       return null;
-    final int last = (tokens - 1) & 3;
-    final boolean withAction = isToken(command, starts[last], ends[last], "return") || isToken(command, starts[last], ends[last],
-        "exception");
-    final int clauseTokens = withAction ? 3 : 2;
-    if (tokens <= clauseTokens)
-      return null;
-    final int keyword = (tokens - clauseTokens) & 3;
-    final int millis = (tokens - clauseTokens + 1) & 3;
-    if (!isToken(command, starts[keyword], ends[keyword], "timeout") || !numbers[millis])
-      return null;
-    return new int[] { starts[keyword], ends[(tokens - clauseTokens - 1) & 3] };
+
+    // The lexer counts code points, the text chars: they differ after a character outside the BMP (an emoji in a literal)
+    return new int[] { command.offsetByCodePoints(0, starts[first & 7]), command.offsetByCodePoints(0, stops[(rest - 1) & 7] + 1) };
   }
 
   /**
-   * The end of the number literal starting at {@code start}, read as the SQL lexer reads it: the longest prefix one of its number
-   * literal forms matches. What follows it is the next token, so a keyword written right after the number ({@code 5000RETURN}) is
-   * a token of its own, as it is to the lexer, while a word that is no keyword ({@code 5000abc}) leaves no clause to find.
+   * Whether the text holds the word TIMEOUT or PARALLEL, in any case, in one pass: the lexer's keywords are the ASCII letters, so
+   * the first character settles nearly every position.
    */
-  private static int numberEnd(final Matcher matcher, final int start, final int length) {
-    int end = start + 1;
-    for (final Pattern form : NUMBER_LITERAL_FORMS)
-      if (matcher.usePattern(form).region(start, length).lookingAt() && matcher.end() > end)
-        end = matcher.end();
-    return end;
+  private static boolean mentionsATrailingKeyword(final String command) {
+    final int length = command.length();
+    for (int i = 0; i < length; i++) {
+      final char c = command.charAt(i);
+      if (((c == 't' || c == 'T') && command.regionMatches(true, i, "timeout", 0, 7)) //
+          || ((c == 'p' || c == 'P') && command.regionMatches(true, i, "parallel", 0, 8)))
+        return true;
+    }
+    return false;
   }
 
-  private static boolean isAsciiDigit(final char c) {
-    return c >= '0' && c <= '9';
-  }
+  /** The error of a text the SQL lexer refuses, thrown from {@link #LEXER_ERROR_LISTENER}: no stack to fill, one instance for all. */
+  private static final class LexerError extends RuntimeException {
+    private static final LexerError INSTANCE = new LexerError();
 
-  private static boolean isWordChar(final char c) {
-    return Character.isLetterOrDigit(c) || c == '_';
-  }
-
-  private static boolean isToken(final String command, final int start, final int end, final String word) {
-    return end - start == word.length() && command.regionMatches(true, start, word, 0, word.length());
+    private LexerError() {
+      super(null, null, false, false);
+    }
   }
 
   /**
