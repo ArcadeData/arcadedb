@@ -1066,6 +1066,41 @@ class CypherLightEdgeTest {
       }
     }
 
+    @Test
+    void sqlDistinctTellsParallelTwinsApart() {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("opencypher", "MATCH (a:A), (b:B {k:'b1'}) RETURN a, b")) {
+          final Result row = rs.next();
+          ((Vertex) row.getProperty("a")).modify().newLightEdge("L", row.<Vertex>getProperty("b"));
+        }
+      });
+
+      // four edges, two of them twins: four rows, not three (the twins are told apart) and not one (the type marker)
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM (SELECT DISTINCT(@this) FROM L)")) {
+        assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(4L);
+      }
+    }
+
+    @Test
+    void sqlDistinctCollapsesAnEdgeMetFromBothOfItsEnds() {
+      database.command("sql", "CREATE VERTEX TYPE W");
+      database.transaction(() -> {
+        final MutableVertex w1 = database.newVertex("W").set("k", "w1").save();
+        final MutableVertex w2 = database.newVertex("W").set("k", "w2").save();
+        w1.newLightEdge("L", w2);
+        w1.newLightEdge("L", w2);
+        w2.newLightEdge("L", w1);
+      });
+
+      // three edges, each of them read from both of its ends: six rows, three relationships
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM (SELECT expand(bothE('L')) FROM W)")) {
+        assertThat(((Number) rs.next().getProperty("n")).longValue()).isEqualTo(6L);
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT DISTINCT @this FROM (SELECT expand(bothE('L')) FROM W)")) {
+        assertThat(rs.stream().count()).isEqualTo(3L);
+      }
+    }
+
     private List<String> elementIds(final String query) {
       final List<String> ids = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher", query)) {

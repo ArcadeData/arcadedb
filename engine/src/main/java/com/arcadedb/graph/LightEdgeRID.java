@@ -153,10 +153,12 @@ public class LightEdgeRID extends DatabaseRID {
    * read from: 0 for the first (and, in the normal case of no duplicates, only) one.
    * <p>
    * Walks the list on the first call, O(degree of the owner), and caches the answer. It is meant to be asked only
-   * when a second edge with the same triple turns up, never per edge. The walk visits entries in the same order the
-   * iterators do, so the OUT list of the source and the IN list of the target - which hold the same entries appended
-   * in the same order - number twins alike; and where they do not, the twins are indistinguishable anyway (no
-   * properties), so any consistent numbering counts the same relationships.
+   * when a second edge with the same triple turns up, never per edge - except by {@link #toElementId()}, which names
+   * the edge and so has to know its occurrence, and only for an edge whose element id is asked for (through the
+   * {@link LightEdgeCensus} of the iteration that read it, two walks of the list serve all of its edges). The walk
+   * visits entries in the same order the iterators do, so the OUT list of the source and the IN list of the target -
+   * which hold the same entries appended in the same order - number twins alike; and where they do not, the twins are
+   * indistinguishable anyway (no properties), so any consistent numbering counts the same relationships.
    */
   public int getOccurrence() {
     int result = occurrence;

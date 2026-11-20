@@ -23,6 +23,7 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
@@ -213,8 +214,11 @@ public class BoltStructureMapper {
 
   /**
    * The numeric id of a relationship. A lightweight edge has no record position to encode (its id() is null, and encoding its
-   * {@code #bucket:-1} marker throws): it gets a negative id hashed (FNV-1a, 64 bits) from the element id that names it, which
+   * {@code #bucket:-1} marker throws): it gets a negative id hashed (FNV-1a, 63 bits) from the element id that names it, which
    * no record id, never negative, can equal (issue #12132).
+   * <p>
+   * The numeric id is a best effort, as a hash is: two lightweight edges whose element ids collide (about 2^-63 for a pair)
+   * would share it. The element id is the identity of the relationship, and the one a client must send back to name it.
    */
   private static long relationshipId(final RID rid, final String elementId) {
     if (rid.getPosition() >= 0)
@@ -246,7 +250,9 @@ public class BoltStructureMapper {
     final List<BoltNode> nodes = new ArrayList<>();
     final Map<RID, Integer> nodeIndex = new HashMap<>();
     final List<BoltUnboundRelationship> rels = new ArrayList<>();
-    final Map<RID, Integer> relIndex = new HashMap<>();
+    // Keyed by what tells one relationship from another: the RID of a record-backed edge, and for a lightweight edge its
+    // distinct key, so that two parallel twins of one path stay two relationships (issue #12132)
+    final Map<Object, Integer> relIndex = new HashMap<>();
     final List<Long> indices = new ArrayList<>(edges.size() * 2);
 
     addPathNode(vertices.get(0), nodes, nodeIndex);
@@ -258,12 +264,12 @@ public class BoltStructureMapper {
       final Vertex from = vertices.get(i);
       final Vertex to = vertices.get(i + 1);
 
-      final RID relRid = edge.getIdentity();
-      Integer ri = relIndex.get(relRid);
+      final Object relKey = DistinctNumericKey.canonicalize(edge);
+      Integer ri = relIndex.get(relKey);
       if (ri == null) {
         rels.add(toUnboundRelationship(edge));
         ri = rels.size(); // 1-based
-        relIndex.put(relRid, ri);
+        relIndex.put(relKey, ri);
       }
       final boolean forward = edge.getOut().equals(from.getIdentity());
       indices.add((long) (forward ? ri : -ri));

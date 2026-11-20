@@ -192,14 +192,17 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
    * The identity a row the RID fast path cannot take is told apart by, null when its properties alone are the key. A
    * lightweight edge has no record address and no properties: without its identity, every lightweight edge would be one row
    * (issue #12132). Its twins are told apart as openCypher tells them, by {@link LightEdgeRID#distinctKey()}.
+   * <p>
+   * Any other row, including one whose element has a record-less RID that is not a lightweight edge's, keeps the properties as
+   * its only key, as it always had. The cheap checks come first: this runs on every row the RID fast path does not take, and
+   * almost none of them is a lightweight edge.
    */
   private static Object identityKeyOf(final Result value) {
-    if (!keysByIdentity(value))
+    if (!value.isElement())
       return null;
-    final RID identity = value.getElement().get().getIdentity();
-    if (identity == null || identity.getPosition() >= 0)
+    if (!(value.getElement().get().getIdentity() instanceof LightEdgeRID light))
       return null;
-    return identity instanceof LightEdgeRID light ? light.distinctKey() : identity;
+    return keysByIdentity(value) ? light.distinctKey() : null;
   }
 
   @Override
