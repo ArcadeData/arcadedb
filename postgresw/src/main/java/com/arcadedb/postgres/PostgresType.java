@@ -1458,14 +1458,15 @@ public enum PostgresType {
       case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
       case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
       case Binary binary -> binary.getString();
-      case Collection<?> nested -> new JSONArray(nested).toString();
+      case Collection<?> nested -> serializeNestedAsJsonArray(nested).toString();
       case Result result -> toJsonDocument(result).toString();
       case JSONObject json -> json.toString();
       case Map<?, ?> map -> toJsonDocument(map).toString();
       // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
       case TraversalPath path -> toJsonDocument(path).toString();
       case Record record -> toJsonDocument(record).toString();
-      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
+      default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)).toString()
+          : element.toString();
     };
   }
 
@@ -1537,10 +1538,11 @@ public enum PostgresType {
       } else if (element instanceof Collection<?> subCollection) {
         // A nested list is carried as a JSON document (issue #5365): the column is advertised as json[], so the
         // element must be a quoted JSON array. Emitting a nested "{...}" literal instead made the announced OID
-        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension.
-        appendQuoted(sb, new JSONArray(subCollection).toString());
+        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension. A record or a map inside
+        // it is rendered as the scalar json column renders it (issue #11958).
+        appendQuoted(sb, serializeNestedAsJsonArray(subCollection).toString());
       } else if (element.getClass().isArray()) {
-        appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
+        appendQuoted(sb, serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)).toString());
       } else if (element instanceof JSONObject json) {
         appendQuoted(sb, json.toString());
       } else if (isJsonDocument(element)) {

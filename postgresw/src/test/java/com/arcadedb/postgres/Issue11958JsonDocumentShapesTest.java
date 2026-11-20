@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.Vertex;
@@ -171,6 +172,53 @@ class Issue11958JsonDocumentShapesTest extends TestHelper {
     final String text = PostgresType.JSON.toText(PostgresType.JSON, segment);
     assertThat(text).isEqualTo(segment.toJSON(true).toString());
     assertThat(new JSONObject(text).getString("@rid")).isEqualTo("#5:0");
+  }
+
+  /**
+   * A detached copy has no database. It is the value the engine hands out of a transaction (the before-image of a DELETE on a type
+   * with EXTERNAL properties), and a json column used to render it through {@code toJSON(true)}: it must not start to fail for want of
+   * the database the HTTP serializer reads the date patterns from.
+   */
+  @Test
+  void aDetachedRecordKeepsItsTemporalText() {
+    final DetachedDocument detached = vertex().detach();
+    assertThat(detached.getDatabase()).isNull();
+
+    assertTemporals(new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, detached)));
+    // a row that wraps it (the before-image step of a DELETE answers one) has no database to ask either
+    assertTemporals(new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, new ResultInternal(detached))));
+    assertTemporals(new JSONArray(PostgresType.JSON.toText(PostgresType.JSON, List.of(detached))).getJSONObject(0));
+    assertTemporals(new JSONObject(PostgresType.JSON.toText(PostgresType.JSON, Map.of("nested", detached))).getJSONObject("nested"));
+  }
+
+  /**
+   * A json document inside a list that is itself an element of a text[] or json[] array (a nested list or an array of the element),
+   * in the literal and in both binary forms, carries the same temporal text as one directly in the column.
+   */
+  @Test
+  void aJsonDocumentInsideAListNestedInAnArray() {
+    final List<Object> values = List.of("text", List.of(map(), List.of(map())), new Object[] { map() });
+    assertThat(PostgresType.getTypeForValue(values)).isEqualTo(PostgresType.ARRAY_TEXT);
+
+    assertNestedElements(PostgresArrayLiteral.parse(PostgresType.ARRAY_TEXT.toText(PostgresType.ARRAY_TEXT, values), s -> s));
+
+    for (final PostgresType arrayType : new PostgresType[] { PostgresType.ARRAY_TEXT, PostgresType.ARRAY_JSON }) {
+      final Binary buffer = new Binary();
+      arrayType.serializeAsBinary(arrayType, buffer, values);
+      buffer.flip();
+      final byte[] data = new byte[buffer.getInt()];
+      buffer.getByteBuffer().get(data);
+      assertNestedElements((List<?>) PostgresType.deserialize(arrayType.code, 1, data));
+    }
+  }
+
+  private static void assertNestedElements(final List<?> elements) {
+    assertThat(elements).hasSize(3);
+    assertThat(elements.get(0)).isEqualTo("text");
+    final JSONArray nested = new JSONArray((String) elements.get(1));
+    assertTemporals(nested.getJSONObject(0));
+    assertTemporals(nested.getJSONArray(1).getJSONObject(0));
+    assertTemporals(new JSONArray((String) elements.get(2)).getJSONObject(0));
   }
 
   private static void assertElements(final List<?> elements) {

@@ -19,12 +19,15 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,6 +74,30 @@ class Issue11958SerializeValueTest extends TestHelper {
       assertTemporals((JSONObject) serializer.serializeValue(database, result.getProperty("rec")));
       assertTemporals((JSONObject) serializer.serializeValue(null, Map.of("nested", map)));
     }
+  }
+
+  /**
+   * A detached copy has no database (a record the engine hands out of a transaction, such as the before-image of a DELETE on a type
+   * with EXTERNAL properties). Rendering it alone, in a list or in a map must not dereference that missing database: the type it
+   * carries still tells each property's precision, and the configured default patterns stand in for the schema's.
+   */
+  @Test
+  void aDetachedRecordHasNoDatabaseAndIsStillRendered() {
+    final DetachedDocument detached;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM T11958")) {
+      detached = rs.next().getElement().orElseThrow().detach();
+    }
+    assertThat(detached.getDatabase()).isNull();
+
+    final JsonSerializer serializer = JsonSerializer.createJsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false)
+        .setUseCollectionSizeForEdges(false);
+    final JSONObject alone = (JSONObject) serializer.serializeValue(null, detached);
+    assertTemporals(alone);
+    assertThat(alone.getString("@type")).isEqualTo("T11958");
+    assertThat(alone.getString("@cat")).isEqualTo("v");
+
+    assertTemporals(((JSONArray) serializer.serializeValue(database, List.of(detached))).getJSONObject(0));
+    assertTemporals(((JSONObject) serializer.serializeValue(database, Map.of("nested", detached))).getJSONObject("nested"));
   }
 
   private JSONObject httpRow() {

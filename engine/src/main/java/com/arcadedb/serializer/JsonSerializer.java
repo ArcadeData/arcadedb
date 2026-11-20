@@ -190,9 +190,10 @@ public class JsonSerializer {
   }
 
   private JSONObject serializeDocumentContent(final Document document) {
+    // null for a detached copy: its type still says each property's precision, and the configured patterns stand in for the schema's
     final Database database = document.getDatabase();
-    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final String schemaDateFormat = database.getSchema().getDateFormat();
+    final String schemaDateTimeFormat = dateTimeFormatOf(database);
+    final String schemaDateFormat = dateFormatOf(database);
     // THE DATE SLOT CARRIES THE DATE PATTERN, as it does in serializeResult below. It used to carry the DATE-TIME
     // one, so the same column rendered differently through GET /document/{db}/{rid} than through a query - a
     // genuine DATE reaching this dispatch picked up a spurious 00:00:00 (issue #7638). What makes the change safe
