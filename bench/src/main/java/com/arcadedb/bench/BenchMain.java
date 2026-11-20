@@ -44,6 +44,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -133,12 +134,12 @@ public final class BenchMain {
   /** The options each subcommand accepts; any other {@code --flag} is rejected, so a typo cannot silently fall back to a default. */
   static final Set<String> RUN_OPTIONS = Set.of("workload", "scale", "image", "variant", "out", "reps", "warmup", "timeout-min",
       "seed", "mem-limit-gb", "heap", "trigger", "machine-id", "tag", "params", "skip-idle-check", "server-cpus", "client-cpus",
-      "commit", "version", "bench-commit");
+      "commit", "version", "bench-commit", "commit-date");
   static final Set<String> INIT_STORE_OPTIONS = Set.of("url", "root-user", "root-password-env", "writer-password-env",
       "reader-password-env");
   static final Set<String> EXPORT_OPTIONS = Set.of("url", "user", "password-env", "out");
   static final Set<String> LDBC_CONVERT_OPTIONS = Set.of("summary", "dataset", "commit", "out", "started-at", "version", "tag",
-      "trigger", "machine-id", "bench-commit");
+      "trigger", "machine-id", "bench-commit", "commit-date");
   static final Set<String> UPLOAD_OPTIONS = Set.of("url", "user", "password-env");
 
   static Map<String, String> parse(final String[] args, final boolean allowPositional, final Set<String> known) {
@@ -195,6 +196,7 @@ public final class BenchMain {
     final Path summaryPath = Path.of(required(o, "summary"));
     final String dataset = required(o, "dataset");
     final String commit = required(o, "commit");
+    final String commitDate = commitDate(o);
     final Path dir = Path.of(required(o, "out"));
     final JSONObject summary;
     final Instant startedAt;
@@ -213,6 +215,8 @@ public final class BenchMain {
         .put("variant", "jvm").put("image", "embedded").put("imageDigest", "n/a").put("revision", commit);
     if (o.containsKey("tag"))
       arcadedb.put("tag", o.get("tag"));
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate);
     final JSONObject config = new JSONObject().put("dataset", dataset).put("framework", "graphalytics").put("mode1", true)
         .put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
     final String runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), "jvm") + "-ldbc";
@@ -301,6 +305,7 @@ public final class BenchMain {
     final String trigger = o.getOrDefault("trigger", "manual");
     final String machineId = o.getOrDefault("machine-id", "local");
     final String tag = o.get("tag");
+    final String commitDate = commitDate(o);
     final JSONObject params;
     try {
       params = new JSONObject(o.getOrDefault("params", "{}"));
@@ -371,6 +376,8 @@ public final class BenchMain {
         .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
     if (tag != null)
       arcadedb.put("tag", tag);
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate);
     final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
     config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
     config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin).put("seed", seed)
@@ -384,6 +391,22 @@ public final class BenchMain {
     new RunResult(info, results).write(dir);
     out.println(dir.resolve(runId + ".json"));
     return 0;
+  }
+
+  /**
+   * The {@code --commit-date} option: when the measured commit was made, as git prints it ({@code %cI}, with an offset) or as a
+   * UTC instant. The dashboard places a point at this date rather than at the run's start, so a release measured today lands
+   * where its code is. Returned as a UTC instant, {@code null} when the option is absent.
+   */
+  static String commitDate(final Map<String, String> o) {
+    final String value = o.get("commit-date");
+    if (value == null)
+      return null;
+    try {
+      return OffsetDateTime.parse(value).toInstant().toString();
+    } catch (final DateTimeParseException e) {
+      throw new IllegalArgumentException("--commit-date must be an ISO-8601 date-time with an offset, got '" + value + "'");
+    }
   }
 
   /** The value of an introspection call; a failure is logged and replaced by the fallback instead of aborting the run. */
