@@ -332,6 +332,51 @@ class RDFImporterFormatStatementBoundariesTest {
         """)).isInstanceOf(ImportException.class).hasMessageContaining("Invalid language tag");
   }
 
+  /** A language tag is ASCII letters, then groups of a '-' and ASCII letters or digits (the LANGTAG of N-Triples), or the row is refused. */
+  @Test
+  void languageTagHasTheStructureOfALangtag() {
+    final NTriplesStatement statement = new NTriplesStatement(" ", 4096);
+    final String[] terms = new String[3];
+    for (final String tag : new String[] { "en", "EN", "en-GB", "zh-Hant-TW", "de-1996", "x-private1" }) {
+      assertThat(statement.parse("<http://a/s> <http://a/p> \"x\"@" + tag + " .", terms)).as(tag).isEqualTo(3);
+      assertThat(terms[2]).as(tag).isEqualTo("\"x\"@" + tag);
+    }
+    for (final String tag : new String[] { "", "123", "en--US", "en-", "en2", "-en" })
+      assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> \"x\"@" + tag + " .", terms)).as("'" + tag + "'")
+          .isInstanceOf(ImportException.class).hasMessageContaining("Invalid language tag");
+  }
+
+  /**
+   * The terminator and a comment are not terms: a statement with no object is refused as a row with 2 terms. The {@code .} was its
+   * object, an edge to a vertex keyed {@code .}. A quoted dot, and an IRI with a {@code #} in it, are objects.
+   */
+  @Test
+  void terminatorOrCommentIsNotTheMissingTerm() throws Exception {
+    final NTriplesStatement statement = new NTriplesStatement(" ", 4096);
+    final String[] terms = new String[3];
+    assertThat(statement.parse("<urn:s> <urn:p> .", terms)).isEqualTo(2);
+    assertThat(statement.parse("<urn:s> <urn:p>.", terms)).isEqualTo(2);
+    assertThat(statement.parse("<urn:s> <urn:p> # no object", terms)).isEqualTo(2);
+    assertThat(statement.parse("<urn:s> .", terms)).isEqualTo(1);
+    assertThat(new NTriplesStatement(",", 4096).parse("<urn:s>,<urn:p>,.", terms)).isEqualTo(2);
+
+    assertThat(statement.parse("<urn:s> <urn:p> \".\" .", terms)).isEqualTo(3);
+    assertThat(terms[2]).isEqualTo("\".\"");
+    assertThat(statement.parse("<urn:s> <urn:p> <urn:o#fragment> .", terms)).isEqualTo(3);
+    assertThat(terms[2]).isEqualTo("urn:o#fragment");
+
+    assertThatThrownBy(() -> load(new RDFImporterFormat(" "), settings(), "<http://a/s> <http://a/p> .\n"))
+        .isInstanceOf(ImportException.class).hasMessageContaining("has 2 term(s)");
+
+    final ImporterSettings skip = settings();
+    skip.onRowError = "skip";
+    final ImporterContext context = load(new RDFImporterFormat(" "), skip,
+        "<http://a/s> <http://a/p> .\n<http://a/s> <http://a/q> <http://a/o> .\n");
+    assertThat(context.errors.get()).isEqualTo(1);
+    assertThat(keys()).containsExactlyInAnyOrder("http://a/s", "http://a/o");
+    assertThat(edges()).containsOnly(Map.entry("http://a/q", "http://a/s>http://a/o"));
+  }
+
   /** The graph term of an N-Quads statement is ignored, as it was: the statement is its first three terms. */
   @Test
   void nQuadsGraphTermIsIgnored() throws Exception {

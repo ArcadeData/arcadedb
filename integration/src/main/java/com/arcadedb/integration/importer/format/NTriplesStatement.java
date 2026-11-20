@@ -207,6 +207,9 @@ final class NTriplesStatement {
         if (pos >= line.length())
           break;
       }
+      // THE TERMINATOR AND A COMMENT ARE NOT TERMS: "<s> <p> ." HAS NO OBJECT, AND THE '.' READ AS ONE MADE AN EDGE TO A VERTEX KEYED "."
+      if (atTerminatorOrComment())
+        break;
       termBegin = pos;
       termNumber = found + 1;
       literalRead = false;
@@ -249,6 +252,20 @@ final class NTriplesStatement {
 
   private boolean atDelimiter() {
     return line.startsWith(delimiter, pos);
+  }
+
+  /**
+   * Whether the next characters are the statement terminator (a {@code .} alone, before whitespace, a comment or the end of the
+   * line) or the start of a comment. No term begins so: an IRI begins with {@code <}, a literal with a quote, and a quoted
+   * {@code "."} or an IRI with a {@code #} in it does not start with the marker.
+   */
+  private boolean atTerminatorOrComment() {
+    final char c = line.charAt(pos);
+    if (c == '#')
+      return true;
+    if (c != '.')
+      return false;
+    return pos + 1 >= line.length() || isWhitespace(line.charAt(pos + 1)) || line.charAt(pos + 1) == '#';
   }
 
   private static boolean isWhitespace(final char c) {
@@ -332,14 +349,16 @@ final class NTriplesStatement {
     if (pos < line.length() && line.charAt(pos) == '@') {
       final int tagBegin = pos;
       ++pos;
-      // A BCP 47 TAG IS ASCII ([A-Za-z0-9-]): A NON-ASCII LETTER OR DIGIT IN IT REFUSES THE ROW RATHER THAN CUT THE TAG SHORT
-      while (pos < line.length() && isLanguageTagChar(line.charAt(pos))) {
+      // THE LANGTAG OF N-TRIPLES: ASCII LETTERS, THEN GROUPS OF A '-' AND ASCII LETTERS OR DIGITS ("en", "en-GB", "zh-Hant-TW"). A TAG
+      // THAT IS NONE OF THAT (EMPTY, STARTING WITH A DIGIT, AN EMPTY GROUP, A NON-ASCII LETTER) REFUSES THE ROW RATHER THAN BE STORED
+      boolean valid = skipLanguageTagGroup(true);
+      while (valid && pos < line.length() && line.charAt(pos) == '-') {
         ++pos;
-        checkTermLength();
+        valid = skipLanguageTagGroup(false);
       }
-      if (pos < line.length() && Character.isLetterOrDigit(line.charAt(pos)))
-        throw new ImportException("Invalid language tag at column " + (tagBegin + 1) + ", a tag is ASCII letters, digits and "
-            + "'-' only: " + line);
+      if (!valid || (pos < line.length() && Character.isLetterOrDigit(line.charAt(pos))))
+        throw new ImportException("Invalid language tag at column " + (tagBegin + 1) + ", a tag is ASCII letters followed by groups "
+            + "of '-' and ASCII letters or digits (en-GB): " + line);
       buffer.append(line, tagBegin, pos);
       literalLanguage = line.substring(tagBegin + 1, pos);
     } else if (line.startsWith("^^", pos)) {
@@ -375,8 +394,18 @@ final class NTriplesStatement {
         + "escaped as \\\" in N-Triples and not doubled: " + line);
   }
 
-  private static boolean isLanguageTagChar(final char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
+  /** Skips one group of a language tag, ASCII letters for the first, letters and digits for the others: answers whether it is not empty. */
+  private boolean skipLanguageTagGroup(final boolean lettersOnly) {
+    final int begin = pos;
+    while (pos < line.length() && isAsciiLetterOrDigit(line.charAt(pos), lettersOnly)) {
+      ++pos;
+      checkTermLength();
+    }
+    return pos > begin;
+  }
+
+  private static boolean isAsciiLetterOrDigit(final char c, final boolean lettersOnly) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (!lettersOnly && c >= '0' && c <= '9');
   }
 
   /**
