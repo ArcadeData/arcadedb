@@ -50,6 +50,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -261,10 +262,8 @@ public class DeleteStep extends AbstractExecutionStep {
               }
             }
 
-            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
-            // clause names (#11688)
-            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
-              markCascadedRelationships(mutableResult, deletedVars);
+            if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && inputResult instanceof ResultInternal mutableResult)
+              markDeletedReferences(mutableResult, deletedVars);
 
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
@@ -327,21 +326,74 @@ public class DeleteStep extends AbstractExecutionStep {
     };
   }
 
-  /**
-   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
-   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
-   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
-   * of the step, so their names are read once.
-   */
-  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
+  static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
+    for (final String variable : row.getPropertyNames()) {
+      final Object value = row.getProperty(variable);
+      final Object marked = markDeletedValue(value, deleted, null);
+      if (marked != value)
+        row.setProperty(variable, marked);
+    }
+  }
+
+  private void markDeletedReferences(final ResultInternal row, final Set<String> deletedVars) {
     if (rowVariables == null)
       rowVariables = row.getPropertyNames().toArray(new String[0]);
     for (final String variable : rowVariables) {
-      if (deletedVars.contains(variable))
+      if (deletedVars != null && deletedVars.contains(variable))
         continue;
-      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
-        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
+      final Object value = row.getProperty(variable);
+      final Object marked = markDeletedValue(value, deleted, pendingVertices);
+      if (marked != value)
+        row.setProperty(variable, marked);
     }
+  }
+
+  private static Object markDeletedValue(final Object value, final DeletedSoFar deleted, final Set<RID> pendingVertices) {
+    if (value instanceof Edge edge) {
+      if (deleted.isDeletedEdge(edge))
+        return new DeletedEntityMarker(edge.getTypeName());
+      return value;
+    }
+
+    if (value instanceof Document doc) {
+      if (deleted.isDeletedRecord(doc) || (doc instanceof Vertex v && pendingVertices != null && pendingVertices.contains(v.getIdentity())))
+        return DeletedEntityMarker.INSTANCE;
+      return value;
+    }
+
+    if (value instanceof TraversalPath path) {
+      return path.withDeleted(
+          v -> deleted.isDeletedRecord(v) || (pendingVertices != null && pendingVertices.contains(v.getIdentity())),
+          e -> deleted.isDeletedEdge(e));
+    }
+
+    if (value instanceof List<?> list) {
+      List<Object> rebuilt = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object element = list.get(i);
+        final Object marked = markDeletedValue(element, deleted, pendingVertices);
+        if (marked != element && rebuilt == null)
+          rebuilt = new ArrayList<>(list);
+        if (rebuilt != null)
+          rebuilt.set(i, marked);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    if (value instanceof Map<?, ?> map) {
+      Map<Object, Object> rebuilt = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object val = entry.getValue();
+        final Object marked = markDeletedValue(val, deleted, pendingVertices);
+        if (marked != val && rebuilt == null)
+          rebuilt = new LinkedHashMap<>(map);
+        if (rebuilt != null)
+          rebuilt.put(entry.getKey(), marked);
+      }
+      return rebuilt != null ? rebuilt : value;
+    }
+
+    return value;
   }
 
   /**
@@ -910,6 +962,18 @@ public class DeleteStep extends AbstractExecutionStep {
         // THE EDGE RECORD IS GONE ALREADY
         return true;
       }
+    }
+
+    boolean isEmpty() {
+      return records.isEmpty() && edges.isEmpty() && vertices.isEmpty();
+    }
+
+    boolean isDeletedEdge(final Edge edge) {
+      return edges.contains(edge.getIdentity()) || (!vertices.isEmpty() && wentWithDeletedVertex(edge));
+    }
+
+    boolean isDeletedRecord(final Document doc) {
+      return records.contains(doc);
     }
 
     boolean hasDeletedVertices() {

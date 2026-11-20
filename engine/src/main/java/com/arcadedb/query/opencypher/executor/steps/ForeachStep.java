@@ -342,6 +342,9 @@ public class ForeachStep extends AbstractExecutionStep {
     // refreshed, and walking it after every element would make the loop quadratic
     if (written != null)
       RowAliases.propagateUpdates(inputRow, written);
+
+    if (!deletedSoFar.isEmpty() && inputRow instanceof ResultInternal mutableRow)
+      DeleteStep.markDeletedReferences(mutableRow, deletedSoFar);
   }
 
   private static boolean holdsCollection(final Result row) {
