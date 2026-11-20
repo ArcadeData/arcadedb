@@ -21,6 +21,7 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.ScanPressureReporter;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.Traverser;
@@ -37,7 +38,9 @@ import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
 import java.util.Iterator;
 import java.util.Locale;
+import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.function.Function;
 
 public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   /** A {@code hasLabel()} value with this prefix names one bucket rather than a type. */
@@ -95,17 +98,7 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
       final Iterator<Record> rawIterator = bucketName == null ?
           database.iterateType(resolvedTypeName, true) :
           database.iterateBucket(bucketName);
-      return new Iterator<>() {
-        @Override
-        public boolean hasNext() {
-          return rawIterator.hasNext();
-        }
-
-        @Override
-        public E next() {
-          return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
-        }
-      };
+      return new ScanIterator<>(this, rawIterator, record -> (E) graph.getVertexFromRecord(record));
     }
 
     // A LIGHTWEIGHT EDGE HAS NO RECORD, SO THE BUCKET SCAN OF ITS TYPE IS EMPTY BY CONSTRUCTION (#9142)
@@ -114,22 +107,70 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     final Iterator<? extends Record> rawIterator = lightweight ?
         LightweightEdges.ofType(database, resolvedTypeName) :
         bucketName == null ? database.iterateType(resolvedTypeName, true) : database.iterateBucket(bucketName);
-    return new CloseableIterator<E>() {
-      @Override
-      public void close() {
-        CloseableIterator.closeIterator(rawIterator);
-      }
+    return new ScanIterator<>(this, rawIterator, record -> (E) graph.getEdgeFromRecord(record));
+  }
 
-      @Override
-      public boolean hasNext() {
-        return rawIterator.hasNext();
-      }
+  /**
+   * One scan of a type or a bucket, closed at most once (#11639). What a scan holds is not always something {@link
+   * CloseableIterator#closeIterator} can close: the iterators of the engine are not {@link AutoCloseable}, and what they hold is the
+   * batch they read ahead, taken from the JVM-wide pool of read-ahead and given back by {@link ScanPressureReporter#releaseReadAhead()}.
+   * A scan the caller stops before its end (a {@code limit()}) would keep it until the garbage collector found the scan, shrinking
+   * the read-ahead of every other scan meanwhile. The scan of a lightweight edge type does hold something closeable, a result set,
+   * which is closed too.
+   * <p>
+   * The scan closes itself as soon as it is exhausted, so a step that opens one per incoming traverser holds no more than one open.
+   */
+  private static final class ScanIterator<E extends Element> implements CloseableIterator<E> {
+    // THE STEP THAT OPENED THE SCAN: AbstractStep.clone() COPIES THE ITERATOR OF A STEP THAT IS RUNNING TO ITS CLONE, WHICH MUST NOT CLOSE IT
+    private final Object                     owner;
+    private final Function<Record, E>        wrapper;
+    // DROPPED WHEN THE SCAN IS CLOSED: A CLOSED TRAVERSAL THAT IS KEPT MUST NOT KEEP THE BATCH THE SCAN HAD READ, WHOSE BYTES WENT BACK TO THE POOL
+    private       Iterator<? extends Record> rawIterator;
+    private       boolean                    closed = false;
 
-      @Override
-      public E next() {
-        return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
+    private ScanIterator(final Object owner, final Iterator<? extends Record> rawIterator, final Function<Record, E> wrapper) {
+      this.owner = owner;
+      this.rawIterator = rawIterator;
+      this.wrapper = wrapper;
+    }
+
+    @Override
+    public boolean hasNext() {
+      if (closed)
+        return false;
+      if (rawIterator.hasNext())
+        return true;
+      close();
+      return false;
+    }
+
+    @Override
+    public E next() {
+      if (closed)
+        throw new NoSuchElementException();
+      return wrapper.apply(rawIterator.next());
+    }
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      closed = true;
+      final Iterator<? extends Record> scan = rawIterator;
+      rawIterator = null;
+      try {
+        if (scan instanceof ScanPressureReporter reporter)
+          reporter.releaseReadAhead();
+      } finally {
+        CloseableIterator.closeIterator(scan);
       }
-    };
+    }
+  }
+
+  /** Closes the scan in hand if this step opened it: a clone shares the scan of the step it was cloned from, which is not the clone's to close. */
+  private void closeOwnScan() {
+    if (iterator instanceof ScanIterator<?> scan && scan.owner == this)
+      scan.close();
   }
 
   public String toString() {
@@ -163,6 +204,8 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
           }
         } else {
           this.head = this.starts.next();
+          // THE SCAN OF THE HEAD BEFORE HAS NOTHING LEFT TO GIVE, BUT IT IS CLOSED HERE ALL THE SAME: ONE OPEN SCAN AT MOST
+          CloseableIterator.closeIterator(this.iterator);
           this.iterator = openIterator();
         }
       }
@@ -172,6 +215,9 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
   @Override
   public void reset() {
     super.reset();
+    // A RESET DROPS THE SCAN IN HAND: GIVE IT BACK NOW INSTEAD OF WHEN THE GARBAGE COLLECTOR FINDS IT (#11639). AbstractStep.clone()
+    // RESETS THE CLONE WHILE IT STILL SHARES THE ITERATOR OF THE STEP IT WAS CLONED FROM: ONLY A SCAN THIS STEP OPENED IS ITS TO CLOSE
+    closeOwnScan();
     this.head = null;
     this.done = false;
     this.iterator = EmptyIterator.instance();

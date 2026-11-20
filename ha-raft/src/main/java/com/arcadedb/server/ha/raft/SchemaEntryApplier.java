@@ -540,7 +540,7 @@ final class SchemaEntryApplier {
    * does not hold - for example a rolling upgrade shipping a type this node's build cannot construct - which is a
    * silent, permanent divergence on replicated data against one SEVERE log line.
    */
-  // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
+  // Package-private rather than private so SealedBlobRepairAndRefusalTest.EngineRepair can drive the apply path directly:
   // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
   void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
       throws IOException {
@@ -1002,7 +1002,7 @@ final class SchemaEntryApplier {
    * operator can turn the incremental refresh off on a running server and have the very next applied entry go back
    * to the full rebuild, without a restart.
    */
-  // @VisibleForTesting - Issue6988SchemaIncrementalApplySettingTest pins the "read per entry, never cached" half,
+  // @VisibleForTesting - SchemaIncrementalApplyGateTest pins the "read per entry, never cached" half,
   // which is the half a reader cannot tell from the call site and which HaSchemaDeltaReplicationFullRebuildIT cannot show
   // (it sets the value once, at server start).
   boolean incrementalSchemaApplyEnabled() {

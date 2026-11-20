@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -152,7 +153,12 @@ public class ProjectReturnStep extends AbstractExecutionStep {
               }
               if (distinctKeys == null)
                 distinctKeys = new GroupKeyValues.Builder(names.size() * 2);
-              final GroupKeyValues key = distinctKeys.build(names, projectedResult::getProperty);
+              // A node a label write replaced is keyed by its original identity, so the rows projected before and after the
+              // write are one row (issue #10614)
+              final LabelReplacements replacements = LabelReplacements.existing(context);
+              final GroupKeyValues key = replacements == null ?
+                  distinctKeys.build(names, projectedResult::getProperty) :
+                  distinctKeys.build(names, name -> replacements.distinctKey(projectedResult.getProperty(name)));
               if (!seenResults.add(key))
                 continue;
               distinctLimit.add(seenResults.size(), key.canonicalValues(), HeapEstimator.HASH_ENTRY_BYTES);

@@ -213,7 +213,7 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
    * <p>
    * Verified against Apache Ratis 3.3.1: that delegation, the three previous-entry carve-outs above and the stock
    * exemption are what this override relies on, and nothing checks them at startup. Re-read them on a Ratis upgrade.
-   * {@code Issue8459InstallSnapshotNotifyLoopTest.rejectedAnchoredAppendFallsBackToANewNotification} runs in
+   * {@code InstallSnapshotNotifyLoopTest.rejectedAnchoredAppendFallsBackToANewNotification} runs in
    * notification mode and fails if the stock answer again hides the anchor from this method; it is the test that
    * caught the 3.3.1 change.
    */

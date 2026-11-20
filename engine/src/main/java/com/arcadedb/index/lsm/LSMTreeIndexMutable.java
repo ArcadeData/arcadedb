@@ -116,7 +116,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     // A file with no page at all has no header to read, and reading page 0 anyway would invent a zeroed one - and cache
     // it - instead of failing (issue #10046). An HA follower holds such a file between the entry that creates a
-    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short.
+    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short. A header
+    // page committed and not flushed yet is counted (issue #12101, see PaginatedComponent), so it is not taken for one.
     if (getTotalPages() == 0)
       throw new MissingHeaderException("Index file '" + name + "' has no header page");
     onAfterLoad();

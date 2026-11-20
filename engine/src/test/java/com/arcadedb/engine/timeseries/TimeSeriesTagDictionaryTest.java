@@ -239,18 +239,19 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
 
   /**
    * The self-heal must not be gated on this instance's page counter (issue #6198). That counter is seeded
-   * from the physical file size and afterwards only the schema-registered component gets it bumped at
-   * commit, so a second instance built while the writer's committed pages are still in the flush queue
-   * reads zero pages for a file that already holds a header and a data page. Gating on it made the
-   * lookup answer {@code null} in exactly the state the self-heal exists for - which is why the sibling
-   * test above passed alone and failed in a full-suite run, where the flush queue is behind.
+   * at construction, from the file and (since issue #12101) the flush queue, and afterwards only the
+   * schema-registered component gets it bumped at commit, so a second instance built before the writer
+   * commits its entries counts the header page alone for a file that holds a header and a data page. Gating
+   * on it made the lookup answer {@code null} in exactly the state the self-heal exists for - which is why
+   * the sibling test above passed alone and failed in a full-suite run, where the flush queue is behind.
    * <p>
-   * The flush is suspended here to pin that state down instead of racing the flusher for it.
+   * The flush is suspended here so that no page of the file reaches the disk while the test runs.
    */
   @Test
   void anIdIsResolvedWhileTheWriterPagesAreStillInTheFlushQueue() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
+    final AtomicReference<TimeSeriesTagDictionary> writerRef = new AtomicReference<>();
     final AtomicReference<TimeSeriesTagDictionary> followerRef = new AtomicReference<>();
     final AtomicReference<Throwable> failure = new AtomicReference<>();
 
@@ -259,8 +260,11 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
     db.getPageManager().suspendFlushAndExecute(db, () -> {
       try {
         final TimeSeriesTagDictionary writer = createDictionary("tags_unflushed");
-        writer.internAll(List.of("host_a", "host_b", "host_c"));
+        writerRef.set(writer);
+        // Built after the header page and before the entries: since issue #12101 an instance counts the pages the flush has not
+        // written yet, so it can no longer start from none, but it still misses what the writer commits after it
         followerRef.set(new TimeSeriesTagDictionary(db, "tags_unflushed", writer.getComponentFile()));
+        writer.internAll(List.of("host_a", "host_b", "host_c"));
       } catch (final Throwable t) {
         failure.set(t);
       }
@@ -271,8 +275,10 @@ class TimeSeriesTagDictionaryTest extends TestHelper {
 
     final TimeSeriesTagDictionary follower = followerRef.get();
     assertThat(follower).isNotNull();
-    // The fixture: not one page of this file had reached the disk when the follower was built
-    assertThat(follower.getTotalPages()).isZero();
+    // The fixture: the follower was built over the header page alone, before the writer committed its entries
+    assertThat(follower.getTotalPages()).isEqualTo(1);
+    assertThat(writerRef.get().getCommittedPageCount()).as("the fixture: the file holds more pages than the follower counts")
+        .isGreaterThan(follower.getTotalPages());
     assertThat(follower.size()).isZero();
 
     assertThat(follower.getById(2)).isEqualTo("host_b");

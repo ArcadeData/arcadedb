@@ -92,6 +92,7 @@ import com.arcadedb.index.sparsevector.SparseSegmentComponent;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.LSMVectorIndexGraphFile;
 import com.arcadedb.index.vector.VectorDeltaPayloadLedger;
+import com.arcadedb.index.vector.VectorGraphBuildCacheLedger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
@@ -275,6 +276,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected final    ComponentFile.MODE                        mode;
   protected final    ContextConfiguration                      configuration;
   protected final    String                                    databasePath;
+  // #12025: tells the instances of one path apart in DatabaseFactory's list of closes that left pages to the recovery
+  private static final AtomicLong                                INSTANCE_SEQUENCE         = new AtomicLong();
+  private final      long                                      instanceSequence          = INSTANCE_SEQUENCE.incrementAndGet();
   protected final    BinarySerializer                          serializer;
   protected final    RecordFactory                             recordFactory             = new RecordFactory();
   protected final    GraphEngine                               graphEngine;
@@ -293,6 +297,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * {@code arcadedb.vectorIndex.deltaCacheMaxHeapPercent} bounds for all of them together (issue #12379).
    */
   private final      VectorDeltaPayloadLedger                  vectorDeltaPayloadLedger  = new VectorDeltaPayloadLedger();
+  /**
+   * The heap the caches of the graph builds running on this database's vector indexes plan on (issue #12544), charged to
+   * the search caches, to the other builds and to the delta payload budget.
+   */
+  private final      VectorGraphBuildCacheLedger               vectorGraphBuildCacheLedger = new VectorGraphBuildCacheLedger();
   protected volatile DatabaseAsyncExecutorImpl                 async                     = null;
   // Held only for short, non-blocking sections: setWrappedDatabaseInstance() takes it from the HA wrapper's constructor,
   // so nothing may ever wait for the async workers while holding it.
@@ -1417,6 +1426,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * The ledger the graph builds of this database's vector indexes charge their caches to while they run (issue #12544).
+   * Answered whatever the state of the database: a build gives its charge back when it ends, even while the database closes.
+   */
+  public VectorGraphBuildCacheLedger getVectorGraphBuildCacheLedger() {
+    return vectorGraphBuildCacheLedger;
+  }
+
+  /**
    * Highest transaction id persisted in this database. Used by the HA bootstrap path
    * (issue #4147) as the recency signal when peers compare their local database state at
    * first cluster formation. Returns -1 if no transaction has ever been committed.
@@ -2174,8 +2191,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // NO INDEXES
         schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record, discardRecordAfter);
 
-      getTransaction().updateRecordInCache(record);
-      getTransaction().removeImmutableRecordsOfSamePage(record.getIdentity());
+      final TransactionContext tx = getTransaction();
+      tx.updateRecordInCache(record);
+      if (!implicitTransaction)
+        // #12472: A DELETE LATER IN THIS TRANSACTION FINDS THIS WRITE IN THE SLOT, AND MUST KNOW IT AS ITS OWN (THE COMMIT'S OWN
+        // WRITES ARE NOT TRACKED, SEE trackImmediateWrite)
+        tx.trackImmediateWrite(record.getIdentity());
+      tx.removeImmutableRecordsOfSamePage(record.getIdentity());
 
       success = true;
 
@@ -2419,7 +2441,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * another value. The page is pinned here, as an update pins it (#6950), and with it the page of the content a placeholder
    * points to ({@code LocalBucket.pinRecordForDelete}), so the commit-time version check covers what is compared now, and when
    * the record's slot no longer holds the image the record was read with, the cleanup reads the slot.
-   * The delete itself is unchanged: it removes the record by its RID, as before. The slot is read without the READ_RECORD check
+   * <p>
+   * When the difference is a concurrent transaction's, the delete is refused with the retryable
+   * {@link ConcurrentModificationException} an update gets in the same position (#6950), instead of removing whatever sits at the
+   * RID now (issue #12472): a record deleted and its RID reused by an insert would lose the unrelated new record, and a
+   * {@code DELETE ... WHERE} would remove a record a concurrent update made stop matching the predicate. The retry reads again and
+   * decides again. See {@link #isChangedByAnotherTransaction} for the changes that are the transaction's own and are not refused.
+   * Known limit, inherent to comparing images: a reused RID whose new record is byte for byte the old one (same type, same
+   * properties, and for a vertex the same edge-list heads) cannot be told from the record read, and is deleted. The heads of a
+   * vertex are compared with the rest: a vertex whose head moved since the read is refused anyway by
+   * {@code GraphEngine.deleteVertex}, which walks the heads the caller holds and then checks them against the record.
+   * <p>
+   * The slot is read without the READ_RECORD check
    * a user read takes and without the before-read events: the delete was granted, and the image only tells the delete which
    * entries to remove, so a listener hiding the record must not send the cleanup back to the image the caller read.
    * <p>
@@ -2430,7 +2463,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * the index past the stored image.
    * <p>
    * A record that was never loaded has no image to compare: it is read from the slot once the page is pinned, instead of
-   * loading itself, unpinned, when the cleanup asks its properties.
+   * loading itself, unpinned, when the cleanup asks its properties. Nothing is refused for it either: its caller decided on a RID,
+   * not on content, and the RID still names a record.
    * <p>
    * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
    * and one comparison in place: nothing is allocated for it.
@@ -2463,6 +2497,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (current == null)
         // A concurrent transaction deleted the record: the version check fails this delete at commit
         return document;
+      if (readImage != null && isChangedByAnotherTransaction(rid, readImage, current))
+        // #12472: THE SLOT HOLDS ANOTHER RECORD, OR THE SAME ONE CHANGED, AND THE CHANGE IS NOT THIS TRANSACTION'S: THE DELETE WAS
+        // DECIDED ON A RECORD THAT IS NO LONGER THERE. NOTHING HAS BEEN WRITTEN YET, SO THE REFUSAL LEAVES NOTHING HALF-APPLIED
+        throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction between its read "
+            + "and its delete. Please retry the operation");
       // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
       stored = readImage == null ? current : current.copyOfContent();
     } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
@@ -2473,6 +2512,31 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     return (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getTypeByBucketId(rid.getBucketId()), rid,
         stored, null);
+  }
+
+  /**
+   * Whether the record a delete is about to remove is no longer, byte for byte, the image the caller read, because of a
+   * transaction other than this one (issue #12472). Asked only once the slot was found to differ, so the record that is still the
+   * one read pays nothing for it.
+   * <p>
+   * The images are compared again here, whole, because {@code LocalBucket.hasRecordChangedSinceRead} also answers "changed" for an
+   * off-page record it could not assemble (a chain caught moving, or broken): only a difference between two images that were both
+   * read is a refusal, and a chain that cannot be read keeps the path that reports it (#6258).
+   * <p>
+   * A slot this transaction wrote itself is the transaction's own business: an insert is written to its page at once, and so is a
+   * write of the asynchronous executor, so the slot can differ from an image read before that write with no concurrent transaction
+   * involved, and refusing it would fail every retry the same way. A concurrent change committed before such a write was refused by
+   * the write itself ({@code TransactionContext.checkRecordIsStillTheOneRead}), and one committed after it fails the commit-time
+   * version check of the page the write holds. Every other write of the transaction is deferred to the commit and leaves the slot
+   * alone, so it never explains a difference: a record the transaction updated, or gave an edge, is refused like any other when the
+   * object deleted was read before a concurrent change (the update itself may have been computed from a newer read, or queued for
+   * the commit-time merge of the edge-list heads, #11498).
+   */
+  private boolean isChangedByAnotherTransaction(final RID rid, final Binary readImage, final Binary current) {
+    final int size = current.size();
+    if (size == readImage.size() && readImage.isSameRegionAs(0, current, 0, size))
+      return false;
+    return !getTransaction().isSlotWrittenInTransaction(rid);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */
@@ -4479,6 +4543,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (!open)
         return null;
 
+      // #12025: listed BEFORE the instance reports itself closed, and unlisted below only once the close forced the files
+      // (or deleted them). A Raft checkpoint that finds the instance closed therefore finds it listed too, whichever way the
+      // close is going to end, and does not declare its pages durable on the strength of a close that may not force them
+      DatabaseFactory.markClosingWithPagesAtRisk(this);
+
       try {
         if (async != null)
           async.close();
@@ -4673,6 +4742,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
 
+      // #12025: a clean close forced every file (the sync above succeeded and no WAL was left to the recovery), and a drop
+      // deleted them: either way nothing of this path is at risk any more. A close that left pages to the recovery stays
+      // listed until a later instance forces the files, and so does one whose teardown failed
+      if (teardownFailure == null && (drop || (!walPreservedForRecovery && dataSafeOnDisk)))
+        DatabaseFactory.releasePagesLeftToRecovery(this, true);
+
       if (teardownFailure instanceof RuntimeException runtime)
         throw runtime;
       if (teardownFailure instanceof Error error)
@@ -4710,6 +4785,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   /** #4927/#5070: whether this instance already consumed its PageManager lifecycle reference (see closeInternal). */
   private final AtomicBoolean pageManagerReferenceReleased = new AtomicBoolean(false);
+
+  /** Increases with every instance created in this JVM, so a later open of a path has a higher one (issue #12025). */
+  long getInstanceSequence() {
+    return instanceSequence;
+  }
 
   boolean isPageManagerReferenceReleased() {
     return pageManagerReferenceReleased.get();

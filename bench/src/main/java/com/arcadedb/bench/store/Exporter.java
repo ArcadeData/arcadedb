@@ -286,9 +286,10 @@ public final class Exporter {
         final int n = l.points.size();
         if (n == 0)
           continue;
+        // a release whose point failed has no median to compare against: "% vs previous release" falls back to the last one that ran
         JSONObject previousRelease = null;
         for (int i = n - 2; i >= 0 && previousRelease == null; i--)
-          if (!l.points.get(i).isNull("tag"))
+          if (!l.points.get(i).isNull("tag") && !l.points.get(i).isNull("median"))
             previousRelease = l.points.get(i);
         out.put(new JSONObject().put("workload", workload).put("case", caseName).put("scale", scale).put("metric", metric)
             .put("machineId", l.machineId).put("variant", l.variant).put("last", l.points.get(n - 1))

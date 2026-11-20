@@ -55,7 +55,7 @@ final class RaftTransportSetup {
    * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
    */
-  // Package-private rather than private so Issue3890RaftParametersPublicationTest can pin when
+  // Package-private rather than private so RaftParametersPublicationTest can pin when
   // raftParameters becomes visible - the property this method exists to get right.
   Parameters buildParameters(final ContextConfiguration configuration) {
     ha.allowlistFilter = null;

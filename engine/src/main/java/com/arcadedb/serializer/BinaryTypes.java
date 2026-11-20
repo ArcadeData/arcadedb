@@ -314,7 +314,11 @@ public class BinaryTypes {
         }
       }
       type = t;
-    } else {
+    } else if (value instanceof Character)
+      // THE STRING Type.TYPES_BY_USERTYPE MAPS IT TO, WRITTEN AS ITS ONE-CHARACTER TEXT AND READ BACK AS A String: IT USED TO FALL
+      // TO THE UNKNOWN BRANCH BELOW, SO THE PROPERTY WAS LEFT OUT OF THE RECORD AND A LIST OR MAP ELEMENT BECAME null (ISSUE #12021)
+      type = TYPE_STRING;
+    else {
       LogManager.instance()
           .log(BinaryTypes.class, Level.WARNING, "Cannot serialize value '%s' of type %s. The value will be ignored", value,
               value.getClass());
