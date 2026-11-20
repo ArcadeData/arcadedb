@@ -74,8 +74,9 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
     if (Arrays.equals(first, second))
       return 1.0;
 
-    final int[] max = first.length > second.length ? first : second;
-    final int[] min = max == first ? second : first;
+    final boolean firstIsLonger = first.length > second.length;
+    final int[] max = firstIsLonger ? first : second;
+    final int[] min = firstIsLonger ? second : first;
 
     final int range = Math.max(max.length / 2 - 1, 0);
     final int[] matchIndexes = new int[min.length];
