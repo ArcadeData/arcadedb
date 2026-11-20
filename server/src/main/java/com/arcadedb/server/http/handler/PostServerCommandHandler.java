@@ -24,6 +24,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BackupRefusedException;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -419,7 +420,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse deleteBackup(final String args) {
     final int space = args.indexOf(' ');
     if (space <= 0)
-      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+      throw new BackupRefusedException("Usage: delete backup <database> <fileName>");
 
     final String databaseName = args.substring(0, space).trim();
     final String fileName = args.substring(space + 1).trim();
@@ -499,13 +500,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse restoreDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
     if (space <= 0)
-      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+      throw new BackupRefusedException("Usage: restore database <name> <url>");
 
     final String databaseName = args.substring(0, space).trim();
     final String url = args.substring(space + 1).trim();
 
     if (databaseName.isEmpty() || url.isEmpty())
-      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+      throw new BackupRefusedException("Usage: restore database <name> <url>");
 
     // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
     // run here, first). Deliberate: a node that is going to refuse the command should not first
@@ -530,18 +531,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse restoreBackup(final String args, final JSONObject payload, final HttpServerExchange exchange) {
     final int asIdx = args.toLowerCase(Locale.ENGLISH).lastIndexOf(" as ");
     if (asIdx <= 0)
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final String head = args.substring(0, asIdx).trim();
     final String targetDatabase = args.substring(asIdx + 4).trim();
     final int space = head.indexOf(' ');
     if (space <= 0 || targetDatabase.isEmpty())
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final String databaseName = head.substring(0, space).trim();
     final String fileName = head.substring(space + 1).trim();
     if (databaseName.isEmpty() || fileName.isEmpty())
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final boolean overwrite = payload.getBoolean("overwrite", false);
 

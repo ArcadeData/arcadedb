@@ -118,7 +118,23 @@ class Issue12405BackupCommandsAddressEveryArchiveTest extends BaseGraphServerTes
     Files.deleteIfExists(archive);
   }
 
-  /** A name no earlier run of the suite used:the backup refuses to overwrite an archive, and the backup folder outlives a test. */
+  @Test
+  void aCommandMissingItsArgumentsNamesItsUsageInTheLabelAndIsA400() throws Exception {
+    final String[][] cases = {
+        { "delete backup " + getDatabaseName(), "Usage: delete backup <database> <fileName>" },
+        { "restore backup " + getDatabaseName(), "Usage: restore backup <database> <fileName> as <targetDatabase>" },
+        { "restore backup " + getDatabaseName() + " as usagetarget12405", "Usage: restore backup <database> <fileName> as <targetDatabase>" },
+        { "restore database usagetarget12405", "Usage: restore database <name> <url>" } };
+
+    for (final String[] c : cases) {
+      final Response response = server(c[0]);
+      assertThat(response.status).as("%s -> %s", c[0], response.body).isEqualTo(400);
+      assertThat(label(response)).as(c[0]).isEqualTo(c[1]);
+    }
+    assertThat(server("list databases").body).as("no database was left behind").doesNotContain("usagetarget12405");
+  }
+
+  /** A name no earlier run of the suite used: the backup refuses to overwrite an archive, and the backup folder outlives a test. */
   private static String uniqueName(final String purpose) {
     return purpose + "12405-" + System.nanoTime() + ".zip";
   }
