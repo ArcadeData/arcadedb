@@ -5928,7 +5928,8 @@ public class TransactionContext implements Transaction {
   /**
    * A key of the {@link MergedEdgeRegistry} the commit of this transaction marks without checking it (issue #11660): another
    * statement's relationship would also find what this transaction created, and checks this key, while two transactions marking it
-   * do not refuse each other. Only together with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   * do not refuse each other. A transaction that only marks keys - one that created relationships of a type a MERGE looks up by an
+   * index (#12483) - publishes them all the same.
    */
   public void markMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
@@ -5965,7 +5966,7 @@ public class TransactionContext implements Transaction {
    * relationship that another transaction committed after this one began, or is committing now (issue #11482).
    */
   private void reserveMergedEdges() {
-    if (mergedEdgeCheckedCount == 0)
+    if (mergedEdgeCheckedCount == 0 && mergedEdgeMarkedCount == 0)
       return;
     if (!database.getTransactionManager().getMergedEdges()
         .reserve(mergedEdgeChecked, mergedEdgeCheckedCount, mergedEdgeMarked, mergedEdgeMarkedCount, mergedEdgeEpoch))
