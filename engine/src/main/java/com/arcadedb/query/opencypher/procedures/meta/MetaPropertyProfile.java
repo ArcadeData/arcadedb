@@ -58,6 +58,8 @@ import java.util.TreeSet;
  * them carried it and with which value types, named as APOC names them ({@code Long}, {@code String},
  * {@code StringArray}, ...). Properties the schema declares are reported too, with 0 observations when no examined record
  * carried them.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 final class MetaPropertyProfile {
   private final Map<String, Long>        observations = new LinkedHashMap<>();

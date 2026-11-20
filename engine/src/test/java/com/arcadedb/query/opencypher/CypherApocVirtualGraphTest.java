@@ -46,6 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * The APOC virtual-graph family: virtual nodes and relationships ({@code create.vNode}, {@code create.vRelationship}), the
  * {@code meta.*} procedures that describe the graph, and {@code path.slice}.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class CypherApocVirtualGraphTest {
 
@@ -184,6 +186,39 @@ class CypherApocVirtualGraphTest {
       assertThat((Boolean) row.getProperty("any")).isTrue();
       assertThat((Boolean) row.getProperty("vNotW")).isTrue();
       assertThat((Boolean) row.getProperty("vAndW")).isFalse();
+    }
+
+    @Test
+    void dynamicLabelsAnswerOnAVirtualNodeAndRelationship() {
+      final Result row = single("""
+          WITH apoc.create.vNode(['A', 'B'], {x: 1}) AS n, apoc.create.vNode(['C']) AS c
+          WITH n, apoc.create.vRelationship(n, 'V', {}, c) AS r
+          RETURN n:$('A') AS a, n:$(['A', 'B']) AS allOfAB, n:$(['A', 'C']) AS allOfAC, n:$any(['C', 'B']) AS anyOfCB,
+                 n:$any(['C', 'D']) AS anyOfCD, n:$([]) AS emptyAll, n:$any([]) AS emptyAny, n:!$('B') AS notB,
+                 n:A&$('B') AS aAndB, n:C|$('A') AS cOrA, n:C|$('D') AS cOrD,
+                 r:$('V') AS v, r:$('W') AS w, r:$any(['W', 'V']) AS anyOfWV, r:!$('V') AS notV, r:V&$('V') AS vAndV,
+                 r:W|$('V') AS wOrV""");
+      assertThat((Boolean) row.getProperty("a")).isTrue();
+      assertThat((Boolean) row.getProperty("allOfAB")).isTrue();
+      assertThat((Boolean) row.getProperty("allOfAC")).isFalse();
+      assertThat((Boolean) row.getProperty("anyOfCB")).isTrue();
+      assertThat((Boolean) row.getProperty("anyOfCD")).isFalse();
+      assertThat((Boolean) row.getProperty("emptyAll")).isTrue();
+      assertThat((Boolean) row.getProperty("emptyAny")).isFalse();
+      assertThat((Boolean) row.getProperty("notB")).isFalse();
+      assertThat((Boolean) row.getProperty("aAndB")).isTrue();
+      assertThat((Boolean) row.getProperty("cOrA")).isTrue();
+      assertThat((Boolean) row.getProperty("cOrD")).isFalse();
+      assertThat((Boolean) row.getProperty("v")).isTrue();
+      assertThat((Boolean) row.getProperty("w")).isFalse();
+      assertThat((Boolean) row.getProperty("anyOfWV")).isTrue();
+      assertThat((Boolean) row.getProperty("notV")).isFalse();
+      assertThat((Boolean) row.getProperty("vAndV")).isTrue();
+      assertThat((Boolean) row.getProperty("wOrV")).isTrue();
+
+      // a dynamic label that is not a string is the same type error on a virtual node as on a stored one
+      assertThatThrownBy(() -> run("WITH apoc.create.vNode(['A']) AS n WHERE n:$(1) RETURN n"))
+          .satisfies(e -> assertThat(stackTraceOf(e)).contains("TypeError"));
     }
 
     @Test

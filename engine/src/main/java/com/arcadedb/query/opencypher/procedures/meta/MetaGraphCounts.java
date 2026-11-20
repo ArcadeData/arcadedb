@@ -44,6 +44,8 @@ import java.util.TreeMap;
  * of {@code meta.stats}' {@code propertyKeyCount}), and counts per pair of endpoint buckets, so what it allocates grows
  * with the number of distinct pairs and not with the number of relationships. It checks the {@link WorkGuard} as it goes,
  * so a deadline, a termination or an interrupt stops it.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 final class MetaGraphCounts {
   /** label - nodes carrying it, labels with at least one node only */

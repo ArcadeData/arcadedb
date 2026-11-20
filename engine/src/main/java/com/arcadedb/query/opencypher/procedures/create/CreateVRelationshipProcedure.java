@@ -30,6 +30,8 @@ import java.util.stream.Stream;
 /**
  * {@code CALL create.vRelationship(from, type, properties, to) YIELD rel}: the procedure form of the
  * {@link CreateVRelationship} function, as APOC declares both. It yields the virtual relationship under {@code rel}.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public class CreateVRelationshipProcedure implements CypherProcedure {
   public static final String NAME = "create.vRelationship";

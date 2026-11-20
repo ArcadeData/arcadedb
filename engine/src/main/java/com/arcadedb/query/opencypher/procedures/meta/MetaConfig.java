@@ -28,6 +28,8 @@ import java.util.Set;
  * -1 reads every record), {@code maxRels} (100 relationships read per sampled node), {@code includeLabels} /
  * {@code excludeLabels} / {@code includeRels} / {@code excludeRels}, and the deprecated {@code labels} / {@code rels} /
  * {@code excludes} spellings of the first, third and second. Unknown keys are ignored, as APOC ignores them.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 final class MetaConfig {
   static final long DEFAULT_SAMPLE   = 1000L;

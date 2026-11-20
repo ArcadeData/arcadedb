@@ -52,6 +52,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * The identity is {@code #-1:<id>}: bucket -1 is never a real bucket, so the RID cannot name a stored record, and every
  * virtual element gets its own id, so two of them are never equal. Everything that would write or reach the storage
  * answers {@link UnsupportedOperationException}.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public abstract class VirtualElement implements Document {
   private static final AtomicLong NEXT_ID = new AtomicLong();
