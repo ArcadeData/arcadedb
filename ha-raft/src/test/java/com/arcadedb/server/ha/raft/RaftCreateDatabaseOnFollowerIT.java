@@ -293,7 +293,7 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   }
 
   private boolean hasType(final int serverIndex, final String database, final String typeName) {
-    return getServer(serverIndex).getDatabase(database).getSchema().existsType(typeName);
+    return getServer(serverIndex).getDatabaseForOperator(database).getSchema().existsType(typeName);
   }
 
   /**
