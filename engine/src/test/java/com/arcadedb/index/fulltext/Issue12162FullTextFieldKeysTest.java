@@ -41,6 +41,8 @@ import static org.assertj.core.api.Assertions.within;
  * prefix query matched the {@code field:token} keys of every field whose name starts with the prefix, and an unprefixed token
  * that itself reads {@code field:token} (the StandardTokenizer keeps {@code title:java} as one token) was stored under the very
  * key of the field-qualified posting, so {@code title:java} matched a record holding that text in another field.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12162FullTextFieldKeysTest extends TestHelper {
 
@@ -231,6 +233,61 @@ class Issue12162FullTextFieldKeysTest extends TestHelper {
     database.command("sql", "REBUILD INDEX `" + index + "`");
     assertThat(search("ClassicArticle", index, "title:java").keySet()).containsExactly(5);
     assertThat(search("ClassicArticle", index, "ti*").keySet()).containsExactly(3);
+  }
+
+  @Test
+  void aFuzzyTermReachesTheEscapedAndTheUnescapedKeysItExpandsTo() {
+    // title\:jav~1 expands to two keys one edit away: ":title:java" (the escaped token of k = 4) and "titlejav" (a plain token). They
+    // sort far apart, and the walk of the expansions must reach both
+    database.transaction(() -> database.command("sql", "INSERT INTO Article SET k = 7, title = 'x', body = 'titlejav'"));
+    assertThat(search("Article", "Article[title,body]", "title\\:jav~1").keySet()).containsExactlyInAnyOrder(4, 7);
+    assertThat(search("Article", "Article[title,body]", "titlejav~2").keySet()).containsExactlyInAnyOrder(4, 7);
+    assertThat(search("Article", "Article[title,body]", "title:jav~1").keySet()).containsExactly(5);
+  }
+
+  @Test
+  void aFieldAnalyzerKeepsTheQualifiedPostingsApartFromTheEscapedUnprefixedOnes() {
+    // The qualified postings of title are analyzed by the analyzer of the property (EnglishAnalyzer), the unprefixed ones by the
+    // analyzer of the index: the escape applies to the unprefixed postings only, whatever writer stores them
+    for (final String similarity : new String[] { "CLASSIC", "BM25" }) {
+      final String type = "Stemmed" + similarity;
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".k INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".title STRING");
+        database.command("sql", "CREATE PROPERTY " + type + ".body STRING");
+        database.command("sql", "CREATE INDEX ON " + type + " (title, body) FULL_TEXT METADATA {\"similarity\": \"" + similarity
+            + "\", \"title_analyzer\": \"org.apache.lucene.analysis.en.EnglishAnalyzer\"}");
+        database.command("sql", "INSERT INTO " + type + " SET k = 1, title = 'Running fast', body = 'see title:java here'");
+        database.command("sql", "INSERT INTO " + type + " SET k = 2, title = 'java', body = 'x'");
+        database.command("sql", "INSERT INTO " + type + " SET k = 3, title = 'Tiger', body = 'cat'");
+      });
+      final String index = type + "[title,body]";
+
+      // the stemmed qualified postings are reached by the stem, and title:java is the title posting of java alone
+      assertThat(search(type, index, "title:run").keySet()).as(similarity).containsExactly(1);
+      assertThat(search(type, index, "title:java").keySet()).as(similarity).containsExactly(2);
+      assertThat(search(type, index, "body:java").keySet()).as(similarity).isEmpty();
+      // the literal token of the body is an unprefixed posting, found by the analyzer of the index
+      assertThat(search(type, index, "title\\:java").keySet()).as(similarity).containsExactly(1);
+      assertThat(search(type, index, "title\\:ja*").keySet()).as(similarity).containsExactly(1);
+      assertThat(search(type, index, "title\\:jav~1").keySet()).as(similarity).containsExactly(1);
+      assertThat(search(type, index, "ti*").keySet()).as(similarity).containsExactlyInAnyOrder(1, 3);
+      assertThat(search(type, index, "title:ti*").keySet()).as(similarity).containsExactly(3);
+
+      database.transaction(() -> database.command("sql", "UPDATE " + type + " SET body = 'nothing' WHERE k = 1"));
+      assertThat(search(type, index, "title\\:java").keySet()).as(similarity).isEmpty();
+      assertThat(search(type, index, "title:java").keySet()).as(similarity).containsExactly(2);
+      assertThat(search(type, index, "title:run").keySet()).as(similarity).containsExactly(1);
+
+      database.command("sql", "REBUILD INDEX `" + index + "`");
+      assertThat(search(type, index, "title:java").keySet()).as(similarity).containsExactly(2);
+      assertThat(search(type, index, "ti*").keySet()).as(similarity).containsExactly(3);
+
+      database.transaction(() -> database.command("sql", "DELETE FROM " + type));
+      // not one posting is left behind by a key the removal did not name
+      assertThat(((TypeIndex) database.getSchema().getIndexByName(index)).countEntries()).as(similarity).isZero();
+    }
   }
 
   private RID ridOf(final int k) {

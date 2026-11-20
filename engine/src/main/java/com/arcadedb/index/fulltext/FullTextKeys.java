@@ -32,6 +32,8 @@ import java.util.List;
  * an unprefixed token as it is.
  * <p>
  * An index written before the escape kept those few tokens unescaped: they read as qualified keys until the index is rebuilt.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 final class FullTextKeys {
   static final char ESCAPE = ':';

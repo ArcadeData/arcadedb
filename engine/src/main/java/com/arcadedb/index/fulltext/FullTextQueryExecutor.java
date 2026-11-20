@@ -1019,10 +1019,19 @@ public class FullTextQueryExecutor {
       return;
 
     // The walk spans the chosen keys only, and decides each posting with one lookup rather than one edit distance. The span is
-    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order
-    final TreeSet<String> sorted = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
-    sorted.addAll(expansions);
-    iterateAndMatch(sorted.first(), sorted.last(), expansions::contains, scoreMap, boostFor(query.getTerm().field()));
+    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order. An escaped key
+    // (see FullTextKeys, issue #12162) sorts before every letter: one span over both kinds of key would also read every key between
+    // an escaped one and the last plain one, so each kind is walked over its own span
+    final TreeSet<String> escaped = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    final TreeSet<String> plain = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    for (final String key : expansions)
+      (!key.isEmpty() && key.charAt(0) == FullTextKeys.ESCAPE ? escaped : plain).add(key);
+
+    final float boost = boostFor(query.getTerm().field());
+    if (!escaped.isEmpty())
+      iterateAndMatch(escaped.first(), escaped.last(), expansions::contains, scoreMap, boost);
+    if (!plain.isEmpty())
+      iterateAndMatch(plain.first(), plain.last(), expansions::contains, scoreMap, boost);
   }
 
   /** The most terms a fuzzy clause expands to (issue #12462): Lucene's FuzzyQuery default unless the index sets its own. */
