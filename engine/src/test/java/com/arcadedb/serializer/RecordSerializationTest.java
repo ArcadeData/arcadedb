@@ -689,6 +689,36 @@ class RecordSerializationTest {
           .containsEntry("byName", MAP_OF_LINKS_HINT);
     }
 
+    /** The row an openCypher {@code RETURN n} produces: the element itself, tagged with its projection name. */
+    private JSONObject serializeCypherRow(final MutableDocument doc) {
+      final ResultInternal row = new ResultInternal(doc);
+      row.setMetadata("_projectionName", "n");
+      return new JsonSerializer(database).setIncludeTypeHints(true).serializeResult(database, row);
+    }
+
+    @Test
+    void aCypherReturnedElementGetsTheLinkHintOfItsUndeclaredProperties() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("friend", other).set("friends", new ArrayList<>(List.of(other))).set("byName", new HashMap<>(Map.of("x", other)));
+      doc.set("declaredLink", other).set("text", "#1:0");
+
+      // the declared LINK and the text keep their shape, as in any other element row
+      assertThat(hintsOf(serializeCypherRow(doc))).containsOnly(Map.entry("friend", LINK_HINT), Map.entry("friends", LIST_OF_LINKS_HINT),
+          Map.entry("byName", MAP_OF_LINKS_HINT));
+    }
+
+    @Test
+    void aCypherReturnedElementWithEmbeddedDocumentsGetsNoLinkHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("list", new ArrayList<>()).set("map", new HashMap<>());
+      doc.newEmbeddedDocument("Addr", "one").set("city", "Rome");
+      doc.newEmbeddedDocument("Addr", "list").set("city", "Milan");
+      doc.newEmbeddedDocument("Addr", "map", "home").set("city", "Turin");
+      doc.set("vertices", new ArrayList<>(List.of(other.asVertex())));
+
+      assertThat(serializeCypherRow(doc).has("@props")).isFalse();
+    }
+
     @Test
     void aProjectedListOrMapOfEmbeddedDocumentsGetsNoLinkElementType() {
       // SELECT addresses FROM Person: the column is a LIST, which JSON does not round-trip, so it keeps its container hint

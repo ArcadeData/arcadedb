@@ -266,8 +266,9 @@ public class JsonSerializer {
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
-          // non-finite needs a hint, or the client reads the marker string back as a String
-          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+          // non-finite needs a hint, or the client reads the marker string back as a String. Issue #12195: so does a link, or a
+          // list or map of links, which the client reads back as its "#12:0" text
+          if (projectionTypes != null && propertyType == null && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
             // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
             final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
             if (hintType != null)

@@ -138,6 +138,18 @@ class Issue12195RemoteLinkReadBackIT extends BaseGraphServerTest {
     assertThat(doc.<Map<String, Object>>getMap("dmapl")).containsEntry("x", other);
   }
 
+  /** MATCH (n) RETURN n: the vertex goes through the openCypher projection, which has its own element row. */
+  @Test
+  void aCypherReturnedVertexReadsItsLinksAsRids() {
+    final RID other = db.command("sql", "INSERT INTO P12195 SET name = 'other'").next().getIdentity().get();
+    db.command("sql",
+        "INSERT INTO P12195 SET name = 'me', friend = " + other + ", friends = [" + other + "], byName = {'x': " + other + "}");
+
+    try (final ResultSet rs = db.query("opencypher", "MATCH (n:P12195 {name: 'me'}) RETURN n")) {
+      assertLinks(rs.next().getVertex().get(), other);
+    }
+  }
+
   /** The content of an embedded document in an undeclared property: a single one, a list of them and a map of them. */
   @Test
   void undeclaredEmbeddedDocumentsKeepTheirContent() {
