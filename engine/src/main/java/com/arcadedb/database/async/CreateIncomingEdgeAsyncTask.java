@@ -42,6 +42,14 @@ public class CreateIncomingEdgeAsyncTask extends DatabaseAsyncAbstractTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+    connectIncomingSide(database);
+  }
+
+  /**
+   * Appends the edge to the IN list of the destination and reports it to the callback. Separate from {@link #execute} for the
+   * caller that is already running on the worker of the destination's slot and so must not schedule a task onto its own queue.
+   */
+  void connectIncomingSide(final DatabaseInternal database) {
     database.getGraphEngine().connectIncomingEdge(destinationVertex, sourceVertexRID, edge.getIdentity());
 
     if (callback != null)
