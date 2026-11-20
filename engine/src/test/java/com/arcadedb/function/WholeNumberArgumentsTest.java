@@ -551,7 +551,7 @@ class WholeNumberArgumentsTest {
         Map.entry("function/sql/math/NumericSum#get: i2b", 1),
         Map.entry("function/sql/math/NumericSum#get: i2s", 1),
         // round(value) IS the rounding the function is asked for
-        Map.entry("function/math/RoundFunction#execute: java/lang/Math.round", 1),
+        Map.entry("function/math/RoundFunction#roundToNearestInteger: java/lang/Math.round", 1),
         // a list index computed from the size of the collected values, never from an argument
         Map.entry("function/sql/math/SQLFunctionPercentile#evaluate: d2i", 2),
         Map.entry("function/sql/time/SQLFunctionTsPercentile#getResult: d2i", 2),
