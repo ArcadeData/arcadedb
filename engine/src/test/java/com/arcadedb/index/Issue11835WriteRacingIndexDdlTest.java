@@ -231,7 +231,8 @@ class Issue11835WriteRacingIndexDdlTest extends TestHelper {
         database.rollback();
     }
 
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM BUCKET:b1")) {
+    // count(), not count(*): the latter may answer from the bucket's cached counter, a scan is the ground truth (engine/CLAUDE.md)
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM BUCKET:b1")) {
       assertThat(((Number) rs.next().getProperty("c")).longValue()).as("records the writer put in the new bucket").isPositive();
     }
     assertThat(countWhere("g = 9")).isEqualTo(4);
@@ -301,7 +302,7 @@ class Issue11835WriteRacingIndexDdlTest extends TestHelper {
   }
 
   private long countWhere(final String condition) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM T WHERE " + condition)) {
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM T WHERE " + condition)) {
       return ((Number) rs.next().getProperty("c")).longValue();
     }
   }
