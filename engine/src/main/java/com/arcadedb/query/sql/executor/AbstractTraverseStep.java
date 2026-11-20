@@ -171,7 +171,8 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   private OperationHeapLimit heapLimit() {
     if (heapLimit == null)
-      heapLimit = OperationHeapLimit.of(context, "visited records", "TRAVERSE");
+      // THE LIMIT COVERS THE VISITED SET AND THE FRONTIER, SO IT IS NOT NAMED AFTER THE FIRST ALONE
+      heapLimit = OperationHeapLimit.of(context, "records", "TRAVERSE");
     return heapLimit;
   }
 
