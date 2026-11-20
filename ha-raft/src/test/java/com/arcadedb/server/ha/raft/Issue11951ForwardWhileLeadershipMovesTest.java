@@ -41,8 +41,8 @@ import static org.mockito.Mockito.when;
  * this node's own. That is a transition, not a configuration fault: it is refused naming no leader, the retryable answer a
  * write gets mid-election (HTTP 503), which this node's own transaction retry gets past once the move settles.
  * <p>
- * Drives the private {@code forwardCommandToLeaderViaRaft} directly, as {@code Issue7527RaftReplicatedDatabaseForwardTimeoutTest}
- * does: the decision is local to the forward, and the window it covers cannot be held open on a live cluster.
+ * Drives the private {@code forwardCommandToLeaderViaRaft} directly, as {@code ForwardedWriteDeadlineTest} does: the decision is
+ * local to the forward, and the window it covers cannot be held open on a live cluster.
  */
 class Issue11951ForwardWhileLeadershipMovesTest {
   private static final RaftPeerId THIS_NODE = RaftPeerId.valueOf("this-node_2434");

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -44,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The window is made deterministic by transferring to a peer that is down: Ratis keeps the transfer pending until the
  * target wins or the transfer's own timeout elapses, and a stopped target cannot win, so the whole timeout refuses writes.
  */
+@Tag("slow")
 class Issue11951SteppingDownLeaderRefusesRetryablyIT extends BaseRaftHATest {
   private static final long TRANSFER_TIMEOUT_MS = 8_000L;
 
