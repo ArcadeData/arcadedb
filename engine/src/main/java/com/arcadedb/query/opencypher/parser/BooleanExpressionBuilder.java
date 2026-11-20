@@ -208,8 +208,9 @@ final class BooleanExpressionBuilder {
       node = parent;
     }
     final String text = CypherASTBuilder.getOriginalText(pattern);
-    if (node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument
-        && "size".equalsIgnoreCase(functionName((Cypher25Parser.FunctionInvocationContext) argument.getParent())))
+    final Cypher25Parser.FunctionInvocationContext function =
+        node.getParent() instanceof Cypher25Parser.FunctionArgumentContext argument ? functionOf(argument) : null;
+    if (function != null && "size".equalsIgnoreCase(functionName(function)))
       throw new NonBooleanPatternExpressionException("A pattern expression should only be used in order to test the "
           + "existence of a pattern. It can no longer be used inside the function size(), an alternative is to replace "
           + "size() with COUNT {}: size(" + text + ")");
@@ -275,12 +276,17 @@ final class BooleanExpressionBuilder {
       case Cypher25Parser.PatternComprehensionContext comprehension -> comprehension.whereExp == expression;
       case Cypher25Parser.ListItemsPredicateContext predicate -> predicate.whereExp == expression;
       case Cypher25Parser.FunctionArgumentContext argument -> {
-        final Cypher25Parser.FunctionInvocationContext function = (Cypher25Parser.FunctionInvocationContext) argument.getParent();
-        yield function.DISTINCT() == null && function.functionArgument().size() == 1 && "exists".equalsIgnoreCase(
+        final Cypher25Parser.FunctionInvocationContext function = functionOf(argument);
+        yield function != null && function.DISTINCT() == null && function.functionArgument().size() == 1 && "exists".equalsIgnoreCase(
             functionName(function));
       }
       case null, default -> false;
     };
+  }
+
+  /** The call an argument belongs to: the grammar has {@code functionArgument} under {@code functionInvocation} only. */
+  private static Cypher25Parser.FunctionInvocationContext functionOf(final Cypher25Parser.FunctionArgumentContext argument) {
+    return argument.getParent() instanceof Cypher25Parser.FunctionInvocationContext function ? function : null;
   }
 
   private static String functionName(final Cypher25Parser.FunctionInvocationContext function) {
@@ -533,9 +539,10 @@ final class BooleanExpressionBuilder {
       return createFallbackComparison(ctx);
     }
 
-    // Check if the expression is a list predicate (any/all/none/single) used as a boolean
+    // Check if the expression is a list predicate (any/all/none/single) used as a boolean. It must be the whole operand: one
+    // found deeper (inside a CASE, for one) would be returned alone and drop the expression around it (#11888).
     final Cypher25Parser.ListItemsPredicateContext listPredCtx = ParseTreeSearch.findListItemsPredicateRecursive(expr6);
-    if (listPredCtx != null) {
+    if (listPredCtx != null && spansSameTokens(listPredCtx, expr6)) {
       final Expression listPredExpr = expressionBuilder.parseListItemsPredicate(listPredCtx);
       // Wrap via BooleanCoercionExpression (rather than an anonymous adapter) so the semantic
       // validator can reach the underlying predicate and scope-check its WHERE body. This catches

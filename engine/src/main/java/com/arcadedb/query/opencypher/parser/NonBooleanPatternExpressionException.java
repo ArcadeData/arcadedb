@@ -25,6 +25,8 @@ import com.arcadedb.exception.CommandParsingException;
  * like {@link FeatureNotImplementedException}, so that the AST build of a subquery body, which falls back to the body text
  * on any other parse failure, lets the refusal through: the text fallback would defer it to execution, and an EXISTS that
  * the boolean simplifier drops (for example {@code true OR EXISTS { ... }}) would never report it.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public class NonBooleanPatternExpressionException extends CommandParsingException {
   public NonBooleanPatternExpressionException(final String message) {

@@ -37,6 +37,8 @@ import static org.assertj.core.api.SoftAssertions.assertSoftly;
  * keeps answering.
  * <p>
  * Graph: a -> b, a -> c, b -> c, so a has two outgoing relationships, b one and c none.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class CypherPatternExpressionNonBooleanWhereIssue11888Test extends TestHelper {
 
@@ -161,6 +163,40 @@ class CypherPatternExpressionNonBooleanWhereIssue11888Test extends TestHelper {
     assertThat(rows("MATCH (p:P) WHERE none(x IN [p] WHERE (x)-->()) RETURN p.n AS n")).containsExactly("c");
     assertThat(rows("MATCH (p:P) WHERE size([x IN [p] WHERE (x)<--()]) > 0 RETURN p.n AS n")).containsExactly("b", "c");
     assertThat(rows("MATCH (p:P) WHERE p.n IN [x IN [p] WHERE (x)-->() | x.n] RETURN p.n AS n")).containsExactly("a", "b");
+  }
+
+  /**
+   * A list predicate (any, all, none, single) nested in a larger expression of a WHERE, such as a CASE, was taken for the
+   * whole predicate: the WHERE parser returned the first one it found in the operand and dropped the CASE around it. With
+   * a pattern in its own WHERE the same statement used to fail on the unbound variable, so refusing the pattern outside a
+   * boolean position was not enough to make it answer.
+   */
+  @Test
+  void listPredicateInsideACaseKeepsTheCase() {
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN false THEN any(x IN [p] WHERE x.n = 'a') ELSE false END RETURN p.n AS n"))
+        .isEmpty();
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN true THEN false ELSE any(x IN [p] WHERE x.n = 'a') END RETURN p.n AS n"))
+        .isEmpty();
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN any(x IN [p] WHERE x.n = 'a') THEN false ELSE true END RETURN p.n AS n"))
+        .containsExactly("b", "c");
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN false THEN all(x IN [p] WHERE x.n = 'a') ELSE false END RETURN p.n AS n"))
+        .isEmpty();
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN false THEN any(x IN [p] WHERE (x)-->()) ELSE false END RETURN p.n AS n"))
+        .isEmpty();
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN true THEN any(x IN [p] WHERE (x)-->()) ELSE false END RETURN p.n AS n"))
+        .containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE CASE WHEN p.n = 'c' THEN true ELSE any(x IN [p] WHERE (x)-->()) END RETURN p.n AS n"))
+        .containsExactly("a", "b", "c");
+  }
+
+  /** A list predicate that is the whole operand keeps answering, bare, in parentheses and under a boolean operator. */
+  @Test
+  void listPredicateAsABooleanKeepsAnswering() {
+    assertThat(rows("MATCH (p:P) WHERE any(x IN [p] WHERE (x)-->()) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE (any(x IN [p] WHERE (x)-->())) RETURN p.n AS n")).containsExactly("a", "b");
+    assertThat(rows("MATCH (p:P) WHERE any(x IN [p] WHERE (x)-->()) AND p.n <> 'a' RETURN p.n AS n")).containsExactly("b");
+    assertThat(rows("MATCH (p:P) WHERE NOT any(x IN [p] WHERE x.n = 'a') RETURN p.n AS n")).containsExactly("b", "c");
+    assertThat(rows("MATCH (p:P) WHERE single(x IN [p.n, 'z'] WHERE x = 'a') RETURN p.n AS n")).containsExactly("a");
   }
 
   private List<Object> rows(final String statement) {
