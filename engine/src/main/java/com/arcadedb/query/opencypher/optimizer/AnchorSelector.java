@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.optimizer;
 
 import com.arcadedb.query.opencypher.ast.*;
+import com.arcadedb.query.opencypher.executor.IdSeekValues;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -151,6 +152,12 @@ public class AnchorSelector {
    * @return anchor selection with cost estimate
    */
   private AnchorSelection evaluateNode(final LogicalNode node, final LogicalPlan plan) {
+    // A node the WHERE clause pins by id is fetched by RID: one lookup per id, whatever the label holds (issue #12134). Nothing an
+    // index or a scan offers reads fewer records, so it is taken before any of them
+    final AnchorSelection byId = evaluateIdSeek(node, plan);
+    if (byId != null)
+      return byId;
+
     // A label disjunction with no per-root index (issue #6397) is served by NodeByLabelDisjunctionScan, which
     // visits every type any alternative accepts. Costing it here from the first label alone described a scan
     // that never runs (issue #6363), so the estimate is summed over exactly the types that scan will walk.
@@ -313,6 +320,21 @@ public class AnchorSelector {
         cost,
         typeCount
     );
+  }
+
+  /** The lookup by id of {@code node}, or null when no conjunct of the WHERE clause pins it by id (issue #12134). */
+  private AnchorSelection evaluateIdSeek(final LogicalNode node, final LogicalPlan plan) {
+    if (plan.getWhereFilters() == null)
+      return null;
+    for (final WhereClause whereClause : plan.getWhereFilters()) {
+      final InListValues ids = IdSeekValues.find(whereClause.getConditionExpression(), node.getVariable());
+      if (ids != null) {
+        // A list parameter is costed as a handful of ids: still far below any seek of an index
+        final long rows = ids.getValues().size() == 1 && ids.isWholeList(ids.getValues().getFirst()) ? 10 : ids.getValues().size();
+        return new AnchorSelection(node.getVariable(), node, ids, rows * CostModel.INDEX_LOOKUP_COST_PER_ROW, rows);
+      }
+    }
+    return null;
   }
 
   /** Whether one seek finds one row at most: a unique index whose every key column is bound */

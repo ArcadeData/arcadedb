@@ -46,6 +46,7 @@ public class AnchorSelection {
   private final List<RangePredicate> rangePredicates;  // For range scan
   private final List<DisjunctionIndexSeek> disjunctionIndexSeeks;  // For a label-disjunction equality index seek
   private final List<UnionIndexSeek> unionIndexSeeks;  // For an OR of index-served predicates (issue #8723)
+  private final InListValues ids;  // For a lookup by id, elementId(n) = $id or IN $ids (issue #12134)
   private final double estimatedCost;
   private final long estimatedCardinality;
 
@@ -120,12 +121,27 @@ public class AnchorSelection {
     this(variable, node, true, null, null, null, null, null, null, unionIndexSeeks, estimatedCost, estimatedCardinality);
   }
 
-  // Main constructor
+  // Constructor for a lookup by id: the records are fetched by RID (issue #12134)
+  public AnchorSelection(final String variable, final LogicalNode node, final InListValues ids,
+                        final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, true, null, null, null, null, null, null, null, ids, estimatedCost, estimatedCardinality);
+  }
+
   private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
                          final IndexStatistics index, final String propertyName, final Object propertyValue,
                          final List<Object> keyValues, final List<RangePredicate> rangePredicates,
                          final List<DisjunctionIndexSeek> disjunctionIndexSeeks, final List<UnionIndexSeek> unionIndexSeeks,
                          final double estimatedCost, final long estimatedCardinality) {
+    this(variable, node, useIndex, index, propertyName, propertyValue, keyValues, rangePredicates, disjunctionIndexSeeks,
+        unionIndexSeeks, null, estimatedCost, estimatedCardinality);
+  }
+
+  // Main constructor
+  private AnchorSelection(final String variable, final LogicalNode node, final boolean useIndex,
+                         final IndexStatistics index, final String propertyName, final Object propertyValue,
+                         final List<Object> keyValues, final List<RangePredicate> rangePredicates,
+                         final List<DisjunctionIndexSeek> disjunctionIndexSeeks, final List<UnionIndexSeek> unionIndexSeeks,
+                         final InListValues ids, final double estimatedCost, final long estimatedCardinality) {
     this.variable = variable;
     this.node = node;
     this.useIndex = useIndex;
@@ -137,6 +153,7 @@ public class AnchorSelection {
     this.rangePredicates = rangePredicates;
     this.disjunctionIndexSeeks = disjunctionIndexSeeks == null ? List.of() : List.copyOf(disjunctionIndexSeeks);
     this.unionIndexSeeks = unionIndexSeeks == null ? List.of() : List.copyOf(unionIndexSeeks);
+    this.ids = ids;
     this.estimatedCost = estimatedCost;
     this.estimatedCardinality = estimatedCardinality;
   }
@@ -239,6 +256,18 @@ public class AnchorSelection {
   }
 
   /**
+   * Returns true when this anchor is a lookup by id (issue #12134): the {@code WHERE} clause pins the node to the records
+   * {@link #getIds()} names, which are fetched by RID. It has no index.
+   */
+  public boolean isIdSeek() {
+    return ids != null;
+  }
+
+  public InListValues getIds() {
+    return ids;
+  }
+
+  /**
    * Returns the estimated cost of accessing this anchor.
    */
   public double getEstimatedCost() {
@@ -263,7 +292,9 @@ public class AnchorSelection {
       // (via appendStepChain -> AbstractExecutionStep.prettyPrint on the physical-operator wrapper step, reached
       // through EXPLAIN's per-branch UNION description), so index.getIndexName() below would NPE for this shape
       // if it were not branched around.
-      if (isUnionIndexSeek()) {
+      if (isIdSeek()) {
+        sb.append(", ids=").append(ids);
+      } else if (isUnionIndexSeek()) {
         sb.append(", unionSeeks=").append(unionIndexSeeks);
       } else if (isDisjunctionIndexSeek()) {
         sb.append(", disjunctionSeeks=").append(disjunctionIndexSeeks);

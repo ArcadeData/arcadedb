@@ -48,6 +48,8 @@ import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.IdSeekValues;
+import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -93,7 +95,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class MatchNodeStep extends AbstractExecutionStep {
   private final String              variable;
   private final NodePattern         pattern;
-  private final String              idFilter;    // Optional ID filter to apply (e.g., "#1:0")
+  // Optional ids the WHERE clause pins the node to (elementId(n) = $id, id(n) IN $ids, ...), fetched by RID: issue #12134
+  private final InListValues        idSeek;
   private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
   private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
   // Read-only empty result used to evaluate context-only pattern property expressions (e.g. a parameter
@@ -203,11 +206,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param variable variable name to bind vertices to
    * @param pattern  node pattern to match
    * @param context  command context
-   * @param idFilter optional ID filter to apply (e.g., "#1:0")
+   * @param idSeek   optional ids to fetch by RID, see {@link IdSeekValues#find}
    */
   public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context,
-                       final String idFilter) {
-    this(variable, pattern, context, idFilter, null);
+                       final InListValues idSeek) {
+    this(variable, pattern, context, idSeek, null);
   }
 
   /**
@@ -216,15 +219,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param variable    variable name to bind vertices to
    * @param pattern     node pattern to match
    * @param context     command context
-   * @param idFilter    optional ID filter to apply (e.g., "#1:0")
+   * @param idSeek      optional ids to fetch by RID, see {@link IdSeekValues#find}
    * @param whereFilter optional inline WHERE predicate for pushdown filtering
    */
   public MatchNodeStep(final String variable, final NodePattern pattern, final CommandContext context,
-                       final String idFilter, final BooleanExpression whereFilter) {
+                       final InListValues idSeek, final BooleanExpression whereFilter) {
     super(context);
     this.variable = variable;
     this.pattern = pattern;
-    this.idFilter = idFilter;
+    this.idSeek = idSeek;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
     this.dynamicIdExpression = whereFilter != null ? findIdValueExpression(whereFilter) : null;
     // When the dynamic ID expression handles {@code id(variable) = X} via runtime RID lookup, the
@@ -579,7 +582,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       // The index seek answered a value the row decides, so the candidates of this row are not the candidates of
       // the next one (issue #12522)
       return false;
-    if ((idFilter != null && !idFilter.isEmpty()) || dynamicIdExpression != null || pattern.hasDynamicLabels())
+    if (idSeek != null || dynamicIdExpression != null || pattern.hasDynamicLabels())
       return false;
     final List<String> labels = pattern.getLabels();
     if (labels != null && labels.size() == 1) {
@@ -638,37 +641,71 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return expr instanceof PropertyAccessExpression propAccess && variable.equals(propAccess.getVariableName());
   }
 
+  /**
+   * The records at {@code rids}, in order, without the ones that do not exist; labels and properties are checked by the caller.
+   * Looked up one at a time as the rows are pulled, so a LIMIT stops the lookups and the command deadline is checked before each.
+   */
+  private Iterator<Identifiable> lookUpIds(final List<RID> rids) {
+    if (rids.isEmpty())
+      return Collections.emptyIterator();
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    return new Iterator<>() {
+      private int          position = 0;
+      private Identifiable next     = null;
+
+      @Override
+      public boolean hasNext() {
+        while (next == null && position < rids.size()) {
+          guard.check();
+          try {
+            next = context.getDatabase().lookupByRID(rids.get(position++), true);
+          } catch (final RecordNotFoundException e) {
+            // no record at that address: no node has that id
+          }
+        }
+        return next != null;
+      }
+
+      @Override
+      public Identifiable next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Identifiable result = next;
+        next = null;
+        return result;
+      }
+    };
+  }
+
   private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
     candidatesDependOnTheRow = false;
-    // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
-    // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
+    // OPTIMIZATION: Resolve the ids - either static (from plan time) or dynamic (from runtime).
+    // The static ids are literals/parameters, one or a list (issue #12134); dynamicIdExpression handles expressions like
     // BatchEntry.destRID that can only be resolved with the current input row (issue #3864).
-    String effectiveIdFilter = this.idFilter;
-    if ((effectiveIdFilter == null || effectiveIdFilter.isEmpty())
-        && dynamicIdExpression != null && currentInputResult != null) {
-      final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
-      if (resolved != null) {
-        if (resolved instanceof Identifiable identifiable)
-          effectiveIdFilter = identifiable.getIdentity().toString();
-        else if (resolved instanceof Number number)
-          effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
-        else
-          effectiveIdFilter = resolved.toString();
-      }
-    }
-
-    // If ID filter is present, look up the specific vertex by ID.
     // This is critical for performance when matching by ID (e.g., WHERE ID(a) = "#1:0")
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
     // would create a Cartesian product of ALL vertices before filtering
-    if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
-      try {
-        final RID rid = context.getDatabase().newRID(effectiveIdFilter);
-        final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
-        return List.of(vertex).iterator();
-      } catch (final Exception e) {
-        // Invalid ID format or record not found - return empty iterator
-        return List.<Identifiable>of().iterator();
+    if (idSeek != null)
+      return lookUpIds(IdSeekValues.resolve(idSeek, context));
+
+    if (dynamicIdExpression != null && currentInputResult != null) {
+      final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
+      if (resolved != null) {
+        final String dynamicId;
+        if (resolved instanceof Identifiable identifiable)
+          dynamicId = identifiable.getIdentity().toString();
+        else if (resolved instanceof Number number)
+          dynamicId = IdFunction.decodeLongToRidString(number.longValue());
+        else
+          dynamicId = resolved.toString();
+        try {
+          final RID rid = context.getDatabase().newRID(dynamicId);
+          final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
+          return List.of(vertex).iterator();
+        } catch (final Exception e) {
+          // Invalid ID format or record not found - return empty iterator
+          return List.<Identifiable>of().iterator();
+        }
       }
     }
 
@@ -1679,8 +1716,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   private boolean matchesAllLabels(final Vertex vertex, final Result currentResult) {
     final List<String> labels = resolveEffectiveLabels(currentResult);
-    if (labels.size() <= 1)
-      return true; // Single label already filtered by iterator
+    // A single label was filtered by the type iterator, but not when the candidates were looked up by id (issue #12134)
+    if (labels.size() <= 1 && idSeek == null && dynamicIdExpression == null)
+      return true;
     return Labels.matches(vertex, labels, pattern.isLabelDisjunction());
   }
 
@@ -1748,8 +1786,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // That is exactly what the resolution of issue #3216 asks a user to verify. Printed from the plan-time field
     // rather than recorded during execution, so EXPLAIN answers it without running the query; the dynamic form
     // (issue #3864) resolves per row and can only be named, not valued.
-    if (idFilter != null && !idFilter.isEmpty())
-      builder.append(" [id: ").append(idFilter).append("]");
+    if (idSeek != null)
+      builder.append(" [id: ").append(describeIds()).append("]");
     else if (dynamicIdExpression != null)
       builder.append(" [id: per-row]");
     if (usedIndexName != null)
@@ -1768,6 +1806,26 @@ public class MatchNodeStep extends AbstractExecutionStep {
           + (scanIterator != null ? scanIterator.getBudgetShrunkBatches() : 0L)));
     }
     return builder.toString();
+  }
+
+  /** The RIDs the ids resolve to in this execution, or the ids as written when none addresses a record. */
+  private String describeIds() {
+    final List<RID> rids;
+    try {
+      rids = IdSeekValues.resolve(idSeek, context);
+    } catch (final IllegalArgumentException e) {
+      // IN over a value that is not a list: the execution refuses it, the plan only names it
+      return idSeek.toString();
+    }
+    if (rids.isEmpty())
+      return idSeek.toString();
+    final StringBuilder text = new StringBuilder();
+    for (final RID rid : rids) {
+      if (!text.isEmpty())
+        text.append(", ");
+      text.append(rid);
+    }
+    return text.toString();
   }
 
   private static String getIndent(final int depth, final int indent) {
