@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.exception.ArcadeDBException;
 import com.sun.management.HotSpotDiagnosticMXBean;
+import com.sun.management.VMOption;
 
 import javax.management.MBeanServer;
 import java.io.File;
@@ -120,6 +121,31 @@ public class JVMUtils {
       throw re;
     } catch (final Exception exp) {
       throw new ArcadeDBException(exp);
+    }
+  }
+
+  /**
+   * Sets {@code -XX:SoftMaxHeapSize} to {@code percent} of {@code -XX:MaxHeapSize}, unless the JVM was started with a value of
+   * its own or one was set since. A manageable flag: ZGC (and Shenandoah) read it at every cycle, the other collectors ignore it.
+   *
+   * @return the soft limit set in bytes, or -1 when nothing was set: a percentage outside 1-99, a value already given, or a JVM
+   * without the HotSpot diagnostic bean (a native image)
+   */
+  public static long applySoftMaxHeapPercent(final int percent) {
+    if (percent <= 0 || percent >= 100)
+      return -1;
+    try {
+      final HotSpotDiagnosticMXBean bean = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);
+      if (bean == null)
+        return -1;
+      final VMOption.Origin origin = bean.getVMOption("SoftMaxHeapSize").getOrigin();
+      if (origin != VMOption.Origin.DEFAULT && origin != VMOption.Origin.ERGONOMIC)
+        return -1;
+      final long softMax = Long.parseLong(bean.getVMOption("MaxHeapSize").getValue()) / 100 * percent;
+      bean.setVMOption("SoftMaxHeapSize", Long.toString(softMax));
+      return softMax;
+    } catch (final RuntimeException | LinkageError e) {
+      return -1;
     }
   }
 
