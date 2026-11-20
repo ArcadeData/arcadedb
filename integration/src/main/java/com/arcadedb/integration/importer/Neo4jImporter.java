@@ -71,9 +71,9 @@ import java.util.zip.GZIPInputStream;
  * Uses {@link GraphBatch} for high-performance bulk import: vertices are created with pre-allocated edge segments,
  * and edges are buffered in flat primitive arrays then flushed sorted by vertex for sequential I/O.
  * <br>
- * ID mapping uses a primitive {@link LongLongMap} when Neo4j IDs are numeric (the common case with APOC exports),
- * falling back to a {@code HashMap<String, Long>} for non-numeric IDs. The primitive map uses ~24 bytes/entry
- * vs ~156 bytes/entry for a {@code HashMap<String, RID>}, saving ~85% RAM on large imports.
+ * ID mapping uses a primitive {@link LongLongMap} when Neo4j IDs are canonical decimal numbers (the common case with APOC
+ * exports), falling back to a {@code HashMap<String, Long>} for any other ID, {@code "01"} included. The primitive map
+ * uses ~24 bytes/entry vs ~156 bytes/entry for a {@code HashMap<String, RID>}, saving ~85% RAM on large imports.
  * <br>
  * Neo4j is a registered mark of Neo4j, Inc.
  *
@@ -669,17 +669,15 @@ public class Neo4jImporter {
    * Canonical only: {@code "01"}, {@code "+1"} and {@code "-0"} parse to the same long as another id, so taking them on the
    * numeric path made two nodes share one entry - the second replaced the first, and the relationships of the first were
    * attached to the second - and the migration, which re-keys every entry with {@code Long.toString}, then lost the
-   * spelling the relationships use (issue #12046).
+   * spelling the relationships use (issue #12046). {@link CanonicalNumber#parseLong} decides, and it also refuses
+   * {@code Long.MIN_VALUE}, the empty marker of {@link LongLongMap}, which could not be stored as a key.
    */
   private void putId(final String id, final long packedRID) {
     if (useNumericIds) {
-      if (isCanonicalLong(id)) {
-        try {
-          numericIdMap.put(Long.parseLong(id), packedRID);
-          return;
-        } catch (final NumberFormatException e) {
-          // OUT OF THE RANGE OF A LONG: MIGRATE TO STRING MODE BELOW
-        }
+      final long numericId = CanonicalNumber.parseLong(id);
+      if (numericId != CanonicalNumber.NOT_CANONICAL_LONG) {
+        numericIdMap.put(numericId, packedRID);
+        return;
       }
       migrateToStringMode();
     }
@@ -692,42 +690,19 @@ public class Neo4jImporter {
   private long getId(final String id) {
     if (useNumericIds) {
       // WHILE IN NUMERIC MODE EVERY STORED ID IS CANONICAL: ANY OTHER SPELLING NAMES A NODE THAT IS NOT THERE
-      if (!isCanonicalLong(id))
-        return LongLongMap.EMPTY;
-      try {
-        return numericIdMap.get(Long.parseLong(id));
-      } catch (final NumberFormatException e) {
-        return LongLongMap.EMPTY;
-      }
+      final long numericId = CanonicalNumber.parseLong(id);
+      return numericId == CanonicalNumber.NOT_CANONICAL_LONG ? LongLongMap.EMPTY : numericIdMap.get(numericId);
     }
     final Long packed = stringIdMap.get(id);
     return packed != null ? packed : LongLongMap.EMPTY;
   }
 
   /**
-   * Whether {@code id} is spelled the way {@link Long#toString(long)} spells a number: an optional minus sign and digits with
-   * no leading zero, {@code "0"} itself excepted. Range is left to {@link Long#parseLong}.
-   */
-  private static boolean isCanonicalLong(final String id) {
-    final int length = id.length();
-    int i = length > 0 && id.charAt(0) == '-' ? 1 : 0;
-    if (i == length)
-      return false;
-    if (id.charAt(i) == '0')
-      return length == 1;
-    for (; i < length; ++i) {
-      final char c = id.charAt(i);
-      if (c < '0' || c > '9')
-        return false;
-    }
-    return true;
-  }
-
-  /**
-   * Migrates from primitive LongLongMap to HashMap when a non-numeric ID is encountered.
+   * Migrates from primitive LongLongMap to HashMap when an ID that is not the canonical decimal form of a long is
+   * encountered.
    */
   private void migrateToStringMode() {
-    log("- Non-numeric Neo4j ID detected, switching to string-based ID mapping");
+    log("- Neo4j ID that is not the canonical form of a number detected, switching to string-based ID mapping");
     useNumericIds = false;
     stringIdMap = new HashMap<>(numericIdMap.size() * 2);
     numericIdMap.forEach((key, value) -> stringIdMap.put(Long.toString(key), value));

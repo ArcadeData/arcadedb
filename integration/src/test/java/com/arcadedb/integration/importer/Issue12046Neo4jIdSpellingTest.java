@@ -80,13 +80,88 @@ class Issue12046Neo4jIdSpellingTest {
         """ + RELATIONSHIPS);
   }
 
+  /** "0" and "-0" parse to the same long, and "-0" is not the way Long.toString spells it. */
+  @Test
+  void negativeZeroIsNotZero() throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts("""
+        {"type":"node","id":"0","labels":["P"],"properties":{"name":"zero"}}
+        {"type":"node","id":"-0","labels":["P"],"properties":{"name":"minus-zero"}}
+        {"type":"node","id":"2","labels":["P"],"properties":{"name":"two"}}
+        {"type":"relationship","id":"0","label":"R","properties":{"w":1},"start":{"id":"0","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        {"type":"relationship","id":"1","label":"R","properties":{"w":2},"start":{"id":"-0","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        """, 2L);
+    assertThat(startByWeight).containsOnly(Map.entry(1, "zero"), Map.entry(2, "minus-zero"));
+  }
+
+  /** While every id is canonical the map stays numeric: zero, a negative id and the largest long keep their own entries. */
+  @Test
+  void canonicalIdsKeepTheirOwnEntries() throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts("""
+        {"type":"node","id":"0","labels":["P"],"properties":{"name":"zero"}}
+        {"type":"node","id":"-5","labels":["P"],"properties":{"name":"minus-five"}}
+        {"type":"node","id":"9223372036854775807","labels":["P"],"properties":{"name":"max"}}
+        {"type":"node","id":"7","labels":["P"],"properties":{"name":"seven"}}
+        {"type":"relationship","id":"0","label":"R","properties":{"w":1},"start":{"id":"0","labels":["P"]},"end":{"id":"7","labels":["P"]}}
+        {"type":"relationship","id":"1","label":"R","properties":{"w":2},"start":{"id":"-5","labels":["P"]},"end":{"id":"7","labels":["P"]}}
+        {"type":"relationship","id":"2","label":"R","properties":{"w":3},"start":{"id":"9223372036854775807","labels":["P"]},"end":{"id":"7","labels":["P"]}}
+        """, 3L);
+    assertThat(startByWeight).containsOnly(Map.entry(1, "zero"), Map.entry(2, "minus-five"), Map.entry(3, "max"));
+  }
+
+  /** A relationship naming a spelling no node has finds nothing: "07" is not the node "7", although both parse to seven. */
+  @Test
+  void aSpellingNoNodeHasIsNotTheNodeItParsesTo() throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts("""
+        {"type":"node","id":"7","labels":["P"],"properties":{"name":"seven"}}
+        {"type":"node","id":"8","labels":["P"],"properties":{"name":"eight"}}
+        {"type":"relationship","id":"0","label":"R","properties":{"w":1},"start":{"id":"07","labels":["P"]},"end":{"id":"8","labels":["P"]}}
+        {"type":"relationship","id":"1","label":"R","properties":{"w":2},"start":{"id":"7","labels":["P"]},"end":{"id":"8","labels":["P"]}}
+        """, 1L);
+    assertThat(startByWeight).containsOnly(Map.entry(2, "seven"));
+  }
+
+  /**
+   * Long.MIN_VALUE is spelled canonically, but it is the empty marker of the primitive map, which refuses it as a key: the
+   * vertex was created and left out of the map, and every relationship naming it was skipped.
+   */
+  @Test
+  void theSmallestLongIsKept() throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts("""
+        {"type":"node","id":"1","labels":["P"],"properties":{"name":"one"}}
+        {"type":"node","id":"-9223372036854775808","labels":["P"],"properties":{"name":"min"}}
+        {"type":"node","id":"2","labels":["P"],"properties":{"name":"two"}}
+        {"type":"relationship","id":"0","label":"R","properties":{"w":1},"start":{"id":"1","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        {"type":"relationship","id":"1","label":"R","properties":{"w":2},"start":{"id":"-9223372036854775808","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        """, 2L);
+    assertThat(startByWeight).containsOnly(Map.entry(1, "one"), Map.entry(2, "min"));
+  }
+
+  /** An id past the range of a long cannot be a primitive key: it moves the map to string mode, and the earlier ids follow. */
+  @Test
+  void anIdPastTheRangeOfALongMigratesTheEarlierOnes() throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts("""
+        {"type":"node","id":"1","labels":["P"],"properties":{"name":"one"}}
+        {"type":"node","id":"9223372036854775808","labels":["P"],"properties":{"name":"past-max"}}
+        {"type":"node","id":"2","labels":["P"],"properties":{"name":"two"}}
+        {"type":"relationship","id":"0","label":"R","properties":{"w":1},"start":{"id":"1","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        {"type":"relationship","id":"1","label":"R","properties":{"w":2},"start":{"id":"9223372036854775808","labels":["P"]},"end":{"id":"2","labels":["P"]}}
+        """, 2L);
+    assertThat(startByWeight).containsOnly(Map.entry(1, "one"), Map.entry(2, "past-max"));
+  }
+
   private static void assertEveryRelationshipKeepsItsStart(final String content) throws Exception {
+    final Map<Integer, String> startByWeight = importAndReadStarts(content, 3L);
+    assertThat(startByWeight).containsOnly(Map.entry(1, "one"), Map.entry(2, "zero-one"), Map.entry(3, "plus-one"));
+  }
+
+  /** Imports {@code content} and answers the name of the vertex each relationship starts at, by the weight {@code w} it carries. */
+  private static Map<Integer, String> importAndReadStarts(final String content, final long expectedEdges) throws Exception {
     final File source = new File("target/issue12046.json");
     Files.writeString(source.toPath(), content, StandardCharsets.UTF_8);
     try (final Database db = new DatabaseFactory(DB_PATH).create()) {
       try (final ResultSet rs = db.command("sql", "IMPORT DATABASE file://" + source.getAbsolutePath())) {
         final Result result = rs.next();
-        assertThat(result.<Long>getProperty("createdEdges")).isEqualTo(3L);
+        assertThat(result.<Long>getProperty("createdEdges")).isEqualTo(expectedEdges);
       }
 
       final Map<Integer, String> startByWeight = new HashMap<>();
@@ -96,7 +171,7 @@ class Issue12046Neo4jIdSpellingTest {
           startByWeight.put(row.<Number>getProperty("w").intValue(), row.getProperty("start"));
         }
       }
-      assertThat(startByWeight).containsOnly(Map.entry(1, "one"), Map.entry(2, "zero-one"), Map.entry(3, "plus-one"));
+      return startByWeight;
     } finally {
       source.delete();
     }
