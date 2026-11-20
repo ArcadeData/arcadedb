@@ -91,6 +91,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** What {@code equalityOf} answers for a condition that infers no value: {@code null} is a value an upsert seeds. */
+  private static final Object NO_EQUALITY = new Object();
   /** Stands for a property the record does not have, which differs from one it has with the value {@code null}. */
   private static final Object ABSENT        = new Object();
   /** What {@link #getPath} answers for a path that reaches no stored value, told apart from a stored null. */
@@ -108,6 +110,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private static final int          NOT_IMPLEMENTED                 = 238;
   private static final int          COMMAND_NOT_FOUND               = 59;
   private static final int          TYPE_MISMATCH                   = 14;
+  /** What mongod answers a command that lacks a field it requires. */
+  private static final int          MISSING_FIELD                   = 40414;
   private static final int          PATH_NOT_VIABLE                 = 28;
   private static final int          IMMUTABLE_FIELD                 = 66;
   private static final int          CONFLICTING_UPDATE_OPERATORS    = 40;
@@ -123,11 +127,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * The codes of a refusal mongod reports as an entry of {@code writeErrors} of an {@code insert} or {@code update}, going on with the
    * other statements (issue #11444): the statement's own documents or values are refused (BadValue, FailedToParse, TypeMismatch,
    * PathNotViable, ImmutableField, DocumentValidationFailure, NotImplemented, DuplicateKey, a malformed {@code $and}/{@code $or},
-   * ConflictingUpdateOperators).
+   * ConflictingUpdateOperators, and NotSingleValueField of an upsert whose filter cannot infer the document it would insert, issue
+   * #12071).
    */
   private static final Set<Integer> STATEMENT_ERROR_CODES           = Set.of(ErrorCode.BadValue.getValue(), ErrorCode.FailedToParse.getValue(),
       TYPE_MISMATCH, PATH_NOT_VIABLE, IMMUTABLE_FIELD, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(),
-      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS);
+      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS, ErrorCode.NotSingleValueField.getValue());
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -369,6 +374,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog)
       throws MongoServerException {
+    MongoCommandFields.check("aggregate", document);
     final String collectionName = document.get("aggregate").toString();
     // like MongoDB, a pipeline over a collection that does not exist is answered with no documents (countDocuments is one). A
     // pipeline that writes ($out, $merge) is not read-only: it keeps failing on the missing collection, as it always did
@@ -538,6 +544,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document createCollection(final Document document) {
+    // refused before anything is created: a capped, validated or collated collection would be an ordinary one (issue #11778)
+    MongoCommandFields.check("create", document);
     database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
   }
@@ -665,6 +673,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * documents than an int counts, and the reply carries it as {@code mongod} does, an int32 while it fits and an int64 past it.
    */
   private Document countCollection(final Document document) throws MongoServerException {
+    MongoCommandFields.check("count", document);
     final String collectionName = document.get("count").toString();
     final Document queryObject = documentField(document, "query");
     // read first: an invalid option is an error whether or not the collection exists
@@ -688,6 +697,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document find(final Document document) throws MongoServerException {
+    // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
+    MongoCommandFields.check("find", document);
     final Document filter = documentField(document, "filter");
     final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
@@ -836,10 +847,21 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code deleteMany} helpers). Each delete spec carries a filter {@code q} and a {@code limit}:
    * a limit of 1 deletes only the first match ({@code deleteOne}), 0 deletes all matches
    * ({@code deleteMany}). The records to delete are the ones the filter selects, as in find (see {@link MongoFilter}).
+   * <p>
+   * Every entry is checked before any runs, as {@code mongod} parses the command before it executes it (issue #11778): a field the
+   * plugin would ignore (a {@code collation}) and a {@code limit} that is neither 0 nor 1, which used to delete every match, refuse
+   * the whole command with nothing deleted.
    */
   private Document deleteDocuments(final Document document) {
+    MongoCommandFields.check("delete", document);
     final String collectionName = document.get("delete").toString();
     final List<Document> deletes = (List<Document>) document.get("deletes");
+    if (deletes != null)
+      for (final Object entry : deletes) {
+        final Document del = statementOf("delete", "deletes", entry);
+        MongoCommandFields.check("delete.deletes", del);
+        deletesOne(del);
+      }
 
     int n = 0;
     if (database.getSchema().existsType(collectionName) && deletes != null) {
@@ -857,8 +879,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         else
           for (final Document del : deletes) {
             final Document q = (Document) del.get("q");
-            final Number limit = (Number) del.get("limit");
-            final boolean single = limit != null && limit.intValue() == 1;
+            final boolean single = deletesOne(del);
 
             final MongoFilter filter = new MongoFilter(database, q, budget);
             if (filter.isEmpty()) {
@@ -889,6 +910,43 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
+   * Whether an entry of {@code delete} removes one document ({@code limit: 1}) or every match ({@code limit: 0}), the two values
+   * {@code mongod} has: any other one is refused as it refuses it, where it used to mean "every match" (issue #11778).
+   */
+  private static boolean deletesOne(final Document entry) {
+    final Object limit = entry.get("limit");
+    if (limit == null)
+      throw new MongoServerError(MISSING_FIELD, "Location" + MISSING_FIELD, "BSON field 'delete.deletes.limit' is missing but a required field");
+    if (!(limit instanceof Number number))
+      throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+          "BSON field 'delete.deletes.limit' is the wrong type '" + typeName(limit) + "', expected type 'number'");
+    final boolean none = isExactly(number, Decimal128.POSITIVE_ZERO, 0D);
+    if (!none && !isExactly(number, Decimal128.ONE, 1D))
+      throw new MongoServerError(ErrorCode.FailedToParse.getValue(), ErrorCode.FailedToParse.getName(),
+          "The limit field in delete objects must be 0 or 1. Got " + limit);
+    return !none;
+  }
+
+  /**
+   * Whether a number of any BSON type is exactly {@code value}. A Decimal128 is compared as a decimal: narrowed to a double, one as
+   * small as 1E-6176 is 0, which would turn a refused limit into "delete every match".
+   */
+  private static boolean isExactly(final Number number, final Decimal128 decimalValue, final double value) {
+    if (number instanceof Decimal128 decimal)
+      // compareTo, not equals: 1.0 and 1 are the same number. NaN and the infinities compare as the doubles they are, equal to neither
+      return decimal.compareTo(decimalValue) == 0;
+    return number.doubleValue() == value;
+  }
+
+  /** A statement of a write command, which must be a document: {@code mongod} refuses anything else when it parses the command. */
+  private static Document statementOf(final String command, final String field, final Object statement) {
+    if (statement instanceof Document document)
+      return document;
+    throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+        "BSON field '" + command + "." + field + "' is the wrong type '" + typeName(statement) + "', expected type 'object'");
+  }
+
+  /**
    * Deletes the samples of a TIMESERIES type each entry names (issue #10464), see {@link MongoTimeSeriesWrites}. Every entry is
    * translated before any runs: the engine's delete is not part of the transaction, so an entry refused after another ran would
    * leave that one applied. A failure while an entry runs (an I/O error of the engine) still leaves the entries before it applied:
@@ -899,11 +957,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final List<Map<String, Object>> statementParams = new ArrayList<>(deletes.size());
     for (final Document del : deletes) {
       final Document q = (Document) del.get("q");
-      final Number limit = (Number) del.get("limit");
       // an invalid filter is the error MongoDB answers first, whatever the collection
       new MongoFilter(database, q, budget);
       final Map<String, Object> params = new HashMap<>();
-      statements.add(MongoTimeSeriesWrites.deleteStatement(type, q, limit != null && limit.intValue() == 1, params));
+      statements.add(MongoTimeSeriesWrites.deleteStatement(type, q, deletesOne(del), params));
       statementParams.add(params);
     }
 
@@ -922,8 +979,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * nothing matched, a new document seeded from the filter's equalities and the update is inserted.
    */
   private Document updateDocuments(final Document document) {
+    MongoCommandFields.check("update", document);
     final String collectionName = document.get("update").toString();
     final List<Document> updates = (List<Document>) document.get("updates");
+    // every statement is checked before any runs, as mongod parses the command before it executes it: a field the plugin would
+    // ignore (a collation, a hint, array filters) refuses the whole command with nothing updated (issue #11778)
+    if (updates != null)
+      for (final Object entry : updates)
+        MongoCommandFields.check("update.updates", statementOf("update", "updates", entry));
     // MongoDB's default is an ordered update: it stops at the first refused statement
     final boolean ordered = document.get("ordered") == null || Utils.isTrue(document.get("ordered"));
 
@@ -1115,9 +1178,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * A schema change cannot happen inside the transaction, so an upsert creates the collection and makes the {@code _id} index
-   * able to hold the key the upsert is about to store, up front: the filter's scalar {@code _id}, or the generated ObjectId (a
-   * string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave the index alone
-   * (a rebuild is a full copy of it).
+   * able to hold the key the upsert is about to store, up front: the {@code _id} the filter seeds (see {@link #upsertSeed}), or the
+   * generated ObjectId (a string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave
+   * the index alone (a rebuild is a full copy of it).
    */
   private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates, final MongoFilter.RegexBudget budget) {
     List<Object> samples = null;
@@ -1126,20 +1189,23 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         continue;
 
       final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
-      Object id = q.get("_id");
-      boolean hasId = q.containsKey("_id");
+      final Document seed;
+      try {
+        seed = upsertSeed(q);
+      } catch (final MongoServerError e) {
+        // a filter mongod cannot infer a document from is the refusal of an insert only: a document that matches is updated, and one
+        // that does not is refused when the statement runs, reported there at its index with the statements before it kept. Nothing
+        // is inserted, so the collection and its index are left alone
+        continue;
+      }
+      Object id = seed.get("_id");
+      boolean hasId = seed.containsKey("_id");
       // the stored _id can also come from the update itself: a replacement's, or $set's
       final Document u = upd.get("u") instanceof Document update ? update : new Document();
       final Document setter = isReplacement(u) ? u : u.get("$set") instanceof Document set ? set : null;
       if (setter != null && setter.containsKey("_id")) {
         id = setter.get("_id");
         hasId = true;
-      }
-      // an operator document says nothing about the key of the document that would be inserted, but for $eq: without it the
-      // upsert stores a generated ObjectId
-      if (id instanceof Document operators) {
-        id = operators.get("$eq");
-        hasId = operators.containsKey("$eq");
       }
 
       database.getSchema().getOrCreateDocumentType(collectionName);
@@ -1405,31 +1471,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code BeforeRecordCreateListener} refused it
    */
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
+    // first: a filter mongod cannot infer the document from is refused (a statement error) before anything is created
+    final Document seed = upsertSeed(q);
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
-    // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
-    if (q != null)
-      for (final Map.Entry<String, Object> entry : q.entrySet()) {
-        final String field = entry.getKey();
-        if (field.startsWith("$"))
-          continue;
-        final Object value = entry.getValue();
-        if (value instanceof Document opDoc) {
-          if (opDoc.containsKey("$eq")) {
-            final Object eqValue = opDoc.get("$eq");
-            // a regex in the filter is a pattern to match, not a value to insert
-            if (eqValue instanceof BsonRegularExpression)
-              continue;
-            record.set(field, MongoBsonValues.toStored(field, eqValue));
-          }
-        } else {
-          if (value instanceof BsonRegularExpression)
-            continue;
-          record.set(field, MongoBsonValues.toStored(field, value));
-        }
-      }
+    // Seed the new document with what the filter's equalities infer, as mongod does (issue #12071): a dotted path makes the embedded
+    // documents on its way. A replacement takes the _id alone from the filter, its own fields are the whole document.
+    final boolean replacement = isReplacement(u);
+    for (final Map.Entry<String, Object> entry : seed.entrySet()) {
+      final String path = entry.getKey();
+      final boolean id = "_id".equals(path);
+      if (replacement && !id)
+        continue;
+      setPath(record, path, id ? idValue(entry.getValue()) : toMapValue(entry.getValue()));
+    }
 
-    if (isReplacement(u)) {
+    if (replacement) {
       // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
       for (final Map.Entry<String, Object> entry : u.entrySet())
         record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), entry.getValue()));
@@ -1440,12 +1497,127 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // must be preserved, whereas a genuinely absent _id needs one generated.
     if (!record.has("_id"))
       record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
+    moveIdFirst(record);
 
     if (!record.saveReportingVeto())
       return UPSERT_VETOED;
 
     // the stored _id tells an ObjectId from a String with the same hex (issue #12073): read back as a find would answer it
     return MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"));
+  }
+
+  /**
+   * mongod stores the {@code _id} as the first field of an inserted document, whichever of the filter, the update or the generator
+   * supplied it (issue #12071).
+   */
+  private static void moveIdFirst(final MutableDocument record) {
+    final List<String> names = new ArrayList<>(record.getPropertyNames());
+    if (names.isEmpty() || "_id".equals(names.getFirst()))
+      return;
+    final Object[] values = new Object[names.size()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = record.get(names.get(i));
+    for (final String name : names)
+      record.remove(name);
+    record.set("_id", values[names.indexOf("_id")]);
+    for (int i = 0; i < values.length; i++)
+      if (!"_id".equals(names.get(i)))
+        record.set(names.get(i), values[i]);
+  }
+
+  /**
+   * The fields an upsert that matches nothing copies from its filter, by path, as mongod infers them (issue #12071): the equality of
+   * each path, dotted or not, at the top level, under {@code $and} and under an {@code $or} of a single branch. An equality is a plain
+   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} of a single value, or
+   * a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one below it, is refused with mongod's
+   * error 54, as is an {@code $all} of several values.
+   * <p>
+   * mongod infers these fields only for a statement that inserts, so the refusal is the insert's: it is raised here and reaches the
+   * client from {@link #executeUpsert} as an entry of {@code writeErrors}, while a filter that matches a document updates it.
+   */
+  static Document upsertSeed(final Document query) {
+    final Document seed = new Document();
+    if (query != null)
+      collectSeed(query, seed);
+    return seed;
+  }
+
+  private static void collectSeed(final Document query, final Document seed) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final String key = entry.getKey();
+      final Object value = entry.getValue();
+      if ("$and".equals(key) || "$or".equals(key)) {
+        // an $or of several branches says nothing about which one the inserted document satisfies
+        if (value instanceof List<?> items && ("$and".equals(key) || items.size() == 1))
+          for (final Object item : items)
+            if (item instanceof Document branch)
+              collectSeed(branch, seed);
+      } else if (!key.startsWith("$")) {
+        final Object equality = equalityOf(key, value);
+        if (equality != NO_EQUALITY)
+          addSeed(seed, key, equality);
+      }
+    }
+  }
+
+  /**
+   * The value the conditions of one path infer, {@link #NO_EQUALITY} when none of them is an equality. {@code $eq}, an {@code $in} of
+   * one value and each value of an {@code $all} are equalities of their own, and mongod refuses two of them on a path. A regular
+   * expression is a pattern to match, never a value (this plugin's matcher does not match a stored one back, so the next run of the
+   * upsert would insert again), and an {@code $elemMatch} document of an {@code $all} says nothing about a value either.
+   */
+  private static Object equalityOf(final String path, final Object value) {
+    if (value instanceof BsonRegularExpression)
+      return NO_EQUALITY;
+    if (!(value instanceof Document operators) || !MongoFilter.isOperatorDocument(operators))
+      return value;
+
+    Object equality = NO_EQUALITY;
+    for (final Map.Entry<String, Object> operator : operators.entrySet()) {
+      final Object operand = operator.getValue();
+      switch (operator.getKey()) {
+      case "$eq" -> equality = addEquality(path, equality, operand);
+      case "$in" -> {
+        if (operand instanceof List<?> in && in.size() == 1)
+          equality = addEquality(path, equality, in.getFirst());
+      }
+      case "$all" -> {
+        if (operand instanceof List<?> all)
+          for (final Object item : all)
+            equality = addEquality(path, equality, item);
+      }
+      default -> {
+        // any other operator is no equality
+      }
+      }
+    }
+    return equality;
+  }
+
+  /** {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern. */
+  private static Object addEquality(final String path, final Object found, final Object candidate) {
+    if (candidate instanceof BsonRegularExpression || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
+      return found;
+    if (found != NO_EQUALITY)
+      throw notSingleValue("path '" + path + "' is matched twice");
+    return candidate;
+  }
+
+  private static void addSeed(final Document seed, final String path, final Object value) {
+    for (final String other : seed.keySet()) {
+      if (other.equals(path))
+        throw notSingleValue("path '" + path + "' is matched twice");
+      final String shorter = path.length() < other.length() ? path : other;
+      final String longer = shorter == path ? other : path;
+      if (longer.startsWith(shorter) && longer.charAt(shorter.length()) == '.')
+        throw notSingleValue("both paths '" + longer + "' and '" + shorter + "' are matched");
+    }
+    seed.put(path, value);
+  }
+
+  private static MongoServerError notSingleValue(final String what) {
+    return new MongoServerError(ErrorCode.NotSingleValueField.getValue(), ErrorCode.NotSingleValueField.getName(),
+        "cannot infer query fields to set, " + what);
   }
 
   /**

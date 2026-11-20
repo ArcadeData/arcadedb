@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ws;
 
+import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -25,13 +26,18 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.CallableNoReturn;
-
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
@@ -533,6 +539,156 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
       throw e;
     } finally {
       LogManager.instance().log(this, Level.FINE, "END " + testName);
+    }
+  }
+
+  /*
+   * Issue #10690: a {@code /ws} SUBSCRIBE frame resolved its database through {@code ArcadeDBServer.getDatabase(String)}, the
+   * operator's entry point, which opens a database from disk past the {@code close database} mark and clears the mark on the way.
+   * One subscribe frame from any user with access to the name reopened a database the operator had closed (for a cold backup, a
+   * copy of the files) and served it again to every protocol. The subscribe now resolves through
+   * {@code getDatabaseForClient}, like every other client surface, and is refused.
+   */
+
+  // Regression: #10690 a SUBSCRIBE frame must not reopen a database a close command closed
+  @Test
+  void aSubscribeDoesNotReopenADatabaseACloseCommandClosed() throws Exception {
+    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    try {
+      try (final WebSocketClientHelper client = newClient()) {
+        final JSONObject answer = new JSONObject(client.send(subscribe()));
+        assertThat(answer.getString("result", "")).as("the subscribe is refused").isEqualTo("error");
+        assertThat(answer.getString("exception", "")).isEqualTo(DatabaseNotAvailableException.class.getName());
+      }
+
+      assertThat(getServer(0).existsDatabase(getDatabaseName())).as("the subscribe opened nothing").isFalse();
+      // The mark survives the frame: every other client is still refused
+      assertThatThrownBy(() -> getServer(0).getDatabaseForClient(getDatabaseName())).isInstanceOf(DatabaseNotAvailableException.class)
+          .hasMessageContaining("close database");
+      assertThat(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()))
+          .as("a refused subscribe leaves no subscription behind").isEmpty();
+    } finally {
+      assertThat(postServerCommand("open database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    }
+
+    // Once the operator opens it again the subscribe is served as before
+    try (final WebSocketClientHelper client = newClient()) {
+      assertThat(new JSONObject(client.send(subscribe())).getString("result", "")).isEqualTo("ok");
+    }
+  }
+
+  // Regression: #10690 a SUBSCRIBE frame must not reopen a database a close command closed
+  /**
+   * The watcher an earlier subscribe started is no pass for a later one: the database is resolved for the client on every
+   * subscribe, not only when the first one creates the watcher.
+   */
+  @Test
+  void aSubscribeIsRefusedEvenWhileAWatcherFromAnEarlierOneIsRunning() throws Exception {
+    try (final WebSocketClientHelper first = newClient()) {
+      assertThat(new JSONObject(first.send(subscribe())).getString("result", "")).isEqualTo("ok");
+
+      assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+      try {
+        try (final WebSocketClientHelper second = newClient()) {
+          final JSONObject answer = new JSONObject(second.send(subscribe()));
+          assertThat(answer.getString("result", "")).isEqualTo("error");
+          assertThat(answer.getString("exception", "")).isEqualTo(DatabaseNotAvailableException.class.getName());
+        }
+        assertThat(getServer(0).existsDatabase(getDatabaseName())).isFalse();
+      } finally {
+        assertThat(postServerCommand("open database " + getDatabaseName()).statusCode()).isEqualTo(200);
+      }
+    }
+  }
+
+  /*
+   * Issue #10801: a {@code /ws} change-stream watcher listens on the database INSTANCE it was started on, and outlived a
+   * {@code close database} / {@code open database} cycle of its name. Every subscriber, the ones from before the close and every new
+   * one after the reopen, was answered {@code ok} and then received nothing: {@code subscribe} found the old watcher in the map and
+   * never started one on the new instance. The watcher of a name now follows the instance the server registers under it.
+   */
+
+  private static final int EVENT_WAIT_MS = 5_000;
+
+  // Regression: #10801 the change stream must follow a database closed and opened again
+  @Test
+  void aSubscriberAfterTheReopenAndOneFromBeforeTheCloseBothReceiveTheNextCommit() throws Exception {
+    try (final WebSocketClientHelper before = newClient()) {
+      assertThat(new JSONObject(before.send(subscribe())).getString("result", "")).isEqualTo("ok");
+
+      closeAndOpen();
+
+      try (final WebSocketClientHelper after = newClient()) {
+        assertThat(new JSONObject(after.send(subscribe())).getString("result", "")).isEqualTo("ok");
+
+        getServerDatabase(0, getDatabaseName()).newVertex("V1").set("name", "issue10801-both").save();
+
+        assertCreated(after, "issue10801-both", "a subscriber that subscribed after the reopen");
+        assertCreated(before, "issue10801-both", "a subscriber from before the close, which the reopen did not end");
+      }
+    }
+  }
+
+  // Regression: #10801 the change stream must follow a database closed and opened again
+  /** No subscribe follows the reopen: the registration of the new instance alone gives the subscriber already there its stream. */
+  @Test
+  void aSubscriberFromBeforeTheCloseReceivesTheNextCommitWithoutSubscribingAgain() throws Exception {
+    try (final WebSocketClientHelper client = newClient()) {
+      assertThat(new JSONObject(client.send(subscribe())).getString("result", "")).isEqualTo("ok");
+
+      closeAndOpen();
+      getServerDatabase(0, getDatabaseName()).newVertex("V1").set("name", "issue10801-kept").save();
+
+      assertCreated(client, "issue10801-kept", "the subscription is to the name, and the name was opened again");
+    }
+  }
+
+  // Regression: #10801 the change stream must follow a database closed and opened again
+  @Test
+  void theStreamSurvivesSeveralCyclesAndDeliversEachCommitOnce() throws Exception {
+    try (final WebSocketClientHelper client = newClient()) {
+      assertThat(new JSONObject(client.send(subscribe())).getString("result", "")).isEqualTo("ok");
+
+      for (int cycle = 0; cycle < 3; cycle++) {
+        closeAndOpen();
+        getServerDatabase(0, getDatabaseName()).newVertex("V1").set("name", "issue10801-cycle-" + cycle).save();
+        assertCreated(client, "issue10801-cycle-" + cycle, "cycle " + cycle);
+        assertThat(client.popMessage(500)).as("one commit, one event: no watcher of an earlier instance publishes it too").isNull();
+      }
+    }
+  }
+
+  private void assertCreated(final WebSocketClientHelper client, final String name, final String who) {
+    final String message = client.popMessage(EVENT_WAIT_MS);
+    assertThat(message).as("%s receives the commit", who).isNotNull();
+    final JSONObject json = new JSONObject(message);
+    assertThat(json.getString("changeType")).isEqualTo("create");
+    assertThat(json.getJSONObject("record").getString("name")).isEqualTo(name);
+  }
+
+  private void closeAndOpen() throws Exception {
+    assertThat(postServerCommand("close database " + getDatabaseName()).statusCode()).isEqualTo(200);
+    assertThat(postServerCommand("open database " + getDatabaseName()).statusCode()).isEqualTo(200);
+  }
+
+  private WebSocketClientHelper newClient() throws Exception {
+    return new WebSocketClientHelper(getServerWsUrl(0, "/ws"), "root", DEFAULT_PASSWORD_FOR_TESTS);
+  }
+
+  private String subscribe() {
+    return new JSONObject().put("action", "subscribe").put("database", getDatabaseName()).toString();
+  }
+
+  private HttpResponse<String> postServerCommand(final String command) throws Exception {
+    final HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/server")))
+        .header("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("command", command).toString()))
+        .build();
+    try (final HttpClient client = HttpClient.newHttpClient()) {
+      return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
   }
 }

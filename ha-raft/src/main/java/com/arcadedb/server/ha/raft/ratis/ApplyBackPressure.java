@@ -30,12 +30,22 @@ import java.util.function.ToLongFunction;
  * Byte-based back-pressure on the leader towards a follower with a large Raft apply backlog (issue #11458).
  * <p>
  * Ratis's {@code SegmentedRaftLog} evicts cached entries only below {@code min(flushed, lastApplied, follower next
- * indexes)}, so a follower that has received N entries it has not applied keeps all N decoded on its heap, whatever
+ * indexes)}, so a follower that has received N entries it has not applied keeps all N on its heap, whatever
  * {@code arcadedb.ha.logCacheSize} says. The leader cannot see that from the replies (they carry the commit index,
  * which a follower advances on receipt), so the follower's applied index travels on the capability poll and
  * {@link FixedGrpcLogAppender} asks {@link #shouldPause} before sending entries. The backlog is estimated as
  * {@code (nextIndex - 1 - reportedApplied) * averageEntryBytes}: the reported index only ever lags the real one, so the
  * estimate errs on the side of pausing for at most one poll period, and an unknown or stale report never pauses.
+ * <p>
+ * The entry size is the serialized size of the {@code LogEntryProto}. That is what the follower's log cache retains (the
+ * proto itself, whose payload is a {@code ByteString} of the wire bytes), so it is a fair measure of the retained cost and
+ * not a decoded form that could be several times larger.
+ * <p>
+ * <b>The heap being protected is the follower's, so the budget is the follower's too</b> (issue #11508). Each node
+ * advertises the budget it resolved for itself ({@link #resolveBudgetBytes} over its own heap and setting) on the same
+ * capability poll, and a follower is held back at the smaller of this leader's budget and the one it advertised
+ * ({@link #effectiveBudgetBytes}). A follower that advertises none (a build that predates the field, or a node that set
+ * the budget to 0) is bound by the leader's alone, as every follower was before.
  * <p>
  * One instance per leader node, found by the appender through the leader's peer id ({@link #of}) because Ratis builds
  * the appender itself.
@@ -47,16 +57,30 @@ public final class ApplyBackPressure {
 
   private static final ConcurrentHashMap<String, ApplyBackPressure> BY_LEADER = new ConcurrentHashMap<>();
 
-  private final long                budgetBytes;
+  private final long                   budgetBytes;
   private final ToLongFunction<String> reportedAppliedIndexOf;
+  private final ToLongFunction<String> advertisedBudgetBytesOf;
 
   /**
-   * @param budgetBytes            the unapplied bytes a follower may hold; {@code 0} or less disables the back-pressure
-   * @param reportedAppliedIndexOf the applied index a follower reported lately, or {@code -1} when unknown or stale
+   * As {@link #ApplyBackPressure(long, ToLongFunction, ToLongFunction)} with no follower advertising a budget: every
+   * follower is bound by {@code budgetBytes}.
    */
   public ApplyBackPressure(final long budgetBytes, final ToLongFunction<String> reportedAppliedIndexOf) {
+    this(budgetBytes, reportedAppliedIndexOf, follower -> -1L);
+  }
+
+  /**
+   * @param budgetBytes             the unapplied bytes this node lets a follower hold, and the budget it advertises for
+   *                                itself; {@code 0} or less disables the back-pressure this node applies as a leader
+   * @param reportedAppliedIndexOf  the applied index a follower reported lately, or {@code -1} when unknown or stale
+   * @param advertisedBudgetBytesOf the budget a follower advertised lately for its own heap, or {@code 0} or less when
+   *                                it advertised none, or the answer is unknown or stale (issue #11508)
+   */
+  public ApplyBackPressure(final long budgetBytes, final ToLongFunction<String> reportedAppliedIndexOf,
+      final ToLongFunction<String> advertisedBudgetBytesOf) {
     this.budgetBytes = budgetBytes;
     this.reportedAppliedIndexOf = reportedAppliedIndexOf;
+    this.advertisedBudgetBytesOf = advertisedBudgetBytesOf;
   }
 
   public static void register(final String leaderPeerId, final ApplyBackPressure backPressure) {
@@ -73,8 +97,25 @@ public final class ApplyBackPressure {
     return BY_LEADER.get(leaderPeerId);
   }
 
+  /** The budget this node resolved for itself: what it applies as a leader, and what it advertises as a follower. */
   public long getBudgetBytes() {
     return budgetBytes;
+  }
+
+  /**
+   * The budget {@code followerId} is held to: the smaller of this leader's and the one the follower advertised for its own
+   * heap, or this leader's alone when the follower advertised none (issue #11508). {@code 0} when this leader disabled
+   * the back-pressure, whatever the follower says: the setting is the operator's way to switch it off on this node.
+   */
+  public long effectiveBudgetBytes(final String followerId) {
+    if (budgetBytes <= 0)
+      return 0L;
+    return smallerBudget(budgetBytes, advertisedBudgetBytesOf.applyAsLong(followerId));
+  }
+
+  /** Pure form of {@link #effectiveBudgetBytes} for an enabled leader: a follower figure of 0 or less is no figure. */
+  static long smallerBudget(final long leaderBudgetBytes, final long followerBudgetBytes) {
+    return followerBudgetBytes > 0 && followerBudgetBytes < leaderBudgetBytes ? followerBudgetBytes : leaderBudgetBytes;
   }
 
   /**
@@ -84,7 +125,12 @@ public final class ApplyBackPressure {
   public boolean shouldPause(final String followerId, final long sentThroughIndex, final long averageEntryBytes) {
     if (budgetBytes <= 0)
       return false;
-    return exceedsBudget(sentThroughIndex, reportedAppliedIndexOf.applyAsLong(followerId), averageEntryBytes, budgetBytes);
+    final long appliedIndex = reportedAppliedIndexOf.applyAsLong(followerId);
+    // Nothing to compare when the follower reported no applied index, so its budget is not looked up either
+    if (appliedIndex < 0)
+      return false;
+    return exceedsBudget(sentThroughIndex, appliedIndex, averageEntryBytes,
+        smallerBudget(budgetBytes, advertisedBudgetBytesOf.applyAsLong(followerId)));
   }
 
   /** Pure form of {@link #shouldPause}. Division, not multiplication, so a huge backlog cannot overflow into a "no". */
@@ -104,7 +150,11 @@ public final class ApplyBackPressure {
     return previousAverage <= 0 ? batchAverage : previousAverage + (batchAverage - previousAverage) / 8;
   }
 
-  /** {@code arcadedb.ha.applyBacklogMax}: empty means a quarter of the heap (at least {@link #MIN_BUDGET_BYTES}), 0 disables. */
+  /**
+   * {@code arcadedb.ha.applyBacklogMax}: empty means a quarter of the heap (at least {@link #MIN_BUDGET_BYTES}), 0 disables.
+   * Resolved by every node over its OWN heap: it is both what the node applies as a leader and what it advertises as a
+   * follower (issue #11508).
+   */
   public static long resolveBudgetBytes(final ContextConfiguration configuration, final long maxHeapBytes) {
     final String value = configuration.getValueAsString(GlobalConfiguration.HA_APPLY_BACKLOG_MAX);
     if (value == null || value.isBlank())
