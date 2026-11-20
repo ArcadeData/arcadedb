@@ -607,8 +607,12 @@ final class AppliedIndexFile {
       if (content.isEmpty())
         return;
       final JSONObject json = new JSONObject(content);
-      for (final String name : json.keySet())
-        createdIndexByDb.put(name, json.getLong(name, -1));
+      for (final String name : json.keySet()) {
+        // A null or negative value records no boundary, the same as a database absent from the file
+        final long created = json.getLong(name, -1);
+        if (created >= 0)
+          createdIndexByDb.put(name, created);
+      }
     } catch (final Exception e) {
       LogManager.instance().log(sm, Level.WARNING, "Could not read %s: %s", file, e.getMessage());
     }

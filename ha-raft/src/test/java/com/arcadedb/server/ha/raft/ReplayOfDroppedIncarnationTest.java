@@ -206,6 +206,22 @@ class ReplayOfDroppedIncarnationTest {
   }
 
   @Test
+  void aBoundaryRecordedAfterTheStateMachineClosedWritesNoFile() throws Exception {
+    final ArcadeStateMachine sm = newStateMachine();
+    apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), FIRST);
+    assertThat(raftDir().resolve("created-index")).as("the create wrote its boundary").exists();
+    sm.close();
+    // The directory is gone, as under the @TempDir of a test or the data directory of a node that is shut down
+    FileUtils.deleteRecursively(raftDir().toFile());
+
+    // A task that outlived the shutdown: the state machine is never reused, so there is no write left worth making
+    sm.appliedIndexes.recordDatabaseCreated(SECOND, OTHER);
+
+    assertThat(serverDir.resolve(".raft")).as("a boundary written after close() must not recreate the directory")
+        .doesNotExist();
+  }
+
+  @Test
   void theDropOfAnEarlierIncarnationLeavesACopyAcquiredFromTheLeader() throws Exception {
     // The leader served the copy at index 20, after the drop at index 12 and the create at index 13 of the incarnation
     // the copy holds; this node, a follower installing a Raft snapshot, still applies the entries above its install boundary
