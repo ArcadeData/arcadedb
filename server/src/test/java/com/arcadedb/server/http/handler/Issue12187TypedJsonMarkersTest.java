@@ -75,4 +75,56 @@ class Issue12187TypedJsonMarkersTest {
           .as(marker.toString())
           .isInstanceOf(RequestRefusedBeforeExecutionException.class);
   }
+
+  /**
+   * A {@code $decimal} is as hostile as a JSON number token: {@code 1E+999999999} is a few bytes that {@code :p + 1} or
+   * {@code :p.asLong()} would expand into a billion digits. It goes through the limits the JSON number parser applies (1000
+   * characters, an exponent up to 1000), and is refused before it reaches the engine.
+   */
+  @Test
+  void aDecimalBeyondTheJsonNumberLimitsIsRefused() {
+    for (final String text : List.of("1E+999999999", "1E-999999999", "-1.5E999999999", "1".repeat(1001), "0." + "0".repeat(1000) + "1"))
+      assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("p", Map.of("$decimal", text)))))
+          .as(text.length() > 40 ? text.length() + " characters" : text)
+          .isInstanceOf(RequestRefusedBeforeExecutionException.class)
+          .hasMessageContaining("$decimal");
+  }
+
+  @Test
+  void aDecimalWithinTheJsonNumberLimitsIsKept() {
+    for (final String text : List.of("1E+1000", "1.2345E-30", "-0.10", "12345678901234567890.123456789", "1".repeat(1000))) {
+      final Object decoded = AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("p", Map.of("$decimal", text)))).get("p");
+      assertThat(decoded).isEqualTo(new BigDecimal(text));
+    }
+  }
+
+  /** {@code RID.is()} only checks for digit runs, so a record id that overflows an int or a long used to escape as a NumberFormatException. */
+  @Test
+  void aRecordIdBeyondTheNumericRangeIsRefusedBeforeExecution() {
+    for (final String text : List.of("#99999999999:0", "#1:99999999999999999999", "#-99999999999:-1"))
+      assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("p", Map.of("$rid", text)))))
+          .as(text)
+          .isInstanceOf(RequestRefusedBeforeExecutionException.class)
+          .hasMessageContaining("$rid");
+  }
+
+  /** A JSON integer beyond the long range is parsed as a BigDecimal, and its longValue() would keep only the low 64 bits. */
+  @Test
+  void aDatetimeBeyondTheLongRangeIsRefused() {
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(
+        new LinkedHashMap<>(Map.of("p", Map.of("$datetime", new BigDecimal("18446744073709551617"))))))
+        .isInstanceOf(RequestRefusedBeforeExecutionException.class)
+        .hasMessageContaining("$datetime");
+
+    assertThat(AbstractQueryHandler.decodeTypedJsonMarkers(new LinkedHashMap<>(Map.of("p", Map.of("$datetime", 5)))).get("p"))
+        .isEqualTo(new Date(5L));
+  }
+
+  @Test
+  void aZoneThatDoesNotExistIsRefused() {
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(
+        new LinkedHashMap<>(Map.of("p", Map.of("$zonedDateTime", "2024-01-01T10:00:00+01:00[Mars/Olympus]")))))
+        .isInstanceOf(RequestRefusedBeforeExecutionException.class)
+        .hasMessageContaining("$zonedDateTime");
+  }
 }

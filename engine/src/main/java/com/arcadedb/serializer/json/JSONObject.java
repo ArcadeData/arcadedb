@@ -719,8 +719,11 @@ public class JSONObject implements Map<String, Object> {
    * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
    * thousands of digits costs superlinear time to parse: beyond these limits the token is refused (a {@link JSONException}, HTTP 400)
    * rather than stored as an {@code Infinity} that the writers turn into {@code null}.
+   * <p>
+   * Public so that a decimal arriving by another road than a JSON number token (the {@code $decimal} marker of the HTTP query
+   * parameters) is held to the same limits instead of reaching {@code new BigDecimal(text)} unchecked.
    */
-  static boolean isSafeBigNumber(final String token) {
+  public static boolean isSafeBigNumber(final String token) {
     if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
       return false;
     for (int i = 0; i < token.length(); i++) {

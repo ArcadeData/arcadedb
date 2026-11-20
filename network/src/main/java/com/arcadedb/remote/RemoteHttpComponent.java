@@ -53,8 +53,8 @@ import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -877,7 +877,7 @@ public class RemoteHttpComponent extends RWLockContext {
     if (value instanceof Document document) {
       if (document.getIdentity() != null)
         return Map.of("$rid", document.getIdentity().toString());
-      // AN EMBEDDED DOCUMENT: ITS PROPERTIES, EACH ENCODED, AND THE TYPE THE SERVER BUILDS IT WITH
+      // An embedded document: its properties, each encoded, and the type the server builds it with
       final Map<String, Object> embedded = new LinkedHashMap<>();
       if (document.getTypeName() != null)
         embedded.put(Property.TYPE_PROPERTY, document.getTypeName());

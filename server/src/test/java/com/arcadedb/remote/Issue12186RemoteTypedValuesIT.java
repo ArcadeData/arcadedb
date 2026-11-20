@@ -21,8 +21,11 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -37,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issues #12186 and #12187: a value of an undeclared property saved with save(), or bound as a parameter, kept its Java type
@@ -45,6 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue12186RemoteTypedValuesIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database-12186";
+
+  private RemoteDatabase remote;
 
   @Override
   protected boolean isCreateDatabases() {
@@ -171,6 +177,91 @@ class Issue12186RemoteTypedValuesIT extends BaseGraphServerTest {
     assertThat(db.query("sql", "SELECT price.asString() AS p FROM " + rid).next().<String>getProperty("p")).isEqualTo("19.90");
   }
 
+  /**
+   * An embedded document used to travel inside the JSON text of the CONTENT clause; it is a parameter now, a map with its
+   * {@code @type}. A record read, modified in one property and saved again writes every other property back, the embedded
+   * documents among them.
+   */
+  @Test
+  void aSavedRecordKeepsItsEmbeddedDocuments() {
+    final RemoteDatabase db = database();
+    db.command("sql", "CREATE DOCUMENT TYPE Emb");
+    final RID rid = db.command("sql", "INSERT INTO Doc CONTENT {\"name\": \"first\", \"emb\": {\"@type\": \"Emb\", \"x\": 1, \"s\": \"a\"}, "
+        + "\"embs\": [{\"@type\": \"Emb\", \"x\": 2}, {\"@type\": \"Emb\", \"x\": 3}]}").next().getIdentity().get();
+
+    final String projection = "SELECT name, emb.type() AS et, emb.x AS ex, emb.s AS es, emb.@type AS ety, embs.type() AS lt, "
+        + "embs[0].@type AS e0ty, embs[1].x AS e1x FROM " + rid;
+    final Map<String, Object> before = db.query("sql", projection).next().toMap();
+
+    final MutableDocument modified = db.lookupByRID(rid, true).asDocument().modify();
+    modified.set("name", "second");
+    modified.save();
+
+    final Map<String, Object> after = db.query("sql", projection).next().toMap();
+    assertThat(after.get("name")).isEqualTo("second");
+    assertThat(after.get("et")).isEqualTo("EMBEDDED");
+    assertThat(((Number) after.get("ex")).intValue()).isEqualTo(1);
+    assertThat(after.get("es")).isEqualTo("a");
+    assertThat(after.get("ety")).isEqualTo("Emb");
+    assertThat(after.get("lt")).isEqualTo("LIST");
+    assertThat(after.get("e0ty")).isEqualTo("Emb");
+    assertThat(((Number) after.get("e1x")).intValue()).isEqualTo(3);
+    // whatever the server says about the record, it says it as before the save, apart from the property that was modified
+    before.put("name", "second");
+    assertThat(after).isEqualTo(before);
+  }
+
+  /**
+   * A new embedded document built on the client, alone and in a list, travels as a parameter too (a document without an
+   * identity is encoded as a map of its properties with its {@code @type}).
+   */
+  @Test
+  void aNewEmbeddedDocumentIsStoredAsEmbedded() {
+    final RemoteDatabase db = database();
+    db.command("sql", "CREATE DOCUMENT TYPE Emb");
+    final RID rid = db.command("sql", "INSERT INTO Doc CONTENT {\"name\": \"first\", \"emb\": {\"@type\": \"Emb\", \"x\": 1}}").next()
+        .getIdentity().get();
+    final Document read = db.lookupByRID(rid, true).asDocument();
+
+    final MutableDocument doc = db.newDocument("Doc");
+    doc.set("copy", read.get("emb"));
+    doc.set("copies", List.of(read.get("emb"), read.get("emb")));
+    doc.save();
+
+    final Result row = db.query("sql", "SELECT copy.type() AS t, copy.x AS x, copies.type() AS lt, copies[1].x AS lx FROM " + doc.getIdentity())
+        .next();
+    assertThat(row.<String>getProperty("t")).isEqualTo("EMBEDDED");
+    assertThat(row.<Number>getProperty("x").intValue()).isEqualTo(1);
+    assertThat(row.<String>getProperty("lt")).isEqualTo("LIST");
+    assertThat(row.<Number>getProperty("lx").intValue()).isEqualTo(1);
+  }
+
+  @Test
+  void aVertexSaveKeepsTheTypeOfAnUndeclaredProperty() {
+    final RemoteDatabase db = database();
+    db.command("sql", "CREATE VERTEX TYPE Node");
+    final Map<String, Object> values = values(target(db));
+
+    final MutableVertex vertex = db.newVertex("Node");
+    values.forEach(vertex::set);
+    vertex.save();
+
+    assertStored(db, vertex.getIdentity(), values);
+  }
+
+  /** A marker that does not decode is a client error, and a decimal the JSON number parser would refuse is one too. */
+  @Test
+  void aHostileDecimalIsRefusedByTheServer() {
+    final RemoteDatabase db = database();
+    for (final String text : List.of("1E+999999999", "1E-999999999"))
+      assertThatThrownBy(() -> db.query("sql", "SELECT :p + 1 AS s", Map.of("p", new BigDecimal(text))).next())
+          .as(text)
+          .hasMessageContaining("$decimal");
+    // the connection is still usable
+    assertThat(db.query("sql", "SELECT :p + 1 AS s", Map.of("p", new BigDecimal("1.5"))).next().<Object>getProperty("s"))
+        .isEqualTo(new BigDecimal("2.5"));
+  }
+
   private void assertStored(final RemoteDatabase db, final RID rid, final Map<String, Object> values) {
     for (final String name : values.keySet())
       assertThat(db.query("sql", "SELECT " + name + ".type() AS t FROM " + rid).next().<String>getProperty("t")).as(name)
@@ -183,13 +274,27 @@ class Issue12186RemoteTypedValuesIT extends BaseGraphServerTest {
   }
 
   private RemoteDatabase database() {
+    remote = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root", DEFAULT_PASSWORD_FOR_TESTS);
+    remote.command("sql", "CREATE DOCUMENT TYPE Doc");
+    return remote;
+  }
+
+  @BeforeEach
+  public void beginTest() {
+    super.beginTest();
     final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     server.create(DATABASE_NAME);
-    final RemoteDatabase db = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
-        DEFAULT_PASSWORD_FOR_TESTS);
-    db.command("sql", "CREATE DOCUMENT TYPE Doc");
-    return db;
+  }
+
+  @AfterEach
+  public void endTest() {
+    if (remote != null)
+      remote.close();
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    if (server.exists(DATABASE_NAME))
+      server.drop(DATABASE_NAME);
+    super.endTest();
   }
 }

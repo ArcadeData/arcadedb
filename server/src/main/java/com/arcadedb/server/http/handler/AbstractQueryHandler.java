@@ -939,25 +939,38 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (!(payload instanceof String text) || !RID.is(text))
       throw new RequestRefusedBeforeExecutionException(
           "Parameter '$rid' value must be a record id such as '#12:0', found " + describeMarkerPayload(payload));
-    return new RID(text);
+    try {
+      return new RID(text);
+    } catch (final NumberFormatException e) {
+      // RID.is() only checks for digit runs: a bucket id beyond an int or a position beyond a long gets here
+      throw new RequestRefusedBeforeExecutionException("Parameter '$rid' is not a valid record id: " + abbreviateMarkerText(text), e);
+    }
   }
 
+  /**
+   * The decimal goes through the same limits as a JSON number token ({@link JSONObject#isSafeBigNumber(String)}): {@code 1E+999999999}
+   * is a few bytes that {@code :p + 1} would expand into a billion digits, and a request has no other way to say it.
+   */
   private static BigDecimal decodeDecimalMarker(final Object payload) {
     if (!(payload instanceof String text))
       throw new RequestRefusedBeforeExecutionException(
           "Parameter '$decimal' value must be the decimal number as a string, found " + describeMarkerPayload(payload));
+    if (!JSONObject.isSafeBigNumber(text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$decimal' is too large: " + text.length() + " characters or an exponent beyond 1000");
     try {
       return new BigDecimal(text);
     } catch (final NumberFormatException e) {
-      throw new RequestRefusedBeforeExecutionException("Parameter '$decimal' is not a valid decimal number: " + text, e);
+      throw new RequestRefusedBeforeExecutionException("Parameter '$decimal' is not a valid decimal number: " + abbreviateMarkerText(text), e);
     }
   }
 
   private static Date decodeDateTimeMarker(final Object payload) {
-    if (!(payload instanceof Number millis) || payload instanceof Double || payload instanceof Float)
+    // A JSON integer beyond the long range is a BigDecimal, whose longValue() would keep only the low 64 bits
+    if (!(payload instanceof Integer || payload instanceof Long))
       throw new RequestRefusedBeforeExecutionException(
           "Parameter '$datetime' value must be epoch milliseconds as an integer, found " + describeMarkerPayload(payload));
-    return new Date(millis.longValue());
+    return new Date(((Number) payload).longValue());
   }
 
   private static Object decodeTemporalMarker(final String marker, final Object payload, final Function<String, Object> parser) {
@@ -973,6 +986,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   private static String describeMarkerPayload(final Object payload) {
     return payload == null ? "null" : payload.getClass().getSimpleName();
+  }
+
+  /** A marker text as it goes into an error message: the request is bounded, but the answer need not repeat all of it. */
+  private static String abbreviateMarkerText(final String text) {
+    return text.length() <= 64 ? text : text.substring(0, 64) + "... (" + text.length() + " characters)";
   }
 
   private static byte[] decodeBytesMarker(final Object payload) {
