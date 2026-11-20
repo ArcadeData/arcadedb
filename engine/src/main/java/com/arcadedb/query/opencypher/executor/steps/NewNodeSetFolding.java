@@ -94,6 +94,76 @@ final class NewNodeSetFolding {
    */
   static int apply(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
       final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, new PropertyTarget() {
+      @Override
+      public boolean has(final String property) {
+        return vertex.has(property);
+      }
+
+      @Override
+      public void set(final String property, final Object value) {
+        vertex.set(property, value);
+      }
+
+      @Override
+      public void remove(final String property) {
+        vertex.remove(property);
+      }
+
+      @Override
+      public Set<String> names() {
+        return vertex.getPropertyNames();
+      }
+    }, result, evaluator, context);
+  }
+
+  /**
+   * Applies {@code items} to the properties a relationship is about to be created with, as {@link #apply(List, MutableVertex,
+   * Result, ExpressionEvaluator, CommandContext)} applies them to a vertex: the relationship is then created once with all of
+   * them, instead of created with its pattern's properties and written again by the SET.
+   *
+   * @param properties the pattern's properties, changed in place
+   *
+   * @return the number of properties the items count as set
+   */
+  static int apply(final List<SetClause.SetItem> items, final Map<String, Object> properties, final Result result,
+      final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, new PropertyTarget() {
+      @Override
+      public boolean has(final String property) {
+        return properties.containsKey(property);
+      }
+
+      @Override
+      public void set(final String property, final Object value) {
+        properties.put(property, value);
+      }
+
+      @Override
+      public void remove(final String property) {
+        properties.remove(property);
+      }
+
+      @Override
+      public Set<String> names() {
+        return properties.keySet();
+      }
+    }, result, evaluator, context);
+  }
+
+  /** What a SET writes to: the vertex about to be saved, or the properties a relationship is about to be created with. */
+  private interface PropertyTarget {
+    boolean has(String property);
+
+    void set(String property, Object value);
+
+    void remove(String property);
+
+    Set<String> names();
+  }
+
+  private static int apply(final List<SetClause.SetItem> items, final PropertyTarget target, final Result result,
+      final ExpressionEvaluator evaluator, final CommandContext context) {
     final Object[] values = new Object[items.size()];
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
@@ -109,50 +179,50 @@ final class NewNodeSetFolding {
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
       switch (item.getType()) {
-      case PROPERTY -> counted += setOrRemove(vertex, item.getProperty(), values[i]);
-      case REPLACE_MAP -> counted += replaceMap(vertex, asPropertyMap(values[i]));
-      default -> counted += mergeMap(vertex, asPropertyMap(values[i]));
+      case PROPERTY -> counted += setOrRemove(target, item.getProperty(), values[i]);
+      case REPLACE_MAP -> counted += replaceMap(target, asPropertyMap(values[i]));
+      default -> counted += mergeMap(target, asPropertyMap(values[i]));
       }
     }
     return counted;
   }
 
-  private static int setOrRemove(final MutableVertex vertex, final String property, final Object value) {
+  private static int setOrRemove(final PropertyTarget target, final String property, final Object value) {
     if (value != null) {
-      vertex.set(property, value);
+      target.set(property, value);
       return 1;
     }
-    if (!vertex.has(property))
+    if (!target.has(property))
       return 0;
-    vertex.remove(property);
+    target.remove(property);
     return 1;
   }
 
   /** {@code SET n = map}, as {@code SetClauseApplier.applyReplaceMap} writes it. A null map is a no-op. */
-  private static int replaceMap(final MutableVertex vertex, final Map<String, Object> map) {
+  private static int replaceMap(final PropertyTarget target, final Map<String, Object> map) {
     if (map == null)
       return 0;
-    final Set<String> existing = new HashSet<>(vertex.getPropertyNames());
+    final Set<String> existing = new HashSet<>(target.names());
     for (final String property : existing)
       if (!property.startsWith("@"))
-        vertex.remove(property);
+        target.remove(property);
 
     int counted = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet())
       if (entry.getValue() != null) {
-        vertex.set(entry.getKey(), entry.getValue());
+        target.set(entry.getKey(), entry.getValue());
         ++counted;
       }
     return counted + CypherStatisticsHelper.countRemovedProperties(existing, map);
   }
 
   /** {@code SET n += map}, as {@code SetClauseApplier.applyMergeMap} writes it. A null map is a no-op. */
-  private static int mergeMap(final MutableVertex vertex, final Map<String, Object> map) {
+  private static int mergeMap(final PropertyTarget target, final Map<String, Object> map) {
     if (map == null)
       return 0;
     int counted = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet())
-      counted += setOrRemove(vertex, entry.getKey(), entry.getValue());
+      counted += setOrRemove(target, entry.getKey(), entry.getValue());
     return counted;
   }
 
