@@ -2109,10 +2109,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final HttpResponse<String> response = LeaderDial.sendBounded(dial.client(), request,
           HttpResponse.BodyHandlers.ofString(), deadlineMs);
 
-      // The leader's X-ArcadeDB-Commit-Index bookmark (issue #5862) is copied onto this exchange explicitly, or a
-      // READ_YOUR_WRITES client that landed on a follower would never see it despite the leader having just emitted it.
-      // (The relayed answer below carries it too, since the allow-list of LeaderCommandForwarder names it for issue
-      // #11739; the same value is written twice.)
+      // The leader's X-ArcadeDB-Commit-Index bookmark (issue #5862) is not on the relayed-header allow-list of
+      // LeaderCommandForwarder, so it is copied onto this exchange explicitly, or a READ_YOUR_WRITES client that
+      // landed on a follower would never see it despite the leader having just emitted it.
       response.headers().firstValue("X-ArcadeDB-Commit-Index")
           .ifPresent(val -> exchange.getResponseHeaders().put(new HttpString("X-ArcadeDB-Commit-Index"), val));
 

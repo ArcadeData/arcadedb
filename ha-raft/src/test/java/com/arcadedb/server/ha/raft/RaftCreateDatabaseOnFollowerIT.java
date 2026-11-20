@@ -22,13 +22,9 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.apache.ratis.proto.RaftProtos.LogEntryProto;
-import org.apache.ratis.server.raftlog.RaftLog;
-import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -51,10 +47,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * same follower was refused with {@code DatabaseNotFoundException}. The follower's apply thread is held off the new database
  * here until the test has seen the leader create it and the follower's answer still pending, which makes that window certain.
  * <p>
- * The follower answers once it has applied the entry the leader committed, which the leader names in the
- * {@code X-ArcadeDB-Commit-Index} bookmark of its answer. The tests also pin the cases a wait on the state of the database
- * would get wrong: a database of the same name still on the follower (dropped on the leader and created again), and one the
- * follower closed, which is not registered on it although its files are.
+ * The follower answers once it has applied what the leader had committed, which it asks the leader for once the forwarded
+ * command is answered. The tests also pin the cases a wait on the state of the database would get wrong: a database of the
+ * same name still on the follower (dropped on the leader and created again), and one the follower closed, which is not
+ * registered on it although its files are.
  */
 @Tag("slow")
 class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
@@ -62,9 +58,7 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
   private static final String       DROPPED_DATABASE     = "droppedThroughAFollower";
   private static final String       RECREATED_DATABASE   = "recreatedThroughAFollower";
   private static final String       CLOSED_DATABASE      = "closedThenDroppedThroughAFollower";
-  private static final String       BOOKMARKED_DATABASE  = "bookmarkedByTheLeader";
-  private static final List<String> TEST_DATABASES       = List.of(NEW_DATABASE, DROPPED_DATABASE, RECREATED_DATABASE, CLOSED_DATABASE,
-      BOOKMARKED_DATABASE);
+  private static final List<String> TEST_DATABASES       = List.of(NEW_DATABASE, DROPPED_DATABASE, RECREATED_DATABASE, CLOSED_DATABASE);
   private static final Duration     HTTP_TIMEOUT         = Duration.ofSeconds(30);
 
   private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
@@ -116,70 +110,11 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = created.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("create database failed: %s", answer.body()).isEqualTo(200);
-    assertBookmarkAppliedOn(answer, followerIndex);
 
     final HttpResponse<String> next = send(followerIndex, "/command/" + NEW_DATABASE,
         new JSONObject().put("language", "sql").put("command", "CREATE DOCUMENT TYPE AfterCreation")).get(30, TimeUnit.SECONDS);
     assertThat(next.statusCode()).as("the request right after the creation, to the same follower, was refused: %s", next.body())
         .isEqualTo(200);
-  }
-
-  /**
-   * The bookmark the issue asks for: the leader answers {@code create database} and {@code drop database} with the
-   * {@code X-ArcadeDB-Commit-Index} it has committed, which is at or past the entry of the command it just ran. Each bookmark is
-   * compared with the index of its own entry, read from the leader's Raft log, not with the other bookmark: a pair of bookmarks
-   * each one short of its entry would still be ordered.
-   */
-  @Test
-  void theLeaderAnswersTheCreationAndTheDropWithTheBookmark() throws Exception {
-    final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
-    final long before = lastRaftLogIndex(leader);
-
-    final HttpResponse<String> created = send(leaderIndex, "/server",
-        new JSONObject().put("command", "create database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
-    assertThat(created.statusCode()).as("create database failed: %s", created.body()).isEqualTo(200);
-    final long createEntry = entryIndexAfter(leader, before, RaftLogEntryType.INSTALL_DATABASE_ENTRY, BOOKMARKED_DATABASE);
-    assertThat(bookmarkOf(created)).as("the bookmark of create database covers its install entry, at %d", createEntry)
-        .isGreaterThanOrEqualTo(createEntry);
-
-    final HttpResponse<String> dropped = send(leaderIndex, "/server",
-        new JSONObject().put("command", "drop database " + BOOKMARKED_DATABASE)).get(30, TimeUnit.SECONDS);
-    assertThat(dropped.statusCode()).as("drop database failed: %s", dropped.body()).isEqualTo(200);
-    final long dropEntry = entryIndexAfter(leader, createEntry, RaftLogEntryType.DROP_DATABASE_ENTRY, BOOKMARKED_DATABASE);
-    assertThat(bookmarkOf(dropped)).as("the bookmark of drop database covers its drop entry, at %d", dropEntry)
-        .isGreaterThanOrEqualTo(dropEntry);
-  }
-
-  /** The index of the first {@code type} entry for {@code database} in {@code server}'s Raft log after {@code afterIndex}. */
-  private static long entryIndexAfter(final RaftHAServer server, final long afterIndex, final RaftLogEntryType type,
-      final String database) throws Exception {
-    final RaftLog log = server.getRaftDivision().getRaftLog();
-    final long last = log.getLastEntryTermIndex().getIndex();
-    for (long i = afterIndex + 1; i <= last; i++) {
-      final LogEntryProto entry = log.get(i);
-      if (entry == null || !entry.hasStateMachineLogEntry())
-        continue;
-      final ByteString data = entry.getStateMachineLogEntry().getLogData();
-      if (data.isEmpty() || RaftLogEntryType.fromId(data.byteAt(0)) != type)
-        continue;
-      if (database.equals(RaftLogEntryCodec.decode(data).databaseName()))
-        return i;
-    }
-    throw new AssertionError("no " + type + " entry for '" + database + "' in the leader's log after index " + afterIndex);
-  }
-
-  /** Not a database command: a command the follower does not forward answers without a bookmark. */
-  @Test
-  void aCommandThatIsNotACreateOrDropCarriesNoBookmark() throws Exception {
-    final int leaderIndex = findLeaderIndex();
-    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-
-    final HttpResponse<String> answer = send(leaderIndex, "/server", new JSONObject().put("command", "list databases"))
-        .get(30, TimeUnit.SECONDS);
-    assertThat(answer.statusCode()).isEqualTo(200);
-    assertThat(answer.headers().firstValue(AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME)).isEmpty();
   }
 
   /**
@@ -213,7 +148,6 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = dropped.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("drop database failed: %s", answer.body()).isEqualTo(200);
-    assertBookmarkAppliedOn(answer, followerIndex);
     assertThat(getServer(followerIndex).existsDatabase(DROPPED_DATABASE))
         .as("the follower that answered the drop must not list the database any more").isFalse();
   }
@@ -261,7 +195,6 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = recreated.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("create database failed: %s", answer.body()).isEqualTo(200);
-    assertBookmarkAppliedOn(answer, followerIndex);
     assertThat(hasType(followerIndex, RECREATED_DATABASE, "OldGeneration"))
         .as("the follower that answered the creation holds the new database, not the dropped one").isFalse();
   }
@@ -304,7 +237,6 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
 
     final HttpResponse<String> answer = dropped.get(30, TimeUnit.SECONDS);
     assertThat(answer.statusCode()).as("drop database failed: %s", answer.body()).isEqualTo(200);
-    assertBookmarkAppliedOn(answer, followerIndex);
 
     final HttpResponse<String> exists = get(followerIndex, "/exists/" + CLOSED_DATABASE).get(30, TimeUnit.SECONDS);
     assertThat(new JSONObject(exists.body()).getBoolean("result", true))
@@ -364,28 +296,11 @@ class RaftCreateDatabaseOnFollowerIT extends BaseRaftHATest {
     return getServer(serverIndex).getDatabase(database).getSchema().existsType(typeName);
   }
 
-  /** The {@code X-ArcadeDB-Commit-Index} of an answer, or {@code -1} when it carries none. */
-  private static long bookmarkOf(final HttpResponse<?> answer) {
-    return answer.headers().firstValueAsLong(AbstractServerHttpHandler.COMMIT_INDEX_HEADER_NAME).orElse(-1L);
-  }
-
-  /**
-   * The answer carries the leader's bookmark, and the server that relayed it has applied everything up to it: the client's next
-   * request to that server finds the change made.
-   */
-  private void assertBookmarkAppliedOn(final HttpResponse<?> answer, final int serverIndex) {
-    final long bookmark = bookmarkOf(answer);
-    assertThat(bookmark).as("the answer carries the leader's X-ArcadeDB-Commit-Index bookmark").isGreaterThan(0);
-    assertThat(getRaftPlugin(serverIndex).getRaftHAServer().getTrustedAppliedIndex())
-        .as("server %d answered with bookmark %d before it applied that index", serverIndex, bookmark)
-        .isGreaterThanOrEqualTo(bookmark);
-  }
-
   /**
    * Waits until {@code request} is answered or a handler of server {@code followerIndex} waits in
-   * {@link RaftHAPlugin#awaitLocally}, which it enters only once the leader's answer to the command it forwarded has arrived. A
-   * follower that relays that answer at once ends the request instead, so the check after this does not depend on how long the
-   * forwarded answer takes.
+   * {@link RaftHAPlugin#awaitLeaderCommitApplied}, which it enters only once the leader's answer to the command it forwarded
+   * has arrived. A follower that relays that answer at once ends the request instead, so the check after this does not depend
+   * on how long the forwarded answer takes.
    */
   private void awaitAnswerOrLocalWait(final CompletableFuture<?> request, final int followerIndex) throws InterruptedException {
     final RaftHAPlugin plugin = getRaftPlugin(followerIndex);

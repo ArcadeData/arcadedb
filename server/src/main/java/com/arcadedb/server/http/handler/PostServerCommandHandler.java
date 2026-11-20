@@ -107,14 +107,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else
       checkRootUser(user);
 
-    // The database a `create database` or `drop database` names, resolved once: their answers carry the bookmark of issue #11739.
-    // Null for every other command
+    // The database a `create database` or `drop database` names, resolved once. Null for every other command
     final boolean createsDatabase = command_lc.startsWith(CREATE_DATABASE);
-    final String bookmarkedDatabase = createsDatabase ? extractTarget(command, CREATE_DATABASE)
+    final String targetDatabase = createsDatabase ? extractTarget(command, CREATE_DATABASE)
         : command_lc.startsWith(DROP_DATABASE) ? extractTarget(command, DROP_DATABASE) : null;
 
     // Write commands that must run on the leader: forward if this node is a replica
-    if (bookmarkedDatabase != null ||
+    if (targetDatabase != null ||
         command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
         command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
         command_lc.startsWith(IMPORT_DATABASE)) {
@@ -125,8 +124,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
       if (forwarded != null) {
-        if (forwarded.getCode() == 200 && bookmarkedDatabase != null)
-          awaitForwardedEntryApplied(forwarded, bookmarkedDatabase, createsDatabase);
+        if (forwarded.getCode() == 200 && targetDatabase != null)
+          awaitForwardedCommandApplied(targetDatabase, createsDatabase);
         return forwarded;
       }
     }
@@ -134,9 +133,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (command_lc.startsWith(SHUTDOWN))
       shutdownServer(extractTarget(command, SHUTDOWN));
     else if (createsDatabase)
-      createDatabase(bookmarkedDatabase);
-    else if (bookmarkedDatabase != null)
-      dropDatabase(bookmarkedDatabase);
+      createDatabase(targetDatabase);
+    else if (targetDatabase != null)
+      dropDatabase(targetDatabase);
     else if (command_lc.startsWith(CLOSE_DATABASE))
       closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
@@ -181,10 +180,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, "{ \"error\" : \"Server command not valid\"}");
     }
 
-    final ExecutionResponse answer = new ExecutionResponse(200, response.toString());
-    if (bookmarkedDatabase != null)
-      emitBookmark(answer, bookmarkedDatabase);
-    return answer;
+    return new ExecutionResponse(200, response.toString());
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -505,69 +501,28 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Stamps the leader's answer to {@code create database} and {@code drop database} with the {@code X-ArcadeDB-Commit-Index}
-   * bookmark (issue #11739): at least the index the command's entry committed at, and this node's commit index when that is
-   * higher. The commit index alone can stand below the entry when the leadership moved during the submission and another leader
-   * committed it (review of #11739). A client carries it to read its own write from another node, and a follower that forwarded
-   * the command waits on it (see {@link #awaitForwardedEntryApplied}). Carried to a node that has not installed the database yet,
-   * it is not reached: {@link DatabaseAbstractHandler} resolves the database before it reads {@code X-ArcadeDB-Read-After}, so
-   * that node answers 404, and the client retries or sends the request to the leader (the OpenAPI description of the header in
-   * {@code CoreApiSpec} says so). Nothing on a server without HA, which has no index.
-   */
-  private void emitBookmark(final ExecutionResponse answer, final String databaseName) {
-    final HAServerPlugin ha = httpServer.getServer().getHA();
-    if (ha == null)
-      return;
-    final long bookmark = Math.max(ha.getCommitIndex(), ha.takeDatabaseEntryIndex(databaseName));
-    if (bookmark >= 0)
-      answer.setHeader(COMMIT_INDEX_HEADER_NAME, String.valueOf(bookmark));
-  }
-
-  /**
-   * Holds the leader's answer to a forwarded {@code create database} or {@code drop database} until this node has applied the
-   * entry the leader committed for it, bounded by the quorum timeout (issue #11739). The leader answers once the entry is
+   * Holds the leader's answer to a forwarded {@code create database} or {@code drop database} until this node has applied
+   * what the leader had committed, bounded by the quorum timeout (issue #11739). The leader answers once the entry is
    * committed, but this node installs or drops the database only when it applies it, which can be after the answer: relaying it
    * at once let the client's next request to this node be refused with {@code DatabaseNotFoundException} after a creation, and
    * {@code GET /api/v1/exists} still answer {@code true} after a drop.
    * <p>
-   * The wait is on the entry, through the bookmark the leader answers with, and not on the state of the database here. A database
-   * of that name can already be on this node when the creation is applied (the leader dropped it and it was created again while
-   * this node lagged), and one that was closed here with {@code close database} reads as gone although its files stay until the
-   * drop is applied. A leader that predates the bookmark answers without it: there is no entry to wait for, and the answer is
-   * relayed at once, as before.
+   * The wait is on the Raft log, not on the state of the database here. A database of that name can already be on this node
+   * when the creation is applied (the leader dropped it and it was created again while this node lagged), and one that was
+   * closed here with {@code close database} reads as gone although its files stay until the drop is applied. It asks the
+   * leader for its commit index instead of reading one from the forwarded answer, so it also holds for an answer the leader
+   * replayed for a retried {@code X-Request-Id} and for a leader that changed while the command ran.
    * <p>
-   * The change is made on the leader either way, so a wait that runs out still answers success.
+   * The change is made on the leader either way, so a wait that could not finish still answers success. These commands are
+   * root-only and rare, which is what bounds the HTTP worker threads that can sit in the wait.
    */
-  private void awaitForwardedEntryApplied(final ExecutionResponse forwarded, final String databaseName, final boolean created) {
+  private void awaitForwardedCommandApplied(final String databaseName, final boolean created) {
     final HAServerPlugin ha = httpServer.getServer().getHA();
-    final long bookmark = bookmarkOf(forwarded);
-    if (ha == null)
-      return;
-    if (bookmark < 0) {
-      LogManager.instance().log(this, Level.FINE,
-          "The leader answered the forwarded %s of database '%s' without the %s bookmark (it runs a version that predates it, or it "
-              + "could not read its commit index): the answer is relayed without waiting for this server to apply it",
-          created ? "creation" : "drop", databaseName, COMMIT_INDEX_HEADER_NAME);
-      return;
-    }
-
-    if (!ha.awaitLocally(() -> ha.getTrustedAppliedIndex() >= bookmark))
+    if (ha != null && !ha.awaitLeaderCommitApplied())
       LogManager.instance().log(this, Level.WARNING,
-          "Database '%s' was %s by the leader, but this server has applied the Raft log only up to index %d of the %d that the "
-              + "leader answered with: a request for it here may see the previous state until this server catches up",
-          databaseName, created ? "created" : "dropped", ha.getTrustedAppliedIndex(), bookmark);
-  }
-
-  /** The {@code X-ArcadeDB-Commit-Index} of the leader's relayed answer, or {@code -1} when it carries none or an unreadable one. */
-  private static long bookmarkOf(final ExecutionResponse answer) {
-    final String value = answer.getHeader(COMMIT_INDEX_HEADER_NAME);
-    if (value == null)
-      return -1L;
-    try {
-      return Long.parseLong(value.trim());
-    } catch (final NumberFormatException e) {
-      return -1L;
-    }
+          "Database '%s' was %s by the leader, but this server could not confirm that it has applied the change: a request for "
+              + "it here may see the previous state until this server catches up",
+          databaseName, created ? "created" : "dropped");
   }
 
   /**

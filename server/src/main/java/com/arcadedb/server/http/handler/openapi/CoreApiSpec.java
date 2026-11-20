@@ -296,17 +296,6 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setResponses(createCommandResponses());
     // Not QueryResponse: every server command answers {"result": ...}, whose shape depends on the command (issue #10164)
     postOp.getResponses().addApiResponse("200", SpecBuilders.jsonResponse("Command executed successfully", "ServerCommandResponse"));
-    // The bookmark of 'create database' and 'drop database' on an HA cluster, sent by a follower that forwarded the command too
-    // (issue #11739). Declared on the 200 only: it is emitted by those two commands, once they have succeeded.
-    postOp.getResponses().get("200").addHeaderObject(COMMIT_INDEX_HEADER, SpecBuilders.stringHeader("""
-        Sent by 'create database' and 'drop database' on an HA cluster: a Raft log position at or past the entry of the \
-        command, which the leader had committed when it answered. The 200 confirms that the command succeeded on the leader. \
-        A follower that was sent the command waits, up to the quorum timeout (arcadedb.ha.quorumTimeout), until it has applied \
-        that position before it relays the answer; the wait is best effort, and a follower still behind when it runs out \
-        answers 200 all the same. The position is not a promise about the database: entries applied after it (another drop or \
-        create of the same name) can change whether it exists. A server that has not installed the database yet answers a \
-        request for it with 404 before it reads X-ArcadeDB-Read-After: retry the request, or send it to the leader. Absent on \
-        a server without HA and on every other command."""));
     // Besides the 'Query terminated' the shared set declares, 'create database' and 'import database' answer 409 for a
     // name that is already taken (issue #10074). 'restore database' and 'restore backup' keep their 400 for a taken
     // target (issue #7395).

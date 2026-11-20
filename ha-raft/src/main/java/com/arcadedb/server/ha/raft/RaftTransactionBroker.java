@@ -469,22 +469,18 @@ public class RaftTransactionBroker {
 
   /**
    * Replicates an install-database entry so replicas create or snapshot-sync the database.
-   *
-   * @return the Raft log index the entry committed at
    */
-  public long replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
-    return replicateInstallDatabase(dbName, forceSnapshot, -1L);
+  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot) {
+    replicateInstallDatabase(dbName, forceSnapshot, -1L);
   }
 
   /**
    * As {@link #replicateInstallDatabase(String, boolean)}, fenced to the term of the restore hold (issue #10974) when
    * {@code restoreFenceTerm} is not negative, see {@link RaftLogEntryCodec#encodeInstallDatabaseEntry(String, boolean, long)}.
-   *
-   * @return the Raft log index the entry committed at
    */
-  public long replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
+  public void replicateInstallDatabase(final String dbName, final boolean forceSnapshot, final long restoreFenceTerm) {
     final ByteString entry = RaftLogEntryCodec.encodeInstallDatabaseEntry(dbName, forceSnapshot, restoreFenceTerm);
-    return groupCommitter.submitAndWait(entry.toByteArray());
+    groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**

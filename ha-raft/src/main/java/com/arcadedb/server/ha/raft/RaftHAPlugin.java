@@ -58,7 +58,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -80,8 +79,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // never changes for the life of the process, so the kept value cannot go stale.
   private volatile String               stoppedClusterToken;
 
-  // The threads inside awaitLocally right now (issue #11739): what a test reads to know a forwarded command is waiting for this
-  // node to apply it, instead of looking for the method on the stacks of every thread of the JVM
+  // The threads inside awaitLeaderCommitApplied right now (issue #11739): what a test reads to know a forwarded command is
+  // waiting for this node to apply it, instead of looking for the method on the stacks of every thread of the JVM
   private final AtomicInteger localWaiters = new AtomicInteger();
 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
@@ -564,43 +563,30 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public boolean awaitLocally(final BooleanSupplier condition) {
+  public boolean awaitLeaderCommitApplied() {
     final RaftHAServer raft = raftHAServer;
     if (raft == null)
-      return condition.getAsBoolean();
+      return true;
     localWaiters.incrementAndGet();
     try {
-      return raft.awaitApplied(condition, raft.getQuorumTimeout());
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return condition.getAsBoolean();
+      // The leader's commit index, confirmed by a ReadIndex round: at or past every entry committed before this call, whichever
+      // node leads by now. Then the lenient apply wait, which gives up at once inside a snapshot resync gap
+      final long leaderCommitIndex = raft.fetchReadIndex(false);
+      raft.waitForAppliedIndex(leaderCommitIndex, false);
+      return raft.getTrustedAppliedIndex() >= leaderCommitIndex;
+    } catch (final RuntimeException e) {
+      // Best effort: the caller's command is done on the leader whatever happens here
+      HALog.log(this, HALog.DETAILED, "Could not wait for this server to apply the leader's commit index: %s", e.getMessage());
+      return false;
     } finally {
       localWaiters.decrementAndGet();
     }
   }
 
-  /** How many threads wait in {@link #awaitLocally} right now. */
+  /** How many threads wait in {@link #awaitLeaderCommitApplied} right now. */
   // @VisibleForTesting
   int localWaiters() {
     return localWaiters.get();
-  }
-
-  @Override
-  public long getCommitIndex() {
-    final RaftHAServer raft = raftHAServer;
-    return raft != null ? raft.getCommitIndex() : -1L;
-  }
-
-  @Override
-  public long getTrustedAppliedIndex() {
-    final RaftHAServer raft = raftHAServer;
-    return raft != null ? raft.getTrustedAppliedIndex() : -1L;
-  }
-
-  @Override
-  public long takeDatabaseEntryIndex(final String databaseName) {
-    final RaftHAServer raft = raftHAServer;
-    return raft != null ? raft.takeDatabaseEntryIndex(databaseName) : -1L;
   }
 
   @Override

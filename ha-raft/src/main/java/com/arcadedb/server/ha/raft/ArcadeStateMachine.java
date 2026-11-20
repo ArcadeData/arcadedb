@@ -1632,7 +1632,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             schemaHistory.recordSchemaChangeApplied(decoded.databaseName(), index);
         }
         case INSTALL_DATABASE_ENTRY -> bootstrapInstalls.applyInstallDatabaseEntry(decoded, index);
-        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded, index);
+        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
         case SECURITY_USERS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityUsersEntry(decoded, index);
         case SECURITY_GROUPS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityGroupsEntry(decoded, index);
         case SECURITY_API_TOKENS_ENTRY -> securitySuperseded[0] = !securityEntries.applySecurityApiTokensEntry(decoded, index);
@@ -3979,8 +3979,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // DropDatabaseApplier holds the implementation of these; they stay here for the callers outside this class.
 
-  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
-    dropEntries.applyDropDatabaseEntry(decoded, index);
+  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+    dropEntries.applyDropDatabaseEntry(decoded);
   }
 
   void setLocalDropVerbs(final LocalDropVerbs localDropVerbs) {

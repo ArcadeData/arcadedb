@@ -802,7 +802,7 @@ class ArcadeStateMachineBootstrapWindowTest {
     server.returns("existsDatabase", false);
     localDb.close();
     FileUtils.deleteRecursively(new File(DB_PATH));
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
     assertThat(sm.getPendingBootstrapReplacements()).isEmpty();
     assertThat(sm.getBootstrapInstallsInFlight())
         .as("and once the last holder is gone the entry is removed rather than left behind at zero")

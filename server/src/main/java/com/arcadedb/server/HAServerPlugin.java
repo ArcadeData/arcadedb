@@ -27,7 +27,6 @@ import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.BooleanSupplier;
 
 /**
  * Public interface for the High Availability server plugin. Consumed by HTTP handlers,
@@ -888,45 +887,20 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * Waits, bounded by the quorum timeout, until {@code condition} holds on THIS node, evaluating it again whenever the state
-   * machine applies an entry (issue #11739). For a command this node forwarded to the leader, whose effect reaches this node
-   * only when it applies the entry the leader committed. Best-effort: it returns {@code false} when the deadline passes. The
-   * default, for non-HA setups, only evaluates the condition.
+   * Waits, bounded by the quorum timeout, until THIS node has applied everything the cluster had committed when the call was
+   * made (issue #11739): it asks the leader for its commit index and waits for the local state machine to reach it. For a
+   * command this node forwarded to the leader, whose effect reaches this node only when it applies the entry the leader
+   * committed. {@link #awaitLocalApply()} is not enough there: it waits for the commit index THIS node has heard of, and a
+   * follower hears of a commit only with the leader's next append, which can be after the leader's answer to the command.
+   * <p>
+   * Best effort: it returns {@code false}, without failing, when the leader cannot be asked, when the deadline passes, or
+   * when this node is inside a snapshot resync gap that waiting cannot close. The default, for non-HA setups, has nothing to
+   * wait for.
    *
-   * @return whether the condition holds
+   * @return whether this node has applied the leader's commit index
    */
-  default boolean awaitLocally(final BooleanSupplier condition) {
-    return condition.getAsBoolean();
-  }
-
-  /**
-   * The highest Raft index this node has seen committed, or {@code -1} when HA is not running or the index cannot be read right
-   * now (issue #11739). On the leader, read once a command's entry has been committed, it is at or past that entry: the bookmark
-   * the leader answers {@code create database} and {@code drop database} with, which a node that forwarded the command waits on
-   * through {@link #awaitLocally} and {@link #getTrustedAppliedIndex()}. The default, for non-HA setups, knows no index.
-   */
-  default long getCommitIndex() {
-    return -1L;
-  }
-
-  /**
-   * The Raft index up to which THIS node can vouch that it has applied the committed log, or {@code -1} when HA is not running or
-   * the index cannot be read right now (issue #11739). Not the raw index of the consensus library: it is held back while this
-   * node is inside a snapshot resync gap it has not filled, because there it advertises entries it does not hold. The default,
-   * for non-HA setups, knows no index.
-   */
-  default long getTrustedAppliedIndex() {
-    return -1L;
-  }
-
-  /**
-   * Takes out the Raft index at which the install or drop entry this node last submitted for {@code databaseName} committed, or
-   * answers {@code -1} when there is none (review of #11739): read once, by the answer to that command. The bookmark of
-   * {@code create database} and {@code drop database} is at least this index: {@link #getCommitIndex()} read after the submission
-   * can stand below the entry when another leader committed it. The default, for non-HA setups, knows no index.
-   */
-  default long takeDatabaseEntryIndex(final String databaseName) {
-    return -1L;
+  default boolean awaitLeaderCommitApplied() {
+    return true;
   }
 
   /**

@@ -347,7 +347,7 @@ class QuarantineEntryTest {
       assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("precondition: the database is quarantined").isEqualTo(FLOOR);
       assertThat(sm.isDatabaseDiverged(DB_NAME)).isTrue();
 
-      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
+      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
 
       // -1 is "this database is not known to be behind", which is the only honest answer once it does not exist
       assertThat(sm.getDatabaseAppliedFloor(DB_NAME)).as("a dropped database has no read floor left to honour")
@@ -366,7 +366,7 @@ class QuarantineEntryTest {
       seedDatabaseAppliedFloor(sm, "other7641", FLOOR);
       sm.markStateDiverged("other7641");
 
-      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)), 1L);
+      sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME)));
 
       assertThat(sm.getDatabaseAppliedFloor("other7641")).as("an unrelated database keeps its floor").isEqualTo(FLOOR);
       assertThat(sm.isDatabaseDiverged("other7641")).isTrue();

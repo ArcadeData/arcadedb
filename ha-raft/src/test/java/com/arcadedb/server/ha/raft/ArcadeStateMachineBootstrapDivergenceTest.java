@@ -249,7 +249,7 @@ class ArcadeStateMachineBootstrapDivergenceTest {
     final ArcadeStateMachine sm = applyStaleBaseline(newStateMachine());
     assertThat(sm.getBootstrapUnreconciledDatabases()).containsExactly(DB_A);
 
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_A)), 1L);
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_A)));
 
     assertThat(sm.getBootstrapUnreconciledDatabases()).isEmpty();
     assertThat(newStateMachine().getBootstrapUnreconciledDatabases())

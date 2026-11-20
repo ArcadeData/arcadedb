@@ -532,7 +532,7 @@ class UnpublishedSchemaChangeQuarantineTest {
     sm.deferCompactionAfterUnpublishableChange("dropped9558");
     sm.deferCompactionAfterUnpublishableChange("other9558");
 
-    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry("dropped9558")), 1L);
+    sm.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry("dropped9558")));
 
     assertThat(sm.isCompactionHeldOff("dropped9558")).isFalse();
     assertThat(sm.deferCompactionAfterUnpublishableChange("dropped9558")).as("its streak starts over")

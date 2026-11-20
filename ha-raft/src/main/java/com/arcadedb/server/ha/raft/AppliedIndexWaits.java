@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
@@ -93,17 +92,15 @@ final class AppliedIndexWaits {
    * @return {@code false} when the timeout elapsed first
    */
   public boolean awaitApplied(final BooleanSupplier condition, final long timeoutMs) throws InterruptedException {
-    // On the monotonic clock (review of #11739): a wall clock stepped back during the wait would extend it by the step
-    final long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    final long deadline = System.currentTimeMillis() + timeoutMs;
     // The condition may read a page (a disk read on a cache miss), so it is evaluated OUTSIDE the monitor that the
     // apply thread takes after every entry: the monitor is only used to park between evaluations.
     while (!condition.getAsBoolean()) {
-      final long remainingNanos = deadline - System.nanoTime();
-      if (remainingNanos <= 0)
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
         return false;
       synchronized (ha.applyNotifier) {
-        // At least 1 ms: wait(0) would park until notified, with no bound at all
-        ha.applyNotifier.wait(Math.max(1L, Math.min(TimeUnit.NANOSECONDS.toMillis(remainingNanos), 50L)));
+        ha.applyNotifier.wait(Math.min(remaining, 50L));
       }
     }
     return true;

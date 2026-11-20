@@ -5394,8 +5394,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     final ArcadeStateMachine exclusiveOn = beginLeaderExclusive();
     try {
       final RaftHAServer raft = requireRaftServer();
-      // The index the command is bookmarked with (review of #11739), see RaftHAServer.recordDatabaseEntryIndex
-      raft.recordDatabaseEntryIndex(getName(), RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false));
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), false);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -5413,8 +5412,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       final RaftHAServer raft = requireRaftServer();
       // The install a restore forces is fenced to the leadership that held the database for it (issue #10974)
-      raft.recordDatabaseEntryIndex(getName(), RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(),
-          forceSnapshot, raft.restoreFenceTerm(getName())));
+      RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(getName(), forceSnapshot,
+          raft.restoreFenceTerm(getName()));
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
@@ -5472,7 +5471,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // The drop of a target a restore replaces is fenced to the leadership that held it for the restore (issue #10974)
         committedLogIndex = RaftHAServer.requireTransactionBroker(raft).replicateDropDatabase(getName(),
             raft.restoreFenceTerm(getName()));
-        raft.recordDatabaseEntryIndex(getName(), committedLogIndex);
         raft.waitForAppliedIndex(getName(), committedLogIndex, true);
       } finally {
         localDropVerbs.release(getName(), registration);

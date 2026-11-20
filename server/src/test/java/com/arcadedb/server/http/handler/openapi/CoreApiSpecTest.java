@@ -638,28 +638,4 @@ class CoreApiSpecTest {
       }
     }
   }
-
-  /**
-   * Issue #11739: {@code create database} and {@code drop database} answer with the leader's bookmark on an HA cluster, a
-   * follower relaying it, so a client generated from the document can read it. Only the 200 carries it: the commands that fail
-   * answer before anything is committed.
-   */
-  @Test
-  void theServerCommandDeclaresTheBookmarkOnItsSuccessOnly() {
-    final Operation post = openAPI.getPaths().get("/api/v1/server").getPost();
-    assertThat(post.getOperationId()).isEqualTo("executeServerCommand");
-
-    final Header bookmark = post.getResponses().get("200").getHeaders() == null
-        ? null
-        : post.getResponses().get("200").getHeaders().get("X-ArcadeDB-Commit-Index");
-    assertThat(bookmark).as("the 200 of the server command declares the bookmark of create database and drop database").isNotNull();
-    assertThat(bookmark.getDescription()).contains("create database", "drop database");
-
-    for (final String status : post.getResponses().keySet())
-      if (!"200".equals(status)) {
-        final Map<String, Header> headers = post.getResponses().get(status).getHeaders();
-        assertThat(headers == null ? null : headers.get("X-ArcadeDB-Commit-Index"))
-            .as("the server command answers %s without a bookmark, and must not promise one", status).isNull();
-      }
-  }
 }

@@ -184,7 +184,7 @@ class ArcadeStateMachineBootstrapBaselinePersistenceTest {
     writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_OTHER, "b".repeat(64), 3L)), 51L);
     assertThat(writer.getBootstrapBaseline(DB_OTHER)).isNotNull();
 
-    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_OTHER)), 1L);
+    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_OTHER)));
     assertThat(writer.getBootstrapBaseline(DB_OTHER))
         .as("baseline evicted in-memory after drop")
         .isNull();
@@ -208,7 +208,7 @@ class ArcadeStateMachineBootstrapBaselinePersistenceTest {
     writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_A, fingerprintA, lastTxIdA)), 50L);
     writer.applyBootstrapFingerprintEntry(RaftLogEntryCodec.decode(encodeBaseline(DB_OTHER, "c".repeat(64), 9L)), 51L);
 
-    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_A)), 1L);
+    writer.applyDropDatabaseEntry(RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_A)));
 
     final ArcadeStateMachine reopened = newStateMachine();
     assertThat(reopened.getBootstrapBaseline(DB_A))

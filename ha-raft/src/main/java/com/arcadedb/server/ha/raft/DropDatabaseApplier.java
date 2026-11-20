@@ -28,7 +28,6 @@ import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.server.ha.raft.ArcadeStateMachine.InstallApplyGate;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -61,25 +60,8 @@ final class DropDatabaseApplier {
     this.sm = sm;
   }
 
-  /**
-   * Applies the DROP_DATABASE entry at {@code index}. A drop whose files the filesystem would not remove, or would not say
-   * whether it removed, fails with an {@link UncheckedIOException}, which quarantines the database; the entry is also held
-   * for the replay until a drop of the name completes (see {@link #holdUnfinishedDrop}).
-   */
   // @VisibleForTesting
-  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
-    final String databaseName = decoded.databaseName();
-    try {
-      applyDrop(decoded);
-    } catch (final UncheckedIOException e) {
-      holdUnfinishedDrop(databaseName, index, e);
-      throw e;
-    }
-    // The name has no files left: an earlier drop of it that left them is done too
-    sm.applyRetry.releaseHeldEntry(unfinishedDropKey(databaseName));
-  }
-
-  private void applyDrop(final RaftLogEntryCodec.DecodedEntry decoded) {
+  void applyDropDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
     final String databaseName = decoded.databaseName();
     // Whatever the database's pages were reserved at, the pages are going away: evict its ledger here so the
     // per-database map does not keep the names of dropped databases for the node's lifetime (same rule as the
@@ -193,16 +175,15 @@ final class DropDatabaseApplier {
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
       staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
       absent = databaseDirectory == null;
-      // The inline fallback of stageForDeletion logs a delete it could not finish and returns: the directory must be gone
-      // before the close mark is cleared below, or a request reopens the copy the cluster dropped once the filesystem recovers
-      if (databaseDirectory != null && staged == null)
-        confirmDeletedInline(databaseName, databaseDirectory);
       // Deregistered again now that the directory is gone from under its name (issue #11739). A drop ends the close that a
       // `close database` asked for, and only removeDatabase ends it: the branch above for a closed database left the mark
       // standing, so GET /exists kept answering true, and a request kept being refused as closed, for a database the cluster
-      // had dropped. It also has the server list the database directory again AFTER the rename: the call in the registered
-      // branch lists it before, and a listing taken in between kept the name for up to a second after the drop was applied.
-      sm.server.removeDatabase(databaseName);
+      // had dropped. It also has the server list the database directories again AFTER the rename: the call in the registered
+      // branch lists them before, and a listing taken in between kept the name for up to a second after the drop was applied.
+      // Not when the inline fallback of stageForDeletion left the directory behind (it logs a delete it could not finish and
+      // returns): the mark then stays, as it did, so no request reopens the copy the cluster dropped.
+      if (staged != null || absent || Files.notExists(databaseDirectory))
+        sm.server.removeDatabase(databaseName);
     }
     if (absent) {
       // Neither registered nor on disk any more: the removal this entry asks for already happened elsewhere.
@@ -236,47 +217,6 @@ final class DropDatabaseApplier {
     sm.baselines.evictBootstrapBaseline(databaseName);
     clearDroppedDatabaseQuarantine(databaseName);
     HALog.log(sm, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
-  }
-
-  /**
-   * Keeps the entry of a drop that left the database's files on disk replayable until the drop completes (review of #11739).
-   * The failure quarantines the database too, which keeps {@code takeSnapshot()} from checkpointing past the entry, but the
-   * quarantine does not last: the targeted resync it triggers asks the leader, a leader that dropped the database answers 404,
-   * and {@link SnapshotResync#reportDatabaseTheLeaderDoesNotHold} lifts the quarantine on that answer. The next checkpoint
-   * would then let Ratis purge the one entry that removes the files, and a restart would not replay it. The hold stands until
-   * a drop of the name completes, a restart replays the entry or a Raft install covers it. Raised before the failure leaves
-   * the apply, so no later entry moves the applied index past it first.
-   */
-  private void holdUnfinishedDrop(final String databaseName, final long index, final UncheckedIOException failure) {
-    final long lowest = sm.applyRetry.heldEntryFloors.merge(unfinishedDropKey(databaseName), index, Math::min);
-    LogManager.instance().log(sm, lowest == index ? Level.SEVERE : Level.FINE,
-        "Raft entry at index %d drops database '%s', whose files are still on disk: no snapshot checkpoint will cover it until "
-            + "a drop of the name completes, so a restart replays it (%s)", index, databaseName, failure.getMessage());
-  }
-
-  static String unfinishedDropKey(final String databaseName) {
-    return "drop:" + databaseName;
-  }
-
-  /**
-   * Fails the apply when the inline deletion {@code stageForDeletion} fell back to left {@code directory} behind (review of
-   * #11739): {@code FileUtils.deleteRecursively} logs what it could not delete and returns. Thrown before the close mark is
-   * cleared, the database stays unavailable, a plain runtime exception takes the {@code handleUnexpectedApplyError} path
-   * (see {@link #closedDatabaseDirectory}), and {@link #holdUnfinishedDrop} keeps the entry replayable until the drop completes.
-   *
-   * @throws UncheckedIOException when the directory is still there, or the filesystem cannot say whether it is
-   */
-  private static void confirmDeletedInline(final String databaseName, final Path directory) {
-    try {
-      Files.readAttributes(directory, BasicFileAttributes.class);
-    } catch (final NoSuchFileException e) {
-      return;
-    } catch (final IOException e) {
-      throw new UncheckedIOException(
-          "Cannot tell whether the files of dropped database '" + databaseName + "' at '" + directory + "' are gone", e);
-    }
-    throw new UncheckedIOException("The files of dropped database '" + databaseName + "' at '" + directory + "' could not be deleted",
-        new FileSystemException(directory.toString(), null, "still present after the inline deletion"));
   }
 
   /**
