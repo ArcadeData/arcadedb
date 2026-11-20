@@ -60,7 +60,7 @@ import java.util.logging.Level;
  * <p>
  * It exists for the streamed {@code /api/v1/batch} forward from a follower to the leader. The JDK {@link HttpClient}
  * hands back an HTTP/1.1 response only once the request body has been published whole (pinned by
- * {@code Issue8674StreamedRelayBodyCapTerminalLineTest.theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished}),
+ * {@code LeaderForwardStreamedRelayTest.StreamedRelayBodyCapTerminalLine#theJdkClientHandsBackTheResponseOnlyOnceTheUploadIsPublished}),
  * so a client loading through a follower saw none of the leader's progress lines until its whole upload had been
  * relayed, and a cap trip on the follower could only ever fail the send. HTTP/2 would deliver the response mid-upload,
  * but the JDK client reaches it only through ALPN on TLS: on the plain listener the {@code h2c} upgrade does not happen

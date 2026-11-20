@@ -25,11 +25,14 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 
 /**
  * Points every alias of a row that binds one record at the version of it a write just produced.
@@ -58,6 +61,10 @@ import java.util.Map;
  * and {@code WITH collect(a) AS ns FOREACH (n IN ns | SET n.v = n.v + 10) UNWIND ns AS m RETURN m.v} read the old value
  * (issue #11684). {@link #propagateUpdates} descends, and FOREACH calls it once per input row after the last iteration,
  * with every record its body wrote, rather than once per write.
+ * <p>
+ * SET and REMOVE reach the lists and maps too, through {@link HeldCollectionRefresher}, once per row after the clause:
+ * {@code WITH collect(n) AS ns SET (head(ns)).v = 10 RETURN head(ns).v} read the old value (issue #11754). It indexes a
+ * list shared by many rows instead of walking it on each of them, which is the quadratic cost the paragraph above avoids.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -107,35 +114,71 @@ public final class RowAliases {
    * @param updated the version each written record was left in, by RID
    */
   public static void propagateUpdates(final Result row, final Map<RID, ? extends Document> updated) {
+    final UnaryOperator<Document> replacement = doc -> {
+      final Document live = updated.get(doc.getIdentity());
+      return live != null ? live : doc;
+    };
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
-      final Object live = liveValue(value, updated);
+      final Object live = liveValue(value, replacement);
       if (live != value) // NOPMD: liveValue answers the value itself, by identity, when nothing in it was stale
         ((ResultInternal) row).setProperty(name, live);
     }
   }
 
-  /** The value with every stale record inside it replaced, or the value itself, by identity, when none was stale. */
-  private static Object liveValue(final Object value, final Map<RID, ? extends Document> updated) {
-    if (value instanceof Document doc) {
-      final Document live = updated.get(doc.getIdentity());
-      return live != null ? live : value;
-    }
+  /**
+   * The value with every record inside it - itself, the members of a path, the elements of a list or a map at any depth -
+   * replaced by what {@code replacement} answers for it, or the value itself, by identity, when nothing changed. A list, a
+   * map or a path is rebuilt only when something inside it changed.
+   *
+   * @param value       the value to line up
+   * @param replacement the live version of a record, or the record itself when it is current
+   */
+  public static Object liveValue(final Object value, final UnaryOperator<Document> replacement) {
+    return liveValue(value, replacement, null);
+  }
 
+  /**
+   * {@link #liveValue(Object, UnaryOperator)} that answers a list, a map or a path met before, at any depth, from
+   * {@code memo} instead of walking it again: rows that share one {@code collect()} list cost one walk of it, not one each
+   * (issue #12565). The memo holds the answer for an unchanged value too, and is valid only while no record it answered
+   * for is written again.
+   *
+   * @param memo the answers already given, by identity of the value; null to walk every value
+   */
+  public static Object liveValue(final Object value, final UnaryOperator<Document> replacement,
+      final IdentityHashMap<Object, Object> memo) {
+    if (value instanceof Document doc)
+      return replacement.apply(doc);
+
+    if (memo == null || !(value instanceof List<?> || value instanceof Map<?, ?> || value instanceof TraversalPath))
+      return liveContainer(value, replacement, memo);
+
+    final Object known = memo.get(value);
+    if (known != null)
+      return known;
+    final Object live = liveContainer(value, replacement, memo);
+    memo.put(value, live);
+    return live;
+  }
+
+  private static Object liveContainer(final Object value, final UnaryOperator<Document> replacement,
+      final IdentityHashMap<Object, Object> memo) {
     if (value instanceof TraversalPath path) {
       TraversalPath live = path;
       for (final Vertex vertex : path.getVertices())
-        live = withUpdated(live, vertex, updated);
+        live = withReplacement(live, vertex, replacement);
       for (final Edge edge : path.getEdges())
-        live = withUpdated(live, edge, updated);
+        live = withReplacement(live, edge, replacement);
       return live;
     }
 
-    if (value instanceof List<?> list) {
+    // A lazy range holds numbers only: walking it would cost its whole length for nothing
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
-        final Object live = liveValue(element, updated);
+        final Object live = liveValue(element, replacement, memo);
         if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new ArrayList<>(list);
         if (rebuilt != null)
@@ -148,7 +191,7 @@ public final class RowAliases {
       Map<Object, Object> rebuilt = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object element = entry.getValue();
-        final Object live = liveValue(element, updated);
+        final Object live = liveValue(element, replacement, memo);
         if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new LinkedHashMap<>(map);
         if (rebuilt != null)
@@ -160,9 +203,9 @@ public final class RowAliases {
     return value;
   }
 
-  private static TraversalPath withUpdated(final TraversalPath path, final Document member,
-      final Map<RID, ? extends Document> updated) {
-    final Document live = updated.get(member.getIdentity());
-    return live != null && live != member ? path.withRecord(member.getIdentity(), live) : path; // NOPMD: same RID, so by identity
+  private static TraversalPath withReplacement(final TraversalPath path, final Document member,
+      final UnaryOperator<Document> replacement) {
+    final Document live = replacement.apply(member);
+    return live != member ? path.withRecord(member.getIdentity(), live) : path; // NOPMD: same RID, so by identity
   }
 }

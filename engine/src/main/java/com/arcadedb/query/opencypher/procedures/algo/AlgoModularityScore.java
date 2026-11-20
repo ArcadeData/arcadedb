@@ -105,7 +105,9 @@ public class AlgoModularityScore extends AbstractAlgoProcedure {
     int numCommunities = 0;
 
     for (int i = 0; i < n; i++) {
-      final Object communityLabel = graph.getVertex(i).get(communityProperty);
+      // A vertex deleted since the graph was loaded has no community, as one without the property
+      final Vertex vertex = graph.getVertex(i);
+      final Object communityLabel = vertex != null ? vertex.get(communityProperty) : null;
       final Object key = communityLabel != null ? communityLabel : "__null__";
       Integer idx = communityToIdx.get(key);
       if (idx == null) {

@@ -149,19 +149,9 @@ public class ForEachBlock extends Statement {
     builder.append("}");
   }
 
+  @Override
   public boolean containsReturn() {
-    for (final Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement) {
-        return true;
-      }
-      if (stm instanceof ForEachBlock block && block.containsReturn()) {
-        return true;
-      }
-      if (stm instanceof IfStatement statement && statement.containsReturn()) {
-        return true;
-      }
-    }
-    return false;
+    return anyContainsReturn(statements);
   }
 }
 /* JavaCC - OriginalChecksum=071053b057a38c57f3c90d28399615d0 (do not edit this line) */

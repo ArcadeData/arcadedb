@@ -187,7 +187,8 @@ public class FullTextQueryExecutor {
       final RIDFilter ridFilter) {
     this.index = index;
     this.guard = guard;
-    this.analyzer = index.getAnalyzer();
+    // a clause qualified to a property with an analyzer of its own is analyzed with it (issue #12163)
+    this.analyzer = index.getParserAnalyzer();
     this.metadata = index.getFullTextMetadata();
     this.propertyNames = index.getPropertyNames();
     this.restrictedFields = restrictedFields != null ? restrictedFields.toArray(new String[0]) : null;
@@ -845,7 +846,8 @@ public class FullTextQueryExecutor {
   /**
    * Keeps the records of {@code candidates} that hold the phrase: its terms at the positions the query gives them, moved by no more
    * than its slop in all, as Lucene's PhraseQuery matches them (issue #12165). The postings keep no position, so each candidate's
-   * indexed values are analyzed again with the index analyzer. A qualified phrase is looked for in its property, an unqualified one in
+   * indexed values are analyzed again with the analyzer that wrote them: the property's own for a qualified phrase on a property that
+   * has one (issue #12163), the index analyzer otherwise. A qualified phrase is looked for in its property, an unqualified one in
    * each property of the index on its own: a phrase does not span two properties. The values of a list are one sequence of
    * positions, the analyzer's position increment gap apart, as Lucene indexes a multi-valued field.
    */
@@ -857,7 +859,9 @@ public class FullTextQueryExecutor {
       return;
 
     final PhrasePositions phrase = new PhrasePositions(query);
-    final Analyzer indexAnalyzer = index.getIndexAnalyzer();
+    // a phrase qualified to a property with an analyzer of its own was indexed, and is matched, with it (issue #12163)
+    final Analyzer propertyAnalyzer = property >= 0 ? index.getPropertyAnalyzer(propertyNames.get(property)) : null;
+    final Analyzer valueAnalyzer = propertyAnalyzer != null ? propertyAnalyzer : index.getIndexAnalyzer();
     final DatabaseInternal database = index.getDatabase();
     candidates.removeIf(rid -> {
       tick();
@@ -875,7 +879,7 @@ public class FullTextQueryExecutor {
       database.getIndexer().forEachIndexKey(index, document, keys -> {
         for (int i = 0; i < keys.length && !found[0]; i++)
           if ((property < 0 || property == i) && keys[i] != null)
-            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(indexAnalyzer, keys[i], phrase.terms()), this::tick);
+            found[0] = phrase.matches(LSMTreeFullTextIndex.tokenPositions(valueAnalyzer, keys[i], phrase.terms()), this::tick);
       });
       return !found[0];
     });
@@ -979,7 +983,7 @@ public class FullTextQueryExecutor {
 
   private void collectPrefixMatches(final PrefixQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getPrefix().field();
-    final String prefix = normalizeText(query.getPrefix().text());
+    final String prefix = normalizeText(field, query.getPrefix().text());
     if (prefix.isEmpty())
       return;
 
@@ -988,7 +992,7 @@ public class FullTextQueryExecutor {
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
-    final String pattern = normalizeText(query.getTerm().text());
+    final String pattern = normalizeText(field, query.getTerm().text());
     if (pattern.isEmpty())
       return;
 
@@ -1084,7 +1088,7 @@ public class FullTextQueryExecutor {
    * one as the token it stands for, so the walk covers the escaped range too (see {@link FullTextKeys}, issue #12162).
    */
   List<FuzzyExpansion> fuzzyExpansions(final FuzzyQuery query, final int max) {
-    final String term = normalizeText(query.getTerm().text());
+    final String term = normalizeText(query.getTerm().field(), query.getTerm().text());
     if (term.isEmpty())
       return List.of();
 
@@ -1240,7 +1244,7 @@ public class FullTextQueryExecutor {
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getRegexp().field();
-    final String regexText = normalizeText(query.getRegexp().text());
+    final String regexText = normalizeText(field, query.getRegexp().text());
     if (regexText.isEmpty())
       return;
 
@@ -1408,13 +1412,17 @@ public class FullTextQueryExecutor {
    * {@code Fo*} into a prefix the stored {@code Foo} could never match (issue #7000). This is also what the Lucene
    * QueryParser itself does for the prefix, wildcard and fuzzy forms; the regexp form it hands over untouched.
    */
-  private String normalizeText(final String text) {
+  private String normalizeText(final String field, final String text) {
     if (text == null || text.isEmpty())
       return "";
     // Normalized under the one field name the write path tokenizes every property under (LSMTreeFullTextIndex.tokenize),
     // not under the query's qualifier: a field-aware analyzer folds by that name, and the stored tokens are what the
-    // pattern has to match.
-    return analyzer.normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text).utf8ToString();
+    // pattern has to match. A clause qualified to a property with an analyzer of its own is folded by it (issue #12163);
+    // every other clause by the plain query analyzer, never by the parser's per-field wrapper, which would pick the
+    // analyzer of a property that happens to be named like that internal field name.
+    final Analyzer propertyAnalyzer = isUnqualified(field) ? null : index.getPropertyAnalyzer(storedField(field));
+    return (propertyAnalyzer != null ? propertyAnalyzer : index.getAnalyzer()).normalize(LSMTreeFullTextIndex.ANALYZED_FIELD, text)
+        .utf8ToString();
   }
 
   /**

@@ -90,7 +90,7 @@ import java.util.Set;
  * {@code /api/v1/ts/{database}} route answers, and on a fan-in endpoint it is the answer that reaches the operator. A
  * shipper pointed at the wrong database name sends empty scrapes too, and a 204 for those told it the batch was
  * delivered, so the misconfiguration surfaced only with the first real sample - or never, for a quiet target. What must
- * never happen is a 500. {@code Issue7831TimeSeriesRoutesNonexistentDatabaseIT} pins 404 on every route of the family,
+ * never happen is a 500. {@code TimeSeriesHttpContractIT.NonexistentDatabaseRoutes} pins 404 on every route of the family,
  * and that the 400 still answers an empty body against a database that exists; do not move a body check ahead of the
  * database resolution without changing both.
  *
