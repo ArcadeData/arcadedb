@@ -5547,12 +5547,22 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * <p>
    * The bookmark the leader answers with is kept for the request (issue #11740), so the one this node answers the client with
    * covers the write: see {@link #getCommitIndexBookmark()}.
+   * <p>
+   * The result is returned once this node has applied the write too, as a commit made on this node waits for its own entry
+   * (issue #12635). Its records are only references: the caller reads them from this node's copy, an HTTP answer serializes
+   * them from it, and with a majority quorum the leader can answer before this node holds them. A record missing there was
+   * answered as a conflict, which the request's retry loop took as a reason to run the forwarded statement again. Lenient, like
+   * that commit: on timeout the result is returned anyway.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final AtomicLong leaderBookmark = new AtomicLong(-1L);
     try {
-      return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
+      final ResultSet result = forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
+      final long bookmark = leaderBookmark.get();
+      if (bookmark >= 0 && !isLeader())
+        requireRaftServer().waitForAppliedIndex(getName(), bookmark);
+      return result;
     } finally {
       // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
       recordRequestWrite(leaderBookmark.get());
@@ -5900,6 +5910,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (runningQuery != null)
           runningQuery.checkNotTerminated("the command forwarded to the leader");
         throw refusal;
+      }
+
+      // The leader executed the client's statement and answered it: it is durable there whatever happens on this node from here
+      // on, so the block running it must not be replayed (issue #12635). Before parsing the answer, which can still fail
+      if (clientRequest) {
+        final TransactionContext tx = proxied.getTransactionIfExists();
+        if (tx != null)
+          tx.reportWriteCommittedByAnotherNode();
       }
 
       if (commitIndexOut != null)

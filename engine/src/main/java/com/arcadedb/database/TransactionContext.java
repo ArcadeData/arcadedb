@@ -681,6 +681,19 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Records on THIS context a write of the block that another node committed: a statement a replica forwarded to the leader,
+   * which answered it (issue #12635). Called by the HA layer once the leader's answer is in, and only then.
+   * <p>
+   * The same witness as {@link #reportBatchBoundaryOfNestedTransaction()}, for the same reason: a rollback here takes nothing back
+   * on the leader, so a retry loop that replays the block writes it there a second time. The replica's HTTP handler runs every
+   * request in such a loop, and a write that is not idempotent - a script creating a vertex and an edge - was executed twice by the
+   * leader whenever anything after the forward raised a conflict on the replica.
+   */
+  public void reportWriteCommittedByAnotherNode() {
+    ++commitCount;
+  }
+
+  /**
    * Whether a block that ran with {@code txAtStart} open, at commit count {@code commitCountAtStart}, has already
    * published part of its work - which makes it UNSAFE TO RE-RUN (issue #7916).
    * <p>
