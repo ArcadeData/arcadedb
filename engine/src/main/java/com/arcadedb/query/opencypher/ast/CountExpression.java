@@ -44,20 +44,21 @@ public class CountExpression implements Expression {
   private final String          subquery;
   private final String          text;
   private final CypherStatement parsedSubquery;
-  // Whether the body is a one-hop pattern the edge list answers, decided on the first row (issue #11891)
-  private volatile OneHopPattern oneHop;
+  // Whether the body is a one-hop pattern the edge list answers, decided once (issue #11891)
+  private final OneHopPattern oneHop;
 
   public CountExpression(final String subquery, final String text, final CypherStatement parsedSubquery) {
     this.subquery = subquery;
     this.text = text;
     this.parsedSubquery = parsedSubquery;
+    this.oneHop = OneHopPattern.ofBody(parsedSubquery);
   }
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
     // A one-hop body is the degree of the bound vertex, read off its edge list without planning a subquery (#11891)
     // The count push-down this replaces reads the edge list alone, so no record permission is asked here either
-    final long degree = oneHop().count(result, context, false, false);
+    final long degree = oneHop.count(result, context, OneHopPattern.Question.COUNT);
     if (degree != OneHopPattern.NOT_ANSWERED)
       return degree;
 
@@ -72,15 +73,6 @@ public class CountExpression implements Expression {
     try (final ResultSet resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
       return countRows(resultSet);
     }
-  }
-
-  private OneHopPattern oneHop() {
-    OneHopPattern pattern = oneHop;
-    if (pattern == null) {
-      pattern = OneHopPattern.ofBody(parsedSubquery);
-      oneHop = pattern;
-    }
-    return pattern;
   }
 
   private static long countRows(final ResultSet resultSet) {

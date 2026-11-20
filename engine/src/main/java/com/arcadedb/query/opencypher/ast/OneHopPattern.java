@@ -28,7 +28,10 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.Iterator;
 import java.util.List;
@@ -51,9 +54,12 @@ import java.util.concurrent.atomic.LongAdder;
  * {@link IncomingEdgeLookup#countPatternEdges}). The edge list is read from the copy of the vertex the transaction holds,
  * so the edges created or deleted earlier in the transaction are counted as they stand.
  * <p>
- * No record is loaded, so no read permission is asked by loading one: where the path this replaces loads the relationship
- * records (a pattern predicate, a pattern comprehension), each relationship's bucket is asked whether the record is there,
- * which asks the same permission and skips an entry whose record is gone as that path does, see {@link #count}.
+ * No record is loaded, so no read permission is asked by loading one. The answer asks the permissions of the path it
+ * replaces instead (see {@link Question}): where that path loads the relationship records (a pattern predicate, a pattern
+ * comprehension), each relationship's bucket is asked whether the record is there, which asks the same permission and skips
+ * an entry whose record is gone as that path does; where it is refused a labelled type whatever the graph holds (the
+ * count push-down), the type is asked up front; and where it has nothing bound to start from and scans (a predicate or a
+ * comprehension bound by their last node only) it keeps its path, see {@link #count}.
  */
 public final class OneHopPattern {
   /** The answer for a row the edge list cannot decide: the caller evaluates the expression the general way. */
@@ -61,6 +67,32 @@ public final class OneHopPattern {
 
   /** A pattern that never qualifies, so the analysis is cached as a value rather than re-run. */
   static final OneHopPattern UNSUPPORTED = new OneHopPattern(null, null, new String[0]);
+
+  /**
+   * What an expression asks of the hop, which fixes what the path it replaces does and therefore which permissions the
+   * answer off the edge list has to ask.
+   */
+  enum Question {
+    /** {@code COUNT { }}: how many; the count push-down it replaces loads no relationship record. */
+    COUNT(false, false),
+    /** {@code EXISTS { }}: whether there is one; its body loads no relationship record either. */
+    EXISTS(true, false),
+    /** {@code size([...])}: how many; the comprehension it replaces loads every relationship record it walks. */
+    SIZE(false, true),
+    /** The pattern predicate: whether there is one; the walk it replaces loads the relationship records up to the first match. */
+    PREDICATE(true, true);
+
+    private final boolean any;
+    private final boolean loadsEdges;
+
+    Question(final boolean any, final boolean loadsEdges) {
+      this.any = any;
+      this.loadsEdges = loadsEdges;
+    }
+  }
+
+  /** Edge-list entries between two asks of the statement's deadline and termination: one less than a power of two. */
+  private static final long GUARD_INTERVAL_MASK = 1023L;
 
   // ROWS ANSWERED HERE SINCE THE JVM STARTED, READ BY THE TESTS THAT CHECK THE FAST PATH IS TAKEN
   private static final LongAdder ROWS_ANSWERED = new LongAdder();
@@ -156,34 +188,49 @@ public final class OneHopPattern {
   }
 
   /**
-   * How many relationships the pattern matches for {@code row}, or with {@code any} 1 when it matches one and 0 when it
-   * matches none; {@link #NOT_ANSWERED} when the row is not one this can decide (no vertex bound to an end, the far end
-   * bound too, or a far-end label over the unidirectional lookup).
-   *
-   * @param loadsEdges whether the path this replaces loads the relationship records it walks, which asks the current user's
-   *                   permission to read their type and skips an entry whose record is gone (it never loads the far end: its
-   *                   label is read off the type of its bucket). The relationships are then walked here too, each record's
-   *                   presence asked of its bucket without loading it.
+   * How many relationships the pattern matches for {@code row}, or for a question that asks whether there is one 1 when it
+   * matches one and 0 when it matches none; {@link #NOT_ANSWERED} when the row is not one this can decide: no vertex bound to
+   * an end, the far end bound too, a far-end label over the unidirectional lookup, or a shape whose replaced path asks
+   * permissions this does not (below).
+   * <p>
+   * What the answer asks is what the replaced path asks, in both directions, because a user refused there must still be
+   * refused and one answered there must not start to be:
+   * <ul>
+   *   <li>{@link Question#SIZE} and {@link Question#PREDICATE} walk the relationships, each record's presence asked of its
+   *   bucket without loading it, which asks the current user's permission to read it and skips an entry whose record is gone
+   *   (the far end is never loaded: its label is read off the type of its bucket). That is the walk of a row that binds the
+   *   FIRST node. A row that binds the last node only has nothing to start from on the replaced path, which scans the first
+   *   node's types (every type when it has no label) and loads the relationships of the vertices it finds: it is refused
+   *   for a type that scan reads, and not for a relationship type that scan never walks. A walk off the bound vertex
+   *   reproduces neither, so such a row keeps its path.</li>
+   *   <li>{@link Question#COUNT} over a labelled node is refused by the count push-down for a type its user cannot read,
+   *   whatever the graph holds, so that type is asked up front, for the bodies the push-down takes (see
+   *   {@link #checkLabelReadable}).</li>
+   *   <li>{@link Question#COUNT} and {@link Question#EXISTS} otherwise load nothing and ask nothing.</li>
+   * </ul>
    */
-  long count(final Result row, final CommandContext context, final boolean any, final boolean loadsEdges) {
+  long count(final Result row, final CommandContext context, final Question question) {
     if (row == null)
       return NOT_ANSWERED;
     Side side = fromFirst;
     Vertex vertex = side != null ? anchorOf(side, row) : null;
     if (vertex == null) {
+      if (fromLast == null || question.loadsEdges)
+        return NOT_ANSWERED;
       side = fromLast;
-      vertex = side != null ? anchorOf(side, row) : null;
+      vertex = anchorOf(side, row);
       if (vertex == null)
         return NOT_ANSWERED;
     }
 
+    final boolean any = question.any;
     final long answer;
-    if (loadsEdges) {
+    if (question.loadsEdges) {
       // THE RELATIONSHIP RIDS ARE READ OFF THE STORED LISTS: THE UNIDIRECTIONAL LOOKUP IS LEFT TO THE GENERAL PATH
       if (!(vertex instanceof VertexInternal internal) || !(vertex.getDatabase() instanceof DatabaseInternal database)
           || IncomingEdgeLookup.isNeeded(context, database, side.direction, edgeTypes))
         return NOT_ANSWERED;
-      answer = countPresentEdges(internal, database, side, any);
+      answer = countPresentEdges(internal, database, side, any, context);
     } else if (side.farLabels.isEmpty()) {
       if (any && !IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), side.direction, edgeTypes))
         answer = vertex.getConnectedVertexRIDs(side.direction, edgeTypes).iterator().hasNext() ? 1L : 0L;
@@ -195,10 +242,34 @@ public final class OneHopPattern {
       // THE STORED LISTS HOLD THE NEIGHBOUR RIDS; THE INCOMING SIDE OF A UNIDIRECTIONAL TYPE IS NOT IN THEM
       if (IncomingEdgeLookup.isNeeded(context, vertex.getDatabase(), side.direction, edgeTypes))
         return NOT_ANSWERED;
-      answer = countLabelled(vertex, side, any);
+      if (question == Question.COUNT)
+        checkLabelReadable(vertex, side);
+      answer = countLabelled(vertex, side, any, context);
     }
     ROWS_ANSWERED.increment();
     return answer;
+  }
+
+  /**
+   * Asks the permission the count push-down asks of a labelled node, before anything is read, so the refusal does not depend
+   * on whether the graph holds a neighbour of that type (it would be an existence oracle for the type otherwise).
+   * <p>
+   * The push-down takes a body of exactly one relationship type, not declared unidirectional, and plain labels (one name
+   * each, no disjunction), and before it runs it counts the type of each label to tell a type that holds nothing from one
+   * that does: counting reads every bucket of the type, subtypes included, which refuses a user who may not read one of
+   * them. A body it does not take (several types or none, a unidirectional type, a conjunction or a disjunction of labels)
+   * is never counted that way, so it is not asked here either.
+   */
+  private void checkLabelReadable(final Vertex vertex, final Side side) {
+    if (edgeTypes.length != 1 || side.farLabels.size() != 1 || !(vertex.getDatabase() instanceof DatabaseInternal database)
+        || IncomingEdgeLookup.isAnyUnidirectional(database.getSchema(), edgeTypes))
+      return;
+    final DocumentType type = database.getSchema().getTypeOrNull(side.farLabels.getFirst());
+    // An edge type named as a label is not counted: it keeps no record when its edges are lightweight
+    if (type == null || type.getType() == Edge.RECORD_TYPE)
+      return;
+    for (final int bucketId : type.getBucketIds(true))
+      database.checkPermissionsOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD);
   }
 
   private static Vertex anchorOf(final Side side, final Result row) {
@@ -211,12 +282,21 @@ public final class OneHopPattern {
    * The neighbours whose type carries the far end's labels, told from the bucket of their RID. An undirected self loop sits
    * in both lists of its vertex and is one relationship, so every second sighting of the vertex itself is skipped.
    */
-  private long countLabelled(final Vertex vertex, final Side side, final boolean any) {
+  private long countLabelled(final Vertex vertex, final Side side, final boolean any, final CommandContext context) {
     final Schema schema = vertex.getDatabase().getSchema();
     final RID self = side.direction == Vertex.DIRECTION.BOTH ? vertex.getIdentity() : null;
     int selfSeen = 0;
     long count = 0;
+    long walked = 0;
+    WorkGuard guard = null;
     for (final RID neighbor : vertex.getConnectedVertexRIDs(side.direction, edgeTypes)) {
+      // A supernode is one row that walks millions of entries: the statement's deadline and its termination are asked now and
+      // then (the guard is made only by a walk long enough to need it, so a short one allocates nothing)
+      if ((++walked & GUARD_INTERVAL_MASK) == 0) {
+        if (guard == null)
+          guard = WorkGuard.forCommandDeadline(context);
+        guard.check();
+      }
       if (self != null && self.equals(neighbor) && (++selfSeen & 1) == 0)
         continue;
       if (Labels.matches(schema.getTypeByBucketId(neighbor.getBucketId()), side.farLabels, side.farDisjunction)) {
@@ -236,14 +316,21 @@ public final class OneHopPattern {
    * two of them are read K, L, K, L, so each is told apart by its identity before its presence is asked, not by parity.
    */
   private long countPresentEdges(final VertexInternal vertex, final DatabaseInternal database, final Side side,
-      final boolean any) {
+      final boolean any, final CommandContext context) {
     final Schema schema = database.getSchema();
     final RID identity = vertex.getIdentity();
     final boolean undirected = side.direction == Vertex.DIRECTION.BOTH;
     long count = 0;
+    long walked = 0;
+    WorkGuard guard = null;
     final Iterator<Edge> entries = database.getGraphEngine().getEdgesKnowingEndpoints(vertex, side.direction, edgeTypes);
     for (final Iterator<Edge> edges = undirected ? SelfLoops.deduplicatingEdges(entries) : entries; edges.hasNext(); ) {
       final Edge edge = edges.next();
+      if ((++walked & GUARD_INTERVAL_MASK) == 0) {
+        if (guard == null)
+          guard = WorkGuard.forCommandDeadline(context);
+        guard.check();
+      }
       final RID far = side.direction == Vertex.DIRECTION.IN || (undirected && !identity.equals(edge.getOut())) ?
           edge.getOut() :
           edge.getIn();

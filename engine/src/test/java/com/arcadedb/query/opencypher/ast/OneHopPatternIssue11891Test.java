@@ -20,11 +20,14 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.VertexType;
@@ -35,6 +38,7 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11891: a one-hop {@code COUNT { }}, {@code EXISTS { }}, bare pattern predicate and {@code size()} of a pattern
@@ -123,7 +127,13 @@ class OneHopPatternIssue11891Test extends TestHelper {
         "MATCH (p:P) WHERE (p)-[:K]->(:P {i: 1}) RETURN count(p) AS c",
         "MATCH (p:P) RETURN size([(p)-[:K]->(q) WHERE q.i > 3 | q]) AS c",
         "MATCH (p:P) RETURN size([(p)-[:K]->(q) | q.i]) AS c",
-        "OPTIONAL MATCH (p:Missing) RETURN COUNT { (p)-[:K]->() } AS c")) {
+        "OPTIONAL MATCH (p:Missing) RETURN COUNT { (p)-[:K]->() } AS c",
+        // Shapes whose replaced path asks other permissions than the edge list would (OneHopPatternSecurityIssue11891Test):
+        // a predicate or a comprehension bound by their last node only scan the first node's types
+        "MATCH (p:P) WHERE (:P)-[:K]->(p) RETURN count(p) AS c",
+        "MATCH (p:P) WHERE ()<-[:K]-(p) RETURN count(p) AS c",
+        "MATCH (p:P) WHERE NOT ()-[:K]-(p) RETURN count(p) AS c",
+        "MATCH (p:P) RETURN size([(:P)-[:K]->(p) | 1]) AS c")) {
       final long before = OneHopPattern.rowsAnswered();
       drain(query);
       assertThat(OneHopPattern.rowsAnswered() - before).as(query).isZero();
@@ -262,6 +272,43 @@ class OneHopPatternIssue11891Test extends TestHelper {
       // the ghosts are this test's fixture: repaired, so the integrity check after it judges the rest of the database
       database.command("sql", "CHECK DATABASE FIX").close();
     }
+  }
+
+  /**
+   * A supernode is one row that walks every entry of its edge list: the statement's deadline is asked now and then, as the
+   * count push-down and the row pipeline this replaces ask it. The context's deadline is already past, so the walk stops at
+   * the first ask whatever the clock reads; with none the same call counts every entry.
+   */
+  @Test
+  void aWalkOverASupernodeHonoursTheStatementDeadline() {
+    final int degree = 2100;
+    final RID[] hubRid = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex hub = database.newVertex("P").set("i", 900).save();
+      for (int i = 0; i < degree; i++)
+        hub.newEdge("K", database.newVertex("Q").set("i", 1000 + i).save());
+      hubRid[0] = hub.getIdentity();
+    });
+    final Vertex hub = database.lookupByRID(hubRid[0], true).asVertex();
+    final ResultInternal row = new ResultInternal();
+    row.setProperty("p", hub);
+
+    final NodePattern bound = new NodePattern("p", null, null);
+    final RelationshipPattern hop = new RelationshipPattern(null, List.of("K"), Direction.OUT, null, null, null);
+    // A far-end label is read off the neighbour's type, the walk of a size() loads each relationship: both are O(degree)
+    final OneHopPattern labelled = OneHopPattern.of(new PathPattern(bound, hop, new NodePattern(null, List.of("Q"), null)));
+    final OneHopPattern plain = OneHopPattern.of(new PathPattern(bound, hop, new NodePattern(null, null, null)));
+
+    final BasicCommandContext open = new BasicCommandContext();
+    open.setDatabase(database);
+    assertThat(labelled.count(row, open, OneHopPattern.Question.COUNT)).isEqualTo(degree);
+    assertThat(plain.count(row, open, OneHopPattern.Question.SIZE)).isEqualTo(degree);
+
+    final BasicCommandContext expired = new BasicCommandContext();
+    expired.setDatabase(database);
+    expired.setCommandDeadline(0L, "the test deadline", false);
+    assertThatThrownBy(() -> labelled.count(row, expired, OneHopPattern.Question.COUNT)).isInstanceOf(TimeoutException.class);
+    assertThatThrownBy(() -> plain.count(row, expired, OneHopPattern.Question.SIZE)).isInstanceOf(TimeoutException.class);
   }
 
   /**

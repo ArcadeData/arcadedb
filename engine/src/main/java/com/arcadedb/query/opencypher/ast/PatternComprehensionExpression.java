@@ -81,7 +81,7 @@ public class PatternComprehensionExpression implements Expression {
    */
   public long countElements(final Result result, final CommandContext context) {
     // The list is built from the relationship records, so the user's permission to read them is still asked
-    return sizeAsDegree.count(result, context, false, true);
+    return sizeAsDegree.count(result, context, OneHopPattern.Question.SIZE);
   }
 
   /**

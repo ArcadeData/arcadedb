@@ -129,7 +129,7 @@ public class PatternPredicateExpression implements BooleanExpression {
     }
 
     // The edge walk below loads the relationship records, so the user's permission to read them is still asked
-    final long found = oneHop.count(result, context, true, true);
+    final long found = oneHop.count(result, context, OneHopPattern.Question.PREDICATE);
     if (found != OneHopPattern.NOT_ANSWERED)
       return found > 0;
 
