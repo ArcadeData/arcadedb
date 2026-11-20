@@ -78,6 +78,38 @@ class TransactionBeforeCommitCallbackTest extends TestHelper {
     assertThat(runs.get()).isZero();
   }
 
+  /**
+   * A statement taken back does not take back the work owed at the commit: the callback it registered still runs, and reads what the
+   * commit writes, which is what is left once the statement is undone. It is not statement state (see
+   * {@code TransactionContextStatementStateTest}).
+   */
+  @Test
+  void aCallbackRegisteredByAStatementTakenBackStillRuns() {
+    final AtomicInteger runs = new AtomicInteger();
+    final AtomicInteger seen = new AtomicInteger(-1);
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    database.begin();
+    // written outside the statement, so the commit has something to write
+    database.newDocument("Doc").set("n", 0).save();
+    final TransactionContext tx = db.getTransaction();
+    final StatementSavepoint savepoint = tx.beginStatement();
+    assertThat(savepoint).isNotNull();
+    database.newDocument("Doc").set("n", 1).save();
+    assertThat(tx.addBeforeCommitCallbackIfAbsent("k", () -> {
+      runs.incrementAndGet();
+      seen.set((int) database.countType("Doc", false));
+    })).isTrue();
+    assertThat(tx.rollbackStatement(savepoint)).as("the statement is taken back").isTrue();
+    tx.endStatement(savepoint);
+
+    database.commit();
+
+    assertThat(runs.get()).isEqualTo(1);
+    assertThat(seen.get()).as("it reads what the commit writes: the statement is gone").isEqualTo(1);
+    assertThat(database.countType("Doc", false)).isEqualTo(1);
+  }
+
   @Test
   void anExceptionItThrowsFailsTheCommit() {
     database.begin();

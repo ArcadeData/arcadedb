@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -52,6 +53,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Grouped materialized views maintained by delta (issue #11937): an INCREMENTAL view grouping one source type with decomposable
  * aggregates applies each commit's delta to the groups it changed, and is still equal to its defining query after every commit.
  */
+// Several tests wait for threads: the timeout is a hang detector for them, not a bound on how long a pass may take
+@Timeout(value = 10, unit = TimeUnit.MINUTES)
 class MaterializedViewGroupedDeltaTest extends TestHelper {
   private static final String G_SUMS    = "SELECT cat, count(*) AS n, sum(v) AS s, avg(v) AS a, count(v) AS c FROM I GROUP BY cat";
   private static final String G_EXTREME =
@@ -266,6 +269,71 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     assertAllViewsMatch();
     database.transaction(() -> database.command("sql", "UPDATE I SET v = null, name = null, w = null WHERE cat = 'c'"));
     assertAllViewsMatch();
+  }
+
+  /**
+   * The listener of a source type hears the BEFORE events of the records of its subtypes, the ones the view takes the state before an
+   * update or a delete from: of a subtype that existed when the view was created, and of one created after it.
+   */
+  @Test
+  void updatesAndDeletesOfRecordsOfSubtypesReachTheView() {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        insert(CATS[i % 4], i % 3, i, (long) i, "n" + i, i % 3, i % 2 == 0 ? "J" : "I");
+    });
+    createView("GSums", G_SUMS);
+    database.transaction(() -> insert("a", 0, 1, 1L, "x", 1, "I"));
+    assertViewMatchesQuery("GSums");
+
+    database.transaction(() -> database.command("sql", "UPDATE J SET cat = 'moved', v = v + 1 WHERE sub = 0"));
+    assertViewMatchesQuery("GSums");
+    database.transaction(() -> database.command("sql", "DELETE FROM J WHERE cat = 'moved' LIMIT 2"));
+    assertViewMatchesQuery("GSums");
+
+    // a subtype created after the view
+    database.transaction(() -> database.getSchema().buildDocumentType().withName("K").withSuperType("J").create());
+    database.transaction(() -> insert("zz", 1, 5, 5L, "k", 1, "K"));
+    assertViewMatchesQuery("GSums");
+    database.transaction(() -> database.command("sql", "UPDATE K SET cat = 'zzz', v = 6"));
+    assertViewMatchesQuery("GSums");
+    database.transaction(() -> database.command("sql", "DELETE FROM K"));
+    assertViewMatchesQuery("GSums");
+  }
+
+  /**
+   * A removed value that may have been the {@code min} or the {@code max} of its group cannot be applied: the view is rebuilt from its
+   * source, once, and the commits after it apply as deltas again. The fallback costs one pass of the defining query at most, never a
+   * rebuild per commit.
+   */
+  @Test
+  void losingTheExtremeOfAGroupRebuildsOnceAndTheNextCommitsAreDeltasAgain() {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 60; i++)
+        insert(CATS[i % 4], i % 3, i, (long) i, "n" + i, i % 3, "I");
+    });
+    final MaterializedViewImpl view = createView("GExtreme", G_EXTREME);
+    database.transaction(() -> insert("a", 0, 1, 1L, "x", 1, "I"));
+    assertViewMatchesQuery("GExtreme");
+
+    final Object max;
+    try (final ResultSet rs = database.query("sql", "SELECT max(v) AS mx FROM I WHERE cat = 'a' AND sub = 0 AND v > -20")) {
+      max = rs.next().getProperty("mx");
+    }
+    final long scansBefore = scans();
+    database.transaction(() -> database.command("sql", "DELETE FROM I WHERE cat = 'a' AND sub = 0 AND v = ?", max));
+    assertViewMatchesQuery("GExtreme");
+    // a rebuild scans the source, and the backing type whose records it writes the rows over: two scans
+    assertThat(scans() - scansBefore).as("the lost extreme is one rebuild").isEqualTo(2);
+    assertThat(view.groupedRuntime().groups()).isNotNull();
+
+    for (int i = 0; i < 10; i++) {
+      final int n = i;
+      database.transaction(() -> insert("a", 0, 100 + n, 7L, "y", 1, "I"));
+      assertViewMatchesQuery("GExtreme");
+    }
+    assertThat(scans() - scansBefore).as("the commits after it are deltas").isEqualTo(2);
   }
 
   @Test
