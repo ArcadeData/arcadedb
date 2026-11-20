@@ -228,8 +228,7 @@ final class CypherStepBuilder {
             // earlier segment never reaches this DELETE (issue #12254)
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
                 EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
-                    || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, false),
-                SelectionPredicates.before(clausesInOrder, deleteClause));
+                    || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, false));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
             eagerness.observeWriteClause();
@@ -785,8 +784,7 @@ final class CypherStepBuilder {
           final boolean eagerMaterialize = EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
               || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables)
               || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, relationshipsWalkedBefore);
-          final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize,
-              SelectionPredicates.before(clausesInOrder, deleteClause));
+          final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
           eagerness.observeWriteClause();

@@ -21,13 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Projection;
-import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.LocalDocumentType;
 
 /**
@@ -40,16 +38,14 @@ import com.arcadedb.schema.LocalDocumentType;
  */
 public class DeleteStep extends AbstractExecutionStep {
   // THE PROJECTION OF A DELETE ... RETURNING (issue #11392), OR NULL
-  private final Projection  returning;
+  private final Projection returning;
   // WHETHER THE STATEMENT ANSWERS THE DELETED RECORDS (RETURN BEFORE, RETURNING) RATHER THAN THEIR COUNT
-  private final boolean     returnsRecords;
+  private final boolean    returnsRecords;
   // DELETE VERTEX (issue #11620): a record that is not a vertex is refused, before anything is deleted for it
-  private final boolean     vertexOnly;
-  // THE WHERE THE SOURCE SELECTED THE RECORDS WITH, EVALUATED AGAIN ON A RECORD A CONCURRENT COMMIT CHANGED (issue #11818), OR NULL
-  private final WhereClause whereClause;
+  private final boolean    vertexOnly;
 
   public DeleteStep(final CommandContext context) {
-    this(context, null, false, false, null);
+    this(context, null, false, false);
   }
 
   /**
@@ -59,16 +55,12 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param returnsRecords whether the deleted records are answered ({@code RETURN BEFORE}, {@code RETURNING}): a record answered
    *                       whole, whose type has EXTERNAL properties, is then answered as a copy taken before the delete
    * @param vertexOnly     whether the statement is a {@code DELETE VERTEX}: a record that is not a vertex is then refused
-   * @param whereClause    the WHERE the records were selected with, or null: a record a concurrent commit changed since it was
-   *                       read so that it no longer matches is not deleted (issue #11818)
    */
-  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly,
-      final WhereClause whereClause) {
+  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly) {
     super(context);
     this.returning = returning;
     this.returnsRecords = returnsRecords;
     this.vertexOnly = vertexOnly;
-    this.whereClause = whereClause;
   }
 
   @Override
@@ -82,16 +74,10 @@ public class DeleteStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
-            final Document element = result.getElement().get();
-            checkIsVertex(element);
-            // #11818: the WHERE was decided on the content the source read. pinForDelete() puts the record's page under the commit
-            // check and reloads what a concurrent commit changed in between: a record that no longer matches is not deleted, as if
-            // the statement had run after that commit, and the delete removes the index entries of the content it deletes
-            if (whereClause != null && element instanceof ImmutableDocument document && document.pinForDelete()
-                && !matchesAgain(context, result))
-              return null;
+            final Document record = result.getElement().get();
+            checkIsVertex(record);
             final Result answer = beforeImage(context, result);
-            return database.deleteRecordReportingVeto(element) ? answer : null;
+            return database.deleteRecordReportingVeto(record) ? answer : null;
           }
           // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
@@ -140,17 +126,6 @@ public class DeleteStep extends AbstractExecutionStep {
         && document.getType() instanceof LocalDocumentType type && type.hasExternalProperties())
       return new ResultInternal(document.detach());
     return answer;
-  }
-
-  /** Whether {@code result}, whose record was just reloaded, still matches the WHERE it was selected with (issue #11818). */
-  private boolean matchesAgain(final CommandContext context, final Result result) {
-    final Object oldCurrent = context.getVariable("current");
-    context.setVariable("current", result);
-    try {
-      return whereClause.matchesFilters(result, context);
-    } finally {
-      context.setVariable("current", oldCurrent);
-    }
   }
 
   @Override

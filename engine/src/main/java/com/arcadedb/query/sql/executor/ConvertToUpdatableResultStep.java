@@ -110,6 +110,8 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             if (ridValue instanceof Identifiable identifiable) {
               final Record record = identifiable.getRecord();
               if (record instanceof Document doc) {
+                // The WHERE selected the projected row, which holds the @rid and not the record: the record is loaded only now, so
+                // there is no earlier read of it to evaluate the WHERE against again
                 nextItem = forUpdate(doc, context);
                 if (nextItem == null)
                   continue;
@@ -195,9 +197,15 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
     if (whereClause == null || mutable == document || !reloadedWithOtherContent(document, readImage))
       return result;
 
+    // $current is restored: a record that is skipped, or refused, is not the row the statement is at
+    final Object oldCurrent = context.getVariable("current");
     context.setVariable("current", result);
-    if (whereClause.matchesFilters(result, context))
-      return result;
+    try {
+      if (whereClause.matchesFilters(result, context))
+        return result;
+    } finally {
+      context.setVariable("current", oldCurrent);
+    }
     if (upsert)
       throw new ConcurrentModificationException("Record " + document.getIdentity()
           + " was modified by a concurrent transaction after the UPDATE UPSERT selected it, and no longer matches its WHERE. "

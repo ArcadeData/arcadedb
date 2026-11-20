@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.query.sql.executor.Result;
@@ -39,12 +38,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #11818: a conditional update or delete was not atomic. When another transaction committed a change to a record after the
- * statement evaluated its WHERE on it and before the statement wrote it, the statement wrote it anyway: {@code modify()} reloads the
- * latest committed content (and pins the page the commit is checked against), SQL UPDATE, openCypher SET and REMOVE build on it
- * (issues #5227, #8538, #8610), and a DELETE pinned the page only when it deleted, but the WHERE that selected the record was never
- * evaluated again. Two concurrent {@code UPDATE R SET claimed = :me WHERE k = :k AND claimed IS NULL} both claimed the record and
- * both committed, and {@code DELETE FROM R WHERE k = :k AND claimed IS NULL} deleted a record claimed in between.
+ * Issue #11818: a conditional update was not atomic. When another transaction committed a change to a record after the statement
+ * evaluated its WHERE on it and before the statement wrote it, the statement wrote it anyway: {@code modify()} reloads the latest
+ * committed content (and pins the page the commit is checked against), SQL UPDATE, openCypher SET and REMOVE build on it (issues
+ * #5227, #8538, #8610), but the WHERE that selected the record was never evaluated again. Two concurrent
+ * {@code UPDATE R SET claimed = :me WHERE k = :k AND claimed IS NULL} both claimed the record and both committed.
+ * <p>
+ * A conditional DELETE is covered by the refusal of issue #12472: a delete never reloads its record, so one of a record a
+ * concurrent commit changed since it was read is a retryable conflict, and the retry evaluates the WHERE on the new state. The
+ * delete cases here pin that for the shapes of this issue.
  * <p>
  * Each case runs the statement in a READ_COMMITTED transaction of the test thread; the function {@code race.interleave(row)},
  * called last in its WHERE, commits the concurrent claim from another thread, so the commit lands after the WHERE read the record
@@ -306,64 +308,80 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
   }
 
   /**
-   * A DELETE pins the record's page only when it deletes it, so a claim committed after its WHERE read the record was not seen: the
-   * claimed record was deleted. Like an UPDATE, the DELETE now evaluates its WHERE again and leaves the record alone.
+   * A DELETE does not build on a concurrent commit as an UPDATE does: the delete of a record changed since its WHERE read it is
+   * refused with a retryable conflict (issue #12472), and the claimed record stays. The retry evaluates the WHERE on the new state
+   * (see {@link #retriedSqlDeleteFindsTheRecordClaimed()}).
    */
   @Test
   void sqlDeleteDoesNotDeleteAVertexClaimedAfterItsWhere() {
-    final AtomicLong deleted = new AtomicLong(-1);
-    final boolean committed = runWithConcurrentCommit(CONCURRENT_CLAIM, () -> deleted.set(countOf(database.command("sql",
-        "DELETE FROM R WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)", Map.of("k", "r0")))));
+    final boolean committed = runWithConcurrentCommit(CONCURRENT_CLAIM, () -> database.command("sql",
+        "DELETE FROM R WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)", Map.of("k", "r0")).close());
 
-    assertThat(committed).isTrue();
-    assertThat(deleted.get()).as("the record no longer matches the WHERE").isZero();
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("R")).isEqualTo(1);
+    assertThat(valueOf("R", "claimed")).isEqualTo("A");
+  }
+
+  /** The conflict is retryable: the retry the auto-commit path runs finds the record claimed and deletes nothing. */
+  @Test
+  void retriedSqlDeleteFindsTheRecordClaimed() {
+    final AtomicReference<Throwable> concurrentFailure = armConcurrentCommit(CONCURRENT_CLAIM);
+    final AtomicInteger attempts = new AtomicInteger();
+    final AtomicLong deleted = new AtomicLong(-1);
+    database.transaction(() -> {
+      attempts.incrementAndGet();
+      deleted.set(countOf(database.command("sql", "DELETE FROM R WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)",
+          Map.of("k", "r0"))));
+    }, false, 3);
+
+    assertThat(Race.PENDING.get()).isNull();
+    assertThat(concurrentFailure.get()).isNull();
+    assertThat(attempts.get()).isEqualTo(2);
+    assertThat(deleted.get()).isZero();
+    assertThat(recordsOf("R")).isEqualTo(1);
     assertThat(valueOf("R", "claimed")).isEqualTo("A");
   }
 
   @Test
   void sqlDeleteDoesNotDeleteAScannedDocumentClaimedAfterItsWhere() {
-    final AtomicLong deleted = new AtomicLong(-1);
     final boolean committed = runWithConcurrentCommit("UPDATE D SET claimed = 'A' WHERE k = 'd0' AND claimed IS NULL",
-        () -> deleted.set(countOf(database.command("sql", "DELETE FROM D WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)",
-            Map.of("k", "d0")))));
+        () -> database.command("sql", "DELETE FROM D WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)", Map.of("k", "d0"))
+            .close());
 
-    assertThat(committed).isTrue();
-    assertThat(deleted.get()).isZero();
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("D")).isEqualTo(1);
     assertThat(valueOf("D", "claimed")).isEqualTo("A");
   }
 
-  /**
-   * A document found through an index is not reloaded by {@code modify()}, but its delete was not checked against the image read
-   * either: it was deleted all the same.
-   */
+  /** And for a document found through an index. */
   @Test
   void sqlDeleteDoesNotDeleteAnIndexedDocumentClaimedAfterItsWhere() {
-    final AtomicLong deleted = new AtomicLong(-1);
     final boolean committed = runWithConcurrentCommit("UPDATE DI SET claimed = 'A' WHERE k = 'i0' AND claimed IS NULL",
-        () -> deleted.set(countOf(database.command("sql", "DELETE FROM DI WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)",
-            Map.of("k", "i0")))));
+        () -> database.command("sql", "DELETE FROM DI WHERE k = :k AND claimed IS NULL AND `race.interleave`(@rid)", Map.of("k", "i0"))
+            .close());
 
-    assertThat(committed).isTrue();
-    assertThat(deleted.get()).isZero();
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
     assertThat(valueOf("DI", "claimed")).isEqualTo("A");
   }
 
   /**
-   * A WHERE that still holds deletes the record as it is now, and so removes the index entries of that content: deleting the content
-   * read left the entry of the key committed in between pointing to the deleted record (the integrity check of the fixture finds it).
+   * A WHERE that still holds on the changed record is a conflict all the same: the delete holds the content it read, and deleting
+   * with it left the index entry of the key committed in between pointing to the deleted record. The retry deletes the record as it
+   * is now, with every index entry of it.
    */
   @Test
-  void sqlDeleteWhoseWhereStillHoldsRemovesTheIndexEntriesOfTheCurrentContent() {
-    final AtomicLong deleted = new AtomicLong(-1);
-    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> deleted.set(countOf(
-        database.command("sql", "DELETE FROM DI WHERE n = 0 AND `race.interleave`(@rid)"))));
+  void sqlDeleteWhoseWhereStillHoldsIsRetriedAndRemovesTheIndexEntriesOfTheCurrentContent() {
+    final boolean committed = runWithConcurrentCommit("UPDATE DI SET k = 'i9' WHERE k = 'i0'", () -> database.command("sql",
+        "DELETE FROM DI WHERE n = 0 AND `race.interleave`(@rid)").close());
 
-    assertThat(committed).isTrue();
-    assertThat(deleted.get()).isEqualTo(1);
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("DI")).isEqualTo(1);
+    assertIndexHolds("DI[k]", "i9");
+
+    database.transaction(() -> database.command("sql", "DELETE FROM DI WHERE n = 0").close());
     assertThat(recordsOf("DI")).isZero();
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM index:`DI[k]`")) {
-      assertThat(((Number) rs.next().getProperty("c")).longValue()).as("index entries left").isZero();
-    }
+    assertIndexHolds("DI[k]");
   }
 
   /**
@@ -476,29 +494,6 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
   }
 
   /**
-   * An after-read listener can hand back other content than the stored one (a decryption), and that is the content modify() built
-   * the copy from: the delete compares it with the current content read through the listener too, so nothing changed and it goes on.
-   */
-  @Test
-  void deleteOfAModifiedDocumentAnAfterReadListenerRewroteGoesOn() {
-    final RID rid = database.query("sql", "SELECT FROM DI WHERE k = 'i0'").next().getIdentity().orElseThrow();
-    final AfterRecordReadListener rewrite = record -> record.asDocument().modify().set("n", 42);
-    database.getSchema().getType("DI").getEvents().registerListener(rewrite);
-    try {
-      database.transaction(() -> {
-        final MutableDocument modified = database.lookupByRID(rid, false).asDocument().modify();
-        assertThat(modified.getInteger("n")).isEqualTo(42);
-        modified.delete();
-      });
-    } finally {
-      database.getSchema().getType("DI").getEvents().unregisterListener(rewrite);
-    }
-
-    assertThat(recordsOf("DI")).isZero();
-    assertIndexHolds("DI[k]");
-  }
-
-  /**
    * A vertex whose edge lists a commit changed after its read is refused with a retryable conflict (issue #12472), as any other
    * record a concurrent commit changed: the edge committed in between stays, and so does the vertex, for the retry to delete.
    */
@@ -527,7 +522,7 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     assertThat(found).as("entries of %s", index).containsExactlyInAnyOrder(keys);
   }
 
-
+  /** The openCypher DELETE shapes of the issue: the claimed vertex stays, whether or not the statement is refused with the conflict. */
   @Test
   void cypherDeleteDoesNotDeleteAVertexClaimedAfterItsWhere() {
     runWithConcurrentCommit(CONCURRENT_CLAIM, () -> database.command("opencypher",
@@ -550,13 +545,31 @@ class Issue11818ConditionalUpdateTest extends TestHelper {
     }
   }
 
+  /** A DELETE whose predicates still hold on the changed record is refused too (issue #12472), and its retry deletes the record. */
   @Test
-  void cypherDeleteWhosePredicatesStillHoldDeletesOverTheConcurrentCommit() {
+  void cypherDeleteWhosePredicatesStillHoldIsRetriedAndDeletes() {
     final boolean committed = runWithConcurrentCommit("UPDATE R SET n = 5 WHERE k = 'r0'", () -> database.command("opencypher",
         "MATCH (r:R {k: 'r0'}) WHERE r.claimed IS NULL AND race.interleave(r) DELETE r", Map.of()).close());
 
-    assertThat(committed).isTrue();
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("R")).isEqualTo(1);
+
+    database.transaction(() -> database.command("opencypher", "MATCH (r:R {k: 'r0'}) WHERE r.claimed IS NULL DELETE r").close());
     assertThat(recordsOf("R")).isZero();
+  }
+
+  /**
+   * A DELETE whose predicates read another variable than its target must not delete what a concurrent commit put at the target's
+   * RID: nothing of the statement selected that record. The target is refused as changed since its read, never reloaded.
+   */
+  @Test
+  void cypherDeleteOfAnEdgeChangedAfterItsReadUnderAPredicateOnItsVertexIsARetryableConflict() {
+    database.transaction(() -> database.command("opencypher", "MATCH (r:R {k: 'r0'}) CREATE (r)-[:E {w: 1}]->(:R {k: 'r1'})").close());
+    final boolean committed = runWithConcurrentCommit("UPDATE E SET w = 2", () -> database.command("opencypher",
+        "MATCH (a:R {k: 'r0'})-[e:E]->(b) WHERE a.claimed IS NULL AND race.interleave(e) DELETE e", Map.of()).close());
+
+    assertThat(committed).as("refused with a retryable conflict").isFalse();
+    assertThat(recordsOf("E")).isEqualTo(1);
   }
 
   /**

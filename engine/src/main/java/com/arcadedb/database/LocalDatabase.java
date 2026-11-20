@@ -2533,29 +2533,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final int size = current.size();
     if (size == readImage.size() && readImage.isSameRegionAs(0, current, 0, size))
       return false;
-    return !getTransaction().isSlotWrittenInTransaction(rid) && !isListenedImageOf(rid, readImage, current);
-  }
-
-  /**
-   * Whether {@code readImage} is {@code current} as the after-read listeners hand it back (issue #11818). A listener can rewrite
-   * the content a record is read with (a decryption), and {@code modify()} builds the copy a delete holds from that rewritten
-   * content, so the slot differs from what the caller read although no transaction changed the record: refusing it would fail
-   * every retry the same way. Only paid when a listener is registered; a record a listener filters away has no content to compare
-   * and is not refused either.
-   */
-  private boolean isListenedImageOf(final RID rid, final Binary readImage, final Binary current) {
-    final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
-    if (!events.hasAfterReadListeners() && !(type instanceof LocalDocumentType local && local.hasAfterReadListeners()))
-      return false;
-    final Record fresh = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, current.copyOfContent(), null);
-    final Record listened = invokeAfterReadEvents(fresh);
-    if (listened == null)
-      return true;
-    if (listened == fresh)
-      return false;
-    final Binary rewritten = serializer.serializeForRead(wrappedDatabaseInstance, listened).getNotReusable();
-    final int size = rewritten.size();
-    return size == readImage.size() && readImage.isSameRegionAs(0, rewritten, 0, size);
+    return !getTransaction().isSlotWrittenInTransaction(rid);
   }
 
   /** The INDEX/EXTERNAL cleanup could not read the record, so the delete proceeds without it. */

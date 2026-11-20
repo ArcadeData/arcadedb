@@ -21,10 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.ImmutableDocument;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -39,7 +36,6 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
-import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -73,9 +69,7 @@ import java.util.Set;
  * Regular DELETE will fail if the vertex still has relationships.
  */
 public class DeleteStep extends AbstractExecutionStep {
-  private final DeleteClause        deleteClause;
-  // The predicates that selected the records the clause deletes, evaluated again on a target a concurrent commit changed (#11818)
-  private final SelectionPredicates selection;
+  private final DeleteClause deleteClause;
 
   /**
    * Elements already deleted (and counted) by this DELETE, shared across all input rows of the
@@ -158,19 +152,9 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context, final boolean eagerMaterialize) {
-    this(deleteClause, context, eagerMaterialize, SelectionPredicates.NONE);
-  }
-
-  /**
-   * @param selection the predicates that selected the records the rows bind: a target a concurrent commit changed since the row
-   *                  read it so that one of them no longer holds is refused with a retryable conflict (issue #11818)
-   */
-  public DeleteStep(final DeleteClause deleteClause, final CommandContext context, final boolean eagerMaterialize,
-      final SelectionPredicates selection) {
     super(context);
     this.deleteClause = deleteClause;
     this.eagerMaterialize = eagerMaterialize;
-    this.selection = selection;
   }
 
   @Override
@@ -416,12 +400,6 @@ public class DeleteStep extends AbstractExecutionStep {
         collectRowTargets(result, allEdges, allOther, deletedVars);
       }
 
-      // #11818: before anything of the row is deleted, so a refusal leaves none of it half done
-      if (!selection.isEmpty()) {
-        requireStillSelected(allEdges, result);
-        requireStillSelected(allOther, result);
-      }
-
       if (deferredBatch != null) {
         final boolean detach = deleteClause.isDetach();
         for (final Object edge : allEdges)
@@ -469,25 +447,6 @@ public class DeleteStep extends AbstractExecutionStep {
       collectDeleteTargets(obj, edges, other);
       if (deletedVars != null && name != null && !name.contains(".") && !name.contains("[") && !name.contains("("))
         deletedVars.add(name);
-    }
-  }
-
-  /**
-   * #11818: the predicates that selected the row were decided on its records as read. Each record the row deletes gets its page put
-   * under the commit check and its content reloaded if a concurrent commit changed it in between, and a predicate that no longer
-   * holds on it refuses the delete with a retryable conflict: the retry runs the statement against the new state. A record this
-   * transaction already wrote or deleted changed by its own doing, not by a concurrent commit.
-   */
-  private void requireStillSelected(final List<Object> targets, final Result row) {
-    final TransactionContext transaction = context.getDatabase().getTransaction();
-    for (final Object target : targets) {
-      if (!(target instanceof ImmutableDocument record))
-        continue;
-      final RID rid = record.getIdentity();
-      if (rid == null || transaction.isDeletedInTransaction(rid) || transaction.getRecordFromCache(rid) instanceof MutableDocument)
-        continue;
-      if (record.pinForDelete())
-        selection.requireStillSelected(rid, row, context);
     }
   }
 
