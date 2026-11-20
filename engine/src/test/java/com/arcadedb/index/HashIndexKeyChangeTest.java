@@ -188,9 +188,9 @@ class HashIndexKeyChangeTest {
           d.set("k", 2);
         });
         assertThat(database.getSchema().getType(t).getPolymorphicIndexByProperties("k").countEntries()).as(kind).isEqualTo(1);
-        assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = 2")).as(kind).isEqualTo(1);
+        assertThat(count("SELECT count(@rid) AS c FROM " + t + " WHERE k = 2")).as(kind).isEqualTo(1);
         for (final int gone : new int[] { 0, 1 })
-          assertThat(count("SELECT count(*) AS c FROM " + t + " WHERE k = " + gone)).as(kind + " k=" + gone).isZero();
+          assertThat(count("SELECT count(@rid) AS c FROM " + t + " WHERE k = " + gone)).as(kind + " k=" + gone).isZero();
         assertThat(database.lookupByRID(rid[0], true).asDocument().getInteger("k")).as(kind).isEqualTo(2);
       }
 

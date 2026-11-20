@@ -377,6 +377,38 @@ class Issue11751PropertyAssignedAfterSaveIndexTest extends TestHelper {
   }
 
   @Test
+  void assignmentBeforeAStatementThatIsTakenBackIsStillIndexedAtTheCommit() {
+    // The failed statement saves the record (which clears what is owed to the commit), and is then taken back: the record returns to
+    // the content it held before the statement, an assignment no save had brought to the index, and the index to the earlier save
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.id INTEGER");
+    database.command("sql", "CREATE PROPERTY S.k INTEGER");
+    database.command("sql", "CREATE INDEX ON S (k) UNIQUE");
+    database.transaction(() -> database.command("sql", "INSERT INTO S (id, k) VALUES (1, 1), (2, 2)").close());
+
+    final RID first;
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS r FROM S WHERE id = 1")) {
+      first = rs.next().<RID>getProperty("r");
+    }
+
+    database.begin();
+    final MutableDocument d = load(first);
+    d.set("k", 10).save();
+    d.set("k", 11);
+    assertThatThrownBy(() -> database.command("sql", "UPDATE S SET k = 9 WHERE id <= 2").close()).isInstanceOf(
+        DuplicatedKeyException.class);
+    database.commit();
+
+    final TypeIndex index = database.getSchema().getType("S").getPolymorphicIndexByProperties("k");
+    assertThat(load(first).getInteger("k")).isEqualTo(11);
+    assertThat(index.get(new Object[] { 11 }).next().getIdentity()).isEqualTo(first);
+    for (final int gone : new int[] { 1, 9, 10 })
+      assertThat(index.get(new Object[] { gone }).hasNext()).as("k=" + gone).isFalse();
+    assertThat(index.countEntries()).isEqualTo(2);
+    assertCheckDatabaseFindsNoIndexDisagreement();
+  }
+
+  @Test
   void rolledBackTransactionLeavesTheIndexAsItWas() {
     final String t = create("R", "NOTUNIQUE");
     final RID rid = insert(t, 0);
