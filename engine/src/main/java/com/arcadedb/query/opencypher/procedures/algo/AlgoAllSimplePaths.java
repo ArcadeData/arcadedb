@@ -124,8 +124,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    findPaths(startNode, endNode, outTypes, inTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths,
-        context, newWorkGuard(context));
+    findPaths(new Walk(endNode, outTypes, inTypes, skipRelTypes, skipVertexTypes, allPaths, context, newWorkGuard(context)), startNode,
+        maxDepth, currentPath, visited);
 
     return allPaths.stream().map(pathElements -> {
       // a TraversalPath, the value every Cypher path is, so the path functions read it (issue #9913)
@@ -154,18 +154,29 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     return result;
   }
 
-  private void findPaths(final Vertex current, final Vertex target, final String[] outTypes, final String[] inTypes,
-                         final Set<String> skipRelTypes, final Set<String> skipVertexTypes, final int remainingDepth,
-                         final List<Object> currentPath, final Set<RID> visited,
-                         final List<List<Object>> allPaths, final CommandContext context, final WorkGuard guard) {
+  /**
+   * What every step of one search shares: the vertex it ends at, the types it walks outgoing and incoming ({@code null} for a
+   * direction it does not walk, empty for every type), the types it skips, and where the paths found and the work guard live.
+   */
+  private record Walk(Vertex target, String[] outTypes, String[] inTypes, Set<String> skipRelTypes, Set<String> skipVertexTypes,
+                      List<List<Object>> allPaths, CommandContext context, WorkGuard guard) {
+  }
+
+  private void findPaths(final Walk walk, final Vertex current, final int remainingDepth, final List<Object> currentPath,
+                         final Set<RID> visited) {
+    final String[] outTypes = walk.outTypes();
+    final String[] inTypes = walk.inTypes();
+    final Set<String> skipRelTypes = walk.skipRelTypes();
+    final Set<String> skipVertexTypes = walk.skipVertexTypes();
+    final CommandContext context = walk.context();
 
     // Enumerating simple paths is exponential in the graph: `maxDepth` bounds the LENGTH of a path, not how many
     // of them there are, and a dense graph of even modest depth has more than can be counted. One call expands a
     // vertex, which is more than a flag test costs (issue #6302).
-    guard.check();
+    walk.guard().check();
 
-    if (current.getIdentity().equals(target.getIdentity())) {
-      allPaths.add(new ArrayList<>(currentPath));
+    if (current.getIdentity().equals(walk.target().getIdentity())) {
+      walk.allPaths().add(new ArrayList<>(currentPath));
       return;
     }
 
@@ -197,8 +208,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, outTypes, inTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
-                context, guard);
+            findPaths(walk, neighbor, remainingDepth - 1, currentPath, visited);
           } finally {
             currentPath.removeLast();
             currentPath.removeLast();
@@ -235,8 +245,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
           // leaving no dirty state for the rest of this branch.
           try {
-            findPaths(neighbor, target, outTypes, inTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths,
-                context, guard);
+            findPaths(walk, neighbor, remainingDepth - 1, currentPath, visited);
           } finally {
             currentPath.removeLast();
             currentPath.removeLast();

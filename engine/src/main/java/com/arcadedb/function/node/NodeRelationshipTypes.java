@@ -30,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -75,9 +74,9 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
     if (vertex == null)
       return Collections.emptyList();
 
-    final boolean legacyDirection = isLegacyDirection(vertex.getDatabase(), args);
-    final RelationshipPattern pattern = patternArgument(args, legacyDirection ? args.length : 1);
-    final Vertex.DIRECTION restriction = legacyDirection ? parseDirection((String) args[1]) : directionArgument(args, 2);
+    final Vertex.DIRECTION legacyDirection = legacyDirection(vertex.getDatabase(), args);
+    final RelationshipPattern pattern = patternArgument(args, legacyDirection != null ? args.length : 1);
+    final Vertex.DIRECTION restriction = legacyDirection != null ? legacyDirection : directionArgument(args, 2);
     final Set<String> types = new LinkedHashSet<>();
     if (pattern.isEmpty())
       addTypes(context, vertex, restriction, types);
@@ -95,16 +94,18 @@ public class NodeRelationshipTypes extends AbstractNodeFunction {
   }
 
   /**
-   * Whether the second argument is the direction the function took there before #12103 rather than a pattern: a direction
-   * word, no third argument, and no edge type the pattern would name.
+   * The direction the second argument stands for when it is the one the function took there before #12103 rather than a
+   * pattern: a direction word, no third argument, and no edge type the pattern would name; {@code null} when it is a pattern.
+   * <p>
+   * The schema decides because an edge type named like a direction word is the one case where the two readings disagree, and
+   * a database that has such a type means the pattern naming it, as APOC reads it. The lookup is a hash probe made only for a
+   * direction word, so a call that passes a type name pays none.
    */
-  private static boolean isLegacyDirection(final Database database, final Object[] args) {
+  private static Vertex.DIRECTION legacyDirection(final Database database, final Object[] args) {
     if (args.length < 2 || !(args[1] instanceof String text) || (args.length > 2 && args[2] != null))
-      return false;
-    return switch (text.toLowerCase(Locale.ROOT)) {
-      case "in", "incoming", "out", "outgoing", "both" -> !(database.getSchema().getTypeOrNull(text) instanceof EdgeType);
-      default -> false;
-    };
+      return null;
+    final Vertex.DIRECTION direction = directionOrNull(text);
+    return direction != null && !(database.getSchema().getTypeOrNull(text) instanceof EdgeType) ? direction : null;
   }
 
   private static void addTypes(final CommandContext context, final Vertex vertex, final Vertex.DIRECTION direction,

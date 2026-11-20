@@ -86,18 +86,24 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
     if (direction == null)
       return Vertex.DIRECTION.BOTH;
 
-    switch (direction.toLowerCase(Locale.ROOT)) {
-    case "in":
-    case "incoming":
-      return Vertex.DIRECTION.IN;
-    case "out":
-    case "outgoing":
-      return Vertex.DIRECTION.OUT;
-    case "both":
-      return Vertex.DIRECTION.BOTH;
-    default:
+    final Vertex.DIRECTION parsed = directionOrNull(direction);
+    if (parsed == null)
       throw new IllegalArgumentException("unknown direction '" + direction + "', expected one of IN, OUT or BOTH");
-    }
+    return parsed;
+  }
+
+  /**
+   * The direction {@code word} names (in, incoming, out, outgoing, both, in any case), {@code null} for any other text. The one
+   * list of direction words: {@link #parseDirection} refuses what this does not know, and a reader that must tell a direction
+   * word from a relationship pattern asks it too.
+   */
+  protected static Vertex.DIRECTION directionOrNull(final String word) {
+    return switch (word.toLowerCase(Locale.ROOT)) {
+      case "in", "incoming" -> Vertex.DIRECTION.IN;
+      case "out", "outgoing" -> Vertex.DIRECTION.OUT;
+      case "both" -> Vertex.DIRECTION.BOTH;
+      default -> null;
+    };
   }
 
   /**

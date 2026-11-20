@@ -36,6 +36,11 @@ import java.util.StringJoiner;
  * The {@code path.*} procedures read it since #10025; the {@code node.*} functions and the {@code algo.*} path finders
  * read the whole string as one type name, so {@code apoc.node.degree(n, 'KNOWS>')} answered 0 (issue #12103). Every
  * reader parses it here.
+ * <p>
+ * A type name that itself contains {@code |}, {@code <} or {@code >} cannot be written in this syntax: it reads as the
+ * separator or the marker.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RelationshipPattern {
   /**

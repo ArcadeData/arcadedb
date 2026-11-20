@@ -35,6 +35,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * APOC's relationship pattern syntax ({@code 'KNOWS>|<LIKES'}) in the functions and procedures that take one.
  * <p>
  * Each nested class holds the regression tests of the GitHub issue its name carries.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class CypherApocRelationshipPatternTest {
 

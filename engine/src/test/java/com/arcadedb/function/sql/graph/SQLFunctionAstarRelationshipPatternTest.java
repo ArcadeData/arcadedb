@@ -43,6 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The graph: {@code (a)-[:KNOWS]->(b)}, {@code (c)-[:LIKES]->(b)}, and two shortcuts the pattern {@code 'KNOWS>|<LIKES'} does
  * not follow from {@code a}: {@code (a)-[:LIKES]->(c)} (LIKES outgoing) and {@code (c)-[:KNOWS]->(a)} (KNOWS incoming).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class SQLFunctionAstarRelationshipPatternTest extends TestHelper {
   private MutableVertex a;

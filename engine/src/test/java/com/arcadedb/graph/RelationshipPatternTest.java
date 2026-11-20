@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * APOC's relationship pattern syntax, parsed once for every reader (issue #12103).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class RelationshipPatternTest extends TestHelper {
 

@@ -376,13 +376,19 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
    * Walks only the relationships an APOC relationship pattern follows ({@code 'KNOWS>|<LIKES'}: KNOWS outgoing, LIKES incoming),
    * for the Cypher {@code algo.*} path finders (issue #12103). A pattern whose alternatives share one direction is said with the
    * {@code direction} and {@code edgeTypeNames} options instead, which keep the graph analytical view's fast path.
+   * <p>
+   * Like every other field of this function, it is state of the call: the instance has to be one the call owns (the
+   * {@code algo.*} procedures create a new one each time), never one shared between concurrent calls.
    */
   public SQLFunctionAstar setRelationshipPattern(final RelationshipPattern pattern) {
     this.relationshipPattern = pattern;
     return this;
   }
 
-  /** The weight of an edge without the weight property, {@link EdgeWeight#MISSING} unless set (APOC's {@code defaultWeight}). */
+  /**
+   * The weight of an edge without the weight property, {@link EdgeWeight#MISSING} unless set (APOC's {@code defaultWeight}).
+   * State of the call, as {@link #setRelationshipPattern} is.
+   */
   public SQLFunctionAstar setMissingWeight(final double weight) {
     this.missingWeight = weight;
     return this;

@@ -69,4 +69,6 @@ direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an un
   marked the other way counts 0), and `node.degree` sums per alternative as APOC does. A pattern whose alternatives mix
   directions is walked as written, each alternative in its own direction. The fifth argument of `algo.dijkstra` is APOC's
   `defaultWeight` when it is a number (the weight of a relationship without the weight property), the direction ArcadeDB took
-  there before when it is a string, and refused otherwise.
+  there before when it is a string, and refused otherwise. An edge type whose name contains `|`, `<` or `>` (or `,` in the
+  `algo.*` finders) can no longer be named in these arguments, as in `path.*` since #10025: the character reads as the
+  separator or the direction marker.
