@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * Issue #7373 made {@code addPeer} seed the group document and the API-token document beside the user list, and
  * #7513 moved all three reads under the {@code ServerSecurity} monitor. Both were covered only against a fake
- * {@code HAServerPlugin} in {@code Issue7373ClusterWideGroupsAndTokensTest}: nothing drove the seed over real
+ * {@code HAServerPlugin} in {@code ClusterWideGroupsAndTokensTest}: nothing drove the seed over real
  * Raft entries, applied by a real state machine, on a node that really held a stale copy. The only multi-node
  * tests that existed - {@code RaftUserSeedOnPeerAdd3NodesIT} and {@code UserSeedOnPeerAddScenarioIT} - asserted
  * the <b>users</b> half alone.
@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * The response shape for a seed that does not commit (issue #7521's {@code error}/{@code detail}/
  * {@code failedSeeds} and the 503 that replaced the original {@code warning} field) is pinned by
- * {@code Issue7521AddPeerSeedFailureIsReportedTest}, which needs no cluster.
+ * {@code PostAddPeerHandlerTest}, which needs no cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

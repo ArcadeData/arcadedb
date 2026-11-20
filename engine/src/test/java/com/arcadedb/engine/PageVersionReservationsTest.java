@@ -29,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,6 +86,60 @@ class PageVersionReservationsTest {
     db.setPageVersionReservations(null);
     increment(0);
     assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).isEqualTo(2L);
+  }
+
+  /**
+   * Issue #11921: the authority is told once per commit that the version checks are about to start, before the first
+   * reservation is read, so a lock it takes there covers the check of every page, the first one included. A commit with
+   * nothing to check does not call it.
+   */
+  @Test
+  void theAuthorityIsToldOnceBeforeTheFirstVersionCheck() {
+    final List<String> calls = new ArrayList<>();
+    db.setPageVersionReservations(new PageVersionReservations() {
+      @Override
+      public int reservedVersion(final PageId pageId) {
+        calls.add("reserved");
+        return -1;
+      }
+
+      @Override
+      public void beforeVersionChecks() {
+        calls.add("before");
+      }
+    });
+
+    increment(0);
+    assertThat(calls).as("one call, ahead of every reservation read").isNotEmpty().startsWith("before");
+    assertThat(calls.stream().filter("before"::equals).count()).isEqualTo(1);
+    assertThat(calls).contains("reserved");
+
+    calls.clear();
+    db.transaction(() -> db.lookupByRID(rid, true));
+    assertThat(calls).as("a commit that changed nothing checks no version").isEmpty();
+  }
+
+  /** Issue #11921: a failure raised there fails the commit like a refused version check, and nothing is published. */
+  @Test
+  void aRefusalBeforeTheVersionChecksFailsTheCommit() {
+    db.setPageVersionReservations(new PageVersionReservations() {
+      @Override
+      public int reservedVersion(final PageId pageId) {
+        return -1;
+      }
+
+      @Override
+      public void beforeVersionChecks() {
+        throw new ConcurrentModificationException("refused before the checks");
+      }
+    });
+
+    assertThatThrownBy(() -> increment(0)).isInstanceOf(ConcurrentModificationException.class);
+    db.setPageVersionReservations(null);
+    assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).isZero();
+    increment(0);
+    assertThat(db.lookupByRID(rid, true).asDocument().getLong("value")).as("the file locks of the refused commit were released")
+        .isEqualTo(1L);
   }
 
   private void increment(final int retries) {

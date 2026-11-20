@@ -44,7 +44,7 @@ import java.util.logging.Level;
  *       is saved), and a valid file the store migrates to its current format (the groups version upgrade, the tokens'
  *       legacy plaintext entries hashed). A file it cannot use is never written over.</li>
  * </ul>
- * {@code Issue10383SecurityArtifactReloadConformanceTest} drives every store through the four inputs a reload can meet.
+ * {@code SecurityArtifactReloadConformanceTest} drives every store through the four inputs a reload can meet.
  * <p>
  * <b>Locking.</b> Every method that reads the file or publishes runs under the {@code lock} handed to the constructor,
  * which is the store's own lock: the groups and tokens stores pass their monitor, so a reload serializes with their
@@ -159,7 +159,7 @@ abstract class ReloadableSecurityArtifact<T> {
    * <ul>
    *   <li>the users store rethrows anything other than an {@code IOException} or a {@code JSONException}, so the
    *       server refuses to start;</li>
-   *   <li>the tokens store keeps what it holds on an I/O error ({@code Issue7373ClusterWideGroupsAndTokensTest}).</li>
+   *   <li>the tokens store keeps what it holds on an I/O error ({@code ClusterWideGroupsAndTokensTest}).</li>
    * </ul>
    */
   protected T onFirstLoadFailure(final Exception failure) {

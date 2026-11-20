@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.BucketPageLayoutTestSupport;
@@ -549,20 +550,7 @@ class ReplicatedApplyPublicationTest {
       final AtomicBoolean stop = new AtomicBoolean();
       final AtomicInteger applied = new AtomicInteger();
 
-      final Thread applier = new Thread(() -> {
-        while (!stop.get()) {
-          pageManager.beginPublication();
-          try {
-            final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
-            while (System.nanoTime() < until)
-              Thread.onSpinWait();
-          } finally {
-            pageManager.endPublication();
-          }
-          applied.incrementAndGet();
-        }
-      });
-      applier.start();
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
       try {
         for (int i = 0; i < 50; i++) {
           final String[] read = new String[1];
@@ -637,6 +625,50 @@ class ReplicatedApplyPublicationTest {
         return "broken";
       })).as("the redo ran against one committed state, so its proof stands").isEqualTo("broken");
       assertThat(runs.get()).as("the overlapped proof was run again").isEqualTo(2);
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
+    }
+
+    /**
+     * #11784: the same, with the publication that overlaps the first run still open when the redo is due, the case a redo under the
+     * page-manager lock did not exclude (it ran at once, on the odd sequence, and voided the proof). The hold waits the publication
+     * out, so the redo runs against one committed state and its proof stands.
+     */
+    @Test
+    void aProofOverlappedByAPublicationStillOpenIsRunAgainOnceItEnds() throws Exception {
+      createChunkedRecords("Read");
+      final LocalBucket bucket = bucketOf("Read");
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final AtomicInteger runs = new AtomicInteger();
+      final AtomicInteger oddRuns = new AtomicInteger();
+      final CountDownLatch published = new CountDownLatch(1);
+      final Thread publisher = new Thread(() -> {
+        pageManager.beginPublication();
+        try {
+          published.countDown();
+          // OPEN ACROSS THE END OF THE FIRST RUN, WELL INSIDE THE WAIT OF THE HOLD
+          final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(20);
+          while (System.nanoTime() < until)
+            Thread.onSpinWait();
+        } finally {
+          pageManager.endPublication();
+        }
+      });
+
+      try {
+        assertThat(bucket.provenAgainstOneCommit(() -> {
+          if (runs.incrementAndGet() == 1) {
+            publisher.start();
+            assertThat(published.await(10, TimeUnit.SECONDS)).isTrue();
+          }
+          if ((pageManager.getPublicationSequence() & 1) != 0 && runs.get() > 1)
+            oddRuns.incrementAndGet();
+          return "broken";
+        })).as("the redo ran once the publication ended, against one committed state, so its proof stands").isEqualTo("broken");
+      } finally {
+        publisher.join();
+      }
+      assertThat(runs.get()).as("the overlapped proof was run again").isEqualTo(2);
+      assertThat(oddRuns.get()).as("the redo never ran with a publication open").isZero();
       assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
 
@@ -827,10 +859,112 @@ class ReplicatedApplyPublicationTest {
       assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isTrue();
     }
 
+    /**
+     * #11784: the visit of a committed page (the COLUMNAR apply's read) reported a broken chain as a record in motion on a busy replica.
+     * The retry loop of the committed read always ends in motion there, so the verdict is the redo's under the held publications, and
+     * that redo answered "in motion" for every walk it could not serve, although nothing can be in motion under the hold. In motion,
+     * the apply keeps the record and retries it without counting it unreadable, so a corrupt slot never reached its rebuild.
+     */
+    @Test
+    void aBrokenChainVisitedWhileEntriesAreAppliedBackToBackIsUnreadableNotInMotion() throws Exception {
+      final RID[] rids = createChunkedRecords(TYPE);
+      // ONLY THE BROKEN RECORD AND ONE HEALTHY ONE ARE KEPT: EVERY CHAINED RECORD OF THE PAGE PAYS ITS OWN RETRIES ON EACH BUSY VISIT
+      database.transaction(() -> {
+        for (int i = 2; i < rids.length; i++)
+          rids[i].asDocument(true).delete();
+      });
+      final RID broken = breakChainAtChunkZero(rids[0]);
+      final RID healthy = rids[1];
+      final LocalBucket bucket = bucketOf(TYPE);
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+
+      // QUIET: THE CONTROL
+      assertThat(visitOutcome(bucket, broken)).isEqualTo("unreadable");
+      assertThat(visitOutcome(bucket, healthy)).isEqualTo("served");
+
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicInteger applied = new AtomicInteger();
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
+      try {
+        for (int i = 0; i < 20; i++) {
+          assertThat(visitOutcome(bucket, broken)).as("busy visit %d of the broken record", i).isEqualTo("unreadable");
+          assertThat(visitOutcome(bucket, healthy)).as("busy visit %d of the healthy record", i).isEqualTo("served");
+        }
+      } finally {
+        stop.set(true);
+        applier.join();
+      }
+      assertThat(applied.get()).as("the applier kept publishing while the visits ran").isPositive();
+    }
+
+    /**
+     * #11784, the same verdict reached for certain: a publication overlaps every optimistic walk of the broken record, so the retry
+     * loop ends in motion and the verdict is the held redo's, which the counter of lock redos proves ran. The background applier of
+     * the test above can leave a visit on the quiet path, which never reaches that redo.
+     */
+    @Test
+    void aBrokenChainWhoseOptimisticWalksAPublicationOverlapsIsUnreadableNotInMotion() throws Exception {
+      final RID[] rids = createChunkedRecords(TYPE);
+      // ONLY THE BROKEN RECORD IS KEPT, SO EVERY WALK THE HOOK SEES IS ONE OF ITS WALKS
+      database.transaction(() -> {
+        for (int i = 1; i < rids.length; i++)
+          rids[i].asDocument(true).delete();
+      });
+      final RID broken = breakChainAtChunkZero(rids[0]);
+      final LocalBucket bucket = bucketOf(TYPE);
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      // THE ATTEMPTS committedMultiPageRecord GIVES THE RETRY LOOP BEFORE THE HELD REDO
+      final int optimisticWalks = database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES) + 1;
+      final AtomicInteger walks = new AtomicInteger();
+      final long lockRedos = bucket.getCommittedWalkLockRedosForTesting();
+
+      LocalBucket.committedWalkHookForTesting = () -> {
+        // A PUBLICATION OPENED AND CLOSED BETWEEN THE HEAD CHUNK AND THE REST OF EACH OPTIMISTIC WALK; NONE UNDER THE HOLD, WHERE IT
+        // WOULD WAIT FOR THE HOLD THIS THREAD HAS
+        if (walks.incrementAndGet() <= optimisticWalks) {
+          pageManager.beginPublication();
+          pageManager.endPublication();
+        }
+      };
+      try {
+        assertThat(visitOutcome(bucket, broken)).isEqualTo("unreadable");
+      } finally {
+        LocalBucket.committedWalkHookForTesting = null;
+      }
+      assertThat(walks.get()).as("every optimistic walk and the held redo walked the broken record").isEqualTo(optimisticWalks + 1);
+      assertThat(bucket.getCommittedWalkLockRedosForTesting() - lockRedos).as("the verdict is the held redo's").isEqualTo(1);
+      assertThat(pageManager.getPublicationSequence() & 1).isZero();
+    }
+
+    /**
+     * How the visit of the page of {@code rid} reports it: served or unreadable (a RECORD with or without content), in motion, or
+     * anything else.
+     */
+    private String visitOutcome(final LocalBucket bucket, final RID rid) {
+      final String[] outcome = { "not visited" };
+      bucket.visitCommittedPage((int) (rid.getPosition() / bucket.getMaxRecordsInPage()), new LocalBucket.CommittedSlotVisitor() {
+        @Override
+        public void onSlot(final long position, final int kind, final Binary content, final int[] offPagePages, final int offPageCount) {
+          if (position == rid.getPosition())
+            outcome[0] = kind != RECORD ? "kind=" + kind : content == null ? "unreadable" : "served";
+        }
+
+        @Override
+        public void onRecordInMotion(final long position) {
+          if (position == rid.getPosition())
+            outcome[0] = "in motion";
+        }
+      });
+      return outcome[0];
+    }
+
     /** A multi-page record whose head chunk points at a page the file does not have: broken at chunk 0. */
     private RID createBrokenRecord() {
-      final RID[] rids = createChunkedRecords(TYPE);
-      final RID broken = rids[0];
+      return breakChainAtChunkZero(createChunkedRecords(TYPE)[0]);
+    }
+
+    /** Points the head chunk of the multi-page record {@code broken} at a page the file does not have, then reopens the database. */
+    private RID breakChainAtChunkZero(final RID broken) {
       final int maxRecordsInPage = bucketOf(TYPE).getMaxRecordsInPage();
       database.transaction(() -> onSlot(broken, page -> {
         final int recordOffset = recordOffsetOf(page, broken);
@@ -847,11 +981,18 @@ class ReplicatedApplyPublicationTest {
   /**
    * Plays the replicated apply of a busy replica: publications opened and closed back to back, each held for 200 microseconds,
    * until {@code stop} is set. The sequence is even only for the instants between two of them.
+   * <p>
+   * Returns once the first publication is open, so the work the caller does next starts while an apply is in flight. Returning
+   * as soon as the thread was started let a slow runner finish all of that work before the applier had published once, and the
+   * caller's "the applier kept publishing" check then failed on a run that had exercised nothing (#12501).
    */
-  private static Thread applyBackToBack(final PageManager pageManager, final AtomicBoolean stop, final AtomicInteger applied) {
+  private static Thread applyBackToBack(final PageManager pageManager, final AtomicBoolean stop, final AtomicInteger applied)
+      throws InterruptedException {
+    final CountDownLatch firstPublicationOpen = new CountDownLatch(1);
     final Thread applier = new Thread(() -> {
       while (!stop.get()) {
         pageManager.beginPublication();
+        firstPublicationOpen.countDown();
         try {
           final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
           while (System.nanoTime() < until)
@@ -863,6 +1004,11 @@ class ReplicatedApplyPublicationTest {
       }
     });
     applier.start();
+    if (!firstPublicationOpen.await(30, TimeUnit.SECONDS)) {
+      stop.set(true);
+      applier.join();
+      throw new AssertionError("the applier thread did not open a publication within 30 seconds");
+    }
     return applier;
   }
 }

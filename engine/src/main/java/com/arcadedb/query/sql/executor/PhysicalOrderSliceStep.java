@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
 
 /**
  * One unit of the load of the records an index range matched, in physical order (issue #8333): a slice of the sorted
@@ -47,11 +48,14 @@ final class PhysicalOrderSliceStep extends AbstractExecutionStep {
   private final List<Object>                              entries;
   // Turns an entry that is not a record address into its row, or null to skip it
   private final BiFunction<Object, CommandContext, Result> entryLoader;
+  // Whether a loaded record is still a row of the range, or null to serve every record loaded (issue #11790)
+  private final BiPredicate<Record, CommandContext>       keep;
   private       Iterator<Record>                          records;
   private       int                                       nextEntry;
 
   private PhysicalOrderSliceStep(final CommandContext context, final int bucketId, final long[] positions, final int from, final int to,
-      final List<Object> entries, final BiFunction<Object, CommandContext, Result> entryLoader) {
+      final List<Object> entries, final BiFunction<Object, CommandContext, Result> entryLoader,
+      final BiPredicate<Record, CommandContext> keep) {
     super(context);
     this.bucketId = bucketId;
     this.positions = positions;
@@ -59,18 +63,24 @@ final class PhysicalOrderSliceStep extends AbstractExecutionStep {
     this.to = to;
     this.entries = entries;
     this.entryLoader = entryLoader;
+    this.keep = keep;
   }
 
-  /** The records at {@code positions[from, to)}, sorted ascending, of the bucket {@code bucketId}. */
+  /**
+   * The records at {@code positions[from, to)}, sorted ascending, of the bucket {@code bucketId}.
+   *
+   * @param keep whether a loaded record is still a row of the range, evaluated through the context of the thread that loads
+   *             it; null to serve every record loaded
+   */
   static PhysicalOrderSliceStep ofPositions(final CommandContext context, final int bucketId, final long[] positions, final int from,
-      final int to) {
-    return new PhysicalOrderSliceStep(context, bucketId, positions, from, to, null, null);
+      final int to, final BiPredicate<Record, CommandContext> keep) {
+    return new PhysicalOrderSliceStep(context, bucketId, positions, from, to, null, null, keep);
   }
 
   /** The entries of a range that are not record addresses, served as they came. */
   static PhysicalOrderSliceStep ofEntries(final CommandContext context, final List<Object> entries,
       final BiFunction<Object, CommandContext, Result> entryLoader) {
-    return new PhysicalOrderSliceStep(context, -1, null, 0, entries.size(), entries, entryLoader);
+    return new PhysicalOrderSliceStep(context, -1, null, 0, entries.size(), entries, entryLoader, null);
   }
 
   @Override
@@ -105,8 +115,14 @@ final class PhysicalOrderSliceStep extends AbstractExecutionStep {
   }
 
   private Result fetchNext(final CommandContext context) {
-    if (entries == null)
-      return records != null && records.hasNext() ? new ResultInternal(records.next()) : null;
+    if (entries == null) {
+      while (records != null && records.hasNext()) {
+        final Record record = records.next();
+        if (keep == null || keep.test(record, context))
+          return new ResultInternal(record);
+      }
+      return null;
+    }
 
     while (nextEntry < to) {
       final Result result = entryLoader.apply(entries.get(nextEntry++), context);

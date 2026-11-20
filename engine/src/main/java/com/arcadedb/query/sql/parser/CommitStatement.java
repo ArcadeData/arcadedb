@@ -124,5 +124,10 @@ public class CommitStatement extends SimpleExecStatement {
     return true;
   }
 
+  @Override
+  public boolean isTransactionControl() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=eaa0bc8f765fdaa017789953861bc0aa (do not edit this line) */

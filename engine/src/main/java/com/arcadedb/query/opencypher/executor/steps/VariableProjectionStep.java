@@ -69,7 +69,7 @@ public class VariableProjectionStep extends AbstractExecutionStep {
         final Result input = prevResults.next();
         final ResultInternal projected = new ResultInternal();
         for (final String var : keepVariables) {
-          if (input.getPropertyNames().contains(var))
+          if (input.listsProperty(var))
             projected.setProperty(var, input.getProperty(var));
         }
         LoadCSVRowContext.carryOver(input, projected);

@@ -468,7 +468,7 @@ public final class HealthMonitor {
                 + "intervention is required (a term-inverted log or snapshot served by the leader needs a "
                 + "coordinated full-cluster Raft-storage reformat). Delete the '<raft-storage-dir>.%s' file next to "
                 + "the Raft storage directory to re-arm the automatic recovery (issues #5291, #7736, #8380)",
-            RaftHAServer.CRASH_LOOP_ESCALATION_MARKER);
+            RaftStorageFiles.CRASH_LOOP_ESCALATION_MARKER);
       }
     }
   }

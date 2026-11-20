@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableVertex;
@@ -36,6 +37,7 @@ import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -92,7 +94,74 @@ public class JsonSerializer {
   private boolean  includeTypeHints          = false;
   private Database database;
 
+  /**
+   * The documents whose JSON is being written on this thread, outermost first (issue #11850). A property can hold the record
+   * object it belongs to ({@code SET x = @this}, openCypher {@code SET n.z = n}): what is stored is a link, but until the record
+   * is read back the value is the object itself, and expanding it inside itself never ends. A document met again inside its
+   * own JSON is written as its RID instead, which is what a stored link reads back as. Shared by every serializer instance,
+   * because a nested document's {@code toJSON()} builds a serializer of its own.
+   */
+  private static final ThreadLocal<ArrayList<Document>> DOCUMENTS_BEING_WRITTEN = ThreadLocal.withInitial(() -> new ArrayList<>(4));
+
   JsonSerializer() {
+  }
+
+  /**
+   * True if the document (the same object, or another object of the same record) is already being written further up on this
+   * thread: its JSON would contain itself.
+   */
+  static boolean isBeingWritten(final Document document) {
+    final ArrayList<Document> stack = DOCUMENTS_BEING_WRITTEN.get();
+    if (stack.isEmpty())
+      return false;
+    final RID rid = document.getIdentity();
+    for (int i = stack.size() - 1; i > -1; --i) {
+      final Document written = stack.get(i);
+      if (written == document || (rid != null && rid.equals(written.getIdentity()) && sameDatabase(written, document)))
+        return true;
+    }
+    return false;
+  }
+
+  /** RID equality ignores the database: two records are the same one only if they also belong to the same database. */
+  private static boolean sameDatabase(final Document a, final Document b) {
+    final Database dbA = a.getDatabase();
+    final Database dbB = b.getDatabase();
+    if (dbA == dbB)
+      return true;
+    return dbA != null && dbB != null && dbA.getDatabasePath().equals(dbB.getDatabasePath());
+  }
+
+  /** Marks the document as being written; every call is paired with {@link #endWriting()} in a finally. */
+  static void beginWriting(final Document document) {
+    DOCUMENTS_BEING_WRITTEN.get().add(document);
+  }
+
+  static void endWriting() {
+    final ArrayList<Document> stack = DOCUMENTS_BEING_WRITTEN.get();
+    stack.removeLast();
+  }
+
+  /**
+   * The JSON of a document met inside another value, through {@link Document#toJSON(boolean)}: its RID text instead (null for a
+   * record with no identity yet) when the document is already being written further up on this thread (issue #11850). For the
+   * writers that expand a nested document on their own, as {@link JSONObject} does.
+   */
+  public static Object nestedDocumentToJSON(final Document document, final boolean includeMetadata) {
+    if (isBeingWritten(document))
+      return referenceTo(document);
+    beginWriting(document);
+    try {
+      return document.toJSON(includeMetadata);
+    } finally {
+      endWriting();
+    }
+  }
+
+  /** What a document met again inside its own JSON is written as: its RID, or null for a record with no identity yet. */
+  static String referenceTo(final Document document) {
+    final RID rid = document.getIdentity();
+    return rid != null ? rid.toString() : null;
   }
 
   public JsonSerializer(final Database database) {
@@ -104,6 +173,24 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeDocument(final Document document) {
+    beginWriting(document);
+    try {
+      return serializeDocumentContent(document);
+    } finally {
+      endWriting();
+    }
+  }
+
+  /** A document inside another value: its JSON, or its RID when it is already being written further up (issue #11850). */
+  private Object serializeNestedDocument(final Document document) {
+    if (isBeingWritten(document)) {
+      final String reference = referenceTo(document);
+      return reference != null ? reference : JSONObject.NULL;
+    }
+    return serializeDocument(document);
+  }
+
+  private JSONObject serializeDocumentContent(final Document document) {
     final Database database = document.getDatabase();
     final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
     final String schemaDateFormat = database.getSchema().getDateFormat();
@@ -179,8 +266,9 @@ public class JsonSerializer {
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
-          // non-finite needs a hint, or the client reads the marker string back as a String
-          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+          // non-finite needs a hint, or the client reads the marker string back as a String. Issue #12195: so does a link, or a
+          // list or map of links, which the client reads back as its "#12:0" text
+          if (projectionTypes != null && propertyType == null && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
             // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
             final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
             if (hintType != null)
@@ -197,8 +285,10 @@ public class JsonSerializer {
 
     final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
-    for (final String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
+    // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+    for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet()) {
+      final String propertyName = property.getKey();
+      Object value = property.getValue();
 
       // Property type from the document's schema only - issue #4149: getTypeByClass(LocalDateTime)
       // collapses every datetime variant onto DATETIME (millis), so the schema lookup is the
@@ -231,8 +321,10 @@ public class JsonSerializer {
         // client with no hint for the column would hand back as that String instead of the number.
         // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
-        // tells the client the marker string stands for a number. Every other element row keeps its shape.
-        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        // tells the client the marker string stands for a number. Issue #12195: the same holds for a LINK, or a list or
+        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Every other
+        // element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaPropertyType == null && (carriesNonFinite(value) || carriesLinks(value));
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
@@ -286,6 +378,8 @@ public class JsonSerializer {
       Type elementType = detectHomogeneousTemporalElementType(elements);
       if (elementType == null)
         elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType == null)
+        elementType = detectHomogeneousLinkElementType(elements);
       if (elementType != null)
         propertyTypes.append('(').append(elementType.getId()).append(')');
     }
@@ -459,10 +553,10 @@ public class JsonSerializer {
   private JSONObject serializePath(final TraversalPath path) {
     final JSONArray nodes = new JSONArray();
     for (final Vertex vertex : path.getVertices())
-      nodes.put(serializeDocument(vertex));
+      nodes.put(serializeNestedDocument(vertex));
     final JSONArray relationships = new JSONArray();
     for (final Edge edge : path.getEdges())
-      relationships.put(serializeDocument(edge));
+      relationships.put(serializeNestedDocument(edge));
 
     final JSONObject json = new JSONObject();
     json.put(TraversalPath.TYPE_KEY, TraversalPath.PATH_TYPE);
@@ -668,7 +762,7 @@ public class JsonSerializer {
    */
   private Object convertToJSONType(Object value, final Type type) {
     if (value instanceof Document document) {
-      value = document.toJSON(true);
+      value = nestedDocumentToJSON(document, true);
     } else if (value instanceof Collection c) {
       final JSONArray array = new JSONArray();
       for (final Iterator it = c.iterator(); it.hasNext(); )
@@ -883,7 +977,7 @@ public class JsonSerializer {
     if (value == null)
       value = JSONObject.NULL;
     else if (value instanceof Document document)
-      value = serializeDocument(document);
+      value = serializeNestedDocument(document);
     else if (value instanceof Result res)
       value = serializeResult(database, res);
     else if (value instanceof ResultSet res)
@@ -975,6 +1069,41 @@ public class JsonSerializer {
         return null;
     }
     return elementType;
+  }
+
+  /**
+   * Whether an undeclared property's value is a link, or a list or map of links only (issue #12195): JSON carries a link as
+   * its "#12:0" text, so without a hint the remote client cannot tell it from a string.
+   * <p>
+   * A link is a {@link RID} and nothing wider. A {@link Document} (an embedded document, a vertex, an edge) is an
+   * {@code Identifiable} too, but {@link #serializeObject} writes it as a nested JSON object: a LINK hint on it would make the
+   * client convert that object to a RID, which empties it.
+   */
+  private static boolean carriesLinks(final Object value) {
+    if (value instanceof RID)
+      return true;
+    if (value instanceof Collection<?> collection)
+      return detectHomogeneousLinkElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectHomogeneousLinkElementType(map.values()) != null;
+    return false;
+  }
+
+  /**
+   * {@link Type#LINK} when every non-null element is a {@link RID} (and there is at least one), null otherwise: the element
+   * type a LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   * Stops at the first element that is not one, so a collection of anything else costs a single test.
+   */
+  private static Type detectHomogeneousLinkElementType(final Collection<?> collection) {
+    boolean found = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (!(element instanceof RID))
+        return null;
+      found = true;
+    }
+    return found ? Type.LINK : null;
   }
 
   /**

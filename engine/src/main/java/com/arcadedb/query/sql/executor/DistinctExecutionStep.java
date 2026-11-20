@@ -184,7 +184,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     if (!value.isElement())
       return false;
     if (value instanceof ResultInternal ri && ri.hasProjectedProperties())
-      return value.getPropertyNames().contains(RID_PROPERTY);
+      return value.listsProperty(RID_PROPERTY);
     return true;
   }
 

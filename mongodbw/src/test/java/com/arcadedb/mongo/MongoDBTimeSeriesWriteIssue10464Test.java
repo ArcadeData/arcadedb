@@ -210,8 +210,9 @@ public class MongoDBTimeSeriesWriteIssue10464Test extends BaseMongoServerTest {
     // a number is not a date to find and count (#10598), see Issue10598MongoTimeSeriesFilterAgreementTest
     assertThatThrownBy(() -> collection.deleteMany(Filters.lt("ts", T1))).isInstanceOf(MongoException.class)
         .hasMessageContaining("TIMESERIES type 'Ev' with the condition on 'ts'");
+    // an empty $and is refused before anything is read, with the answer of mongod (#12074)
     assertThatThrownBy(() -> collection.deleteMany(new Document("$and", List.of()))).isInstanceOf(MongoException.class)
-        .hasMessageContaining("TIMESERIES type 'Ev' with the condition on '$and'");
+        .hasMessageContaining("$and must be a nonempty array");
     assertThat(collection.countDocuments()).isEqualTo(3);
   }
 
