@@ -18,8 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.schema.EdgeType;
@@ -57,12 +59,15 @@ public class ConnectEdgeStep extends AbstractExecutionStep {
             final EdgeType edgeType = (EdgeType) context.getVariable("$__ARCADEDB_EDGE_TYPE_" + edgeHash);
 
             if (fromVertex != null && toVertex != null && edgeType != null) {
-              // Connect the edge using GraphEngine methods
-              context.getDatabase().getGraphEngine().connectOutgoingEdge((VertexInternal) fromVertex, toVertex, edge);
-              if (edgeType.isBidirectional()) {
-                context.getDatabase().getGraphEngine()
-                    .connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
-              }
+              // Connect the edge using GraphEngine methods, to the vertices its record names: a SET or CONTENT of @out / @in
+              // re-pointed the record after the FROM and TO were resolved (issue #12247). A refused endpoint fails the
+              // statement, whose savepoint takes the saved edge back (#10346)
+              final GraphEngine graphEngine = context.getDatabase().getGraphEngine();
+              final VertexInternal source = (VertexInternal) graphEngine.newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, fromVertex);
+              final Identifiable destination = graphEngine.newEdgeEndpoint(edge, Vertex.DIRECTION.IN, toVertex);
+              graphEngine.connectOutgoingEdge(source, destination, edge);
+              if (edgeType.isBidirectional())
+                graphEngine.connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
               // Clean up context variables
               context.setVariable("$__ARCADEDB_EDGE_FROM_" + edgeHash, null);

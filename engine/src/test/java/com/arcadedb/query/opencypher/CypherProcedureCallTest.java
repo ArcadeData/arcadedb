@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.graph.Edge;
@@ -498,20 +497,20 @@ class CypherProcedureCallTest {
     /**
      * A custom {@code DEFINE FUNCTION} has no statically declared output signature - unlike a registered
      * {@link com.arcadedb.query.opencypher.procedures.CypherProcedure}, {@code CypherProcedureRegistry} does not know
-     * it at all, so {@code resolveYieldAllFieldNames} returns {@code null} for it. This pins down that an unresolvable
-     * {@code YIELD *} keeps exactly today's (pre-fix) behavior instead of the fix guessing at a shape it cannot know.
+     * it at all, so {@code resolveYieldAllFieldNames} returns {@code null} for it. Its {@code YIELD *} binds the columns
+     * of the rows it answers, which only running it tells, so neither a named column nor {@code RETURN *} is refused at
+     * parse time any more (issue #12124: both used to be).
      */
     @Test
-    void yieldStarOnAnUnresolvableProcedureNameKeepsPriorBehavior() {
+    void yieldStarOnAnUnresolvableProcedureNameBindsTheColumnsOfItsRows() {
       database.command("sql", "DEFINE FUNCTION math.double \"SELECT :x * 2\" PARAMETERS [x] LANGUAGE sql");
 
-      assertThatThrownBy(() -> database.query("opencypher", "CALL math.double(4) YIELD * RETURN value").close())
-          .isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("UndefinedVariable");
-
-      assertThatThrownBy(() -> database.query("opencypher", "CALL math.double(4) YIELD * RETURN *").close())
-          .isInstanceOf(CommandParsingException.class)
-          .hasMessageContaining("NoVariablesInScope");
+      try (final ResultSet rs = database.command("opencypher", "CALL math.double(4) YIELD * RETURN value")) {
+        assertThat(rs.next().<Number>getProperty("value").intValue()).isEqualTo(8);
+      }
+      try (final ResultSet rs = database.command("opencypher", "CALL math.double(4) YIELD * RETURN *")) {
+        assertThat(rs.next().<Number>getProperty("value").intValue()).isEqualTo(8);
+      }
     }
   }
 

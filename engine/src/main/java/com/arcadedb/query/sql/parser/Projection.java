@@ -172,8 +172,20 @@ public class Projection extends SimpleNode {
         // which of them this statement excluded, since `!alias` is implemented by never writing the value rather
         // than by a tombstone (issue #7895 review): `SELECT *, !@rid` had its @rid put straight back. Written only
         // here, and only when there is something to say: this is the one branch that leaves an element behind.
-        if (!excludedAliases.isEmpty())
-          result.setProjectionExcludes(excludedAliases);
+        // An input row that is itself a `SELECT *, !name` row hands over the same full record as its element, so its
+        // exclusions travel with it (issue #11628): `SELECT *, 1 AS one FROM (SELECT *, !secret FROM P)` must not let
+        // hasProperty("secret") answer from the record. No allocation unless both levels exclude something.
+        final Set<String> inherited = record instanceof ResultInternal ri ? ri.getProjectionExcludes() : null;
+        if (inherited == null || inherited.isEmpty()) {
+          if (!excludedAliases.isEmpty())
+            result.setProjectionExcludes(excludedAliases);
+        } else if (excludedAliases.isEmpty())
+          result.setProjectionExcludes(inherited);
+        else {
+          final Set<String> union = new HashSet<>(inherited);
+          union.addAll(excludedAliases);
+          result.setProjectionExcludes(union);
+        }
 
         // `hidden` is a schema annotation only, and has been since #2378 removed database-level support for it:
         // ALTER PROPERTY still records the flag and SHOW/schema introspection still report it, but no read path
@@ -182,21 +194,29 @@ public class Projection extends SimpleNode {
         // element's names back over the top of it, until #5613 removed that union and left the filter exposed.
         // Do not reinstate it here: hiding a property from a projection but not from the record that backs it is
         // not a security boundary, it only makes the two spellings of "give me everything" return different rows.
-        for (final String alias : record.getPropertyNames()) {
+        // One pass over the record behind the row, not one per property (issue #12558): asking the row for each name in
+        // turn reads a row backed by a stored record once per property, since ImmutableDocument.get(name) walks the record
+        // header from its first byte until it meets the name - so a row of P properties cost P walks of the same record,
+        // and the time per row grew with P squared. The row's properties are read once here, an excluded one not at all.
+        for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(record, excludedAliases).entrySet()) {
+          final String alias = property.getKey();
           if (excludedAliases.contains(alias))
             continue;
-          Object value = item.convert(record.getProperty(alias));
+          Object value = item.convert(property.getValue());
           if (item.nestedProjection != null) {
             value = item.nestedProjection.apply(item.expression, value, context);
           }
           result.setProperty(alias, value);
         }
 
+        // An attribute the input row excluded is not seeded back from its element either: if the input row wrote it
+        // itself, the loop above already copied it from the row's content.
         record.getElement().ifPresent(doc -> {
-          if (!excludedAliases.contains(RID_PROPERTY) && doc.getIdentity() != null) {
+          if (!excludedAliases.contains(RID_PROPERTY) && (inherited == null || !inherited.contains(RID_PROPERTY))
+              && doc.getIdentity() != null) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
-          if (!excludedAliases.contains(Property.TYPE_PROPERTY)) {
+          if (!excludedAliases.contains(Property.TYPE_PROPERTY) && (inherited == null || !inherited.contains(Property.TYPE_PROPERTY))) {
             result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 

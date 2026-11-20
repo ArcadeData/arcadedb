@@ -22,8 +22,10 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -577,6 +579,335 @@ class OrderByPlanningTest extends TestHelper {
     try (final ResultSet rs = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, sum(temperature) AS s FROM Reading8973 GROUP BY hour ORDER BY count(*) ASC LIMIT 1")) {
       assertThat(rs.next().<Number>getProperty("s").doubleValue()).isEqualTo(100.0);
+    }
+  }
+
+  // ---- #11700: a keyset page on a common equality walks the index of the sort key in order ----
+  // WHERE graph_name = ? AND external_id > :after ORDER BY external_id LIMIT n fetched every row the equality matches from its index
+  // and sorted them for each page, so walking a partition page by page was quadratic. When the equality matches enough rows, the
+  // ordered range on the sort key's index, filtered on the equality, stops after n of them.
+
+  private static final int KEYSET_ROWS = 20_000;
+  private static final int KEYSET_PAGE = 50;
+
+  private void loadKeysetFixture() {
+    database.command("sql", "CREATE VERTEX TYPE Chunk");
+    database.command("sql", "CREATE PROPERTY Chunk.external_id STRING");
+    database.command("sql", "CREATE INDEX ON Chunk (external_id) UNIQUE");
+    database.command("sql", "CREATE PROPERTY Chunk.graph_name STRING");
+    database.command("sql", "CREATE INDEX ON Chunk (graph_name) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < KEYSET_ROWS; i++) {
+        // the ids are inserted out of order, so the record order of the equality's index is not the order of the sort key
+        final int id = (int) ((i * 7919L) % KEYSET_ROWS);
+        // g0..g9 hold 10% of the chunks each, 'rare' 0.1% of them (taken from g9)
+        database.newVertex("Chunk").set("external_id", String.format("c%06d", id), "graph_name", id % 1000 == 999 ? "rare" : "g" + id % 10)
+            .save();
+      }
+    });
+  }
+
+  private static String keysetPage(final String where, final boolean ascending) {
+    return "SELECT external_id FROM Chunk WHERE (" + where + ") AND external_id " + (ascending ? ">" : "<") + " :bound ORDER BY external_id "
+        + (ascending ? "ASC" : "DESC") + " LIMIT " + KEYSET_PAGE;
+  }
+
+  /** Walks the pages of {@link #keysetPage} from the first to the last, asserting the plan of each with {@code planCheck}. */
+  private List<String> keysetWalk(final String where, final boolean ascending, final Consumer<String> planCheck) {
+    final List<String> walked = new ArrayList<>();
+    // 'd' sorts after every 'c...' id
+    String bound = ascending ? "" : "d";
+    final String sql = keysetPage(where, ascending);
+    while (true) {
+      final List<String> page = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", sql, Map.of("bound", bound))) {
+        while (rs.hasNext())
+          page.add(rs.next().getProperty("external_id"));
+        planCheck.accept(plan(rs));
+      }
+      walked.addAll(page);
+      if (page.size() < KEYSET_PAGE)
+        return walked;
+      bound = page.getLast();
+    }
+  }
+
+  /** The rows of the walk read in one statement without a LIMIT, which keeps the plan of the equality's index and sorts. */
+  private List<String> sortedThroughTheEquality(final String where, final boolean ascending) {
+    final List<String> result = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT external_id FROM Chunk WHERE " + where + " ORDER BY external_id " + (ascending ? "ASC" : "DESC"))) {
+      while (rs.hasNext())
+        result.add(rs.next().getProperty("external_id"));
+      assertThat(plan(rs)).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY");
+    }
+    return result;
+  }
+
+  private static void walksTheSortKeyIndex(final String plan) {
+    assertThat(plan).contains("FETCH FROM INDEX Chunk[external_id]").contains("FILTER ITEMS WHERE").doesNotContain("ORDER BY")
+        .doesNotContain("Chunk[graph_name]");
+  }
+
+  /**
+   * Regression test for issue #11700.
+   */
+  @Test
+  void keysetWalkOnACommonEqualityWalksTheSortKeyIndex() {
+    loadKeysetFixture();
+    for (final String where : List.of("graph_name = 'g3'", "graph_name IN ['g3', 'g4']"))
+      for (final boolean ascending : new boolean[] { true, false }) {
+        final List<String> expected = sortedThroughTheEquality(where, ascending);
+        assertThat(expected).hasSize(where.contains("IN") ? 4_000 : 2_000);
+        assertThat(keysetWalk(where, ascending, OrderByPlanningTest::walksTheSortKeyIndex)).as(where).isEqualTo(expected);
+      }
+  }
+
+  /**
+   * Regression test for issue #11700: an equality matching 20 rows of 20,000 is read from its index, where the ordered walk would
+   * read about the whole type for one page.
+   */
+  @Test
+  void keysetWalkOnASelectiveEqualityKeepsItsIndex() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'rare'", true);
+    assertThat(expected).hasSize(20);
+    assertThat(keysetWalk("graph_name = 'rare'", true,
+        plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY"))).isEqualTo(expected);
+  }
+
+  /**
+   * Regression test for issue #11700: a composite index on (equality, sort key) answers the page directly and is kept.
+   */
+  @Test
+  void keysetWalkKeepsACompositeIndexOnTheEqualityAndTheSortKey() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", true);
+    database.command("sql", "CREATE INDEX ON Chunk (graph_name, external_id) NOTUNIQUE");
+    assertThat(keysetWalk("graph_name = 'g3'", true,
+        plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name,external_id]").doesNotContain("ORDER BY"))).isEqualTo(
+        expected);
+  }
+
+  /**
+   * Regression test for issue #11700: the first page has no bound on the sort key. When no returned record can miss the key the
+   * whole index is walked in order; when one can, that walk would also scan the type for the records the index does not hold,
+   * and the equality's index is kept.
+   */
+  @Test
+  void firstPageWithoutABoundOnTheSortKey() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", true).subList(0, KEYSET_PAGE);
+
+    try (final ResultSet rs = database.query("sql",
+        "SELECT external_id FROM Chunk WHERE graph_name = 'g3' ORDER BY external_id LIMIT " + KEYSET_PAGE)) {
+      final List<String> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("external_id"));
+      assertThat(got).isEqualTo(expected);
+      assertThat(plan(rs)).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY");
+    }
+
+    // the WHERE clause rules the nulls out, so the walk needs no scan
+    try (final ResultSet rs = database.query("sql",
+        "SELECT external_id FROM Chunk WHERE graph_name = 'g3' AND external_id IS NOT NULL ORDER BY external_id LIMIT " + KEYSET_PAGE)) {
+      final List<String> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("external_id"));
+      assertThat(got).isEqualTo(expected);
+      assertThat(plan(rs)).contains("Chunk[external_id]").doesNotContain("ORDER BY").doesNotContain("FETCH FROM TYPE")
+          .doesNotContain("Chunk[graph_name]");
+    }
+  }
+
+  /**
+   * Regression test for issue #11700: a second condition, not on the sort key, filters the rows of the walk that pass the equality,
+   * which the estimate does not count. The walk could read the whole index for one page, so the equality's index is kept.
+   */
+  @Test
+  void keysetWalkWithAnotherConditionKeepsTheEqualityIndex() {
+    loadKeysetFixture();
+    database.command("sql", "CREATE PROPERTY Chunk.status STRING");
+    // 1% of the 'g3' chunks
+    database.transaction(() -> database.command("sql", "UPDATE Chunk SET status = 'x' WHERE graph_name = 'g3' AND external_id < 'c000200'"));
+    final String where = "graph_name = 'g3' AND status = 'x'";
+    final List<String> expected = sortedThroughTheEquality(where, true);
+    assertThat(expected).hasSize(20);
+    assertThat(keysetWalk(where, true,
+        plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY"))).isEqualTo(expected);
+  }
+
+  /**
+   * Regression test for issue #11700: the count of the equality's entries stops at the break-even, sqrt(2 * LIMIT * records) + 1.
+   * The walk estimated from that capped count was rounded up, and at LIMIT 40 or 48 on 20,000 records it reached half the cap, so
+   * the walk was refused for an equality matching more entries than the cap, the case it exists for.
+   */
+  @Test
+  void keysetPageOnACommonEqualityWalksTheSortKeyIndexAtTheCountCap() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", true);
+    for (final int limit : new int[] { 10, 40, 48, 50 })
+      try (final ResultSet rs = database.query("sql",
+          "SELECT external_id FROM Chunk WHERE graph_name = 'g3' AND external_id > :bound ORDER BY external_id LIMIT " + limit,
+          Map.of("bound", expected.get(500)))) {
+        final List<String> got = new ArrayList<>();
+        while (rs.hasNext())
+          got.add(rs.next().getProperty("external_id"));
+        assertThat(got).as("LIMIT %d", limit).isEqualTo(expected.subList(501, 501 + limit));
+        walksTheSortKeyIndex(plan(rs));
+      }
+  }
+
+  /**
+   * Regression test for issue #11700: the plan depends on the value bound to the equality, so one statement text bound to a
+   * common value and then to a selective one (and the other way round) is planned again for each, not served from the cache.
+   */
+  @Test
+  void keysetPageIsPlannedAgainForEveryBoundValue() {
+    loadKeysetFixture();
+    final String sql = "SELECT external_id FROM Chunk WHERE graph_name = :g AND external_id > :bound ORDER BY external_id LIMIT "
+        + KEYSET_PAGE;
+    final Consumer<String> keepsTheEqualityIndex = plan -> assertThat(plan).contains("FETCH FROM INDEX Chunk[graph_name]")
+        .contains("ORDER BY");
+    for (final String first : List.of("g3", "rare"))
+      for (int round = 0; round < 2; round++)
+        for (final String g : first.equals("g3") ? List.of("g3", "rare") : List.of("rare", "g3"))
+          try (final ResultSet rs = database.query("sql", sql, Map.of("g", g, "bound", ""))) {
+            final List<String> got = new ArrayList<>();
+            while (rs.hasNext())
+              got.add(rs.next().getProperty("external_id"));
+            final List<String> expected = sortedThroughTheEquality("graph_name = '" + g + "'", true);
+            assertThat(got).as(g).isEqualTo(expected.subList(0, Math.min(KEYSET_PAGE, expected.size())));
+            if (g.equals("g3"))
+              walksTheSortKeyIndex(plan(rs));
+            else
+              keepsTheEqualityIndex.accept(plan(rs));
+          }
+  }
+
+  /**
+   * Regression test for issue #11700: a page with a SKIP goes through the ordered walk, which reads SKIP + LIMIT rows, and returns the
+   * rows the sorted read of the equality returns at the same offset.
+   */
+  @Test
+  void keysetPageWithSkipWalksTheSortKeyIndex() {
+    loadKeysetFixture();
+    for (final boolean ascending : new boolean[] { true, false }) {
+      final List<String> expected = sortedThroughTheEquality("graph_name = 'g3'", ascending);
+      final int anchor = 500;
+      final String bound = expected.get(anchor);
+      for (final int skip : new int[] { 0, 7, 30 })
+        try (final ResultSet rs = database.query("sql",
+            "SELECT external_id FROM Chunk WHERE graph_name = 'g3' AND external_id " + (ascending ? ">" : "<") + " :bound ORDER BY external_id "
+                + (ascending ? "ASC" : "DESC") + " SKIP " + skip + " LIMIT 10", Map.of("bound", bound))) {
+          final List<String> got = new ArrayList<>();
+          while (rs.hasNext())
+            got.add(rs.next().getProperty("external_id"));
+          assertThat(got).as("skip %d, ascending %s", skip, ascending).isEqualTo(expected.subList(anchor + 1 + skip, anchor + 11 + skip));
+          walksTheSortKeyIndex(plan(rs));
+        }
+    }
+  }
+
+  /**
+   * Regression test for issue #11700: the first page of a sort key whose index stores the nulls walks the whole index, nulls included,
+   * and returns the rows, nulls in the same place, as the sorted read of the equality does, at the start and across the nulls.
+   */
+  @Test
+  void firstPageOnASortKeyIndexThatStoresNullsWalksTheWholeIndex() {
+    database.command("sql", "CREATE VERTEX TYPE Nullable");
+    database.command("sql", "CREATE PROPERTY Nullable.k STRING");
+    database.command("sql", "CREATE INDEX ON Nullable (k) NOTUNIQUE NULL_STRATEGY INDEX");
+    database.command("sql", "CREATE PROPERTY Nullable.g STRING");
+    database.command("sql", "CREATE INDEX ON Nullable (g) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < KEYSET_ROWS; i++) {
+        final int id = (int) ((i * 7919L) % KEYSET_ROWS);
+        // g0 and g1 hold half of the records each; one record of 20 has no key, so 1,000 of the 10,000 records of g0 are nulls
+        final var vertex = database.newVertex("Nullable").set("g", "g" + id % 2);
+        if (id % 20 != 0)
+          vertex.set("k", String.format("c%06d", id));
+        vertex.save();
+      }
+    });
+
+    for (final boolean ascending : new boolean[] { true, false }) {
+      final List<String> expected = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT k FROM Nullable WHERE g = 'g0' ORDER BY k " + (ascending ? "ASC" : "DESC"))) {
+        while (rs.hasNext())
+          expected.add(rs.next().getProperty("k"));
+      }
+      assertThat(expected).hasSize(10_000).containsNull();
+
+      for (final int skip : new int[] { 0, 20, 980, 990 })
+        try (final ResultSet rs = database.query("sql", "SELECT k FROM Nullable WHERE g = 'g0' ORDER BY k " + (ascending ? "ASC" : "DESC")
+            + " SKIP " + skip + " LIMIT " + KEYSET_PAGE)) {
+          final List<String> got = new ArrayList<>();
+          while (rs.hasNext())
+            got.add(rs.next().getProperty("k"));
+          assertThat(got).as("skip %d, ascending %s", skip, ascending).isEqualTo(expected.subList(skip, skip + KEYSET_PAGE));
+          assertThat(plan(rs)).as("skip %d, ascending %s", skip, ascending).contains("Nullable[k]").doesNotContain("ORDER BY")
+              .doesNotContain("Nullable[g]");
+        }
+    }
+  }
+
+  /**
+   * Regression test for issue #11700: an index on (sort key, list BY ITEM) holds one entry per item and none for an empty list.
+   * Walked in order it repeated records and missed the ones with an empty list, so it is not a walk candidate, for a keyset page
+   * or for a first page.
+   */
+  @Test
+  void keysetWalkSkipsAnIndexWithAnItemExpandedProperty() {
+    database.command("sql", "CREATE VERTEX TYPE Tagged");
+    database.command("sql", "CREATE PROPERTY Tagged.external_id STRING");
+    database.command("sql", "CREATE PROPERTY Tagged.graph_name STRING");
+    database.command("sql", "CREATE PROPERTY Tagged.tags LIST OF STRING");
+    database.command("sql", "CREATE INDEX ON Tagged (graph_name) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON Tagged (external_id, tags BY ITEM) NOTUNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < KEYSET_ROWS; i++) {
+        final int id = (int) ((i * 7919L) % KEYSET_ROWS);
+        final List<String> tags = id % 3 == 0 ? List.of() : id % 3 == 1 ? List.of("a") : List.of("a", "b");
+        database.newVertex("Tagged").set("external_id", String.format("c%06d", id), "graph_name", "g" + id % 10, "tags", tags).save();
+      }
+    });
+    final List<String> expected = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT external_id FROM Tagged WHERE graph_name = 'g3' ORDER BY external_id")) {
+      while (rs.hasNext())
+        expected.add(rs.next().getProperty("external_id"));
+    }
+    assertThat(expected).hasSize(2_000);
+
+    for (final String sql : List.of(
+        "SELECT external_id FROM Tagged WHERE graph_name = 'g3' AND external_id > :bound ORDER BY external_id LIMIT " + KEYSET_PAGE,
+        "SELECT external_id FROM Tagged WHERE graph_name = 'g3' AND external_id IS NOT NULL ORDER BY external_id LIMIT "
+            + KEYSET_PAGE))
+      try (final ResultSet rs = database.query("sql", sql, Map.of("bound", ""))) {
+        final List<String> got = new ArrayList<>();
+        while (rs.hasNext())
+          got.add(rs.next().getProperty("external_id"));
+        assertThat(got).as(sql).isEqualTo(expected.subList(0, KEYSET_PAGE));
+        assertThat(plan(rs)).as(sql).contains("FETCH FROM INDEX Tagged[graph_name]").contains("ORDER BY");
+      }
+  }
+
+  /**
+   * Regression test for issue #11700: an IN list that repeats a value is one seek per distinct key at execution. Counted once per
+   * repeat, 20 matches of 'rare' listed 100 times passed the count cap and chose a walk that reads the whole sort-key range.
+   */
+  @Test
+  void keysetPageCountsARepeatedInValueOnce() {
+    loadKeysetFixture();
+    final List<String> expected = sortedThroughTheEquality("graph_name = 'rare'", true);
+    try (final ResultSet rs = database.query("sql",
+        "SELECT external_id FROM Chunk WHERE graph_name IN :g AND external_id > :bound ORDER BY external_id LIMIT " + KEYSET_PAGE,
+        Map.of("g", Collections.nCopies(100, "rare"), "bound", ""))) {
+      final List<String> got = new ArrayList<>();
+      while (rs.hasNext())
+        got.add(rs.next().getProperty("external_id"));
+      assertThat(got).isEqualTo(expected);
+      assertThat(plan(rs)).contains("FETCH FROM INDEX Chunk[graph_name]").contains("ORDER BY");
     }
   }
 }

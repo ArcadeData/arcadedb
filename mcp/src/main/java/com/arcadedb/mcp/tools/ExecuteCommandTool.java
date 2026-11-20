@@ -94,6 +94,13 @@ public class ExecuteCommandTool {
     final QueryEngine.AnalyzedQuery analyzed = engine.analyze(command);
     checkPermission(analyzed.getOperationTypes(), access.permissions());
 
+    // Each call runs in a transaction of its own, so a BEGIN, COMMIT or ROLLBACK would act on that one call alone, be answered OK and
+    // change nothing for the next call (issues #12202, #12232)
+    if (analyzed.isTransactionControl())
+      throw new MCPToolArgumentException("'" + command.trim() + "' cannot run as a command of its own: each execute_command call runs in "
+          + "its own transaction, which it would begin, commit or roll back alone. Send the statements that must commit or roll back "
+          + "together in one call, as one 'sqlscript' command");
+
     final JsonSerializer serializer = JsonSerializer.createJsonSerializer()
         .setIncludeVertexEdges(false)
         .setUseCollectionSize(false)

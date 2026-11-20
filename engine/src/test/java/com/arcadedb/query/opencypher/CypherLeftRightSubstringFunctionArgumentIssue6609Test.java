@@ -133,14 +133,16 @@ class CypherLeftRightSubstringFunctionArgumentIssue6609Test extends TestHelper {
         .hasMessageContaining("LIST");
   }
 
-  // ===================== the primary STRING argument is untouched by this fix =====================
+  // ===================== the primary STRING argument =====================
 
   @Test
-  void thePrimaryStringArgumentIsStillNotTypeChecked() {
-    // Out of scope for #6609 (and for #5798/#5901 before it): left()/right()/substring()'s primary text argument
-    // still converts any value via toString() rather than rejecting it. Locked down so a future fix to that separate
-    // gap is a deliberate, visible change to this test rather than a silent behavior drift.
-    assertThat(single("RETURN left(5, 1) AS r")).isEqualTo("5");
+  void thePrimaryStringArgumentIsTypeChecked() {
+    // Out of scope for #6609, closed by #11692: left()/right()/substring()'s primary text argument used to convert any
+    // value via toString(). It is now the same client type error as the rest of the STRING family.
+    assertThatThrownBy(() -> consume("RETURN left(5, 1) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("left()")
+        .hasMessageContaining("INTEGER");
   }
 
   // ===================== arguments that are still accepted =====================

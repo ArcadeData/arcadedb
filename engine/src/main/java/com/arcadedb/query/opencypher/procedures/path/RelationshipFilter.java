@@ -19,15 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * The {@code relationshipFilter} of the {@code path.*} procedures, in APOC's syntax (issue #10025):
@@ -89,51 +88,14 @@ final class RelationshipFilter {
 
   private static void parseStep(final String procedureName, final String step, final Schema schema, final int index,
       final String[][] out, final String[][] in) {
-    final Set<String> outNames = new LinkedHashSet<>();
-    final Set<String> inNames = new LinkedHashSet<>();
-    boolean outAll = false;
-    boolean inAll = false;
-    boolean any = false;
-
-    for (final String rawEntry : step.split("\\|")) {
-      final String entry = rawEntry.trim();
-      if (entry.isEmpty())
-        continue;
-      any = true;
-
-      final boolean incoming = entry.charAt(0) == '<';
-      final boolean outgoing = entry.charAt(entry.length() - 1) == '>';
-      if (incoming && outgoing && entry.length() > 1) {
-        final String inner = entry.substring(1, entry.length() - 1).trim();
-        throw new IllegalArgumentException(procedureName + "(): relationship filter '" + entry + "' carries both direction markers: "
-            + (inner.isEmpty() ? "leave the filter empty" : "write '" + inner + "'") + " to follow it in both directions");
-      }
-
-      final String name = entry.substring(incoming ? 1 : 0, entry.length() - (outgoing ? 1 : 0)).trim();
-      if (name.isEmpty()) {
-        // '>' or '<' alone: every type in that direction
-        if (outgoing)
-          outAll = true;
-        else
-          inAll = true;
-        continue;
-      }
-
+    // One hop in APOC's syntax, parsed as the node.* functions and the algo.* path finders parse theirs (issue #12103)
+    final RelationshipPattern pattern = RelationshipPattern.parse(procedureName, step);
+    for (final String name : pattern.typeNames())
       ProcedureSchemaTypes.requireEdgeTypes(procedureName, schema, name);
-      if (!incoming)
-        outNames.add(name);
-      if (!outgoing)
-        inNames.add(name);
-    }
 
-    if (!any) {
-      // An empty hop inside a sequence ('A>,,<B'): any relationship, both directions
-      out[index] = ALL_TYPES;
-      in[index] = ALL_TYPES;
-      return;
-    }
-    out[index] = outAll ? ALL_TYPES : outNames.isEmpty() ? null : outNames.toArray(new String[0]);
-    in[index] = inAll ? ALL_TYPES : inNames.isEmpty() ? null : inNames.toArray(new String[0]);
+    // An empty hop inside a sequence ('A>,,<B') follows any relationship, both directions, as an empty pattern does
+    out[index] = pattern.typesFor(Vertex.DIRECTION.OUT);
+    in[index] = pattern.typesFor(Vertex.DIRECTION.IN);
   }
 
   /**

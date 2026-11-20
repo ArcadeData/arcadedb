@@ -23,9 +23,15 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.gremlin.support.DifferentialTraversal;
 import com.arcadedb.gremlin.support.TraversalPlans;
+import org.apache.tinkerpop.gremlin.process.traversal.Step;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
+import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.LazyBarrierStrategy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -152,5 +158,62 @@ class ArcadeGAVStepsTest {
     // RecordNotFoundException.
     DifferentialTraversal.on(graph)
         .assertSameResults(g -> g.V().has("name", "A").out("KNOWS").out("KNOWS").out("KNOWS").values("name"));
+  }
+
+  /**
+   * Regression for #11636: the fused chain checked that a vertex still exists only at the final hop, and walked the stale CSR
+   * straight through an INTERMEDIATE vertex deleted since the build, answering the vertices reachable only through it. The
+   * unfused step skips the deleted vertex before it feeds the next hop, so the same query had two answers.
+   */
+  @Test
+  void aVertexDeletedAfterTheCsrBuildIsNotWalkedThroughAtAnIntermediateHop() {
+    serveWhenStale();
+    deletePerson("B");
+    assertThat(TraversalPlans.hasStepOfType(
+        graph.traversal().V().has("name", "A").out("KNOWS").out("KNOWS"), ArcadeGAVFusedStep.class))
+        .as("the stale view still serves the fused chain, plan was: %s",
+            TraversalPlans.describe(graph.traversal().V().has("name", "A").out("KNOWS").out("KNOWS")))
+        .isTrue();
+
+    // C is reachable from A only through B
+    assertThat(graph.traversal().V().has("name", "A").out("KNOWS").out("KNOWS").values("name").toList()).isEmpty();
+    DifferentialTraversal.on(graph).assertSameResults(g -> g.V().has("name", "A").out("KNOWS").out("KNOWS").values("name"));
+  }
+
+  @Test
+  void aVertexDeletedAfterTheCsrBuildIsNotWalkedThroughAtALaterIntermediateHop() {
+    serveWhenStale();
+    deletePerson("C");
+    // A -LIKES-> C was the other way to C: D is not reachable through it either
+    assertThat(graph.traversal().V().has("name", "A").out("LIKES").out("KNOWS").values("name").toList()).isEmpty();
+    DifferentialTraversal.on(graph).assertSameResults(g -> g.V().has("name", "A").out("LIKES").out("KNOWS").values("name"));
+
+    // Three hops fuse into ONE chain only without the barrier TinkerPop puts after every second hop: the deleted vertex is then the
+    // chain's second intermediate one, met after a live first one
+    final GraphTraversalSource noBarrier = graph.traversal().withoutStrategies(LazyBarrierStrategy.class);
+    final List<Step> steps = TraversalPlans.stepsOf(noBarrier.V().has("name", "A").out("KNOWS").out("KNOWS").out("KNOWS"));
+    assertThat(steps.stream().filter(s -> s instanceof ArcadeGAVFusedStep).count()).as("plan was: %s", steps).isEqualTo(1L);
+    assertThat(steps.stream().anyMatch(s -> s instanceof ArcadeGAVVertexStep || s instanceof VertexStep)).as("plan was: %s", steps)
+        .isFalse();
+    // D is reachable from A only through B then C
+    assertThat(noBarrier.V().has("name", "A").out("KNOWS").out("KNOWS").out("KNOWS").values("name").toList()).isEmpty();
+  }
+
+  /** The view of the setup, but one that keeps serving once a commit made it STALE ({@code gavUseWhenStale}). */
+  private void serveWhenStale() {
+    gav.drop();
+    gav = null;
+    gav = GraphAnalyticalView.builder((Database) graph.getDatabase())
+        .withVertexTypes("Person")
+        .withEdgeTypes("KNOWS", "LIKES")
+        .withUseWhenStale(true)
+        .build();
+  }
+
+  private void deletePerson(final String name) {
+    graph.getDatabase().transaction(() -> {
+      final var it = graph.getDatabase().query("sql", "SELECT FROM Person WHERE name = ?", name);
+      it.next().getElement().get().asVertex().delete();
+    });
   }
 }

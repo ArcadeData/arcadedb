@@ -44,6 +44,12 @@ public class DatabaseFactory implements AutoCloseable {
   private              boolean                                                    replicatedNode       = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
+  /**
+   * The databases whose committed pages may be in neither a forced data file nor a forced WAL because of how their last
+   * instance closed (issue #12025), keyed by path, valued by the {@link LocalDatabase#getInstanceSequence() sequence} of the
+   * newest instance that put them there. See {@link #getDatabasesClosedWithPagesLeftToRecovery()}.
+   */
+  private static final ConcurrentHashMap<Path, Long>                               PAGES_LEFT_TO_RECOVERY = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new ConcurrentHashMap<>();
@@ -232,6 +238,58 @@ public class DatabaseFactory implements AutoCloseable {
 
   public static Collection<Database> getActiveDatabaseInstances() {
     return Collections.unmodifiableCollection(ACTIVE_INSTANCES.values());
+  }
+
+  /**
+   * The databases, not open now, whose last instance closed without making its pages durable: the bounded flush wait gave
+   * up, an fsync failed, the database was fenced, or a WAL record or a columnar recovery set could not be written (issue
+   * #12025). Such a close keeps the WAL and the lock file, so the next open replays it, but the WAL of a replicated commit
+   * is not forced (#11746) and a follower writes none, so until a later instance has forced the files again the committed
+   * pages of those databases may be in the OS cache only. A caller that is about to declare "everything committed so far
+   * is on the disk" - the Raft snapshot checkpoint - must not include them.
+   * <p>
+   * A path is listed from the moment its close starts (the instance reports itself closed before the close decides how it
+   * ended) until a clean close of an instance at least as new, a drop, or a successful
+   * {@link com.arcadedb.engine.PageManager#flushAndSyncDatabase} of a NEWER instance, whose open ran the recovery and so
+   * forces every file at its first sync. A path whose directory is gone has nothing left to lose and is forgotten here.
+   */
+  public static List<Path> getDatabasesClosedWithPagesLeftToRecovery() {
+    if (PAGES_LEFT_TO_RECOVERY.isEmpty())
+      return List.of();
+    final List<Path> result = new ArrayList<>();
+    for (final Map.Entry<Path, Long> entry : PAGES_LEFT_TO_RECOVERY.entrySet()) {
+      final Path path = entry.getKey();
+      if (!new File(path.toString()).isDirectory())
+        PAGES_LEFT_TO_RECOVERY.remove(path, entry.getValue());
+      else
+        // Listed even while a newer instance is open: only its successful sync releases the path, and one opened after the
+        // caller's own sync pass has not been forced yet
+        result.add(path);
+    }
+    return result;
+  }
+
+  /** Lists the path of a closing instance (issue #12025), before it reports itself closed. */
+  static void markClosingWithPagesAtRisk(final LocalDatabase closing) {
+    PAGES_LEFT_TO_RECOVERY.merge(getNormalizedPath(closing.getDatabasePath()), closing.getInstanceSequence(), Math::max);
+  }
+
+  /**
+   * Unlists the path of {@code synced} once it forced its files (issue #12025), when an EARLIER instance listed it: this one
+   * opened after that close, so its open ran the recovery, which leaves every file to be forced by the first sync.
+   */
+  public static void releasePagesLeftToRecoveryByEarlierInstances(final LocalDatabase synced) {
+    releasePagesLeftToRecovery(synced, false);
+  }
+
+  /**
+   * Unlists a path once {@code instance} made its pages durable (issue #12025): its clean close or its drop when
+   * {@code includingOwn}, otherwise a sync of a newer instance than the one that listed it.
+   */
+  static void releasePagesLeftToRecovery(final LocalDatabase instance, final boolean includingOwn) {
+    final long sequence = instance.getInstanceSequence();
+    PAGES_LEFT_TO_RECOVERY.computeIfPresent(getNormalizedPath(instance.getDatabasePath()),
+        (path, listedBy) -> listedBy < sequence || (includingOwn && listedBy == sequence) ? null : listedBy);
   }
 
   /**

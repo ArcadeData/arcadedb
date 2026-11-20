@@ -91,8 +91,8 @@ public class CypherPointFunction implements StatelessFunction {
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      final double x = coerceCoordinate("x", args[0]);
-      final double y = coerceCoordinate("y", args[1]);
+      final double x = wrapLongitude(coerceCoordinate("x", args[0]));
+      final double y = checkLatitude(coerceCoordinate("y", args[1]));
       final Map<String, Object> result = new LinkedHashMap<>();
       result.put("longitude", x);
       result.put("latitude", y);
@@ -119,8 +119,8 @@ public class CypherPointFunction implements StatelessFunction {
       final Object lat = map.get("latitude");
       if (lon == null || lat == null)
         return null;
-      final double x = coerceCoordinate("longitude", lon);
-      final double y = coerceCoordinate("latitude", lat);
+      final double x = wrapLongitude(coerceCoordinate("longitude", lon));
+      final double y = checkLatitude(coerceCoordinate("latitude", lat));
       result.put("longitude", x);
       result.put("latitude", y);
       result.put("x", x);
@@ -179,6 +179,10 @@ public class CypherPointFunction implements StatelessFunction {
       if (crs == null || crsSrid != null)
         crs = crsOfSrid(srid, has3d);
       result.put("crs", crs);
+      if (crs != null && isGeographicCrs(crs)) {
+        checkLatitude(y);
+        result.put("x", wrapLongitude(x));
+      }
       if (srid != null)
         result.put("srid", srid);
     } else {
@@ -187,6 +191,54 @@ public class CypherPointFunction implements StatelessFunction {
     }
 
     return result;
+  }
+
+  /**
+   * Rejects a WGS-84 latitude outside [-90, 90] with a client error, as Neo4j does (issue #11690).
+   */
+  private static double checkLatitude(final double latitude) {
+    if (latitude > 90 || latitude < -90)
+      throw new CommandSemanticException(
+          "Cannot create WGS-84 point with invalid latitude " + latitude + ": valid range is [-90, 90]");
+    return latitude;
+  }
+
+  /**
+   * Wraps a WGS-84 longitude into [-180, 180] the way Neo4j does (adding or subtracting whole turns), so 181 becomes
+   * -179 (issue #11690). Non-finite values are left alone.
+   */
+  static double wrapLongitude(final double longitude) {
+    if (longitude <= 180 && longitude >= -180 || !Double.isFinite(longitude))
+      return longitude;
+    return longitude > 180 ? longitude - 360 * Math.ceil((longitude - 180) / 360) : longitude + 360 * Math.ceil((-180 - longitude) / 360);
+  }
+
+  /**
+   * Renders a point the way Neo4j renders it in {@code toString()}: {@code point({x: 1.0, y: 2.0, crs: 'cartesian'})},
+   * with the z coordinate between the y one and the crs when the point has one. The srid is not part of the rendering:
+   * Neo4j prints the name of the coordinate reference system, and the srid is its numeric name (issue #12397).
+   * <p>
+   * The coordinates are printed as the doubles they are, the way Neo4j prints them: a point built by {@code point()}
+   * holds doubles, so {@code point({x: 1, y: 2})} renders as {@code x: 1.0, y: 2.0}.
+   *
+   * @param point the point map, as {@code point()} builds it
+   *
+   * @return the rendered point
+   */
+  public static String renderPoint(final Map<?, ?> point) {
+    final StringBuilder rendered = new StringBuilder("point({");
+    rendered.append("x: ").append(coordinate(point.get("x")));
+    rendered.append(", y: ").append(coordinate(point.get("y")));
+    final Object z = point.get("z");
+    if (z != null)
+      rendered.append(", z: ").append(coordinate(z));
+    final Object crs = point.get("crs");
+    rendered.append(", crs: '").append(crs == null ? "" : crs).append("'})");
+    return rendered.toString();
+  }
+
+  private static String coordinate(final Object value) {
+    return value instanceof Number number ? Double.toString(number.doubleValue()) : String.valueOf(value);
   }
 
   /**

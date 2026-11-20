@@ -168,6 +168,18 @@ public class MapProjectionExpression implements Expression {
     return false;
   }
 
+  /**
+   * An aggregate in a computed entry, direct or nested ({@code p{.name, friends: collect(f.name)}}), makes the projection
+   * an aggregation too (issue #11770).
+   */
+  @Override
+  public boolean containsAggregation() {
+    for (final ProjectionElement element : elements)
+      if (element.isKeyExpression() && element.getExpression().containsAggregation())
+        return true;
+    return false;
+  }
+
   @Override
   public String getText() {
     return text;

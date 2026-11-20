@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.LongRangeList;
+import com.arcadedb.utility.NumberUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -84,8 +85,9 @@ public class ListSliceExpression implements Expression {
   public static Integer sliceBound(final Object value) {
     if (value == null)
       return null;
+    // Clamped, not narrowed: intValue() wrapped a bound beyond the int range round to an index inside the list (issue #11626)
     if (value instanceof Number number)
-      return number.intValue();
+      return NumberUtils.saturateToInt(number);
     throw new IllegalArgumentException("Slice index must be a number, got: " + value.getClass().getSimpleName());
   }
 

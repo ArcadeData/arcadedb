@@ -72,7 +72,7 @@ class Issue11638FailedSpanStatusIT extends BaseGraphServerTest {
   void aServerErrorFailsTheQuerySpanAndTheHttpSpan() throws Exception {
     // an INSERT runs before the command returns: a failure raised while a caller iterates a lazy result set is past the span
     getServerDatabase(0, getDatabaseName()).command("sql", "CREATE DOCUMENT TYPE Issue11638");
-    final SQLQueryEngine sql = (SQLQueryEngine) getServer(0).getDatabase(getDatabaseName()).getQueryEngine("sql");
+    final SQLQueryEngine sql = (SQLQueryEngine) getServer(0).getDatabaseForOperator(getDatabaseName()).getQueryEngine("sql");
     sql.getFunctionFactory().register(new SQLFunctionAbstract(FAILING_FUNCTION) {
       @Override
       public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
