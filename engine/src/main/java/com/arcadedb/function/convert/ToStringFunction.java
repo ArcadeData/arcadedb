@@ -31,7 +31,6 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
-import java.time.temporal.Temporal;
 import java.util.List;
 import java.util.Map;
 
@@ -62,8 +61,9 @@ public class ToStringFunction implements StatelessFunction {
     if (args[0] instanceof String || args[0] instanceof Number || args[0] instanceof Boolean)
       return args[0].toString();
     // Temporal types, in Neo4j's text: seconds always printed, no trailing zeros in the fraction (issue #11912). A
-    // java.time value (a Bolt or Java API parameter) prints as the Cypher temporal it stands for.
-    final Object value = args[0] instanceof Temporal ? TemporalUtil.fromCoreJavaType(args[0]) : args[0];
+    // native temporal (a java.time value, a java.util.Date or Calendar: a Bolt or Java API parameter) prints as the Cypher
+    // temporal it stands for, not as Java's own text.
+    final Object value = TemporalUtil.isNativeTemporal(args[0]) ? TemporalUtil.fromCoreJavaType(args[0]) : args[0];
     if (value instanceof CypherTemporalValue temporal)
       return TemporalUtil.toCypherString(temporal);
     // A point is a map at runtime: ArcadeDB has no dedicated geometry type yet (issue #4870), so point() builds a

@@ -22,8 +22,20 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.List;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,6 +83,37 @@ class CypherTemporalToStringTest extends TestHelper {
     // Dates and durations are unchanged
     assertThat(cypher("toString(date('2020-01-01'))")).isEqualTo("2020-01-01");
     assertThat(cypher("toString(duration('PT1.5S'))")).isEqualTo("PT1.5S");
+  }
+
+  /** The APOC-namespaced entry points delegate to toString(), so they print the same text. */
+  @Test
+  void convertToStringPrintsTheSameText() {
+    assertThat(cypher("convert.toString(localtime('10:00'))")).isEqualTo("10:00:00");
+    assertThat(cypher("apoc.convert.toString(datetime('2020-01-01T10:00:00.500Z'))")).isEqualTo("2020-01-01T10:00:00.5Z");
+    assertThat(cypher("apoc.convert.toString(time('10:00:00.120+01:00'))")).isEqualTo("10:00:00.12+01:00");
+  }
+
+  /** A native temporal handed over as a parameter (Bolt, the Java API) prints as the Cypher temporal it stands for. */
+  @Test
+  void nativeTemporalParametersPrintAsTheirCypherTemporal() {
+    assertThat(cypher("toString($t)", "t", OffsetTime.of(10, 0, 0, 0, ZoneOffset.ofHoursMinutes(1, 30)))).isEqualTo("10:00:00+01:30");
+    assertThat(cypher("toString($t)", "t", LocalDateTime.of(2020, 1, 1, 10, 0))).isEqualTo("2020-01-01T10:00:00");
+    assertThat(cypher("toString($t)", "t", LocalDate.of(2020, 1, 1))).isEqualTo("2020-01-01");
+    assertThat(cypher("toString($t)", "t", ZonedDateTime.of(2020, 1, 1, 10, 0, 0, 120_000_000, ZoneId.of("Europe/Berlin"))))
+        .isEqualTo("2020-01-01T10:00:00.12+01:00[Europe/Berlin]");
+    assertThat(cypher("toString($t)", "t", OffsetDateTime.of(2020, 1, 1, 10, 0, 0, 0, ZoneOffset.ofHours(2))))
+        .isEqualTo("2020-01-01T10:00:00+02:00");
+    assertThat(cypher("toString($t)", "t", Instant.parse("2020-01-01T10:00:00.500Z"))).isEqualTo("2020-01-01T10:00:00.5Z");
+  }
+
+  /** java.util.Date and java.util.Calendar are instants the engine reads as a datetime, not as Java's own text. */
+  @Test
+  void dateAndCalendarParametersPrintAsADatetime() {
+    final long millis = Instant.parse("2020-01-01T10:00:00.500Z").toEpochMilli();
+    assertThat(cypher("toString($t)", "t", new Date(millis))).isEqualTo("2020-01-01T10:00:00.5Z");
+    final Calendar calendar = new GregorianCalendar(TimeZone.getTimeZone("UTC"));
+    calendar.setTimeInMillis(millis);
+    assertThat(cypher("toString($t)", "t", calendar)).isEqualTo("2020-01-01T10:00:00.5Z");
   }
 
   @Test
