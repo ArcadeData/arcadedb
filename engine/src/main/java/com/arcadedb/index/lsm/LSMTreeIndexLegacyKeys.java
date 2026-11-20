@@ -248,7 +248,8 @@ final class LSMTreeIndexLegacyKeys {
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys1.length; i++) {
       if (keys1[i] == null || keys2[i] == null) {
-        if (keys1[i] != keys2[i])
+        // one of the two is null here, so they are one key only when the other is null too
+        if (keys1[i] != null || keys2[i] != null)
           return false;
       } else
         try {

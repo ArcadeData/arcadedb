@@ -76,6 +76,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       null);
   protected static final byte                               valueType = BinaryTypes.TYPE_COMPRESSED_RID;
 
+  // the shapes numberTextKind() tells a key text apart by, see there
+  /** The text is none of the shapes below. */
+  private static final int NOT_A_NUMBER    = 0;
+  /** {@code -?digits}: the canonical text of a whole number. */
+  private static final int WHOLE_NUMBER    = 1;
+  /** {@code -?digits.digits}: the canonical text of a fraction, and what Java writes for a double or a decimal of a moderate size. */
+  private static final int DECIMAL_NUMBER  = 2;
+  /** {@code -?digits[.digits](e|E)[+|-]digits}: what Java writes for a double or a decimal of an extreme size. */
+  private static final int EXPONENT_NUMBER = 3;
+
   protected       LSMTreeIndex     mainIndex;
   protected final BinaryComparator comparator;
   protected final BinarySerializer serializer;
@@ -809,15 +819,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
     return false;
   }
-
-  /** What {@link #numberTextKind} makes of a text: none of the shapes below. */
-  private static final int NOT_A_NUMBER    = 0;
-  /** {@code -?digits}: the canonical text of a whole number. */
-  private static final int WHOLE_NUMBER    = 1;
-  /** {@code -?digits.digits}: the canonical text of a fraction, and what Java writes for a double or a decimal of a moderate size. */
-  private static final int DECIMAL_NUMBER  = 2;
-  /** {@code -?digits[.digits](e|E)[+|-]digits}: what Java writes for a double or a decimal of an extreme size. */
-  private static final int EXPONENT_NUMBER = 3;
 
   /** Whether a key text is the text of a list: the one {@code List.toString()} writes and {@link Type#canonicalListKey} keeps. */
   private static boolean isListText(final String text) {
