@@ -123,6 +123,29 @@ class Issue10115TraverseFrontierHeapTest extends TestHelper {
   }
 
   /**
+   * A row the post filter drops (the {@code WHERE} of the outer SELECT, pushed into the TRAVERSE) is never handed downstream, so
+   * only the filter gives its bytes back: a chain of 2,000 vertices none of which passes it would hold some 30MB if every row
+   * stayed charged until the step closes, against a 1MB budget. The rows that pass are charged and given back as any other.
+   */
+  @Test
+  void rowsAPostFilterDropsLeaveTheFrontierAtOnce() {
+    final int chain = 2_000;
+    createChain(chain, 0);
+
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
+    final long baseline = QueryHeapBudget.getReservedBytes();
+
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(1L);
+    for (final String strategy : STRATEGIES) {
+      assertThat(drainFiltered(strategy, "@type = 'Leaf'")).as(strategy).isZero();
+      assertThat(QueryHeapBudget.getReservedBytes()).as(strategy).isLessThanOrEqualTo(baseline);
+
+      assertThat(drainFiltered(strategy, "k >= " + (chain - 10))).as(strategy).isEqualTo(10);
+      assertThat(QueryHeapBudget.getReservedBytes()).as(strategy).isLessThanOrEqualTo(baseline);
+    }
+  }
+
+  /**
    * The identities a {@code $path} or a {@code $stack} lists are the records' own, shared by every entry whose path runs through
    * them: a frontier entry is charged a slot per hop for each list, not the identity in it, which the general estimate of a row
    * would count again for every entry.
@@ -159,7 +182,21 @@ class Issue10115TraverseFrontierHeapTest extends TestHelper {
   }
 
   private static String traverse(final String strategy) {
-    return "SELECT count(*) AS c FROM (TRAVERSE out('Next') FROM (SELECT FROM Link WHERE k = 0) STRATEGY " + strategy + ")";
+    return "SELECT count() AS c FROM (TRAVERSE out('Next') FROM (SELECT FROM Link WHERE k = 0) STRATEGY " + strategy + ")";
+  }
+
+  /**
+   * The rows of the traversal that pass {@code where}, which the planner pushes into the TRAVERSE step as its post filter. The
+   * plan is checked for it: with a filter step of its own after the traversal, every row would leave the TRAVERSE by being
+   * handed downstream and the test would say nothing about the filter.
+   */
+  private long drainFiltered(final String strategy, final String where) {
+    final String sql = "SELECT count() AS c FROM (TRAVERSE out('Next') FROM (SELECT FROM Link WHERE k = 0) STRATEGY " + strategy
+        + ") WHERE " + where;
+    try (final ResultSet rs = database.query("sql", sql)) {
+      assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).as(sql).doesNotContain("FILTER ITEMS WHERE");
+      return rs.next().<Number>getProperty("c").longValue();
+    }
   }
 
   /** {@code chain} vertices linked one after the other, the last one linked to {@code leaves} leaves. */
