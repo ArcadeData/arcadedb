@@ -846,7 +846,10 @@ public class SourceDiscovery {
   /**
    * The index just past an {@code <IRI>} starting at {@code pos}, or {@code -1}. The characters refused inside the
    * brackets are the ones N-Triples itself forbids there, which is what keeps an XML tag - {@code <a>} followed by
-   * text and {@code </a>} - from passing as a predicate.
+   * text and {@code </a>} - from passing as a predicate. A backslash is refused too, unless it begins a complete
+   * {@code \}{@code u} (4 hexadecimal digits) or {@code \}{@code U} (8) escape, the one escape N-Triples allows in an IRI and
+   * the one {@link RDFImporterFormat} decodes: refusing it left a file whose
+   * first statement has one to the delimited-text reading (issue #12049).
    */
   private static int endOfIri(final CharSequence line, final int pos, final int end) {
     if (pos >= end || line.charAt(pos) != '<')
@@ -855,10 +858,24 @@ public class SourceDiscovery {
       final char c = line.charAt(i);
       if (c == '>')
         return i > pos + 1 ? i + 1 : -1;
-      if (c <= ' ' || c == '<' || c == '"' || c == '{' || c == '}' || c == '|' || c == '^' || c == '`' || c == '\\')
+      if (c == '\\') {
+        final char kind = i + 1 < end ? line.charAt(i + 1) : 0;
+        final int digits = kind == 'u' ? 4 : kind == 'U' ? 8 : 0;
+        // THE DIGITS AND THEN THE CLOSING '>' STILL HAVE TO FIT BEFORE THE END OF THE LINE
+        if (digits == 0 || i + 1 + digits >= end)
+          return -1;
+        for (int d = i + 2; d <= i + 1 + digits; ++d)
+          if (!isAsciiHexDigit(line.charAt(d)))
+            return -1;
+        i += 1 + digits;
+      } else if (c <= ' ' || c == '<' || c == '"' || c == '{' || c == '}' || c == '|' || c == '^' || c == '`')
         return -1;
     }
     return -1;
+  }
+
+  private static boolean isAsciiHexDigit(final char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
   }
 
   /** The index just past a {@code _:blank} node label starting at {@code pos}, or {@code -1}. */

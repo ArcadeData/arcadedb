@@ -127,6 +127,36 @@ class Issue12049RdfLiteralTermsTest {
     }
   }
 
+  /**
+   * The escapes of an IRI are decoded wherever the IRI is, and the sniff of the first statement accepts them: a file that OPENS with
+   * one is recognised as N-Triples, where it was handed to the delimited-text reading. No {@code .nt} extension, so the content decides.
+   */
+  @Test
+  void aFileWhoseFirstStatementHasAnEscapedIriIsImportedAsRdf() throws Exception {
+    final File source = new File("target/issue12049-escaped-first.txt");
+    Files.writeString(source.toPath(), """
+        <http://ex.org/caf\\u00E9> <http://ex.org/p> <http://ex.org/o1> .
+        <http://ex.org/s2> <http://ex.org/p> "x" .
+        """, StandardCharsets.UTF_8);
+
+    try (final Database db = new DatabaseFactory(DB_PATH).create()) {
+      try (final ResultSet rs = db.command("sql", "IMPORT DATABASE file://" + source.getAbsolutePath())) {
+        final Result result = rs.next();
+        assertThat(result.<String>getProperty("result")).isEqualTo("OK");
+        assertThat(result.<Long>getProperty("createdEdges")).isEqualTo(2L);
+      }
+
+      try (final ResultSet rs = db.query("sql", "SELECT count() AS c FROM Node WHERE id = ?", "http://ex.org/café")) {
+        assertThat(rs.next().<Long>getProperty("c")).as("the subject keyed by its decoded IRI").isEqualTo(1L);
+      }
+      try (final ResultSet rs = db.query("sql", "SELECT count() AS c FROM Node")) {
+        assertThat(rs.next().<Long>getProperty("c")).as("café, o1, s2 and the literal").isEqualTo(4L);
+      }
+    } finally {
+      source.delete();
+    }
+  }
+
   private static void assertLiteral(final Result row, final String value, final String lang, final String datatype) {
     assertThat(row.<String>getProperty("value")).isEqualTo(value);
     assertThat(row.<String>getProperty("lang")).isEqualTo(lang);
