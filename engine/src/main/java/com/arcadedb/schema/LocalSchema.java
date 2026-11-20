@@ -5296,7 +5296,11 @@ public class LocalSchema implements Schema {
                       // whole definition lives in schema.json - a vector index with its dimensions, similarity and
                       // quantization - comes up empty when its file is relinked under a new name after a compaction:
                       // with dimensions still 0 the component skips loading its vectors at the end of this load.
-                      index.setMetadata(entry.getValue());
+                      // The entry names the type where the by-name path above read the kind of the index (the orphan pass replaced it): the
+                      // kind it declared is given back for this call, or an LSM_TREE index an older build wrote would read as another kind
+                      // and lose the keys it holds under their old spelling (issues #12160 and #12233)
+                      final String declaredKind = orphanIndexKinds.get(entry.getKey());
+                      index.setMetadata(declaredKind != null ? entry.getValue().copy().put("type", declaredKind) : entry.getValue());
                     } catch (final RuntimeException e) {
                       // Refused like on the by-name path above (issue #11568), and left out the same way. The definition is kept
                       // with the index kind it declared, not the component's: a full-text index relinks as its LSM-tree file.

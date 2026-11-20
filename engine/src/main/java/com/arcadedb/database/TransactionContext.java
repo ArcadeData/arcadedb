@@ -59,6 +59,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -4346,6 +4347,10 @@ public class TransactionContext implements Transaction {
     // Issue #10588: while the transaction is still BEGUN, the one state an index queues an entry instead of writing it
     reconcileIndexesRegisteredSinceBegin();
 
+    // Issue #11751: the same state, for what was assigned to a record after the save() that queued it, since the flush below writes the
+    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
+    indexPropertiesAssignedAfterTheirSave();
+
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
     // Without this, concurrent updateRecordNoLock calls could both load the same page
@@ -4426,7 +4431,8 @@ public class TransactionContext implements Transaction {
 
       if (!hasChanges()) {
         // #7934 review: returning without reset() does NOT strand an index replay conclusion registered earlier in
-        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes).
+        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes, and what was assigned
+        // after the save was queued by indexPropertiesAssignedAfterTheirSave before the status left BEGUN, #11751).
         // Every caller of this method concludes the transaction on the null it gets back: commit() through
         // resetAndFireCallbacks(), and the Raft path through concludeCommitWithoutPublishing() on its own read-only
         // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one:
@@ -4746,9 +4752,11 @@ public class TransactionContext implements Transaction {
       final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
+        FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4760,6 +4768,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index
@@ -4808,6 +4819,7 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().commitPublished();
         countPublicationInEnclosingTransactions();
       }
+      FailPoints.hit(FailPoints.COMMIT_AFTER_PUBLISH);
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -6391,6 +6403,49 @@ public class TransactionContext implements Transaction {
       // would put them in the wrong transaction, and skipping them would publish records the new index does not know
       database.getSchema().getEmbedded().reconcileIndexesRegisteredSince(this, indexRegistrationSequenceAtBegin);
     } catch (final DuplicatedKeyException | NeedRetryException | TransactionException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Transaction error on commit", e);
+    }
+  }
+
+  /**
+   * Queues the index changes of what was assigned to a record after the {@code save()} that queued it for this commit (issue #11751).
+   * <p>
+   * A save in a transaction queues the record and diffs the indexes against the values it holds then, and the write itself is deferred
+   * to the flush of {@link #commit1stPhase}, which serializes the very instance it queued, as it is by then. Whatever was assigned in
+   * between is therefore persisted with the record and unknown to the indexes: {@code WHERE k = 1} found a row whose k is 2, {@code WHERE
+   * k = 2} found nothing, and a UNIQUE index never saw the key the record ended with. The flush cannot index it, it writes in
+   * {@code COMMIT_1ST_PHASE} and an index queues only while {@code BEGUN} (#8983), so it is done here, like {@link
+   * #reconcileIndexesRegisteredSinceBegin} does, with the same code as the save: the diff is empty for a record whose assignment put back
+   * what the save left, and a UNIQUE key another record holds is refused by the replay of the queue like any other.
+   * <p>
+   * Costs a flag read per updated record: only a record a property was assigned to since its save is diffed (see {@link
+   * MutableDocument#isAssignedAfterSave}), so the common update, set and save, pays nothing. A container changed in place and not
+   * assigned is not seen, as everywhere else: it has to be saved.
+   */
+  private void indexPropertiesAssignedAfterTheirSave() {
+    if (updatedRecords == null)
+      return;
+
+    try {
+      DocumentIndexer indexer = null;
+      for (final Record rec : updatedRecords.values())
+        if (rec instanceof MutableDocument document && document.isAssignedAfterSave()) {
+          if (indexer == null) {
+            // The entries are queued on the transaction on top of the calling thread's stack, through the indexer: from underneath another
+            // transaction they would land in the wrong one
+            if (database.getTransactionIfExists() != this)
+              throw new TransactionException("Cannot commit a transaction that updated a record after saving it while another transaction "
+                  + "is open on top of it: commit or roll back the innermost one first");
+            indexer = database.getIndexer();
+          }
+          indexer.updateDocumentAssignedAfterSave(this, document);
+        }
+    } catch (final ArcadeDBException e) {
+      // a UNIQUE key another record holds (DuplicatedKeyException), a retryable conflict, a refusal of the index
       rollback();
       throw e;
     } catch (final Exception e) {

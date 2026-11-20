@@ -132,7 +132,35 @@ public final class HeapEstimator {
     return 32L;
   }
 
+  /**
+   * The estimated heap an entry of a TRAVERSE frontier takes (issue #10115): the row, its record, and the {@code $path} and
+   * {@code $stack} lists of its metadata, which are counted by their slots only. The identities those lists hold are the
+   * records' own, shared by the record they identify and by every other entry whose path runs through them: counting them in
+   * full would charge a path of n hops n times over, once per entry it is the prefix of.
+   */
+  static long estimateTraverseEntry(final ResultInternal entry) {
+    long bytes = estimateResultWithoutMetadata(entry, 0);
+    if (entry.metadata == null || entry.metadata.isEmpty())
+      return bytes;
+    bytes += MAP_BYTES + (long) HASH_ENTRY_BYTES * entry.metadata.size();
+    for (final Map.Entry<String, Object> metadata : entry.metadata.entrySet()) {
+      final String key = metadata.getKey();
+      if (metadata.getValue() instanceof List<?> identities && ("$path".equals(key) || "$stack".equals(key)))
+        bytes += LIST_BYTES + (long) REFERENCE_BYTES * identities.size();
+      else
+        bytes += estimate(metadata.getValue(), 1);
+    }
+    return bytes;
+  }
+
   private static long estimateResult(final ResultInternal result, final int depth) {
+    long bytes = estimateResultWithoutMetadata(result, depth);
+    if (result.metadata != null && !result.metadata.isEmpty())
+      bytes += MAP_BYTES + estimateEntries(result.metadata, depth);
+    return bytes;
+  }
+
+  private static long estimateResultWithoutMetadata(final ResultInternal result, final int depth) {
     long bytes = result.content != null ? RESULT_BYTES : ELEMENT_RESULT_BYTES;
     if (result.content != null && !result.content.isEmpty())
       bytes += estimateEntries(result.content, depth);
@@ -141,8 +169,6 @@ public final class HeapEstimator {
       bytes += estimateDocument(result.element, depth);
     if (result.temporaryContent != null && !result.temporaryContent.isEmpty())
       bytes += MAP_BYTES + estimateEntries(result.temporaryContent, depth);
-    if (result.metadata != null && !result.metadata.isEmpty())
-      bytes += MAP_BYTES + estimateEntries(result.metadata, depth);
     if (result.value != null)
       bytes += estimate(result.value, depth + 1);
     return bytes;

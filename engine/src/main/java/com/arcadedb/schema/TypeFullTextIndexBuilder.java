@@ -157,14 +157,23 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * into {@code schema.json} and the exporters copy verbatim. Unlike {@link #withMetadata(JSONObject)} this tolerates
    * (and ignores) the structural keys of such a definition: {@code type}, {@code bucket}, {@code properties},
    * {@code nullStrategy}, {@code unique} and the persisted corpus counters ({@code ft_*}).
+   * <p>
+   * The index {@code create()} builds is a new one, so every one of its postings is written by this version, each property with
+   * the analyzer of its own: the persisted {@code ft_fieldAnalyzersApplied}, which says whether the postings of the SOURCE index
+   * were, is not carried over. Carried over from an export of an index written before per-field analyzers were applied (issue
+   * #12163), it would leave the restored index answering in the legacy mode, with its upgrade warning, though nothing of it is
+   * legacy.
    *
    * @param json the persisted index definition
    *
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withPersistedMetadata(final JSONObject json) {
-    if (json != null)
-      readPersistedDefinition(ftMetadata(), json);
+    if (json != null) {
+      final FullTextIndexMetadata m = ftMetadata();
+      readPersistedDefinition(m, json);
+      m.setFieldAnalyzersApplied(true);
+    }
     return this;
   }
 

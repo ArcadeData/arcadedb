@@ -134,7 +134,7 @@ class CommittedRemotelyContractIT extends BaseRaftHATest {
    * detail - never a retry-worthy 5xx that would invite clients and load balancers to re-drive the
    * write (the exact duplicate-insert hazard, same rationale as the DuplicatedKeyException 409 of
    * issue #4350). Complements the server-module unit test on the catch mapping
-   * (Issue5064CommittedRemotelyHttpStatusTest) by proving the exception reaches that catch RAW
+   * (HttpErrorStatusMappingTest.CommittedRemotely) by proving the exception reaches that catch RAW
    * through the real Raft commit path and transaction wrapper.
    */
   @Test
