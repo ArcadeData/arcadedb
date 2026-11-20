@@ -20,11 +20,13 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.WarningCapture;
 import com.arcadedb.log.WarningCapture.LogLine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.VectorApiSupport;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -32,6 +34,7 @@ import java.util.Random;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #5412 follow-up: bounding the graph-build cache at a flat 100,000 entries (issue #3144) also applied to
@@ -163,6 +166,115 @@ class LSMVectorIndexBuildCacheSizingTest extends TestHelper {
     } finally {
       GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.setValue(previous);
     }
+  }
+
+  // Issue #12511: the build cache was sized against the available-heap reading alone, while the search caches of the
+  // database's vector indexes had planned on room they had not filled yet (their chunks are allocated on first use). A
+  // build cache that took that room and the searches that then filled their caches each counted the same bytes as theirs,
+  // and a 2 GB heap ran out while a server built the graphs of a 768-dimension corpus.
+  @Test
+  void theWholePlanOfASearchCacheIsChargedToTheBuildCache() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+    final long maxHeap = 1L << 40;
+    final long available = 1L << 30;
+
+    final int uncharged = index.computeGraphBuildCacheCapacity(50_000_000, maxHeap, available);
+    assertThat(index.searchCachesPlannedBytes()).as("no search cache planned yet").isZero();
+
+    final FlatVectorCache cache = index.getSearchVectorCache(() -> available);
+    assertThat(cache).isNotNull();
+    final long planned = cache.capacity() * FlatVectorCache.bytesPerVector(DIMENSIONS);
+    assertThat(index.searchCachesPlannedBytes()).as("a search cache that holds nothing yet plans on its whole capacity")
+        .isEqualTo(planned);
+
+    final int charged = index.computeGraphBuildCacheCapacity(50_000_000, maxHeap, available);
+    assertThat(charged).as("the build cache must leave the search cache the room it planned on")
+        .isEqualTo(chargedCapacity(maxHeap, available - planned));
+    assertThat(charged).isLessThan(uncharged);
+  }
+
+  // A filled search cache is charged all the same: the available-heap reading is the one of the last collection of the old
+  // generation, and a chunk filled since then is in neither that reading nor any other figure, so crediting the filled part
+  // back would let the build take bytes a search filled a moment earlier.
+  @Test
+  void aFilledSearchCacheIsStillCharged() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+    final long maxHeap = 1L << 40;
+    final long available = 1L << 30;
+
+    final FlatVectorCache cache = index.getSearchVectorCache(() -> available);
+    assertThat(cache).isNotNull();
+    final long planned = cache.capacity() * FlatVectorCache.bytesPerVector(DIMENSIONS);
+    final float[] components = new float[DIMENSIONS];
+    for (int id = 0; id < cache.capacity(); id++)
+      cache.put(id, VectorApiSupport.jvectorProvider().getVectorTypeSupport().createFloatVector(components));
+
+    assertThat(index.searchCachesPlannedBytes()).isEqualTo(planned);
+    assertThat(index.computeGraphBuildCacheCapacity(50_000_000, maxHeap, available))
+        .isEqualTo(chargedCapacity(maxHeap, available - planned));
+  }
+
+  // The plan is charged against the available heap only: the share of the ceiling (issue #7146) is what an embedded and a
+  // served build agree on, and a search cache is not a reason for them to disagree.
+  @Test
+  void theChargeNeverRaisesTheBuildCacheAboveItsShareOfTheCeiling() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+    final long maxHeap = 1L << 30;
+    final long available = 1L << 40;
+
+    index.getSearchVectorCache(() -> available);
+    assertThat(index.searchCachesPlannedBytes()).isPositive();
+    assertThat(index.computeGraphBuildCacheCapacity(50_000_000, maxHeap, available))
+        .isEqualTo(chargedCapacity(maxHeap, available));
+  }
+
+  // The heap gate of a search-decided build judged the whole build (graph, ordinals, cache) against the raw reading, so with
+  // the build cache charged it still admitted a graph onto the bytes the search caches planned on. It takes the same charge.
+  @Test
+  void theHeapGateOfABuildChargesTheSearchCachesPlan() {
+    createIndex(null);
+    final LSMVectorIndex index = index();
+    final int percent = GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getValueAsInteger();
+    assertThat(percent).as("precondition: the gate is enabled").isPositive();
+
+    // The least available heap the whole build fits, with no search cache in the database
+    final long estimate = VectorHeapBudget.estimateRebuildHeapBytes(NUM_VECTORS, DIMENSIONS,
+        index.computeGraphBuildCacheCapacity(NUM_VECTORS), false);
+    long low = 0L;
+    long high = 1L << 40;
+    while (low < high) {
+      final long mid = (low + high) >>> 1;
+      if (VectorHeapBudget.reclaimNeededFor(estimate, percent, mid, 0L) == 0L)
+        high = mid;
+      else
+        low = mid + 1;
+    }
+    final long fitting = low;
+    assertThat(index.availableHeapNetOfSearchCaches(fitting)).isEqualTo(fitting);
+    assertThat(index.fitSearchBuildToHeap(NUM_VECTORS, fitting, 0L)).as("the whole build fits").isZero();
+
+    index.getSearchVectorCache(() -> 1L << 30);
+    final long planned = index.searchCachesPlannedBytes();
+    assertThat(planned).isPositive();
+    assertThat(index.availableHeapNetOfSearchCaches(fitting)).isEqualTo(Math.max(0L, fitting - planned));
+
+    final int[] cap = { 0 };
+    final Throwable refused = catchThrowable(() -> cap[0] = index.fitSearchBuildToHeap(NUM_VECTORS, fitting, 0L));
+    assertThat(refused == null ? cap[0] > 0 : refused instanceof VectorGraphBuildRefusedException)
+        .as("with the search cache's plan charged the same reading no longer fits the whole build: cut (%d) or refused (%s)",
+            cap[0], refused).isTrue();
+  }
+
+  private int chargedCapacity(final long maxHeap, final long availableHeap) {
+    return (int) (VectorHeapBudget.buildCacheBudgetBytes(buildPercent(), maxHeap, availableHeap)
+        / VectorHeapBudget.bytesPerCachedVector(DIMENSIONS));
+  }
+
+  private static int buildPercent() {
+    return GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getValueAsInteger();
   }
 
   /** Vectors the configured share of {@code -Xmx} pays for. Depends on no live-heap reading, so it cannot drift. */
