@@ -1868,6 +1868,50 @@ class CypherWriteVisibilityTest {
         assertThat(rows.get(i)).isEqualTo((i + 1) + "|250");
     }
 
+    /**
+     * A REMOVE of a property and of a label: every row but the last removes them from {@code a}, the last one from {@code b}, and
+     * every row reads {@code b} after the REMOVE.
+     */
+    @Test
+    void aRemoveOverMoreRowsThanABatchReadsTheLastWrite() {
+      database.transaction(() -> database.command("opencypher", "CREATE (:Node:Tag {id: 1, v: 1}), (:Node:Tag {id: 2, v: 2})").close());
+      final List<String> rows = rows("""
+          MATCH (a:Node {id: 1}), (b:Node {id: 2})
+          UNWIND range(1, 250) AS i
+          WITH i, b, CASE WHEN i = 250 THEN b ELSE a END AS t
+          REMOVE t.v, t:Tag
+          RETURN i, b.v AS v, b:Tag AS tagged""", "i", "v", "tagged");
+      assertThat(rows).hasSize(250);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat(rows.get(i)).isEqualTo((i + 1) + "|null|false");
+    }
+
+    /** A MERGE with no ON CREATE / ON MATCH SET whose following SET it applies itself. */
+    @Test
+    void aMergeFollowedByASetOverMoreRowsThanABatchReadsTheLastWrite() {
+      final List<String> rows = rows("""
+          UNWIND range(1, 250) AS i
+          MERGE (n:Node {id: 1})
+          SET n.v = i
+          RETURN i, n.v AS v""", "i", "v");
+      assertThat(rows).hasSize(250);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat(rows.get(i)).isEqualTo((i + 1) + "|250");
+    }
+
+    /** A LIMIT after the write does not stop it early: every row writes, as behind Neo4j's Eager. */
+    @Test
+    void aLimitAfterTheWriteStillWritesEveryRow() {
+      database.transaction(() -> database.command("opencypher", "CREATE (:Node {id: 1, c: 0})").close());
+      final List<String> rows = rows("""
+          UNWIND range(1, 250) AS i
+          MATCH (n:Node {id: 1})
+          SET n.c = n.c + 1
+          RETURN i, n.c AS c
+          LIMIT 1""", "i", "c");
+      assertThat(rows).containsExactly("1|250");
+    }
+
     @Test
     void theWriteLands() {
       createReportedGraph();
