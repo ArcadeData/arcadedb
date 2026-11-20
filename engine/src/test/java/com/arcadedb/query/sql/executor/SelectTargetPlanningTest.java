@@ -24,10 +24,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -806,9 +809,14 @@ class SelectTargetPlanningTest extends TestHelper {
     assertThat(ParallelTypeScan.isAllowed(inner)).as("a row that holds a record is a real row").isFalse();
   }
 
-  /** Regression test for issue #12537: the filter subquery answers the same as the same subquery bound by a LET. */
+  /**
+   * Regression test for issue #12537: the filter subquery of {@code vector.neighbors}, in the projection of a SELECT without a
+   * target, scans in parallel and answers the same neighbours as its LET form. Which threads scan is observed by reading the
+   * records of the type from a read listener: a parallel scan reads them on the threads of the producer pool, a sequential
+   * one on the caller's thread only.
+   */
   @Test
-  void aVectorNeighborsFilterSubqueryUnderASelectWithoutTargetAnswersAsItsLetForm() {
+  void aVectorNeighborsFilterSubqueryUnderASelectWithoutTargetScansInParallelAndAnswersAsItsLetForm() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc12537 BUCKETS 4");
       database.command("sql", "CREATE PROPERTY Doc12537.embedding ARRAY_OF_FLOATS");
@@ -820,25 +828,43 @@ class SelectTargetPlanningTest extends TestHelper {
             .set("embedding", new float[] { i % 7 + 1, i % 3 + 1, i % 5 + 1, i % 11 + 1 }).save();
     });
 
-    final float[] vector = { 1.0f, 2.0f, 3.0f, 1.0f };
-    final Set<RID> inScope = new HashSet<>();
-    try (final ResultSet rs = database.query("sql", "SELECT @rid FROM Doc12537 WHERE grp < 5")) {
-      rs.forEachRemaining(r -> inScope.add(r.getProperty("@rid")));
-    }
-    assertThat(inScope).hasSize(ROWS / 20);
+    final AtomicLong producerReads = new AtomicLong();
+    final AfterRecordReadListener listener = record -> {
+      if (Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread && record instanceof Document document
+          && "Doc12537".equals(document.getTypeName()))
+        producerReads.incrementAndGet();
+      return record;
+    };
+    database.getEvents().registerListener(listener);
+    try {
+      final float[] vector = { 1.0f, 2.0f, 3.0f, 1.0f };
+      final Set<RID> inScope = new HashSet<>();
+      try (final ResultSet rs = database.query("sql", "SELECT @rid FROM Doc12537 WHERE grp < 5")) {
+        rs.forEachRemaining(r -> inScope.add(r.getProperty("@rid")));
+      }
+      assertThat(inScope).hasSize(ROWS / 20);
+      assertThat(producerReads.getAndSet(0)).as("a standalone scan of the type must run in parallel, or this test proves nothing")
+          .isPositive();
 
-    final Set<RID> filtered = neighbours12537("""
-        SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: (SELECT @rid FROM Doc12537 WHERE grp < 5).@rid }))""",
-        vector);
-    final Set<RID> viaLet = neighbours12537("""
-        SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: $f.@rid }))
-        LET $f = (SELECT @rid FROM Doc12537 WHERE grp < 5)""", vector);
+      final Set<RID> filtered = neighbours12537("""
+          SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: (SELECT @rid FROM Doc12537 WHERE grp < 5).@rid }))""",
+          vector);
+      assertThat(producerReads.getAndSet(0)).as("the filter subquery under the bare row of a SELECT without a target").isPositive();
 
-    assertThat(filtered).hasSize(20).isEqualTo(viaLet);
-    assertThat(inScope).containsAll(filtered);
+      final Set<RID> viaLet = neighbours12537("""
+          SELECT expand(`vector.neighbors`('Doc12537[embedding]', ?, 20, { filter: $f.@rid }))
+          LET $f = (SELECT @rid FROM Doc12537 WHERE grp < 5)""", vector);
+      assertThat(producerReads.getAndSet(0)).as("the same subquery bound by a LET of the whole statement").isPositive();
 
-    try (final ResultSet rs = database.query("sql", "SELECT (SELECT count() AS c FROM Doc12537 WHERE grp < 5)[0].c AS c")) {
-      assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) inScope.size());
+      assertThat(filtered).hasSize(20).isEqualTo(viaLet);
+      assertThat(inScope).containsAll(filtered);
+
+      try (final ResultSet rs = database.query("sql", "SELECT (SELECT count() AS c FROM Doc12537 WHERE grp < 5)[0].c AS c")) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) inScope.size());
+      }
+      assertThat(producerReads.getAndSet(0)).as("a subquery in the projection of a SELECT without a target").isPositive();
+    } finally {
+      database.getEvents().unregisterListener(listener);
     }
   }
 
