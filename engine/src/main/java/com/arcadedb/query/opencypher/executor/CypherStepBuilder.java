@@ -138,6 +138,22 @@ final class CypherStepBuilder {
   }
 
   /**
+   * A SET, a REMOVE or a MERGE with actions holds its rows until every row has written, so the clauses after it read the writes
+   * of every row (issue #12656). One that ends the statement has no clause after it to read them: it hands them out as it
+   * writes them, so a bulk write ({@code UNWIND $rows AS row MATCH (n {id: row.id}) SET n += row}) keeps streaming and stays
+   * out of the per-operation heap limit.
+   */
+  private static AbstractExecutionStep withLastWriteStreaming(final AbstractExecutionStep root) {
+    if (root instanceof SetStep set)
+      set.streamRows();
+    else if (root instanceof RemoveStep remove)
+      remove.streamRows();
+    else if (root instanceof MergeStep merge)
+      merge.streamRows();
+    return root;
+  }
+
+  /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
    * <p>
@@ -421,7 +437,7 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 
   /**
@@ -993,7 +1009,7 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 
   /** Whether {@code source} is reached from {@code end} through the steps' previous links. */
@@ -1887,6 +1903,6 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 }

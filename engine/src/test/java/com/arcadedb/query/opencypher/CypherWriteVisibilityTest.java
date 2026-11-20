@@ -1912,6 +1912,24 @@ class CypherWriteVisibilityTest {
       assertThat(rows).containsExactly("1|250");
     }
 
+    /**
+     * The rows a write holds until every row has written are charged to the per-operation heap limit, as the eager barrier's are,
+     * and a write that ends the statement holds none: nothing after it reads them, so a bulk write keeps streaming under the limit.
+     */
+    @Test
+    void theHeldRowsAreChargedAndAWriteThatEndsTheStatementKeepsStreaming() {
+      database.transaction(() -> database.command("opencypher", "UNWIND range(1, 50) AS i CREATE (:Node {id: i})").close());
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 10L);
+
+      for (final String write : List.of("SET n.v = i", "REMOVE n.v", "MERGE (n)-[:R]->(:Leaf) ON CREATE SET n.v = i")) {
+        rows("UNWIND range(1, 50) AS i MATCH (n:Node {id: i}) " + write, "i");
+
+        assertThatThrownBy(() -> rows("UNWIND range(1, 50) AS i MATCH (n:Node {id: i}) " + write + " RETURN i", "i"))
+            .as(write)
+            .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+      }
+    }
+
     @Test
     void theWriteLands() {
       createReportedGraph();

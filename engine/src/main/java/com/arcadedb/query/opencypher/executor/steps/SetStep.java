@@ -29,6 +29,7 @@ import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -47,8 +48,13 @@ import java.util.NoSuchElementException;
  * ON MATCH SET; this step only owns the row loop and the implicit transaction around it.
  */
 public class SetStep extends AbstractExecutionStep {
-  private final SetClause         setClause;
-  private final SetClauseApplier  applier;
+  // THE ROWS A DRAINING WRITE HOLDS UNTIL IT HANDS THEM OUT, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES,
+  // AS EAGERSTEP HOLDS THEM (ISSUE #12656). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private       OperationHeapLimit heapLimit;
+  // No clause after this one reads the rows: they are handed out as they are written, one pull batch at a time (issue #12656)
+  private       boolean            streamsRows;
+  private final SetClause          setClause;
+  private final SetClauseApplier   applier;
 
   public SetStep(final SetClause setClause, final CommandContext context,
                  final CypherFunctionFactory functionFactory) {
@@ -106,6 +112,12 @@ public class SetStep extends AbstractExecutionStep {
         // A LATER row of the same batch may have replaced a record this row holds after this row was written: served with
         // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
         labelReplacements.redirect(result);
+        if (heapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          releaseHeap();
+        }
         return result;
       }
 
@@ -116,26 +128,41 @@ public class SetStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         // The SET runs for every row before it hands out the first one, as Neo4j's Eager does: when several rows bind the
         // same node, the clauses after the SET read the write of every row, however many pull batches the input takes
-        // (issues #12627, #12656). The drain is one region the statement-level deadline check cannot reach (#6266)
-        final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-        while (prevResults.hasNext()) {
-          guard.check();
-          final Result inputResult = prevResults.next();
-          final long begin = context.isProfiling() ? System.nanoTime() : 0;
-          try {
-            if (context.isProfiling())
-              rowCount++;
+        // (issue #12656). The drain is one region the statement-level deadline check cannot reach (#6266)
+        final boolean drains = !streamsRows;
+        final WorkGuard guard = drains ? WorkGuard.forCommandDeadline(context) : null;
+        if (drains)
+          heapLimit = OperationHeapLimit.of(context, "SET read/write barrier");
+        try {
+          while ((drains || buffer.size() < nRecords) && prevResults.hasNext()) {
+            if (guard != null)
+              guard.check();
+            final Result inputResult = prevResults.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
 
-            applySetOperations(inputResult, writtenDocs, labelReplacements);
-            buffer.add(inputResult);
-          } finally {
-            if (context.isProfiling())
-              cost += System.nanoTime() - begin;
+              applySetOperations(inputResult, writtenDocs, labelReplacements);
+              buffer.add(inputResult);
+              if (heapLimit != null)
+                heapLimit.add(buffer.size(), inputResult);
+            } finally {
+              if (context.isProfiling())
+                cost += System.nanoTime() - begin;
+            }
           }
+        } catch (final RuntimeException | Error e) {
+          // A FAILED DRAIN HANDS OUT NOTHING: ITS ROWS AND THEIR CHARGE GO NOW, NOT WHEN THE QUERY IS CLOSED
+          buffer.clear();
+          releaseHeap();
+          throw e;
         }
-        finished = true;
+        if (!prevResults.hasNext())
+          finished = true;
         // A row holding its own copy of a record a later row wrote is lined up with the copy the transaction wrote
-        WrittenCopy.resolveRows(context, buffer);
+        if (drains)
+          WrittenCopy.resolveRows(context, buffer);
       }
 
       @Override
@@ -153,6 +180,24 @@ public class SetStep extends AbstractExecutionStep {
     // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190): one of
     // its own per row committed the rows before a failing one, and the statement was not atomic any more
     applier.apply(setClause, result, writtenDocs, labelReplacements);
+  }
+
+  /** Called when this step ends the statement: nothing reads its rows, so it does not hold them until every row has written. */
+  public void streamRows() {
+    streamsRows = true;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null) {
+      heapLimit.release();
+      heapLimit = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

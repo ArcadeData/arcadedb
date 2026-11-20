@@ -58,6 +58,7 @@ import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -116,6 +117,11 @@ public class MergeStep extends AbstractExecutionStep {
   // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
   // the step, read by prettyPrint after it
   private       String              usedIndexName;
+  // THE ROWS A DRAINING WRITE HOLDS UNTIL IT HANDS THEM OUT, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES,
+  // AS EAGERSTEP HOLDS THEM (ISSUE #12656). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private       OperationHeapLimit  heapLimit;
+  // No clause after this one reads the rows: they are handed out as they are written, one pull batch at a time (issue #12656)
+  private       boolean             streamsRows;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -165,6 +171,12 @@ public class MergeStep extends AbstractExecutionStep {
         // A LATER row of the same batch may have replaced a record this row holds after this row was merged: served with
         // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
         labelReplacements.redirect(result);
+        if (heapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          releaseHeap();
+        }
         return result;
       }
 
@@ -179,24 +191,36 @@ public class MergeStep extends AbstractExecutionStep {
           }
 
           // A MERGE that writes properties runs for every row before it hands out the first one (issue #12656)
-          final boolean writesForEveryRowFirst = writesProperties();
+          final boolean writesForEveryRowFirst = drainsBeforeHandingOut();
           // The drain is one uninterrupted region the statement-level deadline check cannot reach, as in EagerStep (#6266)
           final WorkGuard guard = writesForEveryRowFirst ? WorkGuard.forCommandDeadline(context) : null;
-          while ((writesForEveryRowFirst || buffer.size() < n) && prevResults.hasNext()) {
-            if (guard != null)
-              guard.check();
-            final Result inputResult = prevResults.next();
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
+          if (writesForEveryRowFirst)
+            heapLimit = OperationHeapLimit.of(context, "MERGE read/write barrier");
+          try {
+            while ((writesForEveryRowFirst || buffer.size() < n) && prevResults.hasNext()) {
+              if (guard != null)
+                guard.check();
+              final Result inputResult = prevResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-              final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
-              buffer.addAll(mergedResults);
-            } finally {
-              if (context.isProfiling())
-                cost += System.nanoTime() - begin;
+                final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
+                buffer.addAll(mergedResults);
+                if (heapLimit != null)
+                  for (final Result merged : mergedResults)
+                    heapLimit.add(buffer.size(), merged);
+              } finally {
+                if (context.isProfiling())
+                  cost += System.nanoTime() - begin;
+              }
             }
+          } catch (final RuntimeException | Error e) {
+            // A FAILED DRAIN HANDS OUT NOTHING: ITS ROWS AND THEIR CHARGE GO NOW, NOT WHEN THE QUERY IS CLOSED
+            buffer.clear();
+            releaseHeap();
+            throw e;
           }
 
           if (!prevResults.hasNext()) {
@@ -235,13 +259,13 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Whether the MERGE writes properties or labels besides the pattern it merges: an ON CREATE SET, an ON MATCH SET or a SET it
-   * absorbed. Such a MERGE is a write the clauses after it read for every row, so it runs for the whole input before it hands
-   * out a row, as Neo4j's {@code Eager} does: a row is never read before a later row binding the same node has written it,
-   * however many pull batches the input takes (issue #12656). The plain MERGE keeps streaming.
+   * Whether the MERGE runs for its whole input before it hands out a row: it writes properties or labels besides the pattern it
+   * merges (an ON CREATE SET, an ON MATCH SET or a SET it absorbed), and a clause after it reads its rows. As Neo4j's
+   * {@code Eager} does: a row is never read before a later row binding the same node has written it, however many pull batches
+   * the input takes (issue #12656). The plain MERGE, and one that ends the statement, keep streaming.
    */
-  private boolean writesProperties() {
-    return mergeClause.hasOnCreateSet() || mergeClause.hasOnMatchSet() || absorbedSet != null;
+  private boolean drainsBeforeHandingOut() {
+    return !streamsRows && (mergeClause.hasOnCreateSet() || mergeClause.hasOnMatchSet() || absorbedSet != null);
   }
 
   /**
@@ -1865,6 +1889,24 @@ public class MergeStep extends AbstractExecutionStep {
     for (final SetClause setClause : setClauses)
       if (!setClause.isEmpty())
         setApplier.apply(setClause, result, written, labelReplacements);
+  }
+
+  /** Called when this step ends the statement: nothing reads its rows, so it does not hold them until every row has written. */
+  public void streamRows() {
+    streamsRows = true;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null) {
+      heapLimit.release();
+      heapLimit = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   /**
