@@ -363,6 +363,10 @@ These dependencies are used only during the build process:
 | org.antlr | antlr4-maven-plugin | 4.13.2 | BSD 3-Clause | https://www.antlr.org/ |
 | io.grpc | protoc-gen-grpc-java | 1.79.0 | Apache 2.0 | https://grpc.io/ |
 | com.github.os72 | protoc-jar-maven-plugin | 3.x | Apache 2.0 | https://github.com/os72/protoc-jar-maven-plugin |
+| (binary) | opengrep | 2.0.0 | LGPL-2.1 | https://github.com/opengrep/opengrep |
+
+opengrep is a CI/pre-commit source checker run by `.github/scripts/opengrep.sh`; it is never linked into or shipped
+with any artifact.
 
 ---
 

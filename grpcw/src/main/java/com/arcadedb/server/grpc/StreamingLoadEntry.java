@@ -110,6 +110,7 @@ final class StreamingLoadEntry {
    * from the termination listener: that one only ever tries the lock.
    */
   Bound enter() {
+    // noopengrep: lock-not-released-in-finally - released by the returned Bound, which the caller closes in a finally
     working.lock();
     final RunningQuery current = entry;
     if (current == null)

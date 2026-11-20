@@ -98,7 +98,7 @@ final class CriticalHaltHandler {
         final Thread watchdog = new Thread(() -> {
           try {
             stopThread.join(fatalErrorGraceMillis);
-          } catch (final InterruptedException ignored) {
+          } catch (final InterruptedException ignored) { // noopengrep: interrupted-exception-swallowed - the JVM halts next
             // halt anyway: the JVM is unstable
           }
           haltJvm(stopThread.isAlive());

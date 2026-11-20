@@ -28,6 +28,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -100,13 +101,12 @@ class Issue7458BackupSurvivesConcurrentCloseIT {
       }
       assertThat(closing).as("the close must be waiting for the window").isTrue();
 
-      final long requestedAt = System.currentTimeMillis();
+      final StallAwareStopwatch requestedAt = StallAwareStopwatch.start();
       assertThatThrownBy(() -> new Backup(database, BACKUP_FILE).setVerboseLevel(0).backupDatabase())
           .isInstanceOf(BackupException.class)
           .hasCauseInstanceOf(PageSnapshotException.class)
           .cause().hasMessageContaining("closed or closing");
-      assertThat(System.currentTimeMillis() - requestedAt).as("refused before any retry, not after a frozen-files pass")
-          .isLessThan(TimeUnit.SECONDS.toMillis(20));
+      requestedAt.assertGaveUpWithin(TimeUnit.SECONDS.toMillis(20), "a refusal before any retry from one after a frozen-files pass");
       assertThat(new File(BACKUP_FILE)).as("no partial archive survives").doesNotExist();
       assertThat(closer.isAlive()).as("the refused backup did not let the close through either").isTrue();
     } finally {

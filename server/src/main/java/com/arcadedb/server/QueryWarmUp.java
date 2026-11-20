@@ -132,6 +132,7 @@ public class QueryWarmUp {
             final JsonSerializer serializer = JsonSerializer.createJsonSerializer();
             while (resultSet.hasNext())
               serializer.serializeResult(database, resultSet.next());
+            // noopengrep: volatile-read-modify-write - written only by the one warm-up thread
             ++executedStatements;
           } catch (final Exception e) {
             LogManager.instance()

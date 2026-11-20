@@ -87,6 +87,7 @@ public class DmlSourcePlanKey {
       unstoredPlans = 0;
     else if (epochBeforePlanning == epochAfterPlanning) {
       // a plan discarded because a DDL ran meanwhile says nothing about the statement
+      // noopengrep: volatile-read-modify-write - a heuristic: a lost update only moves the give-up by one planning (see the field)
       unstoredPlans++;
       giveUpEpoch = epochAfterPlanning;
     }

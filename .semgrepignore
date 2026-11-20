@@ -1,0 +1,6 @@
+# Replaces opengrep's built-in template, which skips every test/ directory: our Java tests are the point.
+.git/
+target/
+node_modules/
+# Rule self-tests carry offenders on purpose.
+.opengrep/tests/

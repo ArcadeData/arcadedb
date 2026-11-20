@@ -26,6 +26,7 @@ public class LockContext {
   private final Lock lock = new ReentrantLock();
 
   protected void lock() {
+    // noopengrep: lock-not-released-in-finally - the lock primitive of this class: callers pair it with unlock() in a finally
     lock.lock();
   }
 

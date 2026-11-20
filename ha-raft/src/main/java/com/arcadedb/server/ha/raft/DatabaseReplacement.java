@@ -100,6 +100,7 @@ final class DatabaseReplacement {
       final Consumer<String> waiting = ArcadeStateMachine.applyWaitsForInstallForTesting;
       if (waiting != null)
         waiting.accept(dbName);
+      // noopengrep: lock-not-released-in-finally - returned to the caller, which releases it once the entry is applied
       gate.lock();
     }
     return gate;

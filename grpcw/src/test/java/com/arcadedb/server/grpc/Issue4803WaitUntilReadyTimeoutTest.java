@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,39 +41,36 @@ class Issue4803WaitUntilReadyTimeoutTest {
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final long timeoutMs = 150;
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     final boolean ready = ArcadeDbGrpcService.awaitTransportReady(() -> false, cancelled, timeoutMs);
-    final long elapsed = System.currentTimeMillis() - start;
 
     // The wait must give up (return not-ready) instead of spinning forever.
     assertThat(ready).as("never-ready transport must time out, not block forever").isFalse();
     // It must have waited at least the configured deadline ...
-    assertThat(elapsed).as("must honor the configured deadline").isGreaterThanOrEqualTo(timeoutMs);
+    assertThat(clock.elapsedMs()).as("must honor the configured deadline").isGreaterThanOrEqualTo(timeoutMs);
     // ... but not run away well past it (generous upper bound to stay CI-stable).
-    assertThat(elapsed).as("must not spin indefinitely past the deadline").isLessThan(timeoutMs + 5_000L);
+    clock.assertGaveUpWithin(timeoutMs + 5_000L, "honouring the deadline from spinning past it");
   }
 
   @Test
   void returnsImmediatelyWhenReady() {
     final AtomicBoolean cancelled = new AtomicBoolean(false);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     final boolean ready = ArcadeDbGrpcService.awaitTransportReady(() -> true, cancelled, 60_000L);
-    final long elapsed = System.currentTimeMillis() - start;
 
     assertThat(ready).as("an already-ready transport must return ready").isTrue();
-    assertThat(elapsed).as("must not wait when already ready").isLessThan(1_000L);
+    clock.assertGaveUpWithin(1_000L, "returning at once when already ready from waiting");
   }
 
   @Test
   void returnsPromptlyWhenAlreadyCancelled() {
     final AtomicBoolean cancelled = new AtomicBoolean(true);
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     final boolean ready = ArcadeDbGrpcService.awaitTransportReady(() -> false, cancelled, 60_000L);
-    final long elapsed = System.currentTimeMillis() - start;
 
     assertThat(ready).as("a cancelled stream must not report ready").isFalse();
-    assertThat(elapsed).as("a cancelled stream must abort promptly, not wait for the deadline").isLessThan(1_000L);
+    clock.assertGaveUpWithin(1_000L, "a cancelled stream aborting from waiting for the deadline");
   }
 }

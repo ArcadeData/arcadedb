@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,10 +59,9 @@ class WaitForApplyTest extends BaseRaftHATest {
 
     final RaftHAServer raft = getRaftPlugin(leaderIndex).getRaftHAServer();
 
-    final long start = System.currentTimeMillis();
+    final StallAwareStopwatch clock = StallAwareStopwatch.start();
     raft.waitForAppliedIndex(0);
-    final long elapsed = System.currentTimeMillis() - start;
-    assertThat(elapsed).isLessThan(1000);
+    clock.assertGaveUpWithin(1_000L, "an already-applied index returning at once from waiting");
   }
 
   /**

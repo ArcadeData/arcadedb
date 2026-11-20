@@ -280,6 +280,7 @@ final class PageVersionLedger {
     final DatabaseLedger publishing = PUBLISHING.get();
     if (publishing == null || !publishing.name.equals(databaseName) || publishing.lock.isHeldByCurrentThread())
       return;
+    // noopengrep: lock-not-released-in-finally - held for the commit, publishOutsideTheLog releases it on the way out
     publishing.lock.lock();
     if (byDatabase.get(databaseName) != publishing)
       // publishOutsideTheLog releases the lock on the way out

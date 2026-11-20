@@ -50,3 +50,16 @@ repos:
           - --write
           - --list-different
           - --ignore-unknown
+  # Opengrep: the CLAUDE.md conventions a bytecode census cannot see (test sources, workflow YAML, Studio JS,
+  # a source-only Java spelling). The script pins the binary; `.github/scripts/opengrep.sh advise` in the
+  # lint job reports the WARNING rules, this hook blocks on the ERROR ones. Rules in .opengrep/rules,
+  # their self-tests in .opengrep/tests (excluded: they carry offenders on purpose).
+  - repo: local
+    hooks:
+      - id: opengrep
+        name: opengrep (blocking rules)
+        entry: .github/scripts/opengrep.sh check
+        language: script
+        types_or: [java, yaml, javascript, python]
+        exclude: ^\.opengrep/tests/
+        require_serial: true

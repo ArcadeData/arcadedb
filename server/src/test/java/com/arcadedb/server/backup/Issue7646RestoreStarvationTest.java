@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -163,12 +164,12 @@ class Issue7646RestoreStarvationTest {
    * one of them is a reservation that was refused, so none of them has to be released.
    */
   private static void awaitRestoreRegisteredAsWaiting(final BackupCoordinator coordinator) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 10_000;
+    final StallAwareStopwatch wait = StallAwareStopwatch.start();
     while (coordinator.begin("db", Operation.EXPORT) != Operation.RESTORE) {
       // Admitted rather than refused means the guard is not up yet - that export now holds a reservation of its
       // own, so give it straight back before looking again, or the waiter would be left waiting on this probe.
       coordinator.end("db", Operation.EXPORT);
-      assertThat(System.currentTimeMillis()).as("the restore never registered as waiting").isLessThan(deadline);
+      wait.assertGaveUpWithin(10_000L, "the restore never registered as waiting");
       Thread.sleep(5);
     }
   }

@@ -19,6 +19,7 @@
 package com.arcadedb.server.backup;
 
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -162,9 +163,9 @@ class Issue8452DropStarvationTest {
    */
   private static void awaitRegisteredAsWaiting(final BackupCoordinator coordinator, final Operation kind)
       throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 10_000;
+    final StallAwareStopwatch wait = StallAwareStopwatch.start();
     while (!coordinator.isWaiting("db", kind)) {
-      assertThat(System.currentTimeMillis()).as("the %s never registered as waiting", kind).isLessThan(deadline);
+      wait.assertGaveUpWithin(10_000L, "the " + kind + " never registered as waiting");
       Thread.sleep(5);
     }
   }

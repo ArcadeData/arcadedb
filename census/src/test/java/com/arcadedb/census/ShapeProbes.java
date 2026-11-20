@@ -30,8 +30,15 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.event.ServerEventLog;
 
+import java.io.PrintStream;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RecursiveAction;
+import java.util.concurrent.RecursiveTask;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -272,6 +279,94 @@ final class ShapeProbes {
 
     static Result embedded(final Database database) {
       return database.query("sql", "select from V").next();
+    }
+  }
+
+  /** {@link NoCommonForkJoinPoolCensusTest}: every way engine code reaches the JDK common pool without naming it. */
+  static final class CommonPool {
+    static long parallelStream(final List<String> list) {
+      return list.parallelStream().count();
+    }
+
+    static void parallelSort() {
+      Arrays.parallelSort(new long[0]);
+    }
+
+    static CompletableFuture<Integer> supplyAsyncWithoutAnExecutor() {
+      return CompletableFuture.supplyAsync(() -> 1);
+    }
+
+    static Function<Supplier<Integer>, CompletableFuture<Integer>> methodReference() {
+      final Function<Supplier<Integer>, CompletableFuture<Integer>> f = CompletableFuture::supplyAsync;
+      return f;
+    }
+
+    static CompletableFuture<Integer> supplyAsyncWithAnExecutor(final Executor executor) {
+      return CompletableFuture.supplyAsync(() -> 1, executor);
+    }
+
+    static String namedInALiteral() {
+      return "never call parallelStream()";
+    }
+
+    static CompletableFuture<Integer> completeAsyncWithoutAnExecutor() {
+      return new CompletableFuture<Integer>().completeAsync(() -> 1);
+    }
+
+    static CompletableFuture<Integer> completeAsyncWithAnExecutor(final Executor executor) {
+      return new CompletableFuture<Integer>().completeAsync(() -> 1, executor);
+    }
+
+    static CompletionStage<Integer> asyncStepThroughTheInterface(final CompletionStage<Integer> stage) {
+      return stage.thenApplyAsync(x -> x + 1);
+    }
+
+    static CompletionStage<Integer> asyncStepThroughTheInterfaceWithAnExecutor(final CompletionStage<Integer> stage,
+        final Executor executor) {
+      return stage.thenApplyAsync(x -> x + 1, executor);
+    }
+
+    static void forkOfAJdkSubclass(final RecursiveAction task) {
+      task.fork();
+    }
+
+    static void forkOfAProjectSubclass(final ProjectTask task) {
+      task.fork();
+    }
+
+    /** A project subclass of a JDK task type: the call names this class, which the census resolves to ForkJoinTask. */
+    static final class ProjectTask extends RecursiveTask<Integer> {
+      @Override
+      protected Integer compute() {
+        return 1;
+      }
+    }
+  }
+
+  /** {@link NoSystemOutCensusTest}: a read of the stream is the print, whatever is called on it next. */
+  static final class ConsolePrint {
+    static void plain() {
+      System.out.println("x");
+    }
+
+    static void errStream() {
+      System.err.print("x");
+    }
+
+    static void passedAsAStream() {
+      dump(System.out);
+    }
+
+    private static void dump(final PrintStream stream) {
+      stream.flush();
+    }
+
+    static String namedInALiteral() {
+      return "System.out";
+    }
+
+    static void throughTheLogger() {
+      LogManager.instance().log(ConsolePrint.class, Level.INFO, "x");
     }
   }
 }

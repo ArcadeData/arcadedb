@@ -1,0 +1,15 @@
+# Source-only spellings of the Java main code. javac folds a qualified name into the same constant pool entry as an
+# imported one, so the census cannot tell them apart; opengrep reads the source.
+rules:
+  - id: fully-qualified-arcadedb-type
+    languages: [java]
+    severity: ERROR
+    message: "Import the class and use its simple name; a fully qualified com.arcadedb name inline is the one spelling the house style forbids. When the simple name is taken by another import, keep the import and reach this class through a static factory, a local alias, or the other class's qualified name instead."
+    paths:
+      include: ["*/src/main/**"]
+    pattern-regex: '\bnew\s+com\.arcadedb\.(?:[a-z]\w*\.)+[A-Z]\w*\s*[(<]'
+  - id: claude-named-as-author
+    languages: [java, javascript, python, yaml]
+    severity: ERROR
+    message: "Do not name Claude as an author (CLAUDE.md). Remove the @author / Co-Authored-By line."
+    pattern-regex: '(?i)(@author\s+claude|co-authored-by:\s*claude)'

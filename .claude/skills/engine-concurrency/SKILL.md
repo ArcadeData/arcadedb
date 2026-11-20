@@ -10,6 +10,9 @@ description: Use when adding, reviewing, or debugging parallelism in ArcadeDB en
 **Existing JDK-common-pool callers** (tagged in source with `NOTE (concurrency)` comments referencing the rule, will migrate as workloads justify it):
 - `GraphBatch.parallelSort` (`engine/...graph/GraphBatch.java`)
 
+The list is enforced by `NoCommonForkJoinPoolCensusTest` (census module): a new caller fails that test, and a migrated one
+fails its `stale` check until its entry is removed.
+
 `ArcadeStateMachine.notifyInstallSnapshotFromLeader` was on this list until issue #6202 gave it a dedicated
 single-worker executor (`arcadedb-raft-snapshot-install`); a follower snapshot install is a full database
 download, i.e. the longest-running thing the HA layer does, and it no longer parks a common-pool worker for it.

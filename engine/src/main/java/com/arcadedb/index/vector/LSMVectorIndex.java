@@ -3874,8 +3874,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // rebuild. On a 200K-vector index that is minutes of blocked commits, surfacing as commit lock timeouts and
     // multi-minute query stalls (issue #5391). It only touches thread-confined structures plus the internally
     // synchronized vectorIndex, so it now runs unlocked.
-    lock.writeLock().lock();
     final int[] vectorIds;
+    lock.writeLock().lock();
     try {
       // CRITICAL: If we couldn't read any live entry from pages, DON'T replace vectorIndex - use what's already
       // in memory! Publishing an empty location index here would drop entries that only exist in RAM.

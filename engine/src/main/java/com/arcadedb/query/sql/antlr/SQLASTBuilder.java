@@ -4496,23 +4496,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Creates a wrapper that delegates to the SQL Expression's execute method.
    */
   private com.arcadedb.query.opencypher.ast.Expression convertToOpenCypherExpression(final Expression sqlExpression) {
-    return new com.arcadedb.query.opencypher.ast.Expression() {
-      @Override
-      public Object evaluate(final Result result, final CommandContext context) {
-        return sqlExpression.execute(result, context);
-      }
-
-      @Override
-      public boolean isAggregation() {
-        // Check if expression is aggregate - pass null context as it's typically not needed for this check
-        return sqlExpression.isAggregate(null);
-      }
-
-      @Override
-      public String getText() {
-        return sqlExpression.toString();
-      }
-    };
+    return new SqlExpressionAsCypherExpression(sqlExpression);
   }
 
   /**
@@ -4520,24 +4504,63 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Creates a wrapper that delegates to the WhereClause's evaluateExpression method.
    */
   private com.arcadedb.query.opencypher.ast.Expression convertWhereClauseToExpression(final WhereClause whereClause) {
-    return new com.arcadedb.query.opencypher.ast.Expression() {
-      @Override
-      public Object evaluate(final Result result, final CommandContext context) {
-        return whereClause.evaluateExpression(result, context);
-      }
+    return new WhereClauseAsCypherExpression(whereClause);
+  }
 
-      @Override
-      public boolean isAggregation() {
-        // WHERE clauses in CASE typically don't contain aggregate functions
-        // If they did, it would be handled by the underlying OrBlock
-        return false;
-      }
+  /**
+   * A SQL {@link Expression} seen as an OpenCypher expression: evaluates through the SQL expression's execute method.
+   * The OpenCypher interface is named in full because {@link Expression} here is the SQL parser's.
+   */
+  private static final class SqlExpressionAsCypherExpression implements com.arcadedb.query.opencypher.ast.Expression {
+    private final Expression sqlExpression;
 
-      @Override
-      public String getText() {
-        return whereClause.toString();
-      }
-    };
+    private SqlExpressionAsCypherExpression(final Expression sqlExpression) {
+      this.sqlExpression = sqlExpression;
+    }
+
+    @Override
+    public Object evaluate(final Result result, final CommandContext context) {
+      return sqlExpression.execute(result, context);
+    }
+
+    @Override
+    public boolean isAggregation() {
+      // Check if expression is aggregate - pass null context as it's typically not needed for this check
+      return sqlExpression.isAggregate(null);
+    }
+
+    @Override
+    public String getText() {
+      return sqlExpression.toString();
+    }
+  }
+
+  /**
+   * A SQL {@link WhereClause} seen as an OpenCypher expression that evaluates to boolean.
+   */
+  private static final class WhereClauseAsCypherExpression implements com.arcadedb.query.opencypher.ast.Expression {
+    private final WhereClause whereClause;
+
+    private WhereClauseAsCypherExpression(final WhereClause whereClause) {
+      this.whereClause = whereClause;
+    }
+
+    @Override
+    public Object evaluate(final Result result, final CommandContext context) {
+      return whereClause.evaluateExpression(result, context);
+    }
+
+    @Override
+    public boolean isAggregation() {
+      // WHERE clauses in CASE typically don't contain aggregate functions
+      // If they did, it would be handled by the underlying OrBlock
+      return false;
+    }
+
+    @Override
+    public String getText() {
+      return whereClause.toString();
+    }
   }
 
   /**

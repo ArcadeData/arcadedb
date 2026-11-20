@@ -696,6 +696,7 @@ public class VectorLocationIndex {
       // every engine workload and LSMVectorIndexTombstoneMemoryTest pins it there across the re-embedding cycles
       // that would trip it first. An assert would have been louder and wrong - it would also fire on the tests
       // that exist to prove this branch does the safe thing.
+      // noopengrep: volatile-read-modify-write - the caller holds writeLock, which serializes every mutation
       inPlaceRidRewrites++;
       LONGS.setRelease(chunk.present, word, chunk.present[word] & ~bit);
     }
@@ -716,6 +717,7 @@ public class VectorLocationIndex {
 
     if (!wasPresent) {
       chunk.liveCount++;
+      // noopengrep: volatile-read-modify-write - the caller holds writeLock, which serializes every mutation
       liveCount++;
     }
   }
@@ -747,6 +749,7 @@ public class VectorLocationIndex {
     // its bits, and a set bit there is a live location pointing at an offset a compaction may already have reused.
     LONGS.setRelease(chunk.present, word, chunk.present[word] & ~bit);
     chunk.liveCount--;
+    // noopengrep: volatile-read-modify-write - the caller holds writeLock, which serializes every mutation
     liveCount--;
 
     if (chunk.liveCount == 0) {

@@ -665,7 +665,9 @@ public class PageManagerFlushThread extends Thread {
 
         retryFailedFlushes();
 
-      } catch (final InterruptedException e) {
+      } catch (final InterruptedException e) { // noopengrep: interrupted-exception-swallowed - see below
+        // The flush thread's own interrupt is its stop signal: the loop drains the queue and ends. Restoring the flag would make
+        // every poll of that drain throw again at once, and the loop would spin instead of draining
         running = false;
       } catch (final Throwable e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on processing page flush requests", e);

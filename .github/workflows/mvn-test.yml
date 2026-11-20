@@ -113,6 +113,18 @@ jobs:
         run: ./.github/scripts/tests/test-issue-workflow-scripts.js
       - name: Check PR workflow scripts
         run: ./.github/scripts/tests/test-pr-workflow-scripts.js
+      # The opengrep binary is 160 MB; cached by version so the lint job does not download it every run.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/arcadedb-opengrep
+          key: opengrep-2.0.0-linux-x86
+      # Every rule must see the shape it forbids before it is allowed to block anything.
+      - name: Opengrep rule self-tests
+        run: ./.github/scripts/opengrep.sh test
+      # WARNING rules: reported, not blocking, until their offenders are gone (JUnit Assertions, Studio HTML sinks,
+      # empty catch blocks, Throwable caught and not rethrown).
+      - name: Opengrep advisory rules
+        run: ./.github/scripts/opengrep.sh advise
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   build-and-package:
