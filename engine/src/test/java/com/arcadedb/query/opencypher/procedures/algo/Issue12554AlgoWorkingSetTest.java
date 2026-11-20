@@ -37,6 +37,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.ref.Reference;
@@ -169,6 +170,13 @@ class Issue12554AlgoWorkingSetTest {
     return accepted;
   }
 
+  /**
+   * Builds 100,000 vertices and 200,000 edges, reads the heap around a call and searches the smallest accepted budget with about 17
+   * more calls: several seconds, which the regular lane does not carry. The held heap is under a quarter of the reservation (12 to 16
+   * bytes a node against 72), so the bound has room for what a shared JVM allocates meanwhile; on the code before the fix the call held
+   * more than twice what it reserved (244 and 299 bytes a node against 96 and 144).
+   */
+  @Tag("slow")
   @Test
   void pageRankReservesWhatItHolds() {
     final int vertices = 100_000;
@@ -182,6 +190,8 @@ class Issue12554AlgoWorkingSetTest {
     assertThat(held).as("heap held by algo.pagerank on %d vertices", vertices).isLessThanOrEqualTo(reserved);
   }
 
+  /** The same measurement for {@code algo.wcc}; see {@link #pageRankReservesWhatItHolds()}. */
+  @Tag("slow")
   @Test
   void wccReservesWhatItHolds() {
     final int vertices = 100_000;
