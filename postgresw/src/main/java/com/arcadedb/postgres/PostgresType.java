@@ -63,6 +63,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -196,6 +197,8 @@ public enum PostgresType {
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
   private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+  // PostgreSQL's uuid, which only a bound parameter carries here: no column is announced under it (issue #11838)
+  private static final int               UUID_CODE                   = 2950;
   // An offset as a client writes it after a time: +02, +02:00, +02:00:00 or Z (lenient parsing takes all of them); the compact
   // +0200 and +020000 are given their colons first by withOffsetColons.
   private static final DateTimeFormatter OFFSET_FORMATTER          = new DateTimeFormatterBuilder().parseLenient()
@@ -1841,6 +1844,9 @@ public enum PostgresType {
       return str;
     }
 
+    if (code == UUID_CODE)
+      return parseUuidText(str);
+
     PostgresType type = CODE_MAP.get((int) code);
     if (type == null) {
       throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
@@ -1849,8 +1855,33 @@ public enum PostgresType {
     return type.textParser.apply(str);
   }
 
+  /**
+   * A uuid parameter (issue #11838), which psycopg binds for a {@code uuid.UUID} and pgjdbc for a {@code java.util.UUID}. ArcadeDB
+   * has no uuid type and stores one as its text, so the parameter is read as the canonical text PostgreSQL itself prints, lower
+   * case with hyphens, from any spelling PostgreSQL accepts: upper case, without hyphens or between braces.
+   */
+  static String parseUuidText(final String value) {
+    String hex = value.trim();
+    if (hex.startsWith("{") && hex.endsWith("}"))
+      hex = hex.substring(1, hex.length() - 1);
+    hex = hex.replace("-", "");
+    boolean valid = hex.length() == 32;
+    for (int i = 0; valid && i < hex.length(); i++)
+      valid = Character.digit(hex.charAt(i), 16) >= 0;
+    if (!valid)
+      throw new PostgresProtocolException("Invalid input syntax for type uuid: '" + value + "'");
+    return new UUID(Long.parseUnsignedLong(hex.substring(0, 16), 16), Long.parseUnsignedLong(hex.substring(16), 16)).toString();
+  }
+
   private static Object deserializeBinary(final long code, final byte[] valueAsBytes) {
     ByteBuffer buffer = ByteBuffer.wrap(valueAsBytes);
+    if (code == UUID_CODE) {
+      // the 16 bytes of the uuid, most significant first
+      if (valueAsBytes.length != 16)
+        throw new PostgresProtocolException("Invalid binary uuid of " + valueAsBytes.length + " bytes");
+      return new UUID(buffer.getLong(), buffer.getLong()).toString();
+    }
+
     PostgresType type = CODE_MAP.get((int) code);
 
     if (type == null) {
