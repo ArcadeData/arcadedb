@@ -81,7 +81,7 @@ public class MetaStats extends AbstractMetaProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
-    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), true);
+    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), true, newWorkGuard(context));
 
     // APOC's relTypes: every type under ()-[:T]->(), and once per label of a start or end node that has some
     final Map<String, Long> relTypes = new TreeMap<>();

@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -119,7 +121,13 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value == null)
       return null; // null:Label -> null in Cypher 3VL
 
+    // A virtual node or relationship (create.vNode, create.vRelationship, meta.graph) has no schema type: its labels, or its
+    // type name, are its own, and reading the null type as "matches nothing" made n:!B true for a node labelled B (issue #12109)
     if (predicate != null) {
+      if (value instanceof VirtualVertex virtual)
+        return predicate.matchesLabels(virtual.getLabels());
+      if (value instanceof VirtualEdge virtual)
+        return predicate.matchesTypeName(virtual.getTypeName());
       if (value instanceof Vertex vertex)
         return predicate.matchesVertexType(vertex.getType(), result, context);
       if (value instanceof Edge edge)
@@ -131,6 +139,10 @@ public class LabelCheckExpression implements BooleanExpression {
       return evaluateDisjunctionWithDynamicLabels(value, result, context);
 
     final List<String> labels = resolveLabels(result, context);
+
+    if (value instanceof VirtualEdge virtual)
+      // Same rule as a stored relationship below: a type name or a disjunction of them, never a conjunction of two names
+      return (operator == LabelOperator.OR || labels.size() == 1) && labels.contains(virtual.getTypeName());
 
     if (value instanceof Vertex vertex)
       // Same meaning a disjunction has when it is written on the pattern instead of in the WHERE (issue #6338).
@@ -181,7 +193,11 @@ public class LabelCheckExpression implements BooleanExpression {
    * issues #9124 and #12339). The empty operand holds.
    */
   private static boolean matchesOperand(final Object value, final List<String> operand) {
-    return Labels.matches(value instanceof Vertex vertex ? vertex.getType() : ((Edge) value).getType(), operand, false);
+    if (value instanceof Vertex vertex)
+      return Labels.matches(vertex, operand, false);
+    if (value instanceof VirtualEdge virtual)
+      return operand.isEmpty() || operand.size() == 1 && operand.contains(virtual.getTypeName());
+    return Labels.matches(((Edge) value).getType(), operand, false);
   }
 
   private List<String> resolveLabels(final Result result, final CommandContext context) {

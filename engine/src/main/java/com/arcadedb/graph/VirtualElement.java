@@ -274,7 +274,13 @@ public abstract class VirtualElement implements Document {
     throw unsupported("detached");
   }
 
-  protected UnsupportedOperationException unsupported(final String what) {
+  /**
+   * The refusal of a write this element cannot take, for a caller that meets a virtual element before it reaches one of the
+   * mutators above (a relabelling, for one, rewrites the node under another type before it modifies anything).
+   *
+   * @param what the write, as a past participle: {@code "relabelled"}
+   */
+  public UnsupportedOperationException unsupported(final String what) {
     return new UnsupportedOperationException("A virtual " + kind() + " is not stored and cannot be " + what);
   }
 

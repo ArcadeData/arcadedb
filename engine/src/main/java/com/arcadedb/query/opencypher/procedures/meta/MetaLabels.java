@@ -87,8 +87,16 @@ final class MetaLabels {
    * The labels of the node {@code rid} names, from its bucket's type.
    */
   List<String> labelsOf(final RID rid) {
-    return labelsByBucket.computeIfAbsent(rid.getBucketId(), bucketId -> {
-      final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
+    return labelsOfBucket(rid.getBucketId());
+  }
+
+  /**
+   * The labels of a node stored in the bucket {@code bucketId}: its type's, empty when the bucket belongs to no type or to
+   * one the caller may not read.
+   */
+  List<String> labelsOfBucket(final int bucketId) {
+    return labelsByBucket.computeIfAbsent(bucketId, id -> {
+      final DocumentType type = database.getSchema().getTypeByBucketId(id);
       return type != null ? labelsOf(type) : List.of();
     });
   }

@@ -87,7 +87,7 @@ public class MetaNodeTypeProperties extends AbstractMetaProcedure {
     final MetaLabels labels = new MetaLabels(database);
 
     final Map<List<String>, MetaPropertyProfile> groups = new LinkedHashMap<>();
-    forEachSampledNode(database, labels, config,
+    forEachSampledNode(database, labels, config, newWorkGuard(context),
         (type, record) -> groups.computeIfAbsent(labels.labelsOf(type), k -> new MetaPropertyProfile()).observe(record.asDocument()));
 
     for (final VertexType type : labels.vertexTypes()) {

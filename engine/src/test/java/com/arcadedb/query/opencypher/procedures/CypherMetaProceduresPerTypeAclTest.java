@@ -70,9 +70,45 @@ class CypherMetaProceduresPerTypeAclTest extends TestHelper {
     assertThat(render("meta.stats")).contains("PublicNode");
   }
 
+  /**
+   * The relationship-based paths of the {@code meta.*} procedures (the endpoint labels of {@code meta.stats} and
+   * {@code meta.graph}, the target labels of {@code meta.relTypeProperties}) resolve a label from the endpoint's bucket: a
+   * readable relationship type that reaches a node of an unreadable type must not name that type's label (issue #12109).
+   */
+  @Test
+  void aReadableRelationshipTypeDoesNotNameTheLabelOfAnUnreadableEndpoint() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("PublicNode").createProperty("title", Type.STRING);
+      database.getSchema().createVertexType("SecretNode").createProperty("cardNumber", Type.STRING);
+      database.getSchema().createEdgeType("LINK").createProperty("since", Type.INTEGER);
+      database.command("cypher", """
+          CREATE (:PublicNode {title: 'a'})-[:LINK {since: 1}]->(:SecretNode {cardNumber: '1'}),
+                 (:SecretNode {cardNumber: '2'})-[:LINK {since: 2}]->(:PublicNode {title: 'b'}),
+                 (:PublicNode {title: 'c'})-[:LINK {since: 3}]->(:PublicNode {title: 'd'})""");
+    });
+
+    // control: unbound, the secret label is named by every procedure that walks the relationships
+    for (final String procedure : List.of("meta.stats", "meta.graph", "meta.relTypeProperties"))
+      assertThat(render(procedure)).as(procedure).contains("SecretNode");
+
+    bindUserDenying(Set.of("SecretNode"));
+
+    for (final String procedure : PROCEDURES)
+      assertThat(render(procedure)).as(procedure).doesNotContain("SecretNode", "cardNumber");
+    // what the principal may read is still described, relationships included
+    assertThat(render("meta.stats")).contains("PublicNode", "LINK");
+    assertThat(render("meta.graph")).contains("PublicNode", "LINK");
+    assertThat(render("meta.relTypeProperties")).contains("LINK", "since", "PublicNode");
+  }
+
   private String render(final String procedure) {
+    // meta.graph answers virtual nodes and relationships, which a serialized row names by their RIDs only: project what they carry
+    final String query = "meta.graph".equals(procedure) ?
+        "CALL meta.graph() YIELD nodes, relationships RETURN [n IN nodes | properties(n)] AS nodes, "
+            + "[r IN relationships | [type(r), properties(r), properties(startNode(r)), properties(endNode(r))]] AS relationships" :
+        "CALL " + procedure + "()";
     final StringBuilder out = new StringBuilder();
-    try (final ResultSet rs = database.query("cypher", "CALL " + procedure + "()")) {
+    try (final ResultSet rs = database.query("cypher", query)) {
       while (rs.hasNext())
         out.append(rs.next().toJSON()).append('\n');
     }

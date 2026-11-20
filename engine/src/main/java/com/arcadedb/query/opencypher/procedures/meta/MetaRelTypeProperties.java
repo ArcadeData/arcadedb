@@ -24,6 +24,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
@@ -93,15 +94,19 @@ public class MetaRelTypeProperties extends AbstractMetaProcedure {
     final MetaConfig config = config(args);
     final MetaLabels labels = new MetaLabels(database);
     final long maxRels = config.maxRels();
+    final WorkGuard guard = newWorkGuard(context);
 
     final Map<RelGroup, MetaPropertyProfile> groups = new LinkedHashMap<>();
-    forEachSampledNode(database, labels, config, (type, record) -> {
+    forEachSampledNode(database, labels, config, guard, (type, record) -> {
       final Vertex vertex = record.asVertex();
       final List<String> sourceLabels = labels.labelsOf(type);
       long read = 0L;
+      int walked = 0;
       for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
         if (read >= maxRels)
           break;
+        // a supernode whose relationships are mostly of excluded types is walked to the end without counting any
+        guard.checkPeriodically(walked++);
         final String relType = edge.getTypeName();
         if (!config.acceptsRelType(relType) || !labels.isReadableEdgeType(relType))
           continue;
