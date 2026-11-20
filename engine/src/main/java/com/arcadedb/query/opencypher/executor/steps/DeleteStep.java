@@ -44,6 +44,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.LongRangeList;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
@@ -146,7 +147,9 @@ public class DeleteStep extends AbstractExecutionStep {
   private OperationHeapLimit heapLimit;
 
   /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
-  private String[] rowVariables;
+  private String[]                              rowVariables;
+  private final IdentityHashMap<Object, Object> containerMemo = new IdentityHashMap<>();
+  private long                                  memoVersion   = -1;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -190,7 +193,10 @@ public class DeleteStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return buffer.get(bufferIndex++);
+        final Result row = buffer.get(bufferIndex++);
+        if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && row instanceof ResultInternal mutableRow)
+          markDeletedReferences(mutableRow, (Set<String>) null);
+        return row;
       }
 
       private boolean hasMoreInput() {
@@ -315,6 +321,7 @@ public class DeleteStep extends AbstractExecutionStep {
           final RowTargets targets = new RowTargets(new ArrayList<>(), new ArrayList<>(), new HashSet<>());
           collectRowTargets(row, targets.edges(), targets.other(), targets.variables());
           pinOccurrences(targets.edges());
+          pinRetainedEdgeOccurrences(row);
           pinnedTargets.put(row, targets);
         }
       }
@@ -326,29 +333,53 @@ public class DeleteStep extends AbstractExecutionStep {
     };
   }
 
-  static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
+  /**
+   * Recursively marks deleted entities in the row's properties with {@link DeletedEntityMarker}.
+   * Memoizes visited containers per deletion version to prevent O(N * size) traversal overhead
+   * when multiple rows share the same container reference (e.g. from collect()).
+   *
+   * @param row     the result row to inspect and mutate
+   * @param deleted what has been deleted so far
+   */
+  public static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
+    markDeletedReferences(row, deleted, new IdentityHashMap<>());
+  }
+
+  static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted, final Map<Object, Object> memo) {
     for (final String variable : row.getPropertyNames()) {
       final Object value = row.getProperty(variable);
-      final Object marked = markDeletedValue(value, deleted, null);
-      if (marked != value)
+      final Object marked = markDeletedValue(value, deleted, null, memo);
+      if (marked != value) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
         row.setProperty(variable, marked);
     }
   }
 
   private void markDeletedReferences(final ResultInternal row, final Set<String> deletedVars) {
+    final long version = deleted.getChangeCount() + pendingVertices.size();
+    if (version != memoVersion) {
+      containerMemo.clear();
+      memoVersion = version;
+    }
     if (rowVariables == null)
       rowVariables = row.getPropertyNames().toArray(new String[0]);
     for (final String variable : rowVariables) {
       if (deletedVars != null && deletedVars.contains(variable))
         continue;
       final Object value = row.getProperty(variable);
-      final Object marked = markDeletedValue(value, deleted, pendingVertices);
-      if (marked != value)
+      final Object marked = markDeletedValue(value, deleted, pendingVertices, containerMemo);
+      if (marked != value) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
         row.setProperty(variable, marked);
     }
   }
 
-  private static Object markDeletedValue(final Object value, final DeletedSoFar deleted, final Set<RID> pendingVertices) {
+  /**
+   * Recursively marks deleted entities inside containers with {@link DeletedEntityMarker}.
+   * Memoizes visited containers (List, Map, TraversalPath) by identity to avoid O(N * size) traversal
+   * when multiple rows share containers. Skips {@link LongRangeList} since numeric ranges can never
+   * contain vertices or edges.
+   */
+  private static Object markDeletedValue(final Object value, final DeletedSoFar deleted, final Set<RID> pendingVertices,
+      final Map<Object, Object> memo) {
     if (value instanceof Edge edge) {
       if (deleted.isDeletedEdge(edge))
         return new DeletedEntityMarker(edge.getTypeName());
@@ -362,35 +393,59 @@ public class DeleteStep extends AbstractExecutionStep {
     }
 
     if (value instanceof TraversalPath path) {
-      return path.withDeleted(
+      if (memo != null) {
+        final Object cached = memo.get(path);
+        if (cached != null)
+          return cached;
+      }
+      final Object marked = path.withDeleted(
           v -> deleted.isDeletedRecord(v) || (pendingVertices != null && pendingVertices.contains(v.getIdentity())),
           e -> deleted.isDeletedEdge(e));
+      if (memo != null)
+        memo.put(path, marked);
+      return marked;
     }
 
-    if (value instanceof List<?> list) {
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      if (memo != null) {
+        final Object cached = memo.get(list);
+        if (cached != null)
+          return cached;
+      }
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
-        final Object marked = markDeletedValue(element, deleted, pendingVertices);
-        if (marked != element && rebuilt == null)
+        final Object marked = markDeletedValue(element, deleted, pendingVertices, memo);
+        if (marked != element && rebuilt == null) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
           rebuilt = new ArrayList<>(list);
         if (rebuilt != null)
           rebuilt.set(i, marked);
       }
-      return rebuilt != null ? rebuilt : value;
+      final Object result = rebuilt != null ? rebuilt : value;
+      if (memo != null)
+        memo.put(list, result);
+      return result;
     }
 
     if (value instanceof Map<?, ?> map) {
+      if (memo != null) {
+        final Object cached = memo.get(map);
+        if (cached != null)
+          return cached;
+      }
       Map<Object, Object> rebuilt = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object val = entry.getValue();
-        final Object marked = markDeletedValue(val, deleted, pendingVertices);
-        if (marked != val && rebuilt == null)
+        final Object marked = markDeletedValue(val, deleted, pendingVertices, memo);
+        if (marked != val && rebuilt == null) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
           rebuilt = new LinkedHashMap<>(map);
         if (rebuilt != null)
           rebuilt.put(entry.getKey(), marked);
       }
-      return rebuilt != null ? rebuilt : value;
+      final Object result = rebuilt != null ? rebuilt : value;
+      if (memo != null)
+        memo.put(map, result);
+      return result;
     }
 
     return value;
@@ -412,6 +467,39 @@ public class DeleteStep extends AbstractExecutionStep {
           twinned = true;
       }
     return twinned;
+  }
+
+  /**
+   * Resolves and caches the occurrence of lightweight edges retained in a row's properties, collections, or paths
+   * before deleting any lightweight edge, so a surviving parallel edge does not collide with a deleted twin after
+   * the vertex's edge list shrinks.
+   */
+  private static void pinRetainedEdgeOccurrences(final Object value) {
+    if (value instanceof Edge edge) {
+      if (edge.getIdentity() instanceof LightEdgeRID light)
+        light.getOccurrence();
+      return;
+    }
+    if (value instanceof TraversalPath path) {
+      for (final Edge edge : path.getEdges())
+        if (edge.getIdentity() instanceof LightEdgeRID light)
+          light.getOccurrence();
+      return;
+    }
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      for (final Object item : list)
+        pinRetainedEdgeOccurrences(item);
+      return;
+    }
+    if (value instanceof Map<?, ?> map) {
+      for (final Object item : map.values())
+        pinRetainedEdgeOccurrences(item);
+      return;
+    }
+    if (value instanceof Result row) {
+      for (final String prop : row.getPropertyNames())
+        pinRetainedEdgeOccurrences(row.getProperty(prop));
+    }
   }
 
   /** CommandContext variable holding the deferred-delete batch within a FOREACH iteration. */
@@ -463,8 +551,11 @@ public class DeleteStep extends AbstractExecutionStep {
 
       // The lightweight edges of the row are numbered before anything is deleted; the first one with a twin numbers
       // the rest of the statement's too, while their lists still hold every twin (#10008)
-      if (pinOccurrences(allEdges) && pinRemainingRows != null)
-        pinRemainingRows.run();
+      if (pinOccurrences(allEdges)) {
+        pinRetainedEdgeOccurrences(result);
+        if (pinRemainingRows != null)
+          pinRemainingRows.run();
+      }
 
       // Delete all edges first, then all other objects (vertices, documents). The `deleted` set is
       // a step-instance field shared across rows so an element bound by multiple rows is deleted once.
@@ -878,6 +969,7 @@ public class DeleteStep extends AbstractExecutionStep {
   @Override
   public void close() {
     pendingVertices.clear();
+    containerMemo.clear();
     releaseHeap();
     super.close();
   }
@@ -925,6 +1017,11 @@ public class DeleteStep extends AbstractExecutionStep {
     private final Set<Object>     records  = new HashSet<>();
     private final EdgeIdentitySet edges    = new EdgeIdentitySet();
     private final RidHashSet      vertices = new RidHashSet();
+    private long                  changeCount;
+
+    long getChangeCount() {
+      return changeCount;
+    }
 
     /**
      * @return true when {@code edge} is still to delete, recording it as deleted: neither deleted already, nor taken
@@ -938,7 +1035,10 @@ public class DeleteStep extends AbstractExecutionStep {
         // THE EDGE RECORD IS GONE ALREADY
         return false;
       }
-      return edges.add(edge.getIdentity());
+      final boolean added = edges.add(edge.getIdentity());
+      if (added)
+        changeCount++;
+      return added;
     }
 
     /**
@@ -951,7 +1051,10 @@ public class DeleteStep extends AbstractExecutionStep {
      * lightweight one twice.
      */
     boolean claimJustRead(final Edge edge) {
-      return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+      final boolean added = edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+      if (added)
+        changeCount++;
+      return added;
     }
 
     /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
@@ -985,12 +1088,14 @@ public class DeleteStep extends AbstractExecutionStep {
     }
 
     void add(final Object record) {
-      records.add(record);
+      if (records.add(record))
+        changeCount++;
     }
 
     void vertexDeleted(final Vertex vertex) {
       records.add(vertex);
       vertices.add(vertex.getIdentity());
+      changeCount++;
     }
   }
 }

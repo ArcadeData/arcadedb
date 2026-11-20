@@ -21,14 +21,18 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -318,5 +322,80 @@ class CypherDeletedEntityInCollectionIssue12548Test {
         WITH [h] AS hs, r, h
         DELETE r, h
         RETURN hs[0].v""");
+  }
+
+  @Test
+  void testMultiRowBatchDeletionWhereLaterRowDeletesEntityRetainedByEarlierRow() {
+    assertDeletedEntityAccess("""
+        MATCH (b:B {id: 2})
+        WITH b
+        UNWIND [null, b] AS target
+        WITH target, b, [b] AS refs
+        DETACH DELETE target
+        RETURN refs[0].v""");
+  }
+
+  @Test
+  void testParallelLightweightEdgesDeletionRetainsSurvivingEdge() {
+    database.transaction(() -> {
+      execute("""
+          CREATE (p1:Leaf {id: 101, v: 1010})
+          CREATE (p2:Leaf {id: 102, v: 1020})
+          CREATE (p1)-[:R {k: 1}]->(p2)
+          CREATE (p1)-[:R {k: 2}]->(p2)""");
+    });
+
+    final List<Long> survivingK = new ArrayList<>();
+    final List<Object> survivingKeys = new ArrayList<>();
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (p1:Leaf {id: 101})-[r:R]->(p2:Leaf {id: 102})
+          WITH collect(r) AS rs
+          DELETE rs[0]
+          RETURN rs[1].k AS k, keys(rs[1]) AS ks""")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          survivingK.add(((Number) row.getProperty("k")).longValue());
+          survivingKeys.add(row.getProperty("ks"));
+        }
+      }
+    });
+
+    assertThat(survivingK).hasSize(1);
+    assertThat(survivingKeys).hasSize(1);
+
+    assertDeletedEntityAccess("""
+        MATCH (p1:Leaf {id: 101})-[r:R]->(p2:Leaf {id: 102})
+        WITH collect(r) AS rs
+        DELETE rs[0]
+        RETURN rs[0].k""");
+  }
+
+  @Test
+  void testNestedForeachDeletionPropagatesToOuterRow() {
+    assertDeletedEntityAccess("""
+        MATCH (n:Isolated)
+        FOREACH (i IN [1] | FOREACH (j IN [1] | DELETE n))
+        RETURN n.v""");
+  }
+
+  @Test
+  void testCopyOnWritePreservesContainerIdentityWhenNothingDeleted() {
+    final ResultInternal row = new ResultInternal();
+    final List<Object> list = new ArrayList<>(List.of("val1", 42L));
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("key1", "val1");
+    map.put("key2", 42L);
+
+    row.setProperty("list", list);
+    row.setProperty("map", map);
+
+    final DeleteStep.DeletedSoFar deleted = new DeleteStep.DeletedSoFar();
+
+    DeleteStep.markDeletedReferences(row, deleted);
+
+    assertThat((Object) row.getProperty("list")).isSameAs(list);
+    assertThat((Object) row.getProperty("map")).isSameAs(map);
   }
 }

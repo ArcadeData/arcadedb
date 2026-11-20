@@ -62,6 +62,7 @@ import java.util.NoSuchElementException;
  * Example: FOREACH (i IN [1, 2, 3] | CREATE (:Node {id: i}))
  */
 public class ForeachStep extends AbstractExecutionStep {
+  public static final String FOREACH_DELETED_SO_FAR_VAR = "__cypherForeachDeletedSoFar__";
   private final ForeachClause foreachClause;
   // WHAT THE DELETES OF EVERY ITERATION HAVE DELETED SO FAR: AN ELEMENT A LATER ITERATION BINDS AGAIN, OR A RELATIONSHIP
   // AN EARLIER ONE'S DETACH TOOK AWAY, IS NOT DELETED AND COUNTED AGAIN (#10008)
@@ -296,6 +297,11 @@ public class ForeachStep extends AbstractExecutionStep {
     final boolean recordWrites = holdsCollection(inputRow);
     Map<RID, Document> written = null;
 
+    final Object existingDeleted = context.getVariable(FOREACH_DELETED_SO_FAR_VAR);
+    final DeleteStep.DeletedSoFar activeDeleted =
+        existingDeleted instanceof DeleteStep.DeletedSoFar d ? d : this.deletedSoFar;
+    context.setVariable(FOREACH_DELETED_SO_FAR_VAR, activeDeleted);
+
     // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
     final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
     // In the statement's transaction, which OpenCypherQueryEngine opens when the caller has none (issue #10190)
@@ -319,7 +325,7 @@ public class ForeachStep extends AbstractExecutionStep {
         try {
           written = executeInnerClauses(inputRow, iterationRow, recordWrites, written, context);
 
-          DeleteStep.flushDeferredDeletes(context, deleteBatch, deletedSoFar);
+          DeleteStep.flushDeferredDeletes(context, deleteBatch, activeDeleted);
         } finally {
           context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
         }
@@ -336,6 +342,8 @@ public class ForeachStep extends AbstractExecutionStep {
       if (e instanceof RuntimeException re)
         throw re;
       throw new CommandExecutionException("FOREACH execution failed", e);
+    } finally {
+      context.setVariable(FOREACH_DELETED_SO_FAR_VAR, existingDeleted);
     }
 
     // Once per input row rather than once per iteration: the list FOREACH iterates is usually the very list being
@@ -343,8 +351,8 @@ public class ForeachStep extends AbstractExecutionStep {
     if (written != null)
       RowAliases.propagateUpdates(inputRow, written);
 
-    if (!deletedSoFar.isEmpty() && inputRow instanceof ResultInternal mutableRow)
-      DeleteStep.markDeletedReferences(mutableRow, deletedSoFar);
+    if (!activeDeleted.isEmpty() && inputRow instanceof ResultInternal mutableRow)
+      DeleteStep.markDeletedReferences(mutableRow, activeDeleted);
   }
 
   private static boolean holdsCollection(final Result row) {
