@@ -22,6 +22,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -50,6 +51,18 @@ public abstract sealed class LabelPredicate {
    * {@code [r:R&!S]} returns every relationship {@code [r:R]} returns that is not an {@code S}.
    */
   public abstract boolean matchesEdgeType(DocumentType edgeType);
+
+  /**
+   * True when the predicate holds for a node that has no schema type and carries exactly these labels: a virtual node
+   * ({@code create.vNode}, {@code meta.graph}), whose labels are its own list and have no hierarchy behind them.
+   */
+  public abstract boolean matchesLabels(Collection<String> labels);
+
+  /**
+   * True when the predicate holds for a relationship that has no schema type and is named {@code typeName}: a virtual
+   * relationship ({@code create.vRelationship}, {@code meta.graph}).
+   */
+  public abstract boolean matchesTypeName(String typeName);
 
   /**
    * The label names every match must carry: the plain positive names among the top-level conjuncts. A node that
@@ -96,6 +109,16 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean matchesLabels(final Collection<String> labels) {
+      return labels.contains(label);
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName) {
+      return label.equals(typeName);
+    }
+
+    @Override
     public String toString() {
       return label;
     }
@@ -125,6 +148,16 @@ public abstract sealed class LabelPredicate {
     }
 
     @Override
+    public boolean matchesLabels(final Collection<String> labels) {
+      return !labels.isEmpty();
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName) {
+      return typeName != null;
+    }
+
+    @Override
     public String toString() {
       return "%";
     }
@@ -146,6 +179,16 @@ public abstract sealed class LabelPredicate {
     @Override
     public boolean matchesEdgeType(final DocumentType edgeType) {
       return !operand.matchesEdgeType(edgeType);
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels) {
+      return !operand.matchesLabels(labels);
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName) {
+      return !operand.matchesTypeName(typeName);
     }
 
     @Override
@@ -174,6 +217,22 @@ public abstract sealed class LabelPredicate {
     public boolean matchesEdgeType(final DocumentType edgeType) {
       for (final LabelPredicate operand : operands)
         if (!operand.matchesEdgeType(edgeType))
+          return false;
+      return true;
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels) {
+      for (final LabelPredicate operand : operands)
+        if (!operand.matchesLabels(labels))
+          return false;
+      return true;
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName) {
+      for (final LabelPredicate operand : operands)
+        if (!operand.matchesTypeName(typeName))
           return false;
       return true;
     }
@@ -214,6 +273,22 @@ public abstract sealed class LabelPredicate {
     public boolean matchesEdgeType(final DocumentType edgeType) {
       for (final LabelPredicate operand : operands)
         if (operand.matchesEdgeType(edgeType))
+          return true;
+      return false;
+    }
+
+    @Override
+    public boolean matchesLabels(final Collection<String> labels) {
+      for (final LabelPredicate operand : operands)
+        if (operand.matchesLabels(labels))
+          return true;
+      return false;
+    }
+
+    @Override
+    public boolean matchesTypeName(final String typeName) {
+      for (final LabelPredicate operand : operands)
+        if (operand.matchesTypeName(typeName))
           return true;
       return false;
     }

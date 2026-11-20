@@ -28,8 +28,8 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * {@code CALL create.vNode(labels, properties) YIELD node}: the procedure form of the {@link CreateVNode} function, as APOC
- * declares both. It yields the virtual node under {@code node}; the CALL of the function alone yielded its properties.
+ * {@code CALL create.vNode(labels, properties = {}) YIELD node}: the procedure form of the {@link CreateVNode} function, as
+ * APOC declares both. It yields the virtual node under {@code node}; the CALL of the function alone yielded its properties.
  */
 public class CreateVNodeProcedure implements CypherProcedure {
   public static final String NAME = "create.vNode";
@@ -41,7 +41,8 @@ public class CreateVNodeProcedure implements CypherProcedure {
 
   @Override
   public int getMinArgs() {
-    return 2;
+    // APOC declares props with a default of {} on the procedure, as it does on the function
+    return 1;
   }
 
   @Override
@@ -62,7 +63,7 @@ public class CreateVNodeProcedure implements CypherProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final ResultInternal result = new ResultInternal();
-    result.setProperty("node", CreateVNode.create(NAME, args[0], args[1], context));
+    result.setProperty("node", CreateVNode.create(NAME, args[0], args.length > 1 ? args[1] : null, context));
     return Stream.of(result);
   }
 }

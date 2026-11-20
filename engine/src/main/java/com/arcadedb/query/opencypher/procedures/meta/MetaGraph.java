@@ -86,7 +86,7 @@ public class MetaGraph extends AbstractMetaProcedure {
     final Database database = context.getDatabase();
     // Validated as a map, otherwise unused: APOC answers the whole graph whatever includeLabels/includeRels say
     optionalMapArg(args, 0, "config");
-    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), false);
+    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), false, newWorkGuard(context));
 
     final Map<String, Vertex> nodesByLabel = new LinkedHashMap<>();
     for (final Map.Entry<String, Long> label : counts.labels.entrySet()) {
