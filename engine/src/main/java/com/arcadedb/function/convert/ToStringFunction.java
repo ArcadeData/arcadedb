@@ -21,8 +21,10 @@ package com.arcadedb.function.convert;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -60,13 +62,21 @@ public class ToStringFunction implements StatelessFunction {
     // Temporal types
     if (args[0] instanceof CypherTemporalValue)
       return args[0].toString();
-    // Unsupported types: List, Map, Node, Relationship, Path. This is a client-side type error (the
+    // A point is a map at runtime: ArcadeDB has no dedicated geometry type yet (issue #4870), so point() builds a
+    // map of coordinate keys. Neo4j renders a point as the point literal, and toString() must do the same instead of
+    // refusing the value (issue #12397). A map that is not a point is still refused, as it is in Neo4j.
+    if (args[0] instanceof Map<?, ?> map) {
+      if (CypherValues.isPointShaped(map))
+        return CypherPointFunction.renderPoint(map);
+      throw new CommandSemanticException("TypeError: InvalidArgumentValue - toString() cannot convert Map");
+    }
+    // Unsupported types: List, Node, Relationship, Path. This is a client-side type error (the
     // query passes the wrong value type to a scalar function), classified by the openCypher TCK as a
     // runtime TypeError/InvalidArgumentValue. Throw a CommandSemanticException so the transport layer
     // reports it as a 400 client error with the descriptive message, not a 500 transaction-commit
     // failure. See issue #5203. A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, a LIST all the
     // same: it used to answer the Java identity string "[J@..." (issue #11582).
-    if (args[0] instanceof List || MultiValue.isSequenceArray(args[0]) || args[0] instanceof Map
+    if (args[0] instanceof List || MultiValue.isSequenceArray(args[0])
         || args[0] instanceof Vertex || args[0] instanceof Edge
         || args[0] instanceof Document || args[0] instanceof TraversalPath)
       throw new CommandSemanticException("TypeError: InvalidArgumentValue - toString() cannot convert " + args[0].getClass().getSimpleName());

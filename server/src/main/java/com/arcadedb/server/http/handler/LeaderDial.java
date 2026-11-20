@@ -140,7 +140,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * <li>{@code shutdownNow()} is prompt - it cancels the in-flight exchanges rather than waiting them out - but
    * it only <em>requests</em> the shutdown: the selector thread and the executor unwind after it returns, so
    * {@code isTerminated()} read straight afterwards is a race (issue #7677, the intermittently red
-   * {@code Issue7507ForwarderClientLifecycleTest});</li>
+   * {@code ForwarderClientLifecycleTest.StopReleasesForwarderClient});</li>
    * <li>{@code close()} does leave the client terminated, but it waits for every submitted operation to
    * complete first, with no bound of its own (issue #7739).</li>
    * </ul>

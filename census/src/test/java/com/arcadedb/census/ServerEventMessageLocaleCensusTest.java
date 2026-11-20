@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code String.format} and no {@code Locale}. The text is the body of a server event that {@code GET /api/v1/server} serves to
  * any REST client, so under a comma-decimal locale the figures carried a comma, and under a locale with its own numbering system
  * they were not even ASCII digits: one cluster answered with a different string from each node. The messages are pinned by
- * {@code Issue9807ServerMonitorLocaleTest}.
+ * {@code ServerMonitorTest.DefaultLocale}.
  * <p>
  * The census ranges over the authority (#11288): every call of {@code ServerEventLog.reportEvent}, or of an implementation of it,
  * in the compiled classes of every module ({@link CompiledClasses}), with its message followed back to what made it

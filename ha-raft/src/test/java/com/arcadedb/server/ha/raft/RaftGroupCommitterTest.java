@@ -160,7 +160,7 @@ class RaftGroupCommitterTest {
    * <p>
    * Issue #4743 narrowed the cap to the SMALLER of the gRPC frame limit and the Ratis appender byte
    * limit, and made the failure non-retryable - retrying an oversized entry makes every newly elected
-   * leader step down in turn. See {@link Issue4743OversizedRaftEntryTest} for those guarantees.
+   * leader step down in turn. See {@link RaftLogEntryCodecTest.OversizedRaftEntry} for those guarantees.
    */
   @Test
   void oversizeEntryRejectedSynchronouslyWithGuidance() {

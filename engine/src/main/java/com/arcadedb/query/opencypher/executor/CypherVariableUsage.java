@@ -44,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Answers one question for both Cypher executors: is a relationship variable used anywhere outside
@@ -300,7 +301,10 @@ public final class CypherVariableUsage {
 
   private static boolean removeReadsVariable(final RemoveClause removeClause, final String variable) {
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
-      if (variable.equals(item.getVariable()) || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+      if (variable.equals(item.getVariable())
+          || expressionReferencesVariable(item.getTargetExpression(), variable)
+          || expressionReferencesVariable(item.getKeyExpression(), variable)
+          || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
         return true;
     return false;
   }
@@ -367,7 +371,16 @@ public final class CypherVariableUsage {
   public static boolean expressionReferencesVariable(final Expression expression, final String variable) {
     if (expression == null || variable == null)
       return false;
-    final VariableReferenceFinder finder = new VariableReferenceFinder(variable);
+    final VariableReferenceFinder finder = new VariableReferenceFinder(Set.of(variable));
+    CypherExpressionWalker.walk(expression, finder);
+    return finder.found;
+  }
+
+  /** {@link #expressionReferencesVariable(Expression, String)} for any of several names: true at the first read of one of them. */
+  public static boolean expressionReferencesAnyVariable(final Expression expression, final Set<String> variables) {
+    if (expression == null || variables == null || variables.isEmpty())
+      return false;
+    final VariableReferenceFinder finder = new VariableReferenceFinder(variables);
     CypherExpressionWalker.walk(expression, finder);
     return finder.found;
   }
@@ -390,13 +403,13 @@ public final class CypherVariableUsage {
   public static boolean expressionReferencesVariable(final BooleanExpression expression, final String variable) {
     if (expression == null || variable == null)
       return false;
-    final VariableReferenceFinder finder = new VariableReferenceFinder(variable);
+    final VariableReferenceFinder finder = new VariableReferenceFinder(Set.of(variable));
     CypherExpressionWalker.walk(expression, finder);
     return finder.found;
   }
 
   /**
-   * A {@link CypherExpressionWalker.Visitor} that stops at the first read of one target variable name,
+   * A {@link CypherExpressionWalker.Visitor} that stops at the first read of one of the target variable names,
    * as a plain variable, a property access, a map-projection base, or a re-mention inside a nested
    * MATCH/CREATE/MERGE pattern. A nested subquery body (a {@code CALL}, or the parsed body of an
    * {@code EXISTS}/{@code COUNT}/{@code COLLECT}) auto-correlates to the names in scope where it was
@@ -408,11 +421,11 @@ public final class CypherVariableUsage {
    * {@link #visit(Expression)} never sees (issue #6567 review).
    */
   private static final class VariableReferenceFinder implements CypherExpressionWalker.Visitor {
-    private final String  variable;
-    private       boolean found = false;
+    private final Set<String> variables;
+    private       boolean     found = false;
 
-    VariableReferenceFinder(final String variable) {
-      this.variable = variable;
+    VariableReferenceFinder(final Set<String> variables) {
+      this.variables = variables;
     }
 
     @Override
@@ -420,9 +433,9 @@ public final class CypherVariableUsage {
       if (found)
         return;
       switch (expression) {
-      case VariableExpression variableExpression -> found = variable.equals(variableExpression.getVariableName());
-      case PropertyAccessExpression property -> found = variable.equals(property.getVariableName());
-      case MapProjectionExpression projection -> found = variable.equals(projection.getVariableName());
+      case VariableExpression variableExpression -> found = contains(variableExpression.getVariableName());
+      case PropertyAccessExpression property -> found = contains(property.getVariableName());
+      case MapProjectionExpression projection -> found = contains(projection.getVariableName());
       default -> {
         // Not a name-carrying node; the walk still descends into its children.
       }
@@ -433,22 +446,26 @@ public final class CypherVariableUsage {
     public void visitPattern(final PathPattern pattern) {
       if (found)
         return;
-      if (variable.equals(pattern.getPathVariable())) {
+      if (contains(pattern.getPathVariable())) {
         found = true;
         return;
       }
       if (pattern.getNodes() != null)
         for (final NodePattern node : pattern.getNodes())
-          if (node != null && variable.equals(node.getVariable())) {
+          if (node != null && contains(node.getVariable())) {
             found = true;
             return;
           }
       if (pattern.getRelationships() != null)
         for (final RelationshipPattern relationship : pattern.getRelationships())
-          if (relationship != null && variable.equals(relationship.getVariable())) {
+          if (relationship != null && contains(relationship.getVariable())) {
             found = true;
             return;
           }
+    }
+
+    private boolean contains(final String name) {
+      return name != null && variables.contains(name);
     }
   }
 }

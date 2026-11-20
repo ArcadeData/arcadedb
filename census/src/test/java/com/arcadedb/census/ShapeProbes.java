@@ -185,6 +185,21 @@ final class ShapeProbes {
       return new DatabaseOperationException(message);
     }
 
+    // issue #11633: a type outside the ArcadeDB exceptions was outside the census
+    static RuntimeException asAnArgumentFailure(final String name) {
+      return new IllegalArgumentException("Edge type '" + name + "' not found");
+    }
+
+    // a message that is not the first argument of the constructor
+    static RuntimeException withTheMessageSecond() {
+      return new MissingObjectRefusal(404, "Index does not exist");
+    }
+
+    // a message handed through a parameter of type Object
+    static Error throughAnObjectParameter() {
+      return new AssertionError((Object) "Index not found");
+    }
+
     // not offenders: the schema family, and a refusal that names no missing object
     static RuntimeException asASchemaFailure(final String name) {
       return new SchemaException("Index '" + name + "' not found");
@@ -192,6 +207,39 @@ final class ShapeProbes {
 
     static RuntimeException anotherFailure(final String name) {
       return new CommandExecutionException("Cannot read " + name);
+    }
+  }
+
+  /** A throwable whose message is its second argument; its own super(...) is a delegation, not a site. */
+  static final class MissingObjectRefusal extends RuntimeException {
+    MissingObjectRefusal(final int code, final String message) {
+      super(code + ": " + message);
+    }
+  }
+
+  /** A throwable constructor that builds a refusal of another type: that construction is a site of its own. */
+  static final class MissingObjectWrapping extends RuntimeException {
+    MissingObjectWrapping() {
+      super(new IllegalArgumentException("Type does not exist"));
+    }
+  }
+
+  /**
+   * A throwable constructor that builds a refusal of its own super class: the super(...) call is a delegation, the new
+   * RuntimeException is a site, although both calls name the same constructor.
+   */
+  static final class MissingObjectThrowing extends RuntimeException {
+    MissingObjectThrowing(final boolean refuse) {
+      super("outer");
+      if (refuse)
+        throw new RuntimeException("Index not found");
+    }
+  }
+
+  /** A throwable whose constructor spells a missing-object message of its own: a site, though it is a call to super(...). */
+  static final class MissingObjectFixedMessage extends RuntimeException {
+    MissingObjectFixedMessage() {
+      super("Index not found");
     }
   }
 

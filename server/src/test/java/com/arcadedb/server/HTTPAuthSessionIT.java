@@ -478,4 +478,58 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
       }
     });
   }
+
+  /*
+   * Issue #7247. The {@code catch (Exception)} around the Authorization header discarded the cause of every failure
+   * it saw, and the reason it could not simply log one is that a mistyped header is CLIENT-triggerable: a stack
+   * trace per request would be a log flood an anonymous caller controls.
+   * <p>
+   * A header that cannot be Base64-decoded is now answered where it happens, exactly as a header that decodes to
+   * something other than {@code user:password} already was - 401 since issue #10109 (403 before), no exception raised. What still reaches the catch
+   * is an internal fault, which is why that arm can now log its cause and chain it.
+   */
+
+  // Regression: #7247 a malformed Basic header is a 401 answered where it happens
+  @Test
+  void aBasicHeaderThatIsNotBase64Is401() throws Exception {
+    assertThat(statusForAuthorizationHeader("Basic !!!not-base64!!!")).isEqualTo(401);
+  }
+
+  // Regression: #7247 a malformed Basic header is a 401 answered where it happens
+  @Test
+  void aBasicHeaderWithNoPayloadIs401() throws Exception {
+    assertThat(statusForAuthorizationHeader("Basic")).isEqualTo(401);
+  }
+
+  // Regression: #7247 a malformed Basic header is a 401 answered where it happens
+  @Test
+  void aBasicHeaderDecodingToSomethingElseIsStill401() throws Exception {
+    // The pre-existing sibling of the two above: valid Base64 that is not 'user:password'.
+    assertThat(statusForAuthorizationHeader(
+        "Basic " + Base64.getEncoder().encodeToString("nocolon".getBytes()))).isEqualTo(401);
+  }
+
+  // Regression: #7247 a malformed Basic header is a 401 answered where it happens
+  /**
+   * The control: without it every assertion above would also pass against a server that refused the request for
+   * an unrelated reason, which is exactly what a stray process on port 2480 produces.
+   */
+  @Test
+  void aWellFormedBasicHeaderStillAuthenticates() throws Exception {
+    assertThat(statusForAuthorizationHeader("Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))).isEqualTo(200);
+  }
+
+  private int statusForAuthorizationHeader(final String authorization) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        getServerHttpUrl("/api/v1/query/graph/sql/select%201")).openConnection();
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty("Authorization", authorization);
+    try {
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
+  }
 }

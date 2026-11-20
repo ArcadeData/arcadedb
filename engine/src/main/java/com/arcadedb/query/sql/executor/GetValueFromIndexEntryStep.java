@@ -43,6 +43,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -159,6 +160,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean                     parallelDecided;
   private ParallelTypeScan            parallelRound;
   private int                         parallelRounds;
+  // A physical-order load reads every entry before it loads a record (issue #11790): the condition of the seek a loaded record
+  // is held to once a commit published since the entries were read, null when it cannot be checked on the record, and the
+  // publication sequence the entries were read from
+  private FetchFromIndexStep.SeekCheck loadSeekCheck;
+  private long                        loadEntriesSequence;
 
   /**
    * @param context         the execution context
@@ -313,8 +319,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    */
   private List<PhysicalOrderSliceStep> unitsOfCurrentChunk(final CommandContext context, final int entriesPerUnit) {
     final List<PhysicalOrderSliceStep> units = new ArrayList<>();
-    fetcher.slices(entriesPerUnit,
-        (bucketId, positions, from, to) -> units.add(PhysicalOrderSliceStep.ofPositions(context, bucketId, positions, from, to)));
+    // A worker evaluates the seek through its own context, on its own copy of the condition
+    fetcher.slices(entriesPerUnit, (bucketId, positions, from, to) -> units.add(
+        PhysicalOrderSliceStep.ofPositions(context, bucketId, positions, from, to, loadRecheck())));
     final List<Object> passThrough = fetcher.takePassThrough();
     if (passThrough != null)
       units.add(PhysicalOrderSliceStep.ofEntries(context, passThrough, GetValueFromIndexEntryStep::toResult));
@@ -461,9 +468,16 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               } else {
                 nextItem = toResult(finalVal, context);
                 if (nextItem == null) {
-                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369)
-                  recovered.addAll(reconcile(indexStep, val.getProperty("key"), rid, context, guard));
+                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369). A row
+                  // found again is held to the range too: its RID may now name a record a commit wrote outside it (issue #11790)
+                  for (final Result row : reconcile(indexStep, key, rid, context, guard))
+                    if (rangeRowStillMatches(indexStep, row, key))
+                      recovered.add(row);
                   nextItem = recovered.pollFirst();
+                } else if (!noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence())
+                    && !rangeRowStillMatches(indexStep, nextItem, key)) {
+                  // A commit since the scan began moved the record out of the range (issue #11790): the entry is stale
+                  nextItem = null;
                 }
               }
             } else
@@ -559,6 +573,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean holdsKey(final FetchFromIndexStep indexStep, final Result row, final Object key) {
     ++verifiedRows;
     return row.getElement().map(record -> indexStep.isKeyOf(record, key)).orElse(false);
+  }
+
+  private boolean rangeRowStillMatches(final FetchFromIndexStep indexStep, final Result row, final Object entryKey) {
+    ++verifiedRows;
+    return row.getElement().map(record -> indexStep.isStillInRange(record, entryKey)).orElse(true);
   }
 
   private void loseEntry(final RID rid) {
@@ -666,6 +685,27 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     return (sequence & 1) == 0 && database.getPageManager().getPublicationSequence() == sequence;
   }
 
+  /**
+   * Whether a record of a range loaded in physical order is still a row of it (issue #11790): the RIDs were all read before the
+   * first record was loaded, so a commit published since then may have moved the record out of the range. Checked only then.
+   */
+  private boolean keepsLoaded(final Record record, final CommandContext context) {
+    if (loadSeekCheck == null || !(record instanceof Document document) || noCommitSince(context.getDatabase(), loadEntriesSequence))
+      return true;
+    ++verifiedRows;
+    return loadSeekCheck.matches(document, context);
+  }
+
+  /** {@link #keepsLoaded} for a slice a worker of a parallel scan loads, or null when the seek cannot be checked on the record. */
+  private BiPredicate<Record, CommandContext> loadRecheck() {
+    if (loadSeekCheck == null)
+      return null;
+    final FetchFromIndexStep.SeekCheck check = loadSeekCheck.copy();
+    final long sequence = loadEntriesSequence;
+    return (record, workerContext) -> !(record instanceof Document document) || noCommitSince(workerContext.getDatabase(), sequence)
+        || check.matches(document, workerContext);
+  }
+
   private static boolean isRepeatableRead(final DatabaseInternal database) {
     return database.isTransactionActive()
         && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
@@ -704,7 +744,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       Object entry;
       while ((entry = fetcher.nextRecord(context.getDatabase())) != null) {
         guard.checkPeriodically((int) ++rowCount);
-        final Result result = entry instanceof Record record ? new ResultInternal(record) : toResult(entry, context);
+        final Result result = entry instanceof Record record ?
+            (keepsLoaded(record, context) ? new ResultInternal(record) : null) :
+            toResult(entry, context);
         if (result != null)
           return result;
       }
@@ -760,6 +802,12 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       }
       case PHYSICAL_ORDER -> strategy = Strategy.PHYSICAL_ORDER;
       case PHYSICAL_ORDER_CHUNKED -> strategy = Strategy.PHYSICAL_ORDER_CHUNKED;
+      }
+      if (fetcher != null) {
+        // Sampled by the first pass, before it read an entry. The chunks a later pass reads are held to it too: that checks a
+        // record a commit between the passes changed, never skips one a commit since its own pass changed
+        loadSeekCheck = indexStep.seekCheck();
+        loadEntriesSequence = indexStep.entriesSequence();
       }
       // Kept on the step: PROFILE is rendered after close() released the fetcher
       matchedEntries = fetcher != null ? fetcher.getMatched() : 0;
@@ -1049,6 +1097,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     matchedEntries = 0;
     parallelDecided = false;
     parallelRounds = 0;
+    loadSeekCheck = null;
     releaseRuntimeSteps();
   }
 

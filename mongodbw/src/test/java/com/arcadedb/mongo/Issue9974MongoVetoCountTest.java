@@ -110,7 +110,7 @@ public class Issue9974MongoVetoCountTest extends BaseMongoServerTest {
     assertThat(collection.countDocuments(eq("touched", true))).isEqualTo(2L);
   }
 
-  /** Without a filter the update runs as one SQL UPDATE: the same two counts must come out of it. */
+  /** An update without a filter: the same two counts must come out of it (it used to run as one SQL UPDATE, which answered its own). */
   @Test
   void anUnfilteredUpdateManyCountsTheVetoedRecordAsMatchedButNotModified() {
     vetoUpdateOf("keep");
