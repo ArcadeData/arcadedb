@@ -81,6 +81,28 @@ class CypherPatternExpressionNonBooleanWhereIssue11888Test extends TestHelper {
           .hasMessageContaining("contexts that evaluate to a boolean");
   }
 
+  /**
+   * The walk that tells a boolean position from the rest passes through one level of the expression grammar at a time, and
+   * a level it passes through by mistake would let a pattern in as an operand. One operator per level of the grammar that
+   * holds an operand: additive, multiplicative, power, string and list comparison.
+   */
+  @Test
+  void patternAsAnOperandOfEveryOperatorLevelIsRefused() {
+    for (final String statement : List.of(//
+        "MATCH (p:P) WHERE (p)-->() + 1 > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE 1 - (p)-->() > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE 'x' || (p)-->() = 'x' RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() * 2 > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE 2 / (p)-->() > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() % 2 > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() ^ 2 > 0 RETURN p.n AS n",//
+        "MATCH (p:P) WHERE (p)-->() STARTS WITH 'x' RETURN p.n AS n",//
+        "MATCH (p:P) WHERE 'x' CONTAINS (p)-->() RETURN p.n AS n",//
+        "MATCH (p:P) WHERE 'x' = (p)-->() RETURN p.n AS n"))
+      assertThatThrownBy(() -> rows(statement)).as(statement).isInstanceOf(CommandParsingException.class)
+          .hasMessageContaining("contexts that evaluate to a boolean");
+  }
+
   @Test
   void everyPredicatePositionIsChecked() {
     for (final String statement : List.of(//
