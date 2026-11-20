@@ -320,9 +320,10 @@ final class CompiledClasses {
    * of {@link #methodsReaching}, walked forward from the callers instead of back from the callee. A call is followed into
    * the method the JVM resolves it to, up the super types of the owner it names, and - when it is dispatched (a virtual or
    * interface call, or a method reference to one) - into the method each sub type of that owner runs, its own override or one
-   * it inherits, so a helper reached through its interface or abstract base is reached. A lambda's body is reached through the method reference of
-   * the method it is written in, and the methods of an anonymous or local class with its constructor, since it exists only
-   * to be called back by whoever it is handed to. The anonymous and local classes of a root are roots.
+   * it inherits, so a helper reached through its interface or abstract base is reached. A lambda's body is reached through
+   * the method reference of the method it is written in, and the methods of an anonymous or local class with its
+   * constructor, since it exists only to be called back by whoever it is handed to. The anonymous and local classes of a root
+   * are roots.
    * <p>
    * {@code enters} decides which classes the walk may step into: a call into a class it refuses is not followed, and neither
    * is a dispatch from an owner it refuses, so the walk can stop at the boundary of what it describes (an importer stops at
