@@ -3202,8 +3202,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * {@link InsertError} instead of a stream-level {@code Status.INTERNAL} (issue #4198). The rows the context held in its
    * open transaction went with the failed commit or with the rollback after it, so they move from inserted/updated to
    * failed; the rows committed before - earlier batches under {@code PER_BATCH}, earlier rows under {@code PER_ROW} -
-   * stand (issue #12130). So do the {@code notApplied} rows the failure kept the stream from reaching. A client
-   * transaction is not the stream's to lose: its rows stay counted as they were.
+   * stand (issue #12130). So do the {@code notApplied} rows the failure kept the stream from reaching. A context that holds
+   * no transaction of its own has no open rows (see {@code InsertContext.ownsTransaction}): a client transaction is not the
+   * stream's to lose, and under {@code NONE} the rows are stored as they come, so their counts stay as they were.
    * <p>
    * {@code counts} is either the running totals or one chunk's acknowledgement. In an acknowledgement the open rows of
    * earlier chunks were acknowledged as inserted with those chunks, so they are counted as failed here without being taken
@@ -3211,8 +3212,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private static void recordTransactionFailure(final Counts counts, final InsertContext ctx, final long notApplied,
       final InsertError error) {
-    final long lostInserted = ctx.externalTransaction ? 0 : ctx.openInserted;
-    final long lostUpdated = ctx.externalTransaction ? 0 : ctx.openUpdated;
+    final long lostInserted = ctx.openInserted;
+    final long lostUpdated = ctx.openUpdated;
     counts.inserted -= Math.min(lostInserted, counts.inserted);
     counts.updated -= Math.min(lostUpdated, counts.updated);
     final long failed = lostInserted + lostUpdated + notApplied;
@@ -4800,10 +4801,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   ctx.totals.received += notApplied;
                   recordTransactionFailure(ctx.totals, ctx, notApplied, error);
                   recordTransactionFailure(perChunk, ctx, notApplied, error);
-                  // Makes the above true and lets the session go on: the rows just declared failed are rolled back
-                  // if the failure left their transaction open, rather than committed by a later COMMIT, and the
-                  // next chunk gets a transaction of its own in place of the one that ended here
-                  ctx.restartTransaction();
                   // intentionally do not advance watermark on failure; client may replay safely
 
                   sendResponse.accept(InsertResponse.newBuilder()
@@ -4811,6 +4808,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                           .setInserted(perChunk.inserted).setUpdated(perChunk.updated).setIgnored(perChunk.ignored)
                           .setFailed(perChunk.failed).addAllErrors(perChunk.errors).build())
                       .build());
+
+                  // Makes the acknowledgement true and lets the session go on: the rows just declared failed are rolled
+                  // back if the failure left their transaction open, rather than committed by a later COMMIT, and the
+                  // next chunk gets a transaction of its own in place of the one that ended here. After the
+                  // acknowledgement, so a transaction that cannot be begun does not cost the client the report of the
+                  // chunk that failed: the session then ends with the error of the unexpected-failure path below. The
+                  // next message is not handled before this one returns, so nothing can run in between
+                  ctx.restartTransaction();
                 }
 
                 call.request(1);
@@ -5191,8 +5196,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (Exception e) {
         c.err(insertError(c.received - 1, "DB_ERROR", e));
       }
-      ctx.openInserted += c.inserted - insertedBefore;
-      ctx.openUpdated += c.updated - updatedBefore;
+      if (ctx.ownsTransaction) {
+        ctx.openInserted += c.inserted - insertedBefore;
+        ctx.openUpdated += c.updated - updatedBefore;
+      }
 
       // The batch is the stream's, not the chunk's: it spans chunks smaller than server_batch_size (issue #12130)
       if (ctx.opts.getTransactionMode() == TransactionMode.PER_BATCH && ++ctx.inBatch >= serverBatchSize(ctx)) {
@@ -5639,8 +5646,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String sessionId = UUID.randomUUID().toString();
     long received = 0;
 
+    // Issue #12130: whether this context begins, and so holds, a transaction of its own. Not under NONE (the caller manages
+    // it, the rows are stored as they come), not for validate_only (nothing is stored) and not inside a client transaction
+    // (the client owns it): in each of those a failure has no transaction of the stream's to lose
+    final boolean ownsTransaction;
+
     // Issue #12130: the rows of the PER_BATCH batch open so far, carried across chunks, and the rows inserted and updated
-    // in the transaction this context holds open, which a failed commit or a rollback takes with it. Reset by every commit
+    // in the transaction this context holds open, which a failed commit or a rollback takes with it. Reset by every commit.
+    // The open rows are counted only when the context owns a transaction
     int  inBatch;
     long openInserted;
     long openUpdated;
@@ -5666,12 +5679,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.updateCols = opts.getUpdateColumnsOnConflictList();
       this.externalTransaction = false;
 
-      if (!opts.getValidateOnly()) {
-        if (opts.getTransactionMode() == TransactionMode.PER_STREAM || opts.getTransactionMode() == TransactionMode.PER_BATCH
-            || opts.getTransactionMode() == TransactionMode.PER_REQUEST || opts.getTransactionMode() == TransactionMode.PER_ROW) {
-          db.begin();
-        }
-      }
+      final TransactionMode mode = opts.getTransactionMode();
+      this.ownsTransaction = !opts.getValidateOnly() && (mode == TransactionMode.PER_STREAM || mode == TransactionMode.PER_BATCH
+          || mode == TransactionMode.PER_REQUEST || mode == TransactionMode.PER_ROW);
+      if (ownsTransaction)
+        db.begin();
 
       // Issue #4806: if anything after db.begin() throws, the caller never receives this context (it is
       // not yet stored in ctxRef), so its mid-stream failure path cannot roll the just-begun transaction
@@ -5694,6 +5706,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.opts = opts;
       this.db = externalDb;
       this.externalTransaction = true;
+      this.ownsTransaction = false;
       this.keyCols = opts.getKeyColumnsList();
       this.keyColsSet = Set.copyOf(this.keyCols);
       this.updateCols = opts.getUpdateColumnsOnConflictList();
@@ -5823,18 +5836,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      * Ends the transaction a failed chunk leaves behind and begins the next one, for a stream that goes on after the
      * failure ({@code InsertBidirectional}). A failed commit has already ended the transaction, and without a new one every
      * later chunk and the final {@code COMMIT} fail with "Transaction not begun"; any other failure leaves it open with
-     * rows the stream has just reported as failed, which a later commit would persist. A client transaction is neither
-     * rolled back nor replaced: it is the client's. Must run on the thread the transaction is bound to.
+     * rows the stream has just reported as failed, which a later commit would persist. A context that holds no transaction
+     * of its own begins none: a client transaction is neither rolled back nor replaced, it is the client's, and under
+     * {@code NONE} or {@code validate_only} a transaction begun here would be one nothing commits. Must run on the thread
+     * the transaction is bound to.
      */
     void restartTransaction() {
       forgetOpenRows();
-      if (externalTransaction)
+      if (!ownsTransaction)
         return;
       abortTransaction();
-      if (!opts.getValidateOnly()) {
-        db.begin();
-        captureTransaction();
-      }
+      db.begin();
+      captureTransaction();
     }
 
     /** The open transaction is over, committed or lost, and the next one starts empty. */

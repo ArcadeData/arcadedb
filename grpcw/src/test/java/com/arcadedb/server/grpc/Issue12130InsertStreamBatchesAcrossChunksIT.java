@@ -293,6 +293,103 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
     assertThat(summary.getFailed()).isEqualTo(20);
   }
 
+  /**
+   * {@code NONE} leaves the transaction to the caller, so the stream holds no transaction of its own and has none to lose:
+   * a chunk the stream refuses must not move the rows it has inserted before to failed.
+   */
+  @Test
+  void noneKeepsTheRowsInsertedBeforeAChunkTheStreamRefuses() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final InsertSummary summary = insertStream(InsertOptions.TransactionMode.NONE, 0, 3, 10, 2);
+
+    assertThat(storedRows()).as("the rows of the two chunks before the refused one are stored as they come").isEqualTo(20);
+    assertThat(summary.getReceived()).isEqualTo(30);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(20);
+    assertThat(summary.getFailed()).as("the rows of the refused chunk").isEqualTo(10);
+    assertThat(summary.getErrorsList()).hasSize(1);
+    assertThat(summary.getErrors(0).getCode()).isEqualTo("CONTRACT_VIOLATION");
+  }
+
+  /**
+   * A {@code NONE} session that goes on after a failed chunk is not moved into a transaction nothing commits: what the
+   * session acknowledges as inserted is what is stored once it is committed and closed.
+   */
+  @Test
+  void insertBidirectionalNoneAcknowledgesWhatIsStored() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final BidiSession session = new BidiSession(InsertOptions.TransactionMode.NONE, 0);
+
+    command("DROP TYPE " + typeName + " UNSAFE");
+    final BatchAck failed = session.send(0, 10);
+    assertThat(failed.getInserted()).isZero();
+    assertThat(failed.getFailed()).as("the chunk never applied").isEqualTo(10);
+    assertThat(failed.getErrorsList()).hasSize(1);
+
+    command("CREATE DOCUMENT TYPE " + typeName);
+    assertThat(session.send(1, 10).getInserted()).isEqualTo(10);
+    assertThat(session.send(2, 10).getInserted()).isEqualTo(10);
+
+    final InsertSummary summary = session.commit();
+    assertThat(storedRows()).as("the rows 10..29, acknowledged as inserted").isEqualTo(20);
+    assertThat(summary.getReceived()).isEqualTo(30);
+    assertThat(summary.getInserted()).as("inserted must match the rows stored").isEqualTo(20);
+    assertThat(summary.getFailed()).isEqualTo(10);
+  }
+
+  /**
+   * A chunk of a stream inside a client transaction that the stream refuses does not take the rows the stream put into the
+   * transaction before: they are the client's to commit or roll back, and the summary keeps counting them as inserted. The
+   * batch of 5 rows is no commit inside a client transaction either.
+   */
+  @Test
+  void aClientTransactionKeepsTheRowsOfAStreamThatRefusesALaterChunk() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final String transactionId = stub.beginTransaction(BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName())
+        .setCredentials(credentials()).build()).getTransactionId();
+    final InsertSummary summary = insertStream(InsertOptions.TransactionMode.PER_BATCH, 5, 2, 10, 1, transactionId);
+
+    assertThat(summary.getReceived()).isEqualTo(20);
+    assertThat(summary.getInserted()).as("the rows of the first chunk are in the client transaction").isEqualTo(10);
+    assertThat(summary.getFailed()).as("the rows of the refused chunk").isEqualTo(10);
+    assertThat(summary.getErrorsList()).hasSize(1);
+
+    assertThat(stub.commitTransaction(CommitTransactionRequest.newBuilder()
+        .setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).build()).setCredentials(credentials())
+        .build()).getSuccess()).isTrue();
+    assertThat(storedRows()).as("what the summary counted as inserted").isEqualTo(10);
+  }
+
+  /**
+   * {@code validate_only} stores nothing and holds no transaction, so a session that goes on after a failed chunk does not
+   * begin one: the chunks after it are validated as before and nothing is stored.
+   */
+  @Test
+  void insertBidirectionalValidateOnlyGoesOnAfterAFailedChunk() throws Exception {
+    createRowTypeWithExistingRow(1_000);
+
+    final BidiSession session = new BidiSession(InsertOptions.TransactionMode.PER_BATCH, 5, true);
+    assertThat(session.send(0, 10).getInserted()).as("nothing is inserted by a validation").isZero();
+
+    command("DROP TYPE " + typeName + " UNSAFE");
+    final BatchAck failed = session.send(1, 10);
+    assertThat(failed.getFailed()).as("the chunk never applied").isEqualTo(10);
+    assertThat(failed.getErrorsList()).hasSize(1);
+
+    command("CREATE DOCUMENT TYPE " + typeName);
+    final BatchAck after = session.send(2, 10);
+    assertThat(after.getErrorsList()).as("the chunk after the failed one").isEmpty();
+    assertThat(after.getFailed()).isZero();
+
+    final InsertSummary summary = session.commit();
+    assertThat(storedRows()).as("validate_only stores nothing").isZero();
+    assertThat(summary.getReceived()).isEqualTo(30);
+    assertThat(summary.getInserted()).isZero();
+    assertThat(summary.getFailed()).isEqualTo(10);
+  }
+
   /** Sends the chunks one by one, each after the acknowledgement of the previous one, then half-closes. */
   private BatchAck[] insertBidirectional(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
       final int rowsPerChunk) throws InterruptedException {
@@ -312,6 +409,11 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
     private final String                        sessionId;
 
     BidiSession(final InsertOptions.TransactionMode mode, final int serverBatchSize) throws InterruptedException {
+      this(mode, serverBatchSize, false);
+    }
+
+    BidiSession(final InsertOptions.TransactionMode mode, final int serverBatchSize, final boolean validateOnly)
+        throws InterruptedException {
       req = asyncStub.insertBidirectional(new StreamObserver<>() {
         @Override
         public void onNext(final InsertResponse value) {
@@ -329,7 +431,7 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
       });
       req.onNext(InsertRequest.newBuilder()
           .setStart(Start.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials())
-              .setOptions(options(mode, serverBatchSize)).build()).build());
+              .setOptions(options(mode, serverBatchSize).toBuilder().setValidateOnly(validateOnly).build()).build()).build());
       sessionId = answer("Started").getStarted().getSessionId();
     }
 
@@ -369,6 +471,12 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
    */
   private InsertSummary insertStream(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
       final int rowsPerChunk, final int contractBreaker) throws InterruptedException {
+    return insertStream(mode, serverBatchSize, chunks, rowsPerChunk, contractBreaker, null);
+  }
+
+  /** With a {@code transactionId}, the stream runs inside that client transaction, which the client commits or rolls back. */
+  private InsertSummary insertStream(final InsertOptions.TransactionMode mode, final int serverBatchSize, final int chunks,
+      final int rowsPerChunk, final int contractBreaker, final String transactionId) throws InterruptedException {
     final CountDownLatch done = new CountDownLatch(1);
     final AtomicReference<InsertSummary> summary = new AtomicReference<>();
     final AtomicReference<Throwable> error = new AtomicReference<>();
@@ -392,9 +500,14 @@ public class Issue12130InsertStreamBatchesAcrossChunksIT extends BaseGrpcServerT
 
     final InsertOptions options = options(mode, serverBatchSize);
     final InsertOptions changed = options.toBuilder().setConflictMode(InsertOptions.ConflictMode.CONFLICT_IGNORE).build();
-    for (int c = 0; c < chunks; c++)
-      req.onNext(chunk("issue-12130", c, rowsPerChunk).toBuilder().setOptions(c == contractBreaker ? changed : options)
-          .setLast(c == chunks - 1).build());
+    for (int c = 0; c < chunks; c++) {
+      final InsertChunk.Builder chunk = chunk("issue-12130", c, rowsPerChunk).toBuilder()
+          .setOptions(c == contractBreaker ? changed : options).setLast(c == chunks - 1);
+      if (transactionId != null)
+        // The credentials of the chunk, not of the options, authorize the client transaction
+        chunk.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).build()).setCredentials(credentials());
+      req.onNext(chunk.build());
+    }
     req.onCompleted();
 
     assertThat(done.await(30, TimeUnit.SECONDS)).as("InsertStream should terminate within 30s").isTrue();
