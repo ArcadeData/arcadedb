@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.executor.operators.ParallelSafeExpressions;
 import com.arcadedb.query.opencypher.rewriter.ProjectedExpressionSubstituter;
 import com.arcadedb.query.opencypher.rewriter.ProjectedOrderByNormalizer;
@@ -184,6 +185,9 @@ public class OrderByStep extends AbstractExecutionStep {
           heapLimit = OperationHeapLimit.of(context, "ORDER BY");
           try {
             materializeAndSort();
+            // Every input row has made its writes by now: the records the sorted rows hold are read as those writes left
+            // them (issue #12565)
+            WrittenCopy.resolveRows(context, sortedResults);
           } catch (final RuntimeException e) {
             releaseBuffer();
             throw e;

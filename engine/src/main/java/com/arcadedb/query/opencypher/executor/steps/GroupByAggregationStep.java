@@ -25,6 +25,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -146,6 +147,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       releaseHeap();
       throw e;
     }
+    // Every input row has made its writes by now: the records the groups hold are read as those writes left them (issue #12565)
+    WrittenCopy.resolveRows(context, results);
 
     return new ResultSet() {
       private int index = 0;
@@ -420,7 +423,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
           final Map<String, Object> overrides = new HashMap<>();
           for (final Map.Entry<String, StatelessFunction> funcEntry : innerFuncs.entrySet())
-            overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+            // the records collect() gathered, as the writes of every row left them (issue #12565)
+            overrides.put(funcEntry.getKey(), WrittenCopy.resolveValue(funcEntry.getValue().getAggregatedResult(), context));
           evaluator.setAggregationOverrides(overrides);
           try {
             final Object value = evaluator.evaluate(complexItem.expression, groupAgg.representativeRow, context);
