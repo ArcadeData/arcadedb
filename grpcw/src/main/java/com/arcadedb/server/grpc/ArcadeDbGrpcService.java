@@ -20,6 +20,7 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.opencypher.executor.steps.FinalProjectionStep;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.database.Database;
@@ -68,6 +69,7 @@ import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -581,6 +583,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // transaction's thread, so the slot goes with it there, where a forward to the leader or a wait on an explicit lock
     // gives it back (issue #10140). Left behind, those releases read an empty thread and hold the slot for the whole wait
     final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+    // The call's read consistency, read here for the same reason, and applied on the transaction's thread, where the
+    // statement reads (issue #11948)
+    final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
@@ -590,12 +595,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // where GrpcProtocolContextInterceptor tags the work, and RaftReplicatedDatabase tells a client from the
         // engine by the tag when it refuses requests on a database being replaced from the leader's snapshot.
         ProtocolContext.set(GRPC_PROTOCOL);
+        if (readConsistency != null)
+          readConsistency.applyTo(txCtx.db);
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         final QueryAdmissionGate.Adoption adoption = admission.adopt();
         try {
           return task.call();
         } finally {
           adoption.close();
+          if (readConsistency != null)
+            readConsistency.clear();
           if (binding != null)
             binding.close();
           if (runningQuery != null && runningQuery.isTerminated())
@@ -1188,9 +1197,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw new IllegalArgumentException("targetClass is required");
 
     final Schema schema = db.getSchema();
+    // getType refuses a missing type with a SchemaException, answered as one by every protocol (issue #11633)
     final DocumentType dt = schema.getType(cls);
-    if (dt == null)
-      throw new IllegalArgumentException("Class not found: " + cls);
 
     // All properties from the request (proto map) — nested under "record"
     final Map<String, GrpcValue> props = req.getRecord().getPropertiesMap();
@@ -2113,6 +2121,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // The commit is a gated RPC too: its slot goes with it to the transaction's thread (issue #10140), as in
       // submitToActiveTransaction
       final QueryAdmissionGate.Handoff admission = QueryAdmissionGate.getInstance().handOff();
+      // The response carries the read-your-writes bookmark of this commit (issue #11948). Bound only, not applied: a
+      // commit reads nothing, and the statements of the transaction had the consistency applied on its thread by
+      // submitToActiveTransaction. Nothing is set on a thread here, so there is nothing for this call to clear
+      final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+      if (readConsistency != null)
+        readConsistency.bind(txCtx.db);
       // Execute commit ON THE SAME THREAD that began the transaction
       Future<?> commitFuture = txCtx.executor.submit(() -> {
         // A statement of this transaction was terminated while this commit waited behind it: what it wrote was rolled
@@ -2253,7 +2267,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
 
       final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
-      scso.setOnCancelHandler(() -> cancelled.set(true));
+      onCancel(scso, cancelled);
 
       final int batchSize = Math.max(1, request.getBatchSize());
       final String language = langOrDefault(request.getLanguage());
@@ -2477,14 +2491,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           pending = null;
         }
 
-        if (r.isElement()) {
-          batch.addRecords(convertToGrpcRecord(r.getElement().get(), db));
-        } else {
-          GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-          for (String p : r.getPropertyNames())
-            rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
-          batch.addRecords(rb.build());
-        }
+        // The row, not the record behind it: a SELECT *, !name row must not stream the excluded column back and a
+        // SELECT *, x AS y row must keep its alias, exactly as ExecuteQuery answers them (issue #11942)
+        batch.addRecords(convertResultToGrpcRecord(r, db, projectionConfig));
 
         inBatch++;
         running++;
@@ -2558,19 +2567,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         Result r = rs.next();
 
-        if (r.isElement()) {
-
-          all.add(convertToGrpcRecord(r.getElement().get(), db));
-        } else {
-
-          GrpcRecord.Builder rb = GrpcRecord.newBuilder();
-
-          for (String p : r.getPropertyNames()) {
-            rb.putProperties(p, convertPropToGrpcValue(p, r, projectionConfig)); // overload below
-          }
-
-          all.add(rb.build());
-        }
+        // The row, not the record behind it, as in streamCursor (issue #11942)
+        all.add(convertResultToGrpcRecord(r, db, projectionConfig));
 
         if (maxMaterializedRows > 0 && all.size() > maxMaterializedRows) {
           throw Status.RESOURCE_EXHAUSTED
@@ -2650,6 +2648,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw e;
       }
     }
+  }
+
+  /**
+   * Sets {@code cancelled} when the client cancels the call. A server-streaming handler runs inside the call's half-close callback
+   * and keeps it until the stream ends, and gRPC delivers the call's other callbacks, the cancel handler included, on the same
+   * serialized executor: the handler set by {@code setOnCancelHandler} alone could only run once the stream was over. A stream the
+   * client cancelled therefore went on waiting for the transport to become ready until arcadedb.server.grpcStreamWriteTimeoutMs
+   * (60 s), holding its worker thread, its result set and its query admission slot, so that arcadedb.queryMaxConcurrent cancelled
+   * streams made every remote query wait. The call's context is cancelled as the cancel arrives, on the server's own executor
+   * and not on the call's serialized one (the gRPC server here has no executor of its own configured, so that is an unbounded
+   * cached pool and the cancel never queues behind a busy worker), and a listener with a direct executor sees it at once, as
+   * {@code GrpcAdmissionInterceptor} already does. The listener is not removed: the context is cancelled when the call ends,
+   * which clears its listeners, and outside a call the current context is the root one, which takes none.
+   */
+  private static void onCancel(final ServerCallStreamObserver<?> call, final AtomicBoolean cancelled) {
+    call.setOnCancelHandler(() -> cancelled.set(true));
+    Context.current().addListener(context -> cancelled.set(true), Runnable::run);
   }
 
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
@@ -3873,7 +3888,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<TimeSeriesQueryResult> call = (ServerCallStreamObserver<TimeSeriesQueryResult>) resp;
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    onCancel(call, cancelled);
     // Set before every terminal in the try; `cancelled` is set asynchronously and cannot guard a throwing terminal.
     boolean terminated = false;
 
@@ -4858,7 +4873,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // racing cancel shut the executor down between the cancelled check above and this submit
         // (onCompleted already guards this).
         try {
-          streamExecutor.submit(grpcContext.wrap(task));
+          // START resolves the database on this stream's own thread, which sets the call's read consistency there
+          // (issue #11948): no listener callback runs on that thread to clear it, so the task does
+          streamExecutor.submit(grpcContext.wrap(GrpcReadConsistencyInterceptor.clearingAfter(task)));
         } catch (final RejectedExecutionException ignore) {
           // a racing cancel shut the executor down; drop the message instead of throwing out of the callback
         }
@@ -5561,21 +5578,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       GrpcMap.Builder mb = GrpcMap.newBuilder();
       if (res.isElement()) {
         final Document element = res.toElement();
+        // A nested SELECT *, !@rid row keeps its exclusions too, as the top-level row does in convertResultToGrpcRecord (issue #11942)
+        final Set<String> excluded = res instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
         // A result that is just a record (a sub-query row) is that record, encoded as the request asks for records
-        if (res.getPropertyNames().equals(element.getPropertyNames()))
+        if (excluded == null && res.getPropertyNames().equals(element.getPropertyNames()))
           return toGrpcValue(element, pc);
         // A row with columns of its own besides the record (SELECT *, name AS alias; a Cypher RETURN n row): its columns, with the
         // record's @rid and @type, as the HTTP serializer sends it
-        if (element.getIdentity() != null && element.getIdentity().isValid())
+        if (element.getIdentity() != null && element.getIdentity().isValid() && !isExcluded(excluded, Property.RID_PROPERTY))
           mb.putEntries(Property.RID_PROPERTY, GrpcValue.newBuilder()
               .setLinkValue(GrpcLink.newBuilder().setRid(element.getIdentity().toString()).build()).setLogicalType("rid").build());
-        if (element.getType() != null)
+        if (element.getType() != null && !isExcluded(excluded, Property.TYPE_PROPERTY))
           mb.putEntries(Property.TYPE_PROPERTY, GrpcValue.newBuilder().setStringValue(element.getTypeName()).build());
       }
       try {
-        for (String k : res.getPropertyNames()) {
-          mb.putEntries(k, toGrpcValue(res.getProperty(k), pc));
-        }
+        // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+        for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(res).entrySet())
+          mb.putEntries(property.getKey(), toGrpcValue(property.getValue(), pc));
       } catch (Throwable ignore) {
       }
 
@@ -6077,6 +6096,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         bindPrincipalToCurrentThread(db, resolvedUsername(credentials));
 
+        // The call's read consistency, on the thread that runs its statements, and the database whose applied index
+        // its response carries (issue #11948). GrpcReadConsistencyInterceptor clears it when the callback ends
+        final GrpcReadConsistencyInterceptor.ReadConsistency readConsistency = GrpcReadConsistencyInterceptor.current();
+        if (readConsistency != null)
+          readConsistency.applyTo(db);
+
         return db;
       }
     }
@@ -6269,77 +6294,80 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
     GrpcRecord.Builder builder = GrpcRecord.newBuilder();
 
+    // The record attributes a SELECT *, !@rid projection excluded stay excluded: the row still wraps the record, but the
+    // statement asked not to answer them, as ResultInternal.toJSON() does over HTTP (issue #11942)
+    final Set<String> excluded = result instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
+
     // If this result wraps an element (Document/Vertex/Edge), get its metadata
     if (result.isElement()) {
       Document dbRecord = result.toElement();
 
-      if (dbRecord.getIdentity() != null) {
+      if (dbRecord.getIdentity() != null && !isExcluded(excluded, Property.RID_PROPERTY)) {
         builder.setRid(dbRecord.getIdentity().toString());
       }
 
-      if (dbRecord.getType() != null) {
+      if (dbRecord.getType() != null && !isExcluded(excluded, Property.TYPE_PROPERTY)) {
         builder.setType(dbRecord.getTypeName());
       }
     }
 
-    // HA-forwarded rows are non-element projections; recover the type from the @type property.
+    // HA-forwarded rows are non-element projections; recover the type from the @type property. Not for a row with a column that
+    // holds a record (SELECT @rid, @type, @this): that row is a projection the query made, which a forwarded record never is, and
+    // typing it turned it into a record whose only property was the column (issue #12196)
     if (builder.getType().isEmpty()) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
-      if (typeProperty instanceof String typeName && !typeName.isEmpty())
+      if (typeProperty instanceof String typeName && !typeName.isEmpty() && !holdsRecordColumn(result))
         builder.setType(typeName);
     }
+
+    // Issue #12196: a Cypher row that returns a node or a relationship (RETURN n) is the element plus its alias column. It goes out
+    // as the element, its own properties, as the HTTP serializer sends it: the alias column alone made a record whose only
+    // property was "n"
+    final Document projectedElement = result.isElement()
+        && result.getMetadata(FinalProjectionStep.PROJECTION_NAME_METADATA) != null ? result.toElement() : null;
 
     // Iterate over ALL properties from the Result, including aliases.
     // Null-valued projections must be included (unset GrpcValue) so clients can always
     // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     final boolean debug = LogManager.instance().isLoggable(this, Level.FINE);
-    for (String propertyName : result.getPropertyNames()) {
-      final Object value = result.getProperty(propertyName);
-
-      if (debug)
-        LogManager.instance()
-            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-                propertyName, summarizeJava(value), value == null ? "null" : value.getClass().getName());
-
-      final GrpcValue gv = projectionConfig != null ?
-          toGrpcValue(value, projectionConfig) :
-          toGrpcValue(value);
-
-      if (debug)
-        LogManager.instance()
-            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
-
-      builder.putProperties(propertyName, gv);
-    }
+    if (projectedElement != null) {
+      // the element's own properties, read by name, not the row's alias column (issue #12196)
+      for (final String propertyName : projectedElement.getPropertyNames())
+        putResultProperty(builder, propertyName, projectedElement.get(propertyName), projectionConfig, debug);
+    } else
+      // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+      for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet())
+        putResultProperty(builder, property.getKey(), property.getValue(), projectionConfig, debug);
 
     // Ensure @rid and @type are always in the properties map when there's an element
     // This matches JsonSerializer behavior and works around client-side limitations
     if (result.isElement()) {
       final Document document = result.toElement();
 
-      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null) {
+      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null
+          && !isExcluded(excluded, Property.RID_PROPERTY)) {
         builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
       }
 
       if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
-          && doc.getType() != null) {
+          && doc.getType() != null && !isExcluded(excluded, Property.TYPE_PROPERTY)) {
         builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
       }
 
       // @cat identifies the record's Java shape (document/vertex/edge), matching what JsonSerializer sends over
       // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
       // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
-      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY))
+      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY) && !isExcluded(excluded, Property.CAT_PROPERTY))
         builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(document instanceof Vertex ? "v" : document instanceof Edge ? "e" : "d"));
     }
 
     // If this is an Edge and @out/@in are not already in properties, add them
     if (result.isElement() && result.getElement().get() instanceof Edge edge) {
-      if (!builder.getPropertiesMap().containsKey("@out")) {
-        builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
+      if (!builder.getPropertiesMap().containsKey(Property.OUT_PROPERTY) && !isExcluded(excluded, Property.OUT_PROPERTY)) {
+        builder.putProperties(Property.OUT_PROPERTY, toGrpcValue(edge.getOut().getIdentity()));
       }
-      if (!builder.getPropertiesMap().containsKey("@in")) {
-        builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
+      if (!builder.getPropertiesMap().containsKey(Property.IN_PROPERTY) && !isExcluded(excluded, Property.IN_PROPERTY)) {
+        builder.putProperties(Property.IN_PROPERTY, toGrpcValue(edge.getIn().getIdentity()));
       }
     }
 
@@ -6347,6 +6375,40 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.getRid(), builder.getType(), builder.getPropertiesCount());
 
     return builder.build();
+  }
+
+  /** Puts one column of a row converted by {@link #convertResultToGrpcRecord}. */
+  private void putResultProperty(final GrpcRecord.Builder builder, final String propertyName, final Object value,
+      final ProjectionConfig projectionConfig, final boolean debug) {
+    if (debug)
+      LogManager.instance()
+          .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+              propertyName, summarizeJava(value), value == null ? "null" : value.getClass().getName());
+
+    final GrpcValue gv = projectionConfig != null ?
+        toGrpcValue(value, projectionConfig) :
+        toGrpcValue(value);
+
+    if (debug)
+      LogManager.instance()
+          .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+
+    builder.putProperties(propertyName, gv);
+  }
+
+  /**
+   * Whether a column of {@code result} holds a record, a document with an identity (issue #12196). It walks the columns, but is asked
+   * only for a row with no type of its own that has a String {@code @type} column: a plain projection row never reaches it.
+   */
+  private static boolean holdsRecordColumn(final Result result) {
+    for (final String name : result.getPropertyNames())
+      if (result.getProperty(name) instanceof Document document && document.getIdentity() != null)
+        return true;
+    return false;
+  }
+
+  private static boolean isExcluded(final Set<String> excluded, final String name) {
+    return excluded != null && excluded.contains(name);
   }
 
   private GrpcRecord convertToGrpcRecord(Record dbRecord, Database db) {
@@ -6367,23 +6429,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         Object value = doc.get(propertyName);
 
-        if (value != null) {
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
-                    , summarizeJava(value),
-                    value.getClass());
-
-          GrpcValue gv = toGrpcValue(value);
-
-          if (debug)
-            LogManager.instance()
-                .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
-                    summarizeGrpc(gv));
-
-          builder.putProperties(propertyName, gv);
+        // A property stored as null is still a property of the record: it is sent as an unset value, as
+        // convertResultToGrpcRecord sends a null projection, so the client's has() and getPropertyNames() see it as the
+        // embedded API and the HTTP serializer ({"key": null}) do (issue #12197)
+        if (value == null) {
+          builder.putProperties(propertyName, GrpcValue.getDefaultInstance());
+          continue;
         }
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "convertToGrpcRecord(): Converting %s\n  value = %s\n  class = %s", propertyName
+                  , summarizeJava(value),
+                  value.getClass());
+
+        GrpcValue gv = toGrpcValue(value);
+
+        if (debug)
+          LogManager.instance()
+              .log(this, Level.FINE, "ENC-REC %s.%s: %s -> %s", builder.getRid(), propertyName, summarizeJava(value),
+                  summarizeGrpc(gv));
+
+        builder.putProperties(propertyName, gv);
       }
 
       // If this is an Edge, include @out / @in for convenience (string rid or link)
@@ -6410,19 +6477,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.getPropertiesCount());
 
     return builder.build();
-  }
-
-  private GrpcValue convertPropToGrpcValue(String propName, Result result, ProjectionConfig pc) {
-
-    final Object propValue = result.getProperty(propName);
-
-    if (LogManager.instance().isLoggable(this, Level.FINE))
-      LogManager.instance()
-          .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
-              summarizeJava(propValue),
-              propValue == null ? "null" : propValue.getClass());
-
-    return toGrpcValue(propValue, pc);
   }
 
   private Object toJavaForProperty(final Database db, final MutableDocument parent, final DocumentType dtype,

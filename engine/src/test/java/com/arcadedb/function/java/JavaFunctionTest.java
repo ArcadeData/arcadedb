@@ -20,6 +20,7 @@ package com.arcadedb.function.java;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -293,7 +294,7 @@ class JavaFunctionTest extends TestHelper {
 
   @Test
   void functionNotFound() {
-    assertThatThrownBy(() -> database.getSchema().getFunction("math", "sum")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "sum")).isInstanceOf(UnknownFunctionException.class);
   }
 
   @Test
@@ -333,7 +334,7 @@ class JavaFunctionTest extends TestHelper {
   @Test
   void notFound() throws Exception {
     registerClass();
-    assertThatThrownBy(() -> database.getSchema().getFunction("math", "NOT_found").execute(3, 5)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "NOT_found").execute(3, 5)).isInstanceOf(UnknownFunctionException.class);
   }
 
   @Test

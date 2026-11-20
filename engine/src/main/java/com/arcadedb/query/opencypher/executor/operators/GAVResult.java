@@ -94,6 +94,14 @@ public final class GAVResult implements Result {
   }
 
   @Override
+  public boolean listsProperty(final String name) {
+    for (final String n : names)
+      if (n != null && n.equals(name))
+        return true;
+    return false;
+  }
+
+  @Override
   public Optional<RID> getIdentity() {
     return Optional.empty();
   }

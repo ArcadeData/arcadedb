@@ -27,6 +27,9 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -240,7 +243,7 @@ class PageVersionLedgerTest {
   void theHeaderWalkAgreesWithTheFullDeserialization() {
     final byte[] entry = wal(9, new Page(3, 0, 4), new Page(3, 0, 4), new Page(7, 12, 1));
     final PageVersionLedger.Pages pages = PageVersionLedger.parse(entry);
-    final com.arcadedb.engine.WALFile.WALTransaction full = ArcadeStateMachine.deserializeWalTransaction(entry);
+    final com.arcadedb.engine.WALFile.WALTransaction full = CommittedEntryDecoding.deserializeWalTransaction(entry);
     assertThat(pages.count()).isEqualTo(full.pages.length);
     for (int i = 0; i < pages.count(); i++) {
       assertThat(pages.fileIds()[i]).isEqualTo(full.pages[i].fileId);
@@ -329,6 +332,347 @@ class PageVersionLedgerTest {
     }
   }
 
+  /**
+   * Issue #11921 review: a session commit run by publishOutsideTheLog waits for its file locks, which an ordinary commit of
+   * the leader holds from its phase 1 until its own entry is validated and appended. Waiting for them with the validation
+   * lock held made the two wait for each other until the file-lock timeout. The commit modelled here takes its file lock,
+   * then checks a version (the engine's order in commit1stPhase); the ordinary commit holds the file lock and validates.
+   */
+  @Test
+  void aPublicationWaitingForAFileLockDoesNotHoldTheValidationLock() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock fileLock = new ReentrantLock();
+    final CountDownLatch publicationStarted = new CountDownLatch(1);
+    final CountDownLatch fileLockHeld = new CountDownLatch(1);
+    final AtomicReference<Throwable> validationFailure = new AtomicReference<>();
+    final Thread ordinaryCommit = new Thread(() -> {
+      fileLock.lock();
+      try {
+        fileLockHeld.countDown();
+        awaitLatch(publicationStarted);
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(5, 0, 1))), entry(2), localVersions);
+      } catch (final Throwable t) {
+        validationFailure.set(t);
+      } finally {
+        fileLock.unlock();
+      }
+    }, "issue11921-ordinary-commit");
+    ordinaryCommit.start();
+    awaitLatch(fileLockHeld);
+
+    final boolean published = ledger.publishOutsideTheLog(DB, () -> {
+      publicationStarted.countDown();
+      if (!fileLock.tryLock(3, TimeUnit.SECONDS))
+        return false;
+      try {
+        ledger.lockForPublication(DB);
+        return true;
+      } finally {
+        fileLock.unlock();
+      }
+    });
+    ordinaryCommit.join(10_000);
+
+    assertThat(published).as("the session commit must get the file lock the ordinary commit releases once validated").isTrue();
+    assertThat(validationFailure.get()).isNull();
+    assertThat(ledger.reservedVersion(DB, 5, 0)).isEqualTo(1);
+  }
+
+  /** Issue #11921: from its first version check to its return, a publication still excludes every validation of the database. */
+  @Test
+  void aValidationWaitsForAPublicationThatChecked() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation");
+
+    final boolean queuedDuringPublication = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queuedDuringPublication).as("a validation must wait on the lock between a publication's check and its return").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+  }
+
+  /** Issue #11921: a publication whose commit throws after its first check must release the validation lock. */
+  @Test
+  void aPublicationThatThrowsAfterItsCheckReleasesTheValidationLock() throws Exception {
+    assertThatThrownBy(() -> ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      throw new ConcurrentModificationException("commit refused after its check");
+    })).isInstanceOf(ConcurrentModificationException.class);
+
+    // Another thread validating the same database must not block: the lock was released on the way out.
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-throw");
+    validation.setDaemon(true);
+    validation.start();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).as("the validation lock leaked by a throwing publication").isTrue();
+    validation.join(10_000);
+
+    // The thread-local is restored too: a check outside any publication takes no lock, so a later validation is not blocked.
+    ledger.lockForPublication(DB);
+    final CountDownLatch validatedAgain = new CountDownLatch(1);
+    final Thread second = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(5, 0, 1))), entry(2), localVersions);
+        validatedAgain.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-restore");
+    second.setDaemon(true);
+    second.start();
+    assertThat(validatedAgain.await(10, TimeUnit.SECONDS)).as("a check outside a publication must not take the lock").isTrue();
+    second.join(10_000);
+  }
+
+  /** Issue #11921: an inner publication of a thread that already holds the lock must not release it for the outer one. */
+  @Test
+  void aNestedPublicationDoesNotReleaseTheLockOfTheEnclosingOne() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-nested");
+    validation.setDaemon(true);
+
+    final boolean queuedAfterInner = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      ledger.publishOutsideTheLog(DB, () -> {
+        ledger.lockForPublication(DB);
+        return null;
+      });
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queuedAfterInner).as("the inner publication released the enclosing publication's lock").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+  }
+
+  /**
+   * Issue #11921 review: a leadership change clears every ledger while a publication may hold one's lock. The clear used
+   * to drop the ledger, so a validation after it built a new one with a free lock and reserved the version the publication
+   * was about to write. The ledger is now kept and emptied under its lock, so the validation still waits.
+   */
+  @Test
+  void aLeadershipClearDuringAPublicationDoesNotFreeTheValidationLock() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-clear");
+    validation.setDaemon(true);
+    final Thread clear = new Thread(ledger::clearAll, "issue11921-leadership-clear");
+    clear.setDaemon(true);
+
+    final boolean queuedAfterClear = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      clear.start();
+      // The clear either ran (the old removal) or waits for this publication: either way a validation must not get through.
+      // Wait for one of the two, so the validation never starts ahead of a clear that has not run yet.
+      final ReentrantLock lock = validationLock(ledger, DB);
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (clear.getState() != Thread.State.TERMINATED && !lock.hasQueuedThread(clear) && System.nanoTime() < deadline)
+        Thread.sleep(1);
+      assertThat(clear.getState() == Thread.State.TERMINATED || lock.hasQueuedThread(clear))
+          .as("the clear must have run or be waiting for the publication").isTrue();
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queuedAfterClear).as("a validation after a leadership clear ran while a publication held the lock").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+    clear.join(10_000);
+  }
+
+  /** Issue #11921 review: a clear between a publication's start and its first check must not let that check skip the lock. */
+  @Test
+  void aLeadershipClearBeforeThePublicationsFirstCheckStillLetsItTakeTheLock() throws Exception {
+    final CountDownLatch validated = new CountDownLatch(1);
+    final Thread validation = new Thread(() -> {
+      try {
+        ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+        validated.countDown();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    }, "issue11921-validation-after-early-clear");
+    validation.setDaemon(true);
+
+    final boolean queued = ledger.publishOutsideTheLog(DB, () -> {
+      ledger.clearAll();
+      ledger.lockForPublication(DB);
+      validation.start();
+      return awaitQueuedOnTheValidationLock(ledger, DB, validation);
+    });
+
+    assertThat(queued).as("the publication's first check after a clear did not take the validation lock").isTrue();
+    assertThat(validated.await(10, TimeUnit.SECONDS)).isTrue();
+    validation.join(10_000);
+  }
+
+  /** A leadership clear still drops every reservation, of every database. */
+  @Test
+  void aLeadershipClearDropsEveryReservation() throws IOException {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    ledger.validateAndReserve("other", PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions);
+
+    ledger.clearAll();
+
+    assertThat(ledger.reservedPages(DB)).isZero();
+    assertThat(ledger.reservedPages("other")).isZero();
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(-1);
+    // A fresh validation of the same base goes through: nothing reserved survived the clear
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 1))), entry(3), localVersions);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(1);
+  }
+
+  /**
+   * Waits until {@code thread} is queued on the validation lock of {@code database}, the state a validation excluded by a
+   * publication must reach. {@code false} once the thread ended without queueing, which is a validation that got through.
+   */
+  private static boolean awaitQueuedOnTheValidationLock(final PageVersionLedger ledger, final String database, final Thread thread)
+      throws Exception {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    while (System.nanoTime() < deadline) {
+      final ReentrantLock lock = validationLock(ledger, database);
+      if (lock != null && lock.hasQueuedThread(thread))
+        return true;
+      if (thread.getState() == Thread.State.TERMINATED)
+        return false;
+      Thread.sleep(1);
+    }
+    return false;
+  }
+
+  private static ReentrantLock validationLock(final PageVersionLedger ledger, final String database) {
+    return ledger.validationLockForTesting(database);
+  }
+
+  /**
+   * Issue #11921: the lock is taken by the explicit call the commit makes before its version checks, not as a side effect
+   * of reading a reservation. A publication that only read reservations holds nothing, and an ordinary commit's call takes
+   * nothing.
+   */
+  @Test
+  void onlyThePublicationsCallBeforeItsChecksTakesTheValidationLock() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock lock = validationLock(ledger, DB);
+
+    ledger.lockForPublication(DB);
+    assertThat(lock.isHeldByCurrentThread()).as("a commit outside a publication takes no validation lock").isFalse();
+
+    final boolean[] held = new boolean[3];
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.reservedVersion(DB, 3, 0);
+      held[0] = lock.isHeldByCurrentThread();
+      // The commit of another database on the publishing thread is not this publication's
+      ledger.lockForPublication("other");
+      held[1] = lock.isHeldByCurrentThread();
+      ledger.lockForPublication(DB);
+      held[2] = lock.isHeldByCurrentThread();
+      return null;
+    });
+
+    assertThat(held[0]).as("reading a reservation must not take the lock").isFalse();
+    assertThat(held[1]).as("the checks of another database must not take this database's lock").isFalse();
+    assertThat(held[2]).as("the call before the version checks takes the lock").isTrue();
+    assertThat(lock.isLocked()).as("released when the publication returns").isFalse();
+  }
+
+  /**
+   * Issue #11921 review: the apply of an entry publishes its page, then releases the reservation. A commit published
+   * outside the log in between finds the reserved version equal to the local one, passes its check and takes the next
+   * version. The reservation is still there afterwards, one version behind the page: an entry of another node validated
+   * against it alone would be given the version the commit has just published.
+   */
+  @Test
+  void aReservationAPublicationWentPastDoesNotAuthorizeThePublishedVersion() throws Exception {
+    final long page = PageVersionLedger.pageKey(3, 0);
+    final byte[] applied = wal(1, new Page(3, 0, 1));
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(applied), entry(1), localVersions);
+    // The apply of entry 1 published the page and has not released the reservation yet
+    local.put(page, 1);
+
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      assertThat(ledger.reservedVersion(DB, 3, 0)).as("the publication's check sees reserved == local and passes").isEqualTo(1);
+      local.put(page, 2);
+      return null;
+    });
+
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 2))), entry(2), localVersions))
+        .as("version 2 is the publication's").isInstanceOf(ConcurrentModificationException.class).hasMessageContaining("version 2");
+
+    // An entry built on the published version chains on it, and the late release of entry 1 leaves its reservation alone
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 3))), entry(3), localVersions);
+    ledger.release(DB, null, applied);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(3);
+  }
+
+  /** A publication that did not touch the page leaves a reservation ahead of the local copy in charge of it. */
+  @Test
+  void aReservationAheadOfTheLocalCopyStillDecidesAfterAPublication() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+
+    ledger.publishOutsideTheLog(DB, () -> {
+      ledger.lockForPublication(DB);
+      local.put(PageVersionLedger.pageKey(5, 0), 1);
+      return null;
+    });
+
+    assertThatThrownBy(() -> ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(2, new Page(3, 0, 1))), entry(2), localVersions))
+        .isInstanceOf(ConcurrentModificationException.class);
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(3, new Page(3, 0, 2))), entry(3), localVersions);
+    assertThat(ledger.reservedVersion(DB, 3, 0)).isEqualTo(2);
+  }
+
+  /**
+   * Issue #11921: a ledger dropped under a publication (the database was dropped or installed, see clear) orders nothing any
+   * more, since a validation after the drop uses a new ledger and its free lock. The commit is refused as a retryable
+   * conflict instead of checking and publishing unordered, and the lock it took is released.
+   */
+  @Test
+  void aPublicationWhoseLedgerWasDroppedIsRefusedBeforeItsChecks() throws Exception {
+    ledger.validateAndReserve(DB, PageVersionLedger.parse(wal(1, new Page(3, 0, 1))), entry(1), localVersions);
+    final ReentrantLock dropped = validationLock(ledger, DB);
+
+    assertThatThrownBy(() -> ledger.publishOutsideTheLog(DB, () -> {
+      ledger.clear(DB);
+      ledger.lockForPublication(DB);
+      return null;
+    })).isInstanceOf(ConcurrentModificationException.class).hasMessageContaining("published outside the Raft log");
+
+    assertThat(dropped.isLocked()).as("the refused publication must release the lock it took").isFalse();
+  }
+
   /** Ages a reservation, since the staleness bound is measured on the wall clock. */
   private void backdate(final String database, final int fileId, final int pageNumber, final long byMs) throws Exception {
     backdate(ledger, database, fileId, pageNumber, byMs);
@@ -347,7 +691,7 @@ class PageVersionLedgerTest {
     reservedAtMs.setLong(reservation, reservedAtMs.getLong(reservation) - byMs);
   }
 
-  /** The wire layout {@code ArcadeStateMachine.deserializeWalTransaction} reads, with a 4-byte delta per segment. */
+  /** The wire layout {@code CommittedEntryDecoding.deserializeWalTransaction} reads, with a 4-byte delta per segment. */
   static byte[] wal(final long txId, final Page... pages) {
     final int deltaSize = 4;
     final ByteBuffer buf = ByteBuffer.allocate(2 * Long.BYTES + 2 * Integer.BYTES + pages.length * (6 * Integer.BYTES + deltaSize));

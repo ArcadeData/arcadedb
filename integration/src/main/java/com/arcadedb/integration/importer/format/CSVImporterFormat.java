@@ -116,7 +116,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * back as a {@code StringIndexOutOfBoundsException} out of the middle of the analysis, naming neither the option
    * nor the value (issue #7867).
    */
-  private String delimiterFor(final ImporterSettings settings) {
+  protected String delimiterFor(final ImporterSettings settings) {
     final String resolved = delimiter != null ? delimiter : settings.getValue("delimiter", ",");
     if (resolved != null && resolved.isEmpty())
       throw new IllegalArgumentException("The CSV delimiter is set to an empty value: a field separator is at least "

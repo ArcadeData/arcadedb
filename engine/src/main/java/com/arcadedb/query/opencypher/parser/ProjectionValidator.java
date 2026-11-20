@@ -111,7 +111,9 @@ final class ProjectionValidator {
         if (callClause.hasYield()) {
           if (callClause.isYieldAll()) {
             final List<String> yieldAllFields = CypherSemanticValidator.resolveYieldAllFieldNames(callClause);
-            if (yieldAllFields != null && !yieldAllFields.isEmpty())
+            // a call with no declared signature (a SQL function used as a procedure) binds the columns of its rows, which only
+            // running it tells: RETURN * is left to return them (issue #12124)
+            if (yieldAllFields == null || !yieldAllFields.isEmpty())
               return true;
           } else {
             for (final CallClause.YieldItem item : callClause.getYieldItems())
