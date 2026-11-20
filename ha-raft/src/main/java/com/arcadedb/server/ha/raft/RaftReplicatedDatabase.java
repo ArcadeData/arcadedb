@@ -60,7 +60,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -466,6 +468,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // #11803: a statement refused for what the database holds now, the caller's to resolve and not a server fault
       Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
+      // #11974: an openCypher statement that uses an entity it deleted itself (404), and a LOAD CSV URL that cannot be read (400):
+      // the caller's to fix, where a TransactionException would answer the client 500 "Error on transaction commit"
+      Map.entry(DeletedEntityException.class.getName(), DeletedEntityException::new),
+      Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // #12161: a statement refused for the transaction the caller holds, the caller's to resolve
       Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
