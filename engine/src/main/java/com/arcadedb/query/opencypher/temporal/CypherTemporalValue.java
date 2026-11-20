@@ -38,13 +38,17 @@ public interface CypherTemporalValue extends Comparable<CypherTemporalValue> {
    * its months, days and seconds, and each protocol has its own encoding for it.
    */
   static Object toJavaTime(final Object value) {
+    // a single check for the common case: the wire protocols call this for every cell they encode
+    if (!(value instanceof CypherTemporalValue))
+      return value;
+
     return switch (value) {
       case CypherDate date -> date.getValue();
       case CypherLocalDateTime localDateTime -> localDateTime.getValue();
       case CypherDateTime dateTime -> dateTime.getValue();
       case CypherLocalTime localTime -> localTime.getValue();
       case CypherTime time -> time.getValue();
-      case null, default -> value;
+      default -> value;
     };
   }
 }

@@ -883,9 +883,9 @@ public enum PostgresType {
     return PostgresArrayLiteral.parse(arrayStr, elementParser);
   }
 
-  public static PostgresType getTypeForValue(Object val) {
+  public static PostgresType getTypeForValue(final Object value) {
     // a Cypher date, time or datetime is typed as the java.time value it wraps, as SQL reads the same property (issue #11955)
-    val = CypherTemporalValue.toJavaTime(val);
+    final Object val = CypherTemporalValue.toJavaTime(value);
     if (val == null) {
       return PostgresType.VARCHAR;
     } else if (val instanceof Float) {
@@ -1450,7 +1450,9 @@ public enum PostgresType {
   }
 
   /** The text of one element of a text[] or json[] array: what {@link #serializeArrayToString} writes, without the literal quoting. */
-  private String arrayElementToText(final Object element) {
+  private String arrayElementToText(final Object rawElement) {
+    // a Cypher datetime in a list is written as the java.time value it wraps, as SQL writes it (issue #11955)
+    final Object element = CypherTemporalValue.toJavaTime(rawElement);
     return switch (element) {
       case String str -> str;
       case Float f -> String.valueOf(f.floatValue());
@@ -1492,11 +1494,13 @@ public enum PostgresType {
     // the element of a time[], timetz[], timestamptz[] or interval[] is written as the scalar is (issue #12449)
     final PostgresType elementType = pgType != null && pgType.isArrayType() ? byCode(pgType.elementCode) : null;
     boolean first = true;
-    for (Object element : collection) {
+    for (final Object rawElement : collection) {
       if (!first) {
         sb.append(",");
       }
       first = false;
+      // a Cypher datetime in a list is written as the java.time value it wraps, as SQL writes it (issue #11955)
+      final Object element = CypherTemporalValue.toJavaTime(rawElement);
       if (element == null) {
         sb.append("NULL");
         continue;
@@ -1587,7 +1591,9 @@ public enum PostgresType {
    * Converts a single collection element into a value the JSON serializer renders natively. Documents keep
    * their "@type" attribute, temporal values use the Postgres text format, and nested collections recurse.
    */
-  private Object toJsonElement(final Object element) {
+  private Object toJsonElement(final Object rawElement) {
+    // a Cypher datetime in a list is written as the java.time value it wraps, as SQL writes it (issue #11955)
+    final Object element = CypherTemporalValue.toJavaTime(rawElement);
     return switch (element) {
       case null -> null;
       case JSONObject json -> json;
