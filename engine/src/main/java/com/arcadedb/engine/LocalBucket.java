@@ -45,6 +45,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -3386,6 +3387,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * (#10637, {@link #relocateANeighbourOffPage}).
    */
   private RID createRecordInternal(final Binary buffer, final boolean isPlaceHolder) {
+    // a placeholder's content is the engine moving the bytes of an existing record, not a record created
+    if (!isPlaceHolder)
+      FailPoints.hit(FailPoints.BUCKET_CREATE_RECORD);
     // A CONTENT record stores its size NEGATED, so its body may not be short enough to write a marker: not < 5 (which
     // would write a -1..-4 the marker namespace owns) and not exactly 5 either (which would write the -5 BOUNDARY that
     // every reader excludes with a strict `<`). A record of its own has no such constraint - its size is positive -
@@ -4980,6 +4984,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           continue;
         }
 
+        // a record the allocator placed reached the point in createRecordInternal, one appended here reaches it now
+        FailPoints.hit(FailPoints.BUCKET_CREATE_RECORD);
+
         if (availablePositionIndex >= maxRecordsInPage || recordPositionInPage + spaceNeeded > currentPage.getMaxContentSize()) {
           leaveAppendedPage(currentPage, availablePositionIndex, appendStartInPage, recordPositionInPage);
           currentPage = addNewPage();
@@ -5021,6 +5028,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent,
                                        final boolean discardRecordAfter) {
+    // the content behind a placeholder pointer is rewritten by the update that already reached the point
+    if (!updatePlaceholderContent)
+      FailPoints.hit(FailPoints.BUCKET_UPDATE_RECORD);
     if (rid.getPosition() < 0)
       throw new IllegalArgumentException("Cannot update a record with invalid RID");
 
@@ -5833,6 +5843,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent, final boolean deleteChunks,
       final boolean force) {
+    // once per record deleted: not again for the placeholder content or the chunks the delete frees, nor for a corrupted slot
+    // CHECK DATABASE FIX clears (it passes both flags)
+    if (!deletePlaceholderContent && !deleteChunks)
+      FailPoints.hit(FailPoints.BUCKET_DELETE_RECORD);
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 

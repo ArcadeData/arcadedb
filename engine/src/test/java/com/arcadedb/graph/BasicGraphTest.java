@@ -488,15 +488,22 @@ public class BasicGraphTest extends BaseGraphTest {
     }
   }
 
-  public static String testReflectionMethod() {
-    return "reflect on this";
+  /**
+   * The class registered as reflective functions. Its own class, not the test: the registry is shared by the whole JVM and
+   * keeps every public static method it is given, so registering the test exposed every TestHelper static
+   * ({@code test_dropDatabase}, {@code test_executeInNewDatabase}, ...) to every SQL statement of every later test (#12445).
+   */
+  public static class ReflectionTarget {
+    public static String testReflectionMethod() {
+      return "reflect on this";
+    }
   }
 
   @Test
   void customReflectionFunction() {
     database.begin();
     try {
-      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().getReflectionFactory().register("test_", getClass());
+      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().getReflectionFactory().register("test_", ReflectionTarget.class);
 
       final ResultSet result = database.query("sql", "select test_testReflectionMethod() as testReflectionMethod");
       assertThat(result.hasNext()).isTrue();

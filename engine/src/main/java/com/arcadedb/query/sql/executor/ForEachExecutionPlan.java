@@ -42,4 +42,20 @@ public class ForEachExecutionPlan extends UpdateExecutionPlan {
     }
     return false;
   }
+
+  /**
+   * Whether the loop, once executed, stopped on a {@code RETURN} of its body: the rows it then holds are the value of that
+   * {@code RETURN}. The plan of a loop holds one loop step, a {@link ForEachStep} (after the step that evaluates its source) or a
+   * {@link WhileStep}, so the first one found is the loop.
+   */
+  public boolean executedReturn() {
+    for (final ExecutionStep step : getSteps()) {
+      if (step instanceof ForEachStep eachStep)
+        return eachStep.executedReturn();
+
+      if (step instanceof WhileStep whileStep)
+        return whileStep.executedReturn();
+    }
+    return false;
+  }
 }

@@ -269,8 +269,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       if (step instanceof ReturnStep)
         return true;
 
-      if (step instanceof ScriptLineStep lineStep)
-        return lineStep.containsReturn();
+      // any line, not the first one: answering for the first line alone hid a RETURN written after it
+      if (step instanceof ScriptLineStep lineStep && lineStep.containsReturn())
+        return true;
     }
 
     return false;
