@@ -29,6 +29,8 @@ import java.util.Map;
  * A relationship that exists only in a query result ({@code create.vRelationship}, the relationships of
  * {@code meta.graph}). Its endpoints are the node objects it was built from, stored or virtual, so {@code startNode()} and
  * {@code endNode()} answer them without a lookup. It cannot be modified.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public class VirtualEdge extends VirtualElement implements Edge {
   private final String type;

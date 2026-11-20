@@ -96,25 +96,36 @@ public class MetaRelTypeProperties extends AbstractMetaProcedure {
     final long maxRels = config.maxRels();
     final WorkGuard guard = newWorkGuard(context);
 
+    // The relationship types the caller may read and the config accepts. The walk asks the vertex's edge list for exactly these,
+    // so an entry of any other type is turned away on its bucket number: no record lookup and no Edge object for it, which is
+    // what a supernode whose relationships are mostly of other types would otherwise pay for every one of them
+    final List<String> walkedTypes = new ArrayList<>();
+    for (final EdgeType type : labels.edgeTypes())
+      if (config.acceptsRelType(type.getName()))
+        walkedTypes.add(type.getName());
+    final String[] edgeTypeNames = walkedTypes.toArray(new String[0]);
+
     final Map<RelGroup, MetaPropertyProfile> groups = new LinkedHashMap<>();
-    forEachSampledNode(database, labels, config, guard, (type, record) -> {
-      final Vertex vertex = record.asVertex();
-      final List<String> sourceLabels = labels.labelsOf(type);
-      long read = 0L;
-      int walked = 0;
-      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT)) {
-        if (read >= maxRels)
-          break;
-        // a supernode whose relationships are mostly of excluded types is walked to the end without counting any
-        guard.checkPeriodically(walked++);
-        final String relType = edge.getTypeName();
-        if (!config.acceptsRelType(relType) || !labels.isReadableEdgeType(relType))
-          continue;
-        ++read;
-        groups.computeIfAbsent(new RelGroup(relType, sourceLabels, labels.labelsOf(edge.getIn())),
-            k -> new MetaPropertyProfile()).observe(edge);
-      }
-    });
+    // an empty list of types would not narrow the walk: it would read every relationship, so it reads none instead
+    if (edgeTypeNames.length > 0)
+      forEachSampledNode(database, labels, config, guard, (type, record) -> {
+        final Vertex vertex = record.asVertex();
+        final List<String> sourceLabels = labels.labelsOf(type);
+        long read = 0L;
+        int walked = 0;
+        for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT, edgeTypeNames)) {
+          if (read >= maxRels)
+            break;
+          guard.checkPeriodically(walked++);
+          // a supertype's mask also takes the edges of its subtypes, which the config or the caller's rights may leave out
+          final String relType = edge.getTypeName();
+          if (!config.acceptsRelType(relType) || !labels.isReadableEdgeType(relType))
+            continue;
+          ++read;
+          groups.computeIfAbsent(new RelGroup(relType, sourceLabels, labels.labelsOf(edge.getIn())),
+              k -> new MetaPropertyProfile()).observe(edge);
+        }
+      });
 
     for (final EdgeType type : labels.edgeTypes()) {
       if (type.getPolymorphicPropertyNames().isEmpty() || !config.acceptsRelType(type.getName()))

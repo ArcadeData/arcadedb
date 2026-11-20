@@ -30,6 +30,8 @@ import java.util.stream.Stream;
 /**
  * {@code CALL create.vNode(labels, properties = {}) YIELD node}: the procedure form of the {@link CreateVNode} function, as
  * APOC declares both. It yields the virtual node under {@code node}; the CALL of the function alone yielded its properties.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public class CreateVNodeProcedure implements CypherProcedure {
   public static final String NAME = "create.vNode";

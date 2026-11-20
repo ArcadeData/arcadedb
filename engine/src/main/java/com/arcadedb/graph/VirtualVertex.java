@@ -31,6 +31,8 @@ import java.util.TreeSet;
  * A node that exists only in a query result ({@code create.vNode}, the label nodes of {@code meta.graph}). Its labels are
  * its own list, not a schema type: they are reported as given, sorted and without duplicates as for a stored node. It
  * has no stored edges, so every adjacency question answers empty, and it cannot be modified.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 public class VirtualVertex extends VirtualElement implements Vertex {
   private final List<String> labels;

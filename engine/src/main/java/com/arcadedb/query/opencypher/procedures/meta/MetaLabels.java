@@ -28,6 +28,7 @@ import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,11 +39,14 @@ import java.util.TreeSet;
  * vertex type answers to (a multi-label composite answers to each of its labels), and the labels of the node a RID names,
  * resolved from its bucket without loading it. A node of a type the caller may not read answers no labels, so its label
  * is not disclosed through the relationships that reach it.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 final class MetaLabels {
   private final Database                   database;
   private final List<VertexType>           vertexTypes = new ArrayList<>();
   private final List<EdgeType>             edgeTypes   = new ArrayList<>();
+  private final Set<String>                edgeTypeNames = new HashSet<>();
   private final Map<String, List<String>>  labelsByType = new HashMap<>();
   private final Map<Integer, List<String>> labelsByBucket = new HashMap<>();
 
@@ -52,8 +56,10 @@ final class MetaLabels {
       if (type instanceof VertexType vertexType) {
         vertexTypes.add(vertexType);
         labelsByType.put(type.getName(), Labels.getLabels(type));
-      } else if (type instanceof EdgeType edgeType)
+      } else if (type instanceof EdgeType edgeType) {
         edgeTypes.add(edgeType);
+        edgeTypeNames.add(edgeType.getName());
+      }
     }
   }
 
@@ -69,10 +75,7 @@ final class MetaLabels {
    * Whether the caller may read relationships of the type named {@code name}.
    */
   boolean isReadableEdgeType(final String name) {
-    for (final EdgeType type : edgeTypes)
-      if (type.getName().equals(name))
-        return true;
-    return false;
+    return edgeTypeNames.contains(name);
   }
 
   /**

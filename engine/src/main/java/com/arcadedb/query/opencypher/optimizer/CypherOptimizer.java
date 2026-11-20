@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
@@ -2242,7 +2243,8 @@ public class CypherOptimizer {
         final Object vertexObj = result.getProperty(expandTargetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
-          return vertex.getType().instanceOf(targetLabel);
+          // the one definition of "carries the label": a virtual node (issue #12109) has no schema type to ask
+          return Labels.hasLabel(vertex, targetLabel);
         }
         return false;
       }
