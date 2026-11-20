@@ -5782,20 +5782,34 @@ public class TransactionContext implements Transaction {
    * with {@link #addMergedEdge}, which makes the commit consult the registry at all.
    */
   public void checkMergedEdge(final RID from, final RID to, final String type) {
+    checkMergedEdge(from, to, type, null);
+  }
+
+  /**
+   * {@link #checkMergedEdge(RID, RID, String)} of the key of the pair, the type and {@code properties}: the key a relationship of the
+   * pair and the type carrying those values is marked under ({@link #markMergedEdge(RID, RID, String, Map)}).
+   */
+  public void checkMergedEdge(final RID from, final RID to, final String type, final Map<String, ?> properties) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, properties));
   }
 
   /**
    * A key of the {@link MergedEdgeRegistry} the commit of this transaction marks without checking it (issue #11660): another
    * statement's relationship would also find what this transaction created, and checks this key, while two transactions marking it
-   * do not refuse each other. Only together with {@link #addMergedEdge}, which makes the commit consult the registry at all.
+   * do not refuse each other. A transaction that only marks keys - one that created relationships of a type a MERGE looks up by an
+   * index (#12483) - publishes them all the same.
    */
   public void markMergedEdge(final RID from, final RID to, final String type) {
+    markMergedEdge(from, to, type, null);
+  }
+
+  /** {@link #markMergedEdge(RID, RID, String)} of the key of the pair, the type and {@code properties}. */
+  public void markMergedEdge(final RID from, final RID to, final String type, final Map<String, ?> properties) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, properties));
   }
 
   /**
@@ -5827,7 +5841,7 @@ public class TransactionContext implements Transaction {
    * relationship that another transaction committed after this one began, or is committing now (issue #11482).
    */
   private void reserveMergedEdges() {
-    if (mergedEdgeCheckedCount == 0)
+    if (mergedEdgeCheckedCount == 0 && mergedEdgeMarkedCount == 0)
       return;
     if (!database.getTransactionManager().getMergedEdges()
         .reserve(mergedEdgeChecked, mergedEdgeCheckedCount, mergedEdgeMarked, mergedEdgeMarkedCount, mergedEdgeEpoch))

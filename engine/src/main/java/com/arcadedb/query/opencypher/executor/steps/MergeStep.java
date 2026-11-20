@@ -114,6 +114,13 @@ public class MergeStep extends AbstractExecutionStep {
   // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
   // the step, read by prettyPrint after it
   private       String              usedIndexName;
+  // Whether the existence check of the row being merged was answered by an index on the relationship's properties, which reads no
+  // edge list: a relationship it creates then checks the registry key a relationship of the pair and the type holding the same values
+  // of the index's properties marks (#12483). The properties are those of the whole key the index was read by, null for a prefix
+  private       boolean             existenceAnsweredByIndex;
+  private       List<String>        existenceIndexKey;
+  // The properties of the whole key the last lookup of tryFindByIndex read, null when it read a prefix
+  private       List<String>        lastIndexWholeKey;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -443,6 +450,7 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
+    existenceAnsweredByIndex = false;
 
     final int anchorIdx = findBoundAnchorIndex(pathPattern, baseResult);
     if (anchorIdx < 0) {
@@ -457,6 +465,11 @@ public class MergeStep extends AbstractExecutionStep {
     if (tryFindPathByIndexSeek(pathPattern, anchorIdx, baseResult, results))
       return results;
 
+    if (tryFindRelationshipByIndex(pathPattern, baseResult, results)) {
+      existenceAnsweredByIndex = true;
+      return results;
+    }
+
     if (anchorIdx == 0) {
       // Anchor is at the start: the forward walker already picks up the
       // binding from currentResult and walks the anchor's outgoing edges.
@@ -468,6 +481,79 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex anchorVertex = reloadAnchorVertex((Vertex) baseResult.getProperty(pathPattern.getNode(anchorIdx).getVariable()));
     traverseFromAnchor(pathPattern, anchorIdx, anchorVertex, copyResult(baseResult), results);
     return results;
+  }
+
+  /**
+   * A relationship between two bound nodes looked up by an index on the properties of its type, instead of by a walk of the edge
+   * list of either end (issue #12483). The walk read the head of the list it walked, and a concurrent transaction that gave either
+   * end a relationship of its own - any relationship, to any other node - moved that head and refused the MERGE at commit (#12320):
+   * a bulk load of relationships between shared vertices was refused about twice per committed batch. The index read leaves the
+   * lists alone.
+   * <p>
+   * What the walk's refusal protected is kept by the registry of the relationships created by match-or-create (#11482): a concurrent
+   * MERGE of the same relationship is refused by its own key as before, and a relationship of the type created between the same two
+   * nodes by any other statement marks the key of the pair and the type ({@code GraphEngine}), which the commit of a relationship
+   * this MERGE creates after an index answer checks ({@link #createPatternEdge}).
+   *
+   * @return true when the index answered, with every matching path added to {@code results}; false when no index covers the
+   * pattern's properties, and the walk has to answer
+   */
+  private boolean tryFindRelationshipByIndex(final PathPattern pathPattern, final ResultInternal baseResult,
+      final List<Result> results) {
+    if (pathPattern.getRelationshipCount() != 1)
+      return false;
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (!relPattern.hasTypes() || relPattern.getTypes().size() != 1 || !relPattern.hasProperties() || relPattern.isVariableLength())
+      return false;
+    final NodePattern leftPattern = pathPattern.getNode(0);
+    final NodePattern rightPattern = pathPattern.getNode(1);
+    if (leftPattern.getVariable() == null || rightPattern.getVariable() == null)
+      return false;
+    if (!(baseResult.getProperty(leftPattern.getVariable()) instanceof Vertex left)
+        || !(baseResult.getProperty(rightPattern.getVariable()) instanceof Vertex right))
+      return false;
+    final String relType = relPattern.getFirstType();
+    if (!context.getDatabase().getSchema().existsType(relType))
+      return false;
+    final DocumentType type = context.getDatabase().getSchema().getType(relType);
+    final Map<String, Object> relProps = evaluateMatchProperties(relPattern.getProperties(), baseResult);
+    final Iterator<Identifiable> candidates = tryFindByIndex(type, relType, relProps);
+    if (candidates == null)
+      return false;
+    existenceIndexKey = lastIndexWholeKey;
+    if (!matchesNodePattern(left, leftPattern, baseResult) || !matchesNodePattern(right, rightPattern, baseResult))
+      return true;
+    final Direction dir = relPattern.getDirection();
+    while (candidates.hasNext()) {
+      final Identifiable identifiable = candidates.next();
+      if (identifiable == null)
+        continue;
+      final Edge edge;
+      try {
+        edge = identifiable.asEdge(true);
+      } catch (final RecordNotFoundException e) {
+        // an entry of a relationship deleted since: the index answers it until the deletion is committed
+        continue;
+      }
+      final boolean forward = left.getIdentity().equals(edge.getOut()) && right.getIdentity().equals(edge.getIn());
+      final boolean backward = right.getIdentity().equals(edge.getOut()) && left.getIdentity().equals(edge.getIn());
+      if (!(dir == Direction.OUT ? forward : dir == Direction.IN ? backward : forward || backward))
+        continue;
+      // the index may cover only some of the pattern's properties
+      if (!matchesProperties(edge, relProps))
+        continue;
+      final ResultInternal r = copyResult(baseResult);
+      if (relPattern.getVariable() != null)
+        r.setProperty(relPattern.getVariable(), edge);
+      r.setProperty(WAS_CREATED, false);
+      final Object[] trace = newPathTrace(pathPattern);
+      tracePathElement(trace, 0, left);
+      tracePathElement(trace, 2, right);
+      tracePathElement(trace, 1, edge);
+      addPathBinding(r, pathPattern, trace);
+      results.add(r);
+    }
+    return true;
   }
 
   /**
@@ -1347,6 +1433,7 @@ public class MergeStep extends AbstractExecutionStep {
     }
     usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", bestWholeKey ? propertyNames :
         indexProperties.toArray(new String[0])) + "]" + (bestWholeKey ? "" : ", prefix: " + String.join(", ", propertyNames));
+    lastIndexWholeKey = bestWholeKey ? List.of(propertyNames) : null;
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1647,6 +1734,11 @@ public class MergeStep extends AbstractExecutionStep {
       if (tx != null) {
         // Also marks the keys a MERGE from either end that creates its far node checks (#11660)
         tx.addMergedEdgeBetweenExistingNodes(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+        if (existenceAnsweredByIndex)
+          // No edge list was read: a relationship of the type created between the same two nodes by a concurrent transaction with
+          // the values the index was read by, which the walk would have been refused by, refuses the commit through the key it
+          // marked (GraphEngine). A lookup by a prefix of the index checks the pair and the type alone
+          tx.checkMergedEdge(fromVertex.getIdentity(), toVertex.getIdentity(), type, indexKeyOf(evaluatedProperties));
       }
     }
 
@@ -1655,6 +1747,20 @@ public class MergeStep extends AbstractExecutionStep {
     stats.addPropertiesSet(edge.getPropertyNames().size());
 
     return edge;
+  }
+
+  /** The values of the properties {@link #existenceIndexKey} names, or null (the pair and the type alone) for a prefix lookup. */
+  private Map<String, Object> indexKeyOf(final Map<String, Object> properties) {
+    if (existenceIndexKey == null || properties == null)
+      return null;
+    final Map<String, Object> key = new HashMap<>(existenceIndexKey.size() * 2);
+    for (final String property : existenceIndexKey) {
+      final Object value = properties.get(property);
+      if (value == null)
+        return null;
+      key.put(property, value);
+    }
+    return key;
   }
 
   /**

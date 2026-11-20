@@ -37,6 +37,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -510,7 +511,49 @@ public class GraphEngine {
     if (type.isBidirectional())
       connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
+    markForMergeByIndex(database, type, edge, source.getIdentity(), destination.getIdentity());
     return edge;
+  }
+
+  /**
+   * Marks a new relationship with the registry of the relationships created by match-or-create (#11482), when its type has an index a
+   * MERGE between two bound nodes answers its existence check from (MergeStep, #12483). That check reads no edge list, so a
+   * relationship created between the same two nodes by a concurrent transaction is not refused by the head of a list it read: the
+   * commit of the relationship the MERGE creates checks the key it looked the relationship up by instead. So each exact-key index of
+   * the type marks the key of the pair, the type and the values the relationship holds for that index's properties, and the pair and
+   * the type alone are marked for a MERGE that looked it up by a prefix of an index. Marked under the name of the type and of every
+   * super type, which a MERGE matches it by too. A type with no such index marks nothing: a MERGE of it walks the list.
+   */
+  private static void markForMergeByIndex(final DatabaseInternal database, final DocumentType type, final Edge edge, final RID from,
+      final RID to) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || from == null || to == null)
+      return;
+    boolean indexed = false;
+    for (final TypeIndex index : type.getAllIndexes(true)) {
+      final List<String> properties = index.getPropertyNamesIfExactKeyLookup();
+      if (properties == null)
+        continue;
+      indexed = true;
+      final Map<String, Object> key = new HashMap<>(properties.size() * 2);
+      for (final String property : properties) {
+        final Object value = edge.get(property);
+        if (value == null)
+          break; // a MERGE cannot look a relationship up by a null
+        key.put(property, value);
+      }
+      if (key.size() == properties.size())
+        mark(tx, type, from, to, key);
+    }
+    if (indexed)
+      mark(tx, type, from, to, null);
+  }
+
+  private static void mark(final TransactionContext tx, final DocumentType type, final RID from, final RID to,
+      final Map<String, Object> key) {
+    tx.markMergedEdge(from, to, type.getName(), key);
+    for (final DocumentType superType : type.getSuperTypes())
+      mark(tx, superType, from, to, key);
   }
 
   /**
