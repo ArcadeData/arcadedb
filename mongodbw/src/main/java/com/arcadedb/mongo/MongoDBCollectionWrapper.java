@@ -63,6 +63,9 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
+  /** The records a key backfill updates per transaction. */
+  static final int BACKFILL_BATCH = 10_000;
+
   private final Database database;
   //  private final int      collectionId;
   private final String   collectionName;
@@ -309,9 +312,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private static final Set<String> ID_INDEX_GAVE_UP = ConcurrentHashMap.newKeySet();
 
   private static final Set<String> ID_INDEX_SLOW_PATH_LOGGED = ConcurrentHashMap.newKeySet();
-
-  /** The records a key backfill updates per transaction. */
-  static final int BACKFILL_BATCH = 10_000;
 
   private static String idIndexKey(final Database database, final String collectionName) {
     return database.getDatabasePath() + "/" + collectionName;

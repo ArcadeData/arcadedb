@@ -287,7 +287,8 @@ final class MongoKeys {
         return "NaN";
       if (Double.isInfinite(value))
         return value > 0 ? "Inf" : "-Inf";
-      exact = new BigDecimal(value);
+      // the exact value of the double, not its shortest text: 1.0 is the 1 of an int, 0.1 is the double nearest to a tenth
+      exact = new BigDecimal(value); // NOPMD: the exact binary value is the point
     } else if (number instanceof Decimal128 decimal) {
       // the combination field of the high word: 11111 is NaN, 11110 an infinity
       final long combination = (decimal.getHigh() >>> 58) & 0x1F;
