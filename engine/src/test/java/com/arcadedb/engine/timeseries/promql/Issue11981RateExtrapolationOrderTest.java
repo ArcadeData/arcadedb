@@ -31,6 +31,8 @@ import static org.assertj.core.api.Assertions.within;
  * extrapolation threshold, the order Prometheus changed in 2.51 (prometheus/prometheus#13725). A zero point that falls between half
  * a sample spacing and the window start then extrapolated past the half spacing. The expected values are what Prometheus v3.5.0
  * answers for the same samples.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue11981RateExtrapolationOrderTest extends TestHelper {
 
@@ -60,6 +62,24 @@ class Issue11981RateExtrapolationOrderTest extends TestHelper {
     // window (1700000060, 1700000120]: start 40 s before the first sample (past the 11 s threshold), end 10 s after the last (under it)
     // (10 + 0.1 + 10) / 10 * 100 = 201
     assertThat(value("increase(cnt2[1m])", 1_700_000_120_000L)).isCloseTo(201.0, within(1e-9));
+  }
+
+  @Test
+  void theCounterResetCorrectedTotalGoesThroughTheNewOrder() {
+    // 5 -> 15 -> 4: the last step is a counter reset, so the corrected total is 10 + 4 = 14 (a last-minus-first total would be -1 and
+    // would skip the zero point altogether). Sampled interval 20 s, average spacing 10 s, threshold 11 s, zero point
+    // 20 * 5 / 14 = 7.142857 s back: between the 5 s half spacing and the threshold, the band where the two orders differ.
+    database.command("sql", "CREATE TIMESERIES TYPE cnt3 TIMESTAMP ts FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO cnt3 SET ts = 1700000200000, value = 5.0");
+      database.command("sql", "INSERT INTO cnt3 SET ts = 1700000210000, value = 15.0");
+      database.command("sql", "INSERT INTO cnt3 SET ts = 1700000220000, value = 4.0");
+    });
+
+    // window (1700000000, 1700000600]: start 200 s and end 380 s away, both past the threshold, so each extrapolates half a spacing:
+    // (20 + 5 + 5) / 20 * 14 = 21, where the old order answered (20 + 7.142857 + 5) / 20 * 14 = 22.5
+    assertThat(value("increase(cnt3[10m])", 1_700_000_600_000L)).isCloseTo(21.0, within(1e-9));
+    assertThat(value("rate(cnt3[10m])", 1_700_000_600_000L)).isCloseTo(21.0 / 600, within(1e-12));
   }
 
   private double value(final String query, final long atMs) {
