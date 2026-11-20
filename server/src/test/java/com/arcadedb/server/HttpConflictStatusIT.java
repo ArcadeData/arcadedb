@@ -233,23 +233,6 @@ class HttpConflictStatusIT extends BaseGraphServerTest {
     assertThat(postUser("dup_nonroot_other", PASSWORD, asThatUser)).isEqualTo(403);
   }
 
-  // Regression: #10073 a taken user name is a 409, not the 403 of a refusal
-  /**
-   * The Java remote client used to surface the duplicate as a {@code SecurityException}, the type it gives a 403. It
-   * arrives as a conflict instead, with its own type ({@link RemoteAlreadyExistsException}, issue #10075), so a caller can
-   * tell it apart from a refusal without matching on the message.
-   */
-  @Test
-  void theRemoteClientReportsATakenNameAsAnAlreadyExistsConflict() {
-    final RemoteServer remote = new RemoteServer("127.0.0.1", getServerHttpPort(0), "root", DEFAULT_PASSWORD_FOR_TESTS);
-    remote.createUser("dup_remote_user", PASSWORD, List.of());
-
-    assertThatThrownBy(() -> remote.createUser("dup_remote_user", PASSWORD, List.of()))
-        .isInstanceOf(RemoteAlreadyExistsException.class)
-        .isNotInstanceOf(SecurityException.class)
-        .hasMessageContaining("already exists");
-  }
-
   private static String basicAuth() {
     return "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
   }
@@ -288,6 +271,12 @@ class HttpConflictStatusIT extends BaseGraphServerTest {
    */
 
   // Regression: #10075 the Java client raises a typed RemoteAlreadyExistsException on a 409
+  // Regression: #10073 a taken user name is a 409, not the 403 of a refusal
+  /**
+   * The Java remote client used to surface the duplicate as a {@code SecurityException}, the type it gives a 403. It
+   * arrives as a conflict instead, with its own type, so a caller can tell it apart from a refusal without matching
+   * on the message.
+   */
   @Test
   void aTakenUserNameIsATypedAlreadyExistsException() {
     final RemoteServer remote = remote();

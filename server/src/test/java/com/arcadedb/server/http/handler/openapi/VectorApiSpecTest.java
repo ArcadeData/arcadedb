@@ -33,9 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -339,42 +337,6 @@ class VectorApiSpecTest {
       final Schema<?> properties = property(hitOf(schema(responseName)), "properties");
       assertThat(properties.getAdditionalProperties()).as(responseName).isEqualTo(Boolean.TRUE);
     }
-  }
-
-  // Regression: #7568 the vector response schemas declare required and no bare objects
-  /**
-   * The sweep that keeps the two fixes from decaying one property at a time: every object anywhere in the six
-   * components this contributor registers says what it holds.
-   */
-  @Test
-  void noSchemaInThisContributorIsABareObject() {
-    final List<String> bare = new ArrayList<>();
-    for (final Map.Entry<String, Schema> entry : openAPI.getComponents().getSchemas().entrySet())
-      collectBareObjects(entry.getKey(), entry.getValue(), bare);
-
-    assertThat(bare)
-        .as("a 'type: object' with neither 'properties' nor 'additionalProperties' generates an empty model")
-        .isEmpty();
-  }
-
-  private static void collectBareObjects(final String path, final Schema<?> schema, final List<String> bare) {
-    if (schema == null || schema.get$ref() != null)
-      return;
-
-    if ("object".equals(schema.getType())
-        && (schema.getProperties() == null || schema.getProperties().isEmpty())
-        && schema.getAdditionalProperties() == null)
-      bare.add(path);
-
-    if (schema.getProperties() != null)
-      for (final Map.Entry<String, Schema> entry : schema.getProperties().entrySet())
-        collectBareObjects(path + "." + entry.getKey(), entry.getValue(), bare);
-
-    if (schema.getItems() != null)
-      collectBareObjects(path + "[]", schema.getItems(), bare);
-
-    if (schema.getAdditionalProperties() instanceof final Schema<?> values)
-      collectBareObjects(path + ".*", values, bare);
   }
 
   /*

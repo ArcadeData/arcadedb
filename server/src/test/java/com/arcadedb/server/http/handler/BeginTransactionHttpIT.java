@@ -29,7 +29,6 @@ import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Paths;
 import io.swagger.v3.oas.models.media.Schema;
-import java.io.DataOutputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -81,6 +80,7 @@ class BeginTransactionHttpIT extends BaseGraphServerTest {
   }
 
   // Regression: #10295 the optional isolationLevel body of /begin
+  // Regression: #5037 an empty JSON body still begins a transaction instead of failing with 400
   @Test
   void anAbsentIsolationLevelOpensATransactionAtTheDatabaseDefault() throws Exception {
     final Database.TRANSACTION_ISOLATION_LEVEL defaultLevel = getServer(0).getDatabaseForOperator(getDatabaseName())
@@ -271,28 +271,6 @@ class BeginTransactionHttpIT extends BaseGraphServerTest {
     connection.connect();
     try {
       assertThat(connection.getResponseCode()).isEqualTo(409);
-    } finally {
-      connection.disconnect();
-    }
-  }
-
-  // Regression: #5037 a second /begin on the same session is a 409 and isolationLevel is optional
-  @Test
-  void beginWithEmptyPayloadDoesNotRequireIsolationLevel() throws Exception {
-    final HttpURLConnection connection = open(beginUrl());
-    connection.setRequestMethod("POST");
-    authorize(connection);
-    connection.setRequestProperty("Content-Type", "application/json");
-    connection.setDoOutput(true);
-    final byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
-    connection.setRequestProperty("Content-Length", Integer.toString(body.length));
-    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-      wr.write(body);
-    }
-    connection.connect();
-    try {
-      assertThat(connection.getResponseCode()).isEqualTo(204);
-      assertThat(connection.getHeaderField(ARCADEDB_SESSION_ID)).isNotNull();
     } finally {
       connection.disconnect();
     }

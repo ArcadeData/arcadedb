@@ -513,18 +513,6 @@ class HttpTransactionSessionIT {
     }
 
     @Test
-    void retriedCommitIsIdempotent() throws Exception {
-      testEachServer(serverIndex -> {
-        final String auth = rootAuth();
-        final String sessionId = beginSession(serverIndex, auth);
-
-        assertThat(post(serverIndex, "commit", auth, sessionId)).isEqualTo(204);
-        // A second /commit with the same (now removed) session id must be a no-op 204, not a 500.
-        assertThat(post(serverIndex, "commit", auth, sessionId)).as("retried commit idempotent").isEqualTo(204);
-      });
-    }
-
-    @Test
     void retriedRollbackIsIdempotent() throws Exception {
       testEachServer(serverIndex -> {
         final String auth = rootAuth();

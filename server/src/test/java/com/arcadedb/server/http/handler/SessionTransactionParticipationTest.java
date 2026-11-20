@@ -86,16 +86,6 @@ class SessionTransactionParticipationTest {
 
   // Regression: #7859 the PromQL, Grafana and Prometheus routes detach from the session transaction
   /**
-   * The counter-case, without which the assertions above would also pass on a base class that answered
-   * {@code false} for everything: a route that DOES run inside the caller's transaction still says so.
-   */
-  @Test
-  void aCommandRouteStillParticipates() {
-    assertThat(new PostCommandHandler(null).participatesInSessionTransaction()).isTrue();
-  }
-
-  // Regression: #7859 the PromQL, Grafana and Prometheus routes detach from the session transaction
-  /**
    * The observability reads keep the {@code requiresTransaction()} answer they had before the shared base class
    * was introduced. It is what {@code rejectsUnresolvableSession()} derives from, so a silent change here would
    * turn a degraded session-less read into a refusal.
@@ -219,6 +209,7 @@ class SessionTransactionParticipationTest {
     }
 
     // Regression: #7734 a failure on a time-series route leaves the session transaction alone
+    // Regression: #7859 the command route is the counter-case of the detached routes: it still participates
     /**
      * The three routes that declare themselves independent, and the ones that must not. Read off the handlers so
      * the wiring above cannot be right while the routes it exists for are still wired the old way.

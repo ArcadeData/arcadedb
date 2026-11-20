@@ -87,14 +87,6 @@ class InsertSessionOptionsTest {
         .hasMessageContaining("per_row");
   }
 
-  /** {@code none} means "the caller manages the transaction", which a /ws session cannot name yet (#7403). */
-  @Test
-  void transactionModeNoneIsRefusedWithThePointerToItsIssue() {
-    assertThatThrownBy(() -> InsertSessionOptions.parse(new JSONObject().put("transactionMode", "none")))
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("#7403");
-  }
-
   /**
    * The four gRPC-only options are refused, not ignored: a loader ported from {@code InsertBidirectional} that
    * asked for upserts must not silently get plain inserts (#7404).

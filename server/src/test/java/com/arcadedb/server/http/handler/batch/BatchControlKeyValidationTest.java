@@ -160,6 +160,7 @@ class BatchControlKeyValidationTest {
   }
 
   // Regression: #7570 an unknown control key or a properties object was stored as data
+  // Regression: #7574 each control key is still accepted on its own kind of line
   /** The five control keys and ordinary data still parse exactly as before. */
   @Test
   void jsonlStillAcceptsTheFiveControlKeysAndFlatProperties() throws Exception {
@@ -473,21 +474,6 @@ class BatchControlKeyValidationTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Unknown control key")
         .hasMessageContaining("'@ID'");
-  }
-
-  // Regression: #7574 a control key on the wrong kind of line was silently dropped
-  /** Nothing about the well-formed payloads changes. */
-  @Test
-  void jsonlStillAcceptsEachControlKeyOnItsOwnKindOfLine() throws Exception {
-    final BatchRecord vertex = first("{\"@type\":\"vertex\",\"@class\":\"Person\",\"@id\":\"p1\",\"name\":\"Alice\"}\n");
-    assertThat(vertex.tempId).isEqualTo("p1");
-    assertThat(vertex.propertyCount).isEqualTo(1);
-
-    final BatchRecord edge = first(
-        "{\"@type\":\"edge\",\"@class\":\"Knows\",\"@from\":\"p1\",\"@to\":\"p2\",\"since\":2020}\n");
-    assertThat(edge.fromRef).isEqualTo("p1");
-    assertThat(edge.toRef).isEqualTo("p2");
-    assertThat(edge.propertyCount).isEqualTo(1);
   }
 
   // Regression: #7574 a control key on the wrong kind of line was silently dropped

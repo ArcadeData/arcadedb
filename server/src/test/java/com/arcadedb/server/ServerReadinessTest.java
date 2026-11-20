@@ -65,6 +65,8 @@ class ServerReadinessTest {
   }
 
   // Regression: #7118 a node whose Raft log failed must not report READY
+  // Regression: #7519 the bootstrap window does not gate a server without HA
+  /** No HA layer at all: nothing to gate, and {@code getHA()} is null rather than a plugin answering null. */
   @Test
   void readyWhenThereIsNoHaLayerAtAll() {
     assertThat(new ServerControlPlane(onlineServerWith(null, new ContextConfiguration())).notReadyReason()).isNull();
@@ -298,12 +300,6 @@ class ServerReadinessTest {
       when(ha.getBootstrapWindowReason()).thenThrow(new IllegalStateException("plugin not initialized"));
 
       assertThat(new ServerControlPlane(onlineServerWith(ha, haConfiguration(false))).notReadyReason()).isNull();
-    }
-
-    /** No HA layer at all: nothing to gate, and {@code getHA()} is null rather than a plugin answering null. */
-    @Test
-    void readyWhenThereIsNoHaLayerAtAll() {
-      assertThat(new ServerControlPlane(onlineServerWith(null, new ContextConfiguration())).notReadyReason()).isNull();
     }
 
     /**
