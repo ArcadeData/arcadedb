@@ -439,8 +439,8 @@ class ProtoUtilsTest {
     final GrpcValue list = GrpcValue.newBuilder().setListValue(GrpcList.newBuilder().addValues(link).addValues(link).build()).build();
     final GrpcValue map = GrpcValue.newBuilder().setMapValue(GrpcMap.newBuilder().putEntries("x", link).build()).build();
 
-    assertThat((List<?>) ProtoUtils.fromGrpcValue(list)).containsExactly(new RID(10, 5), new RID(10, 5));
-    assertThat((Map<?, ?>) ProtoUtils.fromGrpcValue(map)).containsEntry("x", new RID(10, 5));
+    assertThat(ProtoUtils.fromGrpcValue(list)).isEqualTo(List.of(new RID(10, 5), new RID(10, 5)));
+    assertThat(ProtoUtils.fromGrpcValue(map)).isEqualTo(Map.of("x", new RID(10, 5)));
   }
 
   @Test
