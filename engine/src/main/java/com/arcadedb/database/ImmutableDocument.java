@@ -331,11 +331,15 @@ public class ImmutableDocument extends BaseDocument {
    * read nothing from the bucket, so it does not count; the stale marker is only set after a read, so it does.
    */
   protected boolean readInCurrentTransaction() {
+    // THE FIELD FIRST: modify() IS A HOT PATH OF A BULK UPDATE, AND A RECORD NOBODY STAMPED NEEDS NO TRANSACTION LOOKUP
+    final int stamp = readInTransaction;
+    if (stamp == -1)
+      return false;
     final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
-    if (tx == null || readInTransaction == -1)
+    if (tx == null)
       return false;
     final int id = readTransactionId(tx.getBeginSequence());
-    return id >= 0 && ((readInTransaction == id && buffer != null) || readInTransaction == STALE_READ - id);
+    return id >= 0 && ((stamp == id && buffer != null) || stamp == STALE_READ - id);
   }
 
   /**
@@ -346,6 +350,10 @@ public class ImmutableDocument extends BaseDocument {
    * record already does (issue #8984). It answered {@link RecordNotFoundException}, which reaches an HTTP client as a 404 it
    * cannot tell from a wrong RID, and which a retry loop does not retry: a Cypher SET or a SQL UPDATE of a vertex whose MATCH
    * or WHERE read it moments before failed so. A record not read in this transaction keeps the not-found.
+   * <p>
+   * For the kind whose reload drops the content it read ({@code ImmutableVertex}, to force the reload): the reload of a
+   * document or an edge that finds its record gone keeps the content it had, so their {@code modify()} never reaches a
+   * not-found here, and the conflict is raised by the check at commit.
    *
    * @param readHere {@link #readInCurrentTransaction()}, taken before the reload
    */
@@ -410,11 +418,10 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public MutableDocument modify() {
-    final boolean readHere = readInCurrentTransaction();
     if (prepareForModify("document") instanceof MutableDocument fromCache)
       return fromCache;
 
-    loadForModify(readHere);
+    checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
     return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));

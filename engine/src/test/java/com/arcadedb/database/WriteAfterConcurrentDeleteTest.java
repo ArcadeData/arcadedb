@@ -22,10 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,15 +40,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * record, completes. It was answered {@code RecordNotFoundException} instead, which the HTTP API reports as a 404 the caller
  * cannot tell from a wrong RID: 4 to 7 of 900 auto-commit Cypher {@code SET}s racing a {@code DETACH DELETE} of their record.
  */
+@Timeout(value = 2, unit = TimeUnit.MINUTES) // hang detector for the join of the concurrent commit, not a latency bound
 class WriteAfterConcurrentDeleteTest extends TestHelper {
 
   @Override
   protected void beginTest() {
     database.command("sqlscript", "CREATE VERTEX TYPE R; CREATE PROPERTY R.k STRING; CREATE INDEX ON R (k) UNIQUE; "
-        + "CREATE DOCUMENT TYPE D; CREATE PROPERTY D.k STRING; CREATE INDEX ON D (k) UNIQUE");
+        + "CREATE DOCUMENT TYPE D; CREATE PROPERTY D.k STRING; CREATE INDEX ON D (k) UNIQUE; "
+        + "CREATE VERTEX TYPE N; CREATE EDGE TYPE E; CREATE PROPERTY E.k STRING; CREATE INDEX ON E (k) UNIQUE");
     database.transaction(() -> {
       database.command("sql", "INSERT INTO R SET k = 'r0', n = 0").close();
       database.command("sql", "INSERT INTO D SET k = 'd0', n = 0").close();
+      database.command("sql", "CREATE EDGE E FROM (CREATE VERTEX N SET n = 1) TO (CREATE VERTEX N SET n = 2) SET k = 'e0', n = 0").close();
     });
     try {
       database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("race", Race.class));
@@ -76,6 +82,68 @@ class WriteAfterConcurrentDeleteTest extends TestHelper {
   void sqlUpdateOfADocumentDeletedAfterItsWhereIsARetryableConflict() {
     assertRetryableConflict("DELETE FROM D WHERE k = 'd0'",
         () -> database.command("sql", "UPDATE D SET n = n + 1 WHERE k = 'd0' AND `race.interleave`(@rid)").close());
+  }
+
+  @Test
+  void sqlUpdateOfAnEdgeDeletedAfterItsWhereIsARetryableConflict() {
+    assertRetryableConflict("DELETE FROM E WHERE k = 'e0'",
+        () -> database.command("sql", "UPDATE E SET n = n + 1 WHERE k = 'e0' AND `race.interleave`(@rid)").close());
+  }
+
+  /** The same, for an edge read by a scan of its bucket (its content is read straight from the page) and not by an index. */
+  @Test
+  void sqlUpdateOfAnEdgeFoundByAScanAndDeletedAfterItsWhereIsARetryableConflict() {
+    assertRetryableConflict("DELETE FROM E WHERE k = 'e0'",
+        () -> database.command("sql", "UPDATE E SET n = n + 1 WHERE n = 0 AND `race.interleave`(@rid)").close());
+  }
+
+  /**
+   * A record handed out by a scan reads its content straight from the page, so modify() reloads it when the page moved on since.
+   * A vertex drops the content it read to force that reload, and the reload of a record a concurrent commit deleted is where the
+   * not-found came from. A document and an edge keep the content they read when the reload finds the record gone, so they never
+   * reached it: the write is refused at commit, as a conflict. Pinned for the three kinds, so that no kind answers differently.
+   */
+  @Test
+  void aDocumentFoundByAScanAndDeletedAfterwardsIsARetryableConflictAtModify() {
+    assertRetryableConflict("DELETE FROM D WHERE k = 'd0'", () -> {
+      final Document document = database.iterateType("D", false).next().asDocument();
+      Race.interleave(document);
+      document.modify().set("n", 1).save();
+    });
+  }
+
+  @Test
+  void anEdgeFoundByAScanAndDeletedAfterwardsIsARetryableConflictAtModify() {
+    assertRetryableConflict("DELETE FROM E WHERE k = 'e0'", () -> {
+      final Edge edge = database.iterateType("E", false).next().asEdge();
+      Race.interleave(edge);
+      edge.modify().set("n", 1).save();
+    });
+  }
+
+  @Test
+  void aVertexFoundByAScanAndDeletedAfterwardsIsARetryableConflictAtModify() {
+    assertRetryableConflict("DELETE FROM R WHERE k = 'r0'", () -> {
+      final Vertex vertex = database.iterateType("R", false).next().asVertex();
+      Race.interleave(vertex);
+      vertex.modify().set("n", 1).save();
+    });
+  }
+
+  /**
+   * An edge created on a vertex this transaction read, which a concurrent commit deleted since: the vertex's edge list is
+   * written through {@code modify()}, so it is the same conflict, where it was the non-retryable {@code VertexNotFoundException}
+   * of a RID that does not exist. A retry reads the vertex again and finds it gone.
+   */
+  @Test
+  void anEdgeFromAVertexDeletedAfterItWasReadIsARetryableConflict() {
+    final RID target = database.query("sql", "SELECT FROM N WHERE n = 2").next().getIdentity().get();
+    final RID source = database.query("sql", "SELECT FROM R WHERE k = 'r0'").next().getIdentity().get();
+    assertRetryableConflict("DELETE FROM R WHERE k = 'r0'", () -> {
+      final Vertex vertex = database.lookupByRID(source, true).asVertex();
+      Race.interleave(vertex);
+      vertex.newEdge("E", target);
+    });
   }
 
   /** With retries, the retry reads the data again, finds no record and completes: what the conflict is reported for. */
