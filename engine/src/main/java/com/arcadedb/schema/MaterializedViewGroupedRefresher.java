@@ -105,50 +105,63 @@ final class MaterializedViewGroupedRefresher {
     final boolean keepState = !database.isTransactionActive();
     final int maxGroups = MaterializedViewGroupedState.maxGroups(plan);
     for (int attempt = 0; attempt < REBUILD_ATTEMPTS; attempt++) {
-      final MaterializedViewGroupedState.Watch watch = view.openGroupedWatch();
-      final Groups built = new Groups(plan);
-      try {
-        final WhereClause where = plan.newWhere();
-        final CommandContext context = MaterializedViewGroupedPlan.newContext(database);
-        database.transaction(() -> database.scanType(plan.sourceType, true, record -> {
-          final Consumer<RID> observer = scanObserver;
-          if (observer != null)
-            observer.accept(record.getIdentity());
-          final Contribution contribution = plan.contributionOf(record, where, context);
-          if (watch.scanning(record.getIdentity()))
-            built.add(contribution, 1);
-          // past the groups a state may hold the scan stops: the view is kept by the defining query
-          return !built.inexact && built.size() <= maxGroups;
-        }), false, 1);
-      } finally {
-        view.closeGroupedWatch(watch);
-      }
-
-      Outcome outcome = Outcome.INEXACT;
-      if (!built.inexact && built.size() <= maxGroups) {
-        if (watch.isDirty())
-          continue;
-        for (final MaterializedViewGroupedState.Watch.Entry entry : watch.entries().values()) {
-          built.add(entry.counted, -1);
-          built.add(entry.after, 1);
-        }
-        outcome = built.seal();
-        // the corrections can add groups too
-        if (outcome == Outcome.APPLIED && built.size() > maxGroups)
-          outcome = Outcome.INEXACT;
-      }
+      final Outcome outcome = rebuildOnce(database, view, plan, sourceSchema, keepState, maxGroups);
+      if (outcome == Outcome.APPLIED)
+        return;
       if (outcome == Outcome.INEXACT)
         break;
-      if (outcome == Outcome.REBUILD)
-        continue;
-
-      writeAll(database, view, built);
-      view.setGroupedRuntime(keepState ? new MaterializedViewImpl.GroupedRuntime(plan, sourceSchema, built) : null);
-      return;
     }
 
     MaterializedViewRefresher.refreshOnce(database, view);
     view.setGroupedRuntime(keepState ? new MaterializedViewImpl.GroupedRuntime(plan, sourceSchema, null) : null);
+  }
+
+  /**
+   * One attempt of a rebuild.
+   *
+   * @return {@code APPLIED} when the state is built and the rows are written, {@code REBUILD} when the attempt has to be made again
+   * (a commit it cannot correct for, or a group that lost its {@code min}/{@code max}), {@code INEXACT} when the view is not to be
+   * maintained by delta: its values leave the exact domain, or its groups are more than a state may hold
+   */
+  private static Outcome rebuildOnce(final Database database, final MaterializedViewImpl view,
+      final MaterializedViewGroupedPlan plan, final List<Object> sourceSchema, final boolean keepState, final int maxGroups) {
+    final MaterializedViewGroupedState.Watch watch = view.openGroupedWatch();
+    final Groups built = new Groups(plan);
+    try {
+      final WhereClause where = plan.newWhere();
+      final CommandContext context = MaterializedViewGroupedPlan.newContext(database);
+      database.transaction(() -> database.scanType(plan.sourceType, true, record -> {
+        final Consumer<RID> observer = scanObserver;
+        if (observer != null)
+          observer.accept(record.getIdentity());
+        final Contribution contribution = plan.contributionOf(record, where, context);
+        if (watch.scanning(record.getIdentity()))
+          built.add(contribution, 1);
+        // past the groups a state may hold the scan stops: the view is kept by the defining query
+        return !built.inexact && built.size() <= maxGroups;
+      }), false, 1);
+    } finally {
+      view.closeGroupedWatch(watch);
+    }
+
+    if (built.inexact || built.size() > maxGroups)
+      return Outcome.INEXACT;
+    if (watch.isDirty())
+      return Outcome.REBUILD;
+    for (final MaterializedViewGroupedState.Watch.Entry entry : watch.entries().values()) {
+      built.add(entry.counted, -1);
+      built.add(entry.after, 1);
+    }
+    final Outcome outcome = built.seal();
+    if (outcome != Outcome.APPLIED)
+      return outcome;
+    // the corrections can add groups too
+    if (built.size() > maxGroups)
+      return Outcome.INEXACT;
+
+    writeAll(database, view, built);
+    view.setGroupedRuntime(keepState ? new MaterializedViewImpl.GroupedRuntime(plan, sourceSchema, built) : null);
+    return Outcome.APPLIED;
   }
 
   /** Writes the row of every group over the view's records, in place where it can, as the full pass of the defining query does. */

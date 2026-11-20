@@ -442,17 +442,17 @@ final class MaterializedViewGroupedState {
    * record.
    */
   static final class Watch {
-    static final class Entry {
-      Contribution counted;
-      Contribution after;
-    }
-
     private final Map<RID, Entry> entries         = new LinkedHashMap<>();
     private final Set<Integer>    finishedBuckets = new HashSet<>();
     private       int             cursorBucket    = -1;
     private       long            cursorPosition  = -1;
     /** A commit the rebuild cannot correct for (no per-record changes, or a commit that failed past its point) was absorbed. */
     private       boolean         dirty;
+
+    static final class Entry {
+      Contribution counted;
+      Contribution after;
+    }
 
     /** Called by the scan before it counts {@code rid}: false when the watch holds it, which the scan then skips. */
     synchronized boolean scanning(final RID rid) {

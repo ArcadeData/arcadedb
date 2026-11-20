@@ -100,6 +100,21 @@ final class MaterializedViewGroupedPlan {
   private static final Pattern PLAIN_PROPERTY    = Pattern.compile(NAME);
   private static final Pattern AGGREGATE_OF_NAME = Pattern.compile("(?i)(count|sum|avg|min|max)\\(\\s*(\\*|" + NAME + ")\\s*\\)");
 
+  /**
+   * The node types of a condition that reads the properties of the record and nothing else: the boolean connectives, the scalar
+   * comparisons, arithmetic, and literals. A closed list, so that a construct nobody thought of (a link followed, a list element or
+   * range, a condition applied to the records a list holds, an embedded value, a function, a method, a parameter, a subquery) keeps
+   * the view on the full pass instead of reading some other record, which no commit of the source would then refresh: the state
+   * before an update or a delete is evaluated against the data as it is now, so a view reading across a link would drift for good.
+   */
+  private static final Set<Class<?>> RECORD_ONLY_NODES = Set.of(WhereClause.class, OrBlock.class, AndBlock.class, NotBlock.class,
+      ParenthesisBlock.class, BinaryCondition.class, BetweenCondition.class, IsNullCondition.class, IsNotNullCondition.class,
+      IsDefinedCondition.class, IsNotDefinedCondition.class, InCondition.class, EqualsCompareOperator.class, NeOperator.class,
+      NeqOperator.class, NullSafeEqualsCompareOperator.class, GtOperator.class, GeOperator.class, LtOperator.class, LeOperator.class,
+      LikeOperator.class, ILikeOperator.class, InOperator.class, Expression.class, MathExpression.class, BaseExpression.class,
+      ParenthesisExpression.class, ArrayLiteralExpression.class, BaseIdentifier.class, SuffixIdentifier.class, Identifier.class,
+      RecordAttribute.class, Rid.class, PNumber.class, PInteger.class, FloatingPoint.class);
+
   final         String      sourceType;
   private final WhereClause where;
   /** The GROUP BY properties, in their order. */
@@ -228,21 +243,6 @@ final class MaterializedViewGroupedPlan {
       return null;
     }
   }
-
-  /**
-   * The node types of a condition that reads the properties of the record and nothing else: the boolean connectives, the scalar
-   * comparisons, arithmetic, and literals. A closed list, so that a construct nobody thought of (a link followed, a list element or
-   * range, a condition applied to the records a list holds, an embedded value, a function, a method, a parameter, a subquery) keeps
-   * the view on the full pass instead of reading some other record, which no commit of the source would then refresh: the state
-   * before an update or a delete is evaluated against the data as it is now, so a view reading across a link would drift for good.
-   */
-  private static final Set<Class<?>> RECORD_ONLY_NODES = Set.of(WhereClause.class, OrBlock.class, AndBlock.class, NotBlock.class,
-      ParenthesisBlock.class, BinaryCondition.class, BetweenCondition.class, IsNullCondition.class, IsNotNullCondition.class,
-      IsDefinedCondition.class, IsNotDefinedCondition.class, InCondition.class, EqualsCompareOperator.class, NeOperator.class,
-      NeqOperator.class, NullSafeEqualsCompareOperator.class, GtOperator.class, GeOperator.class, LtOperator.class, LeOperator.class,
-      LikeOperator.class, ILikeOperator.class, InOperator.class, Expression.class, MathExpression.class, BaseExpression.class,
-      ParenthesisExpression.class, ArrayLiteralExpression.class, BaseIdentifier.class, SuffixIdentifier.class, Identifier.class,
-      RecordAttribute.class, Rid.class, PNumber.class, PInteger.class, FloatingPoint.class);
 
   /**
    * A condition that reads the record and nothing else: only nodes of {@link #RECORD_ONLY_NODES}, over plain property names and
