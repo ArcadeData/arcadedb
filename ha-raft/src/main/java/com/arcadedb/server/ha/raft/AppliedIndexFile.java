@@ -74,10 +74,16 @@ final class AppliedIndexFile {
 
   // The index of the INSTALL_DATABASE_ENTRY that created the copy of each database this node holds (issue #11919), or for
   // a copy acquired from the leader the index after the one the leader served it at. An entry naming the database at a
-  // LOWER index belongs to an incarnation a drop removed or is already in the copy: a replay from a snapshot marker older
-  // than the drop must not apply it to the copy the later create made. Kept in a file of its own, .raft/created-index,
-  // fsynced on every change: the applied-index file is rewritten without an fsync on every entry, and a power loss can
-  // leave that rewrite empty. Guarded by appliedIndexFileLock and evicted by a drop with the per-database applied index.
+  // LOWER index, whatever its type, is not applied: it belongs to an incarnation a drop removed, or it is already in the
+  // copy. For an acquired copy that is a transaction, a schema change or a configuration the copy carries, and a create,
+  // a drop or a bootstrap baseline whose effect the copy supersedes (the #8579 skip leaves those to the apply, which would
+  // drop the copy, or verify it against a baseline it has moved past). A replay from a snapshot marker older than the drop
+  // must not apply them to the copy the later create made. Kept in a file of its own, .raft/created-index, fsynced on
+  // every change: the applied-index file is rewritten without an fsync on every entry, and a power loss can leave that
+  // rewrite empty. The fsync is paid only when a copy is created, acquired or dropped, never per applied entry. Guarded by
+  // appliedIndexFileLock and evicted by a drop with the per-database applied index.
+  // The boundary is trusted as it stands: it is bound to no Raft group, so a node whose Raft storage is reset to join
+  // another cluster must not keep a .raft directory from the old one (the applied-index file there has the same exposure).
   private final Map<String, Long> createdIndexByDb = new ConcurrentHashMap<>();
 
   // Whether the last change of createdIndexByDb could not be written (issue #11919): the next applied entry writes it again

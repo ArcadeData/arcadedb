@@ -30,6 +30,15 @@ The ones that cannot be quarantined are **held** (`heldEntryFloors`, `holdEntryF
 
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
+### The creation boundary: what a replay does NOT apply (#11919)
+
+A drop followed by a create of the same name leaves the log with two incarnations of one database, and a restart whose marker is older than the drop replays both. The create of the first is a no-op (the name exists), so everything that followed it - its schema entries, its transactions, its drop - used to reach the copy the second create made. `.raft/created-index` holds, per database, the index of the `INSTALL_DATABASE_ENTRY` that made the copy (`servedAt + 1` for a copy acquired from the leader), and `applyTransaction` applies no entry naming the database below it, whatever its type: the position still advances, the database's own position and boundary stay the copy's.
+
+- **It is its own fsynced file on purpose.** `.raft/applied-index` is rewritten on every entry without an fsync, so a power loss can leave it empty and a boundary kept there is lost exactly when a replay needs it. The file is written only when a copy is created, acquired or dropped. A failed write only WARNs and is retried with every applied entry (failing the apply would turn a full `.raft` volume into a crash loop); until it succeeds a restart falls back to the old replay for that database.
+- **Do not skip by the previous session's applied position instead.** `appliedByPreviousSession` (#11946) keeps the older schema document of a replayed entry off the copy and still applies its pages: a restart replays transactions past the marker to recover pages not yet flushed, so skipping them by the position the last session reached loses data. Only entries below the incarnation boundary are skipped.
+- **It is read under the install gate.** An entry that waited for an install of its database reads the boundary that install recorded; read before the wait, it would miss it.
+- **A restore (`forceSnapshot`) records no boundary** (`createdDatabase` leaves it out): the entries older than a restore are still replayed over the restored copy, and a replayed restore reinstalls it from the leader unless the persisted position says a previous session did (#7143). Whether those older entries should be skipped too is not settled here.
+
 ## `RaftHAServer.getLastAppliedIndex()` does not read ArcadeDB's counter
 
 It reads Ratis: `division.getInfo().getLastAppliedIndex()` -> `StateMachineUpdater.appliedIndex`, which Ratis seeds from `getLatestSnapshot().getIndex()` (in its constructor, and again in `reload()` right *after* `reinitialize()` returns). `ArcadeStateMachine.lastAppliedIndex`, the `AtomicLong`, feeds `takeSnapshot()` and the phase-2 replay floor and is **not** on that path.

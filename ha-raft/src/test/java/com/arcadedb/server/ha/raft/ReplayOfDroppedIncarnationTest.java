@@ -41,6 +41,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -64,13 +65,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code .raft/applied-index} file: Ratis hands it the entries again from the marker on.
  */
 class ReplayOfDroppedIncarnationTest {
-  private static final String DB          = "db-incarnations";
-  private static final long   TERM        = 3L;
-  private static final long   FIRST       = 10L;
-  private static final long   OLD_TX      = 11L;
-  private static final long   DROP        = 12L;
-  private static final long   SECOND      = 13L;
-  private static final String CURRENT     = "CreatedAfterTheSecondCreate";
+  private static final String DB      = "db-incarnations";
+  // A database created after the history, by an entry whose applied-index write is not fsynced
+  private static final String OTHER   = "db-other";
+  private static final long   TERM    = 3L;
+  private static final long   FIRST   = 10L;
+  private static final long   OLD_TX  = 11L;
+  private static final long   DROP    = 12L;
+  private static final long   SECOND  = 13L;
+  private static final String CURRENT = "CreatedAfterTheSecondCreate";
 
   @TempDir
   private Path            serverDir;
@@ -105,8 +108,9 @@ class ReplayOfDroppedIncarnationTest {
   private ArcadeStateMachine applyHistory() {
     final ArcadeStateMachine sm = newStateMachine();
     apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), FIRST);
-    // The transaction of the first incarnation is not applied by this node: an empty WAL fails the apply, which is how
-    // the test tells, on the replay below, whether an entry of that incarnation reached the copy
+    // The transaction of the first incarnation (index OLD_TX) is not applied here: this history only builds the state a
+    // restarted node holds. The replay below feeds that transaction in, and an empty WAL fails its apply, which is how
+    // the test tells whether an entry of the first incarnation reached the copy
     apply(sm, RaftLogEntryCodec.encodeDropDatabaseEntry(DB), DROP);
     apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), SECOND);
     assertThat(server.existsDatabase(DB)).as("the second create made the current copy").isTrue();
@@ -169,9 +173,6 @@ class ReplayOfDroppedIncarnationTest {
     assertThat(server.existsDatabase(DB)).as("the replayed drop of the same incarnation still drops it").isFalse();
   }
 
-  // A database created after the history, by an entry whose applied-index write is not fsynced
-  private static final String OTHER = "db-other";
-
   @Test
   void theCreationBoundarySurvivesAPowerLossOfTheAppliedIndexFile() throws Exception {
     final ArcadeStateMachine sm = applyHistory();
@@ -226,6 +227,28 @@ class ReplayOfDroppedIncarnationTest {
   }
 
   @Test
+  void aBootstrapBaselineBelowAnAcquiredCopyIsNotAppliedToIt() throws Exception {
+    // Unlike the transactions and schema changes the #8579 skip covers, a bootstrap baseline acts on this node's own
+    // state: applied, it would be recorded for the database and its fingerprint verified against the copy. The copy was
+    // served at index 20, past the baseline: it is a state the baseline does not describe, and the verification could
+    // only find a mismatch to repair by installing the copy again
+    final HttpServer leader = leaderServingTheCopyAt(20);
+    final ArcadeStateMachine sm = newStateMachine();
+    try {
+      sm.runUnderInstallGate(DB, FIRST - 1, () -> acquireTheCopy(leader));
+    } finally {
+      leader.stop(0);
+    }
+
+    apply(sm, RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB, "00".repeat(16), 0L), OLD_TX);
+
+    assertThat(sm.getBootstrapBaseline(DB))
+        .as("the baseline at index %d is below the index 20 the acquired copy was served at", OLD_TX).isNull();
+    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT)).as("the acquired copy is left as it is").isTrue();
+    assertThat(sm.readAppliedIndexCounter()).as("a skipped entry still advances the applied position").isEqualTo(OLD_TX);
+  }
+
+  @Test
   void aDropWaitingForTheAcquisitionReadsTheBoundaryItRecords() throws Exception {
     // The drop of the earlier incarnation arrives while the copy is being acquired: it waits on the install gate, and must
     // read the boundary the acquisition records before it releases the gate, not the one it would have read before waiting
@@ -261,7 +284,8 @@ class ReplayOfDroppedIncarnationTest {
 
   /** A leader that serves a copy of {@link #DB} it reports as of applied index {@code servedAt}. */
   private static HttpServer leaderServingTheCopyAt(final long servedAt) throws IOException {
-    final HttpServer leader = HttpServer.create(new InetSocketAddress(0), 0);
+    // On loopback, where the install dials it ("localhost"): nothing else on the machine can reach the stand-in
+    final HttpServer leader = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
     leader.createContext("/api/v1/ha/snapshot/" + DB, exchange -> {
       final byte[] zip = zipWith("data.dat", "copy");
       exchange.getResponseHeaders().add(SnapshotManager.APPLIED_INDEX_HEADER, Long.toString(servedAt));
@@ -316,8 +340,9 @@ class ReplayOfDroppedIncarnationTest {
   private static void apply(final ArcadeStateMachine sm, final ByteString payload, final long index) {
     final LogEntryProto logEntry = LogEntryProto.newBuilder().setTerm(TERM).setIndex(index)
         .setStateMachineLogEntry(StateMachineLogEntryProto.newBuilder().setLogData(payload).build()).build();
-    // A failed apply (the empty WAL above) is the outcome some assertions look at, not a test failure
-    sm.applyTransaction(TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build())
-        .exceptionally(t -> null).join();
+    // A failed apply fails the test here: every entry the tests feed in is either applied or skipped, and one that fails
+    // is the defect (an entry of a dropped incarnation reaching the copy fails on its empty WAL), not an outcome to look past
+    assertThat(sm.applyTransaction(TransactionContext.newBuilder().setStateMachine(sm).setLogEntry(logEntry).build()))
+        .as("applying the entry at index %d", index).succeedsWithin(Duration.ofSeconds(60));
   }
 }
