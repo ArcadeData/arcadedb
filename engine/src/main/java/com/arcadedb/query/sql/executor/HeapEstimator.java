@@ -362,7 +362,7 @@ public final class HeapEstimator {
 
   private static long primitiveArrayBytes(final Object array) {
     if (array instanceof byte[] bytes)
-      return ARRAY_BYTES + bytes.length;
+      return ARRAY_BYTES + (long) bytes.length;
     if (array instanceof float[] floats)
       return ARRAY_BYTES + 4L * floats.length;
     if (array instanceof int[] ints)
