@@ -167,6 +167,49 @@ class RDFImporterFormatStatementBoundariesTest {
     }
   }
 
+  /**
+   * A CR that is the very last character of a chunk and a CR that is the very first of the next one, each with its LF on the other
+   * side of the boundary: one line end either way, not a line end and an empty line.
+   */
+  @Test
+  void crlfAtTheBoundaryOfTwoChunksIsOneLineEnd() throws Exception {
+    final String beforeTheBoundary = "a".repeat(NTriplesStatement.CHUNK_SIZE - 1);
+    // CR LAST IN THE FIRST CHUNK, LF FIRST IN THE SECOND
+    assertThat(lines(new StringReader(beforeTheBoundary + "\r\nb\n"))).containsExactly(beforeTheBoundary, "b");
+    // CR FIRST IN THE SECOND CHUNK, LF SECOND
+    final String upToTheBoundary = "a".repeat(NTriplesStatement.CHUNK_SIZE);
+    assertThat(lines(new StringReader(upToTheBoundary + "\r\nb\n"))).containsExactly(upToTheBoundary, "b");
+    // A LONE CR AT THE END OF THE FIRST CHUNK IS A LINE END ON ITS OWN, AND THE NEXT LINE IS NOT SHORTENED BY IT
+    assertThat(lines(new StringReader(beforeTheBoundary + "\rb\n"))).containsExactly(beforeTheBoundary, "b");
+    // THE SOURCE ENDS RIGHT AFTER THE CR AT THE END OF A CHUNK: NO EMPTY LINE AFTER IT
+    assertThat(lines(new StringReader(beforeTheBoundary + "\r"))).containsExactly(beforeTheBoundary);
+  }
+
+  /** An IRI or a literal that never closes, and an escape that is not one, refuse the row, and {@code -onRowError skip} goes on. */
+  @Test
+  void malformedTermsAreRowErrors() throws Exception {
+    final NTriplesStatement statement = new NTriplesStatement(" ", 4096);
+    final String[] terms = new String[3];
+    assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> <http://a/o", terms)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Unterminated IRI starting at column 27");
+    assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> \"no end .", terms)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Unterminated literal starting at column 27");
+    assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> <http://a/\\n> .", terms)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Invalid escape '\\n' in an IRI");
+    assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> \"a\\qb\" .", terms)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Invalid escape '\\q' in a literal");
+    assertThatThrownBy(() -> statement.parse("<http://a/s> <http://a/p> \"a\\", terms)).isInstanceOf(ImportException.class)
+        .hasMessageContaining("Incomplete escape");
+
+    final ImporterSettings skip = settings();
+    skip.onRowError = "skip";
+    final ImporterContext context = load(new RDFImporterFormat(" "), skip, "<http://a/s> <http://a/p> <http://a/o\n"
+        + "<http://a/s> <http://a/p> \"no end .\n" + "<http://a/s> <http://a/p> \"a\\qb\" .\n"
+        + "<http://a/s> <http://a/ok> <http://a/o> .\n");
+    assertThat(context.errors.get()).isEqualTo(3);
+    assertThat(edges()).containsOnly(Map.entry("http://a/ok", "http://a/s>http://a/o"));
+  }
+
   /** The byte-order mark is skipped at the start of the source only, and a source of nothing else has no line. */
   @Test
   void byteOrderMarkIsSkippedAtTheStartOfTheSourceOnly() throws Exception {
