@@ -356,10 +356,15 @@ public final class OperationHeapLimit {
 
   /**
    * Gives back {@code bytes} of what the operation charged: its buffer shrank. The large containers its elements share are
-   * forgotten, as which elements went is not known: the elements met afterwards are charged for them again.
+   * forgotten, as which elements went is not known, and so is what was learnt of the size of an element: the average of the
+   * elements estimated so far leaves out the containers they shared, which the next elements are charged for from a registry that
+   * remembers none. The elements held afterwards are a new buffer, whose first ones are estimated again.
    */
   public void release(final long bytes) {
     shared = null;
+    estimatedElements = 0L;
+    estimatedBytes = 0L;
+    sampleCountdown = 0;
     giveBack(bytes);
   }
 

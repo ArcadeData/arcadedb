@@ -68,6 +68,8 @@ public final class HeapEstimator {
 
   static final         int SAMPLED_ELEMENTS = 16;
   static final         int MAX_DEPTH        = 4;
+  /** A primitive array is remembered by a {@link Shared} from this many bytes: the entry that remembers it must be small beside it. */
+  static final         int SHARED_ARRAY_BYTES = 1024;
   // A String object and the header of its byte array
   private static final int STRING_BYTES     = 40;
   /** A ResultInternal and the LinkedHashMap it keeps its properties in, with its table and its key set. */
@@ -87,8 +89,14 @@ public final class HeapEstimator {
    * The large collections, maps and arrays the elements of one buffer hold, so that the elements that share one are
    * charged for it once (issue #11812): a list collected once and carried by every row of an UNWIND was counted again for
    * each row, and an ORDER BY over a few hundred such rows was refused for asking more than the whole budget although it holds the list
-   * once. Only the containers above {@link #SAMPLED_ELEMENTS} are remembered: the small ones are cheap to count again, and
-   * the large ones are what an overcount is made of.
+   * once. Only the containers above {@link #SAMPLED_ELEMENTS} elements are remembered, and the primitive arrays from
+   * {@link #SHARED_ARRAY_BYTES}: the small ones are cheap to count again, and the large ones are what an overcount is made of.
+   * <p>
+   * A container is remembered at the depth it was met. What a walk counts of it depends on how deep it starts - everything from
+   * {@link #MAX_DEPTH} down is counted flat - so the charge made for a container met three levels down, where the arrays it holds
+   * are counted at 16 bytes each, must not stand for the same container held directly by another row. A sighting at another depth
+   * is another entry: a container held at one depth by every row, the usual case, is charged once, and one held at several is
+   * charged once for each.
    * <p>
    * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
    * back a container with the last element that held it, and forgets it then. The bytes charged for a container are kept with it
@@ -103,8 +111,8 @@ public final class HeapEstimator {
    * Not thread-safe, as the operation that owns it is not.
    */
   public static final class Shared {
-    // Created at the first large container: most operations never meet one
-    private IdentityHashMap<Object, Held> held;
+    // Created at the first large container: most operations never meet one. One map per depth a container is met at
+    private IdentityHashMap<Object, Held>[] held;
     // The bytes charged so far to the containers met for the first time, each counted once, nested ones included
     private long    heldBytes;
     // The bytes of the containers a sampled element met first that a later sampled element turned out to share
@@ -158,7 +166,22 @@ public final class HeapEstimator {
 
     /** The number of large containers remembered now, those some element still holds. */
     int containers() {
-      return held == null ? 0 : held.size();
+      int containers = 0;
+      if (held != null)
+        for (final IdentityHashMap<Object, Held> atDepth : held)
+          if (atDepth != null)
+            containers += atDepth.size();
+      return containers;
+    }
+
+    @SuppressWarnings("unchecked")
+    private IdentityHashMap<Object, Held> heldAt(final int depth) {
+      if (held == null)
+        held = new IdentityHashMap[MAX_DEPTH];
+      IdentityHashMap<Object, Held> atDepth = held[depth];
+      if (atDepth == null)
+        held[depth] = atDepth = new IdentityHashMap<>();
+      return atDepth;
     }
 
     private long walk(final Object value, final boolean sample) {
@@ -169,9 +192,8 @@ public final class HeapEstimator {
     }
 
     private long hold(final Object container, final int depth) {
-      if (held == null)
-        held = new IdentityHashMap<>();
-      final Held known = held.get(container);
+      final IdentityHashMap<Object, Held> atDepth = heldAt(depth);
+      final Held known = atDepth.get(container);
       if (known != null) {
         ++known.holders;
         if (sample && known.walk != walks)
@@ -179,7 +201,7 @@ public final class HeapEstimator {
         return REFERENCE_BYTES;
       }
       final Held entry = new Held(depth, walks);
-      held.put(container, entry);
+      atDepth.put(container, entry);
       final Held parent = firstSighted;
       if (parent != null)
         parent.addNested(entry);
@@ -213,7 +235,8 @@ public final class HeapEstimator {
     }
 
     private long release(final Object container, final int depth) {
-      final Held known = held == null ? null : held.get(container);
+      final IdentityHashMap<Object, Held> atDepth = held == null ? null : held[depth];
+      final Held known = atDepth == null ? null : atDepth.get(container);
       if (known == null) {
         // Not met when it was added, or forgotten since: it was charged in full
         releasedBytes += contents(container, depth, null) - REFERENCE_BYTES;
@@ -221,7 +244,7 @@ public final class HeapEstimator {
       }
       if (--known.holders > 0)
         return REFERENCE_BYTES;
-      held.remove(container);
+      atDepth.remove(container);
       releasedBytes += known.bytes;
       // The containers it holds lose it as a holder, walked as they were when it was met
       contents(container, known.depth, this);
@@ -285,17 +308,17 @@ public final class HeapEstimator {
     if (value instanceof Map<?, ?> map)
       return countedOnce(map, map.size(), depth, shared);
     if (value instanceof byte[] bytes)
-      return ARRAY_BYTES + bytes.length;
+      return primitiveArrayCountedOnce(bytes, ARRAY_BYTES + (long) bytes.length, depth, shared);
     if (value instanceof Object[] array)
       return countedOnce(array, array.length, depth, shared);
     if (value instanceof float[] floats)
-      return ARRAY_BYTES + 4L * floats.length;
+      return primitiveArrayCountedOnce(floats, ARRAY_BYTES + 4L * floats.length, depth, shared);
     if (value instanceof int[] ints)
-      return ARRAY_BYTES + 4L * ints.length;
+      return primitiveArrayCountedOnce(ints, ARRAY_BYTES + 4L * ints.length, depth, shared);
     if (value instanceof long[] longs)
-      return ARRAY_BYTES + 8L * longs.length;
+      return primitiveArrayCountedOnce(longs, ARRAY_BYTES + 8L * longs.length, depth, shared);
     if (value instanceof double[] doubles)
-      return ARRAY_BYTES + 8L * doubles.length;
+      return primitiveArrayCountedOnce(doubles, ARRAY_BYTES + 8L * doubles.length, depth, shared);
     if (value instanceof CharSequence chars)
       return STRING_BYTES + 2L * chars.length();
     if (value instanceof BigDecimal || value instanceof BigInteger)
@@ -313,12 +336,33 @@ public final class HeapEstimator {
     return shared.releasing ? shared.release(container, depth) : shared.hold(container, depth);
   }
 
+  /** The estimate of a primitive array of {@code bytes}: in full the first time {@code shared} meets a big one, as a reference afterwards. */
+  private static long primitiveArrayCountedOnce(final Object array, final long bytes, final int depth, final Shared shared) {
+    if (shared == null || bytes < SHARED_ARRAY_BYTES)
+      return bytes;
+    return shared.releasing ? shared.release(array, depth) : shared.hold(array, depth);
+  }
+
   private static long contents(final Object container, final int depth, final Shared shared) {
     if (container instanceof Collection<?> collection)
       return estimateCollection(collection, depth, shared);
     if (container instanceof Map<?, ?> map)
       return MAP_BYTES + estimateEntries(map, depth, shared);
-    return estimateArray((Object[]) container, depth, shared);
+    if (container instanceof Object[] array)
+      return estimateArray(array, depth, shared);
+    return primitiveArrayBytes(container);
+  }
+
+  private static long primitiveArrayBytes(final Object array) {
+    if (array instanceof byte[] bytes)
+      return ARRAY_BYTES + bytes.length;
+    if (array instanceof float[] floats)
+      return ARRAY_BYTES + 4L * floats.length;
+    if (array instanceof int[] ints)
+      return ARRAY_BYTES + 4L * ints.length;
+    if (array instanceof long[] longs)
+      return ARRAY_BYTES + 8L * longs.length;
+    return ARRAY_BYTES + 8L * ((double[]) array).length;
   }
 
   private static long estimateResult(final ResultInternal result, final int depth, final Shared shared) {

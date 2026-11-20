@@ -184,11 +184,93 @@ class OperationHeapLimitSharedContainersTest {
     exact.release();
   }
 
+  /** A vector every row of a query carries (an UNWIND over a parameter) is in memory once, whatever its element type. */
+  @Test
+  void rowsSharingALargePrimitiveArrayAreChargedForItOnce() {
+    final float[] vector = new float[100_000];
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final int rows = 200;
+    for (int i = 1; i <= rows; i++)
+      limit.add(i, row("v", vector, "i", i));
+
+    // The array once, charged to the first row, and every row's own entries and its reference to it
+    final long rowOnItsOwn = RESULT_BYTES + 2L * HASH_ENTRY_BYTES + REFERENCE_BYTES + OBJECT_BYTES + REFERENCE_BYTES;
+    assertThat(limit.getChargedBytes()).isEqualTo(HeapEstimator.estimate(vector) - REFERENCE_BYTES + rows * rowOnItsOwn);
+    assertThat(limit.sharedContainers()).isEqualTo(1);
+    limit.release();
+  }
+
+  @Test
+  void aSmallPrimitiveArrayIsNotRememberedAndIsChargedByEveryRowThatHoldsIt() {
+    final float[] small = new float[HeapEstimator.SHARED_ARRAY_BYTES / 8];
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    limit.add(1, row("v", small, "i", 1));
+    limit.add(2, row("v", small, "i", 2));
+
+    assertThat(limit.sharedContainers()).isZero();
+    assertThat(limit.getChargedBytes()).isEqualTo(2L * (HeapEstimator.estimate(row("v", small, "i", 1)) + REFERENCE_BYTES));
+    limit.release();
+  }
+
   /**
-   * A top-K heap whose rows share large containers at random - lists that hold lists, maps and arrays that hold them, the same
-   * one under two names of a row, a private one that holds a shared one - and replaces rows at random, gives back exactly what it
-   * charged: when every row has gone for an empty one, what is charged is the empty rows and no container is remembered. A
-   * container given back too early, too late or twice leaves the charge above or below that.
+   * What a walk counts of a container depends on how deep it starts: from the fourth level down everything is counted at 16 bytes. A
+   * list met three levels down by one row is charged that way, which must not stand for the same list held directly by another row,
+   * charged for the arrays it holds.
+   */
+  @Test
+  void aContainerMetDeepIsNotWhatARowHoldingItDirectlyIsChargedAsAReferenceTo() {
+    final List<Object> vectors = new ArrayList<>();
+    for (int i = 0; i < 20; i++)
+      vectors.add(new float[1_024]);
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+
+    final ResultInternal deepRow = row("l", List.of(List.of(vectors)), "i", 1);
+    final ResultInternal directRow = row("l", vectors, "i", 2);
+
+    limit.add(1, deepRow);
+    final long deep = limit.getChargedBytes();
+    assertThat(deep).as("the arrays three levels down are counted flat").isLessThan(HeapEstimator.estimate(vectors) / 4);
+
+    limit.add(2, directRow);
+    assertThat(limit.getChargedBytes() - deep).as("held directly, the list is charged for what it holds")
+        .isGreaterThanOrEqualTo(HeapEstimator.estimate(vectors));
+
+    // and each of the two sightings gives back what it was charged: the rows leave for empty ones
+    final ResultInternal empty = new ResultInternal();
+    limit.replace(deepRow, empty);
+    limit.replace(directRow, empty);
+    assertThat(limit.sharedContainers()).isZero();
+    assertThat(limit.getChargedBytes()).isEqualTo(2L * (HeapEstimator.estimate(empty) + REFERENCE_BYTES));
+    limit.release();
+  }
+
+  /**
+   * A buffer emptied with {@code release(long)} and filled again - the rows a join buffers for each of its outer rows - is a new
+   * buffer: what was learnt of the old rows (an average that leaves out the lists they shared, while the registry that charged the
+   * first of them is gone) must not decide what the first rows of the new one are charged.
+   */
+  @Test
+  void anOperationFilledAgainAfterAReleaseEstimatesItsFirstRowsAgain() {
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final List<Object> first = nulls(2_000);
+    for (int i = 1; i <= 200; i++)
+      limit.add(i, row("l", first, "i", i));
+    limit.release();
+    assertThat(limit.getChargedBytes()).isZero();
+
+    final List<Object> second = nulls(20_000);
+    for (int i = 1; i <= 3; i++)
+      limit.add(i, row("l", second, "i", i));
+
+    assertThat(limit.getChargedBytes()).as("the list the new rows share is charged once").isGreaterThanOrEqualTo(HeapEstimator.estimate(second));
+    limit.release();
+  }
+
+  /**
+   * A top-K heap whose rows share large containers at random - lists that hold lists, maps and arrays that hold them, primitive
+   * arrays, the same one under two names of a row, at different depths of a row, a private one that holds a shared one - and replaces
+   * rows at random, gives back exactly what it charged: when every row has gone for an empty one, what is charged is the empty
+   * rows and no container is remembered. A container given back too early, too late or twice leaves the charge above or below that.
    */
   @Test
   void aTopKHeapGivesBackExactlyWhatItChargedWhateverTheRowsShare() {
@@ -236,6 +318,10 @@ class OperationHeapLimitSharedContainersTest {
 
     final List<Object> lower = new ArrayList<>(leaves);
     lower.addAll(middles);
+    // Primitive arrays from the size a Shared remembers them at
+    final Object[] primitives = { new float[300], new int[400], new long[200], new double[150], new byte[2_000] };
+    lower.addAll(List.of(primitives));
+    pool.addAll(List.of(primitives));
     for (int i = 0; i < 4; i++) {
       final List<Object> top = nulls(HeapEstimator.SAMPLED_ELEMENTS + 4);
       holdSome(random, top, lower);
@@ -268,7 +354,7 @@ class OperationHeapLimitSharedContainersTest {
     final ResultInternal row = new ResultInternal();
     final int properties = 1 + random.nextInt(3);
     for (int p = 0; p < properties; p++) {
-      final Object value = switch (random.nextInt(6)) {
+      final Object value = switch (random.nextInt(7)) {
         case 0, 1, 2 -> pool.get(random.nextInt(pool.size()));
         case 3 -> {
           // A container of the row's own that holds a shared one
@@ -277,6 +363,13 @@ class OperationHeapLimitSharedContainersTest {
           yield own;
         }
         case 4 -> nulls(3);
+        case 5 -> {
+          // A shared one one or two levels further down than when a row holds it as it is
+          Object wrapped = pool.get(random.nextInt(pool.size()));
+          for (int levels = 1 + random.nextInt(2); levels > 0; levels--)
+            wrapped = List.of(wrapped);
+          yield wrapped;
+        }
         default -> "text" + random.nextInt(100);
       };
       row.setProperty("p" + p, value);
