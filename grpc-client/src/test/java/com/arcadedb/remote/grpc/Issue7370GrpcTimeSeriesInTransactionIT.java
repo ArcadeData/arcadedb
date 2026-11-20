@@ -427,17 +427,15 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
    * was raised with, not flattened to INTERNAL by the {@link java.util.concurrent.ExecutionException} the
    * executor wraps it in. Two are asserted because they are raised in different places: INVALID_ARGUMENT comes
    * from {@code streamTimeSeriesBuckets} after dispatch, NOT_FOUND from the type resolution that opens
-   * {@code streamTimeSeries}.
+   * {@code streamTimeSeries}. Each runs in a transaction of its own: a failed statement ends the transaction it ran in, so
+   * a second one sent to it would be refused before it ran (issue #11961).
    */
   @Test
   void anErrorRaisedInsideTheTransactionKeepsItsStatus() throws Exception {
     seed();
 
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub stub = rawStub();
-    final BeginTransactionResponse begun = stub.beginTransaction(BeginTransactionRequest.newBuilder()
-        .setDatabase(getDatabaseName()).setCredentials(rawCredentials()).build());
-    final TransactionContext tx = TransactionContext.newBuilder()
-        .setTransactionId(begun.getTransactionId()).setDatabase(getDatabaseName()).build();
+    final TransactionContext tx = beginRaw(stub);
     try {
       assertThatThrownBy(() -> drain(stub.timeSeriesQuery(TimeSeriesQueryRequest.newBuilder()
           .setDatabase(getDatabaseName()).setCredentials(rawCredentials()).setTransaction(tx).setType(TYPE)
@@ -449,15 +447,27 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
           .build())))
           .hasMessageContaining("INVALID_ARGUMENT")
           .hasMessageContaining("bucket_interval_ms");
-
-      assertThatThrownBy(() -> drain(stub.timeSeriesQuery(TimeSeriesQueryRequest.newBuilder()
-          .setDatabase(getDatabaseName()).setCredentials(rawCredentials()).setTransaction(tx)
-          .setType("NoSuchTimeSeriesType7370").build())))
-          .hasMessageContaining("NOT_FOUND");
     } finally {
       stub.rollbackTransaction(RollbackTransactionRequest.newBuilder()
           .setTransaction(tx).setCredentials(rawCredentials()).build());
     }
+
+    final TransactionContext second = beginRaw(stub);
+    try {
+      assertThatThrownBy(() -> drain(stub.timeSeriesQuery(TimeSeriesQueryRequest.newBuilder()
+          .setDatabase(getDatabaseName()).setCredentials(rawCredentials()).setTransaction(second)
+          .setType("NoSuchTimeSeriesType7370").build())))
+          .hasMessageContaining("NOT_FOUND");
+    } finally {
+      stub.rollbackTransaction(RollbackTransactionRequest.newBuilder()
+          .setTransaction(second).setCredentials(rawCredentials()).build());
+    }
+  }
+
+  private TransactionContext beginRaw(final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingV2Stub stub) throws Exception {
+    final BeginTransactionResponse begun = stub.beginTransaction(BeginTransactionRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(rawCredentials()).build());
+    return TransactionContext.newBuilder().setTransactionId(begun.getTransactionId()).setDatabase(getDatabaseName()).build();
   }
 
   /**
