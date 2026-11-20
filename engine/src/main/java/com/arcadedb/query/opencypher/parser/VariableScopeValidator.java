@@ -407,6 +407,11 @@ final class VariableScopeValidator {
       final String var = item.getVariable();
       if (CypherSemanticValidator.isValidVariableName(var) && !scope.contains(var))
         throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+      final Expression target = item.getTargetExpression();
+      if (target != null) {
+        checkExpressionScope(target, scope);
+        checkSetReceiverIsNotAMap(target);
+      }
       if (item.getKeyExpression() != null)
         checkExpressionScope(item.getKeyExpression(), scope);
       if (item.hasLabelExpressions())

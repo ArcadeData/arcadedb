@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #7760 on the gRPC transport: production mode replaces the {@code arcadedb-dup-keys} trailer's value with the same
  * placeholder HTTP uses (the key values are stored data) and keeps the class and index-name trailers, the same decision the HTTP
- * {@code exceptionArgs} takes ({@code Issue7760DuplicatedKeyConcealmentHttpTest}).
+ * {@code exceptionArgs} takes ({@code HttpErrorStatusMappingTest.DuplicatedKeyConcealment}).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

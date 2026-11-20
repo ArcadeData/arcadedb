@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
@@ -29,7 +30,6 @@ import com.arcadedb.integration.importer.Source;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
-import com.univocity.parsers.common.TextParsingException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -83,8 +83,9 @@ class RDFImporterFormatTransactionLeakTest {
   }
 
   /**
-   * A row whose value exceeds {@code maxPropertySize} makes {@code csvParser.parseNext()} itself throw a
-   * {@link TextParsingException} (unchecked), outside the per-row work the loop otherwise wraps.
+   * A row whose term exceeds {@code maxPropertySize} is refused with an {@link ImportException} (unchecked); it was a
+   * univocity {@code TextParsingException} out of {@code csvParser.parseNext()} until the statements were read as N-Triples
+   * (issue #12049).
    */
   private static Parser rdfParser(final String content) throws Exception {
     final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
@@ -192,7 +193,7 @@ class RDFImporterFormatTransactionLeakTest {
         """);
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithTinyMaxPropertySize()))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(database.isTransactionActive())
         .as("the transaction load() opened for itself must be resolved before the failure propagates")
@@ -220,7 +221,7 @@ class RDFImporterFormatTransactionLeakTest {
         """);
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithTinyMaxPropertySize()))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(database.isTransactionActive())
         .as("a transaction that predates the import is never the importer's to roll back")
@@ -256,7 +257,7 @@ class RDFImporterFormatTransactionLeakTest {
         """);
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithTinyMaxPropertySize()))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(database.isTransactionActive())
         .as("the import pipeline's own transaction is the import's to resolve, and a failure must resolve it")

@@ -1006,6 +1006,20 @@ class AsyncWaitCompletionTest {
   @Nested
   class QuiesceResizeRace extends TestHelper {
 
+    /** Whether {@code thread} parks inside {@code method} within 10s: a lock or latch wait, not a run through it. */
+    private boolean awaitBlockedIn(final Thread thread, final String method) throws InterruptedException {
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+      while (System.nanoTime() < deadline) {
+        final Thread.State state = thread.getState();
+        if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING)
+          for (final StackTraceElement frame : thread.getStackTrace())
+            if (frame.getMethodName().equals(method))
+              return true;
+        Thread.sleep(5);
+      }
+      return false;
+    }
+
     // The 3s polling window below (code review, PR #6661) puts this on the slower end - comparable to the
     // WORKER_HOLD_MS-scale tests in AsyncExecutorConfigurationTest.AsyncExecutorFollowUps, which carry the same tag.
     @Test
@@ -1051,9 +1065,13 @@ class AsyncWaitCompletionTest {
         }
       }, "issue6534-quiescer");
       quiescer.start();
+      // The grow must be attempted while the quiescence already holds resizeLock and waits on the busy worker: started together,
+      // the grower can take the (fair) lock first, publish legitimately, and the quiescence then parks the 3 workers
+      assertThat(awaitBlockedIn(quiescer, "quiesceWorkers")).as("the quiescence is waiting on the busy worker").isTrue();
 
       final Thread grower = new Thread(() -> async.setParallelLevel(3), "issue6534-grower");
       grower.start();
+      assertThat(awaitBlockedIn(grower, "setParallelLevel")).as("the grow is queued behind the quiescence").isTrue();
 
       // Polled rather than a single check after a fixed sleep (code review, PR #6661): a one-shot check could flake
       // on a slow/contended runner that had not yet let the quiescer reach resizeLock.lock() and schedule its park

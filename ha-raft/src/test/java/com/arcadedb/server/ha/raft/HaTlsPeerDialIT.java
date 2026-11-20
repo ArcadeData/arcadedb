@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * two-node {@link BaseRaftHASslTest} cluster with the default subject alternative names.
  * <p>
  * Everything these dials DECIDE is already unit-tested against recording clients - which address, which scheme, which
- * client ({@code Issue7508LeaderForwardSchemeTest}, {@code PeerEndpointIdentityTest.LeaderHttpsEndpoint},
+ * client ({@code LeaderForwardRoutingTest.LeaderForwardScheme}, {@code PeerEndpointIdentityTest.LeaderHttpsEndpoint},
  * {@link PeerDialSafetyTest.PlaintextPeerDialScheme}). Four things only appear once a handshake actually happens, and no
  * recording client can reach any of them:
  * <ul>

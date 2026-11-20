@@ -105,7 +105,7 @@ import java.util.logging.Level;
  * command and the server runs this importer against its own embedded database. {@code CREATE TIMESERIES TYPE}
  * carries the per-column codecs (issue #7689) and the column ORDER (issue #7702) that a TIMESERIES restore needs,
  * so the type it rebuilds on that path is the one the export recorded.
- * {@code Issue7701RemoteTimeSeriesLogicalRestoreIT} drives the whole round trip through remote handles only.
+ * {@code RemoteTimeSeriesIT.LogicalRestore} drives the whole round trip through remote handles only.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

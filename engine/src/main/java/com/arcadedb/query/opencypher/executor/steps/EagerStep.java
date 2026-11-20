@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -96,8 +97,12 @@ public class EagerStep extends AbstractExecutionStep {
 
     // Drained on the first pull, not on the first hasNext(): a consumer that never reads a row (a LIMIT 0 above the
     // barrier) must still see the writes behind it run for every row (issues #8826, #8827)
-    if (materialized == null)
+    if (materialized == null) {
       materialize(context);
+      // Every row before the barrier has made its writes by now: the records the rows hold are read as those writes left
+      // them (issue #12565)
+      WrittenCopy.resolveRows(context, materialized);
+    }
 
     return new ResultSet() {
       @Override

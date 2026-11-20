@@ -37,6 +37,7 @@ import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -265,8 +266,9 @@ public class JsonSerializer {
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
-          // non-finite needs a hint, or the client reads the marker string back as a String
-          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+          // non-finite needs a hint, or the client reads the marker string back as a String. Issue #12195: so does a link, or a
+          // list or map of links, which the client reads back as its "#12:0" text
+          if (projectionTypes != null && propertyType == null && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
             // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
             final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
             if (hintType != null)
@@ -283,8 +285,10 @@ public class JsonSerializer {
 
     final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
-    for (final String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
+    // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+    for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet()) {
+      final String propertyName = property.getKey();
+      Object value = property.getValue();
 
       // Property type from the document's schema only - issue #4149: getTypeByClass(LocalDateTime)
       // collapses every datetime variant onto DATETIME (millis), so the schema lookup is the
@@ -317,8 +321,10 @@ public class JsonSerializer {
         // client with no hint for the column would hand back as that String instead of the number.
         // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
-        // tells the client the marker string stands for a number. Every other element row keeps its shape.
-        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        // tells the client the marker string stands for a number. Issue #12195: the same holds for a LINK, or a list or
+        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Every other
+        // element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaPropertyType == null && (carriesNonFinite(value) || carriesLinks(value));
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
@@ -372,6 +378,8 @@ public class JsonSerializer {
       Type elementType = detectHomogeneousTemporalElementType(elements);
       if (elementType == null)
         elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType == null)
+        elementType = detectHomogeneousLinkElementType(elements);
       if (elementType != null)
         propertyTypes.append('(').append(elementType.getId()).append(')');
     }
@@ -1061,6 +1069,41 @@ public class JsonSerializer {
         return null;
     }
     return elementType;
+  }
+
+  /**
+   * Whether an undeclared property's value is a link, or a list or map of links only (issue #12195): JSON carries a link as
+   * its "#12:0" text, so without a hint the remote client cannot tell it from a string.
+   * <p>
+   * A link is a {@link RID} and nothing wider. A {@link Document} (an embedded document, a vertex, an edge) is an
+   * {@code Identifiable} too, but {@link #serializeObject} writes it as a nested JSON object: a LINK hint on it would make the
+   * client convert that object to a RID, which empties it.
+   */
+  private static boolean carriesLinks(final Object value) {
+    if (value instanceof RID)
+      return true;
+    if (value instanceof Collection<?> collection)
+      return detectHomogeneousLinkElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectHomogeneousLinkElementType(map.values()) != null;
+    return false;
+  }
+
+  /**
+   * {@link Type#LINK} when every non-null element is a {@link RID} (and there is at least one), null otherwise: the element
+   * type a LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   * Stops at the first element that is not one, so a collection of anything else costs a single test.
+   */
+  private static Type detectHomogeneousLinkElementType(final Collection<?> collection) {
+    boolean found = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (!(element instanceof RID))
+        return null;
+      found = true;
+    }
+    return found ? Type.LINK : null;
   }
 
   /**
