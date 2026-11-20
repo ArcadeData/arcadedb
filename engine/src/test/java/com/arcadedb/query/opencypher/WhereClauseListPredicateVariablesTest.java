@@ -89,6 +89,28 @@ class WhereClauseListPredicateVariablesTest {
         .containsExactly("p");
   }
 
+  @Test
+  void reduceExcludesAccumulatorAndIterator() {
+    // Issue #11818: 's' and 'x' are names the reduce binds; the outer 'p' and 'q' it reads are collected
+    assertThat(collect("MATCH (p:Person), (q:Person) WHERE reduce(s = p.age, x IN [q.age] | s + x) > 0 RETURN p"))
+        .containsExactlyInAnyOrder("p", "q");
+  }
+
+  @Test
+  void reduceInsideACaseExcludesAccumulatorAndIterator() {
+    // Issue #11818: a CASE has no arm of its own, so it is read by the walk, which drops the names only inside the reduce
+    assertThat(collect(
+        "MATCH (p:Person), (q:Person) WHERE CASE WHEN true THEN reduce(s = p.age, x IN [q.age] | s + x) ELSE 0 END > 0 RETURN p"))
+        .containsExactlyInAnyOrder("p", "q");
+  }
+
+  @Test
+  void nameBoundByAReduceInsideACaseIsCollectedWhereItIsNotBound() {
+    // the outer 'x' read by the WHEN is the row's variable, whatever the reduce calls its iterator
+    assertThat(collect("MATCH (x:Person) WHERE CASE WHEN x.age > 0 THEN reduce(s = 0, x IN [1] | s + x) ELSE 0 END > 0 RETURN x"))
+        .containsExactly("x");
+  }
+
   private static Set<String> collect(final String query) {
     final CypherStatement stmt = PARSER.parse(query);
     final WhereClause where = stmt.getMatchClauses().get(0).getWhereClause();

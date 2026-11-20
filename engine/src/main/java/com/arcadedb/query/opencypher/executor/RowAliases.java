@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.LongRangeList;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,9 +135,35 @@ public final class RowAliases {
    * @param replacement the live version of a record, or the record itself when it is current
    */
   public static Object liveValue(final Object value, final UnaryOperator<Document> replacement) {
+    return liveValue(value, replacement, null);
+  }
+
+  /**
+   * {@link #liveValue(Object, UnaryOperator)} that answers a list, a map or a path met before, at any depth, from
+   * {@code memo} instead of walking it again: rows that share one {@code collect()} list cost one walk of it, not one each
+   * (issue #12565). The memo holds the answer for an unchanged value too, and is valid only while no record it answered
+   * for is written again.
+   *
+   * @param memo the answers already given, by identity of the value; null to walk every value
+   */
+  public static Object liveValue(final Object value, final UnaryOperator<Document> replacement,
+      final IdentityHashMap<Object, Object> memo) {
     if (value instanceof Document doc)
       return replacement.apply(doc);
 
+    if (memo == null || !(value instanceof List<?> || value instanceof Map<?, ?> || value instanceof TraversalPath))
+      return liveContainer(value, replacement, memo);
+
+    final Object known = memo.get(value);
+    if (known != null)
+      return known;
+    final Object live = liveContainer(value, replacement, memo);
+    memo.put(value, live);
+    return live;
+  }
+
+  private static Object liveContainer(final Object value, final UnaryOperator<Document> replacement,
+      final IdentityHashMap<Object, Object> memo) {
     if (value instanceof TraversalPath path) {
       TraversalPath live = path;
       for (final Vertex vertex : path.getVertices())
@@ -151,7 +178,7 @@ public final class RowAliases {
       List<Object> rebuilt = null;
       for (int i = 0; i < list.size(); i++) {
         final Object element = list.get(i);
-        final Object live = liveValue(element, replacement);
+        final Object live = liveValue(element, replacement, memo);
         if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new ArrayList<>(list);
         if (rebuilt != null)
@@ -164,7 +191,7 @@ public final class RowAliases {
       Map<Object, Object> rebuilt = null;
       for (final Map.Entry<?, ?> entry : map.entrySet()) {
         final Object element = entry.getValue();
-        final Object live = liveValue(element, replacement);
+        final Object live = liveValue(element, replacement, memo);
         if (live != element && rebuilt == null) // NOPMD: by identity, as liveValue answers an unchanged element
           rebuilt = new LinkedHashMap<>(map);
         if (rebuilt != null)

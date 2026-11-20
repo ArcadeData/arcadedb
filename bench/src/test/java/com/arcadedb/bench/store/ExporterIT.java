@@ -103,9 +103,17 @@ class ExporterIT {
   /** The sample run as another run: other time, variant, machine and release tag. */
   private static RunResult variant(final RunResult base, final String runId, final Instant startedAt, final String variant,
       final String machineId, final String tag, final double median) {
+    return variant(base, runId, startedAt, variant, machineId, tag, median, null);
+  }
+
+  /** Same as above, with the date of the measured commit ({@code null} for none). */
+  private static RunResult variant(final RunResult base, final String runId, final Instant startedAt, final String variant,
+      final String machineId, final String tag, final double median, final Instant commitDate) {
     final JSONObject arcadedb = new JSONObject(base.info().arcadedb().toString()).put("variant", variant);
     if (tag != null)
       arcadedb.put("tag", tag);
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate.toString());
     final JSONObject machine = new JSONObject(base.info().machine().toString()).put("id", machineId);
     final RunInfo info = new RunInfo(runId, startedAt, startedAt.plus(Duration.ofMinutes(40)), base.info().trigger(),
         base.info().source(), arcadedb, machine, base.info().config());
@@ -289,6 +297,54 @@ class ExporterIT {
     assertThat(s.getJSONArray("lines").length()).isEqualTo(2);
     assertThat(line(s, "perf-01", "jvm").getJSONArray("points").length()).isEqualTo(1);
     assertThat(line(s, "laptop", "jvm").getJSONArray("points").length()).isEqualTo(1);
+  }
+
+  @Test
+  void aPointIsPlacedAtTheDateOfItsCommitAndKeepsTheRunTime() {
+    final RunResult base = sample();
+    final Instant commitDate = T0.minus(Duration.ofDays(20));
+    upload(variant(base, "r1", T0, "jvm", "perf-01", "26.10.2", 100.0, commitDate));
+    export();
+    final JSONObject p = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points").getJSONObject(0);
+    assertThat(p.getString("t")).isEqualTo(commitDate.toString());
+    assertThat(p.getString("runAt")).isEqualTo(T0.toString());
+  }
+
+  @Test
+  void aRunWithoutACommitDateIsPlacedAtItsStart() {
+    upload(variant(sample(), "r1", T0, "jvm", "perf-01", null, 100.0));
+    export();
+    final JSONObject p = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points").getJSONObject(0);
+    assertThat(p.getString("t")).isEqualTo(T0.toString());
+    assertThat(p.getString("runAt")).isEqualTo(T0.toString());
+  }
+
+  @Test
+  void aReleaseMeasuredAfterANightlyIsOrderedByItsCommitDate() {
+    // the 26.10.2 baseline is measured a day after the nightly of main, but its code is a month older
+    final RunResult base = sample();
+    upload(variant(base, "nightly", T0, "jvm", "perf-01", null, 120.0, T0.minus(Duration.ofHours(3))));
+    upload(variant(base, "release", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", "26.10.2", 100.0,
+        T0.minus(Duration.ofDays(30))));
+    export();
+    final JSONArray points = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points");
+    assertThat(points.getJSONObject(0).getString("runId")).isEqualTo("release");
+    assertThat(points.getJSONObject(1).getString("runId")).isEqualTo("nightly");
+    final JSONObject latest = latestThroughput();
+    assertThat(latest.getJSONObject("last").getString("runId")).isEqualTo("nightly");
+    assertThat(latest.getJSONObject("previousRelease").getString("runId")).isEqualTo("release");
+  }
+
+  @Test
+  void twoRunsOfTheSameCommitAreOrderedByRunTime() {
+    final RunResult base = sample();
+    final Instant commitDate = T0.minus(Duration.ofDays(2));
+    upload(variant(base, "second", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", null, 110.0, commitDate));
+    upload(variant(base, "first", T0, "jvm", "perf-01", null, 100.0, commitDate));
+    export();
+    final JSONArray points = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points");
+    assertThat(points.getJSONObject(0).getString("runId")).isEqualTo("first");
+    assertThat(points.getJSONObject(1).getString("runId")).isEqualTo("second");
   }
 
   @Test

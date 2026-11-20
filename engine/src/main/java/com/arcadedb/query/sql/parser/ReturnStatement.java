@@ -95,6 +95,11 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
+  public boolean containsReturn() {
+    return true;
+  }
+
+  @Override
   public ReturnStatement copy() {
     final ReturnStatement result = new ReturnStatement();
     result.expression = expression == null ? null : expression.copy();

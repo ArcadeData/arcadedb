@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
@@ -30,18 +31,21 @@ import com.arcadedb.function.Function;
 import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.function.sql.graph.SQLFunctionCypherRID;
 import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.text.SQLFunctionSearchFieldsMore;
 import com.arcadedb.function.sql.text.SQLFunctionSearchIndexMore;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorDequantizeInt8;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.security.CodeSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -294,8 +298,41 @@ class SqlParserRobustnessTest {
               SQLFunctionSearchIndexMore.NAME.toLowerCase(Locale.ROOT));
       assertThat(declared).as("the census reaches DefaultSQLFunctionFactory's class-registered (stateful) functions")
           .containsKey(SQLFunctionEval.NAME);
+      final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
       assertThat(declared.keySet()).as("the census reaches every name DefaultSQLFunctionFactory registers")
-          .containsAll(DefaultSQLFunctionFactory.getInstance().getFunctionNames());
+          .containsAll(factory.getFunctionNames().stream().filter(name -> !isDefinedByTheTestSources(factory.getFunctionInstance(name)))
+              .map(name -> name.toLowerCase(Locale.ROOT)).toList());
+      assertThat(declared).as("the census reaches more than a handful of the engine's own functions").hasSizeGreaterThan(300);
+    }
+
+    /**
+     * The control for the filter above: a function another test class left in the shared registry, with an arity its
+     * execute() does not honour, is not read as one of the engine's, while the registry still answers it.
+     */
+    @Test
+    void aFunctionAnotherTestLeftInTheRegistryIsNotCounted() {
+      final String name = "leftbyanothertest";
+      final SQLFunctionAbstract leftOver = new SQLFunctionAbstract(name) {
+        @Override
+        public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+            final CommandContext context) {
+          return params[0];
+        }
+
+        @Override
+        public String getSyntax() {
+          return name + "(<value>)";
+        }
+      };
+      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(leftOver);
+      try {
+        assertThat(FunctionRegistry.get(name)).as("the registry holds the left-over function").isSameAs(leftOver);
+        assertThat(declaredFunctions()).as("a function compiled from the test sources is not one the engine declares")
+            .doesNotContainKey(name);
+      } finally {
+        ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().unregister(name);
+        FunctionRegistry.unregister(name);
+      }
     }
 
     /** Issue #11927: the arity these functions enforce is the arity they declare, so the parse-time gate and the registry agree. */
@@ -478,17 +515,34 @@ class SqlParserRobustnessTest {
      * Every function SQL can call, keyed by the lower-case name it answers to: the shared {@link FunctionRegistry} plus every name
      * of {@link DefaultSQLFunctionFactory}, so a test that cleared the registry earlier in the same JVM cannot shrink the census.
      */
+    /**
+     * The functions the engine declares. A function some other test class registered for itself (a {@code tick6304} that burns
+     * CPU, a {@code throwCME} that always throws) stays in the shared {@link FunctionRegistry} for the rest of the fork, because
+     * the SQL factory's {@code unregister} keeps the registry entry: it is no function of the engine's, and it is told apart by
+     * being compiled from the test sources.
+     */
     private Map<String, Function> declaredFunctions() {
       final Map<String, Function> declared = new TreeMap<>();
       for (final String name : FunctionRegistry.getFunctionNames()) {
         final Function function = FunctionRegistry.get(name);
-        if (function != null)
+        if (function != null && !isDefinedByTheTestSources(function))
           declared.put(name, function);
       }
       final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
-      for (final String name : factory.getFunctionNames())
-        declared.putIfAbsent(name.toLowerCase(Locale.ROOT), factory.getFunctionInstance(name));
+      for (final String name : factory.getFunctionNames()) {
+        final Function function = factory.getFunctionInstance(name);
+        if (!isDefinedByTheTestSources(function))
+          declared.putIfAbsent(name.toLowerCase(Locale.ROOT), function);
+      }
       return declared;
+    }
+
+    private static boolean isDefinedByTheTestSources(final Function function) {
+      if (function == null)
+        return false;
+      final CodeSource tests = SqlParserRobustnessTest.class.getProtectionDomain().getCodeSource();
+      final CodeSource origin = function.getClass().getProtectionDomain().getCodeSource();
+      return tests != null && origin != null && tests.getLocation().equals(origin.getLocation());
     }
 
     private void drain(final String language, final String query) {

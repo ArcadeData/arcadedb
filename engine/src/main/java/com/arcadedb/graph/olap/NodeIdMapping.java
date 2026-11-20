@@ -151,6 +151,9 @@ public class NodeIdMapping {
    * Registers a bucket and prepares it for node collection.
    * Must be called before addNode().
    *
+   * @param estimatedSize how many nodes the bucket is expected to hold: the collection array is allocated at that size, at least one
+   *                      slot, and doubles when the estimate is exceeded. A caller that knows the count gets an array that is not
+   *                      larger than it needs, which is what a graph of many small buckets needs (issue #12554)
    * @return the compact bucket index
    */
   public int registerBucket(final int bucketId, final String typeName, final int estimatedSize) {
@@ -184,7 +187,7 @@ public class NodeIdMapping {
 
     bucketIds[idx] = bucketId;
     bucketTypeNames[idx] = typeName;
-    positionsBuilder[idx] = new long[Math.max(estimatedSize, 64)];
+    positionsBuilder[idx] = new long[Math.max(estimatedSize, 1)];
     builderSizes[idx] = 0;
 
     if (bucketId < MAX_DIRECT_BUCKET_ID)

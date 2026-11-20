@@ -69,6 +69,54 @@ class DatasetGeneratorTest {
   }
 
   @Test
+  void embeddingsAreDeterministicAndUnitLength() {
+    final DatasetGenerator.EmbeddingSpace space = new DatasetGenerator(9).embeddingSpace(128);
+    final float[][] a = new DatasetGenerator(42).embeddings(300, space);
+    assertThat(a).isDeepEqualTo(new DatasetGenerator(42).embeddings(300, new DatasetGenerator(9).embeddingSpace(128)));
+    assertThat(a).isNotEqualTo(new DatasetGenerator(43).embeddings(300, space));
+    for (final float[] v : a) {
+      assertThat(v).hasSize(128);
+      double sum = 0;
+      for (final float x : v)
+        sum += (double) x * x;
+      assertThat(Math.sqrt(sum)).isBetween(1 - 1e-5, 1 + 1e-5);
+    }
+  }
+
+  // Uniform directions in 128 dimensions are all nearly orthogonal, so the exact nearest neighbor is barely closer than any
+  // other point and approximate search cannot tell them apart (recall 0.24 at scale M). Embeddings carry structure: the
+  // nearest neighbor of a query drawn from the same space is clearly closer than a typical point.
+  @Test
+  void embeddingsHaveNeighborsCloserThanUniformVectors() {
+    final DatasetGenerator.EmbeddingSpace space = new DatasetGenerator(9).embeddingSpace(128);
+    final float[][] base = new DatasetGenerator(1).embeddings(5_000, space);
+    final float[][] queries = new DatasetGenerator(2).embeddings(100, space);
+    final float[][] uniformBase = new DatasetGenerator(1).vectors(5_000, 128);
+    final float[][] uniformQueries = new DatasetGenerator(2).vectors(100, 128);
+
+    final double embedded = meanNearestCosine(base, queries);
+    final double uniform = meanNearestCosine(uniformBase, uniformQueries);
+
+    assertThat(uniform).isLessThan(0.45);
+    assertThat(embedded).isGreaterThan(0.8);
+  }
+
+  private static double meanNearestCosine(final float[][] base, final float[][] queries) {
+    double sum = 0;
+    for (final float[] q : queries) {
+      double best = -1;
+      for (final float[] v : base) {
+        double dot = 0;
+        for (int j = 0; j < v.length; j++)
+          dot += (double) v[j] * q[j];
+        best = Math.max(best, dot);
+      }
+      sum += best;
+    }
+    return sum / queries.length;
+  }
+
+  @Test
   void textHasTheRequestedWordCount() {
     assertThat(new DatasetGenerator(3).text(25).split(" ")).hasSize(25);
   }

@@ -437,6 +437,9 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     context.setProfiling(profile != null);
+    // A statement that writes nothing hands out the rows of its sorts and aggregations as they are, without asking for the
+    // transaction's copies of the records they hold (issue #12565)
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
@@ -655,6 +658,8 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    // The seed row comes from the enclosing statement: it holds only current records when that statement does (issue #12565)
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     // Only share the outer statistics accumulator for a write CALL body: getStatistics() lazily
     // allocates, so sharing it unconditionally would allocate a QueryStatistics even for a
@@ -910,6 +915,7 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     context.setProfiling(profile != null);
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).

@@ -19,7 +19,10 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -30,15 +33,17 @@ import com.arcadedb.integration.importer.ImporterTransactions;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
-import com.univocity.parsers.common.AbstractParser;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
+import com.univocity.parsers.csv.CsvParserSettings;
 
 import java.io.IOException;
 import java.io.Reader;
+import java.util.Iterator;
 import java.util.logging.Level;
 
 public class RDFImporterFormat extends CSVImporterFormat {
-  private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
-
   /**
    * The one property {@link #load} puts on the edges it creates: the statement's predicate. Named here because
    * {@link #analyze} declares it and the loop below writes it, and the two must agree.
@@ -46,9 +51,18 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private static final String LABEL_PROPERTY = "label";
 
   /**
+   * The properties of the vertex of a literal object that a user reads (issue #12049): its lexical form with the escapes
+   * decoded and no quotes, its language tag and its datatype IRI (left out for a plain literal). The key property holds the
+   * literal's canonical N-Triples form instead, which keeps a literal from ever being the vertex of the IRI it spells.
+   */
+  public static final String LITERAL_VALUE_PROPERTY    = "value";
+  public static final String LITERAL_LANGUAGE_PROPERTY = "lang";
+  public static final String LITERAL_DATATYPE_PROPERTY = "datatype";
+
+  /**
    * The key property an RDF source resolves its subject and object IRIs against when the caller named none. A
    * DEFAULT, not an invariant: nothing on this path requires the literal {@code "id"} - whatever name is in force is
-   * used consistently for the vertex property, its index and the {@code newEdgeByKeys} lookup - so an explicit
+   * used consistently for the vertex property, its index and the lookup of every term by it - so an explicit
    * {@code -typeIdProperty} / {@code WITH typeIdProperty = ...} wins over it (issue #7891).
    */
   public static final String DEFAULT_TYPE_ID_PROPERTY = "id";
@@ -116,7 +130,13 @@ public class RDFImporterFormat extends CSVImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
-    final AbstractParser csvParser = createCSVParser(settings);
+    // EACH LINE IS READ AS ONE N-TRIPLES STATEMENT, NOT AS DELIMITED TEXT: A CSV PARSER DROPPED THE EMPTY LITERAL "" (THE
+    // TERMINATOR '.' BECAME THE OBJECT), STRIPPED THE QUOTES OF A PLAIN LITERAL ONLY (SO "http://a/o" WAS THE SAME VERTEX AS
+    // <http://a/o>) AND DECODED NO ESCAPE (ISSUE #12049)
+    // maxPropertySize BOUNDS A TERM AS IT BOUNDED A CELL OF THE DELIMITED-TEXT READING, WITH THE SAME DEFAULT (4,096)
+    final NTriplesStatement statement = new NTriplesStatement(termSeparator(settings),
+        settings.getIntValue("maxPropertySize", new CsvParserSettings().getMaxCharsPerColumn()));
+    final String[] terms = new String[3];
 
     // THE VERTEX PROPERTY THE IRIs ARE KEYED BY, READ ONCE AND KEPT LOCAL. IT USED TO BE settings.typeIdProperty,
     // WHICH CONTENT SNIFFING HAD OVERWRITTEN WITH "id" THE MOMENT IT RECOGNISED N-TRIPLES - SO AN EXPLICIT
@@ -189,8 +209,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final Reader inputFileReader = sourceReader(parser)) {
-      csvParser.beginParsing(inputFileReader);
+    // NOT WRAPPED IN A BufferedReader: statement.readLine() TAKES THE SOURCE A CHUNK AT A TIME, SO A BUFFER BETWEEN THEM WOULD ONLY COPY IT
+    try (final Reader reader = sourceReader(parser)) {
+      ensureVertexType(database, settings.vertexTypeName, typeIdProperty);
 
       // A transaction not active here despite ownsTransaction being false is exactly the invariant violation
       // resolvesTransaction's declaration above describes - this call must push one of its own and is then the
@@ -202,8 +223,17 @@ public class RDFImporterFormat extends CSVImporterFormat {
       txOpen[0] = resolvesTransaction;
       ownTx[0] = ImporterTransactions.currentTransaction(database);
 
-      String[] row;
-      for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
+      // THE STATEMENT INDEX: 0-BASED, BLANK AND COMMENT LINES NOT COUNTED, THE SAME NUMBER THE CSV PARSER THIS REPLACES GAVE A
+      // ROW (IT SKIPPED BOTH TOO). skipEntries IS MEASURED AGAINST IT, AND AN ERROR NAMES IT AS THAT: THE PHYSICAL LINE IS NOT
+      // KNOWN HERE, SINCE Parser HAS ALREADY DROPPED THE SOURCE'S LEADING COMMENT BLOCK
+      long line = -1;
+      // BOUNDED: A LINE LONGER THAN ANY STATEMENT WITHIN maxPropertySize IS NOT KEPT WHOLE, AND IS REFUSED BELOW AS A ROW ERROR
+      while (statement.readLine(reader)) {
+        final String text = statement.line();
+        // N-TRIPLES ALLOWS BLANK LINES AND COMMENT LINES: NEITHER IS A STATEMENT, AS THE CSV PARSER THIS REPLACES SKIPPED THEM
+        if (isBlankOrComment(text))
+          continue;
+        ++line;
         context.parsed.incrementAndGet();
 
         // CHECKED BEFORE THE SKIP-ROW 'continue' BELOW, THE SAME WAY CSVImporterFormat's ROW LOOPS ARE: A SKIPPED
@@ -221,46 +251,29 @@ public class RDFImporterFormat extends CSVImporterFormat {
         try {
           // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER TERMS THAN THAT IS NOT A ROW THIS
           // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
-          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). THE TERMS ARE
-          // THE FIRST THREE NON-EMPTY CELLS, NOT POSITIONS 0, 1 AND 2: N-TRIPLES ALLOWS ANY RUN OF WHITESPACE
-          // BETWEEN TERMS AND THE SNIFFER TREATS A RUN OF THE SEPARATOR AS ONE GAP, BUT univocity RETURNS AN
-          // EMPTY CELL (null) FOR EACH EXTRA SEPARATOR (ISSUE #8159).
-          int terms = 0;
-          String term0 = null;
-          String term1 = null;
-          String term2 = null;
-          for (int i = 0; i < row.length && terms < 3; i++) {
-            final String cell = row[i];
-            if (cell == null || cell.isEmpty())
-              continue;
-            if (terms == 0)
-              term0 = cell;
-            else if (terms == 1)
-              term1 = cell;
-            else
-              term2 = cell;
-            ++terms;
-          }
-          if (terms < 3)
-            throw new ImportException(
-                "Row at line " + line + " has " + terms + " term(s), fewer than the 3 an RDF statement "
-                    + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
+          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). ANY RUN OF
+          // WHITESPACE OR OF THE SEPARATOR BETWEEN TERMS IS ONE GAP (ISSUE #8159).
+          if (statement.lineTooLong())
+            throw new ImportException(rowAt(line) + " is " + statement.lineLength() + " characters long, more than a statement of "
+                + "terms within maxPropertySize=" + statement.maxLength() + " can be: " + text.substring(0, 80) + "...");
+          final int found = statement.parse(text, terms);
+          if (found < 3)
+            throw new ImportException(rowAt(line) + " has " + found + " term(s), fewer than the 3 an RDF statement "
+                + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-          final String v1Id = getStringContent(term0, STRING_CONTENT_SKIP);
-          final String edgeLabel = getStringContent(term1, STRING_CONTENT_SKIP);
-          final String v2Id = getStringContent(term2, STRING_CONTENT_SKIP);
+          final String edgeLabel = terms[1];
+
+          // ONE INDEX LOOKUP PER TERM. THE VERTEX OF A LITERAL OBJECT IS RESOLVED FIRST, WITH ITS VALUE WHEN IT IS CREATED, AND
+          // HANDED TO THE EDGE AS IT IS: newEdgeByKeys WOULD HAVE LOOKED THE SAME KEY UP A SECOND TIME, ON THE TERMS THAT ARE
+          // USUALLY THE MAJORITY OF A FILE'S OBJECTS
+          final Vertex literal = statement.objectIsLiteral() ?
+              literalVertex(database, settings.vertexTypeName, typeIdProperty, terms[2], statement) :
+              null;
+          final Vertex subject = vertexByKey(database, settings.vertexTypeName, typeIdProperty, terms[0]);
+          final Vertex object = literal != null ? literal : vertexByKey(database, settings.vertexTypeName, typeIdProperty, terms[2]);
 
           // CREATE AN EDGE
-          database.newEdgeByKeys(settings.vertexTypeName,
-              new String[] { typeIdProperty },
-              new Object[] { v1Id },
-              settings.vertexTypeName,
-              new String[] { typeIdProperty },
-              new Object[] { v2Id }, true,
-              settings.edgeTypeName,
-              true,
-              LABEL_PROPERTY,
-              edgeLabel);
+          subject.newEdge(settings.edgeTypeName, object, LABEL_PROPERTY, edgeLabel);
 
           context.createdEdges.incrementAndGet();
 
@@ -312,12 +325,12 @@ public class RDFImporterFormat extends CSVImporterFormat {
       completed = true;
 
     } catch (final IOException e) {
-      throw new ImportException("Error on importing CSV", e);
+      throw new ImportException("Error on importing RDF", e);
     } finally {
       reportSkippedEntries(route, context, skipped);
 
-      // In a finally rather than in a catch: a malformed row (csvParser.parseNext() itself throwing) or a
-      // newEdgeByKeys() failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
+      // In a finally rather than in a catch: a malformed row (a read of the source throwing) or a
+      // vertex or edge creation failure escapes uncaught otherwise, leaving the transaction opened above on the stack,
       // and an Error - an OutOfMemoryError is the one a large import can realistically raise - would too.
       if (ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0])) {
         txOpen[0] = false;
@@ -350,6 +363,82 @@ public class RDFImporterFormat extends CSVImporterFormat {
               readEdges - committedEdges);
       }
     }
+  }
+
+  /**
+   * The vertex of the literal object of the statement just parsed, keyed by {@code key} (its canonical N-Triples form): the
+   * one already there, else a new one with its decoded value, language tag and datatype.
+   */
+  private static Vertex literalVertex(final DatabaseInternal database, final String typeName, final String typeIdProperty,
+      final String key, final NTriplesStatement statement) {
+    final Iterator<Identifiable> found = database.lookupByKey(typeName, typeIdProperty, key);
+    if (found.hasNext())
+      return found.next().getIdentity().asVertex();
+    final MutableVertex vertex = database.newVertex(typeName);
+    vertex.set(typeIdProperty, key);
+    setUnlessKey(vertex, typeIdProperty, LITERAL_VALUE_PROPERTY, statement.objectLexical());
+    setUnlessKey(vertex, typeIdProperty, LITERAL_LANGUAGE_PROPERTY, statement.objectLanguage());
+    setUnlessKey(vertex, typeIdProperty, LITERAL_DATATYPE_PROPERTY, statement.objectDatatype());
+    return vertex.save();
+  }
+
+  /** The vertex keyed by {@code key}: the one already there, else a new one carrying only the key. */
+  private static Vertex vertexByKey(final DatabaseInternal database, final String typeName, final String typeIdProperty,
+      final String key) {
+    final Iterator<Identifiable> found = database.lookupByKey(typeName, typeIdProperty, key);
+    if (found.hasNext())
+      return found.next().getIdentity().asVertex();
+    final MutableVertex vertex = database.newVertex(typeName);
+    vertex.set(typeIdProperty, key);
+    return vertex.save();
+  }
+
+  /** A literal's property, never written over the key property a caller may have named like it. */
+  private static void setUnlessKey(final MutableVertex vertex, final String typeIdProperty, final String name, final String value) {
+    if (value != null && !name.equals(typeIdProperty))
+      vertex.set(name, value);
+  }
+
+  /**
+   * The vertex type the subjects and objects are keyed into, created with its key property and unique index when the database
+   * does not have it yet. Every term is looked up by that index, so an import into a database without the type failed with
+   * "Type with name 'Node' was not found" (issue #12049). A type that already exists is left as it is.
+   * <p>
+   * Created before the import's transaction is resolved, and inside the caller's when the caller holds one: a schema change
+   * is not transactional in ArcadeDB, so the type and its index stay when the import fails, is rolled back, or the caller
+   * rolls its own transaction back. They are empty then, and the next import uses them as it would have created them.
+   */
+  private static void ensureVertexType(final DatabaseInternal database, final String typeName, final String typeIdProperty) {
+    if (database.getSchema().existsType(typeName))
+      return;
+    final VertexType type = database.getSchema().buildVertexType().withName(typeName).withIgnoreIfExists(true).create();
+    type.getOrCreateProperty(typeIdProperty, Type.STRING);
+    type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, typeIdProperty);
+  }
+
+  /**
+   * The separator between the terms: the delimiter the source was detected (or configured) with, whole, so a delimiter of more
+   * than one character ({@code ";;"}) separates terms as it separated cells.
+   */
+  private String termSeparator(final ImporterSettings settings) {
+    final String delimiter = delimiterFor(settings);
+    return "\\t".equals(delimiter) ? "\t" : delimiter;
+  }
+
+  /** How an error names the statement: by its index, said as such, since it is not the physical line of the source. */
+  private static String rowAt(final long statementIndex) {
+    return "Row at line " + statementIndex + " (0-based, blank and comment lines not counted)";
+  }
+
+  private static boolean isBlankOrComment(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == '#')
+        return true;
+      if (!Character.isWhitespace(c))
+        return false;
+    }
+    return true;
   }
 
   /**

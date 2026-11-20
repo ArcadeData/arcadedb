@@ -46,6 +46,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.VertexNotFoundException;
+import com.arcadedb.graph.olap.NodeIdMapping;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -72,6 +73,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
@@ -495,15 +497,54 @@ public class GraphEngine {
     if (initializer != null)
       initializer.accept(edge);
 
+    // An @out / @in among the properties named another endpoint for the record (MutableEdge.setMetadata): the lists follow the
+    // record (issue #12247), checked before the save so a refused endpoint stores nothing
+    final VertexInternal source = (VertexInternal) newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, fromVertex);
+    final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, toVertex);
+
     // A VETO LEAVES THE EDGE WITHOUT AN IDENTITY: WIRING IT WOULD HAND THE ADJACENCY LIST A null RID (issue #10085)
     if (!(bucketName != null ? edge.saveReportingVeto(bucketName) : edge.saveReportingVeto()))
       return null;
 
-    connectOutgoingEdge(fromVertex, toVertex, edge);
+    connectOutgoingEdge(source, destination, edge);
     if (type.isBidirectional())
-      connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
+      connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
     return edge;
+  }
+
+  /**
+   * The vertex a new edge is wired to in {@code direction}: {@code given} (the FROM or the TO of the creation), unless the edge's
+   * record names another one through an {@code @out} / {@code @in} set among its properties ({@link MutableEdge#setMetadata}).
+   * Every reader of the edge trusts the record, so the adjacency lists follow it, as an UPDATE re-points an existing edge: wiring
+   * the edge into the lists of {@code given} instead left a record and lists that disagreed, which CHECK DATABASE FIX then
+   * resolved by deleting the edge (issue #12247). The named vertex is refused on the same terms as a FROM or TO is.
+   * <p>
+   * Engine-internal: public only because the SQL {@code ConnectEdgeStep}, which wires an edge after its record was saved, lives in
+   * another package. Every other way to create an edge goes through {@link GraphEngine}, which calls it itself.
+   *
+   * @throws VertexNotFoundException  when the named vertex does not exist or was deleted in this transaction
+   * @throws IllegalArgumentException when the named record is not a vertex
+   */
+  public Identifiable newEdgeEndpoint(final Edge edge, final Vertex.DIRECTION direction, final Identifiable given) {
+    final RID named = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
+    if (named == null || named.equals(given.getIdentity()))
+      return given;
+
+    final String side = direction == Vertex.DIRECTION.OUT ? "source" : "destination";
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.isDeletedInTransaction(named))
+      throw deletedEndpoint(named, side);
+
+    final Record record;
+    try {
+      record = database.lookupByRID(named, true);
+    } catch (final RecordNotFoundException e) {
+      throw new VertexNotFoundException("Cannot create an edge whose " + side + " vertex " + named + " does not exist", named, e);
+    }
+    if (!(record instanceof Vertex vertex))
+      throw new IllegalArgumentException("Cannot create an edge whose " + side + " is " + named + ": it is not a vertex");
+    return getMostUpdatedVertex(asVertexInternal(vertex));
   }
 
   /**
@@ -618,12 +659,27 @@ public class GraphEngine {
       if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
         setProperties(edge, connection.edgeProperties);
 
+      // AN @out / @in AMONG THE PROPERTIES NAMED ANOTHER ENDPOINT FOR THE RECORD: THE LISTS FOLLOW THE RECORD (issue #12247), AND A
+      // REFUSED ENDPOINT STORES NOTHING OF THIS EDGE
+      final Identifiable source = newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, sourceVertex);
+      final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, destinationVertex);
+
       // A REFUSED EDGE HAS NO IDENTITY TO WIRE: IT IS LEFT OUT, AND THE RETURNED LIST HOLDS ONLY THE EDGES CREATED (issue #10085)
       if (!edge.saveReportingVeto())
         continue;
-      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
-      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destinationVertex);
+      if (source != sourceVertex) {
+        // THE RECORD NAMES ANOTHER SOURCE: THE EDGE BELONGS TO THE OUT LIST OF THAT VERTEX, NOT TO THE BATCH OF sourceVertex
+        connectOutgoingEdge((VertexInternal) source, destination, edge);
+        if (edgeType.isBidirectional())
+          connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
+        edges.add(edge);
+        continue;
+      }
+
+      recordCreated(edgeType, edge, sourceVertexRID, destination.getIdentity());
+
+      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destination);
       outEdgePairs.add(pair);
       // THE INCOMING SIDE IS A PROPERTY OF THE TYPE, NOT OF THE CALL: A UNIDIRECTIONAL TYPE HAS NONE (issue #10268)
       if (edgeType.isBidirectional()) {
@@ -2999,6 +3055,29 @@ public class GraphEngine {
   }
 
   /**
+   * Whether the edge list(s) of {@code vertex} in {@code direction} hold more than {@code limit} entries, of any type. The
+   * entries are stepped without reading an edge or a vertex record, and never past the one after {@code limit}, so the
+   * answer costs what walking a short list would and stays bounded on a super-node: no list keeps a count to read instead.
+   * <p>
+   * Answers true when a list, or a stripe of one, whose head the vertex names cannot be loaded: such a list is not a short
+   * one, and a vertex with no list at all answers false.
+   * <p>
+   * Used by the openCypher operator that decides per row between walking a vertex's relationships and seeking the far ends
+   * it looks for (issue #11715), which lives outside this package.
+   */
+  public boolean hasMoreEdgeEntriesThan(final VertexInternal vertex, final Vertex.DIRECTION direction, final long limit) {
+    final Iterator<RID> entries = entriesOf(getMostUpdatedVertex(vertex), direction);
+    if (entries == null)
+      return true;
+    for (long i = 0; i < limit; i++) {
+      if (!entries.hasNext())
+        return false;
+      entries.next();
+    }
+    return entries.hasNext();
+  }
+
+  /**
    * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list, or a
    * stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
    */
@@ -3627,6 +3706,25 @@ public class GraphEngine {
   public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     return AdjacencyListBuilder.build(vertices, ridToIdx, dir, relTypes, entryCount);
+  }
+
+  /**
+   * As {@link #buildAdjacencyList(List, Map, Vertex.DIRECTION, String[], LongConsumer)}, for vertices held as the {@link NodeIdMapping}
+   * that numbers them: the row of a vertex is its id in the mapping, and the edge lists are scanned by the position of the vertex, so no
+   * vertex is loaded and no map from RID to row is built. What an algorithm over a large graph passes (issue #12554).
+   * <p>
+   * A vertex deleted since the mapping was made has an empty row, and is no neighbour of any.
+   *
+   * @param vertices      the vertices, numbered by the mapping
+   * @param database      the database the vertices are in
+   * @param entryCount    notified with the total number of neighbour entries about to be allocated; may be null
+   * @param checkpoint    called with a counter that advances by one for every row about to be walked and every entry read, in each of the
+   *                      two passes, so that the caller can abort a long build, a supernode's list included (an exception it throws
+   *                      aborts the build): {@code WorkGuard::checkPeriodically} fits it; may be null
+   */
+  public static int[][] buildAdjacencyList(final NodeIdMapping vertices, final Database database, final Vertex.DIRECTION dir,
+      final String[] relTypes, final LongConsumer entryCount, final IntConsumer checkpoint) {
+    return AdjacencyListBuilder.build(vertices, (DatabaseInternal) database, dir, relTypes, entryCount, checkpoint);
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {
