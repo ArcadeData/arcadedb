@@ -24,9 +24,12 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -109,7 +112,7 @@ public final class BenchRunner {
       } catch (final CaseFailedWithMetrics e) {
         return result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
       } catch (final Throwable t) {
-        return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, t.getClass().getName() + ": " + t.getMessage());
+        return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
       }
     });
     CaseResult result;
@@ -131,7 +134,7 @@ public final class BenchRunner {
       workerStopped = false;
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "interrupted; " + WORKER_STILL_RUNNING);
     } catch (final Exception e) {
-      result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, e.getClass().getName() + ": " + e.getMessage());
+      result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(e));
     } finally {
       executor.shutdown();
     }
@@ -142,7 +145,7 @@ public final class BenchRunner {
       } catch (final Throwable t) {
         if (result.status() == CaseResult.Status.OK)
           result = result(w, ctx, caseName, result.metrics(), CaseResult.Status.FAILED,
-              "teardown: " + t.getClass().getName() + ": " + t.getMessage());
+              "teardown: " + describe(t));
       }
     }
     return result;
@@ -191,6 +194,22 @@ public final class BenchRunner {
       metrics.add(new Metric(f.name(), f.unit(), f.better(), Stats.median(v), v));
     }
     return result(w, ctx, caseName, metrics, CaseResult.Status.OK, null);
+  }
+
+  /**
+   * The failure and every cause under it, {@code "A: msg; caused by B: msg"}. A remote client reports a transport failure as
+   * a generic "Error on executing remote operation" whose cause is the only part that says what broke. A cycle in the chain
+   * ends the walk.
+   */
+  static String describe(final Throwable t) {
+    final StringBuilder b = new StringBuilder();
+    final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (Throwable c = t; c != null && seen.add(c); c = c.getCause()) {
+      if (c != t)
+        b.append("; caused by ");
+      b.append(c.getClass().getName()).append(": ").append(c.getMessage());
+    }
+    return b.toString();
   }
 
   private CaseResult result(final Workload w, final WorkloadContext ctx, final String caseName, final List<Metric> metrics,

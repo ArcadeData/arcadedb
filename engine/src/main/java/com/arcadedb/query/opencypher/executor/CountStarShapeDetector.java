@@ -328,10 +328,16 @@ final class CountStarShapeDetector {
 
     // One hop between two nodes keyed by an equality on a UNIQUE index joins two vertices at most, which the ordinary plan
     // reads off the shorter of their edge lists; the chain count walks every edge of the first one (issue #11699). A key
-    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in
+    // written in WHERE pins the node as an inline one does, so the guard reads the pattern with those equalities folded in.
+    // An IN-list on the key is one vertex per element, which the ordinary plan seeks too when the walk is the longer and the
+    // output cannot show the row order the seek changes (issue #11715)
     if (hopCount == 1) {
       final PathPattern keyed = HopEdgeTrackingAnalyzer.withWhereEqualities(List.of(pathPattern), whereClause).getFirst();
-      if (plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(0)) && plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(1)))
+      final Map<String, Set<String>> inListKeys = CypherOptimizer.rowOrderIsInvisible(statement) ?
+          HopEdgeTrackingAnalyzer.whereInListKeys(whereClause) :
+          Map.of();
+      if (plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(0), inListKeys)
+          && plan.stepBuilder.matchSteps.isUniquelyKeyed(keyed.getNode(1), inListKeys))
         return null;
     }
 

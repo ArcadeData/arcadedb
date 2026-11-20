@@ -22,8 +22,11 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * Cypher split() function - splits a string by a delimiter.
+ * Cypher split() function - splits a string by a delimiter, or by any of a list of delimiters.
  * Returns null if either string or delimiter is null (Cypher behavior).
  */
 public class CypherSplitFunction implements StatelessFunction {
@@ -54,13 +57,40 @@ public class CypherSplitFunction implements StatelessFunction {
     // function, so accepting it here would be an inconsistency within this build rather than a Neo4j
     // compatibility concern.
     final String str = CypherFunctionHelper.requireStringArgument(args[0], getName());
-    final String delimiter = CypherFunctionHelper.requireStringArgument(args[1], getName());
-    if (str == null || delimiter == null)
+
+    final Object delimiter = args[1];
+    if (delimiter == null)
       return null;
 
-    // The one split of the engine, shared with the SQL split() method and function and with text.split() (issue #10485): an empty
-    // delimiter splits into characters (Neo4j/Memgraph semantics), any other is a literal found with indexOf rather than a regex
-    // compiled on every call, the empty pieces are kept, and a surrogate pair is never cut.
-    return CypherFunctionHelper.splitLiteral(str, delimiter);
+    if (delimiter instanceof String text) {
+      if (str == null)
+        return null;
+
+      // The one split of the engine, shared with the SQL split() method and function and with text.split() (issue #10485): an empty
+      // delimiter splits into characters (Neo4j/Memgraph semantics), any other is a literal found with indexOf rather than a regex
+      // compiled on every call, the empty pieces are kept, and a surrogate pair is never cut.
+      return CypherFunctionHelper.splitLiteral(str, text);
+    }
+
+    // Neo4j 5 also accepts split(original :: STRING, splitDelimiters :: LIST<STRING>), which splits the text on any
+    // of the delimiters of the list (issue #12396).
+    final List<Object> list = CypherFunctionHelper.asListOrNull(delimiter);
+    if (list != null) {
+      final List<String> delimiters = new ArrayList<>(list.size());
+      for (final Object element : list) {
+        // a null delimiter makes the whole answer null, as in Neo4j
+        if (element == null)
+          return null;
+        if (!(element instanceof String text))
+          throw CypherFunctionHelper.typeMismatch(getName(), "a STRING or a LIST<STRING>", element);
+        delimiters.add(text);
+      }
+      if (str == null)
+        return null;
+
+      return CypherFunctionHelper.splitLiteral(str, delimiters);
+    }
+
+    throw CypherFunctionHelper.typeMismatch(getName(), "a STRING or a LIST<STRING>", delimiter);
   }
 }
