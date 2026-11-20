@@ -44,9 +44,10 @@ public interface QueryEngine {
     }
 
     /**
-     * Whether the statement is a transaction control (SQL {@code BEGIN}, {@code COMMIT}, {@code ROLLBACK}), which an entry point
-     * refuses as a request of its own outside the caller's transaction or session (issue #12202). False unless the language says
-     * otherwise.
+     * Whether the statement is a transaction control (SQL {@code BEGIN}, {@code COMMIT}, {@code ROLLBACK}, openCypher
+     * {@code START TRANSACTION}, {@code COMMIT}, {@code ROLLBACK}), which an entry point refuses as a request of its own outside the
+     * caller's transaction or session (issues #12202, #12232). A statement that asks for an isolation level the engine cannot
+     * provide is not one: its execution refuses it with its own words (issue #10386). False unless the language says otherwise.
      */
     default boolean isTransactionControl() {
       return false;

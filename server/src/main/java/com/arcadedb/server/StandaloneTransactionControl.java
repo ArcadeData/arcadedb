@@ -19,7 +19,6 @@
 package com.arcadedb.server;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.handler.PostCommandHandler;
@@ -30,10 +29,11 @@ import java.util.logging.Level;
 
 /**
  * Refuses a SQL {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK} (issue #12202), or an openCypher {@code START TRANSACTION},
- * {@code COMMIT} or {@code ROLLBACK} (issue #12232), sent as a command of its own outside any transaction or session of the caller. The server runs such a command in a transaction it opens around that one request, so the
- * statement acted on that wrapper and ended with it: a {@code BEGIN} opened nothing the next command joined, and a later
- * {@code ROLLBACK} was answered OK and undid nothing. A {@code sqlscript} that holds the whole block in one request, and a
- * statement inside the caller's own transaction or session, are not concerned.
+ * {@code COMMIT} or {@code ROLLBACK} (issue #12232), sent as a command of its own outside any transaction or session of the
+ * caller. The server runs such a command in a transaction it opens around that one request, so the statement acted on that
+ * wrapper and ended with it: a {@code BEGIN} opened nothing the next command joined, and a later {@code ROLLBACK} was answered OK
+ * and undid nothing. A {@code sqlscript} that holds the whole block in one request, and a statement inside the caller's own
+ * transaction or session, are not concerned.
  */
 public final class StandaloneTransactionControl {
 
@@ -45,7 +45,8 @@ public final class StandaloneTransactionControl {
 
   /**
    * Throws a {@link CommandSemanticException} (a client error on every protocol) when {@code command}, in {@code language} (SQL or
-   * openCypher), is a transaction control statement. Call it only for a request that runs outside a transaction or session of its caller.
+   * openCypher), is a transaction control statement. Call it only for a request that runs outside a transaction or session of its
+   * caller.
    */
   public static void refuse(final Database database, final String language, final String command) {
     if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
@@ -55,8 +56,8 @@ public final class StandaloneTransactionControl {
     final boolean transactionControl;
     try {
       transactionControl = database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
-    } catch (final CommandParsingException e) {
-      // NOT A SINGLE STATEMENT THE PARSER ACCEPTS (A SCRIPT SENT AS "sql", A TYPO): THE EXECUTION REPORTS OR RUNS IT AS BEFORE
+    } catch (final Exception e) {
+      // Not a single statement the parser accepts (a script sent as "sql", a typo): the execution reports it, or runs it, as before
       LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
           "Could not analyze the command to look for a transaction control: %s", e, e.getMessage());
       return;
@@ -65,9 +66,9 @@ public final class StandaloneTransactionControl {
     if (transactionControl)
       throw new CommandSemanticException("'" + command.trim()
           + "' cannot run as a command of its own outside a transaction: each such request runs in its own transaction, which it "
-          + "would begin, commit or roll back alone. Use the transaction API of the client (RemoteDatabase.begin(), commit(), "
-          + "rollback() or transaction()), the HTTP /begin, /commit and /rollback endpoints with the arcadedb-session-id header, "
-          + "or, in SQL, send the whole block as one 'sqlscript' command");
+          + "would begin, commit or roll back alone. Use the transaction API of the client (RemoteDatabase.begin() or "
+          + "RemoteGrpcDatabase.begin(), then commit() or rollback(), or transaction()), the HTTP /begin, /commit and /rollback "
+          + "endpoints with the arcadedb-session-id header, or, in SQL, send the whole block as one 'sqlscript' command");
   }
 
   /**
@@ -85,6 +86,10 @@ public final class StandaloneTransactionControl {
     return startsWithTransactionControlWord(command, start);
   }
 
+  /**
+   * Matches the four words as bare prefixes, so a text like "beginning" or "started" passes the probe too. That is deliberate: the
+   * probe only decides whether the text is worth a parse, and the engine's own {@code isTransactionControl()} decides afterwards.
+   */
   private static boolean startsWithTransactionControlWord(final String command, final int start) {
     return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "start", 0, 5)
         || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8);

@@ -82,14 +82,20 @@ public class BeginStatement extends SimpleExecStatement {
   }
 
   /**
-   * A level the engine cannot provide is refused first, with its own words (issue #10386): that error says more than the refusal
-   * of a standalone BEGIN (issue #12202) would.
+   * A level the engine cannot provide is left to the execution, which refuses it with its own words (issue #10386): that error says
+   * more than the refusal of a standalone BEGIN (issue #12202) would. The predicate answers false for it, as the openCypher one
+   * does, and never throws.
    */
   @Override
   public boolean isTransactionControl() {
-    if (isolation != null)
+    if (isolation == null)
+      return true;
+    try {
       IsolationLevels.parse(isolation.getStringValue().toUpperCase(Locale.ENGLISH));
-    return true;
+      return true;
+    } catch (final IllegalArgumentException e) {
+      return false;
+    }
   }
 
 }

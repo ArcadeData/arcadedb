@@ -150,7 +150,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
       activeSession = setTransactionInThreadLocal(exchange, database, user);
       if (activeSession == null)
-        // A TRANSACTION CONTROL OF ITS OWN ACTS ON THIS REQUEST'S TRANSACTION ALONE: REFUSED BEFORE ANYTHING RUNS (ISSUE #12202)
+        // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
         refuseOutsideSession(database, payload);
 
       // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this

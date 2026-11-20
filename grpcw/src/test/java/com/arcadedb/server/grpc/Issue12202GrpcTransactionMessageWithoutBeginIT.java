@@ -101,6 +101,6 @@ public class Issue12202GrpcTransactionMessageWithoutBeginIT extends BaseGrpcServ
 
     assertThatThrownBy(() -> stub.executeCommand(request)).isInstanceOf(StatusRuntimeException.class)
         .satisfies(e -> assertThat(((StatusRuntimeException) e).getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT))
-        .hasMessageContaining("RemoteDatabase.begin()");
+        .hasMessageContaining("RemoteGrpcDatabase.begin()");
   }
 }

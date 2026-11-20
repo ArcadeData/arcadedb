@@ -71,10 +71,10 @@ class ServerUnderTestIT {
         ServerUnderTest.PASSWORD)) {
       db.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
       db.command("sql", "CREATE DOCUMENT TYPE Doc IF NOT EXISTS");
-      db.command("sql", "BEGIN");
+      db.begin();
       for (int i = 0; i < 1000; i++)
         db.command("sql", "INSERT INTO Doc SET id = ?, payload = ?", i, "payload-" + i);
-      db.command("sql", "COMMIT");
+      db.commit();
     }
     assertThat(server.peakRssBytes()).isGreaterThan(0L);
     assertThat(server.diskBytes("probe")).isGreaterThan(0L);

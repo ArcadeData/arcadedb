@@ -71,7 +71,7 @@ public class Issue12202GrpcStandaloneTransactionControlIT extends BaseGrpcClient
   void aTransactionControlOutsideATransactionIsRefused() {
     for (final String statement : new String[] { "begin", "commit", "ROLLBACK" })
       assertThatThrownBy(() -> grpc.command("sql", statement)).as(statement).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("RemoteDatabase.begin()");
+          .hasMessageContaining("RemoteGrpcDatabase.begin()");
 
     grpc.command("sql", "INSERT INTO D12202 SET k = 'kept'");
     assertThat(count()).isEqualTo(1L);
@@ -82,7 +82,7 @@ public class Issue12202GrpcStandaloneTransactionControlIT extends BaseGrpcClient
   void anOpenCypherTransactionControlOutsideATransactionIsRefused() {
     for (final String statement : new String[] { "START TRANSACTION", "COMMIT", "ROLLBACK" })
       assertThatThrownBy(() -> grpc.command("opencypher", statement)).as(statement).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("RemoteDatabase.begin()");
+          .hasMessageContaining("RemoteGrpcDatabase.begin()");
   }
 
   @Test
@@ -99,6 +99,6 @@ public class Issue12202GrpcStandaloneTransactionControlIT extends BaseGrpcClient
   }
 
   private long count() {
-    return grpc.query("sql", "SELECT count(*) AS c FROM D12202").next().<Number>getProperty("c").longValue();
+    return grpc.query("sql", "SELECT count(@rid) AS c FROM D12202").next().<Number>getProperty("c").longValue();
   }
 }

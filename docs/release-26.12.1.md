@@ -39,6 +39,26 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
 **Who sees a different answer.** A `DELETE VERTEX FROM` aimed at documents or edges, which used to delete them: write
 `DELETE FROM` instead. `DELETE FROM` on a vertex type keeps removing the vertices with their edges, as before.
 
+### HTTP, gRPC and MCP: a standalone `BEGIN`, `COMMIT` or `ROLLBACK` is refused (#12202, #12232)
+
+A SQL `BEGIN`, `COMMIT` or `ROLLBACK`, or an openCypher `START TRANSACTION`, `COMMIT` or `ROLLBACK`, sent as a command of its own
+outside a session (`POST /api/v1/command/{db}` without `arcadedb-session-id`, `RemoteDatabase.command(...)`,
+`RemoteGrpcDatabase.command(...)` outside `begin()`, the MCP `execute_command` tool) ran in the transaction the server opens
+around that one request. It was answered OK, the `BEGIN` opened nothing the next command joined, and a later `ROLLBACK` undid
+nothing: the writes in between were already durable. It is now refused with a client error (HTTP 400, gRPC `INVALID_ARGUMENT`,
+`CommandSemanticException`) that names the alternatives:
+
+- the transaction API of the client: `begin()`, `commit()`, `rollback()` or `transaction()`;
+- the `/begin`, `/commit` and `/rollback` endpoints with the `arcadedb-session-id` header;
+- in SQL, one `sqlscript` command that holds the whole block.
+
+Unchanged: a `sqlscript` with `BEGIN ... COMMIT/ROLLBACK`, a statement inside an HTTP session or a gRPC transaction, the embedded
+API, and Bolt, where `START TRANSACTION` opens a real transaction on the connection. A `BEGIN` of an isolation level the engine
+cannot provide keeps its own error (#10386), and a SQL `EXPLAIN BEGIN`, which only plans, is still answered.
+
+**Who sees a different answer.** A client that sent a standalone `BEGIN`, `COMMIT` or `ROLLBACK` and relied on the OK, for
+instance a Studio user who types `BEGIN` alone in the SQL editor: use the transaction API of the client instead.
+
 ## Fixes
 
 - **#12023** `vector.dotProduct`, `vector.l2Distance`, `vector.l1Distance` / `vector.manhattanDistance`, `vector.l1Norm`,
