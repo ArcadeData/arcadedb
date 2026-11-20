@@ -62,11 +62,24 @@ class Issue11508FollowerApplyBudgetIT extends BaseRaftHATest {
 
   @Test
   void theLeaderHoldsAFollowerToTheBudgetThatFollowerAdvertised() throws InterruptedException {
+    final long leaderBudget = getRaftPlugin(BIG_HEAP_NODE).getRaftHAServer().getApplyBacklogBudgetBytes();
+    assertThat(leaderBudget).as("the node that leads keeps the default budget, a quarter of its heap or the 32MB floor")
+        .isGreaterThanOrEqualTo(32L << 20);
+
+    // Only a hold the big-heap node makes at the budget of a follower counts: the two 1-byte nodes hold entries back at
+    // their own budget when one of them leads, which says nothing about a leader learning a follower's budget. The log
+    // line names the budget applied ("above 1 bytes") and the emitting node's own ("this node's is N bytes")
+    final String followerBudgetClause = "above 1 bytes";
+    final String leaderBudgetClause = "(this node's is " + leaderBudget + " bytes)";
     final AtomicInteger held = new AtomicInteger();
     final Handler watcher = new Handler() {
       @Override
       public void publish(final LogRecord record) {
-        if (record != null && record.getMessage() != null && record.getMessage().contains("Holding Raft entries back"))
+        if (record == null || record.getMessage() == null)
+          return;
+        final String message = record.getMessage();
+        if (message.contains("Holding Raft entries back") && message.contains(followerBudgetClause)
+            && message.contains(leaderBudgetClause))
           held.incrementAndGet();
       }
 
@@ -88,9 +101,6 @@ class Issue11508FollowerApplyBudgetIT extends BaseRaftHATest {
       makeLeader(BIG_HEAP_NODE);
 
       final RaftHAServer leader = getRaftPlugin(BIG_HEAP_NODE).getRaftHAServer();
-      final long leaderBudget = leader.getApplyBacklogBudgetBytes();
-      assertThat(leaderBudget).as("the leader keeps the default budget, a quarter of its heap or the 32MB floor")
-          .isGreaterThanOrEqualTo(32L << 20);
 
       // Each follower's budget reaches the leader with the capability poll (5 s)
       final ApplyBackPressure backPressure = ApplyBackPressure.of(leader.getLocalPeerId().toString());
@@ -130,14 +140,12 @@ class Issue11508FollowerApplyBudgetIT extends BaseRaftHATest {
       assertClusterConsistency();
       for (int i = 0; i < getServerCount(); i++)
         assertThat(getServerDatabase(i, getDatabaseName()).countType("Held", true)).as("server %d", i).isEqualTo(160L);
-      assertThat(findLeaderIndex()).as("leadership stayed on the node with the default budget, so every hold came from it")
-          .isEqualTo(BIG_HEAP_NODE);
       assertThat(held.get()).as("the leader, whose own budget is %d bytes, must have held entries back from a follower that "
           + "advertised a 1-byte budget", leaderBudget).isGreaterThan(0);
     } finally {
       root.removeHandler(watcher);
-      if (previousLevel != null)
-        root.setLevel(previousLevel);
+      // Unconditionally: a root logger with no level of its own must not keep the WARNING this test set
+      root.setLevel(previousLevel);
     }
   }
 
