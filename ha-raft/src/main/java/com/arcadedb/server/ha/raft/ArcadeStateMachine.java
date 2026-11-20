@@ -1497,6 +1497,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * with its cause before it is rethrown: Ratis reports it only as "caught a Throwable" on its own logger. The calling
    * thread is deliberately not recorded as the updater (issue #8652): this callback is not guaranteed to run on that
    * thread alone, and a short-lived caller must never read as a dead updater.
+   * <p>
+   * It moves the applied index, so it wakes the threads waiting for one (issue #11742), as {@link #applyTransaction} does. A
+   * bookmark this version answers with names the entry the state machine applied, not the metadata entry Ratis appends after
+   * it, so a read waiting for such a bookmark is released by {@link #applyTransaction}. The waiters this callback still
+   * releases are those whose target can be a Ratis-only index: a bookmark answered by a node of an earlier version, the Ratis
+   * index that stands in for a bookmark while the state machine has applied nothing, and the read index a linearizable read
+   * on a follower waits for, the leader's commit index, which counts the metadata entries too. Without the notification
+   * they saw such an index only at their next recheck, up to {@code APPLY_WAIT_RECHECK_INTERVAL_MS} later.
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
@@ -1510,6 +1518,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "closes the division; the health monitor restarts it in place (issue #8652)", t, term, index);
       throw t;
     }
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null)
+      raftHA.notifyApplied();
   }
 
   /** Records the calling thread as the updater, as {@link #applyTransaction} does, for tests (issue #8652). */
