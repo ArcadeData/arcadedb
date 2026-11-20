@@ -1299,10 +1299,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     }
 
     // 409 Conflict: a GraphBatch load refused because another one is open on the same database (issue #11907). The same
-    // "retryable once the other one finishes" as the arm above, and nothing of the refused load ran. It was the generic
-    // 500 "Internal error", logged with a stack trace per refused request. Its own arm, ahead of nothing that would catch
-    // it otherwise: its parent DatabaseOperationException has no arm and also stands for real faults. The label names the
-    // condition, since 'detail' is concealed in production mode.
+    // "retryable once the other one finishes" as the arm above, and nothing of the refused load ran, yet it answered the
+    // generic 500 "Internal error" and was logged with a stack trace per refused request. It needs an arm of its own because
+    // its parent DatabaseOperationException has none and also stands for real faults, which must stay a 500. The label names
+    // the condition, since 'detail' is concealed in production mode.
     final GraphBatchInProgressException batchInProgress = firstOf(e, cause, GraphBatchInProgressException.class);
     if (batchInProgress != null)
       return new ErrorClassification(409, "A GraphBatch load is already in progress on this database", batchInProgress, null,
