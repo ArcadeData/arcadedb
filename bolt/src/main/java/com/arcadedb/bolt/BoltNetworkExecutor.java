@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BeginMessage;
 import com.arcadedb.bolt.message.BoltMessage;
@@ -39,6 +40,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionRetryPolicy;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CauseChain;
@@ -80,6 +83,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.utility.RetryBackoff;
 
 import java.util.Locale;
 import javax.net.ssl.SSLSocket;
@@ -967,7 +971,7 @@ public class BoltNetworkExecutor extends Thread {
       // In READ access mode a statement the analyzer could not classify runs as a read: query() reports what is wrong with it,
       // and refuses it if it does write (QueryNotIdempotentException, answered as the access-mode refusal below)
       if (stream.writeOperation && !(readAccessMode && writeQuery == null)) {
-        stream.resultSet = database.command("opencypher", query, params);
+        stream.resultSet = runWrite(query, params);
       } else {
         stream.resultSet = database.query("opencypher", query, params);
       }
@@ -1040,6 +1044,42 @@ public class BoltNetworkExecutor extends Thread {
       CommandTimeoutOverride.clear();
       if (binding != null)
         binding.close();
+    }
+  }
+
+  /**
+   * Runs the write statement of a RUN (issue #12662). In an explicit transaction that has written nothing yet - under
+   * READ_COMMITTED, with no other stream open - a statement refused by a concurrent transaction ({@link NeedRetryException}) runs
+   * again in a fresh transaction, up to {@code arcadedb.txRetries} attempts with the engine's backoff, as the engine re-runs an
+   * auto-commit statement (#10190). Nothing the client received from the transaction depends on what the refused attempt read,
+   * so the fresh transaction is indistinguishable from it to the client; a driver's managed transaction would otherwise re-send
+   * the whole transaction after a backoff of a second or more. A statement after the transaction's first write keeps its single
+   * attempt: the refusal goes to the client, whose transaction it is.
+   */
+  private ResultSet runWrite(final String query, final Map<String, Object> params) {
+    if (!explicitTransaction || !openStreams.isEmpty())
+      return database.command("opencypher", query, params);
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    if (tx == null || tx.hasChanges() || tx.getIsolationLevel() != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+      return database.command("opencypher", query, params);
+
+    final ContextConfiguration configuration = database.getConfiguration();
+    final int attempts = configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES);
+    final TransactionRetryPolicy retryPolicy = TransactionRetryPolicy.onThisNode();
+    for (int attempt = 0; ; ++attempt) {
+      try {
+        return database.command("opencypher", query, params);
+      } catch (final RuntimeException e) {
+        final NeedRetryException conflict = CauseChain.find(e, NeedRetryException.class);
+        if (conflict == null || attempt >= attempts - 1 || !retryPolicy.mayRetry(conflict))
+          throw e;
+        database.rollback();
+        RetryBackoff.sleep(attempt, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY_BASE),
+            configuration.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY));
+        database.begin();
+        // As BEGIN opened it (issue #10040)
+        ((DatabaseInternal) database).getTransaction().setClientManaged(true);
+      }
     }
   }
 
