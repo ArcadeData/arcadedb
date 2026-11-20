@@ -1780,4 +1780,127 @@ class CypherWriteVisibilityTest {
       return befores;
     }
   }
+
+  /**
+   * Issue #12656: when several rows bind the same node, the {@code ON MATCH SET} / {@code ON CREATE SET} of a pattern
+   * {@code MERGE} is visible to the clauses after it on every row, as on Neo4j (decided in #12627). The first row creates the
+   * pattern and so holds its own copy of the bound endpoint; the write of a later row used to stay out of it, and the first row
+   * answered {@code 1|10} where Neo4j answers {@code 1|99}.
+   */
+  @Nested
+  class Issue12656PatternMergeActionVisibleToEveryRow extends TestHelper {
+    private static final String HEAD = """
+        UNWIND [1, 2] AS i
+        MATCH (n0 {id: 1})<-[:rt4]-(m {id: 114}), (n1 {id: 126})-[:rt2]->(x)-[:rt5]->(n0)
+        MERGE (n0)-[:rt1 {id: 42}]->(n2 {id: 2})<-[:rt11 {id: 43}]-(n0)
+        ON MATCH SET n0.k4 = 99
+        """;
+
+    @Test
+    void aPlainReturnReadsTheWriteOfEveryRow() {
+      createReportedGraph();
+      assertThat(rows(HEAD + "RETURN i, n0.k4 AS k4", "i", "k4")).containsExactly("1|99", "2|99");
+    }
+
+    @Test
+    void anIdentitySubqueryReadsTheWriteOfEveryRow() {
+      createReportedGraph();
+      assertThat(rows(HEAD + "WITH i, n0, n2 CALL (*) { RETURN 0 AS barrier } WITH i, n0, n2 RETURN i, n0.k4 AS k4", "i", "k4"))
+          .containsExactly("1|99", "2|99");
+    }
+
+    @Test
+    void aPlainWithReadsTheWriteOfEveryRow() {
+      createReportedGraph();
+      assertThat(rows(HEAD + "WITH i, n0, n2 RETURN i, n0.k4 AS k4", "i", "k4")).containsExactly("1|99", "2|99");
+    }
+
+    @Test
+    void theOnCreateSetOfTheFirstRowAndTheOnMatchSetOfTheSecondAreBothVisible() {
+      createReportedGraph();
+      assertThat(rows("""
+          UNWIND [1, 2] AS i
+          MATCH (n0 {id: 1})
+          MERGE (n0)-[:rt1]->(n2 {id: 2})
+          ON CREATE SET n0.c = i
+          ON MATCH SET n0.k4 = 99
+          RETURN i, n0.c AS c, n0.k4 AS k4""", "i", "c", "k4")).containsExactly("1|1|99", "2|1|99");
+    }
+
+    /** More input rows than one pull batch: the rows of the first batch read the writes of the rows of the last one too. */
+    @Test
+    void rowsOfAnEarlierBatchReadTheWritesOfALaterOne() {
+      createReportedGraph();
+      final List<String> rows = rows("""
+          UNWIND range(1, 250) AS i
+          MATCH (n0 {id: 1})
+          MERGE (n0)-[:rt1]->(n2 {id: 2})
+          ON MATCH SET n0.k4 = i
+          RETURN i, n0.k4 AS k4""", "i", "k4");
+      assertThat(rows).hasSize(250);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat(rows.get(i)).isEqualTo((i + 1) + "|250");
+    }
+
+    @Test
+    void aSingleNodeMergeOverMoreRowsThanABatchReadsTheLastWrite() {
+      final List<String> rows = rows("""
+          UNWIND range(1, 250) AS i
+          MERGE (n:Node {id: 1})
+          ON MATCH SET n.v = i
+          RETURN i, n.v AS v""", "i", "v");
+      assertThat(rows).hasSize(250);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat(rows.get(i)).isEqualTo((i + 1) + "|250");
+    }
+
+    /** The same visibility for a plain SET, whose rows also used to be read one pull batch at a time. */
+    @Test
+    void aSetOverMoreRowsThanABatchReadsTheLastWrite() {
+      database.transaction(() -> database.command("opencypher", "CREATE (:Node {id: 1})").close());
+      final List<String> rows = rows("""
+          UNWIND range(1, 250) AS i
+          MATCH (n:Node {id: 1})
+          SET n.v = i
+          RETURN i, n.v AS v""", "i", "v");
+      assertThat(rows).hasSize(250);
+      for (int i = 0; i < rows.size(); i++)
+        assertThat(rows.get(i)).isEqualTo((i + 1) + "|250");
+    }
+
+    @Test
+    void theWriteLands() {
+      createReportedGraph();
+      rows(HEAD + "RETURN i, n0.k4 AS k4", "i", "k4");
+      assertThat(rows("MATCH (n {id: 1}) RETURN n.k4 AS k4", "k4")).containsExactly("99");
+    }
+
+    private void createReportedGraph() {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n0 {id: 1, k4: 10}), (m {id: 114}), (n1 {id: 126}), (x {id: 115})").close();
+        database.command("opencypher", """
+            MATCH (m {id: 114}), (n0 {id: 1}), (n1 {id: 126}), (x {id: 115})
+            CREATE (m)-[:rt4]->(n0), (n1)-[:rt2]->(x)-[:rt5]->(n0)""").close();
+      });
+    }
+
+    private List<String> rows(final String query, final String... columns) {
+      final List<String> rows = new ArrayList<>();
+      database.transaction(() -> {
+        try (final ResultSet resultSet = database.command("opencypher", query)) {
+          while (resultSet.hasNext()) {
+            final Result row = resultSet.next();
+            final StringBuilder flattened = new StringBuilder();
+            for (final String column : columns) {
+              if (!flattened.isEmpty())
+                flattened.append('|');
+              flattened.append(String.valueOf((Object) row.getProperty(column)));
+            }
+            rows.add(flattened.toString());
+          }
+        }
+      });
+      return rows;
+    }
+  }
 }

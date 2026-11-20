@@ -26,10 +26,12 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.SelectionPredicates;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -92,7 +94,7 @@ public class SetStep extends AbstractExecutionStep {
           return true;
         if (finished)
           return false;
-        fetchMore(nRecords);
+        fetchMore();
         return bufferIndex < buffer.size();
       }
 
@@ -107,12 +109,17 @@ public class SetStep extends AbstractExecutionStep {
         return result;
       }
 
-      private void fetchMore(final int n) {
+      private void fetchMore() {
         buffer.clear();
         bufferIndex = 0;
         if (prevResults == null)
           prevResults = prev.syncPull(context, nRecords);
-        while (buffer.size() < n && prevResults.hasNext()) {
+        // The SET runs for every row before it hands out the first one, as Neo4j's Eager does: when several rows bind the
+        // same node, the clauses after the SET read the write of every row, however many pull batches the input takes
+        // (issues #12627, #12656). The drain is one region the statement-level deadline check cannot reach (#6266)
+        final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+        while (prevResults.hasNext()) {
+          guard.check();
           final Result inputResult = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
@@ -126,8 +133,9 @@ public class SetStep extends AbstractExecutionStep {
               cost += System.nanoTime() - begin;
           }
         }
-        if (!prevResults.hasNext())
-          finished = true;
+        finished = true;
+        // A row holding its own copy of a record a later row wrote is lined up with the copy the transaction wrote
+        WrittenCopy.resolveRows(context, buffer);
       }
 
       @Override

@@ -51,6 +51,7 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -61,6 +62,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
@@ -176,7 +178,13 @@ public class MergeStep extends AbstractExecutionStep {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n && prevResults.hasNext()) {
+          // A MERGE that writes properties runs for every row before it hands out the first one (issue #12656)
+          final boolean writesForEveryRowFirst = writesProperties();
+          // The drain is one uninterrupted region the statement-level deadline check cannot reach, as in EagerStep (#6266)
+          final WorkGuard guard = writesForEveryRowFirst ? WorkGuard.forCommandDeadline(context) : null;
+          while ((writesForEveryRowFirst || buffer.size() < n) && prevResults.hasNext()) {
+            if (guard != null)
+              guard.check();
             final Result inputResult = prevResults.next();
             final long begin = context.isProfiling() ? System.nanoTime() : 0;
             try {
@@ -194,6 +202,11 @@ public class MergeStep extends AbstractExecutionStep {
           if (!prevResults.hasNext()) {
             finished = true;
           }
+          // When several rows bind the same node, the clauses after the MERGE read the ON CREATE / ON MATCH SET of every
+          // row, as on Neo4j (issue #12627): a row that created the pattern holds its own copy of a bound endpoint, which the
+          // write of a later row did not reach, so it is lined up with the copy the transaction wrote (issue #12656)
+          if (writesForEveryRowFirst)
+            WrittenCopy.resolveRows(context, buffer);
         } else {
           // Standalone MERGE: merge once
           if (!mergedStandalone) {
@@ -219,6 +232,16 @@ public class MergeStep extends AbstractExecutionStep {
         MergeStep.this.close();
       }
     };
+  }
+
+  /**
+   * Whether the MERGE writes properties or labels besides the pattern it merges: an ON CREATE SET, an ON MATCH SET or a SET it
+   * absorbed. Such a MERGE is a write the clauses after it read for every row, so it runs for the whole input before it hands
+   * out a row, as Neo4j's {@code Eager} does: a row is never read before a later row binding the same node has written it,
+   * however many pull batches the input takes (issue #12656). The plain MERGE keeps streaming.
+   */
+  private boolean writesProperties() {
+    return mergeClause.hasOnCreateSet() || mergeClause.hasOnMatchSet() || absorbedSet != null;
   }
 
   /**
