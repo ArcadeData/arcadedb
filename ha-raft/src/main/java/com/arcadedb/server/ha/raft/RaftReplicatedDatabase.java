@@ -539,12 +539,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private static final ThreadLocal<ReadConsistencyContext> READ_CONSISTENCY_CONTEXT = new ThreadLocal<>();
 
   /**
-   * The highest index a write of the request served on this thread is known to be committed at, or {@code null} when it wrote
-   * nothing: the bookmark the leader answered with for a write the request forwarded to it (issue #11740), and the index the
-   * cluster acknowledged a write committed here at (issue #11742). Cleared with the read-consistency context at the end of the
-   * request.
+   * The highest index a write of the request served on this thread is known to be committed at, in its only slot, or -1 when it
+   * wrote nothing: the bookmark the leader answered with for a write the request forwarded to it (issue #11740), and the index
+   * the cluster acknowledged a write committed here at (issue #11742). Reset with the read-consistency context, when a request
+   * sets it and when it ends, so a commit made on this thread outside such a request (an async executor, a handler that sets no
+   * context) does not outlive the thread's next request. A mutable slot rather than a boxed {@code Long}: it is raised on every
+   * commit, and a slot reset in place costs no allocation after the first write of a thread. {@code null} on a thread that
+   * never wrote.
    */
-  private static final ThreadLocal<Long> REQUEST_WRITE_BOOKMARK = new ThreadLocal<>();
+  private static final ThreadLocal<long[]> REQUEST_WRITE_BOOKMARK = new ThreadLocal<>();
 
   public static ReadConsistencyContext getReadConsistencyContext() {
     return READ_CONSISTENCY_CONTEXT.get();
@@ -567,12 +570,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public void setReadConsistencyContext(final Database.READ_CONSISTENCY consistency, final long readAfterIndex) {
     READ_CONSISTENCY_CONTEXT.set(new ReadConsistencyContext(consistency, readAfterIndex));
+    resetRequestWriteBookmark();
   }
 
   @Override
   public void clearReadConsistencyContext() {
     READ_CONSISTENCY_CONTEXT.remove();
-    REQUEST_WRITE_BOOKMARK.remove();
+    resetRequestWriteBookmark();
+  }
+
+  private static void resetRequestWriteBookmark() {
+    final long[] written = REQUEST_WRITE_BOOKMARK.get();
+    if (written != null)
+      written[0] = -1;
   }
 
   /**
@@ -610,8 +620,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public long getCommitIndexBookmark() {
     final long applied = getLastAppliedIndex();
-    final Long written = REQUEST_WRITE_BOOKMARK.get();
-    return written != null ? Math.max(applied, written) : applied;
+    final long[] written = REQUEST_WRITE_BOOKMARK.get();
+    return written != null ? Math.max(applied, written[0]) : applied;
   }
 
   /**
@@ -621,9 +631,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   static void recordRequestWrite(final long index) {
     if (index < 0)
       return;
-    final Long previous = REQUEST_WRITE_BOOKMARK.get();
-    if (previous == null || previous < index)
-      REQUEST_WRITE_BOOKMARK.set(index);
+    final long[] written = REQUEST_WRITE_BOOKMARK.get();
+    if (written == null)
+      REQUEST_WRITE_BOOKMARK.set(new long[] { index });
+    else if (written[0] < index)
+      written[0] = index;
   }
 
   private final ArcadeDBServer server;

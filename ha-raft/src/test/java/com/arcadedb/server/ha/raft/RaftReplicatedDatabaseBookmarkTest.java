@@ -18,16 +18,18 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
-import com.arcadedb.utility.SubclassMocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.when;
 
 /**
  * Issue #11742: the read-your-writes bookmark {@link RaftReplicatedDatabase#getLastAppliedIndex()} answers is the index of
@@ -39,6 +41,10 @@ import static org.mockito.Mockito.when;
 class RaftReplicatedDatabaseBookmarkTest {
   private static final long RATIS_APPLIED = 12L;
 
+  @TempDir
+  Path tempDir;
+
+  private LocalDatabase          proxied;
   private HttpClient             httpClient;
   private FakeRaftHAServer       raftServer;
   private ArcadeStateMachine     stateMachine;
@@ -46,8 +52,7 @@ class RaftReplicatedDatabaseBookmarkTest {
 
   @BeforeEach
   void setUp() {
-    final LocalDatabase proxied = SubclassMocks.mock(LocalDatabase.class);
-    when(proxied.getName()).thenReturn("issue11742");
+    proxied = (LocalDatabase) new DatabaseFactory(tempDir.resolve("issue11742").toString()).create();
     raftServer = FakeRaftHAServer.detached();
     raftServer.lastAppliedIndex(RATIS_APPLIED);
     stateMachine = new ArcadeStateMachine();
@@ -60,6 +65,8 @@ class RaftReplicatedDatabaseBookmarkTest {
   void tearDown() {
     database.clearReadConsistencyContext();
     httpClient.close();
+    if (proxied.isOpen())
+      proxied.drop();
   }
 
   @Test
@@ -110,5 +117,34 @@ class RaftReplicatedDatabaseBookmarkTest {
     stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 2);
     database.clearReadConsistencyContext();
     assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 2);
+
+    // The next request on the same thread starts from nothing: a write below the previous request's one still raises it
+    RaftReplicatedDatabase.recordRequestWrite(RATIS_APPLIED - 1);
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 1);
+  }
+
+  @Test
+  void aCommitOutsideAnyRequestDoesNotLeakIntoTheNextRequestOfTheThread() {
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 5);
+
+    // A commit made on a thread that sets no read-consistency context (an async executor, a handler of another kind) records
+    // the index it was acknowledged at, and nothing clears it
+    RaftReplicatedDatabase.recordRequestWrite(RATIS_APPLIED);
+
+    // The next request served on the thread starts from nothing
+    database.setReadConsistencyContext(Database.READ_CONSISTENCY.READ_YOUR_WRITES, 0L);
+
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED - 5);
+  }
+
+  @Test
+  void aLowerWriteOfTheSameRequestDoesNotLowerTheBookmark() {
+    stateMachine.lastAppliedIndex.set(RATIS_APPLIED - 5);
+
+    RaftReplicatedDatabase.recordRequestWrite(RATIS_APPLIED);
+    RaftReplicatedDatabase.recordRequestWrite(RATIS_APPLIED - 2);
+    RaftReplicatedDatabase.recordRequestWrite(-1);
+
+    assertThat(database.getCommitIndexBookmark()).isEqualTo(RATIS_APPLIED);
   }
 }

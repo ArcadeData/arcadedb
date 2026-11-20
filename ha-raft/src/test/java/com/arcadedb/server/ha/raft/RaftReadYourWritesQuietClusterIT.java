@@ -87,21 +87,19 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
 
     final HttpResponse<String> insert = post(leaderIndex, "/command/" + dbName, "INSERT INTO " + TYPE_NAME + " SET k = 1", null);
     assertThat(insert.statusCode()).isEqualTo(200);
-    final long deadline = System.currentTimeMillis() + 10_000;
-    while (leaderRaft.getLastAppliedIndex() <= leaderRaft.getStateMachine().readAppliedIndexCounter()
-        && System.currentTimeMillis() < deadline)
-      Thread.sleep(20);
-    assertThat(leaderRaft.getLastAppliedIndex()).as("the leader must have applied the metadata entry after the write")
-        .isGreaterThan(leaderRaft.getStateMachine().readAppliedIndexCounter());
+    final long insertBookmark = Long.parseLong(insert.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow());
+    awaitLeaderAppliedPast(leaderRaft, insertBookmark, "the leader must have applied the metadata entry after the write");
 
     final HttpResponse<String> leaderRead = post(leaderIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME, null);
     final String bookmark = leaderRead.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow();
-    // The bookmark is the entry of the insert, which the insert answered with too, not the metadata entry Ratis applied after it.
-    // The timing below cannot tell them apart when the follower already has the metadata entry or a heartbeat lands in time
-    final long writeIndex = leaderRaft.getStateMachine().readAppliedIndexCounter();
-    assertThat(Long.parseLong(insert.headers().firstValue("X-ArcadeDB-Commit-Index").orElseThrow())).isEqualTo(writeIndex);
-    assertThat(Long.parseLong(bookmark)).as("the bookmark of a read after the write").isEqualTo(writeIndex)
-        .isLessThan(leaderRaft.getLastAppliedIndex());
+    // The bookmark is an entry the state machine applied (the insert's, unless some other entry was applied in between), not
+    // the metadata entry Ratis applied after it. The timing below cannot tell them apart when the follower already has the
+    // metadata entry or a heartbeat lands in time. Bounded by the counter read now rather than equal to it, so an entry applied
+    // meanwhile does not fail the test
+    assertThat(Long.parseLong(bookmark)).as("the bookmark of a read after the write").isGreaterThanOrEqualTo(insertBookmark)
+        .isLessThanOrEqualTo(leaderRaft.getStateMachine().readAppliedIndexCounter());
+    awaitLeaderAppliedPast(leaderRaft, Long.parseLong(bookmark),
+        "the bookmark must leave out the metadata entry Ratis applies after the entry it names");
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     final HttpResponse<String> read = post(followerIndex, "/query/" + dbName, "SELECT FROM " + TYPE_NAME + " WHERE k = 1", bookmark);
@@ -113,10 +111,23 @@ class RaftReadYourWritesQuietClusterIT extends BaseRaftHATest {
             + "the metadata entry after the write (bookmark " + bookmark + ")");
   }
 
+  /**
+   * Waits for the leader's Ratis applied index to pass {@code index}: on a bookmark that names a state-machine entry the
+   * metadata entry Ratis appends after it takes it there within milliseconds, while a bookmark that IS the Ratis index (the
+   * defect) stays equal to it on a quiet cluster.
+   */
+  private static void awaitLeaderAppliedPast(final RaftHAServer leaderRaft, final long index, final String why)
+      throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while (leaderRaft.getLastAppliedIndex() <= index && System.currentTimeMillis() < deadline)
+      Thread.sleep(20);
+    assertThat(leaderRaft.getLastAppliedIndex()).as(why).isGreaterThan(index);
+  }
+
   private HttpResponse<String> post(final int serverIndex, final String path, final String sql, final String readAfter)
       throws Exception {
     final HttpRequest.Builder request = HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1" + path))
+        .uri(URI.create(getServerHttpUrl(serverIndex, "/api/v1" + path)))
         .timeout(HTTP_TIMEOUT)
         .header("Authorization", "Basic " + Base64.getEncoder()
             .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))

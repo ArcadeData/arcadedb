@@ -28,6 +28,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,11 +54,18 @@ class ArcadeStateMachineTermIndexNotifiesTest {
     try {
       sm.initialize(stubServer(), RaftGroupId.valueOf(UUID.randomUUID()), raftStorage);
       sm.setRaftHAServer(raft);
+      // A waiter woken before the index moved would read the old one and sleep again until its recheck: the index is read at
+      // the moment of the notification, not afterwards
+      final AtomicLong indexSeenByTheWaiter = new AtomicLong(-1);
+      raft.on("notifyApplied", args -> {
+        indexSeenByTheWaiter.set(sm.getLastAppliedTermIndex().getIndex());
+        return null;
+      });
 
       sm.notifyTermIndexUpdated(1L, 1L);
 
-      assertThat(sm.getLastAppliedTermIndex().getIndex()).as("the applied index the waiters compare with").isEqualTo(1L);
       assertThat(raft.calls("notifyApplied")).hasSize(1);
+      assertThat(indexSeenByTheWaiter.get()).as("the applied index a woken waiter compares with").isEqualTo(1L);
     } finally {
       sm.close();
       raftStorage.close();
