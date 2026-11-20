@@ -57,6 +57,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -77,6 +79,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // the node in between must get the retryable "not the leader" answer, not 401 "Invalid cluster token". The token
   // never changes for the life of the process, so the kept value cannot go stale.
   private volatile String               stoppedClusterToken;
+
+  // The threads inside awaitLeaderCommitApplied right now (issue #11739): what a test reads to know a forwarded command is
+  // waiting for this node to apply it, instead of looking for the method on the stacks of every thread of the JVM
+  private final AtomicInteger localWaiters = new AtomicInteger();
 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
@@ -555,6 +561,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft != null)
       raft.waitForLocalApply();
+  }
+
+  @Override
+  public boolean awaitLeaderCommitApplied() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return true;
+    localWaiters.incrementAndGet();
+    try {
+      // One deadline, the quorum timeout, for both phases. The leader's commit index, confirmed by a ReadIndex round: at or past
+      // every entry committed before this call, whichever node leads by now. Then the lenient apply wait on what is left of the
+      // deadline, which gives up at once inside a snapshot resync gap
+      final long budgetMs = raft.getQuorumTimeout();
+      final long startNanos = System.nanoTime();
+      final long leaderCommitIndex = raft.fetchReadIndex(false, budgetMs);
+      final long remainingMs = budgetMs - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+      if (remainingMs > 0)
+        raft.waitForAppliedIndex(leaderCommitIndex, false, remainingMs);
+      return raft.getTrustedAppliedIndex() >= leaderCommitIndex;
+    } catch (final RuntimeException e) {
+      // Best effort: the caller's command is done on the leader whatever happens here
+      HALog.log(this, HALog.DETAILED, "Could not wait for this server to apply the leader's commit index: %s", e.getMessage());
+      return false;
+    } finally {
+      localWaiters.decrementAndGet();
+    }
+  }
+
+  /** How many threads wait in {@link #awaitLeaderCommitApplied} right now. */
+  // @VisibleForTesting
+  int localWaiters() {
+    return localWaiters.get();
   }
 
   @Override

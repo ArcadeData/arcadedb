@@ -3770,6 +3770,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return appliedWaits.fetchReadIndex(expectSelfIsLeader);
   }
 
+  /** As {@link #fetchReadIndex(boolean)}, giving up after {@code timeoutMs} (issue #11739). */
+  public long fetchReadIndex(final boolean expectSelfIsLeader, final long timeoutMs) {
+    return appliedWaits.fetchReadIndex(expectSelfIsLeader, timeoutMs);
+  }
+
   /**
    * Lenient overload (READ_YOUR_WRITES / bookmark wait): on timeout it logs and returns,
    * allowing the read to proceed against possibly-stale local state. Never used by the
@@ -3812,6 +3817,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     appliedWaits.awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, null);
+  }
+
+  /** As {@link #waitForAppliedIndex(long, boolean)}, giving up after {@code timeoutMs} instead of the quorum timeout (issue #11739). */
+  public void waitForAppliedIndex(final long targetIndex, final boolean throwOnTimeout, final long timeoutMs) {
+    appliedWaits.awaitAppliedIndex(null, targetIndex, throwOnTimeout, null, timeoutMs);
   }
 
   /**
