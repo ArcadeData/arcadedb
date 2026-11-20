@@ -469,7 +469,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean                     replicatedRebuildRequested = new AtomicBoolean();
   private volatile long                           lastReplicatedRebuildNanos = System.nanoTime() - TimeUnit.HOURS.toNanos(1);
   // Rebuilds asked for in a row with no query finding the view current in between: the commits keep coming faster than a rebuild
-  // can serve, and each one doubles the wait before the next
+  // can serve, and each one doubles the wait before the next. Incremented only by the thread that won replicatedRebuildRequested and
+  // reset by any query that finds the view current, with no atomic update: a lost one moves the backoff by a single step, which
+  // is all it is for
   private volatile int                            replicatedRebuildsInARow;
   // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
   // compaction swap or a build publication never waits behind a long backlog
@@ -616,7 +618,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
     // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
     // The level of the transaction the scan runs in, which begin(level) can set apart from the database's default
-    // (review on #12258)
     final boolean certificateMayBeUnsound = database.isTransactionActive() && ((DatabaseInternal) database).getTransaction()
         .getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
 

@@ -109,7 +109,7 @@ class GraphAnalyticalViewReplicatedCommitTest extends TestHelper {
     assertThat(reopened.getEdgeCount()).isEqualTo(10);
   }
 
-  /** Review on #12258: the CSR an earlier close persisted would pass its certificate again at the next open. */
+  /** The CSR an earlier close persisted would pass its certificate again at the next open: the first replicated commit drops it. */
   @Test
   void aPersistedCsrIsDroppedByTheFirstReplicatedCommit() {
     database.command("sql", "CREATE GRAPH ANALYTICAL VIEW g UPDATE MODE SYNCHRONOUS");
@@ -129,7 +129,7 @@ class GraphAnalyticalViewReplicatedCommitTest extends TestHelper {
     }
   }
 
-  /** Review on #12258: a view the builder made without a name serves queries too, and must hear of the commit as well. */
+  /** A view the builder made without a name serves queries too, and must hear of the commit as well. */
   @Test
   void anUnnamedViewHearsOfAReplicatedCommit() {
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
@@ -144,8 +144,8 @@ class GraphAnalyticalViewReplicatedCommitTest extends TestHelper {
   }
 
   /**
-   * Review on #12258: a build that scans in the caller's REPEATABLE_READ transaction may read pages that transaction holds from
-   * before a replicated commit, so it does not report the view current once one was counted; a query then rebuilds it.
+   * A build that scans in the caller's REPEATABLE_READ transaction may read pages that transaction holds from before a replicated
+   * commit, so it does not report the view current once one was counted; a query then rebuilds it.
    */
   @Test
   void aBuildInARepeatableReadTransactionDoesNotVouchForReplicatedCommits() {
