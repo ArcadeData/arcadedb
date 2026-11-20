@@ -520,6 +520,10 @@ public class PromQLEvaluator {
 
       final List<VectorSample> samples = new ArrayList<>();
       for (final RangeSeries series : rv.series()) {
+        // A series rate()/irate()/increase() cannot compute a rate for is left out, as Prometheus leaves it out: a 0 in its place
+        // is a measurement nobody made, and it moves every avg/min/max/count over the result (issue #11980)
+        if (!PromQLFunctions.answers(name, series))
+          continue;
         final double value = switch (name) {
           case "rate" -> PromQLFunctions.rate(series);
           case "irate" -> PromQLFunctions.irate(series);
