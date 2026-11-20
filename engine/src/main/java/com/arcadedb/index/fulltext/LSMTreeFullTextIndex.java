@@ -2006,9 +2006,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return instantiateAnalyzer(analyzerClass);
   }
 
+  /**
+   * Instantiates the analyzer a METADATA key of the definition names (the analyzer of the index, its index and query analyzers, and
+   * the {@code <field>_analyzer} of each property). The class is not initialized until it is known to be a Lucene {@link Analyzer}:
+   * a class that is none must not run its static initializer, let alone its constructor, because a definition named it.
+   */
   private static Analyzer instantiateAnalyzer(final String analyzerClass) {
     try {
-      final Class<?> clazz = Class.forName(analyzerClass);
+      final Class<?> clazz = Class.forName(analyzerClass, false, LSMTreeFullTextIndex.class.getClassLoader());
+      if (!Analyzer.class.isAssignableFrom(clazz))
+        throw new ClassCastException("The class is not a Lucene Analyzer");
       return (Analyzer) clazz.getDeclaredConstructor().newInstance();
     } catch (final Exception e) {
       throw new IndexException("Cannot instantiate analyzer: " + analyzerClass, e);

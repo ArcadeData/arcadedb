@@ -102,8 +102,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   private static final String UNBOUND_LENGTH_RULE = "-";
 
-  private static final String ANALYZER_SUFFIX = "_analyzer";
-  private static final String BOOST_SUFFIX    = "_boost";
+  private static final String ANALYZER_SUFFIX         = "_analyzer";
+  private static final String BOOST_SUFFIX            = "_boost";
   private static final String FIELD_ANALYZERS_APPLIED = "ft_fieldAnalyzersApplied";
 
   /**

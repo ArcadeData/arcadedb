@@ -23,6 +23,8 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -32,8 +34,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12163: the per-field analyzer of a full-text index ({@code "<field>_analyzer"} in METADATA) was stored and never used.
@@ -70,7 +74,7 @@ class Issue12163FullTextFieldAnalyzerTest extends TestHelper {
     assertThat(search("body:running").keySet()).containsExactly(1);
     assertThat(search("body:run").keySet()).isEmpty();
     // an unqualified query reads the unprefixed postings, analyzed by the analyzer of the index
-    assertThat(search("running").keySet()).containsExactlyInAnyOrder(1);
+    assertThat(search("running").keySet()).containsExactly(1);
     assertThat(search("run").keySet()).isEmpty();
     // SEARCH_FIELDS on the field is the same search as the qualified one
     assertThat(searchFields("['title']", "runs").keySet()).containsExactly(1);
@@ -194,6 +198,113 @@ class Issue12163FullTextFieldAnalyzerTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO Note SET k = 2, contents = 'Bar', body = 'y'"));
     assertThat(database.query("sql", "SELECT k FROM Note WHERE SEARCH_INDEX('Note[contents,body]', 'contents:BA*') = true")
         .hasNext()).isTrue();
+  }
+
+  @Test
+  void aQualifiedFuzzyOrRegexpClauseUsesTheAnalyzerOfItsField() {
+    createIndex(", \"title_analyzer\": \"" + ENGLISH + "\"");
+    insertArticles();
+
+    // the title postings hold the stem "run": a fuzzy term one edit away from the stem, and a regexp over the stem, reach it
+    assertThat(search("title:ruh~1").keySet()).containsExactly(1);
+    assertThat(search("title:/ru./").keySet()).containsExactly(1);
+    // the body postings hold "running", which neither clause is near
+    assertThat(search("body:ruh~1").keySet()).isEmpty();
+    assertThat(search("body:/ru./").keySet()).isEmpty();
+    // while the body postings are reached the way they always were
+    assertThat(search("body:runnin~1").keySet()).containsExactly(1);
+    assertThat(search("body:/run.*/").keySet()).containsExactly(1);
+  }
+
+  @Test
+  void anUpdateAndADeleteRemoveThePostingsTheFieldAnalyzerWrote() {
+    for (final String similarity : new String[] { "CLASSIC", "BM25" }) {
+      final String type = "Item" + similarity;
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".k INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".title STRING");
+        database.command("sql", "CREATE PROPERTY " + type + ".body STRING");
+        database.command("sql", "CREATE INDEX ON " + type + " (title, body) FULL_TEXT METADATA {\"similarity\": \"" + similarity
+            + "\", \"title_analyzer\": \"" + ENGLISH + "\"}");
+        database.command("sql", "INSERT INTO " + type + " SET k = 1, title = 'Running fast', body = 'slow'");
+      });
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(type + "[title,body]");
+      final String query = "SELECT k FROM " + type + " WHERE SEARCH_INDEX('" + type + "[title,body]', :q) = true";
+      assertThat(database.query("sql", query, Map.of("q", "title:run")).hasNext()).as(similarity).isTrue();
+
+      // the old value leaves with the tokens it was written with, and the new one comes in with its own
+      database.transaction(() -> database.command("sql", "UPDATE " + type + " SET title = 'Swimming pools' WHERE k = 1"));
+      assertThat(database.query("sql", query, Map.of("q", "title:run")).hasNext()).as(similarity).isFalse();
+      assertThat(database.query("sql", query, Map.of("q", "title:swim")).hasNext()).as(similarity).isTrue();
+
+      database.transaction(() -> database.command("sql", "DELETE FROM " + type + " WHERE k = 1"));
+      assertThat(database.query("sql", query, Map.of("q", "title:swim")).hasNext()).as(similarity).isFalse();
+      // not one posting is left behind by a token the removal did not name
+      assertThat(index.countEntries()).as(similarity).isZero();
+    }
+  }
+
+  @Test
+  void aClassNamedAsAnAnalyzerIsCheckedBeforeItRuns() {
+    final String notAnAnalyzer = NotAnAnalyzer.class.getName();
+    for (final String key : new String[] { "title_analyzer", "analyzer", "index_analyzer", "query_analyzer" }) {
+      INITIALIZED.set(false);
+      assertThatThrownBy(() -> database.command("sql",
+          "CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {\"" + key + "\": \"" + notAnAnalyzer + "\"}")).as(key)
+          .hasStackTraceContaining(notAnAnalyzer);
+      // the class was refused as it is not a Lucene analyzer, before its static initializer or its constructor could run
+      assertThat(INITIALIZED.get()).as(key).isFalse();
+      assertThat(database.getSchema().existsIndex("Article[title,body]")).as(key).isFalse();
+    }
+    // a class that is not there is refused the same way
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {\"title_analyzer\": \"com.arcadedb.NoSuchAnalyzer\"}"))
+        .hasStackTraceContaining("com.arcadedb.NoSuchAnalyzer");
+    assertThat(database.getSchema().existsIndex("Article[title,body]")).isFalse();
+    // and the type takes the index with a real one
+    createIndex(", \"title_analyzer\": \"" + ENGLISH + "\"");
+    assertThat(database.getSchema().existsIndex("Article[title,body]")).isTrue();
+  }
+
+  @Test
+  void anIndexRestoredFromAPersistedDefinitionAppliesItsFieldAnalyzers() {
+    createIndex(", \"title_analyzer\": \"" + ENGLISH + "\"");
+    final JSONObject persisted = ((TypeIndex) database.getSchema().getIndexByName("Article[title,body]")).getIndexesOnBuckets()[0]
+        .toJSON();
+    assertThat(persisted.getBoolean("ft_fieldAnalyzersApplied", false)).isTrue();
+    // as an export taken by a version before the fix wrote it: the definition names the analyzer and says nothing of applying it
+    persisted.remove("ft_fieldAnalyzersApplied");
+    database.command("sql", "DROP INDEX `Article[title,body]`");
+
+    // as the JSONL importer restores it: created empty, every posting written afterwards by this version
+    final TypeFullTextIndexBuilder builder = database.getSchema().buildTypeIndex("Article", new String[] { "title", "body" })
+        .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType();
+    builder.withPersistedMetadata(persisted);
+    builder.withFreshCorpusCounters();
+    builder.withIgnoreIfExists(true);
+    builder.create();
+    insertArticles();
+
+    final LSMTreeFullTextIndex restored = (LSMTreeFullTextIndex) ((TypeIndex) database.getSchema()
+        .getIndexByName("Article[title,body]")).getIndexesOnBuckets()[0];
+    assertThat(restored.getUpgradeWarning()).isNull();
+    assertThat(search("title:run").keySet()).containsExactly(1);
+    reopenDatabase();
+    assertThat(search("title:run").keySet()).containsExactly(1);
+  }
+
+  /** What a METADATA key must never be able to run: a class that is no analyzer, whose initializer and constructor say so. */
+  private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
+
+  public static class NotAnAnalyzer {
+    static {
+      INITIALIZED.set(true);
+    }
+
+    public NotAnAnalyzer() {
+      INITIALIZED.set(true);
+    }
   }
 
   private void createIndex(final String extraMetadata) {
