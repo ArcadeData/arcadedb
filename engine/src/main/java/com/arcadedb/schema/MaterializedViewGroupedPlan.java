@@ -21,22 +21,54 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SqlAstInspector;
 import com.arcadedb.query.sql.grammar.SQLParser;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.ArrayLiteralExpression;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.BetweenCondition;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FloatingPoint;
 import com.arcadedb.query.sql.parser.FromItem;
-import com.arcadedb.query.sql.parser.FunctionCall;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.ILikeOperator;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.InputParameter;
-import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.InOperator;
+import com.arcadedb.query.sql.parser.IsDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotDefinedCondition;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
+import com.arcadedb.query.sql.parser.IsNullCondition;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LikeOperator;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.NeOperator;
+import com.arcadedb.query.sql.parser.NeqOperator;
+import com.arcadedb.query.sql.parser.NotBlock;
+import com.arcadedb.query.sql.parser.NullSafeEqualsCompareOperator;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.PInteger;
+import com.arcadedb.query.sql.parser.PNumber;
+import com.arcadedb.query.sql.parser.ParenthesisBlock;
+import com.arcadedb.query.sql.parser.ParenthesisExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.RecordAttribute;
+import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.SimpleNode;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.WhereClause;
 import org.antlr.v4.runtime.tree.ParseTree;
 
@@ -44,6 +76,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -188,19 +222,41 @@ final class MaterializedViewGroupedPlan {
           aggregateProperties.toArray(new String[0]), columnNames.toArray(new String[0]),
           columnSources.stream().mapToInt(Integer::intValue).toArray());
     } catch (final Exception e) {
+      // The view then keeps the full pass for the life of this instance (the answer is cached): say why, for the one who wonders
+      LogManager.instance().log(MaterializedViewGroupedPlan.class, Level.FINE, "No delta plan for the view query '%s': %s", e, sql,
+          e.getMessage());
       return null;
     }
   }
 
   /**
-   * A condition that reads the record and nothing else: no function or method (a traversal, a clock, a lookup), no parameter and no
-   * context variable ({@code $parent}, {@code $current}...). Nested statements are refused by the select count.
+   * The node types of a condition that reads the properties of the record and nothing else: the boolean connectives, the scalar
+   * comparisons, arithmetic, and literals. A closed list, so that a construct nobody thought of (a link followed, a list element or
+   * range, a condition applied to the records a list holds, an embedded value, a function, a method, a parameter, a subquery) keeps
+   * the view on the full pass instead of reading some other record, which no commit of the source would then refresh: the state
+   * before an update or a delete is evaluated against the data as it is now, so a view reading across a link would drift for good.
+   */
+  private static final Set<Class<?>> RECORD_ONLY_NODES = Set.of(WhereClause.class, OrBlock.class, AndBlock.class, NotBlock.class,
+      ParenthesisBlock.class, BinaryCondition.class, BetweenCondition.class, IsNullCondition.class, IsNotNullCondition.class,
+      IsDefinedCondition.class, IsNotDefinedCondition.class, InCondition.class, EqualsCompareOperator.class, NeOperator.class,
+      NeqOperator.class, NullSafeEqualsCompareOperator.class, GtOperator.class, GeOperator.class, LtOperator.class, LeOperator.class,
+      LikeOperator.class, ILikeOperator.class, InOperator.class, Expression.class, MathExpression.class, BaseExpression.class,
+      ParenthesisExpression.class, ArrayLiteralExpression.class, BaseIdentifier.class, SuffixIdentifier.class, Identifier.class,
+      RecordAttribute.class, Rid.class, PNumber.class, PInteger.class, FloatingPoint.class);
+
+  /**
+   * A condition that reads the record and nothing else: only nodes of {@link #RECORD_ONLY_NODES}, over plain property names and
+   * record attributes (no context variable: {@code $parent}, {@code $current}...).
    */
   private static boolean readsOnlyTheRecord(final SimpleNode node) {
-    if (node instanceof FunctionCall || node instanceof MethodCall || node instanceof InputParameter || node instanceof Statement)
+    // the TRUE and FALSE literals are instances of anonymous classes
+    if (node == BooleanExpression.TRUE || node == BooleanExpression.FALSE)
+      return true;
+    if (!RECORD_ONLY_NODES.contains(node.getClass()))
       return false;
-    return !(node instanceof Identifier identifier) || identifier.getStringValue() == null || !identifier.getStringValue()
-        .startsWith("$");
+    if (node instanceof Identifier identifier)
+      return identifier.getStringValue() == null || !identifier.getStringValue().startsWith("$");
+    return !(node instanceof SuffixIdentifier suffix) || !suffix.star;
   }
 
   /** The property a rendered expression names, unquoted, or null when it is anything but one plain property. */

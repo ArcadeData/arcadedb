@@ -46,7 +46,32 @@ import java.util.Set;
  * {@link MaterializedViewGroupedPlan}) for the full pass.
  */
 final class MaterializedViewGroupedState {
+  /** The share of the heap one view's state may take: a thirty-second, so a few views leave the rest to the application. */
+  private static final long HEAP_SHARE_DIVISOR   = 32;
+  /** What a group costs besides its aggregates: the group, its key list and map entry, its raw keys and its backing record's RID. */
+  private static final long BYTES_PER_GROUP      = 192;
+  /** What each aggregate of a group costs: the {@link Aggregation} and the boxed values it holds. */
+  private static final long BYTES_PER_AGGREGATE  = 96;
+  /** Whatever the heap, a state of this many groups is always allowed. */
+  private static final long MIN_GROUPS           = 10_000;
+  /** Test-only: the cap on the groups of a state, when above 0. */
+  static volatile int maxGroupsOverride;
+
   private MaterializedViewGroupedState() {
+  }
+
+  /**
+   * The most groups a state may hold: the state lives in memory for as long as the database is open, and the number of groups is the
+   * cardinality of the GROUP BY keys, which the source decides (a user id, a device id). Past it the view is not maintained by delta
+   * but by the defining query, as when its values leave the exact domain, which holds nothing. Derived from the heap, so that no
+   * setting has to be tuned: a thirty-second of it per view, at the estimated cost of a group of the plan.
+   */
+  static int maxGroups(final MaterializedViewGroupedPlan plan) {
+    final int override = maxGroupsOverride;
+    if (override > 0)
+      return override;
+    final long perGroup = BYTES_PER_GROUP + BYTES_PER_AGGREGATE * plan.aggregates.length;
+    return (int) Math.min(Integer.MAX_VALUE, Math.max(MIN_GROUPS, Runtime.getRuntime().maxMemory() / HEAP_SHARE_DIVISOR / perGroup));
   }
 
   /** What applying a delta needs instead, when it cannot be applied. */

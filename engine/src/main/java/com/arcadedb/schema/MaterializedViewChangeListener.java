@@ -345,13 +345,14 @@ public class MaterializedViewChangeListener
       final MaterializedViewImpl registered = registeredWith;
       final MaterializedViewImpl target = targetAtCommit();
       try {
-        final boolean absorbed = registered != null && registered.groupedDelivered(this);
-        if (target != null && !absorbed && target.isGroupedDelta()) {
-          if (overflow || delta == null || (registered != null && registered != target) || target.groupedPlan() != plan)
-            target.requestFullPass(false);
-          else if (delta.size() > 0 || delta.inexact)
-            target.adoptGroupedDelta(delta);
-        }
+        final boolean maintained = target != null && target.isGroupedDelta();
+        // The delta can be applied when it is the one of the view this transaction registered with, built for the view's plan. A
+        // transaction that never registered (it was not told of its commit point) cannot say what a rebuild saw: the view is rebuilt
+        final boolean exact = maintained && !overflow && delta != null && registered == target && target.groupedPlan() == plan;
+        final boolean absorbed = registered != null && registered.groupedDelivered(this,
+            exact && (delta.size() > 0 || delta.inexact) ? delta : null);
+        if (maintained && !exact && !absorbed)
+          target.requestFullPass(false);
         if (target != null)
           MaterializedViewRefresher.refreshAfterCommit(database, target);
       } catch (final Exception e) {

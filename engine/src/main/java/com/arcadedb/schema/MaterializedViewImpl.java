@@ -464,21 +464,19 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
 
   /**
    * Adds a committed transaction's delta to the pending one; the caller hands it over. Past the cap on the groups one pass updates,
-   * the next pass rebuilds the view instead. Nothing is added while a full pass is pending: it covers the change.
+   * the next pass rebuilds the view instead. Nothing is added while a full pass is pending: it covers the change. Called with the
+   * lock held.
    */
-  void adoptGroupedDelta(final MaterializedViewGroupedState.Groups delta) {
-    final int maxDelta = maxPerRecordDelta();
-    synchronized (pendingDeltaLock) {
-      if (pendingFull)
-        return;
-      if (pendingGroups == null)
-        pendingGroups = delta;
-      else
-        pendingGroups.merge(delta);
-      if (pendingGroups.size() > maxDelta) {
-        pendingFull = true;
-        pendingGroups = null;
-      }
+  private void adoptGroupedDelta(final MaterializedViewGroupedState.Groups delta, final int maxDelta) {
+    if (pendingFull)
+      return;
+    if (pendingGroups == null)
+      pendingGroups = delta;
+    else
+      pendingGroups.merge(delta);
+    if (pendingGroups.size() > maxDelta) {
+      pendingFull = true;
+      pendingGroups = null;
     }
   }
 
@@ -493,11 +491,31 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     }
   }
 
-  /** The transaction committed: whether a rebuild pass took its changes over, in which case its delta is not applied. */
-  boolean groupedDelivered(final MaterializedViewChangeListener.GroupedCapture capture) {
+  /**
+   * The transaction committed: takes it out of flight and, unless a rebuild pass took its changes over, hands its delta to the view.
+   * One critical section, not two: a rebuild that begins between the two would no longer find the transaction in flight, yet its
+   * scan reads what the transaction published, and the delta handed over after would then be applied on top of a state that
+   * already holds it. The rebuild takes the same lock to begin, so it either finds the transaction in flight (and takes it over) or
+   * begins after the delta is pending (and drops it).
+   *
+   * @param delta what the view adopts, null when the transaction has nothing to hand over (the caller then asks for a full pass if
+   *              it owes one)
+   *
+   * @return whether a rebuild pass took the changes over, in which case the delta is not applied
+   */
+  boolean groupedDelivered(final MaterializedViewChangeListener.GroupedCapture capture,
+      final MaterializedViewGroupedState.Groups delta) {
+    final int maxDelta = maxPerRecordDelta();
     synchronized (pendingDeltaLock) {
       groupedInFlight.remove(capture);
-      return capture.absorbed;
+      if (capture.absorbed)
+        return true;
+      final Runnable observer = MaterializedViewGroupedRefresher.deliveryObserver;
+      if (observer != null)
+        observer.run();
+      if (delta != null)
+        adoptGroupedDelta(delta, maxDelta);
+      return false;
     }
   }
 

@@ -48,14 +48,17 @@ import java.util.function.Consumer;
  * state and every row from scratch: on the first pass after an open, after a manual or a recovery refresh, after a change of the
  * source's schema, and whenever a delta cannot be applied exactly (a group lost its {@code min} or {@code max}, a delta past the
  * cap). When the values themselves are outside what a delta computes exactly (a floating point {@code sum}, numbers of different
- * classes in one group...), the view takes the full pass of the defining query after every commit, as every INCREMENTAL grouped
- * view did before, until its next manual refresh.
+ * classes in one group...), or the groups are more than a state may hold in memory (see
+ * {@link MaterializedViewGroupedState#maxGroups}), the view takes the full pass of the defining query after every commit, as every
+ * INCREMENTAL grouped view did before, until its next manual refresh.
  */
 final class MaterializedViewGroupedRefresher {
   /** A rebuild whose scan raced commits it cannot correct for is made again, this many times at most. */
   private static final int REBUILD_ATTEMPTS = 3;
   /** Test-only: told each record the scan of a rebuild pass reaches, before it reads it. Null outside tests. */
   static volatile Consumer<RID> scanObserver;
+  /** Test-only: run by a committing transaction of a grouped view between taking itself out of flight and handing over its delta. */
+  static volatile Runnable deliveryObserver;
 
   private MaterializedViewGroupedRefresher() {
   }
@@ -79,8 +82,12 @@ final class MaterializedViewGroupedRefresher {
         return;
       final Map<List<Object>, Group> changed = new HashMap<>();
       if (runtime.groups().apply(delta, changed) == Outcome.APPLIED) {
-        if (!changed.isEmpty())
+        if (!changed.isEmpty()) {
           writeChanges(database, view, runtime.groups(), changed);
+          // New groups made it grow past what a state may hold: it is dropped, and the defining query keeps the view from now on
+          if (runtime.groups().size() > MaterializedViewGroupedState.maxGroups(plan))
+            view.setGroupedRuntime(new MaterializedViewImpl.GroupedRuntime(plan, sourceSchema, null));
+        }
         return;
       }
     }
@@ -96,6 +103,7 @@ final class MaterializedViewGroupedRefresher {
   private static void rebuild(final Database database, final MaterializedViewImpl view, final MaterializedViewGroupedPlan plan,
       final List<Object> sourceSchema) {
     final boolean keepState = !database.isTransactionActive();
+    final int maxGroups = MaterializedViewGroupedState.maxGroups(plan);
     for (int attempt = 0; attempt < REBUILD_ATTEMPTS; attempt++) {
       final MaterializedViewGroupedState.Watch watch = view.openGroupedWatch();
       final Groups built = new Groups(plan);
@@ -109,14 +117,15 @@ final class MaterializedViewGroupedRefresher {
           final Contribution contribution = plan.contributionOf(record, where, context);
           if (watch.scanning(record.getIdentity()))
             built.add(contribution, 1);
-          return !built.inexact;
+          // past the groups a state may hold the scan stops: the view is kept by the defining query
+          return !built.inexact && built.size() <= maxGroups;
         }), false, 1);
       } finally {
         view.closeGroupedWatch(watch);
       }
 
       Outcome outcome = Outcome.INEXACT;
-      if (!built.inexact) {
+      if (!built.inexact && built.size() <= maxGroups) {
         if (watch.isDirty())
           continue;
         for (final MaterializedViewGroupedState.Watch.Entry entry : watch.entries().values()) {
@@ -124,6 +133,9 @@ final class MaterializedViewGroupedRefresher {
           built.add(entry.after, 1);
         }
         outcome = built.seal();
+        // the corrections can add groups too
+        if (outcome == Outcome.APPLIED && built.size() > maxGroups)
+          outcome = Outcome.INEXACT;
       }
       if (outcome == Outcome.INEXACT)
         break;

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -27,6 +28,7 @@ import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.awaitility.Awaitility;
@@ -79,6 +81,73 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     assertThat(MaterializedViewGroupedPlan.of(database, "SELECT count(*) AS n FROM I GROUP BY cat")).isNotNull();
     assertThat(MaterializedViewGroupedPlan.of(database, "SELECT cat, COUNT(*) AS n FROM I WHERE name = 'x' AND v IS NOT NULL GROUP BY cat"))
         .isNotNull();
+  }
+
+  /** The WHERE shapes that read the record and nothing else: a closed list, anything outside it keeps the full pass. */
+  @Test
+  void recordOnlyWhereShapesHaveAPlan() {
+    createSource();
+    for (final String where : List.of(//
+        "v > 5", //
+        "v >= 5 AND v <= 10", //
+        "v <> 5 OR cat != 'a'", //
+        "NOT (v > 5 OR cat = 'a')", //
+        "(v > 5 AND cat = 'a') OR name = 'x'", //
+        "v BETWEEN 1 AND 5", //
+        "v IN [1, 2, 3]", //
+        "cat IN ['a', 'b']", //
+        "cat NOT IN ['a', 'b']", //
+        "v + 1 > 5", //
+        "v * 2 - 1 < 10", //
+        "name LIKE 'n%'", //
+        "name ILIKE 'N%'", //
+        "v IS NULL", //
+        "v IS NOT NULL", //
+        "v IS DEFINED", //
+        "v IS NOT DEFINED", //
+        "@type = 'I'", //
+        "@rid <> #1:0", //
+        "true", //
+        "v = null"))
+      assertThat(MaterializedViewGroupedPlan.of(database, "SELECT cat, count(*) AS n FROM I WHERE " + where + " GROUP BY cat")).as(where)
+          .isNotNull();
+  }
+
+  /**
+   * A WHERE that reads anything but the properties of the record has no plan: a link followed (the linked record is not a source
+   * record, and nothing refreshes the view when it changes), an element or a range of a list, an embedded value, a condition applied
+   * to the elements of a list (which loads the records it holds), or any construct the list of record-only shapes does not name.
+   */
+  @Test
+  void aWhereThatReadsMoreThanTheRecordHasNoPlan() {
+    createSource();
+    for (final String where : List.of(//
+        "owner.active = true", // a link followed
+        "owner.owner.active = true", //
+        "tags[0] = 'x'", // an element of a list
+        "tags[0-1] CONTAINS 'x'", // a range of a list
+        "tags[name = 'x'] IS NOT NULL", // a condition applied to a list
+        "address.city = 'x'", // an embedded value
+        "tags CONTAINS (name = 'x')", // a condition applied to the elements, which are records
+        "tags CONTAINS 'x'", //
+        "tags CONTAINSALL ['x', 'y']", //
+        "tags CONTAINSANY ['x', 'y']", //
+        "m CONTAINSKEY 'x'", //
+        "m CONTAINSVALUE 'x'", //
+        "CASE WHEN v > 1 THEN 1 ELSE 0 END = 1", //
+        "v > 1 AND owner.active = true", // nested in a conjunction
+        "NOT (owner.active = true)", //
+        "{'a': v}.a = 1", //
+        "v = ?", // a parameter
+        "v = :limit", //
+        "name.length() > 2", //
+        "sysdate() > 0", //
+        "v > $parent.x")) {
+      final String sql = "SELECT cat, count(*) AS n FROM I WHERE " + where + " GROUP BY cat";
+      // a statement that does not parse has no plan either, which would make this vacuous
+      assertThat(((DatabaseInternal) database).getStatementCache().get(sql)).as(where).isNotNull();
+      assertThat(MaterializedViewGroupedPlan.of(database, sql)).as(where).isNull();
+    }
   }
 
   @Test
@@ -272,7 +341,7 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     });
     assertThat(viewRows("GSums")).as("the delta was not applied").isNotEqualTo(queryRows(G_SUMS));
 
-    ((com.arcadedb.database.DatabaseInternal) database).kill();
+    ((DatabaseInternal) database).kill();
     database.close();
     database = factory.open();
 
@@ -525,7 +594,7 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
       database.transaction(() -> {
         // registered before the first change, so it runs before the view's own callback: the transaction is past its commit point
         // and has not delivered its delta
-        ((com.arcadedb.database.DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
+        ((DatabaseInternal) database).getTransaction().addAfterCommitCallback(() -> {
           final Thread rebuild = new Thread(() -> database.getSchema().getMaterializedView("GSums").refresh());
           rebuilds.add(rebuild);
           rebuild.start();
@@ -543,6 +612,219 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     }
     assertThat(rebuilds).hasSize(1);
     assertAllViewsMatch();
+  }
+
+  /**
+   * A transaction has taken itself out of flight and has not handed its delta over when a rebuild begins: the rebuild's scan reads the
+   * transaction (it is published), so its delta must not be applied on top of the state the rebuild builds. The delivery and the
+   * hand-over are one step for the view: a rebuild that begins meanwhile waits for it, and then drops what was handed over.
+   */
+  @Test
+  void aRebuildBeginningWhileATransactionDeliversItsDeltaDoesNotCountItTwice() throws Exception {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        insert(CATS[i % 4], i % 3, i % 40, (long) i, "n" + i, i % 3, "I");
+    });
+    createView("GSums", G_SUMS);
+    database.transaction(() -> insert("a", 0, 1, 1L, "x", 1, "I"));
+    assertViewMatchesQuery("GSums");
+
+    final AtomicBoolean committing = new AtomicBoolean();
+    final CountDownLatch delivering = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread committer = new Thread(() -> {
+      committing.set(true);
+      database.transaction(() -> insert("a", 0, 5, 5L, "y", 1, "I"));
+    });
+    final Thread rebuilder = new Thread(() -> database.getSchema().getMaterializedView("GSums").refresh());
+    MaterializedViewGroupedRefresher.deliveryObserver = () -> {
+      if (Thread.currentThread() == committer) {
+        delivering.countDown();
+        await(release);
+      }
+    };
+    try {
+      committer.start();
+      assertThat(delivering.await(30, TimeUnit.SECONDS)).as("the commit is delivering its delta").isTrue();
+      rebuilder.start();
+      // either the rebuild is done (the view let it run past a delivery in progress), or it waits for the delivery
+      Awaitility.await("the rebuild ran or waits").atMost(30, TimeUnit.SECONDS).pollInterval(5, TimeUnit.MILLISECONDS)
+          .until(() -> !rebuilder.isAlive() || rebuilder.getState() == Thread.State.BLOCKED);
+    } finally {
+      release.countDown();
+      committer.join(TimeUnit.SECONDS.toMillis(60));
+      rebuilder.join(TimeUnit.SECONDS.toMillis(60));
+      MaterializedViewGroupedRefresher.deliveryObserver = null;
+    }
+    assertThat(committing.get()).isTrue();
+    assertViewMatchesQuery("GSums");
+    // and a commit after it still applies as a delta on the rebuilt state
+    database.transaction(() -> insert("b", 1, 9, 9L, "z", 1, "I"));
+    assertViewMatchesQuery("GSums");
+  }
+
+  /** A WHERE that follows a link reads a record that is not a source record: nothing refreshes the view when it changes. */
+  @Test
+  void aWhereThatFollowsALinkKeepsTheFullPassSoTheNextCommitHealsTheView() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Owner").createProperty("active", Type.BOOLEAN);
+      final DocumentType item = database.getSchema().createDocumentType("Item2");
+      item.createProperty("owner", Type.LINK, "Owner");
+      item.createProperty("cat", Type.STRING);
+    });
+    final RID[] owner = new RID[1];
+    final List<RID> items = new ArrayList<>();
+    database.transaction(() -> {
+      owner[0] = database.newDocument("Owner").set("active", true).save().getIdentity();
+      for (int i = 0; i < 4; i++)
+        items.add(database.newDocument("Item2").set("owner", owner[0]).set("cat", "a").save().getIdentity());
+    });
+    final String query = "SELECT cat, count(*) AS n FROM Item2 WHERE owner.active = true GROUP BY cat";
+    final MaterializedViewImpl view = createView("OView", query);
+    assertThat(view.isGroupedDelta()).as("the WHERE reads another record").isFalse();
+
+    database.transaction(() -> database.newDocument("Item2").set("owner", owner[0]).set("cat", "a").save());
+    assertThat(viewRows("OView")).containsExactlyInAnyOrderElementsOf(queryRows(query));
+
+    // the linked record changes: no source record did, so the view is stale until a source record changes
+    database.transaction(() -> ((Document) database.lookupByRID(owner[0], true)).modify().set("active", false).save());
+    database.transaction(() -> database.lookupByRID(items.getFirst(), true).delete());
+    assertThat(viewRows("OView")).containsExactlyInAnyOrderElementsOf(queryRows(query));
+    assertThat(viewRows("OView")).isEmpty();
+  }
+
+  /** The state of a view is held in memory: past the groups it may hold, the view takes the full pass, as outside the exact domain. */
+  @Test
+  void aViewWithMoreGroupsThanItsStateMayHoldKeepsTheFullPass() {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 40; i++)
+        insert("c" + i, i % 3, i, (long) i, "n" + i, i % 3, "I");
+    });
+    MaterializedViewGroupedState.maxGroupsOverride = 10;
+    try {
+      final MaterializedViewImpl view = createView("GSums", G_SUMS);
+      database.transaction(() -> insert("a", 0, 1, 1L, "x", 1, "I"));
+      assertViewMatchesQuery("GSums");
+      assertThat(view.groupedRuntime()).isNotNull();
+      assertThat(view.groupedRuntime().groups()).as("40 groups, past the cap of 10: nothing is held").isNull();
+      database.transaction(() -> insert("b", 1, 2, 2L, "y", 1, "I"));
+      assertViewMatchesQuery("GSums");
+      database.transaction(() -> database.command("sql", "DELETE FROM I WHERE cat LIKE 'c%'"));
+      assertViewMatchesQuery("GSums");
+    } finally {
+      MaterializedViewGroupedState.maxGroupsOverride = 0;
+    }
+  }
+
+  /** A state that grows past the cap by deltas is dropped, and the view is still equal to its query. */
+  @Test
+  void aStateThatGrowsPastItsCapByDeltasIsDropped() {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        insert("c" + i, i % 3, i, (long) i, "n" + i, i % 3, "I");
+    });
+    MaterializedViewGroupedState.maxGroupsOverride = 10;
+    try {
+      final MaterializedViewImpl view = createView("GSums", G_SUMS);
+      database.transaction(() -> insert("a", 0, 1, 1L, "x", 1, "I"));
+      assertThat(view.groupedRuntime().groups()).as("6 groups, under the cap").isNotNull();
+      for (int i = 0; i < 8; i++) {
+        final int group = i;
+        database.transaction(() -> insert("g" + group, 0, group, 1L, "x", 1, "I"));
+        assertViewMatchesQuery("GSums");
+      }
+      assertThat(view.groupedRuntime().groups()).as("14 groups, past the cap of 10").isNull();
+    } finally {
+      MaterializedViewGroupedState.maxGroupsOverride = 0;
+    }
+  }
+
+  /** A view over a vertex type: the edges created in the same transactions rewrite the vertices without changing what the view reads. */
+  @Test
+  void aViewOverAVertexTypeStaysEqualWhenEdgesAreCreatedInTheSameTransactions() {
+    database.transaction(() -> {
+      final DocumentType person = database.getSchema().createVertexType("Person");
+      person.createProperty("city", Type.STRING);
+      person.createProperty("age", Type.INTEGER);
+      database.getSchema().createEdgeType("Knows");
+    });
+    final Random random = new Random(937);
+    final List<RID> people = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 30; i++)
+        people.add(newPerson(random).getIdentity());
+    });
+    final String query = "SELECT city, count(*) AS n, sum(age) AS s, min(age) AS lo FROM Person GROUP BY city";
+    final MaterializedViewImpl view = createView("PeopleByCity", query);
+    assertThat(view.isGroupedDelta()).isTrue();
+    database.transaction(() -> people.add(newPerson(random).getIdentity()));
+
+    for (int round = 0; round < 80; round++) {
+      database.transaction(() -> {
+        for (int op = 0; op < 1 + random.nextInt(5); op++)
+          switch (random.nextInt(5)) {
+          case 0 -> people.add(newPerson(random).getIdentity());
+          case 1, 2 -> {
+            final MutableVertex from = person(people, random);
+            final MutableVertex to = person(people, random);
+            if (from != null && to != null)
+              from.newEdge("Knows", to);
+          }
+          case 3 -> {
+            final MutableVertex vertex = person(people, random);
+            if (vertex != null)
+              vertex.set("city", "city" + random.nextInt(4)).set("age", random.nextInt(60)).save();
+          }
+          default -> {
+            final MutableVertex vertex = person(people, random);
+            if (vertex != null) {
+              people.remove(vertex.getIdentity());
+              vertex.delete();
+            }
+          }
+          }
+      });
+      assertThat(viewRows("PeopleByCity")).as("round " + round).containsExactlyInAnyOrderElementsOf(queryRows(query));
+    }
+    assertThat(view.groupedRuntime().groups()).as("every commit was a delta").isNotNull();
+  }
+
+  /** A node of an HA cluster does not apply deltas: the delta of a commit lives in the memory of the node that made it. */
+  @Test
+  void aViewOnAReplicatedNodeKeepsTheFullPass() {
+    createSource();
+    database.transaction(() -> {
+      for (int i = 0; i < 30; i++)
+        insert(CATS[i % 4], i % 3, i, (long) i, "n" + i, i % 3, "I");
+    });
+    createView("GSums", G_SUMS);
+    factory.setReplicatedNode(true);
+    try {
+      reopenDatabase();
+      final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("GSums");
+      assertThat(view.isGroupedDelta()).isFalse();
+      assertThat(view.tracksPendingDelta()).isFalse();
+      for (int i = 0; i < 5; i++)
+        database.transaction(() -> insert("a", 1, 7, 7L, "r", 1, "I"));
+      assertViewMatchesQuery("GSums");
+      assertThat(view.groupedRuntime()).as("no state is built on a replicated node").isNull();
+    } finally {
+      factory.setReplicatedNode(false);
+    }
+  }
+
+  private MutableVertex newPerson(final Random random) {
+    return database.newVertex("Person").set("city", "city" + random.nextInt(4)).set("age", random.nextInt(60)).save();
+  }
+
+  /** A random person, or null when it is gone. */
+  private MutableVertex person(final List<RID> people, final Random random) {
+    if (people.isEmpty())
+      return null;
+    return database.lookupByRID(people.get(random.nextInt(people.size())), true).asVertex().modify();
   }
 
   private static void await(final CountDownLatch latch) {
