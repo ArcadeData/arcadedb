@@ -2622,14 +2622,19 @@ public enum GlobalConfiguration {
   HA_APPLY_BACKLOG_MAX("arcadedb.ha.applyBacklogMax", SCOPE.SERVER,
       """
       Byte budget for the Raft entries a follower may hold received but not yet applied (e.g. '256MB'). Ratis keeps \
-      every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
+      every such entry on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
       entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
       reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
-      and resumes when the follower has caught up. It is a soft limit: the applied index reaches the leader with the \
+      and resumes when the follower has caught up. Every node resolves the budget from its own heap and setting and \
+      reports it to the leader, and the bound that applies to a follower is the smaller of the leader's budget and \
+      that follower's own, so a follower with a smaller heap than its leader is held to its own budget (issue \
+      #11508); a follower that reports none (an older version, or one where the setting is 0) is held to the \
+      leader's. It is a soft limit: the applied index reaches the leader with the \
       5 s capability poll, so a follower can overshoot the budget during a burst between two polls, and the size of \
       an entry is a running average, which understates a mix of a few huge entries among many small ones. Empty \
       (the default) means a quarter of the maximum JVM heap, but never less than 32MB (on a very small heap that \
-      floor can exceed a quarter of it). 0 disables the back-pressure (issue #11458).""",
+      floor can exceed a quarter of it). 0 disables the back-pressure this node applies as a leader, whatever its \
+      followers report (issue #11458).""",
       String.class, ""),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
