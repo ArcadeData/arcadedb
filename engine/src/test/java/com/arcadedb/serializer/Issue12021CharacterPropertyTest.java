@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.Vertex;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12021: a {@link Character} value passed {@code Type.validateValue} (it maps to STRING) and was then skipped by the
@@ -97,6 +99,31 @@ class Issue12021CharacterPropertyTest extends TestHelper {
     final Map<Object, Object> nested = new LinkedHashMap<>();
     nested.put('k', Map.of('n', List.of('x')));
     assertThat(writeAndReload("ChrMapKey", "m", nested).get("m")).isEqualTo(Map.of("k", Map.of("n", List.of("x"))));
+  }
+
+  /**
+   * A Character key and a String key of the same text are one key once stored: the map is refused instead of coming back
+   * with one of the two values, in either order, while a map of Character keys alone (a letter count) is kept.
+   */
+  @Test
+  void characterKeyAndStringKeyOfTheSameTextAreRefused() {
+    database.getSchema().createDocumentType("ChrCollide");
+
+    final Map<Object, Object> stringFirst = new LinkedHashMap<>();
+    stringFirst.put("k", 1);
+    stringFirst.put('k', 2);
+    final Map<Object, Object> characterFirst = new LinkedHashMap<>();
+    characterFirst.put('k', 2);
+    characterFirst.put("k", 1);
+    for (final Map<Object, Object> map : List.of(stringFirst, characterFirst))
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument("ChrCollide").set("m", map).save()))
+          .isInstanceOf(SerializationException.class).hasMessageContaining("'k'");
+    assertThat(database.countType("ChrCollide", true)).isZero();
+
+    final Map<Character, Integer> letters = new LinkedHashMap<>();
+    letters.put('b', 2);
+    letters.put('a', 1);
+    assertThat(writeAndReload("ChrLetters", "m", letters).get("m")).isEqualTo(Map.of("a", 1, "b", 2));
   }
 
   @Test
