@@ -1489,6 +1489,14 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Hands the statement's SKIP to the index scan at the root of the operators that {@code matchStep} runs, which then passes over
+   * those rows itself (issue #11954). Only for a plan {@link CypherStepBuilder} checked can count its skipped rows in the scan.
+   */
+  static void passSkipToScan(final AbstractExecutionStep matchStep, final int skip) {
+    ((OptimizedMatchStep) matchStep).skipInScan = skip;
+  }
+
+  /**
    * The step that executes the physical operators of the optimized MATCH. A label scan at the root of the operators can
    * also hand its rows to an aggregation that consumes them in the workers of a parallel scan (issue #8797).
    */
@@ -1499,6 +1507,8 @@ public class CypherExecutionPlan {
 
     private ResultSet operatorResults = null;
     private boolean closed = false;
+    // The rows of the statement's SKIP the index scan at the root passes over itself (issue #11954), see passSkipToScan()
+    private int skipInScan = 0;
 
     @Override
     public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
@@ -1506,7 +1516,9 @@ public class CypherExecutionPlan {
       // set of cursors that the already-spent close() chain would never reach.
       if (operatorResults == null && !closed) {
         // Execute physical operators on first pull
-        operatorResults = physicalPlan.getRootOperator().execute(ctx, nRecords);
+        operatorResults = skipInScan > 0 ?
+            ((NodeIndexRangeScan) physicalPlan.getRootOperator()).execute(ctx, nRecords, skipInScan) :
+            physicalPlan.getRootOperator().execute(ctx, nRecords);
       }
       return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }

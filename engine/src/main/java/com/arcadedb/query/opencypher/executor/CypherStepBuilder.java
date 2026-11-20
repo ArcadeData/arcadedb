@@ -31,12 +31,15 @@ import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.LoadCSVClause;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -44,9 +47,11 @@ import com.arcadedb.query.opencypher.ast.SimpleCypherStatement;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.SubqueryClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
 import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
@@ -155,7 +160,8 @@ final class CypherStepBuilder {
         expressionEvaluator.getFunctionFactory() : null;
 
     // Create a wrapper step that executes the physical operators
-    AbstractExecutionStep currentStep = plan.newOptimizedMatchStep(context);
+    final AbstractExecutionStep matchStep = plan.newOptimizedMatchStep(context);
+    AbstractExecutionStep currentStep = matchStep;
 
     // Apply post-MATCH operations using clausesInOrder to respect the order they appear
     // in the query (e.g. WITH before UNWIND, not the other way around).
@@ -394,9 +400,12 @@ final class CypherStepBuilder {
 
     // Step 9: SKIP (if any)
     if (statement.getSkip() != null) {
-      final SkipStep skipStep =
-          new SkipStep(new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context), context);
+      final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
+          context);
+      final boolean skippedByScan = skipVal > 0 && skipPassesToScan(currentStep, matchStep);
+      if (skippedByScan)
+        CypherExecutionPlan.passSkipToScan(matchStep, skipVal);
+      final SkipStep skipStep = new SkipStep(skipVal, skippedByScan, context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
     }
@@ -420,6 +429,49 @@ final class CypherStepBuilder {
     }
 
     return currentStep;
+  }
+
+  /**
+   * Whether the statement's SKIP can be passed to the index scan that answers its MATCH, which then counts the rows it skips from
+   * the index entries without loading their vertices (issue #11954). Only where every row the scan produces is a row the SKIP
+   * counts and nothing reads the vertex of a skipped row: one MATCH and a RETURN, no WHERE left to evaluate, the rows in the index
+   * order the ORDER BY relies on, read by the scan alone, and a RETURN right on top of it that makes one row of each row (no
+   * DISTINCT, no aggregation) out of items that cannot fail on a row: the scan's variable, its properties and literals.
+   */
+  private boolean skipPassesToScan(final AbstractExecutionStep currentStep, final AbstractExecutionStep matchStep) {
+    if (statement.getOrderByClause() == null || !physicalPlan.isIndexOrdered() || !statement.isReadOnly()
+        || statement.getWhereClause() != null || !(physicalPlan.getRootOperator() instanceof NodeIndexRangeScan scan)
+        || !scan.isIndexOrdered() || !(currentStep instanceof ProjectReturnStep) || currentStep.getPrev() != matchStep)
+      return false;
+
+    int matches = 0;
+    for (final ClauseEntry entry : statement.getClausesInOrder()) {
+      if (entry.getType() == ClauseEntry.ClauseType.MATCH) {
+        if (((MatchClause) entry.getTypedClause()).isOptional())
+          return false;
+        ++matches;
+      } else if (entry.getType() != ClauseEntry.ClauseType.RETURN)
+        return false;
+    }
+    if (matches != 1)
+      return false;
+
+    final ReturnClause returnClause = statement.getReturnClause();
+    if (returnClause.isDistinct() || returnClause.hasAggregations())
+      return false;
+    if (returnClause.isReturnAll())
+      return true;
+    for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+      if (item.isStar())
+        continue;
+      final Expression expression = item.getExpression();
+      final boolean cannotFail = expression instanceof LiteralExpression
+          || expression instanceof VariableExpression variable && variable.getVariableName().equals(scan.getVariable())
+          || expression instanceof PropertyAccessExpression property && property.getVariableName().equals(scan.getVariable());
+      if (!cannotFail)
+        return false;
+    }
+    return true;
   }
 
   /**
