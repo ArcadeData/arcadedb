@@ -46,6 +46,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.VertexNotFoundException;
+import com.arcadedb.graph.olap.NodeIdMapping;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -72,6 +73,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
@@ -3650,6 +3652,25 @@ public class GraphEngine {
   public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     return AdjacencyListBuilder.build(vertices, ridToIdx, dir, relTypes, entryCount);
+  }
+
+  /**
+   * As {@link #buildAdjacencyList(List, Map, Vertex.DIRECTION, String[], LongConsumer)}, for vertices held as the {@link NodeIdMapping}
+   * that numbers them: the row of a vertex is its id in the mapping, and the edge lists are scanned by the position of the vertex, so no
+   * vertex is loaded and no map from RID to row is built. What an algorithm over a large graph passes (issue #12554).
+   * <p>
+   * A vertex deleted since the mapping was made has an empty row, and is no neighbour of any.
+   *
+   * @param vertices      the vertices, numbered by the mapping
+   * @param database      the database the vertices are in
+   * @param entryCount    notified with the total number of neighbour entries about to be allocated; may be null
+   * @param checkpoint    called with a counter that advances by one for every row about to be walked and every entry read, in each of the
+   *                      two passes, so that the caller can abort a long build, a supernode's list included (an exception it throws
+   *                      aborts the build): {@code WorkGuard::checkPeriodically} fits it; may be null
+   */
+  public static int[][] buildAdjacencyList(final NodeIdMapping vertices, final Database database, final Vertex.DIRECTION dir,
+      final String[] relTypes, final LongConsumer entryCount, final IntConsumer checkpoint) {
+    return AdjacencyListBuilder.build(vertices, (DatabaseInternal) database, dir, relTypes, entryCount, checkpoint);
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {

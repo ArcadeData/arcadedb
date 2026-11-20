@@ -1339,8 +1339,8 @@ public enum GlobalConfiguration {
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
       Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the working \
-      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (one record per \
-      vertex and the RID index over them), the adjacency lists, weighted adjacency lists and degree buffers it \
+      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (the RID of every \
+      vertex, 16 bytes each), the adjacency lists, weighted adjacency lists and degree buffers it \
       materialises from the records or from a view, the edge arrays of algo.mst and algo.msa, the visited sets and \
       traversal state of the walks (algo.bfs, algo.dfs, the path searches), the neighbour bitsets of the clique, \
       triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
