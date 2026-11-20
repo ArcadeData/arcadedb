@@ -37,6 +37,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -510,7 +511,37 @@ public class GraphEngine {
     if (type.isBidirectional())
       connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
+    markPairForMergeByIndex(database, type, source.getIdentity(), destination.getIdentity());
     return edge;
+  }
+
+  /**
+   * Marks the pair of vertices and the type of a new relationship with the registry of the relationships created by match-or-create
+   * (#11482), when its type has an index a MERGE between two bound nodes answers its existence check from (MergeStep, #12483). That
+   * check reads no edge list, so a relationship created between the same two nodes by a concurrent transaction is not refused by
+   * the head of a list it read: the commit of the relationship the MERGE creates checks this key instead. Marked under the name of
+   * the type and of every super type, which a MERGE matches it by too. A type with no such index marks nothing: a MERGE of it walks
+   * the list.
+   */
+  private static void markPairForMergeByIndex(final DatabaseInternal database, final DocumentType type, final RID from,
+      final RID to) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || from == null || to == null || !hasExactKeyIndex(type))
+      return;
+    markPair(tx, type, from, to);
+  }
+
+  private static void markPair(final TransactionContext tx, final DocumentType type, final RID from, final RID to) {
+    tx.markMergedEdge(from, to, type.getName());
+    for (final DocumentType superType : type.getSuperTypes())
+      markPair(tx, superType, from, to);
+  }
+
+  private static boolean hasExactKeyIndex(final DocumentType type) {
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.getPropertyNamesIfExactKeyLookup() != null)
+        return true;
+    return false;
   }
 
   /**
