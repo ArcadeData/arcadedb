@@ -440,6 +440,42 @@ class CypherApocVirtualGraphTest {
     }
 
     @Test
+    void relationshipCountsAreWholeOnALargerGraphWhoseTypesSpanSeveralBuckets() {
+      // 4600 nodes and 2300 relationships of two types between two labels in both directions: the scan counts per pair of endpoint
+      // buckets, so every relationship has to land in the pair of its own endpoints whatever bucket either node is stored in
+      database.transaction(() -> {
+        database.command("opencypher", "UNWIND range(1, 1500) AS i CREATE (:A {i: i})-[:R {w: i}]->(:B {i: i})").close();
+        database.command("opencypher", "UNWIND range(1, 500) AS i CREATE (:B {i: i})-[:R {w: i}]->(:A {i: i})").close();
+        database.command("opencypher", "UNWIND range(1, 300) AS i CREATE (:A {i: i})-[:S]->(:A {i: i})").close();
+      });
+
+      final Result stats = single("""
+          CALL apoc.meta.stats() YIELD nodeCount, relCount, labelCount, relTypeCount, propertyKeyCount, labels, relTypes, relTypesCount
+          RETURN nodeCount, relCount, labelCount, relTypeCount, propertyKeyCount, labels, relTypes, relTypesCount""");
+      assertThat(longOf(stats.getProperty("nodeCount"))).isEqualTo(4600L);
+      assertThat(longOf(stats.getProperty("relCount"))).isEqualTo(2300L);
+      assertThat(longOf(stats.getProperty("labelCount"))).isEqualTo(2L);
+      assertThat(longOf(stats.getProperty("relTypeCount"))).isEqualTo(2L);
+      // the property keys found in the data: i on the nodes, w on the R relationships
+      assertThat(longOf(stats.getProperty("propertyKeyCount"))).isEqualTo(2L);
+      assertThat((Map<?, ?>) stats.getProperty("labels")).isEqualTo(Map.of("A", 2600L, "B", 2000L));
+      assertThat((Map<?, ?>) stats.getProperty("relTypesCount")).isEqualTo(Map.of("R", 2000L, "S", 300L));
+      assertThat((Map<?, ?>) stats.getProperty("relTypes")).isEqualTo(Map.of(
+          "()-[:R]->()", 2000L, "(:A)-[:R]->()", 1500L, "(:B)-[:R]->()", 500L, "()-[:R]->(:A)", 500L, "()-[:R]->(:B)", 1500L,
+          "()-[:S]->()", 300L, "(:A)-[:S]->()", 300L, "()-[:S]->(:A)", 300L));
+
+      final Result graph = single("""
+          CALL apoc.meta.graph() YIELD nodes, relationships
+          RETURN [n IN nodes | [n.name, n.count]] AS n,
+                 [r IN relationships | [type(r), r.out, r.in, r.count, labels(startNode(r)), labels(endNode(r))]] AS r""");
+      assertThat(list(graph.getProperty("n"))).containsExactly(List.of("A", 2600L), List.of("B", 2000L));
+      assertThat(list(graph.getProperty("r"))).containsExactly(
+          List.of("R", 1500L, 1500L, 2000L, List.of("A"), List.of("B")),
+          List.of("R", 500L, 500L, 2000L, List.of("B"), List.of("A")),
+          List.of("S", 300L, 300L, 300L, List.of("A"), List.of("A")));
+    }
+
+    @Test
     void theMetaScansStopWhenTheCommandDeadlinePasses() {
       createGraph();
       // a deadline already in the past: the first record read of each scan has to notice it, as every other scan of the engine
