@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +54,9 @@ public final class RelationshipPattern {
   /** Every type: what {@link #typesFor} answers for a direction an alternative without a type follows. Shared, never written. */
   private static final String[] EVERY_TYPE = new String[0];
 
+  /** The pattern that names nothing: what a call without one, or a blank one, reads. Immutable, so shared. */
+  private static final RelationshipPattern EMPTY = new RelationshipPattern(List.of());
+
   private final List<Entry> entries;
 
   private RelationshipPattern(final List<Entry> entries) {
@@ -70,27 +72,44 @@ public final class RelationshipPattern {
   public static RelationshipPattern parse(final String functionName, final Object pattern) {
     final String text = text(functionName, pattern);
     if (text == null)
-      return new RelationshipPattern(Collections.emptyList());
+      return EMPTY;
+
+    // node.degree and node.relationship.exists parse the argument once per row, and mostly it is one alternative: no split, no list
+    if (text.indexOf('|') < 0) {
+      final Entry entry = parseEntry(functionName, text.trim());
+      return entry == null ? EMPTY : new RelationshipPattern(List.of(entry));
+    }
 
     final List<Entry> entries = new ArrayList<>();
-    for (final String rawEntry : text.split("\\|")) {
-      final String entry = rawEntry.trim();
-      if (entry.isEmpty())
-        continue;
-
-      final boolean incoming = entry.charAt(0) == '<';
-      final boolean outgoing = entry.charAt(entry.length() - 1) == '>';
-      if (incoming && outgoing && entry.length() > 1) {
-        final String inner = entry.substring(1, entry.length() - 1).trim();
-        throw new IllegalArgumentException(functionName + "(): relationship filter '" + entry + "' carries both direction markers: "
-            + (inner.isEmpty() ? "leave the filter empty" : "write '" + inner + "'") + " to follow it in both directions");
-      }
-
-      final String name = entry.substring(incoming ? 1 : 0, entry.length() - (outgoing ? 1 : 0)).trim();
-      final Vertex.DIRECTION direction = incoming ? Vertex.DIRECTION.IN : outgoing ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
-      entries.add(new Entry(name.isEmpty() ? null : name, direction));
+    int start = 0;
+    while (start <= text.length()) {
+      int end = text.indexOf('|', start);
+      if (end < 0)
+        end = text.length();
+      final Entry entry = parseEntry(functionName, text.substring(start, end).trim());
+      if (entry != null)
+        entries.add(entry);
+      start = end + 1;
     }
-    return new RelationshipPattern(entries);
+    return entries.isEmpty() ? EMPTY : new RelationshipPattern(entries);
+  }
+
+  /** One alternative, {@code null} when it is blank. */
+  private static Entry parseEntry(final String functionName, final String entry) {
+    if (entry.isEmpty())
+      return null;
+
+    final boolean incoming = entry.charAt(0) == '<';
+    final boolean outgoing = entry.charAt(entry.length() - 1) == '>';
+    if (incoming && outgoing && entry.length() > 1) {
+      final String inner = entry.substring(1, entry.length() - 1).trim();
+      throw new IllegalArgumentException(functionName + "(): relationship filter '" + entry + "' carries both direction markers: "
+          + (inner.isEmpty() ? "leave the filter empty" : "write '" + inner + "'") + " to follow it in both directions");
+    }
+
+    final String name = entry.substring(incoming ? 1 : 0, entry.length() - (outgoing ? 1 : 0)).trim();
+    final Vertex.DIRECTION direction = incoming ? Vertex.DIRECTION.IN : outgoing ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
+    return new Entry(name.isEmpty() ? null : name, direction);
   }
 
   private static String text(final String functionName, final Object pattern) {
@@ -186,13 +205,12 @@ public final class RelationshipPattern {
 
   /** Whether {@code edge}, met on {@code direction} from the node at hand, is one the pattern follows. */
   public boolean follows(final Edge edge, final Vertex.DIRECTION direction) {
-    final String[] types = typesFor(direction);
-    if (types == null)
-      return false;
-    if (types.length == 0)
+    // what typesFor(direction) says, asked of one edge: it allocates nothing, as the path rebuild asks once per edge
+    if (entries.isEmpty())
       return true;
-    for (final String type : types)
-      if (edge.getType().instanceOf(type))
+    for (final Entry entry : entries)
+      if ((entry.direction() == Vertex.DIRECTION.BOTH || entry.direction() == direction) && (entry.type() == null
+          || edge.getType().instanceOf(entry.type())))
         return true;
     return false;
   }

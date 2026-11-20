@@ -124,7 +124,8 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
 
   /**
    * The direction an alternative of the pattern is followed in once the direction argument restricts it: the alternative's
-   * own marker, or the restriction for an alternative without one; {@code null} when the two disagree.
+   * own marker, or the restriction for an alternative without one; {@code null} when the two disagree, which is an
+   * alternative the direction argument rules out: {@code 'KNOWS>'} restricted to {@code IN} names no relationship.
    */
   protected static Vertex.DIRECTION effectiveDirection(final RelationshipPattern.Entry entry, final Vertex.DIRECTION restriction) {
     if (restriction == Vertex.DIRECTION.BOTH || entry.direction() == restriction)
@@ -147,10 +148,33 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
       final Vertex.DIRECTION direction = effectiveDirection(entry, restriction);
       if (direction == null)
         continue;
-      count += entry.type() == null ?
-          IncomingEdgeLookup.countEdges(context, vertex, direction) :
-          IncomingEdgeLookup.countEdges(context, vertex, direction, entry.type());
+      count += countAlternative(context, vertex, entry, direction);
     }
     return count;
+  }
+
+  /**
+   * Whether {@code vertex} has a relationship the pattern follows: {@code countEdges(...) > 0}, answered at the first
+   * alternative that has one. The alternatives behind it are not counted, and counting the incoming side of a unidirectional
+   * edge type takes a scan of the whole type, which an answer already known must not pay.
+   */
+  protected static boolean hasEdges(final CommandContext context, final Vertex vertex, final RelationshipPattern pattern,
+      final Vertex.DIRECTION restriction) {
+    if (pattern.isEmpty())
+      return IncomingEdgeLookup.countEdges(context, vertex, restriction) > 0;
+
+    for (final RelationshipPattern.Entry entry : pattern.entries()) {
+      final Vertex.DIRECTION direction = effectiveDirection(entry, restriction);
+      if (direction != null && countAlternative(context, vertex, entry, direction) > 0)
+        return true;
+    }
+    return false;
+  }
+
+  private static long countAlternative(final CommandContext context, final Vertex vertex, final RelationshipPattern.Entry entry,
+      final Vertex.DIRECTION direction) {
+    return entry.type() == null ?
+        IncomingEdgeLookup.countEdges(context, vertex, direction) :
+        IncomingEdgeLookup.countEdges(context, vertex, direction, entry.type());
   }
 }

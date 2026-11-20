@@ -22,11 +22,15 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeWeight;
+import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.RelationshipPattern;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -116,12 +120,68 @@ class SQLFunctionAstarRelationshipPatternTest extends TestHelper {
     assertThat(astar.getDistance(edges[1])).isEqualTo(EdgeWeight.of("heavy"));
     assertThat(astar.getDistance(edges[2])).isEqualTo(3.0);
 
-    // APOC's defaultWeight replaces the weight of an edge without the property only
+    // APOC's defaultWeight replaces the weight of an edge without a numeric weight, the one every reader of the weight
+    // column of a graph analytical view gives it too (see aCustomDefaultWeightWeighsANonNumericWeightTheSameWithAndWithoutAView)
     final SQLFunctionAstar withDefault = new SQLFunctionAstar().setMissingWeight(2.5);
     assertThat(withDefault.getDistance(edges[0])).isEqualTo(2.5);
     assertThat(withDefault.getDistance(null)).isEqualTo(2.5);
-    assertThat(withDefault.getDistance(edges[1])).isEqualTo(EdgeWeight.of("heavy"));
+    assertThat(withDefault.getDistance(edges[1])).isEqualTo(2.5);
     assertThat(withDefault.getDistance(edges[2])).isEqualTo(3.0);
+  }
+
+  @Test
+  void aCustomDefaultWeightWeighsANonNumericWeightTheSameWithAndWithoutAView() {
+    // end0 reaches end2 by one edge whose weight is not a number, or by two edges of weight 1: with a default weight of 5 the
+    // two edges are the cheaper way, with the default of 1 the single edge is
+    database.getSchema().createEdgeType("TEXTUAL");
+    final MutableVertex[] ends = new MutableVertex[3];
+    database.transaction(() -> {
+      for (int i = 0; i < ends.length; i++)
+        ends[i] = database.newVertex("P").set("name", "end" + i).save();
+      ends[0].newEdge("TEXTUAL", ends[2], "w", "n/a").save();
+      ends[0].newEdge("KNOWS", ends[1], "w", 1.0).save();
+      ends[1].newEdge("KNOWS", ends[2], "w", 1.0).save();
+    });
+
+    final List<RID> direct = List.of(ends[0].getIdentity(), ends[2].getIdentity());
+    final List<RID> viaMiddle = List.of(ends[0].getIdentity(), ends[1].getIdentity(), ends[2].getIdentity());
+
+    assertThat(searchEnds(ends, null)).as("OLTP, the default weight of 1").isEqualTo(direct);
+    assertThat(searchEnds(ends, 5.0)).as("OLTP, a default weight of 5").isEqualTo(viaMiddle);
+
+    // the view types a weight column from the schema, and leaves the slot of a value that is not a number empty: the default
+    database.getSchema().getType("KNOWS").createProperty("w", Type.DOUBLE);
+    final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
+        .withName("astar-default-weight-view")
+        .withVertexTypes("P")
+        .withEdgeTypes("KNOWS", "TEXTUAL")
+        .withEdgeProperties("w")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+    try {
+      final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, "KNOWS", "TEXTUAL");
+      assertThat(provider).as("the view must cover both types, or this test does not reach the weights the view serves").isNotNull();
+      final NodeEdgeWeights served = provider.edgeWeightsOf(provider.getNodeId(ends[0].getIdentity()), Vertex.DIRECTION.OUT, "w", 5.0,
+          "KNOWS", "TEXTUAL");
+      assertThat(served).as("the view serves the weights, or the half below would only repeat the OLTP one").isNotNull();
+      assertThat(served.weights()).as("the view weighs the text weight with the default").containsExactlyInAnyOrder(5.0, 1.0);
+      assertThat(searchEnds(ends, null)).as("view, the default weight of 1").isEqualTo(direct);
+      assertThat(searchEnds(ends, 5.0)).as("view, a default weight of 5").isEqualTo(viaMiddle);
+    } finally {
+      view.drop();
+    }
+  }
+
+  private List<RID> searchEnds(final MutableVertex[] ends, final Double defaultWeight) {
+    final Map<String, Object> options = new HashMap<>();
+    options.put(SQLFunctionAstar.PARAM_DIRECTION, "OUT");
+    options.put("emptyIfMaxDepth", true);
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final SQLFunctionAstar astar = new SQLFunctionAstar();
+    if (defaultWeight != null)
+      astar.setMissingWeight(defaultWeight);
+    return astar.execute(null, null, null, new Object[] { ends[0], ends[2], "w", options }, context);
   }
 
   private List<RID> search(final RelationshipPattern pattern) {

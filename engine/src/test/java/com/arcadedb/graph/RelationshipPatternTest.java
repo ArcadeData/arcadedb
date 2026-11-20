@@ -159,5 +159,43 @@ class RelationshipPatternTest extends TestHelper {
     assertThat(RelationshipPattern.parse("test", "LIKES").follows(knows, OUT)).isFalse();
     assertThat(RelationshipPattern.parse("test", "LIKES|>").follows(knows, OUT)).isTrue();
     assertThat(RelationshipPattern.parse("test", "").follows(knows, IN)).isTrue();
+
+    // follows() is the question typesFor() answers per direction, asked of one edge
+    for (final String text : new String[] { "KNOWS>|<LIKES", "KNOWS", ">", "<", "", "LIKES>|<KNOWS|>", "BEST_FRIEND>|<LIKES", "<BEST_FRIEND",
+        "LIKES|<", "KNOWS>|BEST_FRIEND>" }) {
+      final RelationshipPattern pattern = RelationshipPattern.parse("test", text);
+      for (final Edge edge : new Edge[] { knows, bestFriend })
+        for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { OUT, IN }) {
+          final String[] types = pattern.typesFor(direction);
+          boolean expected = types != null && types.length == 0;
+          if (types != null)
+            for (final String type : types)
+              expected |= edge.getType().instanceOf(type);
+          assertThat(pattern.follows(edge, direction)).as("'%s' %s %s", text, edge.getTypeName(), direction).isEqualTo(expected);
+        }
+    }
+  }
+
+  @Test
+  void splitsOnEveryBarAndDropsTheBlankAlternatives() {
+    assertThat(RelationshipPattern.parse("test", "KNOWS").entries()).containsExactly(new Entry("KNOWS", BOTH));
+    assertThat(RelationshipPattern.parse("test", "  KNOWS  ").entries()).containsExactly(new Entry("KNOWS", BOTH));
+    assertThat(RelationshipPattern.parse("test", "KNOWS|").entries()).containsExactly(new Entry("KNOWS", BOTH));
+    assertThat(RelationshipPattern.parse("test", "|KNOWS").entries()).containsExactly(new Entry("KNOWS", BOTH));
+    assertThat(RelationshipPattern.parse("test", "A||B|").entries()).containsExactly(new Entry("A", BOTH), new Entry("B", BOTH));
+    assertThat(RelationshipPattern.parse("test", "A|B|C").entries()).containsExactly(new Entry("A", BOTH), new Entry("B", BOTH),
+        new Entry("C", BOTH));
+    assertThat(RelationshipPattern.parse("test", "<").entries()).containsExactly(new Entry(null, IN));
+    assertThat(RelationshipPattern.parse("test", " > ").entries()).containsExactly(new Entry(null, OUT));
+    assertThat(RelationshipPattern.parse("test", "< KNOWS ").entries()).containsExactly(new Entry("KNOWS", IN));
+  }
+
+  @Test
+  void theEmptyPatternIsOneSharedValue() {
+    // node.degree asks for a pattern per row: a call without one, or a blank one, allocates nothing
+    final RelationshipPattern empty = RelationshipPattern.parse("test", null);
+    assertThat(empty.isEmpty()).isTrue();
+    for (final Object blank : new Object[] { "", "  ", " | ", List.of(), List.of("", " ") })
+      assertThat(RelationshipPattern.parse("test", blank)).as("%s", blank).isSameAs(empty);
   }
 }

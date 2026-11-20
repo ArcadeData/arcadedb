@@ -29,8 +29,10 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.node.NodeRelationshipExists;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -1682,6 +1684,74 @@ class UnidirectionalEdgeTest {
       } finally {
         otherThread.shutdown();
       }
+    }
+  }
+
+  /**
+   * Issue #12103: {@code node.relationship.exists} answers at the first alternative of the relationship pattern that has a
+   * relationship, as it did when it looped over the types, and does not count the ones behind it: counting the incoming side
+   * of a unidirectional type takes a scan of the whole type, which an answer already known must not pay.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class RelationshipExistsStopsAtTheFirstAlternative extends TestHelper {
+    private Vertex a;
+    private Vertex b;
+
+    @Override
+    public void beginTest() {
+      database.getSchema().createVertexType("V");
+      database.getSchema().createEdgeType("K");
+      database.command("sql", "CREATE EDGE TYPE U UNIDIRECTIONAL");
+      database.transaction(() -> {
+        final MutableVertex va = database.newVertex("V").set("name", "a").save();
+        final MutableVertex vb = database.newVertex("V").set("name", "b").save();
+        va.newEdge("K", vb).save();
+        va.newEdge("U", vb).save();
+        a = va;
+        b = vb;
+      });
+    }
+
+    @Test
+    void aLaterAlternativeIsNotCountedOnceAnEarlierOneHasARelationship() {
+      final long scansBefore = IncomingEdgeLookup.getScansTaken();
+      assertThat(exists(b, "<K|<U")).isTrue();
+      assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore)
+          .as("the incoming K answers, so the scan of the unidirectional type U is never taken").isZero();
+    }
+
+    @Test
+    void aLaterAlternativeIsReadWhenTheEarlierOnesHaveNone() {
+      // the control: the scan the test above must not take is taken when it is the only way to the answer
+      long scansBefore = IncomingEdgeLookup.getScansTaken();
+      assertThat(exists(b, "<U")).isTrue();
+      assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore).isEqualTo(1L);
+
+      scansBefore = IncomingEdgeLookup.getScansTaken();
+      assertThat(exists(b, "NOPE|<U")).isTrue();
+      assertThat(IncomingEdgeLookup.getScansTaken() - scansBefore).isEqualTo(1L);
+
+      assertThat(exists(a, "<K|<U")).as("a has no incoming relationship").isFalse();
+      assertThat(exists(a, "<K|U>")).as("the outgoing U is one").isTrue();
+    }
+
+    @Test
+    void anEmptyPatternAndTheDirectionArgumentAnswerAsBefore() {
+      assertThat(exists(b, "")).isTrue();
+      assertThat(exists(a, "", "IN")).isFalse();
+      assertThat(exists(a, "", "OUT")).isTrue();
+      assertThat(exists(b, "K|U", "IN")).isTrue();
+      assertThat(exists(b, "K>|U", "IN")).as("K is marked outgoing, U follows the direction argument").isTrue();
+      assertThat(exists(b, "K>|U>", "IN")).as("both are marked the other way").isFalse();
+    }
+
+    private boolean exists(final Vertex vertex, final String pattern, final String... direction) {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final Object[] args = direction.length == 0 ? new Object[] { vertex, pattern } : new Object[] { vertex, pattern, direction[0] };
+      return (Boolean) new NodeRelationshipExists().execute(args, context);
     }
   }
 }

@@ -2076,7 +2076,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   /**
    * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} for the APOC path finders: the edges are the ones
    * {@code pattern} follows (a direction argument beside it already applied, see {@link #configureSearch}), and an edge
-   * without the weight property weighs {@code missingWeight}, APOC's {@code defaultWeight} (issue #12103).
+   * without a numeric weight weighs {@code missingWeight}, APOC's {@code defaultWeight} (issue #12103), as it does in the search.
    */
   protected WeightedPath attachEdges(final List<RID> pathRids, final RelationshipPattern pattern, final String weightProperty,
       final double missingWeight) {
@@ -2130,7 +2130,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
           final double edgeWeight;
           if (walkableOnly) {
-            edgeWeight = w == null ? missingWeight : EdgeWeight.of(w);
+            edgeWeight = w instanceof Number ? EdgeWeight.of(w) : missingWeight;
             if (!EdgeWeight.isWalkable(edgeWeight))
               continue;
           } else

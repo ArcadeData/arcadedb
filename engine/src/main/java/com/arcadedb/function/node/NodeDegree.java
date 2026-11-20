@@ -25,8 +25,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * node.degree(node, [relTypes], [direction]) - Get the degree of a node.
  * <p>
  * {@code relTypes} is APOC's relationship pattern ({@code 'KNOWS>|<LIKES'}, {@code '>'}, a blank one for every relationship),
- * summed per alternative as APOC does (issue #12103). {@code direction}, which APOC does not have, restricts the
- * alternatives that carry no direction marker.
+ * summed per alternative as APOC does (issue #12103). {@code direction}, which APOC does not have, narrows the pattern to that
+ * direction: an alternative without a marker is followed in it, and a marked one that points the other way ({@code 'KNOWS>'}
+ * with {@code 'IN'}) names no relationship and counts 0.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */

@@ -25,7 +25,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * node.relationship.exists(node, [relTypes], [direction]) - Check if a node has relationships.
  * <p>
  * {@code relTypes} is APOC's relationship pattern ({@code 'KNOWS>|<LIKES'}, {@code '>'}, a blank one for every relationship,
- * issue #12103). {@code direction}, which APOC does not have, restricts the alternatives that carry no direction marker.
+ * issue #12103). {@code direction}, which APOC does not have, narrows the pattern to that direction: an alternative without a
+ * marker is followed in it, and a marked one that points the other way ({@code 'KNOWS>'} with {@code 'IN'}) names no
+ * relationship. The answer is the first alternative that has a relationship, the ones behind it are not counted.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -55,6 +57,6 @@ public class NodeRelationshipExists extends AbstractNodeFunction {
     final Vertex vertex = toVertex(args[0]);
     if (vertex == null)
       return false;
-    return countEdges(context, vertex, patternArgument(args, 1), directionArgument(args, 2)) > 0;
+    return hasEdges(context, vertex, patternArgument(args, 1), directionArgument(args, 2));
   }
 }

@@ -163,6 +163,23 @@ class CypherApocRelationshipPatternTest {
     }
 
     @Test
+    void theDefaultWeightIsTheWeightOfARelationshipWithoutANumericWeight() {
+      database.transaction(() -> database.command("opencypher",
+          "MATCH (a:P {uid: 1}), (b:P {uid: 2}) CREATE (a)-[:TEXTUAL {w: 'n/a'}]->(b)"));
+
+      // a weight that is not a number is no weight at all, so the default weighs it (the graph analytical view's columns
+      // answer the same)
+      assertThat(weight("CALL apoc.algo.dijkstra(a, b, 'TEXTUAL', 'w', 2.5) YIELD weight RETURN weight AS r")).isEqualTo(2.5);
+      assertThat(weight("CALL apoc.algo.dijkstra(a, b, 'TEXTUAL', 'w') YIELD weight RETURN weight AS r")).isEqualTo(1.0);
+      assertThat(weight("CALL apoc.algo.aStar(a, b, 'TEXTUAL', 'w', null, null) YIELD weight RETURN weight AS r")).isEqualTo(1.0);
+      // a stored number is never replaced
+      assertThat(weight("CALL apoc.algo.dijkstra(a, b, 'KNOWS>', 'w', 2.5) YIELD weight RETURN weight AS r")).isEqualTo(1.0);
+      // a default no relationship can be walked at (negative, as a stored weight of that kind) leaves no path
+      assertThat(rowCount("CALL apoc.algo.dijkstra(a, b, 'KNOWS>', 'missing', -1) YIELD weight RETURN weight AS r")).isZero();
+      assertThat(rowCount("CALL apoc.algo.dijkstra(a, b, 'KNOWS>', 'missing', 3) YIELD weight RETURN weight AS r")).isEqualTo(1L);
+    }
+
+    @Test
     void aStarAndAllSimplePathsReadThePattern() {
       assertThat(weight("CALL apoc.algo.aStar(a, b, 'KNOWS>', 'w', null, null) YIELD weight RETURN weight AS r")).isEqualTo(1.0);
       assertThat(weight("CALL apoc.algo.aStar(a, b, '<KNOWS', 'w', null, null) YIELD weight RETURN weight AS r")).isEqualTo(2.0);
@@ -201,6 +218,12 @@ class CypherApocRelationshipPatternTest {
     private List<Object> paths(final String call) {
       try (final ResultSet rs = database.query("opencypher", "MATCH (a:P {uid: 1}), (b:P {uid: 2}) " + call)) {
         return rs.stream().map(r -> r.getProperty("t")).toList();
+      }
+    }
+
+    private long rowCount(final String call) {
+      try (final ResultSet rs = database.query("opencypher", "MATCH (a:P {uid: 1}), (b:P {uid: 2}) " + call)) {
+        return rs.stream().count();
       }
     }
 

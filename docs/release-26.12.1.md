@@ -44,7 +44,8 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
 `node.relationship.types(node, [relTypes], [direction])` (and `apoc.node.relationship.types`) takes APOC's relationship
 pattern as its second argument, as APOC does: `(n, 'KNOWS>|<LIKES')` answers the types of that list the node has a
 relationship of, in the pattern's order. The second argument used to be the direction, which is now the third one,
-restricting the alternatives that carry no direction marker: `(n, null, 'IN')` is every incoming type.
+narrowing the pattern to that direction: an alternative without a marker is followed in it, and a marked one that points the
+other way names no relationship. `(n, null, 'IN')` is every incoming type, `(n, 'KNOWS>', 'IN')` answers `[]`.
 
 A call written for the old signature keeps its answer: a second argument that is a direction word (`IN`, `INCOMING`, `OUT`,
 `OUTGOING`, `BOTH`, in any case) with no third argument is still read as the direction.
@@ -68,7 +69,7 @@ direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an un
   that does not exist. `node.degree.in` and `node.degree.out` read the pattern with their direction fixed (an alternative
   marked the other way counts 0), and `node.degree` sums per alternative as APOC does. A pattern whose alternatives mix
   directions is walked as written, each alternative in its own direction. The fifth argument of `algo.dijkstra` is APOC's
-  `defaultWeight` when it is a number (the weight of a relationship without the weight property), the direction ArcadeDB took
+  `defaultWeight` when it is a number (the weight of a relationship without a numeric weight), the direction ArcadeDB took
   there before when it is a string, and refused otherwise. An edge type whose name contains `|`, `<` or `>` (or `,` in the
   `algo.*` finders) can no longer be named in these arguments, as in `path.*` since #10025: the character reads as the
   separator or the direction marker.

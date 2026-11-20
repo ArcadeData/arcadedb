@@ -73,8 +73,6 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
   // NO EDGE TYPE NAMED: EVERY TYPE. SHARED, AS THE OLTP EXPANSION ASKS FOR IT ONCE PER NODE
   private static final String[] ANY_EDGE_TYPE = new String[0];
-  // THE TWO DIRECTIONS A RELATIONSHIP PATTERN IS WALKED IN, ONE PASS EACH
-  private static final Vertex.DIRECTION[] SINGLE_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
 
   private static final Set<String> OPTIONS = Set.of(PARAM_DIRECTION, PARAM_EDGE_TYPE_NAMES, PARAM_VERTEX_AXIS_NAMES,
       PARAM_PARALLEL, PARAM_MAX_DEPTH, PARAM_EMPTY_IF_MAX_DEPTH, PARAM_TIE_BREAKER, PARAM_D_FACTOR, PARAM_HEURISTIC_FORMULA,
@@ -83,8 +81,11 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   private String paramWeightFieldName = "weight";
   // The weight of an edge without the weight property: APOC's defaultWeight when a Cypher caller sets one (issue #12103)
   private double missingWeight        = EdgeWeight.MISSING;
-  // A relationship pattern whose alternatives mix directions ('KNOWS>|<LIKES'), which direction + edgeTypeNames cannot say
+  // A relationship pattern whose alternatives mix directions ('KNOWS>|<LIKES'), which direction + edgeTypeNames cannot say, and
+  // the types it follows outgoing and incoming (null: none, empty: every type), worked out once and not per expanded vertex
   private RelationshipPattern relationshipPattern;
+  private String[]            patternOutTypes;
+  private String[]            patternInTypes;
   // The number of edges between the source and the vertex whose estimate is being asked for: the "depth" a heuristic receives
   private long   currentDepth         = 0;
 
@@ -345,12 +346,12 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     // unidirectional edge type comes from the edges that end in the node, as the view above answers it (issue #8629)
     if (relationshipPattern == null)
       addNeighbors(node, ctx, paramDirection, paramEdgeTypeNames != null ? paramEdgeTypeNames : ANY_EDGE_TYPE, result);
-    else
-      for (final Vertex.DIRECTION direction : SINGLE_DIRECTIONS) {
-        final String[] types = relationshipPattern.typesFor(direction);
-        if (types != null)
-          addNeighbors(node, ctx, direction, types, result);
-      }
+    else {
+      if (patternOutTypes != null)
+        addNeighbors(node, ctx, Vertex.DIRECTION.OUT, patternOutTypes, result);
+      if (patternInTypes != null)
+        addNeighbors(node, ctx, Vertex.DIRECTION.IN, patternInTypes, result);
+    }
     return result;
   }
 
@@ -382,6 +383,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
    */
   public SQLFunctionAstar setRelationshipPattern(final RelationshipPattern pattern) {
     this.relationshipPattern = pattern;
+    this.patternOutTypes = pattern != null ? pattern.typesFor(Vertex.DIRECTION.OUT) : null;
+    this.patternInTypes = pattern != null ? pattern.typesFor(Vertex.DIRECTION.IN) : null;
     return this;
   }
 
@@ -499,12 +502,14 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return cheapest;
   }
 
-  /** The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}. */
+  /**
+   * The weight of {@code edge} by the rule every weighted path finder shares, {@link EdgeWeight#of(Object)}, except that an
+   * edge without a numeric weight weighs {@link #setMissingWeight the missing weight}, which is {@link EdgeWeight#MISSING}
+   * unless a caller set one. The graph analytical view's weight columns say the same, so a search answers alike with and
+   * without a view.
+   */
   protected double getDistance(final Edge edge) {
-    if (edge == null)
-      return missingWeight;
-    final Object weight = edge.get(paramWeightFieldName);
-    return weight == null ? missingWeight : EdgeWeight.of(weight);
+    return edge != null && edge.get(paramWeightFieldName) instanceof Number weight ? EdgeWeight.of(weight) : missingWeight;
   }
 
   @Override

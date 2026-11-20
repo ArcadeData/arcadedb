@@ -41,9 +41,14 @@ import java.util.stream.Stream;
  * </p>
  * <p>
  * {@code relTypesAndDirections} is APOC's relationship pattern ({@code 'ROAD>|<RAIL'}, {@code '>'}, a blank one for every
- * relationship), and the fifth argument APOC's {@code defaultWeight}, the weight of a relationship without the weight property
+ * relationship), and the fifth argument APOC's {@code defaultWeight}, the weight of a relationship without a numeric weight
  * (issue #12103). A text fifth argument is still read as the direction ArcadeDB took there before, applied to the alternatives
  * without a direction marker.
+ * </p>
+ * <p>
+ * A default weight that is NaN is no default, and a relationship weighs 1 without a weight, as it did. One that is negative or
+ * infinite makes the relationships without a weight not walkable, as a stored weight of that kind is: Dijkstra settles a
+ * vertex for good the first time it reaches it, so a negative weight has no shortest path to give.
  * </p>
  * <p>
  * Example Cypher usage:

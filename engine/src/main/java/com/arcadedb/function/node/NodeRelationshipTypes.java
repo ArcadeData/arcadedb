@@ -38,7 +38,9 @@ import java.util.Set;
  * {@code relTypes} is APOC's relationship pattern ({@code 'KNOWS>|<LIKES'}, {@code '>'}, a blank one for every relationship):
  * the answer is the types the pattern names that the node has a relationship of, in the pattern's order. It used to be a
  * direction, so {@code apoc.node.relationship.types(n, 'KNOWS')} was refused as an unknown direction (issue #12103). The
- * direction is now the third argument, which APOC does not have, restricting the alternatives that carry no direction marker.
+ * direction is now the third argument, which APOC does not have, narrowing the pattern to that direction: an alternative
+ * without a marker is followed in it, and a marked one that points the other way ({@code 'KNOWS>'} with {@code 'IN'}) names no
+ * relationship, so {@code (n, 'KNOWS>', 'IN')} answers {@code []}.
  * <p>
  * A call written for the old signature still answers as it did: a second argument that is one of the direction words
  * ({@code IN}, {@code INCOMING}, {@code OUT}, {@code OUTGOING}, {@code BOTH}, in any case), with no third argument, is read as
