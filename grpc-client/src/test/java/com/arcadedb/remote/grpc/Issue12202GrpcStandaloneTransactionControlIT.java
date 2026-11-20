@@ -34,8 +34,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * was answered OK and did nothing: the call ran in its own transaction, so a later {@code ROLLBACK} undid nothing. It is refused
  * now (INVALID_ARGUMENT, rebuilt as a {@link CommandSemanticException}); inside a transaction of the client, and as a
  * {@code sqlscript}, it runs as before.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Issue12202GrpcStandaloneTransactionControlIT extends BaseGrpcClientServerTest {
 

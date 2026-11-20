@@ -39,8 +39,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code COMMIT} or {@code ROLLBACK}, or an openCypher {@code START TRANSACTION}, {@code COMMIT} or {@code ROLLBACK}, acted on that
  * one call alone and was answered OK, while a later {@code ROLLBACK} undid nothing. It is refused now with an argument error that
  * says so, as the HTTP and gRPC command entry points refuse it.
- *
- * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12232MCPStandaloneTransactionControlTest extends BaseGraphServerTest {
   private static final String TYPE = "Mcp12232";

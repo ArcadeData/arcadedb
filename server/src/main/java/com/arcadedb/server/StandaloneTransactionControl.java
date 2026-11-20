@@ -21,7 +21,6 @@ package com.arcadedb.server;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.http.handler.PostCommandHandler;
 
 import java.util.Locale;
 import java.util.Set;
@@ -75,15 +74,42 @@ public final class StandaloneTransactionControl {
    * A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK, also behind an
    * EXPLAIN or PROFILE prefix. SQL PROFILE and both openCypher prefixes run the transaction control they wrap; the engine's own
    * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused.
+   * <p>
+   * The probe must let through every text the engines read as a transaction control, or the statement runs as before: it skips
+   * the comments of both languages (an openCypher {@code //} line comment too) and any number of prefixes, since SQL accepts
+   * {@code PROFILE PROFILE BEGIN}. It scans the text in place and allocates nothing.
    */
   private static boolean startsWithTransactionControl(final String command) {
-    final int start = PostCommandHandler.skipLeadingSpaceAndComments(command);
-    if ((command.regionMatches(true, start, "explain", 0, 7) || command.regionMatches(true, start, "profile", 0, 7))
-        && command.length() > start + 7 && Character.isWhitespace(command.charAt(start + 7))) {
-      final String wrapped = command.substring(start + 7);
-      return startsWithTransactionControlWord(wrapped, PostCommandHandler.skipLeadingSpaceAndComments(wrapped));
-    }
+    final int length = command.length();
+    int start = skipLeadingSpaceAndComments(command, 0);
+    while ((command.regionMatches(true, start, "explain", 0, 7) || command.regionMatches(true, start, "profile", 0, 7))
+        && length > start + 7 && Character.isWhitespace(command.charAt(start + 7)))
+      start = skipLeadingSpaceAndComments(command, start + 7);
     return startsWithTransactionControlWord(command, start);
+  }
+
+  /**
+   * The position, from {@code from} on, of the first character that is neither whitespace nor inside a comment of SQL (a block,
+   * or two dashes and a space up to the end of the line) or of openCypher (a block, or two slashes up to the end of the line). An
+   * unterminated block comment hides the rest of the text.
+   */
+  private static int skipLeadingSpaceAndComments(final String command, final int from) {
+    final int length = command.length();
+    int pos = from;
+    while (pos < length) {
+      if (Character.isWhitespace(command.charAt(pos)))
+        ++pos;
+      else if (command.startsWith("/*", pos)) {
+        final int end = command.indexOf("*/", pos + 2);
+        pos = end < 0 ? length : end + 2;
+      } else if (command.startsWith("-- ", pos) || command.startsWith("//", pos)) {
+        pos += 2;
+        while (pos < length && command.charAt(pos) != '\r' && command.charAt(pos) != '\n')
+          ++pos;
+      } else
+        break;
+    }
+    return pos;
   }
 
   /**

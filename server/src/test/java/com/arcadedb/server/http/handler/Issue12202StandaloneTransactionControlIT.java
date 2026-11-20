@@ -44,8 +44,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * runs such a command in a transaction of that one request, so a {@code BEGIN} opened nothing the next command joined and a later
  * {@code ROLLBACK} undid nothing. It is refused now with a client error that names the transaction API. A {@code sqlscript}
  * holding the whole block, and a statement inside a session, run as before.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue12202StandaloneTransactionControlIT extends BaseGraphServerTest {
 
@@ -83,6 +81,21 @@ class Issue12202StandaloneTransactionControlIT extends BaseGraphServerTest {
 
     assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
     assertThat(response.body()).contains("CommandSemanticException").contains("RemoteDatabase.begin()");
+  }
+
+  /**
+   * The text probe in front of the parse has to let through every spelling the engines read as a transaction control: one behind
+   * an openCypher {@code //} line comment, and one behind more than one SQL PROFILE, were answered OK and did nothing.
+   */
+  @ParameterizedTest
+  @CsvSource({ "opencypher,'// undo the batch\nROLLBACK'", "opencypher,'// open\nSTART TRANSACTION'",
+      "opencypher,'/* a */ // b\nPROFILE // c\n COMMIT'", "sql,PROFILE PROFILE BEGIN", "sql,'profile /* a */ PROFILE -- b\n rollback'" })
+  void aTransactionControlBehindCommentsOrRepeatedPrefixesIsAClientError(final String language, final String statement)
+      throws Exception {
+    final HttpResponse<String> response = command(language, statement, null);
+
+    assertThat(response.statusCode()).as(response.body()).isEqualTo(400);
+    assertThat(response.body()).contains("CommandSemanticException").contains(REFUSAL);
   }
 
   /**

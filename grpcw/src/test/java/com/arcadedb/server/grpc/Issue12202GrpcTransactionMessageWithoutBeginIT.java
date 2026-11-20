@@ -45,8 +45,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #12202 (review of PR #12230): an ExecuteCommand whose transaction message names no registered transaction and does not set
  * {@code begin} runs in no transaction of the client, so a standalone transaction control is refused there too. It ran without the
  * auto-commit wrapper and was answered OK.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Issue12202GrpcTransactionMessageWithoutBeginIT extends BaseGrpcServerTest {
 

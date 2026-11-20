@@ -33,8 +33,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code BEGIN}, {@code COMMIT} and {@code ROLLBACK} and the openCypher {@code START TRANSACTION}, {@code COMMIT} and
  * {@code ROLLBACK}, also behind a prefix that still runs them. A level the engine cannot provide is left to the execution, which
  * refuses it with its own words (issue #10386): the predicate answers false for it in both languages and never throws.
- *
- * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12202TransactionControlAnalysisTest {
   private Database database;
