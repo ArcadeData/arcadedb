@@ -113,6 +113,41 @@ class Issue12044XmlEntityTextTest {
     TestHelper.checkActiveDatabases();
   }
 
+  /**
+   * With {@code trimText=false} the text of an element that mixes whitespace with a reference or a CDATA section is stored
+   * whole, surrounding whitespace included (plain text without a reference was already stored that way). It used to store the
+   * last non-blank raw piece.
+   */
+  @Test
+  void trimTextFalseKeepsTheWholeCoalescedText() throws Exception {
+    final String databasePath = "target/databases/test-import-12044-no-trim";
+    final File xmlFile = new File("target/importer-12044-no-trim.xml");
+    Files.writeString(xmlFile.toPath(), """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <items>
+          <item id="1"><name>  Al &amp; Bo  </name><note> <![CDATA[x<y]]> </note><plain>  two  </plain></item>
+        </items>""", StandardCharsets.UTF_8);
+
+    final DatabaseFactory databaseFactory = new DatabaseFactory(databasePath);
+    if (databaseFactory.exists())
+      databaseFactory.open().drop();
+
+    final Database db = databaseFactory.create();
+    try {
+      db.command("sql", "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH trimText=false");
+      assertThat(db.countType("v_item", true)).isEqualTo(1);
+
+      final Result item = selectById(db, "1");
+      assertThat(item.<String>getProperty("name")).isEqualTo("  Al & Bo  ");
+      assertThat(item.<String>getProperty("note")).isEqualTo(" x<y ");
+      assertThat(item.<String>getProperty("plain")).isEqualTo("  two  ");
+    } finally {
+      db.drop();
+      xmlFile.delete();
+    }
+    TestHelper.checkActiveDatabases();
+  }
+
   private static Result selectById(final Database db, final String id) {
     try (final ResultSet rs = db.query("sql", "SELECT FROM v_item WHERE id = ?", id)) {
       return rs.next();
