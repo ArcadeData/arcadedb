@@ -271,14 +271,19 @@ public class BoltStructureMapper {
   public static Map<String, Object> toProperties(final Document document) {
     final Map<String, Object> properties = new LinkedHashMap<>();
 
-    for (final String propertyName : document.getPropertyNames()) {
+    // ONE PASS OVER THE RECORD, NOT ONE PER PROPERTY (issue #12558): asking the document for each property by
+    // name reads a record once per property, since ImmutableDocument.get(name) walks the record header from its
+    // first byte until it meets the name - so a record of P properties cost P walks of the same record, and the
+    // cost of a row grew with P squared. toMap(false) reads the record once and leaves the metadata out, the
+    // same way the HTTP and gRPC serializers read a row.
+    for (final Map.Entry<String, Object> entry : document.toMap(false).entrySet()) {
+      final String propertyName = entry.getKey();
       // Skip internal properties
       if (propertyName.startsWith("@")) {
         continue;
       }
 
-      final Object value = document.get(propertyName);
-      properties.put(propertyName, toPackStreamValue(value));
+      properties.put(propertyName, toPackStreamValue(entry.getValue()));
     }
 
     return properties;
