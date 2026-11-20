@@ -280,7 +280,8 @@ class AsyncNewEdgeCrossSlotIssue12602Test extends TestHelper {
       assertThat(rid.asVertex().countEdges(Vertex.DIRECTION.IN, "F")).as("IN of " + rid).isEqualTo(expectedIn.getOrDefault(rid, 0L));
       assertThat(inEdges(rid, "F")).as("IN edges of " + rid).hasSize(expectedIn.getOrDefault(rid, 0L).intValue()).doesNotHaveDuplicates();
     }
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM F")) {
+    // count(@rid) SCANS THE RECORDS: count(*) READS A CACHED COUNTER AND WOULD NOT SAY HOW MANY EDGE RECORDS THERE ARE
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS n FROM F")) {
       assertThat(rs.next().<Long>getProperty("n")).isEqualTo((long) edges);
     }
   }
