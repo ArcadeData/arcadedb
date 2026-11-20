@@ -150,6 +150,31 @@ class Issue12092VectorIndexHierarchyDefaultTest extends TestHelper {
     assertThat(bucketMetadata("Doc[embedding]")).allSatisfy(m -> assertThat(m.addHierarchy).isFalse());
   }
 
+  /**
+   * SHOW INDEXES lists the settings that differ from the creation default, so with the default flipped a flat index must
+   * list {@code addHierarchy: false}, and the statement it prints must create a flat index again.
+   */
+  @Test
+  void showIndexesNamesAFlatIndexSoItsStatementRecreatesIt() {
+    database.command("opencypher",
+        "CREATE VECTOR INDEX flat FOR (n:L) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 4, addHierarchy: false}}");
+    database.command("opencypher", "CREATE VECTOR INDEX hier FOR (n:M) ON n.e OPTIONS {indexConfig: {`vector.dimensions`: 4}}");
+
+    final String flatStatement = createStatement("flat");
+    assertThat(flatStatement).contains("`addHierarchy`: false");
+    assertThat(createStatement("hier")).doesNotContain("addHierarchy");
+
+    database.command("opencypher", "DROP INDEX flat");
+    database.command("opencypher", flatStatement);
+    assertThat(bucketMetadata("flat")).allSatisfy(m -> assertThat(m.addHierarchy).isFalse());
+  }
+
+  private String createStatement(final String name) {
+    try (final ResultSet rs = database.query("opencypher", "SHOW INDEXES YIELD * WHERE name = $name", "name", name)) {
+      return rs.next().getProperty("createStatement");
+    }
+  }
+
   private static JSONObject definition() {
     return new JSONObject().put("typeName", "Doc").put("properties", new JSONArray().put("embedding"));
   }

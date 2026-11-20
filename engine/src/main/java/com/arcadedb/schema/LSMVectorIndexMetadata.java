@@ -112,7 +112,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
    * {@link #fromJSON(JSONObject)} keeps it flat.
    */
   public boolean                  addHierarchy             = true;
-  public String                   buildState              = "READY"; // BUILDING, READY, or INVALID
+  public String                   buildState               = "READY"; // BUILDING, READY, or INVALID
 
   // Product Quantization (PQ) configuration - used when quantizationType=PRODUCT
   public int                      pqSubspaces              = -1;    // Number of subspaces (M), -1 = auto (dimensions/4, capped at 512)
