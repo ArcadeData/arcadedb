@@ -31,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -84,6 +85,20 @@ class Issue11956GrpcDateParameterIT extends BaseGrpcServerTest {
     assertThat(query("sql", "SELECT k FROM D11956 WHERE da = :p")).hasSize(1);
     assertThat(query("sql", "SELECT k FROM D11956 WHERE dt >= :p")).hasSize(1);
     assertThat(query("sql", "SELECT k FROM D11956 WHERE dt < :p")).isEmpty();
+  }
+
+  /** arcadedb.dateImplementation=java.util.Date reads a DATE back as a java.util.Date: the date parameter still matches it (issue #9647). */
+  @Test
+  void cypherEqualityOnADatePropertyMatchesADateParameterUnderTheJavaUtilDateImplementation() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "ALTER DATABASE `arcadedb.dateImplementation` 'java.util.Date'").close();
+    // the setting took effect: otherwise the test silently runs the default LocalDate path
+    try (final ResultSet rs = database.query("sql", "SELECT da FROM D11956 WHERE k = 1")) {
+      assertThat(rs.next().<Object>getProperty("da")).isInstanceOf(Date.class);
+    }
+
+    assertThat(query("cypher", "MATCH (n:D11956) WHERE n.da = $p RETURN n.k AS k")).hasSize(1);
+    assertThat(query("sql", "SELECT k FROM D11956 WHERE da = :p")).hasSize(1);
   }
 
   @Test

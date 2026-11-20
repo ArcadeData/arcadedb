@@ -33,6 +33,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Properties;
 
@@ -66,6 +67,22 @@ class Issue11956PostgresDateParameterIT extends PostgresWireProtocolTestBase {
   void cypherEqualityOnADatePropertyMatchesADateParameter() throws Exception {
     try (final Connection connection = connect("0")) {
       assertThat(keys(connection, "{cypher}MATCH (n:D11956) WHERE n.da = ? RETURN n.k AS k")).containsExactly(1);
+    }
+  }
+
+  /** arcadedb.dateImplementation=java.util.Date reads a DATE back as a java.util.Date: the date parameter still matches it (issue #9647). */
+  @Test
+  void cypherEqualityOnADatePropertyMatchesADateParameterUnderTheJavaUtilDateImplementation() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "ALTER DATABASE `arcadedb.dateImplementation` 'java.util.Date'").close();
+    // the setting took effect: otherwise the test silently runs the default LocalDate path
+    try (final ResultSet rs = database.query("sql", "SELECT da FROM D11956 WHERE k = 1")) {
+      assertThat(rs.next().<Object>getProperty("da")).isInstanceOf(Date.class);
+    }
+
+    try (final Connection connection = connect("0")) {
+      assertThat(keys(connection, "{cypher}MATCH (n:D11956) WHERE n.da = ? RETURN n.k AS k")).containsExactly(1);
+      assertThat(keys(connection, "SELECT k FROM D11956 WHERE da = ?")).containsExactly(1);
     }
   }
 
