@@ -245,6 +245,10 @@ abstract class InPlaceRebuildStrategy {
       // the postings are stored with or without their statistics by the setting of the file: a similarity changed since needs new files
       if (metadata != null && metadata.isBM25() != fullText.isBM25())
         return "the similarity of the full-text index '" + index.getName() + "' changed since its postings were written";
+      // an index whose per-field analyzers were stored but not applied writes with the analyzer of the index while it is in use: its
+      // definition is created again, with them applied (issue #12163)
+      if (metadata != null && !metadata.getFieldAnalyzers().isEmpty() && !metadata.isFieldAnalyzersApplied())
+        return "the per-field analyzers of the full-text index '" + index.getName() + "' were not applied when its postings were written";
       return null;
     }
 
