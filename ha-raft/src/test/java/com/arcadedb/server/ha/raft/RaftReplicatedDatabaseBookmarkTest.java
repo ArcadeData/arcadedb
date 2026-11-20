@@ -59,6 +59,8 @@ class RaftReplicatedDatabaseBookmarkTest {
     raftServer.stateMachine(stateMachine);
     httpClient = HttpClient.newHttpClient();
     database = new RaftReplicatedDatabase(null, proxied, raftServer, httpClient);
+    // The write slot is per thread: start from a thread another test did not leave a commit on
+    database.clearReadConsistencyContext();
   }
 
   @AfterEach
