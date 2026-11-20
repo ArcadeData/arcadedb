@@ -539,6 +539,10 @@ public class BoltStructureMapper {
    * Recursively convert a value read from a Bolt PackStream request into engine-friendly types,
    * decoding temporal structures into {@code java.time} values. Maps and lists are walked so nested
    * parameters are handled too. Non-temporal values are returned unchanged.
+   * <p>
+   * A map or a list is copied only when something inside it changes: the parameters of a request are almost always
+   * plain values, and a bulk write of 500 rows of 1024 floats was copied whole, every map and every list of it, to
+   * hand on the same values (issue #12641).
    */
   @SuppressWarnings("unchecked")
   public static Object fromPackStreamValue(final Object value) {
@@ -546,17 +550,36 @@ public class BoltStructureMapper {
       return fromInboundStructure(structure);
 
     if (value instanceof Map<?, ?> map) {
-      final Map<String, Object> converted = new LinkedHashMap<>(map.size());
-      for (final Map.Entry<?, ?> entry : map.entrySet())
-        converted.put(String.valueOf(entry.getKey()), fromPackStreamValue(entry.getValue()));
-      return converted;
+      Map<String, Object> converted = null;
+      for (final Map.Entry<?, ?> entry : map.entrySet()) {
+        final Object item = entry.getValue();
+        final Object convertedItem = fromPackStreamValue(item);
+        if (converted == null && (convertedItem != item || !(entry.getKey() instanceof String))) {
+          // the first entry that changes: the entries before it are copied as they are
+          converted = new LinkedHashMap<>(map.size());
+          for (final Map.Entry<?, ?> before : map.entrySet()) {
+            if (before == entry)
+              break;
+            converted.put(String.valueOf(before.getKey()), before.getValue());
+          }
+        }
+        if (converted != null)
+          converted.put(String.valueOf(entry.getKey()), convertedItem);
+      }
+      return converted != null ? converted : map;
     }
 
     if (value instanceof List<?> list) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list)
-        converted.add(fromPackStreamValue(item));
-      return converted;
+      List<Object> converted = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object item = list.get(i);
+        final Object convertedItem = fromPackStreamValue(item);
+        if (converted == null && convertedItem != item)
+          converted = new ArrayList<>(list);
+        if (converted != null)
+          converted.set(i, convertedItem);
+      }
+      return converted != null ? converted : list;
     }
 
     return value;
