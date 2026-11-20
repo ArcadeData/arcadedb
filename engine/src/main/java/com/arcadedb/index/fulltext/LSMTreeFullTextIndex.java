@@ -1557,6 +1557,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k });
+          // Only the key the unprefixed posting is stored under, unlike remove(keys, rid): this removes a KEY, whatever record holds
+          // it. The unescaped key an index written before issue #12162 holds for a token such as "title:java" is the key of the
+          // "title" posting of "java" of every record, so removing it here would drop the postings of records this call is not about.
           underlyingIndex.remove(new String[] { FullTextKeys.unqualifiedKey(propertyNames, k) });
         }
       }

@@ -19,10 +19,15 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -146,6 +151,109 @@ class Issue12162FullTextFieldKeysTest extends TestHelper {
     assertThat(search("Doc", "Doc[t]", "note*").keySet()).containsExactlyInAnyOrder(1, 2);
     assertThat(search("Doc", "Doc[t]", "not?*").keySet()).containsExactlyInAnyOrder(1, 2);
     assertThat(search("Doc", "Doc[t]", "note?this").keySet()).containsExactly(1);
+  }
+
+  @Test
+  void anUpdateOfOneFieldKeepsTheQualifiedPostingOfTheOtherOne() {
+    // k = 6 holds java in its title and title:java in its body: the unprefixed posting of the body token (stored escaped) and the
+    // title posting of java are two keys, and the cleanup of an update must not take one for the other
+    database.transaction(() -> database.command("sql", "INSERT INTO Article SET k = 6, title = 'java', body = 'see title:java'"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactlyInAnyOrder(5, 6);
+    assertThat(search("Article", "Article[title,body]", "title\\:java").keySet()).containsExactlyInAnyOrder(4, 6);
+
+    database.transaction(() -> database.command("sql", "UPDATE Article SET body = 'other text' WHERE k = 6"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactlyInAnyOrder(5, 6);
+    assertThat(search("Article", "Article[title,body]", "title\\:java").keySet()).containsExactly(4);
+
+    database.transaction(() -> database.command("sql", "UPDATE Article SET title = 'other' WHERE k = 6"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactly(5);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Article WHERE k = 5"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).isEmpty();
+    assertThat(search("Article", "Article[title,body]", "title\\:java").keySet()).containsExactly(4);
+  }
+
+  @Test
+  void aPostingAnIndexWrittenBeforeTheFixStoredUnescapedGoesWithItsRecord() {
+    // An index written before the escape stored the token of the body of k = 4 under title:java, the key of the title posting of
+    // java. Until a REBUILD INDEX it still answers a title:java query with k = 4, but an update or a delete of the record removes it.
+    final RID rid = ridOf(4);
+    database.transaction(() -> ((LSMTreeFullTextIndex) bucketIndexOf(rid)).putReplay(new Object[] { "title:java" }, new RID[] { rid }));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactlyInAnyOrder(4, 5);
+
+    database.transaction(() -> database.command("sql", "UPDATE Article SET body = 'nothing here' WHERE k = 4"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactly(5);
+    assertThat(search("Article", "Article[title,body]", "title\\:java").keySet()).isEmpty();
+
+    database.transaction(() -> database.command("sql", "UPDATE Article SET body = 'see title:java again' WHERE k = 4"));
+    database.transaction(() -> ((LSMTreeFullTextIndex) bucketIndexOf(rid)).putReplay(new Object[] { "title:java" }, new RID[] { rid }));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactlyInAnyOrder(4, 5);
+    database.transaction(() -> database.command("sql", "DELETE FROM Article WHERE k = 4"));
+    assertThat(search("Article", "Article[title,body]", "title:java").keySet()).containsExactly(5);
+  }
+
+  @Test
+  void theDirectLookupReadsTheKeyTheTokenIsStoredUnder() {
+    // Title is not a qualifier (the property names are case sensitive), so the analyzer folds Title:java into the token title:java
+    assertThat(direct("Article[title,body]", "Title:java")).containsExactly(4);
+    assertThat(direct("Article[title,body]", "title:java")).containsExactly(5);
+    assertThat(direct("Article[title,body]", "body:title:java")).containsExactly(4);
+  }
+
+  @Test
+  void aClassicIndexKeepsTheKeysApartToo() {
+    // CLASSIC stores one RID-only posting per token occurrence, through another writer than the BM25 postings with statistics
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE ClassicArticle");
+      database.command("sql", "CREATE PROPERTY ClassicArticle.k INTEGER");
+      database.command("sql", "CREATE PROPERTY ClassicArticle.title STRING");
+      database.command("sql", "CREATE PROPERTY ClassicArticle.body STRING");
+      database.command("sql", "CREATE INDEX ON ClassicArticle (title, body) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
+      database.command("sql", "INSERT INTO ClassicArticle SET k = 3, title = 'Tiger', body = 'big cat'");
+      database.command("sql", "INSERT INTO ClassicArticle SET k = 4, title = 'Notes', body = 'see title:java for details'");
+      database.command("sql", "INSERT INTO ClassicArticle SET k = 5, title = 'Java', body = 'intro'");
+    });
+    final String index = "ClassicArticle[title,body]";
+
+    assertThat(search("ClassicArticle", index, "ti*").keySet()).containsExactlyInAnyOrder(3, 4);
+    assertThat(search("ClassicArticle", index, "b*").keySet()).containsExactly(3);
+    assertThat(search("ClassicArticle", index, "title:java").keySet()).containsExactly(5);
+    assertThat(search("ClassicArticle", index, "title\\:java").keySet()).containsExactly(4);
+    assertThat(search("ClassicArticle", index, "title\\:ja*").keySet()).containsExactly(4);
+    assertThat(search("ClassicArticle", index, "title\\:jav~1").keySet()).containsExactly(4);
+    assertThat(direct(index, "Title:java")).containsExactly(4);
+    assertThat(direct(index, "title:java")).containsExactly(5);
+
+    database.transaction(() -> database.command("sql", "UPDATE ClassicArticle SET body = 'nothing here' WHERE k = 4"));
+    assertThat(search("ClassicArticle", index, "title\\:java").keySet()).isEmpty();
+    assertThat(search("ClassicArticle", index, "title:java").keySet()).containsExactly(5);
+
+    database.command("sql", "REBUILD INDEX `" + index + "`");
+    assertThat(search("ClassicArticle", index, "title:java").keySet()).containsExactly(5);
+    assertThat(search("ClassicArticle", index, "ti*").keySet()).containsExactly(3);
+  }
+
+  private RID ridOf(final int k) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Article WHERE k = :k", Map.of("k", k))) {
+      return rs.next().getIdentity().orElseThrow();
+    }
+  }
+
+  private Index bucketIndexOf(final RID rid) {
+    for (final Index bucketIndex : ((TypeIndex) database.getSchema().getIndexByName("Article[title,body]")).getIndexesOnBuckets())
+      if (bucketIndex.getAssociatedBucketId() == rid.getBucketId())
+        return bucketIndex;
+    throw new IllegalStateException("no bucket index for " + rid);
+  }
+
+  /** The {@code k} of every record the index lookup of {@code text} finds, the path of CONTAINSTEXT rather than of SEARCH_INDEX. */
+  private List<Integer> direct(final String indexName, final String text) {
+    final List<Integer> ks = new ArrayList<>();
+    try (final IndexCursor cursor = ((TypeIndex) database.getSchema().getIndexByName(indexName)).get(new Object[] { text })) {
+      while (cursor.hasNext())
+        ks.add(database.lookupByRID(cursor.next().getIdentity(), true).asDocument().getInteger("k"));
+    }
+    return ks;
   }
 
   private Map<Integer, Float> search(final String target, final String index, final String query) {
