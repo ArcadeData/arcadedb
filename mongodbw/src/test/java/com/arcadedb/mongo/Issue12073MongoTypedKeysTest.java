@@ -403,6 +403,36 @@ class Issue12073MongoTypedKeysTest {
   }
 
   @Test
+  void everyWritePathKeepsTheKeysCurrent() {
+    createUniqueIndex("Paths", new Document("a", 1));
+    // an insert without an _id is given one, as its first field, and its key
+    insert("Paths", new Document("a", 1), new Document("a", 2));
+    final List<Document> generated = find("Paths", new Document());
+    assertThat(generated).extracting(d -> d.keySet().iterator().next()).containsOnly("_id");
+    assertThat(generated).extracting(d -> d.get("_id")).allMatch(ObjectId.class::isInstance);
+    assertThat(keyedRecords("Paths", MongoKeys.ID_KEY)).isEqualTo(2L);
+
+    // an update without a filter: the keys follow the new values (it is not the SQL UPDATE that leaves them as they were)
+    command("update", "Paths", new Document("updates", List.of(new Document("q", new Document("a", 1)).append("u", new Document("$set", new Document("a", 5))))));
+    command("update", "Paths", new Document("updates", List.of(new Document("q", new Document()).append("multi", false).append("u",
+        new Document("$set", new Document("b", 1))))));
+    assertThatThrownBy(() -> insert("Paths", new Document("_id", "x").append("a", 5.0))).isInstanceOf(DuplicatedKeyException.class);
+    insert("Paths", new Document("_id", "y").append("a", 1));
+
+    // a replacement is the new fields and their keys
+    command("update", "Paths", new Document("updates", List.of(new Document("q", new Document("_id", "y")).append("u", new Document("a", 7)))));
+    assertThatThrownBy(() -> insert("Paths", new Document("_id", "z").append("a", 7))).isInstanceOf(DuplicatedKeyException.class);
+    insert("Paths", new Document("_id", "z").append("a", 1));
+
+    // an upsert that inserts writes the keys of what it stores
+    command("update", "Paths", new Document("updates", List.of(new Document("q", new Document("_id", "up")).append("u",
+        new Document("$set", new Document("a", 9))).append("upsert", true))));
+    assertThatThrownBy(() -> insert("Paths", new Document("_id", "w").append("a", 9L))).isInstanceOf(DuplicatedKeyException.class);
+    assertThatThrownBy(() -> insert("Paths", new Document("_id", "up"))).isInstanceOf(DuplicatedKeyException.class);
+    assertThat(keyedRecords("Paths", "$unique:a")).isEqualTo((long) find("Paths", new Document()).size());
+  }
+
+  @Test
   void aUniqueCreateIndexesOnTheIdIsTheIdIndex() {
     database.getSchema().createDocumentType("OnId");
     database.transaction(() -> {
