@@ -91,7 +91,8 @@ class ImporterCommitsThroughOneProtocolCensusTest {
       Map.entry(GREMLIN_DELEGATE,
           "TinkerPop's readers commit their batches through graph.tx(): only on a graph the import owns, since in a caller's "
               + "transaction ArcadeGraph.openInCallerTransaction declares transactions unsupported and the readers never commit, "
-              + "and a refused commit is rolled back by AbstractTinkerPopImporterFormat.rollbackOwnBatch")));
+              + "and the batch a refused commit leaves open is rolled back by AbstractTinkerPopImporterFormat.rollbackOwnBatch "
+              + "when the import began it (Issue11388TinkerPopFormatsRefusedCommitTest)")));
 
   @Test
   void everyImporterRowLoopCommitsThroughImporterTransactions() throws Exception {
@@ -134,7 +135,9 @@ class ImporterCommitsThroughOneProtocolCensusTest {
         .containsExactlyInAnyOrder("org/acme/loader/HandRolledRowLoopProbe#run (Database.commit)",
             "org/acme/loader/MethodReferencedRowLoopProbe#run (Database.commit)",
             "org/acme/loader/CommittingRowSinkProbe#accept (BasicDatabase.commit)",
-            "org/acme/loader/CommittingRowSourceProbe#drain (Database.commit)");
+            "org/acme/loader/CommittingRowSourceProbe#drain (Database.commit)",
+            "org/acme/loader/InheritedSinkBodyProbe#accept (BasicDatabase.commit)",
+            "org/acme/loader/InheritedLoopBodyProbe#run (Database.commit)");
     assertThat(callSites).as("a class no importer reaches is not an importer's").doesNotContainKey("org/acme/loader/UnreachedCommitProbe#run");
     assertThat(callSites).as("the walk stops at an implementation of the database, whose commits are the database's")
         .doesNotContainKey("org/acme/loader/DatabaseImplementationProbe#flush");
@@ -159,7 +162,7 @@ class ImporterCommitsThroughOneProtocolCensusTest {
     final Set<String> importer = new TreeSet<>();
     for (final String method : CompiledClasses.methodsReachableFrom(classes, roots,
         type -> !engine.contains(type) && !databases.contains(type)))
-      importer.add(CompiledClasses.keyOf(method.substring(0, method.indexOf('.')) + ".class"));
+      importer.add(CompiledClasses.keyOf(CompiledClasses.typeOf(method) + ".class"));
     return importer;
   }
 

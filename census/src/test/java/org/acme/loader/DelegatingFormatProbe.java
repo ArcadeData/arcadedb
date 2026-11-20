@@ -59,6 +59,11 @@ public final class DelegatingFormatProbe implements FormatImporter {
     UnwalkedRegistryProbe.SINK.accept(database);
     UnwalkedRegistryProbe.SOURCE.drain(database);
 
+    // THE SAME WITH A BODY THE CLASS INHERITS RATHER THAN OVERRIDES: BY DISPATCH FROM THE INTERFACE, AND BY A CALL ON THE CLASS
+    // WHOSE INTERFACE DECLARES THE METHOD ABSTRACTLY WHILE ITS SUPER CLASS HOLDS THE BODY
+    UnwalkedRegistryProbe.INHERITING_SINK.accept(database);
+    UnwalkedRegistryProbe.INHERITING_LOOP.run(database);
+
     // AN IMPLEMENTATION OF THE DATABASE: THE WALK DOES NOT STEP INTO IT
     DatabaseImplementationProbe.flush(database);
   }
@@ -122,10 +127,39 @@ final class CommittingRowSourceProbe extends RowSourceProbe {
   }
 }
 
+/** The body {@link InheritingSinkProbe} runs: its super class holds it, and the interface it implements declares none. */
+class InheritedSinkBodyProbe {
+  public void accept(final BasicDatabase database) {
+    database.commit();
+  }
+}
+
+/** Implements {@link RowSinkProbe} by inheriting {@code accept} from its super class, which does not implement it. */
+final class InheritingSinkProbe extends InheritedSinkBodyProbe implements RowSinkProbe {
+}
+
+/** What a format calls on the class itself, as an interface: the class gets its body from its super class. */
+interface RowLoopProbe {
+  void run(Database database);
+}
+
+/** The body {@link InheritingLoopProbe} runs, declared once and only here. */
+class InheritedLoopBodyProbe {
+  public void run(final Database database) {
+    database.commit();
+  }
+}
+
+/** Implements {@link RowLoopProbe} by inheriting {@code run} from its super class: a call on this class finds the body there. */
+final class InheritingLoopProbe extends InheritedLoopBodyProbe implements RowLoopProbe {
+}
+
 /** Creates the helpers that only a dispatch may reach: no call of a walked method runs this initializer. */
 final class UnwalkedRegistryProbe {
-  static final RowSinkProbe   SINK   = new CommittingRowSinkProbe();
-  static final RowSourceProbe SOURCE = new CommittingRowSourceProbe();
+  static final RowSinkProbe        SINK            = new CommittingRowSinkProbe();
+  static final RowSourceProbe      SOURCE          = new CommittingRowSourceProbe();
+  static final RowSinkProbe        INHERITING_SINK = new InheritingSinkProbe();
+  static final InheritingLoopProbe INHERITING_LOOP = new InheritingLoopProbe();
 
   private UnwalkedRegistryProbe() {
   }
