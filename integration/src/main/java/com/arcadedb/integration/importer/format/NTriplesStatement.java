@@ -40,7 +40,10 @@ import java.io.Reader;
  * other delimiter (a comma-separated triple file, or a delimiter the user set) the terms are separated by that delimiter,
  * whitespace around it is ignored, and text that follows a term without the delimiter ends the statement there - the way
  * the delimited-text reading this replaces put it in the same cell. A term that is none of the above is taken as written.
- * What follows the third term (the {@code .}, or the graph of an N-Quads statement) is ignored. A blank-node label ends
+ * A literal is followed by the end of the line, whitespace, the delimiter, {@code .}, {@code #} or the next term; any other
+ * text after it refuses the row, rather than cutting the literal short and ignoring the rest: a CSV doubled quote
+ * ({@code "say ""hi"""}) or a prefixed datatype ({@code "42"^^xsd:integer}) is not N-Triples. What follows the third term
+ * (the {@code .}, or the graph of an N-Quads statement) is ignored. A blank-node label ends
  * before a final {@code .}, which is the terminator, not part of the label. A term longer than {@code maxLength} (when
  * positive) is refused, as the {@code maxPropertySize} setting refused a cell before, as soon as the scan passes the limit and
  * before the term's value is built.
@@ -55,10 +58,16 @@ final class NTriplesStatement {
   // A STATEMENT IS AT MOST FOUR TERMS (AN N-QUADS GRAPH IS THE FOURTH): THIS MUCH ROOM IS LEFT FOR SEPARATORS AND THE TERMINATOR
   private static final int SEPARATOR_ROOM = 4096;
 
+  // HOW MUCH OF THE SOURCE readLine TAKES FROM THE READER AT A TIME
+  static final int CHUNK_SIZE = 8192;
+
   private final String        delimiter;
   private final boolean       whitespaceSeparates;
   private final int           maxLength;
   private final long          lineLimit;
+  private final char[]        chunk      = new char[CHUNK_SIZE];
+  private       int           chunkPos;
+  private       int           chunkLen;
   private final StringBuilder lineBuffer = new StringBuilder();
   private       long          lineLength;
   private       boolean       skipLineFeed;
@@ -88,35 +97,60 @@ final class NTriplesStatement {
   /**
    * Reads the next line of {@code reader} (ended by LF, CR or CRLF), keeping at most {@link #lineLimit} characters of it in
    * {@link #line()} and counting the rest in {@link #lineLength()}. Answers false at the end of the source.
+   * <p>
+   * The source is read a chunk at a time and scanned for the line end in the chunk, then the line is copied out whole: reading
+   * a character per call took the reader's lock once per character of a file that can be many gigabytes. The chunk holds the
+   * source read past the line, so every call of one instance must be given the same {@code reader}.
    */
   boolean readLine(final Reader reader) throws IOException {
     lineBuffer.setLength(0);
     lineLength = 0;
-    int c = reader.read();
     if (atSourceStart) {
       atSourceStart = false;
       // A UTF-8 FILE SAVED WITH A BYTE-ORDER MARK: KEPT, IT BECAME PART OF THE FIRST SUBJECT'S KEY ("\uFEFF<http://...>")
-      if (c == '\uFEFF')
-        c = reader.read();
+      if (fillChunk(reader) && chunk[chunkPos] == '\uFEFF')
+        ++chunkPos;
     }
     if (skipLineFeed) {
       skipLineFeed = false;
-      if (c == '\n')
-        c = reader.read();
-    }
-    if (c < 0)
-      return false;
-    while (c >= 0 && c != '\n') {
-      if (c == '\r') {
-        skipLineFeed = true;
-        break;
+      if (chunkPos < chunkLen || fillChunk(reader)) {
+        if (chunk[chunkPos] == '\n')
+          ++chunkPos;
       }
-      if (lineLength < lineLimit)
-        lineBuffer.append((char) c);
-      ++lineLength;
-      c = reader.read();
     }
-    return true;
+    // WHETHER A CHARACTER OF THIS LINE, ITS TERMINATOR INCLUDED, WAS READ: AN EMPTY LINE IS A LINE, THE END OF THE SOURCE IS NOT
+    boolean read = false;
+    while (chunkPos < chunkLen || fillChunk(reader)) {
+      final int begin = chunkPos;
+      int end = begin;
+      while (end < chunkLen && chunk[end] != '\n' && chunk[end] != '\r')
+        ++end;
+      if (end > begin) {
+        read = true;
+        if (lineLength < lineLimit)
+          lineBuffer.append(chunk, begin, (int) Math.min(end - begin, lineLimit - lineLength));
+        lineLength += end - begin;
+      }
+      chunkPos = end;
+      if (end < chunkLen) {
+        // THE LINE END: A CR MAY BE THE FIRST HALF OF A CRLF WHOSE LF IS THE NEXT CHARACTER, WHICH THE NEXT CALL SKIPS
+        skipLineFeed = chunk[end] == '\r';
+        ++chunkPos;
+        return true;
+      }
+    }
+    return read;
+  }
+
+  /** Reads the next chunk of {@code reader}: answers false, with the chunk empty, at the end of the source. */
+  private boolean fillChunk(final Reader reader) throws IOException {
+    int n;
+    do {
+      n = reader.read(chunk, 0, CHUNK_SIZE);
+    } while (n == 0);
+    chunkPos = 0;
+    chunkLen = Math.max(n, 0);
+    return n > 0;
   }
 
   /** The line {@link #readLine} read, cut at {@link #lineLimit} characters when it was longer. */
@@ -308,16 +342,37 @@ final class NTriplesStatement {
             + "'-' only: " + line);
       buffer.append(line, tagBegin, pos);
       literalLanguage = line.substring(tagBegin + 1, pos);
-    } else if (line.startsWith("^^<", pos)) {
+    } else if (line.startsWith("^^", pos)) {
+      // A PREFIXED NAME ("42"^^xsd:integer) IS TURTLE, NOT N-TRIPLES: LEFT UNREAD IT LOST THE DATATYPE, AND THE LITERAL WAS THE PLAIN "42"
+      if (!line.startsWith("^^<", pos))
+        throw new ImportException("Invalid datatype at column " + (pos + 1) + ", a datatype is an IRI between '<' and '>': " + line);
       pos += 2;
       final String literal = buffer.toString();
       final String datatype = readIri();
+      checkLiteralEnd();
       if (XSD_STRING.equals(datatype))
         return literal;
       literalDatatype = datatype;
       return literal + "^^<" + datatype + ">";
     }
+    checkLiteralEnd();
     return buffer.toString();
+  }
+
+  /**
+   * What may follow a literal with its language tag or datatype: the end of the line, whitespace, the delimiter, the statement
+   * terminator, a comment, or the next term. Any other character is text the scan would leave unread, which cut the literal
+   * short and went on without a word: the CSV doubled quote of {@code "say ""hi"""} read as the literal {@code "say "} and the
+   * rest of the row ignored, with a result of OK. The row is refused instead.
+   */
+  private void checkLiteralEnd() {
+    if (pos >= line.length())
+      return;
+    final char c = line.charAt(pos);
+    if (isWhitespace(c) || c == '.' || c == '#' || c == '<' || line.startsWith("_:", pos) || atDelimiter())
+      return;
+    throw new ImportException("Unexpected text after the literal that ends at column " + pos + ", a quote inside a literal is "
+        + "escaped as \\\" in N-Triples and not doubled: " + line);
   }
 
   private static boolean isLanguageTagChar(final char c) {
@@ -357,11 +412,14 @@ final class NTriplesStatement {
   private void appendCodePoint(final int digits, final boolean iri) {
     if (pos + digits > line.length())
       throw new ImportException("Incomplete \\u escape in: " + line);
-    final int codePoint;
-    try {
-      codePoint = Integer.parseInt(line, pos, pos + digits, 16);
-    } catch (final NumberFormatException e) {
-      throw new ImportException("Invalid \\u escape in: " + line);
+    // ASCII HEX DIGITS ONLY: Integer.parseInt TAKES A LEADING SIGN AND NON-ASCII DIGITS TOO, SO A SIGNED ESCAPE WAS READ AS A LETTER
+    int codePoint = 0;
+    for (int i = 0; i < digits; i++) {
+      final char h = line.charAt(pos + i);
+      final int digit = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+      if (digit < 0)
+        throw new ImportException("Invalid \\u or \\U escape, " + digits + " hexadecimal digits are required, in: " + line);
+      codePoint = (codePoint << 4) | digit;
     }
     if (!Character.isValidCodePoint(codePoint))
       throw new ImportException("Invalid code point in a \\U escape in: " + line);

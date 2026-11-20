@@ -38,7 +38,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.univocity.parsers.csv.CsvParserSettings;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.Reader;
 import java.util.Iterator;
@@ -210,7 +209,8 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // what -commitEvery actually asks for, and is the same shape CSVImporterFormat.loadEdges() uses (issue #7288).
     int txCount = 0;
 
-    try (final Reader reader = new BufferedReader(sourceReader(parser))) {
+    // NOT WRAPPED IN A BufferedReader: statement.readLine() TAKES THE SOURCE A CHUNK AT A TIME, SO A BUFFER BETWEEN THEM WOULD ONLY COPY IT
+    try (final Reader reader = sourceReader(parser)) {
       ensureVertexType(database, settings.vertexTypeName, typeIdProperty);
 
       // A transaction not active here despite ownsTransaction being false is exactly the invariant violation
@@ -325,7 +325,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
       completed = true;
 
     } catch (final IOException e) {
-      throw new ImportException("Error on importing CSV", e);
+      throw new ImportException("Error on importing RDF", e);
     } finally {
       reportSkippedEntries(route, context, skipped);
 
