@@ -517,6 +517,9 @@ public class GraphEngine {
    * Every reader of the edge trusts the record, so the adjacency lists follow it, as an UPDATE re-points an existing edge: wiring
    * the edge into the lists of {@code given} instead left a record and lists that disagreed, which CHECK DATABASE FIX then
    * resolved by deleting the edge (issue #12247). The named vertex is refused on the same terms as a FROM or TO is.
+   * <p>
+   * Engine-internal: public only because the SQL {@code ConnectEdgeStep}, which wires an edge after its record was saved, lives in
+   * another package. Every other way to create an edge goes through {@link GraphEngine}, which calls it itself.
    *
    * @throws VertexNotFoundException  when the named vertex does not exist or was deleted in this transaction
    * @throws IllegalArgumentException when the named record is not a vertex
@@ -654,12 +657,27 @@ public class GraphEngine {
       if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
         setProperties(edge, connection.edgeProperties);
 
+      // AN @out / @in AMONG THE PROPERTIES NAMED ANOTHER ENDPOINT FOR THE RECORD: THE LISTS FOLLOW THE RECORD (issue #12247), AND A
+      // REFUSED ENDPOINT STORES NOTHING OF THIS EDGE
+      final Identifiable source = newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, sourceVertex);
+      final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, destinationVertex);
+
       // A REFUSED EDGE HAS NO IDENTITY TO WIRE: IT IS LEFT OUT, AND THE RETURNED LIST HOLDS ONLY THE EDGES CREATED (issue #10085)
       if (!edge.saveReportingVeto())
         continue;
-      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
-      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destinationVertex);
+      if (source != sourceVertex) {
+        // THE RECORD NAMES ANOTHER SOURCE: THE EDGE BELONGS TO THE OUT LIST OF THAT VERTEX, NOT TO THE BATCH OF sourceVertex
+        connectOutgoingEdge((VertexInternal) source, destination, edge);
+        if (edgeType.isBidirectional())
+          connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
+        edges.add(edge);
+        continue;
+      }
+
+      recordCreated(edgeType, edge, sourceVertexRID, destination.getIdentity());
+
+      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destination);
       outEdgePairs.add(pair);
       // THE INCOMING SIDE IS A PROPERTY OF THE TYPE, NOT OF THE CALL: A UNIDIRECTIONAL TYPE HAS NONE (issue #10268)
       if (edgeType.isBidirectional()) {

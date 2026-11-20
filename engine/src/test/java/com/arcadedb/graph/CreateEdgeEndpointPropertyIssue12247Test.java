@@ -19,7 +19,9 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.VertexNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -197,5 +199,106 @@ class CreateEdgeEndpointPropertyIssue12247Test extends TestHelper {
   void endpointEqualToTheGivenOneKeepsTheEdge() {
     createVertices();
     assertWired(createdBy("sql", "CREATE EDGE F FROM " + a + " TO " + b + " SET `@in` = " + b + ", `@out` = " + a), a, b, true);
+  }
+
+  @Test
+  void endpointDeletedInTheSameTransactionIsRefusedAndNothingIsCreated() {
+    createVertices();
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.command("sql", "DELETE FROM V WHERE @rid = " + c);
+      database.command("sql", "CREATE EDGE F FROM " + a + " TO " + b + " SET `@in` = " + c);
+    })).isInstanceOf(VertexNotFoundException.class).hasMessageContaining("was deleted in this transaction");
+    assertThatThrownBy(() -> database.transaction(() -> {
+      c.asVertex().modify().delete();
+      a.asVertex().modify().newEdge("F", b, "@out", c);
+    })).isInstanceOf(VertexNotFoundException.class).hasMessageContaining("was deleted in this transaction");
+    assertThat(countF()).isZero();
+    assertThat(out(a, "F")).isEmpty();
+    assertCheckDatabaseClean();
+  }
+
+  @Test
+  void newEdgesWiresEachEdgeToTheVerticesItsRecordNames() {
+    createVertices();
+    // one batch of the source vertex: an @in, an @out and a plain edge, the plain one keeps going through the batched list
+    final List<Edge> created = new ArrayList<>();
+    database.transaction(() -> created.addAll(((DatabaseInternal) database).getGraphEngine().newEdges((VertexInternal) a.asVertex(),
+        List.of(new GraphEngine.CreateEdgeOperation("F", b, new Object[] { "@in", c }),
+            new GraphEngine.CreateEdgeOperation("F", b, new Object[] { "@out", c }),
+            new GraphEngine.CreateEdgeOperation("F", b, new Object[] { "w", 1 })), true)));
+
+    assertThat(created).hasSize(3);
+    assertThat(created.get(0).getOut()).isEqualTo(a);
+    assertThat(created.get(0).getIn()).isEqualTo(c);
+    assertThat(created.get(1).getOut()).isEqualTo(c);
+    assertThat(created.get(1).getIn()).isEqualTo(b);
+    assertThat(created.get(2).getOut()).isEqualTo(a);
+    assertThat(created.get(2).getIn()).isEqualTo(b);
+
+    assertThat(out(a, "F")).containsExactlyInAnyOrder(created.get(0).getIdentity(), created.get(2).getIdentity());
+    assertThat(in(b, "F")).containsExactlyInAnyOrder(created.get(1).getIdentity(), created.get(2).getIdentity());
+    assertThat(out(c, "F")).containsExactly(created.get(1).getIdentity());
+    assertThat(in(c, "F")).containsExactly(created.get(0).getIdentity());
+    assertCheckDatabaseClean();
+  }
+
+  @Test
+  void newEdgesRefusesAnEndpointThatIsNotAVertex() {
+    createVertices();
+    final RID[] document = new RID[1];
+    database.transaction(() -> document[0] = database.newDocument("D").save().getIdentity());
+    assertThatThrownBy(() -> database.transaction(() -> ((DatabaseInternal) database).getGraphEngine().newEdges(
+        (VertexInternal) a.asVertex(), List.of(new GraphEngine.CreateEdgeOperation("F", b, new Object[] { "@in", document[0] })),
+        true))).hasMessageContaining("not a vertex");
+    assertThat(countF()).isZero();
+    assertCheckDatabaseClean();
+  }
+
+  @Test
+  void graphBatchEdgeKeepsItsRecordAndItsListsInAgreement() {
+    createVertices();
+    // the endpoints of a batch edge are its arguments and the bulk writer never lets a property re-point the record, so the
+    // record and the lists name the same vertices, whatever @in / @out were passed along
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(a, "F", b, "@in", c);
+      batch.newEdge(a, "F", b, "@out", c);
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT FROM F")) {
+      int edges = 0;
+      while (rs.hasNext()) {
+        final Edge edge = rs.next().getEdge().orElseThrow();
+        assertWired(edge.getIdentity(), edge.getOut(), edge.getIn(), true);
+        ++edges;
+      }
+      assertThat(edges).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void labelWriteMovesAnEdgeThatCarriesAnEndpointKeyWithTheVertex() {
+    createVertices();
+    database.getSchema().createVertexType("Extra");
+    // a GraphBatch stores @in as an ordinary key of the edge, as every version before #9799 did: the label write re-creates the
+    // edge from its properties, and must not take that key for the endpoint of the new edge
+    try (final GraphBatch batch = database.batch().build()) {
+      batch.newEdge(a, "F", b, "@in", c, "w", 1);
+    }
+    database.transaction(() -> database.command("opencypher", "MATCH (n {name: 'b'}) SET n:Extra").close());
+    assertThat(relationships()).containsExactly("a->b");
+    database.transaction(() -> database.command("opencypher", "MATCH (n {name: 'a'}) SET n:Extra").close());
+    assertThat(relationships()).containsExactly("a->b");
+    assertThat(countF()).isEqualTo(1L);
+    assertCheckDatabaseClean();
+  }
+
+  private List<String> relationships() {
+    final List<String> list = new ArrayList<>();
+    try (final ResultSet rs = database.query("opencypher", "MATCH (x)-[:F]->(y) RETURN x.name AS x, y.name AS y")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        list.add(row.getProperty("x") + "->" + row.getProperty("y"));
+      }
+    }
+    return list;
   }
 }
