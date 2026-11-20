@@ -340,7 +340,7 @@ class CypherCountStarTest {
    * type that is not declared in the schema returned HTTP 500 ({@code SchemaException: Type with
    * name '...' was not found}) instead of the correct aggregated count.
    * <p>
-   * Root cause: the star-join count-push-down ({@code CypherExecutionPlan#tryDetectStarCountStar})
+   * Root cause: the star-join count-push-down ({@code CountStarShapeDetector#tryDetectStarCountStar})
    * builds a {@code DegreeProductOp} arm for the OPTIONAL MATCH relationship without checking
    * whether the schema actually declares that edge type. {@code DegreeProductOp#executeOLTPDegreeMap}
    * then called {@code Database#iterateType(String, boolean)} unconditionally, which resolves the

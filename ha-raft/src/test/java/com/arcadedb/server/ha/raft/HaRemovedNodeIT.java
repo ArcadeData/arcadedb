@@ -80,7 +80,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * as before.</li>
  * </ul>
  * Every test removes a node, so the class stays on the per-test {@link BaseRaftHATest} fixture: the merge is for
- * organization only and saves no cluster boot. {@code Issue5275MembershipSelfHealIT} stays a class of its own because
+ * organization only and saves no cluster boot. {@code ClusterRejoinMembershipIT} stays a class of its own because
  * it needs {@link #persistentRaftStorage()}.
  * <p>
  * The tests tagged {@code slow} were tagged so in their source class; #7040's was not.
@@ -609,7 +609,7 @@ class HaRemovedNodeIT extends BaseRaftHATest {
     if (thread == null || thread.getState() != Thread.State.TIMED_WAITING)
       return false;
     for (final StackTraceElement frame : thread.getStackTrace())
-      if (frame.getMethodName().equals("awaitAppliedIndex") && frame.getClassName().equals(RaftHAServer.class.getName()))
+      if (frame.getMethodName().equals("awaitAppliedIndex") && frame.getClassName().equals(AppliedIndexWaits.class.getName()))
         return true;
     return false;
   }

@@ -19,6 +19,7 @@
 package com.arcadedb.redis;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -34,7 +35,7 @@ import java.util.Set;
  * SELECT argument surfaced as a Java exception text and a surplus one was ignored); {@code RedisCommandArityCensusTest} (census
  * module) fails on a command the dispatch switch of either surface names and this table does not. The hash commands and SELECT
  * are listed apart because their shape is the wire one ({@code HGET <bucket> <key>}): the query language names an index or a
- * RID instead and checks its own forms, and has no SELECT.
+ * RID instead, with the counts of {@link #QUERY_LANGUAGE_HASH} (issue #11783), and has no SELECT.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -55,7 +56,46 @@ public final class RedisCommandArity {
       Map.entry("HSET", new int[] { 3, -1 }), Map.entry("HMSET", new int[] { 3, -1 }),//
       Map.entry("SELECT", new int[] { 2, 2 }));
 
+  /**
+   * The hash commands of the query language, which name an index ({@code HGET Person[id] 1}) or RIDs ({@code HGET #10:5}) instead
+   * of a bucket: {ridMin, ridMax, indexMin, indexMax}, the form chosen by whether the first argument is a RID. They used to check
+   * a minimum count only, so {@code HGET Person[id] 1 2 3} answered key 1 (HMGET was meant) and {@code HGET #28:0 extra junk}
+   * answered the record (issue #11783).
+   */
+  private static final Map<String, int[]> QUERY_LANGUAGE_HASH = Map.ofEntries(//
+      Map.entry("HGET", new int[] { 2, 2, 3, 3 }), Map.entry("HEXISTS", new int[] { 2, 2, 3, 3 }),//
+      Map.entry("HMGET", new int[] { 2, -1, 3, -1 }), Map.entry("HDEL", new int[] { 2, -1, 3, -1 }),//
+      Map.entry("HSET", new int[] { 3, -1, 3, -1 }), Map.entry("HMSET", new int[] { 3, -1, 3, -1 }));
+
   private RedisCommandArity() {
+  }
+
+  /**
+   * Same as {@link #checkRam} for every command of the {@code redis} query language, its hash commands included in the form the
+   * first argument selects.
+   *
+   * @param command   the upper-case command name
+   * @param arguments the words of the command, its name included
+   */
+  public static void checkQueryLanguage(final String command, final List<String> arguments) {
+    final int[] ram = RAM.get(command);
+    if (ram != null) {
+      check(ram, command, arguments.size());
+      return;
+    }
+    final int[] forms = QUERY_LANGUAGE_HASH.get(command);
+    if (forms == null)
+      return;
+    final boolean ridForm = arguments.size() > 1 && arguments.get(1).startsWith("#");
+    final int offset = ridForm ? 0 : 2;
+    check(forms[offset], forms[offset + 1], command, arguments.size());
+  }
+
+  /** The commands {@link #checkQueryLanguage} knows, upper case. */
+  public static Set<String> queryLanguageCommands() {
+    final Set<String> commands = new HashSet<>(RAM.keySet());
+    commands.addAll(QUERY_LANGUAGE_HASH.keySet());
+    return commands;
   }
 
   /**
@@ -90,7 +130,12 @@ public final class RedisCommandArity {
   }
 
   private static void check(final int[] arity, final String command, final int argumentCount) {
-    if (arity != null && (argumentCount < arity[0] || (arity[1] >= 0 && argumentCount > arity[1])))
+    if (arity != null)
+      check(arity[0], arity[1], command, argumentCount);
+  }
+
+  private static void check(final int min, final int max, final String command, final int argumentCount) {
+    if (argumentCount < min || (max >= 0 && argumentCount > max))
       throw wrongArity(command);
   }
 

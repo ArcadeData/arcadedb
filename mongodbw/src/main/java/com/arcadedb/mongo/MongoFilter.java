@@ -30,11 +30,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
-import de.bwaldvogel.mongo.backend.DefaultQueryMatcher;
-import de.bwaldvogel.mongo.backend.QueryMatcher;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
-import de.bwaldvogel.mongo.bson.ObjectId;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -53,8 +50,10 @@ import java.util.regex.PatternSyntaxException;
  * The SQL comparisons the translator relies on are not MongoDB's: they coerce across types ({@code n = 5} matches {@code "5"}
  * and {@code true}), see an array as one opaque value (so {@code tags = 'a'} never matches {@code ['a', 'b']}, and
  * {@code tags <> 'a'} matches it) and answer {@code IS DEFINED} on a nested path from the wrong set. A filter that can hit any of
- * those is therefore evaluated on the document, by the matcher of the MongoDB emulation the plugin is built on, which implements
- * MongoDB's own rules: type brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering.
+ * those is therefore evaluated on the document, by {@link MongoQueryMatcher}, which implements the rules of {@code mongod}: type
+ * brackets, array traversal, {@code $elemMatch}, {@code $all}, {@code $size}, dotted paths, ordering. It replaced the matcher of the
+ * MongoDB emulation the plugin is built on, which answers differently from {@code mongod} on paths through arrays and on several
+ * operators (issue #12074).
  * <p>
  * SQL still has a part: a filter that is on the {@code _id}, alone or under {@code $and} / {@code $or} (a batch lookup by key), or has
  * an {@code _id} conjunct, reads its candidates through the unique index on the {@code _id}, and the matcher then tests the whole
@@ -74,8 +73,6 @@ import java.util.regex.PatternSyntaxException;
  * <p>
  * Every other filter reads the whole type.
  * <p>
- * Known leniency of the matcher: a regular expression is also tested against the string form of a number, which MongoDB does not.
- * <p>
  * Regular expressions are searched through {@link TimeBoundRegex}, bounded by {@code arcadedb.command.regexTimeout} with one
  * deadline per filter, exactly like the SQL {@code MATCHES} the plugin used to rely on.
  *
@@ -90,7 +87,7 @@ final class MongoFilter {
   private final Document     filter;
   private final Document     idPart;
   private final Document     normalized;
-  private final QueryMatcher matcher;
+  private final MongoQueryMatcher matcher;
   private final Set<String>  properties;
 
   MongoFilter(final Database database, final Document filter) {
@@ -114,8 +111,10 @@ final class MongoFilter {
       this.matcher = null;
       this.properties = Set.of();
     } else {
-      this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database), true);
-      this.matcher = new DefaultQueryMatcher();
+      this.normalized = normalizeQuery(filter, budget != null ? budget : RegexBudget.of(database));
+      this.matcher = new MongoQueryMatcher();
+      // a malformed filter is refused here, as mongod refuses it when it parses it, even when no document is ever tested
+      this.matcher.validate(normalized);
       this.properties = new HashSet<>();
       collectProperties(normalized, properties);
     }
@@ -465,10 +464,12 @@ final class MongoFilter {
   }
 
   /**
-   * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}, and
-   * the {@code _id} operand takes the form the {@code _id} is stored in.
+   * Prepares a query document for the matcher: a regular expression, however it is spelled, becomes a {@link BoundedRegex}. The
+   * operands keep their BSON type, and so does the stored {@code _id} the matcher reads (an ObjectId is an ObjectId, a String a
+   * String, see {@link MongoDBToSqlTranslator#toMatchDocument}), so an ObjectId and the String with the same hex are two values
+   * (issue #12073).
    */
-  private static Document normalizeQuery(final Document query, final RegexBudget deadline, final boolean top) {
+  private static Document normalizeQuery(final Document query, final RegexBudget deadline) {
     final Document result = new Document();
     List<Object> lifted = null;
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
@@ -480,7 +481,7 @@ final class MongoFilter {
           throw new IllegalArgumentException("Operator " + key + " requires an array");
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(logicalOperand(key, item, deadline, top));
+          converted.add(logicalOperand(key, item, deadline));
         result.put(key, converted);
         continue;
       }
@@ -497,14 +498,9 @@ final class MongoFilter {
         continue;
       }
 
-      // the _id operand takes its stored form first, then goes the way of any other field (its regular expressions are bounded too)
-      final Object operand = top && "_id".equals(key) ? MongoBsonValues.idFilter(value) : value;
-
-      if (operand instanceof BsonRegularExpression regex)
+      if (value instanceof BsonRegularExpression regex)
         result.put(key, new BoundedRegex(regex.getPattern(), regex.getOptions(), deadline));
-      else if (operand instanceof ObjectId objectId)
-        result.put(key, new Document("$in", bothForms(objectId)));
-      else if (operand instanceof Document document && isOperatorDocument(document)) {
+      else if (value instanceof Document document && isOperatorDocument(document)) {
         if (document.containsKey("$regex")) {
           final Document rest = withoutRegex(document);
           final BoundedRegex regex = BoundedRegex.of(document, deadline);
@@ -520,7 +516,7 @@ final class MongoFilter {
         } else
           result.put(key, normalizeOperators(document, deadline));
       } else
-        result.put(key, operand);
+        result.put(key, value);
     }
 
     if (lifted == null)
@@ -531,19 +527,10 @@ final class MongoFilter {
     return new Document("$and", all);
   }
 
-  private static Document logicalOperand(final String operator, final Object item, final RegexBudget deadline, final boolean top) {
+  private static Document logicalOperand(final String operator, final Object item, final RegexBudget deadline) {
     if (!(item instanceof Document document))
       throw new IllegalArgumentException("Operator " + operator + " requires an array of documents");
-    return normalizeQuery(document, deadline, top);
-  }
-
-  /**
-   * An ObjectId stored outside the {@code _id} is tagged, but data written before the tagging holds the bare hex string: both forms
-   * are the same value. Only for the operands that compare one value ({@code $eq}, {@code $ne}, {@code $in}, {@code $nin}, a plain
-   * equality): an array operand ({@code {refs: [oid]}}) and {@code $all} match the tagged form only.
-   */
-  private static List<Object> bothForms(final ObjectId objectId) {
-    return List.of(objectId, objectId.getHexData());
+    return normalizeQuery(document, deadline);
   }
 
   /**
@@ -563,12 +550,6 @@ final class MongoFilter {
         else
           result.put(operator, operand);
       }
-      case "$eq", "$ne" -> {
-        if (operand instanceof ObjectId objectId)
-          result.put("$eq".equals(operator) ? "$in" : "$nin", bothForms(objectId));
-        else
-          result.put(operator, operand);
-      }
       case "$in", "$nin", "$all" -> {
         if (operand instanceof List<?> list) {
           final List<Object> converted = new ArrayList<>(list.size());
@@ -578,12 +559,8 @@ final class MongoFilter {
             else if (item instanceof Document document && isOperatorDocument(document))
               // {$all: [{$elemMatch: ...}]}
               converted.add(normalizeOperators(document, deadline));
-            else {
+            else
               converted.add(item);
-              // not for $all, which asks for each element: the hex form of an ObjectId is not an extra one
-              if (item instanceof ObjectId objectId && !"$all".equals(operator))
-                converted.add(objectId.getHexData());
-            }
           result.put(operator, converted);
         } else
           result.put(operator, operand);
@@ -593,7 +570,7 @@ final class MongoFilter {
         if (operand instanceof List<?> list) {
           final List<Object> converted = new ArrayList<>(list.size());
           for (final Object item : list)
-            converted.add(logicalOperand(operator, item, deadline, false));
+            converted.add(logicalOperand(operator, item, deadline));
           result.put(operator, converted);
         } else
           result.put(operator, operand);
@@ -606,7 +583,7 @@ final class MongoFilter {
               throw new IllegalArgumentException("$regex directly inside $elemMatch is not supported, match a field of the element");
             result.put(operator, normalizeOperators(document, deadline));
           } else
-            result.put(operator, normalizeQuery(document, deadline, false));
+            result.put(operator, normalizeQuery(document, deadline));
         } else
           result.put(operator, operand);
       }
@@ -657,8 +634,7 @@ final class MongoFilter {
       final String name = entry.getKey();
       final Object value = entry.getValue();
       switch (name) {
-      // inside a pipeline the _id is the one the previous stage produced, not the stored identity of a record: never the "top" form
-      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget, false) : value);
+      case "$match" -> result.put(name, value instanceof Document query ? normalizeQuery(query, budget) : value);
       case "$facet" -> {
         if (value instanceof Document branches) {
           final Document converted = new Document();
@@ -679,7 +655,7 @@ final class MongoFilter {
       case "$graphLookup" -> {
         if (value instanceof Document options && options.get("restrictSearchWithMatch") instanceof Document query) {
           final Document converted = new Document(options);
-          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget, false));
+          converted.put("restrictSearchWithMatch", normalizeQuery(query, budget));
           result.put(name, converted);
         } else
           result.put(name, value);
@@ -699,7 +675,7 @@ final class MongoFilter {
     return converted;
   }
 
-  private static boolean isOperatorDocument(final Document document) {
+  static boolean isOperatorDocument(final Document document) {
     return !document.isEmpty() && document.keySet().iterator().next().startsWith("$");
   }
 
@@ -809,9 +785,9 @@ final class MongoFilter {
     }
 
     /**
-     * Assumes the matcher only calls {@link Matcher#find()} on what it gets back (true of the mongo-java-server this plugin is
-     * built on): the answer is computed here, so only "found or not" is carried. Tests over every regex-bearing operator pin it
-     * when the library is upgraded.
+     * Assumes the matcher only calls {@link Matcher#find()} on what it gets back (true of {@link MongoQueryMatcher}, and of the
+     * mongo-java-server matcher an aggregation {@code $match} still runs through): the answer is computed here, so only "found or
+     * not" is carried. Tests over every regex-bearing operator pin it.
      */
     @Override
     public Matcher matcher(final String string) {

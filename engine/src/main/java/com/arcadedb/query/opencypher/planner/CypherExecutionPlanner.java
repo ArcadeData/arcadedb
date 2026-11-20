@@ -286,36 +286,33 @@ public class CypherExecutionPlanner {
       }
     }
 
-    // The optimizer path (buildExecutionStepsWithOptimizer) applies clauses in a fixed order
-    // (MATCH → CREATE → SET → DELETE → REMOVE → MERGE → UNWIND → WITH → RETURN).
-    // This breaks queries where clause ordering matters, e.g. WITH before DELETE or UNWIND before SET.
-    // Fall back to ordered execution when write/mutating clauses are interleaved with WITH/UNWIND,
-    // or when MATCH appears after WITH or UNWIND (MATCH-WITH-MATCH, MATCH-UNWIND-MATCH): the later
-    // MATCH may read the UNWIND variable, which the optimizer would bind only after it (issue #11586).
+    // The optimizer path (buildExecutionStepsWithOptimizer) runs every MATCH first and then chains
+    // the remaining clauses in source order. So it may take a statement only when every clause before
+    // its last MATCH is itself a MATCH: any other clause (WITH, UNWIND, LOAD CSV, a write, and any
+    // clause type added later) may bind or change what the later MATCH reads, which the optimizer
+    // would apply only after it (MATCH-UNWIND-MATCH #11586, LOAD CSV-MATCH #11771). This is a
+    // deny-by-default rule on purpose: listing the unsafe clauses one at a time missed LOAD CSV.
+    // A write must likewise not follow a clause that introduces or reshapes rows (anything that is
+    // neither a MATCH nor itself a write), since the writes are chained after the optimized MATCH.
     if (statement.getClausesInOrder() != null) {
       int mergeCount = 0;
       int deleteCount = 0;
-      boolean seenWith = false;
-      boolean seenUnwind = false;
+      boolean seenNonMatch = false;
+      boolean seenRowSource = false;
       for (final ClauseEntry clause : statement.getClausesInOrder()) {
         final ClauseEntry.ClauseType type = clause.getType();
+        final boolean mutating = MUTATING_CLAUSES.contains(type);
 
         // Validate ordering before updating state
-        if ((seenWith || seenUnwind) && MUTATING_CLAUSES.contains(type))
+        if (seenRowSource && mutating)
           return false;
-        if ((seenWith || seenUnwind) && type == ClauseEntry.ClauseType.MATCH)
+        if (seenNonMatch && type == ClauseEntry.ClauseType.MATCH)
           return false;
 
         switch (type) {
         case FOREACH:
         case CALL:
           return false;
-        case WITH:
-          seenWith = true;
-          break;
-        case UNWIND:
-          seenUnwind = true;
-          break;
         case MERGE:
           mergeCount++;
           break;
@@ -324,6 +321,12 @@ public class CypherExecutionPlanner {
           break;
         default:
           break;
+        }
+
+        if (type != ClauseEntry.ClauseType.MATCH) {
+          seenNonMatch = true;
+          if (!mutating)
+            seenRowSource = true;
         }
       }
       // Multiple CREATE clauses ARE handled by the optimizer path: buildExecutionStepsWithOptimizer

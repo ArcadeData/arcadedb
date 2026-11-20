@@ -25,6 +25,10 @@ import com.arcadedb.database.Document;
  */
 public class TraverseResult extends ResultInternal {
   protected Integer depth;
+  // What this row is charged to the heap budget while the TRAVERSE that queued it holds it (issue #10115), given back when it
+  // leaves: the row may change between the two (a projection re-queues it with a longer path), so the charge is remembered.
+  // Only AbstractTraverseStep reads or writes it, on the thread that runs the step
+  long              frontierBytes;
 
   public TraverseResult() {
   }

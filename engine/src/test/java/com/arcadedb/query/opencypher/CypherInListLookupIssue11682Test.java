@@ -98,6 +98,21 @@ class CypherInListLookupIssue11682Test extends TestHelper {
     assertAnswer(List.of(5L), padded(size, i -> List.of((long) i + 1000), List.of(1L), List.of(2L)), false);
   }
 
+  /**
+   * = compares texts holding an isolated surrogate by their UTF-8 bytes, where the surrogate is the replacement byte '?', so
+   * a lone U+D800 = '?' is true: the lookup walks such a text, as a probe and as a member, instead of answering with
+   * String.equals.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = { 3, 100 })
+  void aTextWithAnIsolatedSurrogateIsEqualAsTheComparisonHasIt(final int size) {
+    assertAnswer("\uD800", padded(size, i -> "s" + i, "?", "c"), true);
+    assertAnswer("?", padded(size, i -> "s" + i, "\uD800", "c"), true);
+    assertAnswer("a\uDC00b", padded(size, i -> "s" + i, "a?b"), true);
+    assertAnswer("a?b", padded(size, i -> "s" + i, "a\uDBFFb"), true);
+    assertAnswer("\uD800", padded(size, i -> "s" + i, "!", "c"), false);
+  }
+
   @ParameterizedTest
   @ValueSource(ints = { 3, 100 })
   void nullsKeepThreeValuedLogic(final int size) {

@@ -19,21 +19,15 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.AlreadyExistsException;
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.graph.olap.GraphAnalyticalViewBuilder;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
-import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
+import com.arcadedb.graph.olap.GraphAnalyticalViewCommands;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 public class CreateGraphAnalyticalViewStatement extends DDLStatement {
@@ -53,55 +47,21 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   @Override
   public ResultSet executeDDL(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     final String viewName = name.getStringValue();
 
-    // Check if already exists
-    final JSONObject allGavs = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
-    if (allGavs != null && allGavs.has(viewName)) {
-      if (ifNotExists) {
-        final InternalResultSet result = new InternalResultSet();
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("operation", "create graph analytical view");
-        r.setProperty("name", viewName);
-        r.setProperty("created", false);
-        result.add(r);
-        return result;
-      }
-      throw new AlreadyExistsException(AlreadyExistsException.Kind.GRAPH_ANALYTICAL_VIEW,
-          "Graph Analytical View '" + viewName + "' already exists");
-    }
-
-    final String[] vtArray = toStringArray(vertexTypes);
-    final String[] etArray = toStringArray(edgeTypes);
-
-    // Build the view — the builder handles persistence via GraphAnalyticalViewPersistence.save()
-    final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(viewName);
-    if (vtArray != null && vtArray.length > 0)
-      builder.withVertexTypes(vtArray);
-    if (etArray != null && etArray.length > 0)
-      builder.withEdgeTypes(etArray);
-    // toStringArray() maps an empty array to null, so preserve PROPERTIES () explicitly: it copies no vertex properties
-    // while an omitted clause copies all (issue #9831).
-    if (properties != null)
-      builder.withProperties(properties.length == 0 ? new String[0] : toStringArray(properties));
-    final String[] edgePropArray = toStringArray(edgeProperties);
-    if (edgePropArray != null && edgePropArray.length > 0)
-      builder.withEdgeProperties(edgePropArray);
-    builder.withUpdateMode(resolveUpdateMode());
-    if (compactionThreshold >= 0)
-      builder.withCompactionThreshold(compactionThreshold);
-    final String[] cchArray = toStringArray(cchWeights);
-    if (cchArray != null)
-      for (final String weight : cchArray)
-        builder.withContractionHierarchy(weight);
-    builder.buildAsync();
+    // toStringArray() maps an empty array to null, so PROPERTIES () is kept explicitly: it copies no vertex properties
+    // while an omitted clause copies all (issue #9831)
+    final String[] propertyArray = properties == null ? null : properties.length == 0 ? new String[0] : toStringArray(properties);
+    final GraphAnalyticalViewCommands.Definition definition = new GraphAnalyticalViewCommands.Definition(viewName,
+        toStringArray(vertexTypes), toStringArray(edgeTypes), propertyArray, toStringArray(edgeProperties), resolveUpdateMode(),
+        compactionThreshold, toStringArray(cchWeights));
+    final boolean created = GraphAnalyticalViewCommands.create(database, definition, ifNotExists) != null;
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "create graph analytical view");
     r.setProperty("name", viewName);
-    r.setProperty("created", true);
+    r.setProperty("created", created);
     result.add(r);
     return result;
   }
@@ -155,15 +115,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   }
 
   private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
-    if (updateModeStr != null) {
-      try {
-        return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase(Locale.ROOT));
-      } catch (final IllegalArgumentException e) {
-        throw new CommandExecutionException(
-            "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");
-      }
-    }
-    return GraphAnalyticalView.UpdateMode.OFF;
+    return updateModeStr != null ? GraphAnalyticalViewCommands.parseUpdateMode(updateModeStr) : GraphAnalyticalView.UpdateMode.OFF;
   }
 
   private static void appendIdentifiers(final Map<String, Object> params, final StringBuilder builder, final Identifier[] ids) {
