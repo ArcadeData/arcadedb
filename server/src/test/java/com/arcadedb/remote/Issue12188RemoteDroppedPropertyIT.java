@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #12188: a property dropped or renamed stayed in the remote client's cached type for the life of the connection,
  * {@link RemoteSchema#reload()} included, and its declared type kept decoding the values of the records read through it.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12188RemoteDroppedPropertyIT extends BaseGraphServerTest {
 
@@ -58,7 +60,7 @@ class Issue12188RemoteDroppedPropertyIT extends BaseGraphServerTest {
       ((RemoteSchema) schema).reload();
       assertThat(schema.getType("Doc12188").getPropertyNames()).containsExactly("newName");
 
-      // the stale declarations no longer decode the record: it reads as a fresh connection and the embedded API read it
+      // the dropped declarations no longer decode the record: it reads the way a new connection and the embedded API read it
       final RID rid = database.command("sql", "INSERT INTO Doc12188 SET created = 1700000000000, oldName = 42").next()
           .getIdentity().get();
       final var read = database.lookupByRID(rid, true).asDocument();
@@ -84,6 +86,56 @@ class Issue12188RemoteDroppedPropertyIT extends BaseGraphServerTest {
 
       assertThat(database.getSchema().getType("Other12188").existsProperty("gone")).isFalse();
       assertThat(database.getSchema().getType("Other12188").getPropertyNames()).isEmpty();
+    } finally {
+      other.close();
+      database.close();
+    }
+  }
+
+  @Test
+  void propertyDeclaredAgainWithAnotherTypeByAnotherClientDecodesWithTheNewType() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase other = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    try {
+      database.getSchema().createDocumentType("Again12188").createProperty("stamp", Type.DATETIME);
+      assertThat(database.getSchema().getType("Again12188").getProperty("stamp").getType()).isEqualTo(Type.DATETIME);
+
+      // the name never leaves the schema, so only the declaration tells that it is another property now
+      other.command("sql", "DROP PROPERTY Again12188.stamp");
+      other.command("sql", "CREATE PROPERTY Again12188.stamp LONG");
+      ((RemoteSchema) database.getSchema()).reload();
+
+      assertThat(database.getSchema().getType("Again12188").getProperty("stamp").getType()).isEqualTo(Type.LONG);
+      final RID rid = database.command("sql", "INSERT INTO Again12188 SET stamp = 1700000000000").next().getIdentity().get();
+      assertThat(database.lookupByRID(rid, true).asDocument().get("stamp")).isEqualTo(1700000000000L);
+    } finally {
+      other.close();
+      database.close();
+    }
+  }
+
+  @Test
+  void constraintClearedByAnotherClientLeavesTheCachedProperty() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase other = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    try {
+      database.getSchema().createDocumentType("Cleared12188").createProperty("code", Type.STRING);
+      other.command("sql", "ALTER PROPERTY Cleared12188.code MANDATORY true");
+      other.command("sql", "ALTER PROPERTY Cleared12188.code MIN 2");
+      ((RemoteSchema) database.getSchema()).reload();
+      assertThat(database.getSchema().getType("Cleared12188").getProperty("code").isMandatory()).isTrue();
+      assertThat(database.getSchema().getType("Cleared12188").getProperty("code").getMin()).isEqualTo("2");
+
+      other.command("sql", "ALTER PROPERTY Cleared12188.code MANDATORY false");
+      other.command("sql", "ALTER PROPERTY Cleared12188.code MIN null");
+      ((RemoteSchema) database.getSchema()).reload();
+
+      assertThat(database.getSchema().getType("Cleared12188").getProperty("code").isMandatory()).isFalse();
+      assertThat(database.getSchema().getType("Cleared12188").getProperty("code").getMin()).isNull();
     } finally {
       other.close();
       database.close();

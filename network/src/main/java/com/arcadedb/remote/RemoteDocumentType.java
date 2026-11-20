@@ -54,7 +54,8 @@ public class RemoteDocumentType implements DocumentType {
   private         List<String>                buckets;
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
-  private         Map<String, RemoteProperty> properties;
+  // replaced as a whole by reload(), never mutated: see there (issue #12188)
+  private volatile Map<String, RemoteProperty> properties = Collections.emptyMap();
   private         Set<String>                 aliases = Collections.emptySet();
   private         Map<String, Object>         custom  = new HashMap<>();
   private         boolean                     needsRepartition;
@@ -81,24 +82,26 @@ public class RemoteDocumentType implements DocumentType {
 
     final List<Map<String, Object>> propertiesMap = record.getProperty("properties");
 
-    if (properties == null)
-      properties = new HashMap<>(propertiesMap.size());
-
-    // Issue #12188: the server's list is the whole set of properties, so a cached one it no longer lists was dropped or
-    // renamed and is forgotten here; kept, it answered existsProperty() and decoded record values for the rest of the session
-    final Set<String> listedNames = new HashSet<>(propertiesMap.size());
-    for (Map<String, Object> entry : propertiesMap) {
+    // Issue #12188: the server's list is the WHOLE set of properties of the type, so the map is rebuilt from it and a
+    // cached property it no longer lists, dropped or renamed, is forgotten. Kept, it answered existsProperty() and
+    // decoded the values of records for the rest of the session. Built aside and published whole, like the maps of
+    // RemoteSchema.reload(): a reader walking getPropertyNames() is never broken by a reload (it was a live view of a map
+    // this method mutated). The property objects are reused while they still describe the same declaration, so a
+    // reference a caller holds keeps tracking its attributes.
+    final Map<String, RemoteProperty> previous = properties;
+    final Map<String, RemoteProperty> reloaded = new HashMap<>(propertiesMap.size());
+    for (final Map<String, Object> entry : propertiesMap) {
       final String propertyName = (String) entry.get("name");
-      listedNames.add(propertyName);
 
-      RemoteProperty p = properties.get(propertyName);
-      if (p == null) {
-        p = new RemoteProperty(this, entry);
-        properties.put(propertyName, p);
-      } else
+      RemoteProperty p = previous.get(propertyName);
+      if (p != null && p.describes(entry))
         p.reload(entry);
+      else
+        // new, or dropped and declared again under the same name with another type, which a property cannot change
+        p = new RemoteProperty(this, entry);
+      reloaded.put(propertyName, p);
     }
-    properties.keySet().retainAll(listedNames);
+    properties = reloaded;
 
     if (record.hasProperty("custom"))
       custom = record.getProperty("custom");
