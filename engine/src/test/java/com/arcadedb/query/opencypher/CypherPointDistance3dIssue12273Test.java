@@ -105,4 +105,27 @@ class CypherPointDistance3dIssue12273Test extends TestHelper {
     assertThat(distance("point.distance(" + inside + ", point({longitude:1,latitude:1,height:0}))")).isCloseTo(5.0, within(0.001));
     assertThat(value("point.withinBBox(" + inside + box)).isEqualTo(true);
   }
+
+  // A raw Cartesian map that holds only height: point() reads height as the z of a Cartesian point, so point.distance() and
+  // point.withinBBox() both take it as the third coordinate instead of one of them calling the map 2D
+  @Test
+  void aCartesianMapHoldingOnlyHeightIsThreeDimensionalForBothFunctions() {
+    assertThat(distance("point.distance({x:0, y:0, height:0}, {x:0, y:0, height:5})")).isCloseTo(5.0, within(0.001));
+    assertThat(value("point.distance({x:0, y:0, height:0}, point({x:3, y:4}))")).isNull();
+    assertThat(value("point.withinBBox({x:1, y:1, height:50}, point({x:0,y:0,z:0}), point({x:2,y:2,z:2}))")).isEqualTo(false);
+    assertThat(value("point.withinBBox({x:1, y:1, height:1}, point({x:0,y:0,z:0}), point({x:2,y:2,z:2}))")).isEqualTo(true);
+  }
+
+  // A third coordinate that is null or not a number is no third coordinate: the point is 2D, so against a 3D point there is no
+  // answer. It must not raise a ClassCastException from the Cartesian branch of point.distance()
+  @Test
+  void aNullOrNonNumericThirdCoordinateMakesThePointTwoDimensional() {
+    assertThat(value("point.distance({longitude:0, latitude:0, height:null}, point({longitude:1,latitude:0,height:1000}))")).isNull();
+    assertThat(value("point.distance({x:0, y:0, z:'a'}, point({x:3,y:4,z:0}))")).isNull();
+    assertThat(value("point.distance({x:0, y:0, z:null}, point({x:3,y:4,z:0}))")).isNull();
+    assertThat(distance("point.distance({x:0, y:0, z:null}, point({x:3,y:4}))")).isCloseTo(5.0, within(0.001));
+    assertThat(value("point.withinBBox({x:1, y:1, z:null}, point({x:0,y:0,z:0}), point({x:2,y:2,z:2}))")).isNull();
+    assertThat(value("point.withinBBox({x:1, y:1, z:'a'}, point({x:0,y:0,z:0}), point({x:2,y:2,z:2}))")).isNull();
+    assertThat(value("point.withinBBox({x:1, y:1, z:null}, point({x:0,y:0}), point({x:2,y:2}))")).isEqualTo(true);
+  }
 }

@@ -27,7 +27,8 @@ import java.util.Map;
 
 /**
  * point.withinBBox(point, lowerLeft, upperRight) - checks if a point is within a bounding box.
- * All 3 arguments are maps with x/y or longitude/latitude.
+ * All 3 arguments are maps with x/y or longitude/latitude. When they carry a third coordinate (z or height) it is checked
+ * against the box too; a 2D point against a 3D box, or the reverse, gives {@code null} (issue #12273).
  */
 public class PointWithinBBoxFunction implements StatelessFunction {
   @Override
@@ -59,12 +60,13 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
     // A 2D point against a 3D box (or the reverse) has no answer, as in Neo4j (issue #12273)
-    final Double pointZ = third(args[0], lowerLeftGeo);
-    final Double lowerLeftZ = third(args[1], lowerLeftGeo);
-    final Double upperRightZ = third(args[2], lowerLeftGeo);
+    // (extractCoordinates above refused anything that is not a map, so the casts hold)
+    final Number pointZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[0], lowerLeftGeo);
+    final Number lowerLeftZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[1], lowerLeftGeo);
+    final Number upperRightZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[2], lowerLeftGeo);
     if ((pointZ == null) != (lowerLeftZ == null) || (lowerLeftZ == null) != (upperRightZ == null))
       return null;
-    if (pointZ != null && (pointZ < lowerLeftZ || pointZ > upperRightZ))
+    if (pointZ != null && (pointZ.doubleValue() < lowerLeftZ.doubleValue() || pointZ.doubleValue() > upperRightZ.doubleValue()))
       return false;
     final boolean longitudeInRange;
     if (lowerLeftGeo && lowerLeft[0] > upperRight[0])
@@ -88,16 +90,6 @@ public class PointWithinBBoxFunction implements StatelessFunction {
       throw new InvalidArgumentException("Point must have x/y or longitude/latitude properties");
     }
     throw new TypeMismatchException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
-  }
-
-  // The third coordinate read the way point.distance() reads it: height first for a geographic point, z first otherwise, so a
-  // raw map holding both keys with different values answers both functions with the same coordinate
-  private static Double third(final Object value, final boolean geographic) {
-    final Map<?, ?> map = (Map<?, ?>) value;
-    final Object first = map.get(geographic ? "height" : "z");
-    if (first instanceof Number n)
-      return n.doubleValue();
-    return map.get(geographic ? "z" : "height") instanceof Number n ? n.doubleValue() : null;
   }
 
   private static double[] pair(final Map<?, ?> map, final String first, final String second) {
