@@ -570,6 +570,15 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * {@link #createDatabaseLock}: the apply skips an install of a database already present, so two creates of one name on this
    * node would otherwise both pass the check and both report the database as created by them.
    * <p>
+   * Holding the lock across the submit and the strict apply wait is deliberate: releasing it after the submit would let a second
+   * create of the name pass the check before the first entry applied. The cost is that a create waiting on a slow quorum (up to
+   * about twice {@code HA_QUORUM_TIMEOUT}) delays every other create on this node, which is acceptable for an operation this
+   * rare and this far from any read or write path.
+   * <p>
+   * A strict wait that gives up is reported as a {@link TransactionException}, as {@code createInReplicas} and the drop report
+   * theirs: the entry is already committed and creates the database everywhere when this node applies it, so a caller that sees
+   * the failure checks for the database before it retries.
+   * <p>
    * No leader-exclusive window ({@code ArcadeStateMachine.beginLeaderExclusive}), unlike the install of an existing database:
    * that window orders the entry after the transactions of the database the log already accepted, and a database that does not
    * exist yet has none.
