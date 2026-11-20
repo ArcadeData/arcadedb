@@ -530,6 +530,10 @@ public class TransactionContext implements Transaction {
   private       Thread                               afterCompletionOwner        = null;
   // Read by begin() on the thread that runs the callbacks, which is the one that sets it
   private       boolean                              runningAfterCompletion      = false;
+  // Issue #12251: a commit that runs the callbacks its transaction owes somewhere else than where the transaction concludes, see
+  // deferCallbacks(). Volatile like commitPointReached, for the same reason: the conclusion of a commit is not always one thread's
+  private volatile boolean                           callbacksDeferred           = false;
+  private       Runnable                             deferredCallbacks           = null;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
@@ -1545,7 +1549,7 @@ public class TransactionContext implements Transaction {
 
     if (completion != null) {
       if (completionOwner == Thread.currentThread())
-        fireAfterCompletionCallbacks(completion);
+        fireOrDefer(null, false, completion);
       else
         LogManager.instance().log(this, Level.INFO,
             "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
@@ -1726,7 +1730,66 @@ public class TransactionContext implements Transaction {
         throw e;
       }
     }
-    fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+    fireOrDefer(callbacks, commitPointWasReached, completion);
+  }
+
+  /**
+   * From here until {@link #takeDeferredCallbacks()}, whatever ends this transaction, a commit or a rollback, hands back the callbacks
+   * it owes instead of running them where it concludes (issue #12251). A callback is work of its own, the refresh of a continuous
+   * aggregate or of a materialized view, with a transaction and a commit of its own. The replication layer concludes a commit inside
+   * the locks of its commit protocol, which that work must not run under: its commit waits for a schema session in progress, and the
+   * session waits for the very locks the commit it runs under holds, until the quorum timeout. The layer defers the callbacks of the
+   * commit it drives, and runs them once it has released those locks.
+   * <p>
+   * The transaction ends exactly as it does without the deferral (its records marked clean, the commit counted, the context released
+   * for its next transaction): only the run of what it owes moves. The driver ends the deferral with
+   * {@link #takeDeferredCallbacks()}, whatever the outcome of the commit.
+   */
+  public void deferCallbacks() {
+    callbacksDeferred = true;
+  }
+
+  /** Whether {@link #deferCallbacks()} is in force: the callbacks this transaction owes are kept for the one that deferred them. */
+  public boolean isDeferringCallbacks() {
+    return callbacksDeferred;
+  }
+
+  /**
+   * Ends the deferral of {@link #deferCallbacks()} and hands back what the transaction owed meanwhile: its after-commit callbacks in
+   * order, then its after-completion callbacks, as one piece of work to run once. The after-commit ones are owed by a commit only,
+   * the after-completion ones by a commit and by a rollback, and an {@link Error} escaping one leaves the others to the rules of
+   * {@link #fireCommitCallbacks}, as when they run where the transaction concludes.
+   *
+   * @return the work to run, or {@code null} when the transaction owed none
+   */
+  public Runnable takeDeferredCallbacks() {
+    callbacksDeferred = false;
+    final Runnable owed = deferredCallbacks;
+    deferredCallbacks = null;
+    return owed;
+  }
+
+  /** Runs what a concluded transaction owes where it concludes, or keeps it for {@link #takeDeferredCallbacks()} while deferring. */
+  private void fireOrDefer(final List<Runnable> callbacks, final boolean commitPointWasReached, final Map<String, Runnable> completion) {
+    if (!callbacksDeferred) {
+      fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+      return;
+    }
+    if (callbacks == null && completion == null)
+      return;
+    final Runnable owed = () -> fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+    final Runnable earlier = deferredCallbacks;
+    if (earlier == null)
+      deferredCallbacks = owed;
+    else
+      // a driver can end one transaction twice, a commit whose last step failed and was rolled back: both are owed, in the order they ended
+      deferredCallbacks = () -> {
+        try {
+          earlier.run();
+        } finally {
+          owed.run();
+        }
+      };
   }
 
   /** Runs what a concluded commit owes: its after-commit callbacks in order, then its after-completion callbacks. */
@@ -5072,33 +5135,6 @@ public class TransactionContext implements Transaction {
   public void concludeCommitWithoutPublishing() {
     markModifiedRecordsClean();
     resetAndFireCallbacks();
-  }
-
-  /**
-   * {@link #concludeCommitWithoutPublishing()} for a transaction whose phase 1 found nothing to write, concluded under a database
-   * lock: the transaction ends here, its records marked clean and the commit counted, and what it owes (the after-commit callbacks,
-   * then the after-completion ones) is handed back instead of run, for the caller to run once it has released the lock (issue
-   * #12251). A callback is work of its own, the refresh of a continuous aggregate or a materialized view, with a transaction and a
-   * commit of its own: run under the read lock, the commit of that work waited for a schema session whose owner was waiting for the
-   * write lock that read lock held off, until the quorum timeout.
-   *
-   * @return the callbacks to run, or {@code null} when the transaction registered none
-   */
-  public Runnable concludeReadOnlyCommitDeferringCallbacks() {
-    // a transaction with nothing to write never took a WAL sync ticket, so nothing has to be awaited before its callbacks
-    assert deferredWALSyncTicket <= 0 : "a transaction with nothing to write has no WAL sync to wait for";
-    markModifiedRecordsClean();
-    ++commitCount;
-    final List<Runnable> callbacks = afterCommitCallbacks;
-    afterCommitCallbacks = null;
-    final Map<String, Runnable> completion = afterCompletionCallbacks;
-    afterCompletionCallbacks = null;
-    afterCompletionOwner = null;
-    final boolean commitPointWasReached = commitPointReached;
-    reset();
-    if (callbacks == null && completion == null)
-      return null;
-    return () -> fireCommitCallbacks(callbacks, commitPointWasReached, completion);
   }
 
   private void markModifiedRecordsClean() {

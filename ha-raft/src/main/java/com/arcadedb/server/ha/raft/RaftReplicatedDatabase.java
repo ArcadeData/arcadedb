@@ -716,13 +716,79 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its entry is accepted (issue #12236, keepLockedUntilCompactionIsPublished).
     final boolean gated = leader && !Boolean.TRUE.equals(isSchemaCommitThread.get());
     if (gated)
-      passRecordingSessionGate();
-    try {
+      commitCountedAtTheRecordingSessionGate(leader);
+    else
       commitPastRecordingSessionGate(leader);
-    } finally {
-      if (gated)
+  }
+
+  /**
+   * {@link #commitPastRecordingSessionGate} of a leader commit counted at the gate (issue #12098), which runs the callbacks its
+   * transaction owes only once it has left the gate and every lock of its commit (issue #12251).
+   * <p>
+   * A callback is work of its own, the refresh of a continuous aggregate or of a materialized view, with a transaction and a commit
+   * of its own, and that commit waits at the gate for any schema session in progress. The session of another client waits for the
+   * commits counted at the gate and then for the database write lock, and the commit running the callback was counted and held the
+   * read lock (a read-only commit concludes under it, a commit that writes takes it again to complete): the session waited for the
+   * very commit that waited for it, until the quorum timeout, and so did every client behind them. Every TIMESERIES insert into a
+   * type with a continuous aggregate ends this way, since its samples commit in a transaction of their own and the statement's
+   * transaction owes the aggregate a refresh.
+   * <p>
+   * The transaction defers its callbacks for the length of the commit, whichever arm concludes it (see
+   * {@link TransactionContext#deferCallbacks()}), and they run here, in the order they would have run where the transaction
+   * concluded. Its context stays on the stack until they have run and is popped once after them, as off HA: a nested commit popped
+   * first leaves the enclosing transaction on top, and the {@code database.transaction()} of a callback joins it (see
+   * {@link #popEndedTransaction}).
+   */
+  private void commitCountedAtTheRecordingSessionGate(final boolean leader) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    final TransactionContext committing = context != null ? context.getLastTransaction() : null;
+    // none active: the arms below refuse the commit, as they always did
+    final boolean deferring = committing != null && committing.isActive();
+    if (deferring)
+      committing.deferCallbacks();
+    try {
+      passRecordingSessionGate();
+      try {
+        commitPastRecordingSessionGate(leader);
+      } finally {
         leaveRecordingSessionGate();
+      }
+    } catch (final Throwable failure) {
+      // what the transaction owed is owed whatever happened to the commit afterwards, but never at the price of the failure
+      if (deferring)
+        try {
+          runDeferredCallbacks(context, committing);
+        } catch (final Throwable fromCallbacks) {
+          failure.addSuppressed(fromCallbacks);
+        }
+      throw failure;
     }
+    if (deferring)
+      runDeferredCallbacks(context, committing);
+  }
+
+  /**
+   * Runs what the commit of {@code committing} deferred (see {@link TransactionContext#takeDeferredCallbacks()}), and then pops the
+   * context of the transaction if the commit ended it and no arm of the commit popped it already.
+   */
+  private static void runDeferredCallbacks(final DatabaseContext.DatabaseContextTL context, final TransactionContext committing) {
+    // read before the callbacks run: their transactions begin on this very context
+    final boolean ended = !committing.isActive();
+    try {
+      runOwedCallbacks(committing);
+    } finally {
+      if (ended && context.getLastTransaction() == committing)
+        context.popIfNotLastTransaction();
+    }
+  }
+
+  /**
+   * Pops the context of a transaction the commit ended, but leaves it to {@link #runDeferredCallbacks} while the commit defers the
+   * callbacks that transaction owes (issue #12251): they run with it still on top of the stack, as they do off HA.
+   */
+  private static void popEndedTransaction(final DatabaseContext.DatabaseContextTL context, final TransactionContext tx) {
+    if (tx.isActive() || !tx.isDeferringCallbacks())
+      context.popIfNotLastTransaction();
   }
 
   /** The two arms of {@link #commit()} past its recording-session gate: the schema-commit thread's and the replicated one. */
@@ -808,78 +874,53 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     }
 
-    // What a read-only commit owes once it has released the read lock (issue #12251), see the arm below, and the context whose
-    // transaction it concluded, popped only once those callbacks have run
-    final Runnable[] readOnlyCallbacks = new Runnable[1];
-    final DatabaseContext.DatabaseContextTL[] concludedContext = new DatabaseContext.DatabaseContextTL[1];
-
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
-    final ReplicationPayload payload;
-    try {
-      payload = proxied.executeInReadLock(() -> {
-        proxied.checkTransactionIsActive(false);
+    final ReplicationPayload payload = proxied.executeInReadLock(() -> {
+      proxied.checkTransactionIsActive(false);
 
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-        final TransactionContext tx = current.getLastTransaction();
-        try {
-          requireReplicationBuffer(tx);
-          final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
-
-          if (phase1 != null) {
-            final byte[] walData = phase1.result.toByteArray();
-            final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
-            // Read before the commit concludes: the accumulator is released with the transaction
-            final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
-            final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
-                corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
-            // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
-            // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
-            // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
-            // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
-            proxied.beginCommitInFlight();
-            return prepared;
-          }
-
-          // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
-          // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape. The callbacks
-          // run after the read lock is released (issue #12251): the refresh of a continuous aggregate one of them makes commits
-          // a transaction of its own, which waits for any schema session in progress, and the owner of that session waits for
-          // the write lock this read lock holds off. Every TIMESERIES insert into a type with an aggregate ends here (its
-          // samples commit in a transaction of their own), and the cycle cost each one the quorum timeout.
-          readOnlyCallbacks[0] = tx.concludeReadOnlyCommitDeferringCallbacks();
-          concludedContext[0] = current;
-          // The pop waits for the callbacks (found in review): a nested transaction popped before them left the enclosing one
-          // on top, and a callback's database.transaction() joined it, so the enclosing transaction's rollback took back work
-          // whose own commit had returned. Before #12251 the callbacks ran before the pop, as they do off HA.
-          // THE SAVE STAYS BEFORE THE POP (#8635): IT TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH
-          if (leader)
-            getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
-          return null;
-        } catch (final ArcadeDBException e) {
-          rollbackRefusedCommit(tx, e);
-          // a failed save after the conclusion leaves the pop to the finally below, after the callbacks
-          if (concludedContext[0] == null)
-            current.popIfNotLastTransaction();
-          throw e;
-        } catch (final Exception e) {
-          final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
-          rollbackRefusedCommit(tx, refusal);
-          if (concludedContext[0] == null)
-            current.popIfNotLastTransaction();
-          throw refusal;
-        }
-      });
-    } finally {
-      // Owed by the transaction that ended above, even when the schema save after it failed: they ran before that save until #12251
-      final Runnable owed = readOnlyCallbacks[0];
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      final TransactionContext tx = current.getLastTransaction();
       try {
-        if (owed != null)
-          owed.run();
-      } finally {
-        if (concludedContext[0] != null)
-          concludedContext[0].popIfNotLastTransaction();
+        requireReplicationBuffer(tx);
+        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
+
+        if (phase1 != null) {
+          final byte[] walData = phase1.result.toByteArray();
+          final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
+          // Read before the commit concludes: the accumulator is released with the transaction
+          final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(tx);
+          final ReplicationPayload prepared = new ReplicationPayload(tx, phase1, walData, bucketDeltas,
+              corpusDeltas != null ? corpusDeltas.snapshot() : Collections.emptyList());
+          // Issue #10881: phase 1 checked the write refusal under this lock, and the rest of the commit - quorum, publication,
+          // acknowledgement - runs after it is released. Registered here, still under the lock, so a restore that refuses
+          // writes and then awaits the commits in flight waits for this one too, instead of swapping its target away after
+          // the client has been told the commit succeeded. The last statement of the arm: nothing below can throw past it
+          proxied.beginCommitInFlight();
+          return prepared;
+        }
+
+        // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
+        // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape. On the leader
+        // the callbacks are not run here, under the read lock, but once the commit has left it (issue #12251, see
+        // commitCountedAtTheRecordingSessionGate)
+        tx.concludeCommitWithoutPublishing();
+        // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
+        // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
+        if (leader)
+          getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
+        popEndedTransaction(current, tx);
+        return null;
+      } catch (final ArcadeDBException e) {
+        rollbackRefusedCommit(tx, e);
+        popEndedTransaction(current, tx);
+        throw e;
+      } catch (final Exception e) {
+        final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
+        rollbackRefusedCommit(tx, refusal);
+        popEndedTransaction(current, tx);
+        throw refusal;
       }
-    }
+    });
 
     // Read-only transaction: nothing more to do.
     if (payload == null)
@@ -1196,12 +1237,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * EVERY thread ({@code DatabaseContext.removeAllContexts}), this one's included, while it is waiting for the quorum or
    * for the publication. Requiring the context here then replaced the outcome the caller is owed (committed, or committed
    * cluster-wide but not applied here) with "Transaction context not found on current thread". With no context left
-   * there is nothing to pop: the close has already discarded it.
+   * there is nothing to pop: the close has already discarded it. A commit that defers the callbacks of its transaction pops it after
+   * them (issue #12251, see {@link #popEndedTransaction}).
    */
   private void popCommittingTransaction() {
     final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
-    if (current != null)
-      current.popIfNotLastTransaction();
+    if (current == null)
+      return;
+    // an empty stack has nothing to pop
+    final TransactionContext committing = current.getLastTransaction();
+    if (committing != null)
+      popEndedTransaction(current, committing);
   }
 
   /**
@@ -2462,7 +2508,47 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void rollback() {
-    proxied.rollback();
+    final TransactionContext rolledBack = transactionRolledBackDeferringCallbacks();
+    if (rolledBack == null) {
+      proxied.rollback();
+      return;
+    }
+    try {
+      proxied.rollback();
+    } catch (final Throwable failure) {
+      try {
+        runOwedCallbacks(rolledBack);
+      } catch (final Throwable fromCallbacks) {
+        failure.addSuppressed(fromCallbacks);
+      }
+      throw failure;
+    }
+    runOwedCallbacks(rolledBack);
+  }
+
+  /**
+   * The transaction of this thread when a leader rolls it back, with its callbacks deferred (issue #12251): a rollback owes the
+   * after-completion ones (#10687, the refresh of a continuous aggregate over samples a rolled back transaction wrote beside
+   * itself), and the rollback of the engine runs them under the database read lock, which the schema session a refresh commit
+   * waits for is waiting to be rid of, as it is for the one of a commit (see {@link #commitCountedAtTheRecordingSessionGate}). They
+   * run here, once the rollback has released it. {@code null} when there is nothing to defer: a replica, no transaction active, or a
+   * rollback inside a commit, whose callbacks that commit runs.
+   */
+  private TransactionContext transactionRolledBackDeferringCallbacks() {
+    if (!isLeader())
+      return null;
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    final TransactionContext tx = context != null ? context.getLastTransaction() : null;
+    if (tx == null || !tx.isActive() || tx.isDeferringCallbacks())
+      return null;
+    tx.deferCallbacks();
+    return tx;
+  }
+
+  private static void runOwedCallbacks(final TransactionContext tx) {
+    final Runnable owed = tx.takeDeferredCallbacks();
+    if (owed != null)
+      owed.run();
   }
 
   @Override
