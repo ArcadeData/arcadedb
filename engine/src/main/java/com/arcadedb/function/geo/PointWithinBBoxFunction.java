@@ -64,10 +64,11 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final Number pointZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[0], lowerLeftGeo);
     final Number lowerLeftZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[1], lowerLeftGeo);
     final Number upperRightZ = CypherPointDistanceFunction.thirdCoordinate((Map<?, ?>) args[2], lowerLeftGeo);
-    if ((pointZ == null) != (lowerLeftZ == null) || (lowerLeftZ == null) != (upperRightZ == null))
+    if (pointZ != null && lowerLeftZ != null && upperRightZ != null) {
+      if (pointZ.doubleValue() < lowerLeftZ.doubleValue() || pointZ.doubleValue() > upperRightZ.doubleValue())
+        return false;
+    } else if (pointZ != null || lowerLeftZ != null || upperRightZ != null)
       return null;
-    if (pointZ != null && (pointZ.doubleValue() < lowerLeftZ.doubleValue() || pointZ.doubleValue() > upperRightZ.doubleValue()))
-      return false;
     final boolean longitudeInRange;
     if (lowerLeftGeo && lowerLeft[0] > upperRight[0])
       // Crossmeridian bbox: lowerLeft.longitude > upperRight.longitude means the box wraps around ±180
