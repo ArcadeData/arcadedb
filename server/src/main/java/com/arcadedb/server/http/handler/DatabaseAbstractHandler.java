@@ -621,6 +621,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * #12202). Called only for a request that runs in no session. Refuses nothing by default.
    */
   protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
+    // NOTHING TO REFUSE BY DEFAULT: ONLY THE HANDLERS THAT RUN A COMMAND OVERRIDE THIS
   }
 
   /**
