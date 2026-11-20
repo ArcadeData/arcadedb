@@ -23,10 +23,15 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * The copy of a record the current transaction wrote, when it wrote one.
@@ -79,7 +84,10 @@ public final class WrittenCopy {
    * of one would see the writes of the rows after it in the batch, which a streaming plan has not made yet (issue #6362). A
    * row between two breakers reads what it holds.
    * <p>
-   * Free for a command that holds only current records, and when the transaction has written nothing.
+   * Free for a command that holds only current records, and when the transaction has written nothing. A list, a map or a
+   * path many rows share (every row of {@code WITH collect(n) AS ns UNWIND ns AS m ... ORDER BY} holds the same {@code ns})
+   * is walked once per call, not once per row: the answers are kept by identity for the length of the call, where no
+   * write can happen in between.
    *
    * @param context the context of the command the rows belong to
    * @param rows    the rows the step is about to hand out
@@ -88,12 +96,15 @@ public final class WrittenCopy {
     final TransactionContext tx = writtenTransaction(context);
     if (tx == null)
       return;
+    IdentityHashMap<Object, Object> memo = null;
     for (final Result row : rows) {
       if (!(row instanceof ResultInternal result))
         continue;
       for (final String name : result.getPropertyNames()) {
         final Object value = result.getProperty(name);
-        final Object live = RowAliases.liveValue(value, WrittenCopy::of);
+        if (memo == null && (value instanceof List<?> || value instanceof Map<?, ?> || value instanceof TraversalPath))
+          memo = new IdentityHashMap<>();
+        final Object live = RowAliases.liveValue(value, WrittenCopy::of, memo);
         if (live != value) // NOPMD: liveValue answers the value itself, by identity, when nothing in it was stale
           result.setProperty(name, live);
       }
@@ -104,6 +115,14 @@ public final class WrittenCopy {
           result.setElement(live);
       }
     }
+  }
+
+  /**
+   * Whether {@link #resolveRows} can change anything for the command: it can hold a record older than a copy its transaction
+   * wrote. Lets a caller skip gathering the rows when it cannot.
+   */
+  public static boolean resolves(final CommandContext context) {
+    return writtenTransaction(context) != null;
   }
 
   /**

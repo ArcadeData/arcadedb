@@ -406,6 +406,15 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results = new ArrayList<>(groups.size());
     final long beginBuild = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      // A complex item reads the group's first row (h{.v, c: count(*)} reads h.v there): every input row has made its writes
+      // by now, so its records are read as those writes left them. The grouping keys were computed already (issue #12565)
+      if (!complexAggregationItems.isEmpty() && WrittenCopy.resolves(context)) {
+        final List<Result> representatives = new ArrayList<>(groups.size());
+        for (final GroupAggregators groupAgg : groups.values())
+          representatives.add(groupAgg.representativeRow);
+        WrittenCopy.resolveRows(context, representatives);
+      }
+
       for (final Map.Entry<GroupKeyValues, GroupAggregators> groupEntry : groups.entrySet()) {
         final GroupKeyValues keyValues = groupEntry.getKey();
         final GroupAggregators groupAgg = groupEntry.getValue();

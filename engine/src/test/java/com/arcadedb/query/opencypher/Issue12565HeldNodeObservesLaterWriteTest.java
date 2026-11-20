@@ -20,11 +20,15 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -218,6 +222,80 @@ class Issue12565HeldNodeObservesLaterWriteTest extends TestHelper {
           assertThat(((Document) held).getInteger("v")).isEqualTo(8);
         assertThat(row.<Map<String, Object>>getProperty("projected")).containsEntry("v", 8L);
       }
+    });
+  }
+
+  /**
+   * A map projection around an aggregate reads the node from the group's first row: that row is read as the writes of every
+   * row left it, with no grouping key, the node as the key and a scalar key beside it.
+   */
+  @Test
+  void aGroupedMapProjectionSeesTheLaterWrite() {
+    final String prefix = """
+        MATCH (n:Node) WITH n ORDER BY n.id
+        WITH collect(n) AS ns
+        UNWIND ns AS m
+        WITH m, last(ns) AS h
+        SET m.v = -2 * m.v
+        """;
+    for (final String tail : List.of(//
+        "WITH h{.v, c: count(*)} AS projected RETURN projected.v AS v, projected.c AS c",
+        "WITH h, h{.v, c: count(*)} AS projected RETURN projected.v AS v, projected.c AS c",
+        "WITH h.id AS k, h{.v, c: count(*)} AS projected RETURN projected.v AS v, projected.c AS c",
+        "WITH h{.v, c: count(*)} AS projected, count(*) AS total RETURN projected.v AS v, projected.c AS c")) {
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", prefix + tail)) {
+          final Result row = rs.next();
+          assertThat(row.<Number>getProperty("v").intValue()).as(tail).isEqualTo(-4);
+          assertThat(row.<Number>getProperty("c").intValue()).as(tail).isEqualTo(2);
+          assertThat(rs.hasNext()).as(tail).isFalse();
+        }
+        // every variant starts from the same values
+        database.rollback();
+        database.begin();
+      });
+    }
+  }
+
+  /**
+   * Rows that share one list are resolved with one walk of it: they all end up holding the same rebuilt list, which holds the
+   * written copies. Walking the list once per row instead is quadratic in a {@code collect()} list every sorted row holds.
+   */
+  @Test
+  void aListSharedByTheRowsIsResolvedOnce() {
+    database.transaction(() -> {
+      final List<Object> held = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:Node) RETURN n ORDER BY n.id")) {
+        while (rs.hasNext())
+          held.add(rs.next().getProperty("n"));
+      }
+      final Map<String, Object> nested = Map.of("list", held);
+      final List<Result> rows = new ArrayList<>();
+      for (int i = 0; i < 3; i++) {
+        final ResultInternal row = new ResultInternal();
+        row.setProperty("ns", held);
+        row.setProperty("wrapped", List.of(nested));
+        rows.add(row);
+      }
+      database.command("opencypher", "MATCH (n:Node) SET n.v = -2 * n.v").close();
+
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      WrittenCopy.resolveRows(context, rows);
+
+      final Object resolved = rows.getFirst().getProperty("ns");
+      assertThat(resolved).isNotSameAs(held);
+      for (final Object node : (List<?>) resolved)
+        assertThat(((Document) node).getInteger("v")).isEqualTo(-2 * ((Document) node).getInteger("id"));
+      // each row holds its own outer list, around the one map they share: that map is rebuilt once, at any depth
+      final Object sharedMap = rows.getFirst().<List<?>>getProperty("wrapped").getFirst();
+      assertThat(sharedMap).isNotSameAs(nested);
+      for (final Result row : rows) {
+        assertThat(row.<Object>getProperty("ns")).isSameAs(resolved);
+        assertThat(row.<List<?>>getProperty("wrapped").getFirst()).isSameAs(sharedMap);
+      }
+      // the list nested in the map is the one the rows hold directly: one walk answered both
+      assertThat(((Map<?, ?>) sharedMap).get("list")).isSameAs(resolved);
     });
   }
 
