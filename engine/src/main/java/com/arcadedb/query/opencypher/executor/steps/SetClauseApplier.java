@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -86,6 +87,9 @@ public final class SetClauseApplier {
   // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
   // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
+  // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
+  // shared by every clause, resolved at the start of each apply()
+  private       HeldCollectionRefresher heldCollections;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
       final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
@@ -129,6 +133,10 @@ public final class SetClauseApplier {
     // Pre-resolve any vertex aliases that were replaced by a label change on a prior row so that property-SET
     // operations (which go through resolveLatestDoc) observe the live vertex rather than the deleted original.
     labelReplacements.redirect(result);
+    // ...and the records the row holds in a list or a map at what this statement wrote so far, so the right-hand sides read
+    // it: an UNWIND hands the same list to every row, and the copy an earlier row lined up is not that list (issue #11754)
+    heldCollections = HeldCollectionRefresher.of(context);
+    heldCollections.refresh(result);
 
     final List<SetClause.SetItem> items = setClause.getItems();
     if (reloadedRids != null)
@@ -186,6 +194,12 @@ public final class SetClauseApplier {
         break;
       }
     }
+
+    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
+    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
+    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
+    heldCollections.refresh(result);
+    labelReplacements.redirect(result);
   }
 
   /**
@@ -475,6 +489,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
 
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     // Fallback: ensure the named variable is updated even when doc has no identity yet
@@ -520,6 +535,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
@@ -558,6 +574,7 @@ public final class SetClauseApplier {
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
+    heldCollections.written(mutableDoc);
     RowAliases.propagateUpdate(result, doc, mutableDoc);
     if (doc.getIdentity() == null)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
@@ -573,10 +590,11 @@ public final class SetClauseApplier {
    * <p>
    * Cypher accepts a map literal, a node or a relationship there - copying every property off another entity is the
    * documented way to clone one - so anything else is a type error rather than a discarded write (issue #6832). A
-   * null right-hand side stays a no-op, which is what the two callers get back as a null map.
+   * null right-hand side stays a no-op, which is what the two callers get back as a null map. {@link NewNodeSetFolding}
+   * resolves a folded map item through here too, so a folded and an applied write accept and refuse the same values.
    */
   @SuppressWarnings("unchecked")
-  private static Map<String, Object> toPropertyMap(final Object value, final String operator,
+  static Map<String, Object> toPropertyMap(final Object value, final String operator,
       final Expression valueExpression) {
     if (value == null)
       return null;

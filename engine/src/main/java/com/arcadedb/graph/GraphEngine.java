@@ -1079,7 +1079,7 @@ public class GraphEngine {
       // vertex that no longer exists surfaces - one frame before the head-chunk lookup the catch below was written
       // for. A multi-page vertex body whose continuation chunk is not visible yet reaches here too, and that one IS
       // the publication window, so the two are separated by the RID the not-found names rather than by the site.
-      headRID = direction == Vertex.DIRECTION.OUT ? vertex.getOutEdgesHeadChunk() : vertex.getInEdgesHeadChunk();
+      headRID = direction == Vertex.DIRECTION.OUT ? vertex.peekOutEdgesHeadChunk() : vertex.peekInEdgesHeadChunk();
     } catch (final RecordNotFoundException e) {
       if (vertexRID != null && vertexRID.equals(e.getRID()))
         throw missingVertexOnEdgeListWrite(vertexRID, direction, e);
@@ -1148,7 +1148,7 @@ public class GraphEngine {
       // this list would be inventing a diagnosis, which is the whole thing #6586 is about not doing.
       throw e;
     }
-    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.getOutEdgesHeadChunk() : mutable.getInEdgesHeadChunk();
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
     if (reloadedHead != null)
       return getOrCreateEdgeList(mutable, direction);
 
@@ -1195,7 +1195,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
-    RID inEdgesHeadChunk = toVertex.getInEdgesHeadChunk();
+    RID inEdgesHeadChunk = toVertex.peekInEdgesHeadChunk();
 
     EdgeSegment inChunk = null;
     if (inEdgesHeadChunk != null)
@@ -1222,7 +1222,7 @@ public class GraphEngine {
   }
 
   public EdgeSegment createOutEdgeChunk(final MutableVertex fromVertex) {
-    RID outEdgesHeadChunk = fromVertex.getOutEdgesHeadChunk();
+    RID outEdgesHeadChunk = fromVertex.peekOutEdgesHeadChunk();
 
     EdgeSegment outChunk = null;
     if (outEdgesHeadChunk != null)
@@ -3001,6 +3001,29 @@ public class GraphEngine {
         return far;
       farEntries.next();
     }
+  }
+
+  /**
+   * Whether the edge list(s) of {@code vertex} in {@code direction} hold more than {@code limit} entries, of any type. The
+   * entries are stepped without reading an edge or a vertex record, and never past the one after {@code limit}, so the
+   * answer costs what walking a short list would and stays bounded on a super-node: no list keeps a count to read instead.
+   * <p>
+   * Answers true when a list, or a stripe of one, whose head the vertex names cannot be loaded: such a list is not a short
+   * one, and a vertex with no list at all answers false.
+   * <p>
+   * Used by the openCypher operator that decides per row between walking a vertex's relationships and seeking the far ends
+   * it looks for (issue #11715), which lives outside this package.
+   */
+  public boolean hasMoreEdgeEntriesThan(final VertexInternal vertex, final Vertex.DIRECTION direction, final long limit) {
+    final Iterator<RID> entries = entriesOf(getMostUpdatedVertex(vertex), direction);
+    if (entries == null)
+      return true;
+    for (long i = 0; i < limit; i++) {
+      if (!entries.hasNext())
+        return false;
+      entries.next();
+    }
+    return entries.hasNext();
   }
 
   /**

@@ -48,7 +48,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
  *   left-associative <em>binary tree</em> exactly as deep as the term count, and that tree is then walked
  *   recursively by several independent, unrelated passes - {@code ExpressionRewriter} (WHERE-clause
  *   normalization), {@code CypherExpressionWalker} (generic visitor, semantic validation and more) and
- *   {@code CypherSemanticValidator#checkExpressionScope} were all confirmed to overflow on a long enough
+ *   {@code VariableScopeValidator#checkExpressionScope} were all confirmed to overflow on a long enough
  *   chain, each on its own call stack shape. Rejecting an oversized chain here, at the one place its length
  *   is known before any tree gets built, protects all of them at once - including any future or
  *   undiscovered walker - without touching a single one of them.

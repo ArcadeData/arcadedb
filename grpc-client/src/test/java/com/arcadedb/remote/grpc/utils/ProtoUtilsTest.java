@@ -18,7 +18,12 @@
  */
 package com.arcadedb.remote.grpc.utils;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -141,6 +146,29 @@ class ProtoUtilsTest {
 
     assertThat(value.hasLinkValue()).isTrue();
     assertThat(value.getLinkValue().getRid()).isEqualTo("#10:5");
+  }
+
+  @Test
+  void toGrpcValueRecordWithIdentityIsALink() {
+    // Issue #12197: a persistent record set as a value matched no branch and was sent as its toString()
+    final GrpcValue value = ProtoUtils.toGrpcValue(new IdentifiableStub(new RID("#10:5")));
+
+    assertThat(value.getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(value.getLinkValue().getRid()).isEqualTo("#10:5");
+    assertThat(value.getLogicalType()).isEqualTo("rid");
+    assertThat(ProtoUtils.fromGrpcValue(value)).isEqualTo("#10:5");
+  }
+
+  @Test
+  void toGrpcValueRecordsInsideACollectionAndAMapAreLinks() {
+    // Issue #12197: the nested values go through the same encoder
+    final GrpcValue list = ProtoUtils.toGrpcValue(List.of(new IdentifiableStub(new RID("#10:5"))));
+    assertThat(list.getListValue().getValues(0).getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(list.getListValue().getValues(0).getLinkValue().getRid()).isEqualTo("#10:5");
+
+    final GrpcValue map = ProtoUtils.toGrpcValue(Map.of("main", new IdentifiableStub(new RID("#10:6"))));
+    assertThat(map.getMapValue().getEntriesMap().get("main").getKindCase()).isEqualTo(GrpcValue.KindCase.LINK_VALUE);
+    assertThat(map.getMapValue().getEntriesMap().get("main").getLinkValue().getRid()).isEqualTo("#10:6");
   }
 
   @Test
@@ -520,6 +548,63 @@ class ProtoUtilsTest {
     assertThat(result).isInstanceOf(LocalDateTime.class);
     assertThat((LocalDateTime) result)
         .isEqualTo(LocalDateTime.ofEpochSecond(1234567890L, 0, ZoneOffset.UTC));
+  }
+
+  /**
+   * A record reduced to what the encoder reads, its identity: a real one needs a database, and the branch under test
+   * only asks for the identity.
+   */
+  private static final class IdentifiableStub implements Identifiable {
+    private final RID rid;
+
+    private IdentifiableStub(final RID rid) {
+      this.rid = rid;
+    }
+
+    @Override
+    public RID getIdentity() {
+      return rid;
+    }
+
+    @Override
+    public Record getRecord(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Record getRecord() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Document asDocument() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Document asDocument(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Vertex asVertex() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Vertex asVertex(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Edge asEdge() {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Edge asEdge(final boolean loadContent) {
+      throw new UnsupportedOperationException();
+    }
   }
 
   private void assertRoundTrip(final Object original) {
