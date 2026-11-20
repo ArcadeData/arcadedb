@@ -91,9 +91,11 @@ public final class HeapEstimator {
    * the large ones are what an overcount is made of.
    * <p>
    * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
-   * back a container with the last element that held it, and forgets it then. What {@link #remove} gives back is worked out from
-   * the container as it is then: a container that changed while an element held it gives back what it holds now, not what was
-   * charged for it (the operation never gives back more than it charged), so a buffer is not to change a container it holds.
+   * back a container with the last element that held it, and forgets it then. The bytes charged for a container are kept with it
+   * and given back as they were charged; what is walked again at {@link #remove} is the element, and the large containers nested in
+   * the container, to take away the holders they had. A container that changed while an element held it can therefore give back a
+   * different amount than it was charged (the operation never gives back more than it charged), so a buffer is not to change a
+   * container it holds.
    * <p>
    * The containers are held by strong references until the last element holding each is removed or the owner drops this object:
    * whoever owns one must let go of it when its buffer goes (an operation does, in {@link OperationHeapLimit#release()}).
@@ -152,6 +154,11 @@ public final class HeapEstimator {
      */
     public long sharedSampleBytes() {
       return sharedSampleBytes;
+    }
+
+    /** The number of large containers remembered now, those some element still holds. */
+    int containers() {
+      return held == null ? 0 : held.size();
     }
 
     private long walk(final Object value, final boolean sample) {

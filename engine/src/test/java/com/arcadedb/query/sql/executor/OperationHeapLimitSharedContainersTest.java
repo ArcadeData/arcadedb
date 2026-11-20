@@ -23,18 +23,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.lang.ref.WeakReference;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 import static com.arcadedb.query.sql.executor.HeapEstimator.HASH_ENTRY_BYTES;
 import static com.arcadedb.query.sql.executor.HeapEstimator.OBJECT_BYTES;
 import static com.arcadedb.query.sql.executor.HeapEstimator.REFERENCE_BYTES;
 import static com.arcadedb.query.sql.executor.HeapEstimator.RESULT_BYTES;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #11812: the large containers the elements of one operation share are charged once, and what is charged stays what
@@ -96,7 +96,7 @@ class OperationHeapLimitSharedContainersTest {
     List<Object> held = nulls(2_000);
     limit.add(1, held);
     final long oneList = limit.getChargedBytes();
-    final WeakReference<List<Object>> first = new WeakReference<>(held);
+    assertThat(limit.sharedContainers()).isEqualTo(1);
 
     for (int i = 0; i < 100; i++) {
       final List<Object> next = nulls(2_000);
@@ -105,12 +105,12 @@ class OperationHeapLimitSharedContainersTest {
     }
     assertThat(limit.getChargedBytes()).isEqualTo(oneList);
 
-    // The list that left the heap is not kept reachable by the operation
-    await().atMost(Duration.ofSeconds(30)).until(() -> {
-      System.gc();
-      return first.get() == null;
-    });
+    // The lists that left the heap are not kept reachable by the operation: it remembers the one the heap holds now
+    assertThat(limit.sharedContainers()).isEqualTo(1);
+
+    // and nothing at all once it is released, as an owner does when its buffer goes
     limit.release();
+    assertThat(limit.sharedContainers()).isZero();
   }
 
   @Test
@@ -172,11 +172,119 @@ class OperationHeapLimitSharedContainersTest {
       exact.add(i, row);
     }
 
+    // The first row's own list holds the child among the elements an estimate looks at, and extrapolates it to the one it does not
+    // (17 elements, 16 looked at): about one more child, which the average spreads over the rows not estimated. The estimate errs
+    // high, never low, and by less than a second child: a child charged again by every row, or by every sampled one, is a multiple
+    // of its size, and one charged once more is more than the extrapolation of the first
     final long childBytes = HeapEstimator.estimate(child);
+    final long exactBytes = exact.getChargedBytes();
     assertThat(sampled.getChargedBytes()).as("the child is charged once, as when every row is estimated")
-        .isBetween(exact.getChargedBytes() - childBytes, exact.getChargedBytes() + childBytes);
+        .isBetween(exactBytes - rows, exactBytes + childBytes + childBytes / 2);
     sampled.release();
     exact.release();
+  }
+
+  /**
+   * A top-K heap whose rows share large containers at random - lists that hold lists, maps and arrays that hold them, the same
+   * one under two names of a row, a private one that holds a shared one - and replaces rows at random, gives back exactly what it
+   * charged: when every row has gone for an empty one, what is charged is the empty rows and no container is remembered. A
+   * container given back too early, too late or twice leaves the charge above or below that.
+   */
+  @Test
+  void aTopKHeapGivesBackExactlyWhatItChargedWhateverTheRowsShare() {
+    final Random random = new Random(11812L);
+    final List<Object> pool = sharedContainers(random);
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY").estimateEachElement();
+    final int heapSize = 24;
+    final ResultInternal[] held = new ResultInternal[heapSize];
+    for (int i = 0; i < heapSize; i++) {
+      held[i] = randomRow(random, pool);
+      limit.add(i + 1, held[i]);
+    }
+    for (int step = 0; step < 4_000; step++) {
+      final int slot = random.nextInt(heapSize);
+      final ResultInternal next = randomRow(random, pool);
+      limit.replace(held[slot], next);
+      held[slot] = next;
+    }
+    assertThat(limit.sharedContainers()).as("the containers the heap holds are remembered").isPositive();
+
+    final ResultInternal empty = new ResultInternal();
+    for (int slot = 0; slot < heapSize; slot++)
+      limit.replace(held[slot], empty);
+
+    assertThat(limit.getChargedBytes()).isEqualTo(heapSize * (HeapEstimator.estimate(empty) + REFERENCE_BYTES));
+    assertThat(limit.sharedContainers()).isZero();
+    limit.release();
+  }
+
+  /** Large containers, the later ones holding earlier ones among their first entries, the ones an estimate looks at. */
+  private static List<Object> sharedContainers(final Random random) {
+    final List<Object> pool = new ArrayList<>();
+    final List<Object> leaves = new ArrayList<>();
+    for (int i = 0; i < 5; i++)
+      leaves.add(nulls(HeapEstimator.SAMPLED_ELEMENTS + 4 + random.nextInt(10)));
+    pool.addAll(leaves);
+
+    final List<Object> middles = new ArrayList<>();
+    for (int i = 0; i < 5; i++) {
+      final List<Object> middle = nulls(HeapEstimator.SAMPLED_ELEMENTS + 4);
+      holdSome(random, middle, leaves);
+      middles.add(middle);
+    }
+    pool.addAll(middles);
+
+    final List<Object> lower = new ArrayList<>(leaves);
+    lower.addAll(middles);
+    for (int i = 0; i < 4; i++) {
+      final List<Object> top = nulls(HeapEstimator.SAMPLED_ELEMENTS + 4);
+      holdSome(random, top, lower);
+      pool.add(top);
+    }
+    for (int i = 0; i < 3; i++) {
+      final Map<String, Object> map = new LinkedHashMap<>();
+      for (int k = 0; k < HeapEstimator.SAMPLED_ELEMENTS + 4; k++)
+        map.put("k" + k, null);
+      map.put("k0", lower.get(random.nextInt(lower.size())));
+      map.put("k1", lower.get(random.nextInt(lower.size())));
+      pool.add(map);
+    }
+    for (int i = 0; i < 3; i++) {
+      final Object[] array = new Object[HeapEstimator.SAMPLED_ELEMENTS + 4];
+      array[0] = lower.get(random.nextInt(lower.size()));
+      array[1] = lower.get(random.nextInt(lower.size()));
+      pool.add(array);
+    }
+    return pool;
+  }
+
+  private static void holdSome(final Random random, final List<Object> container, final List<Object> candidates) {
+    final int held = 1 + random.nextInt(3);
+    for (int i = 0; i < held; i++)
+      container.set(i, candidates.get(random.nextInt(candidates.size())));
+  }
+
+  private static ResultInternal randomRow(final Random random, final List<Object> pool) {
+    final ResultInternal row = new ResultInternal();
+    final int properties = 1 + random.nextInt(3);
+    for (int p = 0; p < properties; p++) {
+      final Object value = switch (random.nextInt(6)) {
+        case 0, 1, 2 -> pool.get(random.nextInt(pool.size()));
+        case 3 -> {
+          // A container of the row's own that holds a shared one
+          final List<Object> own = nulls(HeapEstimator.SAMPLED_ELEMENTS + 4);
+          own.set(random.nextInt(HeapEstimator.SAMPLED_ELEMENTS), pool.get(random.nextInt(pool.size())));
+          yield own;
+        }
+        case 4 -> nulls(3);
+        default -> "text" + random.nextInt(100);
+      };
+      row.setProperty("p" + p, value);
+    }
+    if (random.nextInt(8) == 0)
+      // The same container under a second name
+      row.setProperty("again", row.getProperty("p0"));
+    return row;
   }
 
   private static List<Object> nulls(final int size) {

@@ -91,6 +91,8 @@ class SqlSharedListHeapBudgetTest extends TestHelper {
         ordered.add(row.<Number>getProperty("i").intValue());
       }
     }
+    // The sort let go of what it held, the list it remembered included: nothing stays reserved once the query is closed
+    assertThat(QueryHeapBudget.getReservedBytes()).as("the query gave its heap back").isZero();
     return ordered;
   }
 }

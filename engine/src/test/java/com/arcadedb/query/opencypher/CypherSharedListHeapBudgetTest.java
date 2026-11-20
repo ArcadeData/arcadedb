@@ -20,9 +20,12 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -38,6 +41,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author lvca (l.garulli@arcadedata.com)
  */
 class CypherSharedListHeapBudgetTest extends TestHelper {
+
+  @BeforeEach
+  void noReservationLeft() {
+    // What queries of other tests abandoned is given back at any moment until then: the reservation read below is this test's own
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
+  }
 
   @AfterEach
   void resetBudget() {
@@ -69,5 +78,7 @@ class CypherSharedListHeapBudgetTest extends TestHelper {
     assertThat(ordered).hasSize(300);
     assertThat(ordered.getFirst()).isEqualTo(300L);
     assertThat(ordered.getLast()).isEqualTo(1L);
+    // The sort let go of what it held, the list it remembered included: nothing stays reserved once the query is closed
+    assertThat(QueryHeapBudget.getReservedBytes()).as("the query gave its heap back").isZero();
   }
 }
