@@ -47,6 +47,7 @@ import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -310,7 +311,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private static final Set<String> ID_INDEX_SLOW_PATH_LOGGED = ConcurrentHashMap.newKeySet();
 
   /** The records a key backfill updates per transaction. */
-  private static final int BACKFILL_BATCH = 10_000;
+  static final int BACKFILL_BATCH = 10_000;
 
   private static String idIndexKey(final Database database, final String collectionName) {
     return database.getDatabasePath() + "/" + collectionName;
@@ -405,6 +406,42 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
+   * The unique index of a {@code createIndexes} on the fields {@code paths}, on their derived key {@code property}: the keys of the
+   * records that exist are written, then the index is built, then the index the plugin built on the plain fields before #12073 is
+   * dropped, as it would go on refusing {@code 1} next to {@code "1"}. An index that already exists costs nothing, as on mongod:
+   * the keys of the records written since are the plugin's to keep. The caller must hold the exclusive lock.
+   */
+  static void ensureUniqueKeyIndex(final Database database, final String collectionName, final String property, final String[] paths) {
+    if (keyIndexNames(database, collectionName, property).isEmpty()) {
+      if (database.countType(collectionName, false) > 0)
+        backfillKeys(database, collectionName, property, paths);
+      createKeyIndex(database, collectionName, property);
+    }
+    dropLegacyUniqueIndexes(database, database.getSchema().getType(collectionName), paths);
+  }
+
+  /**
+   * Drops the unique indexes {@code createIndexes} built on the plain fields before #12073: on exactly these fields, none of them
+   * declared, so that the keys were read as strings (a unique index on a declared field is the application's own, and compares what
+   * its type says).
+   */
+  private static void dropLegacyUniqueIndexes(final Database database, final DocumentType type, final String[] paths) {
+    final List<String> legacy = new ArrayList<>();
+    for (final TypeIndex index : type.getAllIndexes(false))
+      if (index.isUnique() && index.getPropertyNames().equals(Arrays.asList(paths)) && !hasDeclaredProperty(type, paths))
+        legacy.add(index.getName());
+    for (final String name : legacy)
+      database.getSchema().dropIndex(name);
+  }
+
+  private static boolean hasDeclaredProperty(final DocumentType type, final String[] paths) {
+    for (final String path : paths)
+      if (type.getPolymorphicPropertyIfExists(path) != null)
+        return true;
+    return false;
+  }
+
+  /**
    * Builds the unique index on a derived key property; a failed build (a duplicate) leaves no partial index behind. Only an index
    * this call created is dropped on failure: one that already existed on the property is left as it was.
    */
@@ -457,13 +494,16 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     try {
       for (final RID rid : rids) {
         final MutableDocument record = rid.asDocument().modify();
+        final String key;
         if (paths == null) {
           if (!record.has("_id"))
             continue;
-          record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"))));
+          key = MongoKeys.key(MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id")));
         } else
-          record.set(property, MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths));
-        record.save();
+          key = MongoKeys.key(MongoDBToSqlTranslator.convertDocumentToMongoDB(record), paths);
+        // a record that has its key is not written again: what a retry after a failed build (or an interrupted one) costs is the scan
+        if (!key.equals(record.getString(property)))
+          record.set(property, key).save();
       }
       tx.commit();
     } finally {

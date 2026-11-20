@@ -22,8 +22,14 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.BsonJavaScript;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.BsonTimestamp;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.bson.MaxKey;
+import de.bwaldvogel.mongo.bson.MinKey;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
@@ -31,10 +37,12 @@ import de.bwaldvogel.mongo.exception.MongoServerError;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * The keys the unique indexes of a collection are built on (issue #12073). An engine index converts every key to the one type it
@@ -45,10 +53,15 @@ import java.util.Map;
  * exactly when mongod's unique index makes them collide. Numbers compare by value whatever their type (1, 1L, 1.0 and
  * NumberDecimal("1.00") are one key), a missing field is a null, a document compares field by field in order.
  * <p>
- * Known differences: an array is one key, not one per element (mongod indexes each element of an array, a multikey index), and
- * only the documents this plugin writes carry the keys: a record written through SQL or another protocol has none, so no unique
- * index of the plugin covers it and, once the collection has the {@code _id} key index, a filter on {@code _id} (which selects its
- * candidates through that index) does not find it.
+ * Known differences from mongod:
+ * <ul>
+ *   <li>an array is one key, not one per element (mongod indexes each element of an array, a multikey index): {@code {a: [1, 2]}}
+ *   then {@code {a: 2}} are both accepted, an identical array is refused. A path through an array ({@code items.sku}) is the list
+ *   of what the elements hold;</li>
+ *   <li>only the documents this plugin writes carry the keys: a record written through SQL or another protocol has none, so no
+ *   unique index of the plugin covers it and, once the collection has the {@code _id} key index, a filter on {@code _id} (which
+ *   selects its candidates through that index) does not find it.</li>
+ * </ul>
  */
 final class MongoKeys {
   static final String PREFIX = "$unique:";
@@ -163,16 +176,27 @@ final class MongoKeys {
 
   /**
    * The value at a dotted path through embedded documents, {@code null} for a missing one (a unique index takes a missing field
-   * as null).
+   * as null). A path that goes through an array reads each of its elements: the value is the list of what they hold, so that
+   * {@code items.sku} of two documents with different items is two keys, not the same missing field.
    */
   private static Object valueAt(final Document document, final String path) {
-    Object current = document;
-    for (final String segment : path.split("\\.")) {
-      if (!(current instanceof Document embedded) || !embedded.containsKey(segment))
-        return null;
-      current = embedded.get(segment);
+    if (path.indexOf('.') < 0)
+      return document.get(path);
+    return valueAt(document, path.split("\\."), 0);
+  }
+
+  private static Object valueAt(final Object current, final String[] segments, final int index) {
+    if (index == segments.length)
+      return current;
+    if (current instanceof Document embedded)
+      return valueAt(embedded.get(segments[index]), segments, index + 1);
+    if (current instanceof List<?> list) {
+      final List<Object> collected = new ArrayList<>(list.size());
+      for (final Object element : list)
+        collected.add(valueAt(element, segments, index));
+      return collected;
     }
-    return current;
+    return null;
   }
 
   /**
@@ -209,8 +233,27 @@ final class MongoKeys {
       buffer.append(']');
     } else if (value instanceof BinData binary)
       buffer.append('x').append(Base64.getEncoder().encodeToString(binary.getData())).append(';');
-    else
-      appendText(buffer.append('x').append(value.getClass().getSimpleName()).append(':'), value.toString());
+    else if (value instanceof BsonTimestamp timestamp)
+      buffer.append('t').append(timestamp.getValue()).append(';');
+    else if (value instanceof MinKey)
+      buffer.append('<');
+    else if (value instanceof MaxKey)
+      buffer.append('>');
+    else if (value instanceof BsonJavaScript script)
+      appendText(buffer.append('j'), script.getCode());
+    else if (value instanceof LegacyUUID uuid)
+      buffer.append('l').append(uuid.getUuid()).append(';');
+    else if (value instanceof UUID uuid)
+      buffer.append('u').append(uuid).append(';');
+    else if (value instanceof BsonRegularExpression regex) {
+      appendText(buffer.append('r'), regex.getPattern());
+      // the options are a set: /a/ix and /a/xi are the same expression
+      final char[] options = regex.getOptions() != null ? regex.getOptions().toCharArray() : new char[0];
+      Arrays.sort(options);
+      appendText(buffer, new String(options));
+    } else
+      // a type the plugin does not store: its text, which the classes of the BSON library that have none make an object identity
+      appendText(buffer.append('?').append(value.getClass().getName()).append(':'), value.toString());
   }
 
   private static void appendText(final StringBuilder buffer, final String text) {

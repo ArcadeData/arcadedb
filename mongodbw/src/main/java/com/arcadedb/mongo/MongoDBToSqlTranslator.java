@@ -480,11 +480,11 @@ public class MongoDBToSqlTranslator {
   }
 
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
-    return convertMapToMongoDB(doc.toMap());
+    return convertMapToMongoDB(doc.toMap(), true);
   }
 
   protected static Document convertDocumentToMongoDB(final Result doc) {
-    return convertMapToMongoDB(doc.toMap());
+    return convertMapToMongoDB(doc.toMap(), true);
   }
 
   /**
@@ -492,16 +492,21 @@ public class MongoDBToSqlTranslator {
    * own class (an Integer, a Long, a Date, a {@code null}), and a BSON document can only name a field by text. The key's text is
    * taken exactly as the shared {@code JSONObject(Map)} constructor takes it, a {@code null} key named {@code "null"}, so the same
    * record reads the same through every protocol (issue #9973).
+   *
+   * @param document whether the map is the document itself: only its {@code _id} is the one that reads as an ObjectId when it spells
+   *                 one (see {@link #convertIdToMongoDB}), an {@code _id} inside an embedded document is a field like any other, a
+   *                 String that spells an ObjectId is the String it was written as (issue #12073)
    */
-  private static Document convertMapToMongoDB(final Map<?, ?> map) {
+  private static Document convertMapToMongoDB(final Map<?, ?> map, final boolean document) {
     final Document result = new Document();
     for (final Map.Entry<?, ?> entry : map.entrySet()) {
       final String p = String.valueOf(entry.getKey());
       // the record's own metadata is not part of a MongoDB document: a client would see fields it never wrote
-      if (isRecordMetadata(p))
+      // (the derived keys of the unique indexes are properties of the record, not of an embedded document)
+      if (document ? isRecordMetadata(p) : isEngineMetadata(p))
         continue;
       final Object value = entry.getValue();
-      result.put(p, "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
+      result.put(p, document && "_id".equals(p) ? convertIdToMongoDB(value) : toBsonValue(value));
     }
     return result;
   }
@@ -526,7 +531,14 @@ public class MongoDBToSqlTranslator {
    * unique indexes are built on ({@link MongoKeys}).
    */
   static boolean isRecordMetadata(final String property) {
-    return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property) || MongoKeys.isKeyProperty(property);
+    return isEngineMetadata(property) || MongoKeys.isKeyProperty(property);
+  }
+
+  /**
+   * The metadata the engine puts in the map of a record or of an embedded document.
+   */
+  private static boolean isEngineMetadata(final String property) {
+    return "@rid".equals(property) || "@type".equals(property) || "@cat".equals(property);
   }
 
   /**
@@ -568,7 +580,7 @@ public class MongoDBToSqlTranslator {
       // a malformed tag stays a plain map and is converted like any other embedded document
       if (bson != value)
         return bson;
-      return convertMapToMongoDB((Map<?, ?>) value);
+      return convertMapToMongoDB((Map<?, ?>) value, false);
     } else if (value instanceof LocalDateTime dateTime)
       return dateTime.toInstant(ZoneOffset.UTC);
     else if (value instanceof LocalDate date)
@@ -579,7 +591,7 @@ public class MongoDBToSqlTranslator {
       return date.toInstant();
     else if (value instanceof Map<?, ?> map)
       // an embedded document can hold a temporal property of its own
-      return convertMapToMongoDB(map);
+      return convertMapToMongoDB(map, false);
     else if (value instanceof List<?> list) {
       final List<Object> converted = new ArrayList<>(list.size());
       for (final Object item : list)

@@ -628,6 +628,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     for (final String field : key.keySet()) {
+      // the property the plugin keeps the key of a unique index in is not a field a client indexes (issue #12073)
+      MongoKeys.checkNotKey(field);
       final Object direction = key.get(field);
       if (!(direction instanceof Number number) || number.doubleValue() == 0D || Double.isNaN(number.doubleValue()))
         throw new MongoServerError(67, "CannotCreateIndex",
@@ -650,9 +652,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final Lock lock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).writeLock();
       lock.lock();
       try {
-        if (database.countType(collectionName, false) > 0)
-          MongoDBCollectionWrapper.backfillKeys(database, collectionName, property, propertyNames);
-        MongoDBCollectionWrapper.createKeyIndex(database, collectionName, property);
+        // the unique index of the _id is the one every collection has, built on its own key
+        if (MongoKeys.ID_KEY.equals(property))
+          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
+        else
+          MongoDBCollectionWrapper.ensureUniqueKeyIndex(database, collectionName, property, propertyNames);
       } finally {
         lock.unlock();
       }
@@ -672,7 +676,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, propertyNames);
     builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-    builder.withUnique(false);
     builder.withIgnoreIfExists(true);
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);

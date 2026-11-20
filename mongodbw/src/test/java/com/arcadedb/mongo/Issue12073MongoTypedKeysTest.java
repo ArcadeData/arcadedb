@@ -21,27 +21,42 @@ package com.arcadedb.mongo;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.utility.FileUtils;
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.BsonJavaScript;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.BsonTimestamp;
 import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.bson.MaxKey;
+import de.bwaldvogel.mongo.bson.MinKey;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.exception.ErrorCode;
 import de.bwaldvogel.mongo.exception.MongoServerError;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -185,6 +200,31 @@ class Issue12073MongoTypedKeysTest {
   }
 
   @Test
+  void anIndexOnAKeyPropertyIsRefused() {
+    // a client index on the property the plugin keeps its unique key in would make the plugin's own index impossible to build
+    for (final boolean unique : new boolean[] { true, false })
+      assertThatThrownBy(() -> command("createIndexes", "Reserved2", new Document("indexes",
+          List.of(new Document("key", new Document(MongoKeys.ID_KEY, 1)).append("name", "reserved").append("unique", unique))))).isInstanceOf(
+          MongoServerError.class);
+    assertThat(database.getSchema().existsType("Reserved2")).isFalse();
+  }
+
+  @Test
+  void anEmbeddedIdThatSpellsAnObjectIdStaysTheStringItWas() {
+    // only the _id of the document is an ObjectId when it spells one: an _id inside an embedded document is a field like any other
+    insert("Embedded", new Document("_id", 1).append("e", new Document("_id", HEX)), new Document("_id", 2).append("e", new Document("_id", OID)),
+        new Document("_id", 3).append("l", List.of(new Document("_id", HEX))));
+
+    assertThat(((Document) find("Embedded", new Document("_id", 1)).getFirst().get("e")).get("_id")).isEqualTo(HEX);
+    assertThat(((Document) find("Embedded", new Document("_id", 2)).getFirst().get("e")).get("_id")).isEqualTo(OID);
+    assertThat(((Document) ((List<?>) find("Embedded", new Document("_id", 3)).getFirst().get("l")).getFirst()).get("_id")).isEqualTo(HEX);
+
+    // and the prefix of the derived keys is reserved for the fields of the document itself: inside an embedded document it is a name
+    insert("Embedded", new Document("_id", 4).append("e", new Document(MongoKeys.PREFIX + "x", 1)));
+    assertThat(find("Embedded", new Document("_id", 4)).getFirst().get("e")).isEqualTo(new Document(MongoKeys.PREFIX + "x", 1));
+  }
+
+  @Test
   void aDecimal128NaNInfinityOrNegativeZeroIsStored() {
     final List<Decimal128> values = List.of(Decimal128.NaN, Decimal128.NEGATIVE_INFINITY, Decimal128.POSITIVE_INFINITY,
         Decimal128.NEGATIVE_ZERO);
@@ -276,6 +316,266 @@ class Issue12073MongoTypedKeysTest {
     for (final TypeIndex index : database.getSchema().getType("Kept").getAllIndexes(false))
       left.add(index.getPropertyNames().getFirst());
     assertThat(left).containsExactly("p");
+  }
+
+  @Test
+  void issuingTheSameUniqueCreateIndexesAgainRewritesNoRecord() {
+    // an ORM issues createIndexes at every start of the application: an index that exists must cost nothing
+    insert("Again", new Document("_id", 1).append("a", 1), new Document("_id", 2).append("a", 2), new Document("_id", 3).append("a", 3));
+    createUniqueIndex("Again", new Document("a", 1));
+
+    final AtomicInteger updated = countUpdates("Again");
+    createUniqueIndex("Again", new Document("a", 1));
+    assertThat(updated.get()).isZero();
+    assertThat(uniqueIndexProperties("Again")).containsExactlyInAnyOrder("$unique:a", MongoKeys.ID_KEY);
+    assertThatThrownBy(() -> insert("Again", new Document("_id", 4).append("a", 2.0))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aBuildThatFailedOnDuplicatesCanBeRetriedAndRewritesNoKey() {
+    insert("Retry", new Document("_id", 1).append("a", 1), new Document("_id", 2).append("a", 1), new Document("_id", 3).append("a", 3));
+    assertThatThrownBy(() -> createUniqueIndex("Retry", new Document("a", 1))).isInstanceOf(RuntimeException.class);
+    // the failed build leaves no index (the engine refused it) but the keys it wrote: they are what the retry finds
+    assertThat(uniqueIndexProperties("Retry")).containsExactly(MongoKeys.ID_KEY);
+
+    command("delete", "Retry", new Document("deletes", List.of(new Document("q", new Document("_id", 2)).append("limit", 0))));
+    final AtomicInteger updated = countUpdates("Retry");
+    createUniqueIndex("Retry", new Document("a", 1));
+    assertThat(updated.get()).as("the keys the failed build wrote are not written again").isZero();
+    assertThat(uniqueIndexProperties("Retry")).containsExactlyInAnyOrder("$unique:a", MongoKeys.ID_KEY);
+    assertThatThrownBy(() -> insert("Retry", new Document("_id", 4).append("a", 1))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aUniqueIndexOnAPathThroughAnArrayKeysWhatItCollects() {
+    createUniqueIndex("Items", new Document("items.sku", 1));
+    insert("Items", new Document("_id", 1).append("items", List.of(new Document("sku", 1), new Document("sku", 2))),
+        new Document("_id", 2).append("items", List.of(new Document("sku", 3))));
+    assertThatThrownBy(() -> insert("Items", new Document("_id", 3).append("items", List.of(new Document("sku", 1), new Document("sku", 2)))))
+        .isInstanceOf(DuplicatedKeyException.class);
+
+    // an embedded document keeps working as it did
+    insert("Items", new Document("_id", 4).append("items", new Document("sku", 9)));
+    assertThatThrownBy(() -> insert("Items", new Document("_id", 5).append("items", new Document("sku", 9.0)))).isInstanceOf(
+        DuplicatedKeyException.class);
+    // and a missing path is a null, once
+    insert("Items", new Document("_id", 6));
+    assertThatThrownBy(() -> insert("Items", new Document("_id", 7))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aCompoundUniqueIndexOverAnEmbeddedField() {
+    createUniqueIndex("Compound", new Document("a", 1).append("b.c", -1));
+    insert("Compound", new Document("_id", 1).append("a", 1).append("b", new Document("c", 1)),
+        new Document("_id", 2).append("a", 1).append("b", new Document("c", "1")),
+        new Document("_id", 3).append("a", 2).append("b", new Document("c", 1)), new Document("_id", 4).append("a", 1));
+    assertThatThrownBy(() -> insert("Compound", new Document("_id", 5).append("a", 1.0).append("b", new Document("c", 1)))).isInstanceOf(
+        DuplicatedKeyException.class);
+    assertThatThrownBy(() -> insert("Compound", new Document("_id", 6).append("a", 1))).isInstanceOf(DuplicatedKeyException.class);
+
+    // an update that moves a document onto the pair another holds is refused, the one that frees a pair is not
+    assertThat(writeErrorCodes(command("update", "Compound", new Document("updates", List.of(new Document("q", new Document("_id", 2))
+        .append("u", new Document("$set", new Document("b.c", 1)))))))).containsExactly(ErrorCode.DuplicateKey.getValue());
+    command("update", "Compound", new Document("updates", List.of(new Document("q", new Document("_id", 2)).append("u",
+        new Document("$set", new Document("b.c", 5))))));
+    insert("Compound", new Document("_id", 7).append("a", 1).append("b", new Document("c", "1")));
+    assertThat(find("Compound", new Document())).hasSize(5);
+  }
+
+  @Test
+  void aLegacyUniqueIndexOnAnUndeclaredFieldGivesWayToTheDerivedOne() {
+    // what createIndexes built before #12073: a unique index on the plain field, its keys read as strings
+    database.getSchema().createDocumentType("OldUnique");
+    final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("OldUnique", new String[] { "a" });
+    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    builder.withUnique(true);
+    builder.withDefaultKeyTypesForUndeclaredProperties(new Type[] { Type.STRING });
+    builder.create();
+    database.transaction(() -> database.newDocument("OldUnique").set("_id", 1).set("a", 1).save());
+
+    createUniqueIndex("OldUnique", new Document("a", 1));
+
+    assertThat(uniqueIndexProperties("OldUnique")).containsExactly("$unique:a");
+    insert("OldUnique", new Document("_id", 2).append("a", "1"));
+    assertThat(uniqueIndexProperties("OldUnique")).containsExactlyInAnyOrder("$unique:a", MongoKeys.ID_KEY);
+    assertThatThrownBy(() -> insert("OldUnique", new Document("_id", 3).append("a", 1.0))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void aUniqueCreateIndexesOnTheIdIsTheIdIndex() {
+    database.getSchema().createDocumentType("OnId");
+    database.transaction(() -> {
+      database.newDocument("OnId").set("_id", 1).save();
+      database.newDocument("OnId").set("k", "no id").save();
+      database.newDocument("OnId").set("k", "no id either").save();
+    });
+
+    createUniqueIndex("OnId", new Document("_id", 1));
+
+    // the index every collection has, on the keys of the records that have an _id: the ones without are not duplicates of each other
+    assertThat(uniqueIndexProperties("OnId")).containsExactly(MongoKeys.ID_KEY);
+    assertThat(keyedRecords("OnId", MongoKeys.ID_KEY)).isEqualTo(1L);
+    assertThatThrownBy(() -> insert("OnId", new Document("_id", 1))).isInstanceOf(DuplicatedKeyException.class);
+    insert("OnId", new Document("_id", "1"));
+  }
+
+  @Test
+  void aUniqueIndexOnADeclaredFieldIsNotTheLegacyOneAndStays() {
+    database.command("sql", "CREATE DOCUMENT TYPE Declared");
+    database.command("sql", "CREATE PROPERTY Declared.a STRING");
+    database.command("sql", "CREATE INDEX ON Declared (a) UNIQUE");
+
+    createUniqueIndex("Declared", new Document("a", 1));
+
+    assertThat(uniqueIndexProperties("Declared")).containsExactlyInAnyOrder("a", "$unique:a");
+  }
+
+  @Test
+  void everyBsonTypeHasAStableKeyOfItsOwn() {
+    final List<Object> samples = List.of(1, "1", true, 1.5, OID, HEX, new Date(1_700_000_000_123L), new BsonTimestamp(5L << 32 | 7),
+        new BsonTimestamp(5L << 32 | 8), MinKey.getInstance(), MaxKey.getInstance(), new BsonJavaScript("x"), new BsonJavaScript("y"),
+        LegacyUUID.fromString("00000000-0000-0001-0000-000000000002"), UUID.fromString("00000000-0000-0001-0000-000000000002"),
+        new BsonRegularExpression("^a", "i"), new BsonRegularExpression("^a", ""), new BinData(new byte[] { 1, 2, 3 }),
+        new Document("x", 1), List.of(1), Decimal128.NaN);
+    final List<Object> twins = List.of(1.0, "1", true, 1.5, new ObjectId(HEX), HEX, Instant.ofEpochMilli(1_700_000_000_123L),
+        new BsonTimestamp(5L << 32 | 7), new BsonTimestamp(5L << 32 | 8), MinKey.getInstance(), MaxKey.getInstance(),
+        new BsonJavaScript("x"), new BsonJavaScript("y"), LegacyUUID.fromString("00000000-0000-0001-0000-000000000002"),
+        UUID.fromString("00000000-0000-0001-0000-000000000002"), new BsonRegularExpression("^a", "i"), new BsonRegularExpression("^a", ""),
+        new BinData(new byte[] { 1, 2, 3 }), new Document("x", 1.0), List.of(1L), Decimal128.NaN);
+
+    final List<String> keys = new ArrayList<>();
+    for (int i = 0; i < samples.size(); i++) {
+      final String key = MongoKeys.key(samples.get(i));
+      // a value is the same key whichever object stands for it, and never one that depends on the identity of an object
+      assertThat(MongoKeys.key(twins.get(i))).as("%s", samples.get(i)).isEqualTo(key);
+      assertThat(key).as("%s", samples.get(i)).doesNotContain("@");
+      keys.add(key);
+    }
+    // a Double 1.0 is the Integer 1, whatever else: the samples of the other kinds are all distinct
+    assertThat(keys).doesNotHaveDuplicates();
+  }
+
+  @Test
+  void aValueIsTheSameKeyWhicheverPathWroteIt() {
+    // the key of an insert is made from the client's document, the one of an update or of a backfill from the stored record read back:
+    // a value that is not the same key on both is not found by its own index, or refused for a value it does not share
+    final List<Object> values = new ArrayList<>(List.of(new Date(1_700_000_000_123L), Instant.ofEpochMilli(1_700_000_000_123L),
+        new Decimal128(new BigDecimal("1.50")), Decimal128.NEGATIVE_ZERO, Decimal128.NaN, Decimal128.POSITIVE_INFINITY,
+        new BinData(new byte[] { 1, 2, 3 }), new BsonTimestamp(5L << 32 | 7), MinKey.getInstance(), MaxKey.getInstance(),
+        new BsonJavaScript("x"), LegacyUUID.fromString("00000000-0000-0001-0000-000000000002"), new BsonRegularExpression("^a", "i"), OID, HEX,
+        "$oid:" + HEX, "$str:" + HEX, "", 5L, 5.5, new Document("o", OID).append("d", new Date(1_700_000_000_123L)),
+        new Document("_id", HEX), new Document("_id", OID), List.of(1, "a", OID, new Document("b", 2))));
+
+    final List<String> inconsistent = new ArrayList<>();
+    for (int i = 0; i < values.size(); i++) {
+      final Object value = values.get(i);
+      final String described = value.getClass().getSimpleName() + " " + value;
+
+      // insert, then an update that rewrites the keys: the key the update leaves is the one the insert wrote
+      final String updated = "Updated" + i;
+      createUniqueIndex(updated, new Document("a", 1));
+      insert(updated, new Document("_id", 1).append("a", value));
+      command("update", updated,
+          new Document("updates", List.of(new Document("q", new Document("_id", 1)).append("u", new Document("$set", new Document("k", 1))))));
+      if (!isRefused(() -> insert(updated, new Document("_id", 2).append("a", value))))
+        inconsistent.add("insert then update: " + described);
+
+      // an index built on what is stored, then an insert of the same value
+      final String backfilled = "Backfilled" + i;
+      insert(backfilled, new Document("_id", 1).append("a", value));
+      createUniqueIndex(backfilled, new Document("a", 1));
+      if (!isRefused(() -> insert(backfilled, new Document("_id", 2).append("a", value))))
+        inconsistent.add("insert then backfill: " + described);
+    }
+    assertThat(inconsistent).isEmpty();
+  }
+
+  @Test
+  void anIdFilterReadsTheIndexOfTheDerivedKey() {
+    insert("Explained", new Document("_id", 1), new Document("_id", "1"));
+    final DocumentType type = database.getSchema().getType("Explained");
+    for (final Document filter : List.of(new Document("_id", 1), new Document("_id", new Document("$in", List.of(1, "1"))),
+        new Document("$or", List.of(new Document("_id", 1), new Document("_id", "1"))))) {
+      final Map<String, Object> params = new HashMap<>();
+      final StringBuilder sql = new StringBuilder("select from Explained");
+      new MongoFilter(database, filter).appendCandidateWhere(sql, params, type);
+
+      assertThat(sql.toString()).as("%s", filter).contains("`" + MongoKeys.ID_KEY + "`");
+      try (final ResultSet rs = database.query("sql", "EXPLAIN " + sql, params)) {
+        assertThat(rs.next().<String>getProperty("executionPlanAsString")).as("%s", filter).contains("FETCH FROM INDEX");
+      }
+    }
+  }
+
+  @Tag("slow")
+  @Test
+  void aCollectionOfSeveralBackfillBatchesGetsEveryKeyAndTheRetryWritesNone() {
+    // written outside the plugin, as a collection that predates it is: no key on any record
+    final int total = 2 * MongoDBCollectionWrapper.BACKFILL_BATCH + 123;
+    database.getSchema().createDocumentType("Big");
+    for (int from = 0; from < total; from += 5_000) {
+      final int start = from;
+      database.transaction(() -> {
+        for (int i = start; i < Math.min(start + 5_000, total); i++)
+          database.newDocument("Big").set("_id", i).set("a", i).save();
+      });
+    }
+
+    // the first insert builds the key index: three batches, each its own transaction
+    insert("Big", new Document("_id", "new").append("a", -1));
+    assertThat(keyedRecords("Big", MongoKeys.ID_KEY)).isEqualTo(total + 1L);
+    for (final int id : new int[] { 0, MongoDBCollectionWrapper.BACKFILL_BATCH - 1, MongoDBCollectionWrapper.BACKFILL_BATCH, total - 1 }) {
+      assertThat(find("Big", new Document("_id", id))).as("_id %d", id).hasSize(1);
+      assertThatThrownBy(() -> insert("Big", new Document("_id", id))).isInstanceOf(DuplicatedKeyException.class);
+    }
+    insert("Big", new Document("_id", String.valueOf(total - 1)));
+
+    // a createIndexes unique goes over the same batches, and doing it again costs nothing
+    createUniqueIndex("Big", new Document("a", 1));
+    assertThat(keyedRecords("Big", "$unique:a")).isEqualTo(total + 2L);
+    final AtomicInteger updated = countUpdates("Big");
+    MongoDBCollectionWrapper.backfillKeys(database, "Big", "$unique:a", new String[] { "a" });
+    MongoDBCollectionWrapper.backfillKeys(database, "Big", MongoKeys.ID_KEY, null);
+    assertThat(updated.get()).isZero();
+  }
+
+  private void createUniqueIndex(final String collection, final Document key) {
+    command("createIndexes", collection,
+        new Document("indexes", List.of(new Document("key", key).append("name", "unique_" + key.keySet()).append("unique", true))));
+  }
+
+  /** The properties the unique indexes of a collection are on. */
+  private List<String> uniqueIndexProperties(final String collection) {
+    final List<String> properties = new ArrayList<>();
+    for (final TypeIndex index : database.getSchema().getType(collection).getAllIndexes(false))
+      if (index.isUnique())
+        properties.add(index.getPropertyNames().getFirst());
+    return properties;
+  }
+
+  /** Counts the record updates of a collection from now on. */
+  private AtomicInteger countUpdates(final String collection) {
+    final AtomicInteger updated = new AtomicInteger();
+    database.getSchema().getType(collection).getEvents().registerListener((BeforeRecordUpdateListener) record -> {
+      updated.incrementAndGet();
+      return true;
+    });
+    return updated;
+  }
+
+  private long keyedRecords(final String collection, final String property) {
+    try (final ResultSet rs = database.query("sql", "select count(*) as c from `" + collection + "` where `" + property + "` is not null")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
+  }
+
+  private static boolean isRefused(final Runnable insert) {
+    try {
+      insert.run();
+      return false;
+    } catch (final DuplicatedKeyException e) {
+      return true;
+    }
   }
 
   private void insert(final String collection, final Document... documents) {
