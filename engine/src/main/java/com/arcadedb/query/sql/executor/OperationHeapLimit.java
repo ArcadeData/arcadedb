@@ -45,6 +45,12 @@ import java.util.function.Function;
  * share a shape, and a sort of millions of rows then pays for a fraction of the estimates. Charges reach the tracker
  * in batches of {@link #FORWARD_BYTES}, so the tracker's monitor is taken once per several kilobytes, not per row.
  * <p>
+ * A large collection, map or array that several elements of the operation hold - the same object, not an equal one - is
+ * charged once, to the first element that holds it, and as a reference to every other (issue #11812): a list collected once and
+ * carried by every row of an UNWIND is in memory once. The operation remembers those containers, which keeps them reachable, until
+ * the buffer lets go of them: every owner must call {@link #release()} when its buffer goes. What an element gives back is worked
+ * out from the container as it is then, so a container is not to be changed while an operation holds an element that holds it.
+ * <p>
  * An operation nested in another one - the list a collect() gathers inside a GROUP BY - is a {@link #child(String)}:
  * it counts its own elements, and charges its bytes to its parent, which releases them with its own.
  * <p>
@@ -60,19 +66,20 @@ public final class OperationHeapLimit {
   /** Charges accumulate on the operation up to this many bytes before they reach the tracker. */
   static final int FORWARD_BYTES = 16 * 1024;
 
-  private final long               maxElements;
-  private final String             elementsName;
-  private final String             operation;
-  private final QueryHeapTracker   tracker;
-  private final OperationHeapLimit parent;
-  private       long               charged;
-  private       long               pending;
-  private       long               estimatedElements;
-  private       long               estimatedBytes;
-  private       int                sampleCountdown;
-  private       boolean            eachElement;
-  // The large containers this operation's elements share, charged once rather than once per element that holds them
-  private       HeapEstimator.Shared shared = new HeapEstimator.Shared();
+  private final long                 maxElements;
+  private final String               elementsName;
+  private final String               operation;
+  private final QueryHeapTracker     tracker;
+  private final OperationHeapLimit   parent;
+  private       long                 charged;
+  private       long                 pending;
+  private       long                 estimatedElements;
+  private       long                 estimatedBytes;
+  private       int                  sampleCountdown;
+  private       boolean              eachElement;
+  // The large containers this operation's elements share, charged once rather than once per element that holds them. Created when
+  // the first element is estimated, and dropped by every release: an operation that charges nothing allocates nothing for it
+  private       HeapEstimator.Shared shared;
 
   private OperationHeapLimit(final long maxElements, final String elementsName, final String operation,
       final QueryHeapTracker tracker, final OperationHeapLimit parent) {
@@ -310,9 +317,10 @@ public final class OperationHeapLimit {
       return;
     long bytes = 0L;
     // Counted afresh: what the operation holds now shares each large container once, whichever elements held it before
-    shared = new HeapEstimator.Shared();
+    final HeapEstimator.Shared counted = new HeapEstimator.Shared();
+    shared = counted;
     for (final Object element : elements)
-      bytes += shared.add(element) + HeapEstimator.REFERENCE_BYTES;
+      bytes += counted.add(element) + HeapEstimator.REFERENCE_BYTES;
     if (bytes < charged)
       giveBack(charged - bytes);
     else
@@ -335,8 +343,9 @@ public final class OperationHeapLimit {
   public void replace(final Object removed, final Object added, final long besideDelta) {
     if (tracker == null)
       return;
+    final HeapEstimator.Shared counted = shared();
     // Added first: a container both hold keeps a holder, so it is neither given back nor charged again
-    final long delta = shared.add(added) - shared.remove(removed) + besideDelta;
+    final long delta = counted.add(added) - counted.remove(removed) + besideDelta;
     if (delta > 0)
       charge(delta);
     else
@@ -348,7 +357,7 @@ public final class OperationHeapLimit {
    * forgotten, as which elements went is not known: the elements met afterwards are charged for them again.
    */
   public void release(final long bytes) {
-    shared = new HeapEstimator.Shared();
+    shared = null;
     giveBack(bytes);
   }
 
@@ -382,7 +391,7 @@ public final class OperationHeapLimit {
     pending += other.pending;
     other.charged = 0L;
     other.pending = 0L;
-    other.shared = new HeapEstimator.Shared();
+    other.shared = null;
     return true;
   }
 
@@ -406,15 +415,22 @@ public final class OperationHeapLimit {
     return maxElements;
   }
 
+  private HeapEstimator.Shared shared() {
+    if (shared == null)
+      shared = new HeapEstimator.Shared();
+    return shared;
+  }
+
   private long estimate(final Object element) {
     if (eachElement || estimatedElements < EXACT_SAMPLES || ++sampleCountdown == SAMPLE_EVERY) {
       sampleCountdown = 0;
-      final long sharedBefore = shared.sharedSampleBytes();
-      final long bytes = shared.addSample(element) + HeapEstimator.REFERENCE_BYTES;
+      final HeapEstimator.Shared counted = shared();
+      final long sharedBefore = counted.sharedSampleBytes();
+      final long bytes = counted.addSample(element) + HeapEstimator.REFERENCE_BYTES;
       // The average charged to the elements that are not estimated is what one element holds on its own: a container a
       // later element shares is charged once, to the element that met it first, and is no part of every other element's share.
       // A container no other element holds stays in it, as the elements not estimated hold containers of their own as well
-      estimatedBytes += bytes - (shared.sharedSampleBytes() - sharedBefore);
+      estimatedBytes += bytes - (counted.sharedSampleBytes() - sharedBefore);
       ++estimatedElements;
       return bytes;
     }

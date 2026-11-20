@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #11812: a list collected once and carried by every row (WITH collect(n) AS ns UNWIND ...) is held once, but an ORDER BY over
  * those rows charged it to the query heap budget once per row: 300 rows of a list of 2,000 records asked for far more than
  * a 64 MB budget although the sort holds a few kilobytes of its own.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class CypherSharedListHeapBudgetTest extends TestHelper {
 

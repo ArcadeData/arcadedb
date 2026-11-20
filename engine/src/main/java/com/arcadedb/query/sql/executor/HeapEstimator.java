@@ -48,7 +48,9 @@ import java.util.Set;
  * <p>
  * A record several rows hold is counted once per row, so the estimate errs on the high side for rows that repeat a
  * record (the start node of an expansion); rows of distinct records - the ones that fill a heap - are counted as
- * they are.
+ * they are. A large collection, map or array is the exception where the operation that buffers the rows counts through a
+ * {@link Shared}, as {@link OperationHeapLimit} does: the one object every row holds is counted once (issue #11812).
+ * {@link #estimate(Object)} on its own counts every reference in full.
  * <p>
  * It reads a value through its ordinary accessors, so a row that is not a {@link ResultInternal} may load its record
  * to answer a property and a lazy collection may count or iterate its elements: the operations estimate the first
@@ -89,7 +91,12 @@ public final class HeapEstimator {
    * the large ones are what an overcount is made of.
    * <p>
    * Each container is remembered with the elements that hold it, so a buffer that lets an element go ({@link #remove}) gives
-   * back a container with the last element that held it, and forgets it then.
+   * back a container with the last element that held it, and forgets it then. What {@link #remove} gives back is worked out from
+   * the container as it is then: a container that changed while an element held it gives back what it holds now, not what was
+   * charged for it (the operation never gives back more than it charged), so a buffer is not to change a container it holds.
+   * <p>
+   * The containers are held by strong references until the last element holding each is removed or the owner drops this object:
+   * whoever owns one must let go of it when its buffer goes (an operation does, in {@link OperationHeapLimit#release()}).
    * <p>
    * Not thread-safe, as the operation that owns it is not.
    */
@@ -100,7 +107,8 @@ public final class HeapEstimator {
     private long    heldBytes;
     // The bytes of the containers a sampled element met first that a later sampled element turned out to share
     private long    sharedSampleBytes;
-    private int     walk;
+    // The number of the current walk: which walk met a container first
+    private int     walks;
     private boolean sample;
     // The container met for the first time that the current walk is inside of, null at the top of the element
     private Held    firstSighted;
@@ -147,7 +155,7 @@ public final class HeapEstimator {
     }
 
     private long walk(final Object value, final boolean sample) {
-      ++walk;
+      ++walks;
       this.sample = sample;
       firstSighted = null;
       return estimate(value, 0, this);
@@ -159,11 +167,11 @@ public final class HeapEstimator {
       final Held known = held.get(container);
       if (known != null) {
         ++known.holders;
-        if (sample && known.walk != walk)
+        if (sample && known.walk != walks)
           moveToShared(known);
         return REFERENCE_BYTES;
       }
-      final Held entry = new Held(depth, walk);
+      final Held entry = new Held(depth, walks);
       held.put(container, entry);
       final Held parent = firstSighted;
       if (parent != null)
@@ -219,12 +227,12 @@ public final class HeapEstimator {
    * for the first time inside it.
    */
   private static final class Held {
-    private final int        depth;
-    private final int        walk;
-    private int              holders = 1;
-    private long             bytes;
-    private long             sampleBytes;
-    private List<Held>       nested;
+    private final int  depth;
+    private final int  walk;
+    private int        holders = 1;
+    private long       bytes;
+    private long       sampleBytes;
+    private List<Held> nested;
 
     private Held(final int depth, final int walk) {
       this.depth = depth;

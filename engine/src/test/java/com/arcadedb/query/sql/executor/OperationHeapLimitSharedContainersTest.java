@@ -40,6 +40,8 @@ import static org.awaitility.Awaitility.await;
  * Issue #11812: the large containers the elements of one operation share are charged once, and what is charged stays what
  * the elements hold: a container nested in another one met for the first time, a top-K heap replacing rows that hold
  * containers of their own, and rows whose containers are their own past the sampled ones.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class OperationHeapLimitSharedContainersTest {
 
@@ -68,6 +70,23 @@ class OperationHeapLimitSharedContainersTest {
     final long parentWithItsList = new HeapEstimator.Shared().add(parent);
     final long rowOnItsOwn = RESULT_BYTES + 2L * HASH_ENTRY_BYTES + REFERENCE_BYTES + OBJECT_BYTES + REFERENCE_BYTES;
     assertThat(limit.getChargedBytes()).isEqualTo(parentWithItsList - REFERENCE_BYTES + rows * rowOnItsOwn);
+    limit.release();
+  }
+
+  @Test
+  void aReleasedOperationForgetsTheContainersItHeld() {
+    final OperationHeapLimit limit = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final List<Object> shared = nulls(2_000);
+    limit.add(1, row("l", shared, "i", 1));
+    final long withTheList = limit.getChargedBytes();
+
+    limit.release();
+    assertThat(limit.getChargedBytes()).isZero();
+
+    // What the operation holds from here on is a new buffer: the list is charged in full again, not as a reference to a list
+    // the first buffer held
+    limit.add(1, row("l", shared, "i", 2));
+    assertThat(limit.getChargedBytes()).isEqualTo(withTheList);
     limit.release();
   }
 
