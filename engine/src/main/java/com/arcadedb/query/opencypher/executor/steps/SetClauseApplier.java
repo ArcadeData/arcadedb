@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -83,6 +84,8 @@ public final class SetClauseApplier {
   private final ExpressionEvaluator evaluator;
   private final boolean             reloadLatestTarget;
   private final boolean             skipUnchangedPropertyWrites;
+  // The predicates that selected the records the clause writes, evaluated again on a target reloaded with changed content (#11818)
+  private final SelectionPredicates selection;
   // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
   // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
@@ -91,11 +94,12 @@ public final class SetClauseApplier {
   private       HeldCollectionRefresher heldCollections;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
-      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
+      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites, final SelectionPredicates selection) {
     this.context = context;
     this.evaluator = evaluator;
     this.reloadLatestTarget = reloadLatestTarget;
     this.skipUnchangedPropertyWrites = skipUnchangedPropertyWrites;
+    this.selection = selection;
   }
 
   /**
@@ -103,7 +107,16 @@ public final class SetClauseApplier {
    * item unconditionally.
    */
   public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, true, false);
+    return forSetClause(context, evaluator, SelectionPredicates.NONE);
+  }
+
+  /**
+   * {@link #forSetClause(CommandContext, ExpressionEvaluator)}, refusing the write of a target that a concurrent commit changed
+   * since the row read it so that one of {@code selection} no longer holds (issue #11818).
+   */
+  public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator,
+      final SelectionPredicates selection) {
+    return new SetClauseApplier(context, evaluator, true, false, selection);
   }
 
   /**
@@ -111,7 +124,7 @@ public final class SetClauseApplier {
    * transaction matched or created, and an unchanged property value is not re-written.
    */
   public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, false, true);
+    return new SetClauseApplier(context, evaluator, false, true, SelectionPredicates.NONE);
   }
 
   /**
@@ -370,15 +383,31 @@ public final class SetClauseApplier {
     // record had no buffer to compare, and the transaction's own modified copy, answered from its record cache, can
     // differ from the committed image the row read (an UNWIND fanning out onto a record already written re-evaluates
     // once per row for that reason). Any of the three asks for a new evaluation.
-    final Binary current = record != null ? record.getBuffer() : null;
-    final boolean contentChanged = readImage == null || (current != readImage && !sameContent(readImage, current))
-        || (rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable);
+    final boolean ownCopy = rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) == mutable;
+    final boolean contentChanged = ownCopy || holdsOtherContent(doc, readImage);
     // A record with no identity has nothing to reload, so it never asks for another round: the loop would not settle
     if (!contentChanged || rid == null)
       return false;
+    // #11818: the predicates that selected the record were decided on the content the row read. A concurrent commit that changed
+    // what they read leaves a record the statement no longer selects: writing it would build on that commit, and two concurrent
+    // "MATCH (r {k: $k}) WHERE r.claimed IS NULL SET r.claimed = $me" both claimed the record. The transaction's own copy is what
+    // this transaction wrote, not a concurrent commit: the statement's own writes never unselect a row it already matched.
+    if (!ownCopy)
+      selection.requireStillSelected(rid, result, context);
     if (reloadedRids == null)
       reloadedRids = new HashSet<>();
     return reloadedRids.add(rid);
+  }
+
+  /**
+   * Whether {@code doc}, which {@code modify()} was just called on, holds other content than {@code readImage}, the content the
+   * row read: a lazily loaded record had none to compare, so it counts as changed. Shared with {@link RemoveStep} (issue #11818).
+   */
+  static boolean holdsOtherContent(final Document doc, final Binary readImage) {
+    if (readImage == null)
+      return true;
+    final Binary current = doc instanceof BaseRecord record ? record.getBuffer() : null;
+    return current != readImage && !sameContent(readImage, current);
   }
 
   private static boolean sameContent(final Binary a, final Binary b) {
