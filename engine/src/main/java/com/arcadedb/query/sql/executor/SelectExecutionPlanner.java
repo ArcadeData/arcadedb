@@ -6545,11 +6545,10 @@ public class SelectExecutionPlanner {
     }
 
     // A lookup of whole keys of a UNIQUE index - an equality or an IN list on each of its properties - answers at most one
-    // record per key, which no other index covering as many conditions can beat. Preferred before the cost ranking below, and
-    // so over it, whether or not query statistics are recorded: a NOTUNIQUE candidate the statistics rank cheaper still loses
-    // (a long IN list on the UNIQUE index beats an equality on a NOTUNIQUE value with a few rows). Statistics are usually not
-    // recorded, and then every candidate costs the same and the first index the type lists wins, which used to be a NOTUNIQUE
-    // index on a tenant-like property shared by most records (issue #11963)
+    // record per key, which no other index covering as many conditions can beat. It is decided here, ahead of the cost ranking
+    // below: nothing records query statistics (QueryStats.get() answers a shared instance that does not, issue #9173), so every
+    // candidate costs Integer.MAX_VALUE and the ranking cannot tell them apart. The first index the type lists then won, which
+    // could be a NOTUNIQUE index on a tenant-like property shared by most records (issue #11963)
     if (descriptors.size() > 1) {
       final List<IndexSearchDescriptor> uniqueKeyDescriptors = descriptors.stream()
           .filter(SelectExecutionPlanner::isUniqueKeyLookup)
