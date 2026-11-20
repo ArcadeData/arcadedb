@@ -453,7 +453,7 @@ class OpenCypherTextFunctionsTest {
     final TextIndexOf fn = new TextIndexOf();
 
     assertThat(fn.getMinArgs()).isEqualTo(2);
-    assertThat(fn.getMaxArgs()).isEqualTo(3);
+    assertThat(fn.getMaxArgs()).isEqualTo(4);
     assertThat(fn.getDescription()).isNotEmpty();
   }
 
@@ -640,8 +640,8 @@ class OpenCypherTextFunctionsTest {
   void textRpadNegativeLength() {
     final TextRpad fn = new TextRpad();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
-        .isInstanceOf(IllegalArgumentException.class);
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
+    assertThat(fn.execute(new Object[]{"test", -1, "0"}, null)).isEqualTo("test");
   }
 
   // ============ TextRegexReplace tests ============
@@ -774,8 +774,8 @@ class OpenCypherTextFunctionsTest {
   void textLpadNegativeLength() {
     final TextLpad fn = new TextLpad();
 
-    assertThatThrownBy(() -> fn.execute(new Object[]{"test", -1, "0"}, null))
-        .isInstanceOf(IllegalArgumentException.class);
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
+    assertThat(fn.execute(new Object[]{"test", -1, "0"}, null)).isEqualTo("test");
   }
 
   @Test

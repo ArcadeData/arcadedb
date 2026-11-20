@@ -209,11 +209,9 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textLpadNegativeLength() {
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
     final ResultSet rs = database.query("opencypher", "RETURN text.lpad('x', -100, ' ') AS result");
-    // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("Invalid length") ||
-        exception.getMessage().contains("negative")).isTrue();
+    assertThat(rs.next().<String>getProperty("result")).isEqualTo("x");
   }
 
   @Test
@@ -236,12 +234,9 @@ class CypherFunctionSecurityTest extends TestHelper {
 
   @Test
   void textRpadNegativeLength() {
+    // A negative length is one the string already reaches: unchanged, as in APOC (issue #12105), not an error
     final ResultSet rs = database.query("opencypher", "RETURN text.rpad('x', -100, ' ') AS result");
-    // Test that negative lengths are rejected
-    final IllegalArgumentException exception = assertThatExceptionOfType(IllegalArgumentException.class)
-        .isThrownBy(rs::hasNext).actual();
-    assertThat(exception.getMessage().contains("Invalid length") ||
-        exception.getMessage().contains("negative")).isTrue();
+    assertThat(rs.next().<String>getProperty("result")).isEqualTo("x");
   }
 
   @Test
