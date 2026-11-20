@@ -18,6 +18,11 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -411,5 +416,84 @@ class PostgresCatalogExpressionTest {
     assertThat(PostgresCatalogExpression.asString(null)).isNull();
     assertThat(PostgresCatalogExpression.asString(PostgresCatalogExpression.UNKNOWN)).isNull();
     assertThat(PostgresCatalogExpression.UNKNOWN.toString()).isEqualTo("UNKNOWN");
+  }
+
+  /**
+   * Issue #10883: a FROM-less SELECT naming {@code pg_catalog} that the catalog cannot evaluate - a function it does not model, an
+   * argument it cannot read - was answered with an empty result set as a success, where PostgreSQL answers exactly one row or an
+   * error. {@link PostgresCatalog#resolveProbe} now says {@link PostgresCatalog#DECLINED} for it, which the executor refuses with
+   * {@code feature_not_supported}, as it refuses a declined catalog query (issue #10371).
+   */
+  @Nested
+  class UnevaluableProbe {
+    private static final String DATABASE_PATH = "./target/databases/PostgresCatalogExpressionTest-UnevaluableProbe";
+    private static final String USER          = "root";
+
+    private Database database;
+
+    @BeforeEach
+    void createDatabase() {
+      final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH);
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
+    }
+
+    @AfterEach
+    void dropDatabase() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Regression: #10883
+    @Test
+    void aProbeTheCatalogCannotEvaluateIsDeclinedNotAnsweredEmpty() {
+      for (final String query : List.of(//
+          "SELECT pg_catalog.no_such_function_10883()",//
+          "select pg_catalog.no_such_function_10883(1, 'a');",//
+          "SELECT pg_catalog.current_schema(), pg_catalog.no_such_function_10883()",//
+          // a function PostgreSQL has and this catalog does not model is not answered with no row either
+          "SELECT pg_catalog.pg_postmaster_start_time()",//
+          // a known function with an argument it cannot read
+          "SELECT pg_catalog.pg_is_in_recovery(42)",//
+          "SELECT pg_catalog.set_config('search_path', '')",//
+          "/* app */ SELECT pg_catalog.no_such_function_10883()")) {
+        final PostgresCatalog.Answer answer = probe(query);
+        assertThat(answer).as(query).isSameAs(PostgresCatalog.DECLINED);
+        assertThat(answer.rows).as("a refusal carries no rows to send: %s", query).isNull();
+      }
+    }
+
+    // Regression: #10883
+    @Test
+    void aProbeTheCatalogCanEvaluateStillAnswersItsOneRow() {
+      for (final String query : List.of("SELECT pg_catalog.current_schema()", "SELECT pg_catalog.set_config('search_path', '', false)",
+          "SELECT pg_catalog.pg_is_in_recovery()", "SELECT pg_catalog.version()", "SELECT 1 AS pg_type")) {
+        final PostgresCatalog.Answer answer = probe(query);
+        assertThat(answer).as(query).isNotNull().isNotSameAs(PostgresCatalog.DECLINED);
+        assertThat(answer.rows).as(query).hasSize(1);
+      }
+    }
+
+    // Regression: #10883
+    /** What is not a probe still reaches the SQL engine: the refusal is only for the statements resolveProbe owns. */
+    @Test
+    void aStatementThatIsNotAProbeIsStillLeftToTheEngine() {
+      assertThat(probe("SELECT no_such_function_10883()")).isNull();
+      assertThat(probe("SELECT 'pg_catalog.no_such_function_10883()'")).isNull();
+      assertThat(probe("INSERT INTO Nope SET body = 'pg_catalog.no_such_function_10883()'")).isNull();
+    }
+
+    // Regression: #10883
+    @Test
+    void theRefusalIsFeatureNotSupported() {
+      final PostgresCatalog.UnsupportedCatalogQuery refusal = PostgresCatalog.refusalOfProbe();
+      assertThat(refusal.sqlState).isEqualTo("0A000");
+      assertThat(refusal.getMessage()).contains("session probe");
+    }
+
+    private PostgresCatalog.Answer probe(final String query) {
+      return PostgresCatalog.resolveProbe(query, database, USER, null);
+    }
   }
 }

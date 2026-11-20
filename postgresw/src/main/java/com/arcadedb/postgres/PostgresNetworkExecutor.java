@@ -861,7 +861,7 @@ public class PostgresNetworkExecutor extends Thread {
    * returned by the query" rather than yielding an empty result. Only two things reach here with no column
    * to name - a command with nothing to return ({@code {cypher} CREATE (n)}) and a query whose rows simply
    * did not match, an unmodelled catalog relation included (issue #6412, pinned by
-   * {@code Issue6412CatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
+   * {@code PostgresCatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
    * language this server does not parse, nothing distinguishes them: the row count cannot, since both come
    * back empty, and the query text cannot without a parser per language. Announcing an empty result set is
    * the answer that is merely uninformative for the first and correct for the second; {@code NoData} would
@@ -3114,7 +3114,7 @@ public class PostgresNetworkExecutor extends Thread {
    * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
    * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
-  // Package-private, not private, only so PostgresOnePassRowReadIssue12558Test can call it: visible for testing
+  // Package-private, not private, only so PostgresOnePassRowReadTest can call it: visible for testing
   static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
     if (row.isElement() && isExcludedFromElement(row, propertyName))
@@ -4256,7 +4256,7 @@ public class PostgresNetworkExecutor extends Thread {
    * 34000} (portal missing) before it ever reaches this method. Inside an explicit block, the refusal aborts the
    * block and {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846), so nothing can recover the block and retry
    * the same portal either. Static and package-private so {@code PostgresApplyPendingSettingTest} pins the ordering
-   * directly; {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
+   * directly; {@code PostgresSessionSettingsIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
    * that a replay is answered as an error and never as {@code CommandComplete SET}.
    * <p>
    * Recorded in this connection's own settings (issue #8217), never in the database: a {@code SET datestyle} used to
