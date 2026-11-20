@@ -649,7 +649,7 @@ class Issue12073MongoTypedKeysTest {
     final List<Object> equivalent = List.of(1, 1L, 1.0, new Decimal128(new BigDecimal("1.00")), 1, 1L, 1.0, new Decimal128(BigDecimal.ONE));
     final AtomicInteger stored = new AtomicInteger();
     final AtomicInteger refused = new AtomicInteger();
-    final List<Throwable> unexpected = new ArrayList<>();
+    final List<Exception> unexpected = new ArrayList<>();
     final CountDownLatch start = new CountDownLatch(1);
 
     final List<Thread> threads = new ArrayList<>();
@@ -661,7 +661,7 @@ class Issue12073MongoTypedKeysTest {
           stored.incrementAndGet();
         } catch (final DuplicatedKeyException e) {
           refused.incrementAndGet();
-        } catch (final Throwable e) {
+        } catch (final Exception e) {
           synchronized (unexpected) {
             unexpected.add(e);
           }
