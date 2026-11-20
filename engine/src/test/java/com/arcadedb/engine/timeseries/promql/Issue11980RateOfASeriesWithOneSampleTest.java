@@ -38,6 +38,8 @@ import static org.assertj.core.api.Assertions.within;
  * Regression test for issue #11980: {@code rate()}, {@code irate()} and {@code increase()} answered {@code 0} for a series with
  * one sample in the window, where Prometheus answers no sample for it. The zeros then moved every aggregation above them. The
  * expected values are what Prometheus v3.5.0 answers for the same samples.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue11980RateOfASeriesWithOneSampleTest extends TestHelper {
 
