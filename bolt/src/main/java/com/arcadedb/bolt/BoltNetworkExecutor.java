@@ -198,6 +198,10 @@ public class BoltNetworkExecutor extends Thread {
   private static final long OMITTED_QID = -1;
   /** What an empty query is analyzed as: a read. */
   private static final CypherStatement EMPTY_STATEMENT = () -> true;
+  /** The prefixes that ask for a plan, each with the space that follows it: the engine strips them before it parses. */
+  private static final String PLAN_PREFIX_EXPLAIN = "EXPLAIN ";
+  private static final String PLAN_PREFIX_PROFILE = "PROFILE ";
+  private static final int    PLAN_PREFIX_LENGTH  = PLAN_PREFIX_EXPLAIN.length();
   /** What a COMMIT or a RUN past the explicit transaction's tx_timeout is refused with (issue #11392). */
   private static final String TRANSACTION_TIMED_OUT_MESSAGE =
       "The transaction has been terminated because it ran longer than the timeout it was begun with (tx_timeout)";
@@ -918,8 +922,7 @@ public class BoltNetworkExecutor extends Thread {
       // Determine if this is a write query using the query analyzer: one it cannot analyze counts as a write, to be safe
       final CypherStatement statement = analyzeStatement(query);
       final Boolean writeQuery = statement == null ? null : !statement.isReadOnly();
-      stream.writeOperation = writeQuery == null || writeQuery;
-      stream.schemaOperation = statement instanceof CypherDDLStatement;
+      final boolean runAsWrite = writeQuery == null || writeQuery;
 
       // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
       // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
@@ -927,9 +930,16 @@ public class BoltNetworkExecutor extends Thread {
       // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
       // and to pick the correct metadata key.
       final String trimmedQuery = query == null ? "" : query.trim();
-      final String upperQuery = trimmedQuery.toUpperCase(Locale.ROOT);
-      final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
-      final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
+      final boolean explainMode = trimmedQuery.regionMatches(true, 0, PLAN_PREFIX_EXPLAIN, 0, PLAN_PREFIX_LENGTH);
+      final boolean profileMode = !explainMode && trimmedQuery.regionMatches(true, 0, PLAN_PREFIX_PROFILE, 0, PLAN_PREFIX_LENGTH);
+
+      // The summary's query type is the one of the statement an EXPLAIN or a PROFILE wraps, as Neo4j reports it (issue #11972).
+      // The grammar does not parse the prefix, so the analysis above fails for them and reads as a write: what to run, and in
+      // which access mode, stays decided by it, but a PROFILE of a read must not report a write
+      final CypherStatement typedStatement =
+          explainMode || profileMode ? analyzeStatement(trimmedQuery.substring(PLAN_PREFIX_LENGTH).trim()) : statement;
+      stream.writeOperation = typedStatement == null || !typedStatement.isReadOnly();
+      stream.schemaOperation = typedStatement instanceof CypherDDLStatement;
 
       // A write in READ access mode is refused before it runs, as Neo4j refuses it (issue #11392): session.executeRead used
       // to write. An EXPLAIN executes nothing, so it is not a write whatever it explains
@@ -969,7 +979,7 @@ public class BoltNetworkExecutor extends Thread {
       // only a raw client that resets or drops in between sees the difference; an explicit transaction is unaffected
       // In READ access mode a statement the analyzer could not classify runs as a read: query() reports what is wrong with it,
       // and refuses it if it does write (QueryNotIdempotentException, answered as the access-mode refusal below)
-      if (stream.writeOperation && !(readAccessMode && writeQuery == null)) {
+      if (runAsWrite && !(readAccessMode && writeQuery == null)) {
         stream.resultSet = database.command("opencypher", query, params);
       } else {
         stream.resultSet = database.query("opencypher", query, params);
