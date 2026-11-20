@@ -189,14 +189,17 @@ abstract class InPlaceRebuildStrategy {
      * Every entry is under its canonical key now, an entry an older build wrote included (issues #12160 and #12233): the index stops
      * reading the old spellings, and says so in its schema entry. Persisted after the swap, so that a stop in between reopens the index
      * still reading them, which costs a lookup and loses nothing.
+     * <p>
+     * Flipped inside a schema recording session, not by a bare {@code saveConfiguration()}: under HA the session is what ships the schema
+     * to the followers, so a follower, and the node that becomes leader after a failover, stops reading the old spellings too instead of
+     * paying for them until some later DDL happens to ship the schema.
      */
     @Override
     void afterBucketIndexRebuilt(final DatabaseInternal database, final IndexInternal index) {
       final LSMTreeIndex lsmTree = (LSMTreeIndex) index;
       if (!lsmTree.mayHoldLegacyKeys())
         return;
-      lsmTree.markKeysCanonical();
-      database.getSchema().getEmbedded().saveConfiguration();
+      database.getSchema().getEmbedded().recordChange(lsmTree::markKeysCanonical);
     }
   }
 

@@ -967,7 +967,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // KEY REMOVED AT COMMIT TIME (IN A LOCK)
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE, convertedKeys,
-              rid != null ? rid.getIdentity() : null);
+              rid.getIdentity());
     else
       lock.executeInReadLock(() -> {
         mutable.remove(convertedKeys, rid);

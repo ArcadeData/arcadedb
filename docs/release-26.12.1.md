@@ -52,7 +52,8 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
   and refusing duplicates of the list and number values that build keyed by their Java text (`[1.5, 2.0]`, `1.0`, `-0.0`,
   `1.0E300`) instead of the canonical text written today (`[1.5, 2]`, `1`, `0`). A STRING spelled like such an old key is still
   a different value. **Upgrade note:** every `LSM_TREE` index created before this release (26.11.x and earlier) is treated as
-  possibly holding old keys, and its seeks, removals and unique checks on such values pay an extra read (and, for a unique
-  STRING key starting with `[`, `-` or a digit, one record load at commit) until it is rebuilt. Run `REBUILD INDEX <name>`
-  (or `REBUILD INDEX *`) once after upgrading to write every entry under its canonical key and drop that cost; an index this
-  build creates or rebuilds pays nothing.
+  possibly holding old keys, and its seeks, removals and unique checks on such values pay an extra read. A STRING key that
+  reads as a number or a list (`1.0`, `2.500`, `[1.5, 2.0]`) also loads the record behind each entry a seek finds, and a
+  unique STRING key that reads as a number or a list (`12345`, `2.5`, `[1.5, 2]`) loads one record at commit; a version, an
+  address, a date or any other text pays nothing. Run `REBUILD INDEX <name>` (or `REBUILD INDEX *`) once after upgrading to
+  write every entry under its canonical key and drop that cost: an index this build creates or rebuilds pays nothing.
