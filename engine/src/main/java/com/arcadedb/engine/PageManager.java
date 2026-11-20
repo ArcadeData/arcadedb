@@ -3039,6 +3039,15 @@ public class PageManager extends LockContext {
   };
 
   void putPageInReadCache(final CachedPage page) {
+    // #12244: a PageId compares its database by PATH, so a page cached for a CLOSED instance is a hit for the next
+    // instance opened on the same directory. The close purges the instance's pages, but a reader of it that loaded a
+    // page before that purge caches it only after (loadPage puts once the I/O lock is released). When the files under
+    // the path were replaced meanwhile (a Raft follower's snapshot install: close, swap, reopen), that image answered
+    // for the page instead of the newer file: the next replicated entry on it was refused with a WAL version gap.
+    final BasicDatabase database = page.getPageId().getDatabase();
+    if (!database.isOpen())
+      return;
+
     // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
     // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
     // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
@@ -3051,7 +3060,25 @@ public class PageManager extends LockContext {
     if (ramDelta[0] != 0)
       totalReadCacheRAM.addAndGet(ramDelta[0]);
 
+    // #12244: checked again AFTER the put. The close marks the instance closed (a volatile write) before it purges its
+    // pages, so either the purge sees this page, or this read sees the instance closed and takes the page back itself
+    if (!database.isOpen())
+      removeOwnPageFromCache(page);
+
     checkForPageDisposal();
+  }
+
+  /** Removes {@code page} from the read cache only if the cache still holds that very instance (#12244). */
+  private void removeOwnPageFromCache(final CachedPage page) {
+    final boolean[] removed = new boolean[1];
+    readCache.computeIfPresent(page.getPageId(), (id, cached) -> {
+      if (cached != page)
+        return cached;
+      removed[0] = true;
+      return null;
+    });
+    if (removed[0])
+      totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
   /**
