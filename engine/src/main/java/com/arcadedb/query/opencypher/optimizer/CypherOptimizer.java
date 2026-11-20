@@ -259,6 +259,9 @@ public class CypherOptimizer {
 
     if (components.isEmpty()) {
       anchor = anchorSelector.selectAnchor(logicalPlan);
+      // No labelled node to start from (issue #11904): hasRepresentableLabelSets keeps a lone unlabelled node out of here already
+      if (anchor == null)
+        return null;
       anchorOperator = createAnchorOperator(anchor);
       rootOperator = anchorOperator;
     } else {

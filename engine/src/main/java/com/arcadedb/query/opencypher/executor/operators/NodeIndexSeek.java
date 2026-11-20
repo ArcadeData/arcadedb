@@ -125,6 +125,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // A user who may not read the label is refused whatever the keys are, as the walk of its buckets does (issue #11904)
+    requireReadable(context, label);
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
