@@ -89,9 +89,9 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * which it gets on a plain-HTTP connection by an h2c upgrade and over TLS by ALPN. An HTTP/2 connection keeps reading
    * frames while a stream waits, and the client sends nothing while it waits for the answer, so the leader's read timeout
    * ({@code arcadedb.network.socketTimeout}) closed the connection one timeout into any statement longer than that: the
-   * read-timeout lift of #9953 covers HTTP/1.1 exchanges only. Over HTTP/1.1 the leader does not read the connection
-   * while the statement runs, or lifts the timeout while its client-disconnect watch does, and the follower's forward is
-   * answered however long the statement runs.
+   * read-timeout lift of #9953 covers HTTP/1.1 exchanges only. Over HTTP/1.1 no read timer runs while the statement does:
+   * over TLS Undertow does not read the connection until the exchange completes, and on plain HTTP the client-disconnect
+   * watch lifts the timeout. The follower's forward is answered however long the statement runs.
    */
   public static final HttpClient.Version FORWARD_HTTP_VERSION = HttpClient.Version.HTTP_1_1;
 

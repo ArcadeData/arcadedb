@@ -75,7 +75,7 @@ class HaForwardedLongCommandIT extends BaseRaftHATest {
       final String script = "SLEEP 3000; CREATE VERTEX TYPE LongForward" + i;
       final HttpResponse<String> response = postScript(follower, script);
       assertThat(response.statusCode()).as("forward %d, three socket timeouts long: %s", i, response.body()).isEqualTo(200);
-      assertThat(getServer(leader).getDatabase(getDatabaseName()).getSchema().existsType("LongForward" + i)).isTrue();
+      assertThat(getServerDatabase(leader, getDatabaseName()).getSchema().existsType("LongForward" + i)).isTrue();
     }
   }
 

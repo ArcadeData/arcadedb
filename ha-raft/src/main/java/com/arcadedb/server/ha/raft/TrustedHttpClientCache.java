@@ -119,7 +119,10 @@ final class TrustedHttpClientCache {
     // connect timeout cannot change afterwards, so a change needs a restart (or a truststore rotation, which
     // rebuilds the client here).
     client = HttpClient.newBuilder()
-        // HTTP/1.1 rather than the h2 ALPN would pick: see LeaderDial.FORWARD_HTTP_VERSION (issue #12442)
+        // HTTP/1.1 rather than the h2 ALPN would pick: see LeaderDial.FORWARD_HTTP_VERSION (issue #12442). It is the
+        // leader forward that needs it, but this class is also the client of the peer RPCs (PeerAuthSessionQuery, the
+        // capability probe, VoterQuarantineCheck, UnverifiedClosedCopyCheck, UnverifiedCopyReverifier), so they are
+        // pinned as well: short requests, for which HTTP/1.1 over TLS costs nothing and is no less secure
         .version(LeaderDial.FORWARD_HTTP_VERSION)
         .connectTimeout(connectTimeoutOf(server.getConfiguration()))
         .sslContext(SnapshotInstaller.buildSSLContext(server))
