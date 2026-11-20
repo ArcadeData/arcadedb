@@ -57,16 +57,8 @@ public class NodeDegreeOut extends AbstractNodeFunction {
 
     final String[] relTypes = extractRelTypes(args);
 
-    long count = 0;
-    if (relTypes != null && relTypes.length > 0) {
-      for (final String relType : relTypes) {
-        count += vertex.countEdges(Vertex.DIRECTION.OUT, relType);
-      }
-    } else {
-      count = vertex.countEdges(Vertex.DIRECTION.OUT);
-    }
-
-    return count;
+    // The types go in ONE call, which counts an edge once whichever of them it matches (issue #12075)
+    return relTypes != null ? vertex.countEdges(Vertex.DIRECTION.OUT, relTypes) : vertex.countEdges(Vertex.DIRECTION.OUT);
   }
 
   @SuppressWarnings("unchecked")
