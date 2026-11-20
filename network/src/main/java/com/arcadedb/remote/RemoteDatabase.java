@@ -74,6 +74,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -1887,14 +1888,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final Object value = entry.getValue();
       if (value == null)
         continue;
-      // Issue #12184: a column holding a record (Cypher RETURN a, r, b; SQL @this, first(out())) arrives as the record's
-      // JSON with its @cat, and is rebuilt as the record a whole-row record is. Its LINK hint must not touch it: converting
-      // the map to an Identifiable kept the strings that parse as RIDs (@rid, @in, @out) and dropped every property.
-      final Object records = columnRecords(value);
-      if (records != value) {
-        entry.setValue(records);
+      // Issue #12184: a column holding a record (Cypher RETURN a, r, b; SQL @this, first(out())), or a list, map or path holding
+      // records (collect(a), {who: a}, a path's nodes and relationships), arrives as the records' JSON with their @cat, and is
+      // rebuilt as the records a whole-row record is. The column's hint must not touch what was rebuilt: it is written for the
+      // JSON, and a LINK hint converted the record's map to an Identifiable, which kept the strings that parse as RIDs (@rid,
+      // @in, @out) and dropped every property.
+      final Record record = recordOf(value);
+      if (record != null) {
+        entry.setValue(record);
         continue;
       }
+      if (rebuildRecordsIn(value))
+        continue;
       final ColumnTypeHint hint = propTypes.get(entry.getKey());
       if (hint != null)
         entry.setValue(convertWithHint(value, hint));
@@ -1903,24 +1908,49 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
-   * The record a projection column holds, or the list of records, for a column that holds a record's JSON (one carrying
-   * {@code @cat}) or a list of them; any other value is returned as is, the same instance (issue #12184).
+   * The record a value of a projection column describes as JSON, or null when the value is not one: a map that carries a record's
+   * {@code @cat} and the {@code @type} that names its type (issue #12184). A map with the key and no type is a map the query built,
+   * and building it as a record would ask the schema for a type it does not have.
    */
-  private Object columnRecords(final Object value) {
-    if (value instanceof Map<?, ?> map) {
-      final Record record = map2Record(map);
-      return record != null ? record : value;
-    }
-    if (value instanceof List<?> list && !list.isEmpty() && list.getFirst() instanceof Map<?, ?> first
-        && first.containsKey(CAT_PROPERTY)) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list) {
-        final Record record = item instanceof Map<?, ?> itemMap ? map2Record(itemMap) : null;
-        converted.add(record != null ? record : item);
+  private Record recordOf(final Object value) {
+    return value instanceof Map<?, ?> map && map.get(Property.TYPE_PROPERTY) instanceof String ? map2Record(map) : null;
+  }
+
+  /**
+   * Replaces, in place, every record held as JSON by the list or map {@code container} - at any depth, in the lists, maps and
+   * path objects it holds - with the record it describes, and tells whether it replaced any (issue #12184). Nothing is allocated for
+   * a container that holds none. In place is safe: a row is converted by {@code toMap()}, which hands back a tree of fresh
+   * {@code LinkedHashMap}s and {@code ArrayList}s that nobody else holds. A record's own map is never walked: it is the record's
+   * attributes, and the record reads its nested values itself.
+   *
+   * @return false when {@code container} is not a list or a map, or holds no record
+   */
+  @SuppressWarnings("unchecked")
+  private boolean rebuildRecordsIn(final Object container) {
+    boolean rebuilt = false;
+    if (container instanceof List<?> list) {
+      final ListIterator<Object> iterator = ((List<Object>) list).listIterator();
+      while (iterator.hasNext()) {
+        final Object item = iterator.next();
+        final Record record = recordOf(item);
+        if (record != null) {
+          iterator.set(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
       }
-      return converted;
+    } else if (container instanceof Map<?, ?> map) {
+      for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) map).entrySet()) {
+        final Object item = entry.getValue();
+        final Record record = recordOf(item);
+        if (record != null) {
+          entry.setValue(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
+      }
     }
-    return value;
+    return rebuilt;
   }
 
   /**

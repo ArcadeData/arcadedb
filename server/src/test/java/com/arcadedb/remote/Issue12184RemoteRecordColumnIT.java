@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -117,6 +119,64 @@ class Issue12184RemoteRecordColumnIT extends BaseGraphServerTest {
       final List<?> people = rs.next().getProperty("people");
       assertThat(people).hasSize(2).allSatisfy(p -> assertThat(p).isInstanceOf(Vertex.class));
       assertThat(people.stream().map(p -> ((Vertex) p).getString("name")).toList()).containsExactlyInAnyOrder("alice", "bob");
+    }
+  }
+
+  @Test
+  void cypherListWhoseFirstItemIsNotARecord() {
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:Person12184 {name:'alice'}) RETURN [1, a] AS mixed, [null, a] AS nullFirst")) {
+      final Result row = rs.next();
+      for (final String column : new String[] { "mixed", "nullFirst" }) {
+        final List<?> items = row.getProperty(column);
+        assertThat(items).as(column).hasSize(2);
+        assertThat(items.get(1)).as(column).isInstanceOf(Vertex.class);
+        assertThat(((Vertex) items.get(1)).getString("name")).as(column).isEqualTo("alice");
+      }
+    }
+  }
+
+  @Test
+  void cypherMapLiteralAndNestedListHoldRecords() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person12184 {name:'alice'}) RETURN {who: a, n: a.name} AS m, [[a]] AS nested")) {
+      final Result row = rs.next();
+
+      final Map<?, ?> m = row.getProperty("m");
+      assertThat(m.get("who")).isInstanceOf(Vertex.class);
+      assertThat(((Vertex) m.get("who")).getInteger("age")).isEqualTo(30);
+      assertThat(m.get("n")).isEqualTo("alice");
+
+      final List<?> nested = row.getProperty("nested");
+      assertThat(((List<?>) nested.getFirst()).getFirst()).isInstanceOf(Vertex.class);
+    }
+  }
+
+  @Test
+  void cypherPathColumnHoldsRecords() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH path = (a:Person12184)-[:Knows12184]->(b:Person12184) RETURN path")) {
+      final Map<?, ?> path = rs.next().getProperty("path");
+      final List<?> nodes = (List<?>) path.get("nodes");
+      assertThat(nodes).hasSize(2).allSatisfy(n -> assertThat(n).isInstanceOf(Vertex.class));
+      assertThat(((Vertex) nodes.getFirst()).getString("name")).isEqualTo("alice");
+      final List<?> relationships = (List<?>) path.get("relationships");
+      assertThat(relationships).hasSize(1);
+      assertThat(relationships.getFirst()).isInstanceOf(Edge.class);
+      assertThat(((Edge) relationships.getFirst()).getInteger("since")).isEqualTo(2020);
+    }
+  }
+
+  @Test
+  void embeddedDocumentColumnIsADocument() {
+    database.command("sql", "create document type Address12184");
+    database.command("sql", "create property Person12184.address embedded of Address12184");
+    database.command("sql", "update Person12184 set address = {'@type':'Address12184','city':'Rome'} where name = 'alice'");
+
+    try (final ResultSet rs = database.query("sql", "SELECT address, name FROM Person12184 WHERE name = 'alice'")) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("address")).isInstanceOf(Document.class);
+      assertThat(row.<Document>getProperty("address").getString("city")).isEqualTo("Rome");
+      assertThat(row.<String>getProperty("name")).isEqualTo("alice");
     }
   }
 }
