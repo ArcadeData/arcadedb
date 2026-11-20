@@ -56,6 +56,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -537,6 +538,81 @@ class Issue12073MongoTypedKeysTest {
     MongoDBCollectionWrapper.backfillKeys(database, "Big", "$unique:a", new String[] { "a" });
     MongoDBCollectionWrapper.backfillKeys(database, "Big", MongoKeys.ID_KEY, null);
     assertThat(updated.get()).isZero();
+  }
+
+  @Tag("slow")
+  @Test
+  void aBackfillThatFailsBetweenBatchesLeavesTheCollectionConsistentAndTheRetryFinishesIt() {
+    final int total = 2 * MongoDBCollectionWrapper.BACKFILL_BATCH + 123;
+    database.getSchema().createDocumentType("Half");
+    for (int from = 0; from < total; from += 5_000) {
+      final int start = from;
+      database.transaction(() -> {
+        for (int i = start; i < Math.min(start + 5_000, total); i++)
+          database.newDocument("Half").set("_id", i).save();
+      });
+    }
+
+    // the write of one record in the second batch fails: the first batch is committed, the second is not
+    final AtomicInteger writes = new AtomicInteger();
+    final BeforeRecordUpdateListener failing = record -> {
+      if (writes.incrementAndGet() == MongoDBCollectionWrapper.BACKFILL_BATCH + 5)
+        throw new IllegalStateException("the write failed");
+      return true;
+    };
+    database.getSchema().getType("Half").getEvents().registerListener(failing);
+    assertThatThrownBy(() -> insert("Half", new Document("_id", "new"))).isInstanceOf(RuntimeException.class);
+    database.getSchema().getType("Half").getEvents().unregisterListener(failing);
+
+    // no index yet, so nothing reads the keys that are there; the records are intact and the plugin still writes (by-hand check)
+    assertThat(MongoKeys.hasIdKeyIndex(database.getSchema().getType("Half"))).isFalse();
+    assertThat(keyedRecords("Half", MongoKeys.ID_KEY)).isEqualTo((long) MongoDBCollectionWrapper.BACKFILL_BATCH);
+    assertThat(database.countType("Half", false)).isEqualTo(total);
+
+    // the next insert finishes it: the committed batch is not written again
+    final AtomicInteger retried = countUpdates("Half");
+    insert("Half", new Document("_id", "new"));
+    assertThat(retried.get()).isEqualTo(total - MongoDBCollectionWrapper.BACKFILL_BATCH);
+    assertThat(keyedRecords("Half", MongoKeys.ID_KEY)).isEqualTo(total + 1L);
+    assertThat(MongoKeys.hasIdKeyIndex(database.getSchema().getType("Half"))).isTrue();
+    assertThatThrownBy(() -> insert("Half", new Document("_id", total - 1))).isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
+  void equivalentIdsInsertedAtTheSameTimeAreOneDocument() throws Exception {
+    insert("Racing", new Document("_id", "seed"));
+    final List<Object> equivalent = List.of(1, 1L, 1.0, new Decimal128(new BigDecimal("1.00")), 1, 1L, 1.0, new Decimal128(BigDecimal.ONE));
+    final AtomicInteger stored = new AtomicInteger();
+    final AtomicInteger refused = new AtomicInteger();
+    final List<Throwable> unexpected = new ArrayList<>();
+    final CountDownLatch start = new CountDownLatch(1);
+
+    final List<Thread> threads = new ArrayList<>();
+    for (final Object id : equivalent) {
+      final Thread thread = new Thread(() -> {
+        try {
+          start.await();
+          new MongoDBCollectionWrapper(database, "Racing").insertDocuments(List.of(new Document("_id", id)));
+          stored.incrementAndGet();
+        } catch (final DuplicatedKeyException e) {
+          refused.incrementAndGet();
+        } catch (final Throwable e) {
+          synchronized (unexpected) {
+            unexpected.add(e);
+          }
+        }
+      });
+      threads.add(thread);
+      thread.start();
+    }
+    start.countDown();
+    for (final Thread thread : threads)
+      thread.join();
+
+    assertThat(unexpected).isEmpty();
+    assertThat(stored.get()).as("one of the equivalent ids is stored").isEqualTo(1);
+    assertThat(refused.get()).isEqualTo(equivalent.size() - 1);
+    assertThat(find("Racing", new Document("_id", 1))).hasSize(1);
   }
 
   private void createUniqueIndex(final String collection, final Document key) {
