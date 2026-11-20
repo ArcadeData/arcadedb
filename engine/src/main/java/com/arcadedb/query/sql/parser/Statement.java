@@ -377,6 +377,15 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement is a transaction control, {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK}. Sent as a request of its
+   * own outside any transaction or session of the caller, it acts on the transaction the server opens around that one request
+   * and ends with it, so a server refuses it there (issue #12202).
+   */
+  public boolean isTransactionControl() {
+    return false;
+  }
+
+  /**
    * Whether running this statement can execute a {@code RETURN} that ends the script holding it (issue #11892): a RETURN itself,
    * or a block (IF with either of its branches, FOREACH, WHILE) holding a statement that can, at any depth. The script executor
    * asks it of every line that is not the last one, to tell the lines it has to run for their answer from the lines it only

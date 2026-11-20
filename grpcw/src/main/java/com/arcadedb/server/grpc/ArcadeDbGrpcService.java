@@ -82,6 +82,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
@@ -874,6 +875,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         // No external transaction - execute on current thread
         Database db = getDatabase(req.getDatabase(), req.getCredentials());
+        if (!req.hasTransaction() || !req.getTransaction().getBegin())
+          // A transaction control of its own acts on this call's transaction alone: refused before anything runs (issue #12202). A
+          // transaction message that names no registered transaction and does not set begin opens none either
+          StandaloneTransactionControl.refuse(db, langOrDefault(req.getLanguage()), req.getCommand());
         response = executeCommandWithRetries(req, t0, db);
       }
       resp.onNext(response);
