@@ -2006,21 +2006,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
             // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
             // stay light on allocations for wide documents and bulk updates.
-            final RID rid = record.getIdentity();
-            final Document previous = tx.getLastIndexedSnapshot(rid);
-            final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
-            // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+            // updateDocumentInTransaction records a refreshed snapshot (built from the key values it already extracted
             // for the diff) ONLY when an index actually changed: otherwise the previous diff source
             // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
             // that touch only non-indexed properties pay no snapshot cost at all.
             // #8066: same invariant as the create path (#7467) - a refused row leaves no trace. Without the undo the
             // new key stays queued in the transaction's index changes and the chunk's commit dies naming the row
             // the caller was already told was refused, discarding every row that was accepted.
+            final RID rid = record.getIdentity();
             final TransactionIndexContext indexChanges = tx.getIndexChanges();
             indexChanges.armRecordUndo();
-            final Document refreshedSnapshot;
             try {
-              refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              indexer.updateDocumentInTransaction(tx, document, indexes);
             } catch (final RuntimeException | Error e) {
               indexChanges.undoRecordChanges();
               // The deferred write must not reach the commit either: it would store the refused values in a body
@@ -2034,10 +2031,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             } finally {
               indexChanges.disarmRecordUndo();
             }
-            if (refreshedSnapshot != null)
-              tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
           }
         }
+        // #11751: the indexes now hold what the record holds. The commit writes the record as it is THEN, so an assignment made after
+        // this save is the commit's to index, and this is the point it is counted from
+        if (record instanceof MutableDocument mutable)
+          mutable.clearAssignedAfterSave();
         countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +
@@ -2147,8 +2146,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * <p>
    * <b>Indexes are not maintained while the transaction is in {@code COMMIT_1ST_PHASE} (#8983).</b> The only caller there
    * is the flush of deferred updates, whose index changes {@code updateRecord()} queued at save time; indexing again would
-   * write them twice. A new caller running in that phase must queue its own index changes. For the same reason the index
-   * follows the last {@code save()}: a property changed after it and before commit is not re-indexed.
+   * write them twice. A new caller running in that phase must queue its own index changes. What the flush writes is the record as
+   * it is at the commit, which is not always the record as it was at its last {@code save()}: a property assigned after it is
+   * indexed by the commit BEFORE the status leaves {@code BEGUN}, the one state an index queues an entry instead of writing it
+   * (#11751, {@link DocumentIndexer#updateDocumentAssignedAfterSave}), so the flush never has to.
    */
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
