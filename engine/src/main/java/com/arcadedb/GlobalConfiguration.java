@@ -1156,7 +1156,7 @@ public enum GlobalConfiguration {
   QUERY_MAX_HEAP_RAM("arcadedb.queryMaxHeapRAM", SCOPE.JVM, """
       Maximum heap (in MB) the in-memory buffers of all the queries running in the JVM may hold at once, across every \
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
-      of a LET subquery, the records a TRAVERSE has visited or a MATCH prefetches, the record addresses an UPDATE reads ahead \
+      of a LET subquery, the records a TRAVERSE has visited and the rows it keeps queued to expand, the records a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
       materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
       buffer reserves its estimated size from this budget as it grows and gives it \
@@ -1339,8 +1339,8 @@ public enum GlobalConfiguration {
   CYPHER_ALGO_MAX_WORKING_MEMORY("arcadedb.cypher.algoMaxWorkingMemory", SCOPE.DATABASE,
       """
       Maximum heap, in bytes, that a single call to an OpenCypher algorithm procedure may reserve for the working \
-      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (one record per \
-      vertex and the RID index over them), the adjacency lists, weighted adjacency lists and degree buffers it \
+      set it builds beside the graph: the graph it loads when no Graph Analytical View covers it (the RID of every \
+      vertex, 16 bytes each), the adjacency lists, weighted adjacency lists and degree buffers it \
       materialises from the records or from a view, the edge arrays of algo.mst and algo.msa, the visited sets and \
       traversal state of the walks (algo.bfs, algo.dfs, the path searches), the neighbour bitsets of the clique, \
       triangle and truss algorithms, the random-walk buffers of algo.node2vec (walksPerNode x nodeCount walks of \
@@ -2622,14 +2622,19 @@ public enum GlobalConfiguration {
   HA_APPLY_BACKLOG_MAX("arcadedb.ha.applyBacklogMax", SCOPE.SERVER,
       """
       Byte budget for the Raft entries a follower may hold received but not yet applied (e.g. '256MB'). Ratis keeps \
-      every such entry decoded on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
+      every such entry on the follower's heap, whatever arcadedb.ha.logCacheSize says, since it only evicts \
       entries below the applied index. While the leader estimates that a follower is over the budget (applied index \
       reported by the follower, average entry size measured by the leader) it sends that follower heartbeats only, \
-      and resumes when the follower has caught up. It is a soft limit: the applied index reaches the leader with the \
+      and resumes when the follower has caught up. Every node resolves the budget from its own heap and setting and \
+      reports it to the leader, and the bound that applies to a follower is the smaller of the leader's budget and \
+      that follower's own, so a follower with a smaller heap than its leader is held to its own budget (issue \
+      #11508); a follower that reports none (an older version, or one where the setting is 0) is held to the \
+      leader's. It is a soft limit: the applied index reaches the leader with the \
       5 s capability poll, so a follower can overshoot the budget during a burst between two polls, and the size of \
       an entry is a running average, which understates a mix of a few huge entries among many small ones. Empty \
       (the default) means a quarter of the maximum JVM heap, but never less than 32MB (on a very small heap that \
-      floor can exceed a quarter of it). 0 disables the back-pressure (issue #11458).""",
+      floor can exceed a quarter of it). 0 disables the back-pressure this node applies as a leader, whatever its \
+      followers report (issue #11458).""",
       String.class, ""),
 
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,

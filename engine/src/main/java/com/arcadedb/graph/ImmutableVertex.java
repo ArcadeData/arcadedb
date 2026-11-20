@@ -100,10 +100,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   @Override
   public MutableVertex modify() {
+    final boolean readHere = readInCurrentTransaction();
     if (prepareForModify("vertex") instanceof MutableVertex fromCache)
       return fromCache;
 
-    checkForLazyLoading();
+    loadForModify(readHere);
     final Binary content = requireBuffer("modify");
     content.rewind();
     return markIfReadWentStale(new MutableVertex(database, (VertexType) type, rid, content.copyOfContent()));

@@ -25,6 +25,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -130,6 +132,28 @@ class BenchRunnerTest {
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(results.get(0).error()).contains("boom");
     assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  // a remote client wraps the transport failure: "Error on executing remote operation" alone says nothing of what broke
+  @Test
+  void failureRecordsTheWholeCauseChain() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        throw new IllegalStateException("Error on executing remote operation 'command'",
+            new UncheckedIOException(new IOException("HTTP/1.1 header parser received no bytes")));
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(results.get(0).error())
+        .startsWith("java.lang.IllegalStateException: Error on executing remote operation 'command'")
+        .contains("caused by java.io.IOException: HTTP/1.1 header parser received no bytes");
   }
 
   @Test

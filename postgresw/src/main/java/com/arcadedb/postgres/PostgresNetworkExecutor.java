@@ -1992,6 +1992,11 @@ public class PostgresNetworkExecutor extends Thread {
         atLeastOneElement = true;
       }
 
+      // The row's properties are read once, not once per column: a row backed by a stored record answers a name by walking
+      // the record header from its first byte until it meets the name, so a row of P columns cost P walks of the same record.
+      // The columns are typed from every row (issue #9009), so the walk was paid once per row per column (#12558).
+      final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
+
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
         // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
@@ -2000,7 +2005,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = propertyOf(row, p);
+        final Object value = propertyOf(row, p, rowProperties);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -3071,9 +3076,10 @@ public class PostgresNetworkExecutor extends Thread {
     bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
     int colIndex = 0;
+    final Map<String, Object> properties = ResultInternal.propertiesOf(row);
     for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
       final String propertyName = postgresTypeEntry.getKey();
-      final Object value = columnValue(row, propertyName);
+      final Object value = columnValue(row, propertyName, properties);
 
       final PostgresType columnType = postgresTypeEntry.getValue();
       if (resolveResultFormat(resultFormats, colIndex++) == 1)
@@ -3105,9 +3111,11 @@ public class PostgresNetworkExecutor extends Thread {
    * The value a row carries for a column: the property of that name, or for the metadata columns ({@code @rid},
    * {@code @type}, {@code @cat}, {@code @in}, {@code @out}) what the row's element answers. Shared by the
    * {@code DataRow} writer and by {@code COPY ... TO STDOUT} (issue #7188), so the two encode the same value for
-   * the same column.
+   * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
+   * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
-  private static Object columnValue(final Result row, final String propertyName) {
+  // Package-private, not private, only so PostgresOnePassRowReadIssue12558Test can call it: visible for testing
+  static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
     if (row.isElement() && isExcludedFromElement(row, propertyName))
       return propertyOf(row, propertyName);
@@ -3147,10 +3155,13 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = propertyOf(row, propertyName);
+        Object v = propertyOf(row, propertyName, properties);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
-        if (v == null && row.isElement())
+        // ...but only for a name the row does not list: a null the row wrote itself (a projection that set the column to
+        // null) is the row's answer and must not be replaced by the element's value. Before #12558 the fallback fired on
+        // any null, which answered such a column with the element's property instead.
+        if (v == null && row.isElement() && !properties.containsKey(propertyName))
           v = row.getElement().get().get(propertyName);
         yield v;
       }
@@ -3163,7 +3174,18 @@ public class PostgresNetworkExecutor extends Thread {
    * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
    */
   private static Object propertyOf(final Result row, final String name) {
-    final Object value = row.getProperty(name);
+    return propertyOf(row, name, null);
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   *
+   * @param properties the row's properties already read, or null to read the one property the name asks for
+   */
+  private static Object propertyOf(final Result row, final String name, final Map<String, Object> properties) {
+    final Object value = properties != null && properties.containsKey(name) ? properties.get(name) : row.getProperty(name);
     final Object list = PostgresType.materializeLazyMultiValue(value);
     if (list != value && !row.isElement() && row instanceof ResultInternal internal)
       internal.setProperty(name, list);
@@ -3306,14 +3328,15 @@ public class PostgresNetworkExecutor extends Thread {
 
       checkRowFitsAnnouncedColumns(row, columns);
 
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
       if (binary) {
         payload.putShort((short) names.length);
         for (int i = 0; i < names.length; i++)
-          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i], properties));
         appendCopyData(out, payload);
       } else {
         for (int i = 0; i < names.length; i++)
-          texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+          texts[i] = types[i].toText(types[i], columnValue(row, names[i], properties));
         copy.appendRow(line, texts, names);
         encoded = appendCopyData(out, line, encoder, encoded);
       }

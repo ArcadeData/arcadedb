@@ -127,7 +127,7 @@ class VectorLocationIndexTest {
           """.formatted(DIMENSIONS, LOCATION_CACHE_CAP)))
           // A parsing exception, not an execution one: it is what AbstractServerHttpHandler's 400 arm keys on, so
           // this type is what keeps the refusal a client error over HTTP rather than a 500 carrying a helpful
-          // message nobody displays. Pinned end to end by Issue5559LocationCacheSizeHttpIT in the server module.
+          // message nobody displays. Pinned end to end by VectorIndexLocationCacheSizeHttpIT in the server module.
           .isInstanceOf(CommandSQLParsingException.class)
           .hasRootCauseInstanceOf(IndexException.class)
           .hasMessageContaining("locationCacheSize")

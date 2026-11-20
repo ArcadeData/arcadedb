@@ -455,7 +455,9 @@ public class IndexMetadata {
       geoMetadata.setTokenization(GeoIndexMetadata.DEFAULT_TOKENIZATION);
       // re-tokenized from every record under the current reading of a shape (issue #10210)
       geoMetadata.setPlanar(true);
-    }
+    } else if (metadata instanceof FullTextIndexMetadata fullTextMetadata)
+      // every posting is written again, each property with its own analyzer (issue #12163)
+      fullTextMetadata.setFieldAnalyzersApplied(true);
     return metadata;
   }
 }

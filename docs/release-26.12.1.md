@@ -48,3 +48,12 @@ The `VERTEX` keyword of `DELETE VERTEX FROM ...` was accepted and then discarded
   answers `NaN` or `Infinity`, and a long sum no longer stops growing at the float precision of its running total. The SIMD
   paths of the dot product (4096 components and more) and of the L2 distance are kept, and an answer they return non-finite is
   recomputed in double.
+- **#12160, #12233** An `LSM_TREE` index on a property no schema declares, written by an older build, keeps finding, removing
+  and refusing duplicates of the list and number values that build keyed by their Java text (`[1.5, 2.0]`, `1.0`, `-0.0`,
+  `1.0E300`) instead of the canonical text written today (`[1.5, 2]`, `1`, `0`). A STRING spelled like such an old key is still
+  a different value. **Upgrade note:** every `LSM_TREE` index created before this release (26.11.x and earlier) is treated as
+  possibly holding old keys, and its seeks, removals and unique checks on such values pay an extra read. A STRING key that
+  reads as a number or a list (`1.0`, `2.500`, `[1.5, 2.0]`) also loads the record behind each entry a seek finds, and a
+  unique STRING key that reads as a number or a list (`12345`, `2.5`, `[1.5, 2]`) loads one record at commit; a version, an
+  address, a date or any other text pays nothing. Run `REBUILD INDEX <name>` (or `REBUILD INDEX *`) once after upgrading to
+  write every entry under its canonical key and drop that cost: an index this build creates or rebuilds pays nothing.

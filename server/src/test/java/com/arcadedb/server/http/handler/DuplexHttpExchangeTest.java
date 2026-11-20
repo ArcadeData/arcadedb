@@ -49,7 +49,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * The HTTP/1.1 framing of {@link DuplexHttpExchange} (issue #9216), the transport of the streamed batch forward: how it
  * reads each shape of answer a leader - or something answering in its place - can send, and how it refuses the ones
- * it cannot read safely. The forward's behaviour end to end is {@code Issue9216StreamedForwardIncrementalAcksTest}.
+ * it cannot read safely. The forward's behaviour end to end is {@code LeaderForwardStreamedRelayTest.StreamedForwardIncrementalAcks}.
  */
 class DuplexHttpExchangeTest {
 

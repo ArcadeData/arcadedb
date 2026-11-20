@@ -214,6 +214,34 @@ public class CypherPointFunction implements StatelessFunction {
   }
 
   /**
+   * Renders a point the way Neo4j renders it in {@code toString()}: {@code point({x: 1.0, y: 2.0, crs: 'cartesian'})},
+   * with the z coordinate between the y one and the crs when the point has one. The srid is not part of the rendering:
+   * Neo4j prints the name of the coordinate reference system, and the srid is its numeric name (issue #12397).
+   * <p>
+   * The coordinates are printed as the doubles they are, the way Neo4j prints them: a point built by {@code point()}
+   * holds doubles, so {@code point({x: 1, y: 2})} renders as {@code x: 1.0, y: 2.0}.
+   *
+   * @param point the point map, as {@code point()} builds it
+   *
+   * @return the rendered point
+   */
+  public static String renderPoint(final Map<?, ?> point) {
+    final StringBuilder rendered = new StringBuilder("point({");
+    rendered.append("x: ").append(coordinate(point.get("x")));
+    rendered.append(", y: ").append(coordinate(point.get("y")));
+    final Object z = point.get("z");
+    if (z != null)
+      rendered.append(", z: ").append(coordinate(z));
+    final Object crs = point.get("crs");
+    rendered.append(", crs: '").append(crs == null ? "" : crs).append("'})");
+    return rendered.toString();
+  }
+
+  private static String coordinate(final Object value) {
+    return value instanceof Number number ? Double.toString(number.doubleValue()) : String.valueOf(value);
+  }
+
+  /**
    * Neo4j SRID of a well-known CRS name in any letter case, or null when the name is not one of the four Neo4j defines.
    */
   public static Integer sridOfCrs(final String crs) {

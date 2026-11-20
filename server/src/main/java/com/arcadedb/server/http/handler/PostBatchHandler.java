@@ -1580,7 +1580,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * whatever the POOL last left in it - for a connection whose first read filled it, the request head and the very
      * records already loaded. The next read is then served from that buffer without touching the channel, and the
      * parser is handed a replay of the payload: on a type with a unique index it surfaces as a 409 duplicate key
-     * ({@code Issue5470BatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
+     * ({@code PostBatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
      * 200 (issue #6176).
      * <p>
      * So the failure is recorded here rather than raised: the probe answers -1, which is exactly the "the body is
@@ -1650,7 +1650,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * client that still owes bytes ends this at once with {@link BufferedDrain#EXHAUSTED}. Undertow reports a
      * finished body as -1 available rather than 0, which is the end-of-body signal both callers are looking for;
      * that is Undertow's own convention, not the {@link InputStream} contract (which says >= 0). An upgrade that
-     * changed it would not go unnoticed - {@code Issue5470BatchErrorDeliveryIT}'s
+     * changed it would not go unnoticed - {@code PostBatchErrorDeliveryIT}'s
      * {@code aRecordCutInHalfIsStillReportedAsATruncatedUpload} and
      * {@code aRejectedButCompletePayloadKeepsItsConnection} both fail when it reports 0 at end of body (verified by
      * mutation) - and if it ever does, the degradation is a worse diagnosis, never a wrong answer.
@@ -2087,7 +2087,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // Sent full duplex (issue #9216): the upload goes out on a thread of its own and the leader's answer is handed
         // back as soon as its headers arrive, so the client sees the leader's progress lines while it is still
         // uploading, as it does on the leader. The JDK client (21, 25, 27) hands back an HTTP/1.1 answer only once the
-        // relayed upload has been published whole (pinned by Issue8674StreamedRelayBodyCapTerminalLineTest), which is
+        // relayed upload has been published whole (pinned by LeaderForwardStreamedRelayTest.StreamedRelayBodyCapTerminalLine), which is
         // why it is not used here.
         //
         // The wait for the answer is counted from the last byte the upload relayed, not from the send (issue #8719): an

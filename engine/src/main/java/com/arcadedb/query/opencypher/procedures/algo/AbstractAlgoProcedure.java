@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.DenseNodeIdProvider;
@@ -41,6 +42,7 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.olap.NodeIdMapping;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.ProcedureSchemaTypes;
@@ -49,6 +51,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.HeapUsage;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.NumberUtils;
@@ -402,15 +405,25 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected static final long LONG_BYTES = 8L;
 
   /**
-   * Estimated heap one OLTP-loaded vertex costs the call, for the structures {@code loadGraph} builds around it:
-   * the {@code List<Vertex>} slot, the {@code HashMap} table slot, the {@code HashMap.Node} and the boxed
-   * {@code Integer} index of the RID index, and the loaded record's own object shell.
+   * Estimated heap one vertex a traversal visits costs the call: the {@code List} slot, the {@code HashMap} table slot, the
+   * {@code HashMap.Node} and the boxed {@code Integer} of the visited set, and the loaded record's own object shell.
    * <p>
-   * The record's payload is on top of this and is not estimated: it is whatever the user stored. The figure is
-   * therefore a floor, which is the useful direction - it is what the call holds per vertex whatever the data
-   * looks like, and at ten million vertices it is already most of a gigabyte for the index alone (issue #6317).
+   * The record's payload is on top of this and is not estimated: it is whatever the user stored. The figure is therefore a floor,
+   * which is the useful direction. The whole-graph procedures do not hold their vertices that way any more: see
+   * {@link #LOADED_NODE_BYTES}.
    */
   protected static final long OLTP_VERTEX_BYTES = 96L;
+
+  /**
+   * Heap one vertex of a graph loaded from the records costs the call: its position in the {@link NodeIdMapping} that numbers the nodes
+   * (a {@code long}) and the copy of it that mapping holds while it is being sorted into place. The graph is held as the RIDs of its
+   * vertices and nothing else, so what a node costs does not depend on the record behind it (issue #12554): the loaded records and the
+   * boxed map from RID to node that were held instead cost about 250 bytes a node, against the 96 they were priced at.
+   */
+  protected static final long LOADED_NODE_BYTES = 16L;
+
+  /** The most nodes a loaded graph numbers: every structure indexed by node is an array. */
+  private static final long MAX_LOADED_NODES = Integer.MAX_VALUE - 8L;
 
   /** The smallest working-memory budget a call gets, whatever the heap. */
   static final long MIN_WORKING_MEMORY = 64 * 1024 * 1024L;
@@ -565,6 +578,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return;
       }
       throw refusal(estimatedBytes, component, detail);
+    }
+
+    /**
+     * Refuses the call, before anything is allocated, if {@code bytes} more than are reserved do not fit the budget, and reserves
+     * nothing. For an allocation that lives beside what is reserved for a while and is then replaced or charged by the caller: the
+     * new array of a growing buffer while the old one is still referenced, or the copy of a row whose entries the caller reserves with
+     * the rest once it has the row. The charge of what is kept stays {@link #reserve}'s, so nothing is counted twice.
+     *
+     * @param bytes     what the allocation takes, on top of what is reserved
+     * @param component what is about to be allocated, for the error message
+     * @param detail    the counts that sized it, for the error message
+     */
+    public void checkRoom(final long bytes, final String component, final String detail) {
+      if (limit < 0)
+        return;
+      if (auto && !sizedFromHeap)
+        sizeFromHeap();
+      final long total = saturatingSum(reserved, bytes);
+      if (total > limit)
+        throw refusal(bytes, component, detail);
+      if (sizedFromHeap)
+        ensureAllocatable(total, bytes, component, detail);
     }
 
     /**
@@ -994,40 +1029,94 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return GraphEngine.getAllVertices(db, nodeLabels);
   }
 
-  /** @see GraphEngine#buildRidIndex(List) */
-  protected Map<RID, Integer> buildRidIndex(final List<Vertex> vertices) {
-    return GraphEngine.buildRidIndex(vertices);
-  }
-
   /**
-   * Loads every vertex the call will work over, charging each one to the call's budget as it arrives.
+   * Loads the vertices the call will work over as the RIDs that number them, charging each one to the call's budget as it arrives.
    * <p>
-   * The list, the RID index built beside it and the loaded records are the first allocation of every procedure in
-   * this package and the one no budget priced: a call could be refused for a 64 MB matrix having already
-   * allocated a multi-gigabyte graph to measure it against, and a call that was accepted held that graph for its
-   * whole duration with the budget none the wiser (issue #6317).
+   * The graph is the first allocation of every procedure in this package and the one no budget priced: a call could be refused for a
+   * 64 MB matrix having already allocated a multi-gigabyte graph to measure it against, and a call that was accepted held that graph
+   * for its whole duration with the budget none the wiser (issue #6317).
    * <p>
-   * The bound is carried by the walk rather than by a reservation made once the count is known. Both refuse the
-   * same calls, but a check afterwards first pays in full for a traversal it will throw away - the same argument
-   * {@code algo.mst} settled the same way in issue #6300. The refusal itself still goes through
-   * {@link MemoryBudget#reserve}, so there is one place that decides and one shape of message.
+   * Nothing but the RID of a vertex is kept (issue #12554). The call used to hold every vertex it loaded as a record object, and a boxed
+   * map from RID to node beside them, and that is what went unpriced: two calls at once ran out of memory with each of them having
+   * reserved a tenth of what it held. The node numbers are the ids of the {@link NodeIdMapping}, which is the scan order: type by type,
+   * bucket by bucket, position by position. A vertex is read again when a call asks for it ({@link GraphData#getVertex}), and its edges
+   * are read without loading it ({@link GraphData#adjacency}).
+   * <p>
+   * The bound is carried by the walk rather than by a reservation made once the count is known. Both refuse the same calls, but a check
+   * afterwards first pays in full for a traversal it will throw away - the same argument {@code algo.mst} settled the same way in issue
+   * #6300. The refusal itself still goes through {@link MemoryBudget#reserve}, so there is one place that decides and one shape of
+   * message.
    *
    * @param db         the database
    * @param nodeLabels vertex type filter (null = all types)
    * @param memory     the call's budget
    */
-  protected List<Vertex> loadVertices(final Database db, final String[] nodeLabels, final MemoryBudget memory) {
-    long maxVertices = memory.capacityFor(OLTP_VERTEX_BYTES);
-    final List<Vertex> vertices = new ArrayList<>();
+  protected NodeIdMapping loadVertexIds(final Database db, final String[] nodeLabels, final MemoryBudget memory) {
+    long maxVertices = memory.capacityFor(LOADED_NODE_BYTES);
+    final NodeIdMapping ids = new NodeIdMapping(4);
+    final Schema schema = db.getSchema();
     final Iterator<Vertex> iter = getAllVertices(db, nodeLabels);
+    long loaded = 0;
+    int lastBucketId = -1;
+    int lastBucketIdx = -1;
+    // The slots of the array of the bucket being read, and the nodes it holds: the table doubles it when a bucket holds more than was
+    // counted. And the slots of every array the table holds, the unused ones of the buckets before included: what is on the heap
+    int bucketCapacity = 0;
+    int bucketLoaded = 0;
+    long allocatedSlots = 0;
     while (iter.hasNext()) {
-      if (vertices.size() >= maxVertices)
-        maxVertices = memory.extendCapacity(vertices.size() + 1L, OLTP_VERTEX_BYTES, "the loaded graph",
-            "at least " + (vertices.size() + 1) + " nodes");
-      vertices.add(iter.next());
+      if (loaded >= maxVertices)
+        maxVertices = memory.extendCapacity(loaded + 1L, LOADED_NODE_BYTES, "the loaded graph", "at least " + (loaded + 1) + " nodes");
+      if (loaded >= MAX_LOADED_NODES)
+        throw new IllegalArgumentException(
+            getName() + "(): the database has more than the " + MAX_LOADED_NODES + " nodes a Java array can number");
+      final Vertex vertex = iter.next();
+      final RID rid = vertex.getIdentity();
+      if (rid.getBucketId() != lastBucketId) {
+        lastBucketId = rid.getBucketId();
+        // Sized from what the bucket holds, within what the budget allows: the table is not grown by doubling and copied while it fills,
+        // and a bucket with a few vertices holds an array of a few slots, so the 16 bytes a node is priced at cover what the table
+        // takes whatever the number of buckets. What the budget allows is counted in the slots the table already holds, not in the
+        // nodes read: the arrays of the buckets before keep the slots they did not use, so a count that is too high on each of many
+        // buckets cannot add up to many times the budget. The new array is asked about beside them before it is allocated
+        bucketCapacity = (int) Math.min(Math.max(bucketCount(schema, lastBucketId), 1L), Math.max(1L, maxVertices - allocatedSlots));
+        memory.checkRoom(saturatingProduct(saturatingSum(allocatedSlots, bucketCapacity), LONG_BYTES), "the loaded graph",
+            "a bucket counted as " + bucketCapacity + " nodes");
+        bucketLoaded = 0;
+        allocatedSlots += bucketCapacity;
+        lastBucketIdx = ids.registerBucket(lastBucketId, vertex.getTypeName(), bucketCapacity);
+      } else if (bucketLoaded == bucketCapacity) {
+        // The bucket holds more than its count said (a commit appended to it meanwhile): the table doubles its array, copying it while
+        // the old one is still held. What is on the heap then is every array the table holds, the slots the buckets before did not use
+        // included, and the double of this one, none of it reserved yet, and the call is refused before the copy when that does not fit
+        final long grown = 2L * bucketCapacity;
+        memory.checkRoom(saturatingProduct(saturatingSum(allocatedSlots, grown), LONG_BYTES), "the loaded graph",
+            "a bucket of more than " + bucketCapacity + " nodes");
+        allocatedSlots += grown - bucketCapacity;
+        bucketCapacity = (int) Math.min(grown, MAX_LOADED_NODES);
+      }
+      ids.addNode(lastBucketIdx, rid.getPosition());
+      bucketLoaded++;
+      loaded++;
     }
-    memory.reserve(saturatingProduct(vertices.size(), OLTP_VERTEX_BYTES), "the loaded graph", vertices.size() + " nodes");
-    return vertices;
+    memory.reserve(saturatingProduct(loaded, LOADED_NODE_BYTES), "the loaded graph", loaded + " nodes");
+    // compact() copies the nodes of each bucket into an array of its own while the arrays of the table are still held: the 16 bytes a node
+    // is priced at cover both when the arrays hold no more than the nodes, and the slots they hold beyond them are asked about here,
+    // reserving nothing
+    if (allocatedSlots > loaded)
+      memory.checkRoom(saturatingProduct(allocatedSlots - loaded, LONG_BYTES), "the loaded graph",
+          "a table of " + allocatedSlots + " slots for " + loaded + " nodes");
+    ids.compact();
+    return ids;
+  }
+
+  /**
+   * What a bucket holds, as a hint to size the table of the loaded graph by: a count that is stale only makes the table grow by doubling.
+   * A method of its own so that a test can say a count that is wrong.
+   */
+  long bucketCount(final Schema schema, final int bucketId) {
+    final Bucket bucket = schema.getBucketByIdIfExists(bucketId);
+    return bucket != null ? Math.min(bucket.count(), MAX_LOADED_NODES) : 0L;
   }
 
   /** @see GraphEngine#neighborRid(Edge, RID, Vertex.DIRECTION) */
@@ -1057,12 +1146,6 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException(getName() + "(): " + e.getMessage(), e);
     }
-  }
-
-  /** @see GraphEngine#buildAdjacencyList(List, Map, Vertex.DIRECTION, String[]) */
-  protected int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
-      final Vertex.DIRECTION dir, final String[] relTypes) {
-    return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes);
   }
 
   /**
@@ -1190,7 +1273,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         return new GraphData(dense, dense.getNodeIdUpperBound(), memory, incomingSideContext(db, context));
       }
     }
-    return new GraphData(loadVertices(db, nodeLabels, memory), memory, incomingSideContext(db, context));
+    return new GraphData(loadVertexIds(db, nodeLabels, memory), db, memory, incomingSideContext(db, context));
   }
 
   /**
@@ -1199,7 +1282,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected GraphData loadGraphFromRecords(final Database db, final String[] nodeLabels, final CommandContext context) {
     final MemoryBudget memory = newMemoryBudget(db);
-    return new GraphData(loadVertices(db, nodeLabels, memory), memory, incomingSideContext(db, context));
+    return new GraphData(loadVertexIds(db, nodeLabels, memory), db, memory, incomingSideContext(db, context));
   }
 
   /**
@@ -1535,7 +1618,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
-   * Encapsulates graph data that can be backed by either a CSR provider or OLTP vertex lists.
+   * Encapsulates graph data that can be backed by either a CSR provider or the RIDs of the vertices loaded from the records.
    * Provides uniform access to adjacency, vertex lookup, and RID resolution regardless of backing.
    */
   protected static class GraphData {
@@ -1548,8 +1631,9 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      */
     public final int                     nodeCount;
     private final GraphTraversalProvider provider;
-    private final List<Vertex>           vertices;
-    private final Map<RID, Integer>      ridToIdx;
+    // A GRAPH LOADED FROM THE RECORDS: ITS NODES, NUMBERED, AND THE DATABASE TO READ THEM FROM (null WHEN A PROVIDER BACKS THE GRAPH)
+    private final NodeIdMapping          ids;
+    private final Database               database;
     private final MemoryBudget           memory;
     // WHAT THE RECORD WALKS READ THE INCOMING SIDE OF THE UNIDIRECTIONAL EDGE TYPES THROUGH (ISSUE #8629)
     private final CommandContext         context;
@@ -1557,18 +1641,18 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     private GraphData(final GraphTraversalProvider provider, final int nodeCount, final MemoryBudget memory,
         final CommandContext context) {
       this.provider = provider;
-      this.vertices = null;
-      this.ridToIdx = null;
+      this.ids = null;
+      this.database = null;
       this.nodeCount = nodeCount;
       this.memory = memory;
       this.context = context;
     }
 
-    private GraphData(final List<Vertex> vertices, final MemoryBudget memory, final CommandContext context) {
+    private GraphData(final NodeIdMapping ids, final Database database, final MemoryBudget memory, final CommandContext context) {
       this.provider = null;
-      this.vertices = vertices;
-      this.ridToIdx = GraphEngine.buildRidIndex(vertices);
-      this.nodeCount = vertices.size();
+      this.ids = ids;
+      this.database = database;
+      this.nodeCount = ids.size();
       this.memory = memory;
       this.context = context;
     }
@@ -1586,6 +1670,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     public int[][] adjacency(final Vertex.DIRECTION dir, final String... relTypes) {
+      return adjacency(null, dir, relTypes);
+    }
+
+    /**
+     * {@link #adjacency(Vertex.DIRECTION, String...)} that {@code guard} can abort: the walk of a graph loaded from the records reads
+     * every edge list of the database, and is one of the graph-driven loops of a call.
+     */
+    public int[][] adjacency(final WorkGuard guard, final Vertex.DIRECTION dir, final String... relTypes) {
       if (provider != null) {
         // Try zero-allocation NeighborView first
         final NeighborView nv = provider.getNeighborView(dir, relTypes);
@@ -1627,8 +1719,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       }
       // buildAdjacencyList counts every entry before it allocates a single row, so the exact footprint is known
       // at the one moment it is still free to refuse: that count is handed here and reserved before the fill.
-      return GraphEngine.buildAdjacencyList(vertices, ridToIdx, dir, relTypes,
-          entries -> reserveAdjacency(nodeCount, entries));
+      return GraphEngine.buildAdjacencyList(ids, database, dir, relTypes, entries -> reserveAdjacency(nodeCount, entries),
+          guard != null ? guard::checkPeriodically : null);
     }
 
     /**
@@ -1725,24 +1817,30 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       // The incoming side of a unidirectional edge type is counted from the edges that end in the vertex, as a view
       // counts it (issue #8629); the lookup answers the vertex API's count when no such type is involved
       final String[] types = relTypes != null ? relTypes : NO_EDGE_TYPES;
-      for (int i = 0; i < nodeCount; i++)
-        degrees[i] = (int) IncomingEdgeLookup.countEdges(context, vertices.get(i), dir, types);
+      for (int i = 0; i < nodeCount; i++) {
+        // A vertex deleted since the graph was loaded has no edges
+        final Vertex vertex = getVertex(i);
+        if (vertex != null)
+          degrees[i] = (int) IncomingEdgeLookup.countEdges(context, vertex, dir, types);
+      }
       return degrees;
     }
 
+    /**
+     * The vertex of node {@code i}, read from its record when it is asked for, or {@code null} when it is gone: a graph holds the RIDs of
+     * its vertices and not the records (issue #12554), so a vertex deleted since the graph was loaded is no vertex any more, whichever
+     * way the graph is backed.
+     */
     public Vertex getVertex(final int i) {
-      if (provider != null) {
-        final RID rid = provider.getRID(i);
-        if (rid == null)
-          return null;
-        try {
-          return rid.asVertex();
-        } catch (final RecordNotFoundException e) {
-          // vertex deleted in OLTP since CSR was built — skip
-          return null;
-        }
+      final RID rid = getRID(i);
+      if (rid == null)
+        return null;
+      try {
+        return rid.asVertex();
+      } catch (final RecordNotFoundException e) {
+        // vertex deleted in OLTP since the graph was loaded — skip
+        return null;
       }
-      return vertices.get(i);
     }
 
     public RID getRID(final int i) {
@@ -1750,14 +1848,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
         final RID rid = provider.getRID(i);
         return rid; // may be null for overflow nodes
       }
-      return vertices.get(i).getIdentity();
+      return ids.getRID(database, i);
     }
 
     public int indexOf(final RID rid) {
       if (provider != null)
         return provider.getNodeId(rid);
-      final Integer idx = ridToIdx.get(rid);
-      return idx != null ? idx : -1;
+      return ids.getGlobalId(rid);
     }
 
     public boolean isCSRBacked() {
@@ -1912,7 +2009,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           // produce the same multiset of (neighbour, weight) pairs for a node.
           if (fallback == null)
             fallback = new RecordRowReader();
-          edges = fallback.readRow(guard, i, dir, weightProperty, types);
+          edges = fallback.readRow(guard, i, dir, weightProperty, types, entries);
         }
         neighbors[i] = edges.neighbors();
         weights[i] = edges.weights();
@@ -1948,7 +2045,7 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       long totalEntries = 0;
 
       for (int i = 0; i < nodeCount; i++) {
-        final NodeEdgeWeights row = reader.readRow(guard, i, dir, weightProperty, relTypes);
+        final NodeEdgeWeights row = reader.readRow(guard, i, dir, weightProperty, relTypes, entries);
         neighbors[i] = row.neighbors();
         weights[i] = row.weights();
         entries += row.neighbors().length;
@@ -1974,12 +2071,19 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
      * path it stands in for is worse than no fallback.
      */
     private class RecordRowReader {
-      private int[]    scratchNeighbors = new int[16];
-      private double[] scratchWeights   = new double[16];
+      /** Entries the buffers start with: a row of that many or fewer is priced by the entries the caller reserves for it. */
+      private static final int INITIAL_ROW_BUFFER = 16;
+
+      private int[]    scratchNeighbors = new int[INITIAL_ROW_BUFFER];
+      private double[] scratchWeights   = new double[INITIAL_ROW_BUFFER];
       private int      edgeStep;
 
+      /**
+       * @param pendingEntries the entries of the rows already read that the caller has not reserved yet: they are on the heap, and the
+       *                       copy of this row comes on top of them
+       */
       private NodeEdgeWeights readRow(final WorkGuard guard, final int i, final Vertex.DIRECTION dir,
-          final String weightProperty, final String[] relTypes) {
+          final String weightProperty, final String[] relTypes, final long pendingEntries) {
         final Vertex vertex = getVertex(i);
         if (vertex == null)
           // Deleted since the CSR was built: no edges to read, and every other caller in this package skips it.
@@ -1998,8 +2102,20 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             if (neighbor < 0)
               continue;
             if (degree == scratchNeighbors.length) {
-              scratchNeighbors = Arrays.copyOf(scratchNeighbors, degree * 2);
-              scratchWeights = Arrays.copyOf(scratchWeights, degree * 2);
+              // Priced before the arrays are allocated (issue #12554): a supernode row doubles them again and again, which the entries
+              // reserved once the row is read do not see. The new arrays are alive beside the old ones, which are reserved already, and
+              // beside the rows read before this one that the caller has not reserved yet, until the copy is made: the budget is asked
+              // whether they fit in full, reserving nothing. The buffers stay for the rows that follow, so what is reserved is the entries
+              // each growth adds, the length they reached at the end, and the copy of the row is charged beside it by the entries the
+              // caller reserves: nothing is counted twice
+              final int newLength = (int) Math.min(2L * degree, Integer.MAX_VALUE - 8L);
+              memory.checkRoom(saturatingProduct(saturatingSum(newLength, pendingEntries), INT_BYTES + DOUBLE_BYTES),
+                  "the neighbour buffers of one node", "a row of more than " + degree + " edge entries, " + pendingEntries
+                      + " more not reserved yet");
+              memory.reserve(saturatingProduct(newLength - degree, INT_BYTES + DOUBLE_BYTES), "the neighbour buffers of one node",
+                  "a row of more than " + degree + " edge entries");
+              scratchNeighbors = Arrays.copyOf(scratchNeighbors, newLength);
+              scratchWeights = Arrays.copyOf(scratchWeights, newLength);
             }
             final Object weight = edge.get(weightProperty);
             scratchNeighbors[degree] = neighbor;
@@ -2010,6 +2126,12 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
             GhostEdgeReporter.reportSkipped(rnf);
           }
         }
+        // The copy of a long row is the largest allocation of the walk: it is refused before it is made when the budget cannot hold it
+        // beside the rows still waiting to be reserved. Nothing is reserved here, the caller reserves the entries of the row with the
+        // others once it has it, so that they are not charged twice
+        if (degree > INITIAL_ROW_BUFFER)
+          memory.checkRoom(saturatingProduct(saturatingSum(pendingEntries, degree), INT_BYTES + DOUBLE_BYTES),
+              "the weighted adjacency list", "a row of " + degree + " edge entries, " + pendingEntries + " more not reserved yet");
         return new NodeEdgeWeights(Arrays.copyOf(scratchNeighbors, degree), Arrays.copyOf(scratchWeights, degree));
       }
     }

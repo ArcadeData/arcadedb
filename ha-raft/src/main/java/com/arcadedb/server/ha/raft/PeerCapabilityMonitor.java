@@ -385,7 +385,8 @@ final class PeerCapabilityMonitor {
   private void recordPeerCapabilities(final long generation, final String peerId,
       final PeerCapabilityQuery.Advertisement advertisement) {
     if (ha.peerCapabilities.record(generation, peerId, advertisement.capabilities(), advertisement.version(),
-        advertisement.serviceGap(), advertisement.quarantined(), advertisement.appliedIndex()))
+        advertisement.serviceGap(), advertisement.quarantined(), advertisement.appliedIndex(),
+        advertisement.applyBacklogBudget()))
       LogManager.instance().log(ha, Level.INFO,
           "Peer '%s' (version %s) advertises the cluster capabilities %s", peerId, advertisement.version(),
           new TreeSet<>(advertisement.capabilities()));
