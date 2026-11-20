@@ -20,10 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.ForEachBlock;
 import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.IfStatement;
-import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
 import java.util.Iterator;
@@ -102,16 +99,6 @@ public class ForEachStep extends AbstractExecutionStep {
   }
 
   public boolean containsReturn() {
-    for (final Statement stm : this.body) {
-      if (stm instanceof ReturnStatement)
-        return true;
-
-      if (stm instanceof ForEachBlock block && block.containsReturn())
-        return true;
-
-      if (stm instanceof IfStatement statement && statement.containsReturn())
-        return true;
-    }
-    return false;
+    return Statement.anyContainsReturn(body);
   }
 }

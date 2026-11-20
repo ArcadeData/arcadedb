@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BreakStatement;
-import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
@@ -71,31 +70,13 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return executionPlan.statement instanceof ReturnStatement;
 
     } else if (plan instanceof IfExecutionPlan) {
+      // both branches: the one that runs is known only when the condition is evaluated, and the statements hold the answer
+      // whether or not the branch has been planned yet
       final IfStep step = (IfStep) plan.getSteps().getFirst();
-      if (step.positivePlan != null && step.positivePlan.containsReturn())
-        return true;
-      else if (step.positiveStatements != null) {
-        for (final Statement stm : step.positiveStatements) {
-          if (containsReturn(stm))
-            return true;
-        }
-      }
+      return Statement.anyContainsReturn(step.positiveStatements) || Statement.anyContainsReturn(step.negativeStatements);
     } else if (plan instanceof ForEachExecutionPlan executionPlan)
       return executionPlan.containsReturn();
 
-    return false;
-  }
-
-  private boolean containsReturn(final Statement stm) {
-    if (stm instanceof ReturnStatement)
-      return true;
-
-    if (stm instanceof IfStatement statement) {
-      for (final Statement o : statement.getStatements()) {
-        if (containsReturn(o))
-          return true;
-      }
-    }
     return false;
   }
 

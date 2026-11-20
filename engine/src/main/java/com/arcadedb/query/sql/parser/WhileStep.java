@@ -95,19 +95,6 @@ public class WhileStep extends AbstractExecutionStep {
   }
 
   public boolean containsReturn() {
-    for (final Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement)
-        return true;
-
-      if (stm instanceof ForEachBlock block && block.containsReturn())
-        return true;
-
-      if (stm instanceof IfStatement statement && statement.containsReturn())
-        return true;
-
-      if (stm instanceof WhileBlock block && block.containsReturn())
-        return true;
-    }
-    return false;
+    return Statement.anyContainsReturn(statements);
   }
 }
