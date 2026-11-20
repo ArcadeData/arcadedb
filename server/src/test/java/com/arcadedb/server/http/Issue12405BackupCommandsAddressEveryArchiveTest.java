@@ -102,7 +102,23 @@ class Issue12405BackupCommandsAddressEveryArchiveTest extends BaseGraphServerTes
     Files.deleteIfExists(archive);
   }
 
-  /** A name no earlier run of the suite used: the backup refuses to overwrite an archive, and the backup folder outlives a test. */
+  @Test
+  void aTextFileNamedZipIsABadInputNotAServerFault() throws Exception {
+    final Path archive = backUpAs(uniqueName("host"));
+    final String fakeName = uniqueName("notzip");
+    final Path fake = archive.resolveSibling(fakeName);
+    Files.write(fake, "this is not a zip archive".getBytes(StandardCharsets.UTF_8));
+
+    final Response response = server("restore backup " + getDatabaseName() + " " + fakeName + " as notziptarget12405");
+
+    assertThat(response.status).as(response.body).isEqualTo(400);
+    assertThat(label(response)).contains("Invalid backup archive");
+    assertThat(server("list databases").body).as("nothing is left behind").doesNotContain("notziptarget12405");
+    Files.deleteIfExists(fake);
+    Files.deleteIfExists(archive);
+  }
+
+  /** A name no earlier run of the suite used:the backup refuses to overwrite an archive, and the backup folder outlives a test. */
   private static String uniqueName(final String purpose) {
     return purpose + "12405-" + System.nanoTime() + ".zip";
   }
