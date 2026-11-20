@@ -251,8 +251,8 @@ public class GraphAnalyticalViewRegistry {
    * The views are those the query planner can serve, named or built without a name: the traversal provider registry holds both,
    * where this registry holds only the named ones.
    * <p>
-   * Called after the pages are written. A view registered after the read of the providers below is built by a scan that starts
-   * after its registration, so it reads them.
+   * Called after the pages are written, and also when the apply failed part-way, which may have published some of them. A view
+   * registered after the read of the providers below is built by a scan that starts after its registration, so it reads them.
    */
   public static void onTransactionApplied(final Database database, final WALFile.WALTransaction tx) {
     // A single volatile read when no database has a view, the common case

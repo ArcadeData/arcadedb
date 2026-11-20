@@ -1852,6 +1852,28 @@ public class TransactionManager {
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     final int applied;
+    try {
+      applied = applyChangesUnderLocks(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+    } catch (final RuntimeException | Error e) {
+      // The pages of an entry are written one by one, so one that fails part-way may have published some: the views hear of it as of
+      // an entry that advanced a page, which costs one rebuild at most. The failure that propagates is the apply's own
+      try {
+        GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+      } catch (final RuntimeException notifyFailure) {
+        e.addSuppressed(notifyFailure);
+      }
+      throw e;
+    }
+    // An entry applied as pages runs no record listener, so the graph analytical views hear of it here: after every lock is
+    // released, and before the caller reports the entry applied (issue #12250). An entry already held changes nothing they serve
+    if ((applied & APPLIED_NEW_CONTENT) != 0)
+      GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+    return (applied & APPLIED_PAGES) != 0;
+  }
+
+  /** The apply itself, under the shared apply lock and the locks of the buckets with an unknown counter: what it did, as {@code APPLIED_*} bits. */
+  private int applyChangesUnderLocks(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
@@ -1865,7 +1887,7 @@ public class TransactionManager {
       // A REPLICATED OR RECOVERED COMMIT BECOMES VISIBLE HERE, AS A LOCAL ONE DOES WHEN ITS PAGES ARE PUBLISHED (ISSUE #11713)
       commitPublishing();
       try {
-        applied = applyChangesInternal(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+        return applyChangesInternal(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
       } finally {
         commitPublished();
       }
@@ -1883,11 +1905,6 @@ public class TransactionManager {
       }
       applyLock.readLock().unlock();
     }
-    // An entry applied as pages runs no record listener, so the graph analytical views hear of it here: after every lock is
-    // released, and before the caller reports the entry applied (issue #12250). An entry already held changes nothing they serve
-    if ((applied & APPLIED_NEW_CONTENT) != 0)
-      GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
-    return (applied & APPLIED_PAGES) != 0;
   }
 
   private static final class BucketLocks {

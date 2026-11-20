@@ -1036,6 +1036,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * a legitimate signal that the caller wants the view actually resolved, not just optimistically READY.
    *
    * An {@code ASYNCHRONOUS} view also waits for the commits not merged yet (issue #10189).
+   * <p>
+   * A view behind on commits that reached the node as pages (issue #12250) asks for the rebuild it needs while it waits, no more
+   * often than the backoff of {@link #REPLICATED_REBUILD_MIN_INTERVAL_MS} allows. Under commits that arrive faster than a rebuild
+   * serves, it can stay behind and the wait runs to its timeout. An {@code OFF} view is rebuilt by nothing but an explicit rebuild,
+   * so the wait returns false at once.
    *
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
@@ -3542,7 +3547,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
   }
 
-  /** Whether a transaction applied as pages since the scan of the base may be missing from it (issue #12250). */
+  /**
+   * Whether a transaction applied as pages since the scan of the base may be missing from it (issue #12250). The two volatile reads
+   * are not one snapshot, and need not be: the count is made after the pages are written and before the entry is reported applied,
+   * so what a reader that waited for the entry sees is always counted, and a build publishes its base before its status.
+   */
   private boolean isBehindReplicatedCommits() {
     return replicatedCommits.get() != replicatedCommitsInBase;
   }
