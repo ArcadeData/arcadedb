@@ -36,6 +36,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.PartitionPruning;
+import com.arcadedb.query.opencypher.executor.RidTextKeys;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
@@ -63,6 +64,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
@@ -1294,8 +1296,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (best != null) {
       final String[] propertyNames = best.matchedProperties().toArray(new String[0]);
       final Object[] propertyValues = new Object[propertyNames.length];
+      // The WHERE compares with =, which reads a RID spelled as text as the id it stands for: that id is the key in a numeric
+      // column (issue #11933). The inline property map above compares through InlineProperties, which does not, and keeps the text
+      final Type[] keyTypes = best.index().getKeyTypes();
       for (int i = 0; i < propertyNames.length; i++)
-        propertyValues[i] = TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i]));
+        propertyValues[i] = RidTextKeys.keyFor(TemporalUtil.toIndexKey(equalityPredicates.get(propertyNames[i])), keyTypes, i);
       return seekChosenIndex(best, label, propertyNames, propertyValues);
     }
 
@@ -1367,7 +1372,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       if (index == null)
         continue;
 
-      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult);
+      final List<Object[]> keys = resolveInListKeys(seek.in(), currentInputResult, index.getKeyTypes());
       if (keys != null && (bestKeys == null || keys.size() < bestKeys.size())) {
         bestIndex = index;
         bestProperty = seek.propertyName();
@@ -1396,10 +1401,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /**
    * The distinct index keys of the IN-list's elements, evaluated as {@code InExpression} evaluates them; null elements are
-   * dropped because they equal nothing. Null when the list cannot be resolved here or holds an element that is not a plain
-   * scalar, so the scan and the WHERE filter answer it (and raise the error a non-list right side deserves).
+   * dropped because they equal nothing. A RID spelled as text is the id it stands for in a numeric column (issue #11933). Null
+   * when the list cannot be resolved here or holds an element that is not a plain scalar, so the scan and the WHERE filter answer
+   * it (and raise the error a non-list right side deserves).
    */
-  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult) {
+  private List<Object[]> resolveInListKeys(final InExpression in, final Result currentInputResult, final Type[] keyTypes) {
     final List<Expression> list = in.getList();
     final List<Object> elements = new ArrayList<>();
     try {
@@ -1425,7 +1431,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         continue;
       if (element instanceof Collection<?> || element instanceof Map<?, ?> || element.getClass().isArray())
         return null;
-      distinct.add(TemporalUtil.toIndexKey(element));
+      distinct.add(RidTextKeys.keyFor(TemporalUtil.toIndexKey(element), keyTypes, 0));
     }
 
     final List<Object[]> keys = new ArrayList<>(distinct.size());
