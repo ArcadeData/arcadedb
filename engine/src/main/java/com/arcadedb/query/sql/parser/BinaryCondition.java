@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.schema.DocumentType;
 
 import java.lang.reflect.Array;
@@ -148,27 +149,39 @@ public class BinaryCondition extends BooleanExpression {
     return function != null && function.answersByScore();
   }
 
-  /** A bare call of a function that answers by score on either side sets {@code $score}, as evaluating it runs both sides. */
+  /**
+   * A bare call of a function that sets {@code $score} on either side sets it, as evaluating the condition runs both sides:
+   * the full-text searches, and the more-like-this functions that answer from no index (issue #11773).
+   */
   @Override
   public boolean setsScore(final CommandContext context) {
-    return answersByScore(indexableFunction(left, context)) || answersByScore(indexableFunction(right, context));
+    final SQLFunction leftFunction = function(left, context);
+    if (leftFunction != null && leftFunction.setsScore())
+      return true;
+    final SQLFunction rightFunction = function(right, context);
+    return rightFunction != null && rightFunction.setsScore();
   }
 
-  private static boolean answersByScore(final IndexableSQLFunction function) {
-    return function != null && function.answersByScore();
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    final SQLFunction leftFunction = function(left, context);
+    if (leftFunction != null && leftFunction.setsSimilarity())
+      return true;
+    final SQLFunction rightFunction = function(right, context);
+    return rightFunction != null && rightFunction.setsSimilarity();
   }
 
   /** The function of a bare call on the left-hand side, the path {@link #executeIndexedFunction} delegates down. */
   private IndexableSQLFunction indexableFunction(final CommandContext context) {
-    return indexableFunction(left, context);
+    return function(left, context) instanceof final IndexableSQLFunction indexable ? indexable : null;
   }
 
   /** The function of {@code operand} when it is a bare call of one, otherwise null. */
-  private static IndexableSQLFunction indexableFunction(final Expression operand, final CommandContext context) {
+  private static SQLFunction function(final Expression operand, final CommandContext context) {
     if (operand == null || !(operand.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
         || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
-    return base.identifier.levelZero.functionCall.getIndexableFunction(context);
+    return base.identifier.levelZero.functionCall.getSQLFunction(context);
   }
 
   /**

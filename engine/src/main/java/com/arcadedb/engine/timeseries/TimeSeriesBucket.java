@@ -1655,9 +1655,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * perfectly legal value.
    * <p>
    * <b>Nor may it gate on {@link #getTotalPages()}</b>, which two of these readers used to do. That counter is
-   * per-instance: it is seeded from the physical file size at construction and afterwards only the component
-   * registered with the schema gets it bumped at commit, so it under-reports for an instance built over a file
-   * whose committed pages are still in the flush queue - conflating "this instance has seen nothing" with "the
+   * per-instance: it is seeded at construction, from the file and (since issue #12101) the flush queue, and
+   * afterwards only the component registered with the schema gets it bumped at commit, so it under-reports for
+   * an instance built before another one committed pages - conflating "this instance has seen nothing" with "the
    * file holds nothing" (issue #6198 again). The magic in page 0 has no such blind spot.
    * <p>
    * The active transaction's own page set comes first: it holds the copy this transaction must read - one it

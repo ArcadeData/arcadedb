@@ -1741,8 +1741,8 @@ class VectorBuildMemoryTest {
     }
 
     /** The numbers the gate compares, derived with the same pieces it uses so the test pins no magic constants. */
-    private record Sizes(long onHeapBytes, long onDiskBytes, long nodes, long buildCacheCapacity, int dimensions,
-                         float overflow, int percent) {
+    private record Sizes(LSMVectorIndex index, long onHeapBytes, long onDiskBytes, long nodes, long buildCacheCapacity,
+                         int dimensions, float overflow, int percent) {
       long estimateKeepingOnHeap() {
         return VectorHeapBudget.estimateOnlineRebuildHeapBytes(nodes, dimensions, buildCacheCapacity, onHeapBytes, nodes,
             true, overflow);
@@ -1753,10 +1753,14 @@ class VectorBuildMemoryTest {
             nodes, true, overflow, onDiskBytes);
       }
 
-      /** An available-heap reading the on-heap estimate overshoots by a margin, but the demoted one fits. */
+      /**
+       * An available-heap reading the on-heap estimate overshoots by a margin, but the demoted one fits. The gate takes the
+       * database's search caches' plan off the reading (issue #12511), so the reading carries it on top, read when the
+       * figure is asked for: the fixture's searches create those caches.
+       */
       long availableHeapJustBelow(final long estimate) {
         final long needed = (estimate * 100 + percent - 1) / percent;
-        return Math.max(1L, needed - Math.max(1L, needed / 100));
+        return Math.max(1L, needed - Math.max(1L, needed / 100)) + index.searchCachesPlannedBytes();
       }
     }
 
@@ -1773,7 +1777,7 @@ class VectorBuildMemoryTest {
       }
       final int percent = GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getValueAsInteger();
       final long nodes = resident.getIdUpperBound();
-      final Sizes sizes = new Sizes(onHeap, onDisk, nodes, index.computeGraphBuildCacheCapacity((int) nodes),
+      final Sizes sizes = new Sizes(index, onHeap, onDisk, nodes, index.computeGraphBuildCacheCapacity((int) nodes),
           DIMENSIONS, index.metadata.neighborOverflowFactor, percent);
       assertThat(sizes.estimateKeepingOnDisk())
           .as("the premise of the fallback: the twin must be cheaper to keep than the on-heap graph")

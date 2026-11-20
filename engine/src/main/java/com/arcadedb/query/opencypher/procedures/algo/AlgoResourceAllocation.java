@@ -23,9 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -36,7 +36,9 @@ import java.util.stream.Stream;
  * Computes the Resource Allocation link prediction index between the given source node and
  * every other vertex. The score between two vertices u and v is:
  * {@code sum over common neighbors w: 1 / degree(w)}.
- * Only pairs with score &gt; cutoff (default 0.0) are returned, sorted by score descending.
+ * Only pairs with score &gt; cutoff (default 0.0) are returned, sorted by score descending, equal
+ * scores in RID order. Only the nodes two hops away can share a neighbour with the source, so only
+ * their rows are read (issue #12176).
  * </p>
  * <p>
  * Example:
@@ -88,45 +90,36 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
     final double cutoff        = optionalNumberArg(args, 3, "cutoff", 0.0).doubleValue();
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    // Only a node two hops away shares a neighbour with the source, so only those are read: no view, no loading of the whole
+    // graph (issue #12176)
+    final Neighbourhood graph = openNeighbourhood(db, relTypes, context, sourceVertex.getIdentity());
 
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    final int srcIdx = graph.nodeOf(sourceVertex.getIdentity());
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source neighbors for O(1) membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
+    // score = the sum of 1 / degree(w) over the entries of v's row naming a neighbour w of the source
+    final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> {
+      final int degree = graph.neighbors(w, dir).length;
+      return degree > 0 ? 1.0 / degree : 0.0;
+    }, guard);
 
-    // Accumulate Resource Allocation scores into a primitive double array (no boxing)
-    final double[] raScores = new double[n];
-
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx)
-        continue;
-      double score = 0.0;
-      for (final int w : adj[v])
-        if (srcNeighbors.get(w) && adj[w].length > 0)
-          score += 1.0 / adj[w].length;
-      raScores[v] = score;
-    }
-
+    // A node sharing no neighbour scores 0, and is listed only when the cutoff admits 0 (a negative one)
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx || raScores[v] <= cutoff)
+    int candidate = 0;
+    for (final int v : candidateNodes(db, graph, shared, srcIdx, cutoff < 0.0 || Double.isNaN(cutoff))) {
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
+      final int slot = shared.slotOf(v);
+      final double score = slot >= 0 ? shared.score(slot) : 0.0;
+      if (score <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex.getIdentity());
-      r.setProperty("node2", graph.getRID(v));
-      r.setProperty("score", raScores[v]);
+      r.setProperty("node2", graph.ridOf(v));
+      r.setProperty("score", score);
       results.add(r);
     }
     results.sort(Comparator.comparingDouble((Result r) -> (double) r.getProperty("score")).reversed());

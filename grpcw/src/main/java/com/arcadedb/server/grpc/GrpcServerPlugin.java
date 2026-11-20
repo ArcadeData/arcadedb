@@ -318,6 +318,9 @@ public class GrpcServerPlugin implements ServerPlugin {
     // threads by this tag, so an untagged RPC is served from the copy the cluster is discarding. Registered
     // unconditionally and on this shared path, so both the standard and the xDS builder get it.
     serverBuilder.intercept(new GrpcProtocolContextInterceptor());
+    // Read-your-writes on a cluster (issue #11948): the x-arcadedb-commit-index bookmark on every response, and the
+    // x-arcadedb-read-after / x-arcadedb-read-consistency a read sends back, as X-ArcadeDB-* do over HTTP
+    serverBuilder.intercept(new GrpcReadConsistencyInterceptor());
     // The query admission gate (issue #9518). Added after the interceptors above so it runs outside them and inside the
     // authentication one added below: an unauthenticated call is refused before it can take a slot or wait for one.
     serverBuilder.intercept(new GrpcAdmissionInterceptor(arcadeServer));

@@ -167,10 +167,7 @@ public class TraverseExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = SelectExecutionPlanner.collectionTargetElement(x, paramValue, context).getIdentity();
 
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();

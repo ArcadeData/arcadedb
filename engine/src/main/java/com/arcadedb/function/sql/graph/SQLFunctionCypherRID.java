@@ -22,7 +22,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TypeMismatchException;
-import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -42,11 +41,21 @@ public class SQLFunctionCypherRID extends SQLFunctionConfigurableAbstract {
     super(NAME);
   }
 
+  /** The declared arity is the contract the parse-time gate enforces (issue #11927): it used to be checked only inside execute(). */
+  @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 1;
+  }
+
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 1)
-      throw FunctionArity.mismatch(NAME, FunctionArity.describe(1, 1), params == null ? 0 : params.length);
+    checkArity(params);
 
     final Object value = params[0];
     if (value == null)

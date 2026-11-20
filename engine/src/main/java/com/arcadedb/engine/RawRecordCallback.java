@@ -25,4 +25,13 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 @ExcludeFromJacocoGeneratedReport
 public interface RawRecordCallback {
   boolean onRecord(RID rid, Binary view);
+
+  /**
+   * {@link #onRecord(RID, Binary)} for a scan that knows whether the view was read from the transaction's own image of its page
+   * (#12320): under {@code READ_COMMITTED} that image misses what others committed to the page after the transaction's first
+   * write to it, so a vertex built from it carries edge-list heads a concurrent transaction may have moved.
+   */
+  default boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+    return onRecord(rid, view);
+  }
 }
