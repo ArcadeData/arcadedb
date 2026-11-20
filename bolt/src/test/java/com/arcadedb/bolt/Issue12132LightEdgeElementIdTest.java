@@ -41,6 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #12132: the element id a Bolt relationship carries for a lightweight edge is the one {@code elementId()} answers, and
  * names that edge, so a driver can send it back in {@code WHERE elementId(r) = $id} without selecting every lightweight edge of
  * the type.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12132LightEdgeElementIdTest {
   private static final String   DB_PATH = "./target/databases/Issue12132LightEdgeElementIdTest";
