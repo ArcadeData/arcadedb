@@ -952,8 +952,9 @@ public class BinarySerializer {
             entryValue = null;
           }
 
-          if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
-            final int id = dictionary.getIdByName((String) entryKey, false);
+          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character IS TOO, AND IT IS WRITTEN AS ITS TEXT (ISSUE #12021)
+          if (entryKeyType == BinaryTypes.TYPE_STRING && entryKey instanceof String stringKey) {
+            final int id = dictionary.getIdByName(stringKey, false);
             if (id > -1) {
               // COMPRESSED STRING AS MAP KEY
               entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
