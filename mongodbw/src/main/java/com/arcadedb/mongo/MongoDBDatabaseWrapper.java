@@ -125,11 +125,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * The codes of a refusal mongod reports as an entry of {@code writeErrors} of an {@code insert} or {@code update}, going on with the
    * other statements (issue #11444): the statement's own documents or values are refused (BadValue, FailedToParse, TypeMismatch,
    * PathNotViable, ImmutableField, DocumentValidationFailure, NotImplemented, DuplicateKey, a malformed {@code $and}/{@code $or},
-   * ConflictingUpdateOperators).
+   * ConflictingUpdateOperators, and NotSingleValueField of an upsert whose filter cannot infer the document it would insert, issue
+   * #12071).
    */
   private static final Set<Integer> STATEMENT_ERROR_CODES           = Set.of(ErrorCode.BadValue.getValue(), ErrorCode.FailedToParse.getValue(),
       TYPE_MISMATCH, PATH_NOT_VIABLE, IMMUTABLE_FIELD, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(),
-      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS);
+      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS, ErrorCode.NotSingleValueField.getValue());
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -1128,8 +1129,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         continue;
 
       final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
-      // also refuses, before anything is written, a filter mongod cannot infer the inserted document from
-      final Document seed = upsertSeed(q);
+      final Document seed;
+      try {
+        seed = upsertSeed(q);
+      } catch (final MongoServerError e) {
+        // a filter mongod cannot infer a document from is the refusal of an insert only: a document that matches is updated, and one
+        // that does not is refused when the statement runs, reported there at its index with the statements before it kept. Nothing
+        // is inserted, so the collection and its index are left alone
+        continue;
+      }
       Object id = seed.get("_id");
       boolean hasId = seed.containsKey("_id");
       // the stored _id can also come from the update itself: a replacement's, or $set's
@@ -1403,12 +1411,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code BeforeRecordCreateListener} refused it
    */
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
+    // first: a filter mongod cannot infer the document from is refused (a statement error) before anything is created
+    final Document seed = upsertSeed(q);
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
     // Seed the new document with what the filter's equalities infer, as mongod does (issue #12071): a dotted path makes the embedded
     // documents on its way. A replacement takes the _id alone from the filter, its own fields are the whole document.
     final boolean replacement = isReplacement(u);
-    for (final Map.Entry<String, Object> entry : upsertSeed(q).entrySet()) {
+    for (final Map.Entry<String, Object> entry : seed.entrySet()) {
       final String path = entry.getKey();
       final boolean id = "_id".equals(path);
       if (replacement && !id)
@@ -1458,9 +1468,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The fields an upsert that matches nothing copies from its filter, by path, as mongod infers them (issue #12071): the equality of
    * each path, dotted or not, at the top level, under {@code $and} and under an {@code $or} of a single branch. An equality is a plain
-   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} or {@code $all} of a
-   * single value. A path matched twice, or a path and one below it, is refused with mongod's error 54, as is an {@code $all} of
-   * several values.
+   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} of a single value, or
+   * a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one below it, is refused with mongod's
+   * error 54, as is an {@code $all} of several values.
+   * <p>
+   * mongod infers these fields only for a statement that inserts, so the refusal is the insert's: it is raised here and reaches the
+   * client from {@link #executeUpsert} as an entry of {@code writeErrors}, while a filter that matches a document updates it.
    */
   static Document upsertSeed(final Document query) {
     final Document seed = new Document();
@@ -1487,22 +1500,47 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
   }
 
+  /**
+   * The value the conditions of one path infer, {@link #NO_EQUALITY} when none of them is an equality. {@code $eq}, an {@code $in} of
+   * one value and each value of an {@code $all} are equalities of their own, and mongod refuses two of them on a path. A regular
+   * expression is a pattern to match, never a value (this plugin's matcher does not match a stored one back, so the next run of the
+   * upsert would insert again), and an {@code $elemMatch} document of an {@code $all} says nothing about a value either.
+   */
   private static Object equalityOf(final String path, final Object value) {
     if (value instanceof BsonRegularExpression)
       return NO_EQUALITY;
     if (!(value instanceof Document operators) || !MongoFilter.isOperatorDocument(operators))
       return value;
-    if (operators.containsKey("$eq"))
-      return operators.get("$eq");
-    if (operators.get("$in") instanceof List<?> in && in.size() == 1 && !(in.getFirst() instanceof BsonRegularExpression))
-      return in.getFirst();
-    if (operators.get("$all") instanceof List<?> all && !all.isEmpty()) {
-      if (all.size() > 1)
-        throw notSingleValue("path '" + path + "' is matched twice");
-      if (!(all.getFirst() instanceof BsonRegularExpression))
-        return all.getFirst();
+
+    Object equality = NO_EQUALITY;
+    for (final Map.Entry<String, Object> operator : operators.entrySet()) {
+      final Object operand = operator.getValue();
+      switch (operator.getKey()) {
+      case "$eq" -> equality = addEquality(path, equality, operand);
+      case "$in" -> {
+        if (operand instanceof List<?> in && in.size() == 1)
+          equality = addEquality(path, equality, in.getFirst());
+      }
+      case "$all" -> {
+        if (operand instanceof List<?> all)
+          for (final Object item : all)
+            equality = addEquality(path, equality, item);
+      }
+      default -> {
+        // any other operator is no equality
+      }
+      }
     }
-    return NO_EQUALITY;
+    return equality;
+  }
+
+  /** {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern. */
+  private static Object addEquality(final String path, final Object found, final Object candidate) {
+    if (candidate instanceof BsonRegularExpression || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
+      return found;
+    if (found != NO_EQUALITY)
+      throw notSingleValue("path '" + path + "' is matched twice");
+    return candidate;
   }
 
   private static void addSeed(final Document seed, final String path, final Object value) {
