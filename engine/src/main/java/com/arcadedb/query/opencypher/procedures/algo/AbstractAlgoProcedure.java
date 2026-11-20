@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 import com.arcadedb.graph.DenseNodeIdProvider;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeWeight;
@@ -40,6 +41,7 @@ import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.LocalAdjacency;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.NodeEdgeWeights;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.graph.olap.NodeIdMapping;
@@ -201,6 +203,39 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    */
   protected void requireEdgeTypes(final Database db, final String... relTypes) {
     requireTypes(db, relTypes, true);
+  }
+
+  /**
+   * The {@code relTypesAndDirections} argument of the APOC path finders, in APOC's relationship pattern syntax
+   * ({@code 'ROAD>|<RAIL'}, {@code '>'}, a blank one for every relationship), each type named checked against the schema. It
+   * used to be read as one type name, so {@code 'ROAD>'} was refused as a type that does not exist (issue #12103). A
+   * {@code ,} separates alternatives too, as it did in the list of names {@link #extractRelTypes} reads: these finders walk
+   * one hop at a time, so it cannot mean the sequence it means in {@code path.*}.
+   */
+  protected RelationshipPattern extractRelationshipPattern(final Object arg, final CommandContext context) {
+    final RelationshipPattern pattern = RelationshipPattern.parse(getName(), arg instanceof String s ? s.replace(',', '|') : arg);
+    requireEdgeTypes(context.getDatabase(), pattern.typeNames().toArray(new String[0]));
+    return pattern;
+  }
+
+  /**
+   * Sets the A* search the APOC path finders run to walk {@code pattern}: through the {@code direction} and
+   * {@code edgeTypeNames} options when its alternatives share a direction, which keeps the graph analytical view's fast
+   * path, and through the pattern itself when they mix directions. A direction argument beside the pattern is applied to it
+   * first ({@link RelationshipPattern#withUnmarked}), so that a mixed pattern walks its unmarked alternatives in it too.
+   */
+  protected static void configureSearch(final SQLFunctionAstar astar, final Map<String, Object> options,
+      final RelationshipPattern pattern) {
+    final Vertex.DIRECTION direction = pattern.commonDirection();
+    if (direction == null) {
+      options.put("direction", Vertex.DIRECTION.BOTH.name());
+      astar.setRelationshipPattern(pattern);
+      return;
+    }
+    options.put("direction", direction.name());
+    final String[] types = pattern.typesFor(direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
+    if (types != null && types.length > 0)
+      options.put("edgeTypeNames", types);
   }
 
   /**
@@ -2151,13 +2186,28 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected WeightedPath attachEdges(final List<RID> pathRids, final String relType, final Vertex.DIRECTION dir,
       final String weightProperty) {
     return attachEdges(pathRids, relType != null && !relType.isEmpty() ? new String[] { relType } : null, dir,
-        weightProperty, true);
+        weightProperty, true, null, EdgeWeight.MISSING);
   }
 
   /** Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} over several edge types. */
   protected WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
       final String weightProperty) {
-    return attachEdges(pathRids, edgeTypeFilter, dir, weightProperty, true);
+    return attachEdges(pathRids, edgeTypeFilter, dir, weightProperty, true, null, EdgeWeight.MISSING);
+  }
+
+  /**
+   * Same as {@link #attachEdges(List, String, Vertex.DIRECTION, String)} for the APOC path finders: the edges are the ones
+   * {@code pattern} follows (a direction argument beside it already applied, see {@link #configureSearch}), and an edge
+   * without a numeric weight weighs {@code missingWeight}, APOC's {@code defaultWeight} (issue #12103), as it does in the search.
+   */
+  protected WeightedPath attachEdges(final List<RID> pathRids, final RelationshipPattern pattern, final String weightProperty,
+      final double missingWeight) {
+    final Vertex.DIRECTION direction = pattern.commonDirection();
+    if (direction == null)
+      return attachEdges(pathRids, null, Vertex.DIRECTION.BOTH, weightProperty, true, pattern, missingWeight);
+    final String[] types = pattern.typesFor(direction == Vertex.DIRECTION.IN ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
+    return attachEdges(pathRids, types != null && types.length > 0 ? types : null, direction, weightProperty, true, null,
+        missingWeight);
   }
 
   /**
@@ -2168,11 +2218,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected WeightedPath attachEdgesWithNegativeWeights(final List<RID> pathRids, final String relType,
       final Vertex.DIRECTION dir, final String weightProperty) {
     return attachEdges(pathRids, relType != null && !relType.isEmpty() ? new String[] { relType } : null, dir,
-        weightProperty, false);
+        weightProperty, false, null, EdgeWeight.MISSING);
   }
 
   private WeightedPath attachEdges(final List<RID> pathRids, final String[] edgeTypeFilter, final Vertex.DIRECTION dir,
-      final String weightProperty, final boolean walkableOnly) {
+      final String weightProperty, final boolean walkableOnly, final RelationshipPattern mixedPattern, final double missingWeight) {
     // callers hand a LinkedList: index it once as an array-backed list
     final List<RID> vertexRids = new ArrayList<>(pathRids);
 
@@ -2192,13 +2242,17 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           edgeTypeFilter != null ? edgeTypeFilter : NO_EDGE_TYPES); edges.hasNext(); ) {
         final Edge edge = edges.next();
         try {
-          final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
+          final boolean outgoing = edge.getOut().equals(from.getIdentity());
+          final RID otherRid = outgoing ? edge.getIn() : edge.getOut();
           if (!toRid.equals(otherRid))
+            continue;
+          // a pattern whose alternatives mix directions: only an edge it follows from this end (issue #12103)
+          if (mixedPattern != null && !mixedPattern.follows(edge, outgoing ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN))
             continue;
           final Object w = weightProperty != null ? edge.get(weightProperty) : null;
           final double edgeWeight;
           if (walkableOnly) {
-            edgeWeight = EdgeWeight.of(w);
+            edgeWeight = w instanceof Number ? EdgeWeight.of(w) : missingWeight;
             if (!EdgeWeight.isWalkable(edgeWeight))
               continue;
           } else
