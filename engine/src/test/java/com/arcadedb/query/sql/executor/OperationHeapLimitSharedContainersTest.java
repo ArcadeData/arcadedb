@@ -184,6 +184,33 @@ class OperationHeapLimitSharedContainersTest {
     exact.release();
   }
 
+  /**
+   * The first row meets a large child by one path and then again inside a container another path leads to, {@code [[child], parent]},
+   * and the rows after it hold that container only: the child is shared with them through it, and leaves what the first row holds
+   * on its own together with the container. Left in, its bytes are spread over every row not estimated, a multiple of its size.
+   */
+  @Test
+  void aChildMetBeforeItsContainerInTheSameRowLeavesTheSampledAverageWithThatContainer() {
+    final List<Object> child = nulls(100_000);
+    final List<Object> parent = nulls(HeapEstimator.SAMPLED_ELEMENTS + 1);
+    parent.set(0, child);
+    final int rows = 1_000;
+    final OperationHeapLimit sampled = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY");
+    final OperationHeapLimit exact = OperationHeapLimit.of(new BasicCommandContext(), "ORDER BY").estimateEachElement();
+    for (int i = 1; i <= rows; i++) {
+      final ResultInternal row = row("l", i == 1 ? List.of(List.of(child), parent) : List.of(List.of(), parent), "i", i);
+      sampled.add(i, row);
+      exact.add(i, row);
+    }
+
+    final long childBytes = HeapEstimator.estimate(child);
+    final long exactBytes = exact.getChargedBytes();
+    assertThat(sampled.getChargedBytes()).as("the child is charged once, as when every row is estimated")
+        .isBetween(exactBytes - childBytes / 4, exactBytes + childBytes / 4);
+    sampled.release();
+    exact.release();
+  }
+
   /** A vector every row of a query carries (an UNWIND over a parameter) is in memory once, whatever its element type. */
   @Test
   void rowsSharingALargePrimitiveArrayAreChargedForItOnce() {

@@ -196,8 +196,14 @@ public final class HeapEstimator {
       final Held known = atDepth.get(container);
       if (known != null) {
         ++known.holders;
-        if (sample && known.walk != walks)
-          moveToShared(known);
+        if (sample) {
+          if (known.walk != walks)
+            moveToShared(known);
+          else if (firstSighted != null && firstSighted != known)
+            // Met earlier in this same walk, by another path: the container this one is inside of holds it too, so the elements
+            // that share that container later share it as well, and it leaves what the first element holds on its own with it
+            firstSighted.addNested(known);
+        }
         return REFERENCE_BYTES;
       }
       final Held entry = new Held(depth, walks);
@@ -222,16 +228,17 @@ public final class HeapEstimator {
 
     /**
      * A container a sampled element met first is shared by a later sampled element: it, and the containers met for the first
-     * time inside it, which the later element holds through it, leave what the first element holds on its own. Once.
+     * time inside it, which the later element holds through it, leave what the first element holds on its own. Once: the
+     * containers inside one another may hold each other, and a container already moved is not walked again.
      */
     private void moveToShared(final Held container) {
       sharedSampleBytes += container.sampleBytes;
       container.sampleBytes = 0L;
-      if (container.nested != null) {
-        for (final Held nested : container.nested)
+      final List<Held> inside = container.nested;
+      container.nested = null;
+      if (inside != null)
+        for (final Held nested : inside)
           moveToShared(nested);
-        container.nested = null;
-      }
     }
 
     private long release(final Object container, final int depth) {
