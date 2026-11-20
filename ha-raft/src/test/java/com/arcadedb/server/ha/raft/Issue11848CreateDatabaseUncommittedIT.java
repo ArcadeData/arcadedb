@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ServerControlPlane;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.awaitility.Awaitility;
@@ -68,8 +69,24 @@ class Issue11848CreateDatabaseUncommittedIT extends BaseRaftHATest {
   }
 
   @AfterEach
-  void clearHook() {
+  void clearHookAndDropTheDatabase() {
     RaftGroupCommitter.TEST_FORCE_DISPATCHED_TIMEOUT = null;
+
+    // Through the leader, so the drop is replicated and no node keeps the database for the next test. Subclass @AfterEach methods
+    // run before the base class's, so the servers are still up here
+    try {
+      for (int i = 0; i < getServerCount(); i++) {
+        final ArcadeDBServer server = getServer(i);
+        final RaftHAPlugin plugin = getRaftPlugin(i);
+        if (server != null && server.isStarted() && plugin != null && plugin.isLeader() && server.existsDatabase(NAME)) {
+          new ServerControlPlane(server).dropDatabase(NAME);
+          break;
+        }
+      }
+    } catch (final RuntimeException e) {
+      // The test's own failure is what the report has to show: a database left behind goes with the server directories
+      LogManager.instance().log(this, Level.WARNING, "TEST: could not drop '%s' at the end of the test: %s", NAME, e.getMessage());
+    }
   }
 
   @Test
@@ -115,6 +132,25 @@ class Issue11848CreateDatabaseUncommittedIT extends BaseRaftHATest {
 
     // The entry was dispatched and commits: its apply creates the database on every node, the leader included
     awaitDatabaseOnEveryNode();
+  }
+
+  /**
+   * The name is checked before the entry is submitted: a name the cluster already has is refused as a local create refuses it,
+   * instead of becoming an entry every node skips as "already present" while the caller is told the database was created.
+   */
+  @Test
+  void aCreateOfANameTheClusterAlreadyHasIsRefusedAndTheDatabaseIsKept() {
+    final int leader = requireLeaderIndex();
+    final ServerControlPlane controlPlane = new ServerControlPlane(getServer(leader));
+
+    controlPlane.createDatabase(NAME);
+    awaitDatabaseOnEveryNode();
+
+    assertThatThrownBy(() -> controlPlane.createDatabase(NAME)).isInstanceOf(DatabaseAlreadyExistsException.class)
+        .hasMessageContaining(NAME);
+
+    for (int i = 0; i < getServerCount(); i++)
+      assertThat(getServer(i).existsDatabase(NAME)).as("server %d still has '%s'", i, NAME).isTrue();
   }
 
   private void assertNoDatabase(final int serverIndex, final String where) {
