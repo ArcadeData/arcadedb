@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.RowGuards;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -48,6 +49,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 
 /**
  * The single implementation of the openCypher SET clause: {@code SET n.prop = value}, {@code SET n[key] = value},
@@ -83,6 +85,9 @@ public final class SetClauseApplier {
   private final ExpressionEvaluator evaluator;
   private final boolean             reloadLatestTarget;
   private final boolean             skipUnchangedPropertyWrites;
+  // #11808: whether the newest content of a record the row was selected by still satisfies the selection (a MERGE pattern),
+  // or null when the clause has no selection to check it against
+  private final BiPredicate<Result, Document> stillSelected;
   // The records the clause reloaded while applying the current row (#8538), reused across rows. Not thread-safe, like
   // SetStep's writtenDocs: every SetStep and MergeStep builds its own applier and applies its rows one at a time.
   private       Set<RID>            reloadedRids;
@@ -91,11 +96,13 @@ public final class SetClauseApplier {
   private       HeldCollectionRefresher heldCollections;
 
   private SetClauseApplier(final CommandContext context, final ExpressionEvaluator evaluator,
-      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites) {
+      final boolean reloadLatestTarget, final boolean skipUnchangedPropertyWrites,
+      final BiPredicate<Result, Document> stillSelected) {
     this.context = context;
     this.evaluator = evaluator;
     this.reloadLatestTarget = reloadLatestTarget;
     this.skipUnchangedPropertyWrites = skipUnchangedPropertyWrites;
+    this.stillSelected = stillSelected;
   }
 
   /**
@@ -103,15 +110,30 @@ public final class SetClauseApplier {
    * item unconditionally.
    */
   public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, true, false);
+    return forSetClause(context, evaluator, null);
+  }
+
+  /**
+   * The stand-alone {@code SET} clause on the rows of a selection that can tell whether the newest content of a record still
+   * satisfies it (issue #11808): the {@code SET} a {@code MERGE} absorbed.
+   *
+   * @param stillSelected answers, for a row and the newest content of a record it binds, whether the row is still selected
+   */
+  public static SetClauseApplier forSetClause(final CommandContext context, final ExpressionEvaluator evaluator,
+      final BiPredicate<Result, Document> stillSelected) {
+    return new SetClauseApplier(context, evaluator, true, false, stillSelected);
   }
 
   /**
    * A {@code MERGE} action ({@code ON CREATE SET} / {@code ON MATCH SET}): the record is already the one this
    * transaction matched or created, and an unchanged property value is not re-written.
+   *
+   * @param stillSelected answers, for a row and the newest content of a record it binds, whether the MERGE pattern still
+   *                      matches it (issue #11808)
    */
-  public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator) {
-    return new SetClauseApplier(context, evaluator, false, true);
+  public static SetClauseApplier forMergeAction(final CommandContext context, final ExpressionEvaluator evaluator,
+      final BiPredicate<Result, Document> stillSelected) {
+    return new SetClauseApplier(context, evaluator, false, true, stillSelected);
   }
 
   /**
@@ -136,6 +158,8 @@ public final class SetClauseApplier {
     // it: an UNWIND hands the same list to every row, and the copy an earlier row lined up is not that list (issue #11754)
     heldCollections = HeldCollectionRefresher.of(context);
     heldCollections.refresh(result);
+    // #11808: a record of the row other than the write targets may be the one the statement's predicate read
+    RowGuards.refuseIfRowChanged(context, result);
 
     final List<SetClause.SetItem> items = setClause.getItems();
     if (reloadedRids != null)
@@ -355,6 +379,15 @@ public final class SetClauseApplier {
     final MutableDocument mutable = doc.modify();
     if (mutable == doc)
       return false;
+    // #11808: when a predicate (WHERE, or a property map in the pattern) selected this row, it was evaluated on the read that
+    // went stale: the record need no longer satisfy it, so the statement is refused with the retryable conflict and runs
+    // again from the start, where the predicate sees what is committed now. A statement without a predicate has nothing
+    // to re-check, and is left to build on the reloaded content. A MERGE pattern is checked again on the reloaded content,
+    // so a MERGE that still matches it builds on the concurrent commit.
+    if (mutable.isBasedOnStaleRead() && (RowGuards.guardsRows(context) || (stillSelected != null && !stillSelected.test(result,
+        mutable))))
+      throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction after the "
+          + "statement matched it. Please retry the operation");
     // #8610: the values this clause writes are evaluated again against the reloaded content (below), never against the
     // read that went stale, so the write is not the stale read-modify-write the save refuses
     mutable.clearBasedOnStaleRead();

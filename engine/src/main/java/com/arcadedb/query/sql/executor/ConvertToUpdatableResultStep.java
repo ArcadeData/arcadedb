@@ -24,6 +24,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.NoSuchElementException;
 
@@ -41,8 +42,19 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
       + "or a TIMESERIES sample). Select the records themselves (SELECT FROM <type> WHERE ...), or their @rid, as the source";
   ResultSet prevResult = null;
 
+  private final WhereClause whereClause;
+
   public ConvertToUpdatableResultStep(final CommandContext context) {
+    this(context, null);
+  }
+
+  /**
+   * @param whereClause the WHERE of the UPDATE whose source this step converts, evaluated again on a record that
+   *                    {@code modify()} had to reload; {@code null} for a statement without one
+   */
+  public ConvertToUpdatableResultStep(final CommandContext context, final WhereClause whereClause) {
     super(context);
+    this.whereClause = whereClause;
   }
 
   @Override
@@ -84,7 +96,13 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             if (nextItem.isElement()) {
               final Record element = nextItem.getElement().get();
               if (element != null) {
-                nextItem = new UpdatableResult(forUpdate(((Document) element.getRecord()).modify()));
+                final MutableDocument mutable = ((Document) element.getRecord()).modify();
+                if (!stillMatchesWhere(mutable)) {
+                  // A concurrent commit changed the record after the WHERE matched it, and it no longer matches: skip it
+                  nextItem = null;
+                  continue;
+                }
+                nextItem = new UpdatableResult(forUpdate(mutable));
               }
               break;
             }
@@ -156,9 +174,22 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
   }
 
   /**
+   * Whether the record {@code modify()} handed back still satisfies the statement's WHERE (#11808). The WHERE was evaluated
+   * on the content this transaction read; when {@code modify()} reloaded different content (a concurrent commit landed in
+   * between, flagged as a stale read) the UPDATE would otherwise write a record its own WHERE rejects, which lets two
+   * callers both win a guarded update such as {@code UPDATE T SET claimed = true WHERE claimed IS NULL}. Only a reloaded
+   * record is checked again, so the common path costs nothing.
+   */
+  private boolean stillMatchesWhere(final MutableDocument mutable) {
+    if (whereClause == null || !mutable.isBasedOnStaleRead())
+      return true;
+    return Boolean.TRUE.equals(whereClause.matchesFilters(mutable, context));
+  }
+
+  /**
    * #8610: the UPDATE evaluates its assignments against the record returned here, i.e. against the content modify()
    * reloaded, never against the read that went stale, so the record it writes is not the stale read-modify-write the
-   * save refuses.
+   * save refuses. The WHERE is checked again on that content by {@link #stillMatchesWhere}.
    */
   private static MutableDocument forUpdate(final MutableDocument mutable) {
     mutable.clearBasedOnStaleRead();

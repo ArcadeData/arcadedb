@@ -441,6 +441,7 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    RowGuards.register(context, statement);
     // A branch of a write UNION shares the label replacements of the whole statement: a later branch's label write deletes
     // the records the rows of an earlier branch hold, and the UNION redirects them with that map (issue #10614)
     if (outerContext != null && !statement.isReadOnly() && LabelReplacements.existing(outerContext) != null)
@@ -674,6 +675,7 @@ public class CypherExecutionPlan {
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    RowGuards.register(context, statement);
 
     // Create a seed step that returns the seed row
     final AbstractExecutionStep seedStep = new AbstractExecutionStep(context) {

@@ -303,6 +303,46 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   /**
+   * The newest committed content of this record when a concurrent commit changed (or deleted) it since the current transaction
+   * read it (issue #11808): for a record a statement selected its rows by but does not write itself, whose change no save would
+   * notice. This record keeps the content it was read with, which is what the rows were selected on.
+   *
+   * @return null when the record did not change since the current transaction read it, or was not read by it, or was already
+   * modified by it; otherwise the newest committed content as a new record, which has no content ({@link #getBuffer()} null)
+   * when a commit deleted it
+   */
+  public ImmutableDocument latestIfChangedSinceRead() {
+    if (rid == null || buffer == null || readInTransaction == -1)
+      return null;
+    final TransactionContext tx = database.getTransaction();
+    if (!tx.isStaleReadCheck())
+      return null;
+    final int transactionId = readTransactionId(tx.getBeginSequence());
+    // A read modify() already found stale was replaced by the newer content: the rows were selected on the older one
+    final boolean knownStale = readInTransaction == STALE_READ - transactionId;
+    if ((!knownStale && readInTransaction != transactionId) || tx.getRecordFromCache(rid) instanceof MutableDocument)
+      return null;
+    if (!knownStale && contentPageVersion >= 0)
+      try {
+        if (tx.getPage(rid.getPageId(database),
+            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize()).getVersion() == contentPageVersion)
+          return null;
+      } catch (final IOException e) {
+        throw new DatabaseOperationException("Error on reading the page of record " + rid, e);
+      }
+    // Loaded the way a reload loads it, read listeners included, so the two images compare
+    final ImmutableDocument latest = (ImmutableDocument) database.getRecordFactory()
+        .newImmutableRecord(database, type, rid, buffer.getByte(0));
+    latest.reload();
+    final Binary content = latest.buffer;
+    if (knownStale || content == null)
+      return latest;
+    final int offset = contentChangeOffset();
+    final int length = buffer.size() - offset;
+    return length == content.size() - offset && buffer.isSameRegionAs(offset, content, offset, length) ? null : latest;
+  }
+
+  /**
    * Records the transaction this record was read in (issue #8610), so {@link #modify()} can tell a read made in the
    * current transaction, which a property write may be computed from, from a record held across transactions, which it
    * keeps refreshing silently. Set by the load paths that hold the transaction anyway; left unset (-1) elsewhere, where
