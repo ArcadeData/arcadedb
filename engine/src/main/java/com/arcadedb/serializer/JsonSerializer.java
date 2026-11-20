@@ -23,8 +23,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableVertex;
@@ -985,9 +985,13 @@ public class JsonSerializer {
   /**
    * Whether an undeclared property's value is a link, or a list or map of links only (issue #12195): JSON carries a link as
    * its "#12:0" text, so without a hint the remote client cannot tell it from a string.
+   * <p>
+   * A link is a {@link RID} and nothing wider. A {@link Document} (an embedded document, a vertex, an edge) is an
+   * {@code Identifiable} too, but {@link #serializeObject} writes it as a nested JSON object: a LINK hint on it would make the
+   * client convert that object to a RID, which empties it.
    */
   private static boolean carriesLinks(final Object value) {
-    if (value instanceof Identifiable)
+    if (value instanceof RID)
       return true;
     if (value instanceof Collection<?> collection)
       return detectHomogeneousLinkElementType(collection) != null;
@@ -997,15 +1001,16 @@ public class JsonSerializer {
   }
 
   /**
-   * {@link Type#LINK} when every non-null element is a link (and there is at least one), null otherwise: the element type a
-   * LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   * {@link Type#LINK} when every non-null element is a {@link RID} (and there is at least one), null otherwise: the element
+   * type a LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   * Stops at the first element that is not one, so a collection of anything else costs a single test.
    */
   private static Type detectHomogeneousLinkElementType(final Collection<?> collection) {
     boolean found = false;
     for (final Object element : collection) {
       if (element == null)
         continue;
-      if (!(element instanceof Identifiable))
+      if (!(element instanceof RID))
         return null;
       found = true;
     }

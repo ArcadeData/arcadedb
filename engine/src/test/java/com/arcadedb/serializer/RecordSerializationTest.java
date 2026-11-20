@@ -571,6 +571,149 @@ class RecordSerializationTest {
   }
 
   /**
+   * Regression for #12195: a LINK, or a list or map of links, goes out as its "#12:0" text, so an element row carries an
+   * {@code @props} hint for it when the schema does not declare the property, or the remote client reads the text back as a
+   * String. What goes out as a nested JSON object (an embedded document, a vertex) is no link and must get no link hint: the
+   * client rebuilds a hinted item as a RID, and a JSON object is not one.
+   */
+  @Nested
+  class LinkElementRowHint extends TestHelper {
+    private static final String LINK_HINT = String.valueOf(Type.LINK.getId());
+    private static final String LIST_OF_LINKS_HINT = Type.LIST.getId() + "(" + Type.LINK.getId() + ")";
+    private static final String MAP_OF_LINKS_HINT = Type.MAP.getId() + "(" + Type.LINK.getId() + ")";
+
+    private RID other;
+
+    @BeforeEach
+    void schema() {
+      database.getSchema().createDocumentType("Rec").createProperty("declaredLink", Type.LINK);
+      database.getSchema().createDocumentType("Addr");
+      database.getSchema().createVertexType("V12195");
+      database.transaction(() -> other = database.newVertex("V12195").set("name", "other").save().getIdentity());
+    }
+
+    private JSONObject serialize(final MutableDocument doc, final boolean hints) {
+      return new JsonSerializer(database).setIncludeTypeHints(hints).serializeResult(database, new ResultInternal(doc));
+    }
+
+    private JSONObject serializeRow(final Map<String, Object> row) {
+      return new JsonSerializer(database).setIncludeTypeHints(true).serializeResult(database, new ResultInternal(row));
+    }
+
+    @Test
+    void undeclaredLinkListAndMapGetAHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("friend", other).set("friends", new ArrayList<>(List.of(other))).set("byName", new HashMap<>(Map.of("x", other)));
+      final JSONObject json = serialize(doc, true);
+      assertThat(json.getString("@props")).isEqualTo(
+          "friend:" + LINK_HINT + ",friends:" + LIST_OF_LINKS_HINT + ",byName:" + MAP_OF_LINKS_HINT);
+      // the value itself still goes out as the rid text
+      assertThat(json.getString("friend")).isEqualTo(other.toString());
+    }
+
+    @Test
+    void aNullAmongTheLinksKeepsTheHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      final List<Object> list = new ArrayList<>();
+      list.add(other);
+      list.add(null);
+      doc.set("friends", list);
+      assertThat(serialize(doc, true).getString("@props")).isEqualTo("friends:" + LIST_OF_LINKS_HINT);
+    }
+
+    @Test
+    void declaredLinkKeepsItsShape() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("declaredLink", other);
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
+    @Test
+    void mixedCollectionOfLinksAndTextGetsNoHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("l", new ArrayList<>(List.of(other, "#1:0"))).set("m", new HashMap<>(Map.of("a", other, "b", "text")));
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
+    @Test
+    void textThatLooksLikeARidGetsNoHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("code", "#1:0").set("codes", new ArrayList<>(List.of("#1:0")));
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
+    @Test
+    void emptyCollectionsGetNoHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("l", new ArrayList<>()).set("m", new HashMap<>());
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
+    @Test
+    void undeclaredEmbeddedDocumentsGetNoLinkHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("list", new ArrayList<>()).set("map", new HashMap<>());
+      doc.newEmbeddedDocument("Addr", "one").set("city", "Rome");
+      doc.newEmbeddedDocument("Addr", "list").set("city", "Milan");
+      doc.newEmbeddedDocument("Addr", "map", "home").set("city", "Turin");
+
+      final JSONObject json = serialize(doc, true);
+      assertThat(json.has("@props")).isFalse();
+      // and they go out as nested JSON objects, which is what the client reads back
+      assertThat(json.getJSONObject("one").getString("city")).isEqualTo("Rome");
+      assertThat(json.getJSONArray("list").getJSONObject(0).getString("city")).isEqualTo("Milan");
+      assertThat(json.getJSONObject("map").getJSONObject("home").getString("city")).isEqualTo("Turin");
+    }
+
+    @Test
+    void aCollectionOfVerticesGetsNoLinkHint() {
+      final MutableDocument doc = database.newDocument("Rec");
+      final Vertex vertex = other.asVertex();
+      doc.set("vertices", new ArrayList<>(List.of(vertex))).set("byName", new HashMap<>(Map.of("x", vertex)));
+      assertThat(serialize(doc, true).has("@props")).isFalse();
+    }
+
+    @Test
+    void noHintWhenHintsAreOff() {
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("friend", other).set("friends", new ArrayList<>(List.of(other)));
+      assertThat(serialize(doc, false).has("@props")).isFalse();
+    }
+
+    @Test
+    void projectedLinkListAndMapKeepTheirLinkHint() {
+      final JSONObject json = serializeRow(
+          Map.of("friend", other, "friends", new ArrayList<>(List.of(other)), "byName", new HashMap<>(Map.of("x", other))));
+      final Map<String, String> hints = hintsOf(json);
+      assertThat(hints).containsEntry("friend", LINK_HINT).containsEntry("friends", LIST_OF_LINKS_HINT)
+          .containsEntry("byName", MAP_OF_LINKS_HINT);
+    }
+
+    @Test
+    void aProjectedListOrMapOfEmbeddedDocumentsGetsNoLinkElementType() {
+      // SELECT addresses FROM Person: the column is a LIST, which JSON does not round-trip, so it keeps its container hint
+      final MutableDocument doc = database.newDocument("Rec");
+      doc.set("list", new ArrayList<>()).set("map", new HashMap<>());
+      doc.newEmbeddedDocument("Addr", "list").set("city", "Milan");
+      doc.newEmbeddedDocument("Addr", "map", "home").set("city", "Turin");
+      final Map<String, Object> row = new LinkedHashMap<>();
+      row.put("list", doc.get("list"));
+      row.put("map", doc.get("map"));
+      row.put("vertices", new ArrayList<>(List.of(other.asVertex())));
+
+      assertThat(hintsOf(serializeRow(row))).containsEntry("list", String.valueOf(Type.LIST.getId()))
+          .containsEntry("map", String.valueOf(Type.MAP.getId())).containsEntry("vertices", String.valueOf(Type.LIST.getId()));
+    }
+
+    private static Map<String, String> hintsOf(final JSONObject json) {
+      final Map<String, String> hints = new LinkedHashMap<>();
+      for (final String entry : json.getString("@props").split(","))
+        hints.put(entry.substring(0, entry.indexOf(':')), entry.substring(entry.indexOf(':') + 1));
+      return hints;
+    }
+  }
+
+  /**
    * Regression for #5600: a value stored in a {@code STRING} property must read back as the very same {@code String}. The
    * deserializer used to sniff the first characters of every string it read and, when they looked like the head of a WKT
    * geometry, return a spatial4j {@code Shape} instead - changing the declared type of the value at the storage layer and
