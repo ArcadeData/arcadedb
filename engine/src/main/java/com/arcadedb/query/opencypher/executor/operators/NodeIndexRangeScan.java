@@ -886,26 +886,34 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
    * Counts the index entries of the range, up to a cap, without loading a record (issue #11889). The planner's estimate of
    * a range is a fixed share of its label whatever the bounds, so it cannot tell a range of a few keys from one of most of
    * the label; this tells them apart for what reading at most {@code cap} index entries costs. An entry of an index declared
-   * on a supertype is counted only when its record carries the label, read from its bucket as the scan reads it.
+   * on a supertype is counted only when its record carries the label, read from its bucket as the scan reads it, but the cap
+   * bounds the entries READ: the scan reads every entry of the range, a sibling's included, to drop it, so a range the cap
+   * stops is no cheaper than the label it would replace whoever its entries belong to.
+   * <p>
+   * The refusals of {@link #resolveRange} ("re-plan the query", an index the schema no longer offers) and a timeout are not
+   * caught: the plan was built from the schema this call reads, so a failure here is a statement racing a DDL, which the scan
+   * refuses with the same exception.
    *
-   * @return the entries of the range, or {@code cap} when it holds that many or more
+   * @return the entries of the range, or {@code cap} when it reads that many or more
    */
   public long countEntries(final CommandContext context, final long cap) {
+    if (cap < 1L)
+      return cap;
     final Range range = resolveRange(context);
     if (range == null)
       return 0L;
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final IndexCursor cursor = openCursor(range);
     try {
-      long entries = 0L;
-      int read = 0;
-      while (entries < cap && cursor.hasNext()) {
-        guard.checkPeriodically(++read);
+      long read = 0L;
+      long counted = 0L;
+      while (read < cap && cursor.hasNext()) {
+        guard.checkPeriodically((int) ++read);
         final Identifiable entry = cursor.next();
-        if (!range.inherited() || Labels.carriesLabel(context.getDatabase().getSchema(), entry, label))
-          ++entries;
+        if (entry != null && (!range.inherited() || Labels.carriesLabel(context.getDatabase().getSchema(), entry, label)))
+          ++counted;
       }
-      return entries;
+      return read < cap ? counted : cap;
     } finally {
       cursor.close();
     }

@@ -157,10 +157,10 @@ public class CypherExecutionPlan {
    * How much smaller than its label the range of an index range seek must be, counted, for a count to be left to the ordinary
    * plan rather than pushed down (issue #11889). The optimizer estimates any range at a fixed share of the label, so the range
    * is counted instead, up to this share. Only the optimizer's plan seeks a range. On a graph of 60,000 vertices and 120,000
-   * relationships the range seek plus its
-   * expansion was faster than the push-down at every range up to a quarter of the label, in every shape measured (a star with
-   * a filtered arm and without, and a chain in either direction), and the two cost about the same between a quarter and half
-   * of it; past half the star without a filtered arm was faster pushed down (61 ms against 131 ms over the whole label).
+   * relationships the range seek plus its expansion was faster than the push-down at every range up to a quarter of the label,
+   * in every shape measured (a star with a filtered arm and without, and a chain in either direction), and the two cost about
+   * the same between a quarter and half of it; past half the star without a filtered arm was faster pushed down (61 ms against
+   * 131 ms over the whole label).
    */
   private static final int RANGE_ANCHOR_LABEL_SHARE = 4;
 
@@ -2270,7 +2270,8 @@ public class CypherExecutionPlan {
    * </ul>
    * The entries are counted, with the parameters of this execution bound, by the operator the optimizer builds for the anchor,
    * the very one its plan runs. The count stops at the cap and loads no record: it costs at most that many index entries read,
-   * against a push-down that walks the whole label.
+   * against a push-down that walks the whole label. It does not catch what the operator refuses with (an index the schema no
+   * longer offers, a timeout): the plan was built from the schema it reads, and the seek would refuse the same way.
    */
   private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics,
       final CommandContext context) {

@@ -380,35 +380,49 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
   /**
    * Counts the index entries the seek finds, up to a cap, without loading a record (issue #11889). The planner's estimate of an
    * equality on a NOTUNIQUE key is an average over the keys, which says little of the one sought; this reads what it finds,
-   * for what reading at most {@code cap} index entries costs. An entry of an index declared on a supertype is counted only when
-   * its record carries the label, read from its bucket as the seek reads it. The values of an IN-list are counted one by one,
-   * a vertex two of them find twice.
+   * for what reading at most {@code cap} index entries costs: the lookup of a whole key collects the entries it finds before it
+   * answers, so it is asked for the entries the cap leaves and no more. An entry of an index declared on a supertype is counted
+   * only when its record carries the label, read from its bucket as the seek reads it, but the cap bounds the entries READ: the
+   * seek reads every entry of the key, a sibling's included, to drop it, so a key the cap stops is no cheaper than the label it
+   * would replace whoever its entries belong to. The values of an IN-list are counted one by one, a vertex two of them find
+   * twice.
+   * <p>
+   * The refusals of {@link #resolveSeek} ("re-plan the query", an index the schema no longer offers) and a timeout are not
+   * caught: the plan was built from the schema this call reads, so a failure here is a statement racing a DDL, which the seek
+   * refuses with the same exception.
    *
-   * @return the entries the seek finds, or {@code cap} when it finds that many or more
+   * @return the entries the seek finds, or {@code cap} when it reads that many or more
    */
   public long countEntries(final CommandContext context, final long cap) {
+    // a cap below one leaves nothing to read, and a lookup limit below zero would mean no limit at all
+    if (cap < 1L)
+      return cap;
     final Seek seek = resolveSeek(context);
     if (seek == null || !seek.readable())
       return 0L;
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    long entries = 0L;
-    int read = 0;
+    long read = 0L;
+    long counted = 0L;
     for (final Object[] key : seek.keys()) {
-      final IndexCursor cursor = openCursor(seek.index(), seek.wholeKey(), key);
+      // an IN-list of many values that hold no entry reads none: one check per value keeps the deadline in reach
+      guard.check();
+      final IndexCursor cursor = seek.wholeKey() ?
+          seek.index().get(key, (int) Math.min(cap - read, Integer.MAX_VALUE)) :
+          seek.index().range(true, key, true, key, true);
       try {
-        while (entries < cap && cursor.hasNext()) {
-          guard.checkPeriodically(++read);
+        while (read < cap && cursor.hasNext()) {
+          guard.checkPeriodically((int) ++read);
           final Identifiable entry = cursor.next();
-          if (!seek.inherited() || Labels.carriesLabel(context.getDatabase().getSchema(), entry, label))
-            ++entries;
+          if (entry != null && (!seek.inherited() || Labels.carriesLabel(context.getDatabase().getSchema(), entry, label)))
+            ++counted;
         }
       } finally {
         cursor.close();
       }
-      if (entries >= cap)
+      if (read >= cap)
         break;
     }
-    return entries;
+    return read < cap ? counted : cap;
   }
 
   @Override
