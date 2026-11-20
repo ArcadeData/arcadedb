@@ -96,7 +96,7 @@ class ReplayOfDroppedIncarnationTest {
     executor.shutdownNow();
     for (final String name : new String[] { DB, OTHER })
       if (server.existsDatabase(name))
-        server.getDatabase(name).getEmbedded().close();
+        server.getDatabaseForOperator(name).getEmbedded().close();
     FileUtils.deleteRecursively(new File(serverDir.toString()));
   }
 
@@ -115,7 +115,7 @@ class ReplayOfDroppedIncarnationTest {
     apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), SECOND);
     assertThat(server.existsDatabase(DB)).as("the second create made the current copy").isTrue();
 
-    final Database current = server.getDatabase(DB);
+    final Database current = server.getDatabaseForOperator(DB);
     current.transaction(() -> current.getSchema().createDocumentType(CURRENT));
     return sm;
   }
@@ -137,7 +137,7 @@ class ReplayOfDroppedIncarnationTest {
     replayFromBeforeTheDrop();
 
     assertThat(server.existsDatabase(DB)).isTrue();
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT))
         .as("the drop at index %d belongs to the incarnation the create at index %d replaced: replayed, it renamed the "
             + "current copy away and the replayed create made an empty one", DROP, SECOND).isTrue();
   }
@@ -182,7 +182,7 @@ class ReplayOfDroppedIncarnationTest {
 
     replayFromBeforeTheDrop();
 
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT))
         .as("the boundary recorded at index %d must not depend on the unsynced per-entry write", SECOND).isTrue();
   }
 
@@ -201,7 +201,7 @@ class ReplayOfDroppedIncarnationTest {
 
     replayFromBeforeTheDrop();
 
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT))
         .as("the boundary whose write failed at index %d is written again once the volume takes writes", SECOND).isTrue();
   }
 
@@ -238,7 +238,7 @@ class ReplayOfDroppedIncarnationTest {
     apply(sm, RaftLogEntryCodec.encodeInstallDatabaseEntry(DB), SECOND);
 
     assertThat(server.existsDatabase(DB)).isTrue();
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT))
         .as("the drop at index %d is of an incarnation the copy served at index 20 already replaced", DROP).isTrue();
   }
 
@@ -260,7 +260,7 @@ class ReplayOfDroppedIncarnationTest {
 
     assertThat(sm.getBootstrapBaseline(DB))
         .as("the baseline at index %d is below the index 20 the acquired copy was served at", OLD_TX).isNull();
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT)).as("the acquired copy is left as it is").isTrue();
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT)).as("the acquired copy is left as it is").isTrue();
     assertThat(sm.readAppliedIndexCounter()).as("a skipped entry still advances the applied position").isEqualTo(OLD_TX);
   }
 
@@ -294,7 +294,7 @@ class ReplayOfDroppedIncarnationTest {
     }
 
     assertThat(server.existsDatabase(DB)).isTrue();
-    assertThat(server.getDatabase(DB).getSchema().existsType(CURRENT))
+    assertThat(server.getDatabaseForOperator(DB).getSchema().existsType(CURRENT))
         .as("the drop at index %d waited for the copy served at index 20, which already replaced its incarnation", DROP).isTrue();
   }
 
