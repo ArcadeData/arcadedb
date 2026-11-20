@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,6 +56,40 @@ class CypherPointOrderIssue12274Test extends TestHelper {
     assertThat(value("UNWIND [point({x:1,y:1}), point({x:1,y:1,z:0}), point({longitude:0,latitude:0}), "
         + "point({longitude:0,latitude:0,height:0})] AS p WITH p ORDER BY p RETURN collect(p.srid) AS v"))
         .isEqualTo(List.of(4326, 4979, 7203, 9157));
+  }
+
+  // A point of a crs name that is not one of the four Neo4j defines carries no srid (ArcadeDB keeps it as given): it sorts after the
+  // points of a known srid
+  @Test
+  void aPointOfAnUnknownCrsSortsLast() {
+    assertThat(value("UNWIND [point({x:1,y:1,crs:'custom'}), point({x:1,y:1}), point({longitude:0,latitude:0})] AS p "
+        + "WITH p ORDER BY p RETURN collect(p.crs) AS v")).isEqualTo(List.of("wgs-84", "cartesian", "custom"));
+    assertThat(value("UNWIND [point({x:1,y:1,crs:'custom'}), point({x:1,y:1}), point({longitude:0,latitude:0})] AS p "
+        + "WITH p ORDER BY p DESC RETURN collect(p.crs) AS v")).isEqualTo(List.of("custom", "cartesian", "wgs-84"));
+  }
+
+  // Equal srid, x and y: the points of one srid order by z
+  @Test
+  void pointsOfOneCrsTieBreakByZ() {
+    assertThat(value("UNWIND [point({x:1,y:1,z:5}), point({x:1,y:1,z:2}), point({x:0,y:9,z:7})] AS p "
+        + "WITH p ORDER BY p RETURN collect(p.z) AS v")).isEqualTo(List.of(7.0, 2.0, 5.0));
+    // A point-shaped map written as a literal may lack the z of its srid: the missing z sorts before a present one
+    assertThat(value("UNWIND [{crs:'cartesian', srid:7203, x:1, y:1, z:3}, {crs:'cartesian', srid:7203, x:1, y:1}] AS p "
+        + "WITH p ORDER BY p RETURN collect(p.z IS NULL) AS v")).isEqualTo(List.of(true, false));
+  }
+
+  // Points read back from a stored property order as the points they were written as
+  @Test
+  void storedPointsOrderAsPoints() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Place {name:'a', loc: point({longitude:10,latitude:5})})");
+      database.command("opencypher", "CREATE (:Place {name:'b', loc: point({longitude:-10,latitude:1})})");
+      database.command("opencypher", "CREATE (:Place {name:'c', loc: point({longitude:0,latitude:9})})");
+    });
+    assertThat(value("MATCH (n:Place) WITH n ORDER BY n.loc RETURN collect(n.name) AS v")).isEqualTo(List.of("b", "c", "a"));
+    assertThat(value("MATCH (n:Place) WITH n ORDER BY n.loc DESC RETURN collect(n.name) AS v")).isEqualTo(List.of("a", "c", "b"));
+    assertThat(value("MATCH (n:Place) WITH min(n.loc) AS m, max(n.loc) AS M RETURN [m.longitude, M.longitude] AS v"))
+        .isEqualTo(List.of(-10.0, 10.0));
   }
 
   @Test
@@ -93,5 +129,20 @@ class CypherPointOrderIssue12274Test extends TestHelper {
     }
     // Two ordinary maps keep the map order: size first
     assertThat(value("UNWIND [{x:1, y:2, k:3}, {x:9}] AS p WITH p ORDER BY p RETURN collect(p.x) AS v")).isEqualTo(List.of(9L, 1L));
+  }
+
+  // A Java parameter map may be sorted by keys that are not strings (a TreeMap of Integer): looking a String key up in it throws a
+  // ClassCastException, which the point check must not let out of the map order and the inclusive comparison (#11657 orders such maps)
+  @Test
+  void aMapWithNonStringKeysIsNotAPoint() {
+    final TreeMap<Integer, Integer> integerKeys = new TreeMap<>(Map.of(1, 10));
+    try (final ResultSet rs = database.query("opencypher", "UNWIND $maps AS m WITH m ORDER BY m RETURN size(keys(m)) AS v",
+        Map.of("maps", List.of(Map.of("a", 1, "b", 2), integerKeys)))) {
+      assertThat(rs.stream().map(r -> r.<Number>getProperty("v").intValue()).toList()).containsExactly(1, 2);
+    }
+    try (final ResultSet rs = database.query("opencypher", "RETURN $a <= $b AS v",
+        Map.of("a", integerKeys, "b", new TreeMap<>(integerKeys)))) {
+      assertThat(rs.next().<Object>getProperty("v")).isNull();
+    }
   }
 }
