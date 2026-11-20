@@ -887,8 +887,8 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * Waits, bounded by the quorum timeout, until THIS node has applied everything the cluster had committed when the call was
-   * made (issue #11739): it asks the leader for its commit index and waits for the local state machine to reach it. For a
+   * Waits until THIS node has applied everything the cluster had committed when the call was
+   * made (issue #11739): it asks the leader for its commit index and waits for the local state machine to reach it. Meant for a
    * command this node forwarded to the leader, whose effect reaches this node only when it applies the entry the leader
    * committed. {@link #awaitLocalApply()} is not enough there: it waits for the commit index THIS node has heard of, and a
    * follower hears of a commit only with the leader's next append, which can be after the leader's answer to the command.
@@ -896,6 +896,10 @@ public interface HAServerPlugin extends ServerPlugin {
    * Best effort: it returns {@code false}, without failing, when the leader cannot be asked, when the deadline passes, or
    * when this node is inside a snapshot resync gap that waiting cannot close. The default, for non-HA setups, has nothing to
    * wait for.
+   * <p>
+   * The wait for the local apply is bounded by the quorum timeout ({@code arcadedb.ha.quorumTimeout}). Asking the leader for its
+   * commit index is the ReadIndex round a LINEARIZABLE follower read makes, and is bounded as that read is: by the Raft client's
+   * request timeout and retry policy, which a leader that answered a command a moment ago has no reason to use up.
    *
    * @return whether this node has applied the leader's commit index
    */

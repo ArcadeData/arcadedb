@@ -175,13 +175,10 @@ final class DropDatabaseApplier {
       // releasing the lock first would let a concurrent create of the same name meet a half-deleted one.
       staged = databaseDirectory == null ? null : deferredDatabaseDeleter.stageForDeletion(databaseDirectory);
       absent = databaseDirectory == null;
-      // Deregistered again now that the directory is gone from under its name (issue #11739). A drop ends the close that a
-      // `close database` asked for, and only removeDatabase ends it: the branch above for a closed database left the mark
-      // standing, so GET /exists kept answering true, and a request kept being refused as closed, for a database the cluster
-      // had dropped. It also has the server list the database directories again AFTER the rename: the call in the registered
-      // branch lists them before, and a listing taken in between kept the name for up to a second after the drop was applied.
-      // Not when the inline fallback of stageForDeletion left the directory behind (it logs a delete it could not finish and
-      // returns): the mark then stays, as it did, so no request reopens the copy the cluster dropped.
+      // A drop ends the close that `close database` asked for, and only removeDatabase ends it (issue #11739): without it GET
+      // /exists kept answering true for a database the cluster had dropped. Idempotent, and it lists the directories again after
+      // the rename. Not when the inline delete of stageForDeletion left the directory behind: the mark then stays, as it did,
+      // so no request reopens the copy the cluster dropped.
       if (staged != null || absent || Files.notExists(databaseDirectory))
         sm.server.removeDatabase(databaseName);
     }
