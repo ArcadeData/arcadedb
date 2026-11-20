@@ -359,6 +359,8 @@ public class TraversalPath {
    * @param vertex vertex to add
    */
   public void addStep(final Edge edge, final Vertex vertex) {
+    if (deletedVertices != null || deletedEdges != null)
+      throw new IllegalStateException("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
     edges.add(edge);
     vertices.add(vertex);
   }

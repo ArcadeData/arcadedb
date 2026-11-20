@@ -48,6 +48,7 @@ import com.arcadedb.utility.LongRangeList;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -148,8 +149,29 @@ public class DeleteStep extends AbstractExecutionStep {
 
   /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
   private String[]                              rowVariables;
-  private final IdentityHashMap<Object, Object> containerMemo = new IdentityHashMap<>();
-  private long                                  memoVersion   = -1;
+  private final IdentityHashMap<Object, Object> containerMemo    = new IdentityHashMap<>();
+  private long                                  memoChangeCount  = -1;
+  private int                                   memoPendingSize  = -1;
+  private long                                  markStateVersion = 0;
+  private Set<Object>                           pinnedVisited;
+
+  private long syncMarkState() {
+    final long cc = deleted.getChangeCount();
+    final int ps = pendingVertices.size();
+    if (cc != memoChangeCount || ps != memoPendingSize) {
+      containerMemo.clear();
+      memoChangeCount = cc;
+      memoPendingSize = ps;
+      markStateVersion++;
+    }
+    return markStateVersion;
+  }
+
+  private Set<Object> getPinnedVisited() {
+    if (pinnedVisited == null)
+      pinnedVisited = Collections.newSetFromMap(new IdentityHashMap<>());
+    return pinnedVisited;
+  }
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -170,6 +192,7 @@ public class DeleteStep extends AbstractExecutionStep {
       private List<Result> materializedInput = null;
       private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
+      private final List<Long> bufferVersions = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
 
@@ -193,9 +216,11 @@ public class DeleteStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        final Result row = buffer.get(bufferIndex++);
-        if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && row instanceof ResultInternal mutableRow)
-          markDeletedReferences(mutableRow, (Set<String>) null);
+        final int index = bufferIndex++;
+        final Result row = buffer.get(index);
+        final long rowVersion = bufferVersions.get(index);
+        if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && syncMarkState() != rowVersion && row instanceof ResultInternal mutableRow)
+          markCurrentRow(mutableRow, null);
         return row;
       }
 
@@ -209,6 +234,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
       private void fetchMore(final int n) {
         buffer.clear();
+        bufferVersions.clear();
         bufferIndex = 0;
 
         // Initialize prevResults on first call
@@ -269,10 +295,11 @@ public class DeleteStep extends AbstractExecutionStep {
             }
 
             if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && inputResult instanceof ResultInternal mutableResult)
-              markDeletedReferences(mutableResult, deletedVars);
+              markCurrentRow(mutableResult, deletedVars);
 
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
+            bufferVersions.add(markStateVersion);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -321,7 +348,7 @@ public class DeleteStep extends AbstractExecutionStep {
           final RowTargets targets = new RowTargets(new ArrayList<>(), new ArrayList<>(), new HashSet<>());
           collectRowTargets(row, targets.edges(), targets.other(), targets.variables());
           pinOccurrences(targets.edges());
-          pinRetainedEdgeOccurrences(row);
+          pinRetainedEdgeOccurrences(row, getPinnedVisited());
           pinnedTargets.put(row, targets);
         }
       }
@@ -341,11 +368,11 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param row     the result row to inspect and mutate
    * @param deleted what has been deleted so far
    */
-  public static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
-    markDeletedReferences(row, deleted, new IdentityHashMap<>());
+  static void markRowDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
+    markRowDeletedReferences(row, deleted, new IdentityHashMap<>());
   }
 
-  static void markDeletedReferences(final ResultInternal row, final DeletedSoFar deleted, final Map<Object, Object> memo) {
+  static void markRowDeletedReferences(final ResultInternal row, final DeletedSoFar deleted, final Map<Object, Object> memo) {
     for (final String variable : row.getPropertyNames()) {
       final Object value = row.getProperty(variable);
       final Object marked = markDeletedValue(value, deleted, null, memo);
@@ -354,12 +381,8 @@ public class DeleteStep extends AbstractExecutionStep {
     }
   }
 
-  private void markDeletedReferences(final ResultInternal row, final Set<String> deletedVars) {
-    final long version = deleted.getChangeCount() + pendingVertices.size();
-    if (version != memoVersion) {
-      containerMemo.clear();
-      memoVersion = version;
-    }
+  private void markCurrentRow(final ResultInternal row, final Set<String> deletedVars) {
+    syncMarkState();
     if (rowVariables == null)
       rowVariables = row.getPropertyNames().toArray(new String[0]);
     for (final String variable : rowVariables) {
@@ -377,6 +400,10 @@ public class DeleteStep extends AbstractExecutionStep {
    * Memoizes visited containers (List, Map, TraversalPath) by identity to avoid O(N * size) traversal
    * when multiple rows share containers. Skips {@link LongRangeList} since numeric ranges can never
    * contain vertices or edges.
+   * <p>
+   * Note: This method handles openCypher row value types ({@link Edge}, {@link Vertex}/{@link Document},
+   * {@link List}, {@link Map}, and {@link TraversalPath}). It does not descend into nested {@link Result}
+   * instances or detached map-serialized path copies.
    */
   private static Object markDeletedValue(final Object value, final DeletedSoFar deleted, final Set<RID> pendingVertices,
       final Map<Object, Object> memo) {
@@ -474,31 +501,41 @@ public class DeleteStep extends AbstractExecutionStep {
    * before deleting any lightweight edge, so a surviving parallel edge does not collide with a deleted twin after
    * the vertex's edge list shrinks.
    */
-  private static void pinRetainedEdgeOccurrences(final Object value) {
+  private static void pinRetainedEdgeOccurrences(final Object value, final Set<Object> visited) {
+    if (value == null)
+      return;
     if (value instanceof Edge edge) {
       if (edge.getIdentity() instanceof LightEdgeRID light)
         light.getOccurrence();
       return;
     }
     if (value instanceof TraversalPath path) {
+      if (visited != null && !visited.add(path))
+        return;
       for (final Edge edge : path.getEdges())
         if (edge.getIdentity() instanceof LightEdgeRID light)
           light.getOccurrence();
       return;
     }
     if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      if (visited != null && !visited.add(list))
+        return;
       for (final Object item : list)
-        pinRetainedEdgeOccurrences(item);
+        pinRetainedEdgeOccurrences(item, visited);
       return;
     }
     if (value instanceof Map<?, ?> map) {
+      if (visited != null && !visited.add(map))
+        return;
       for (final Object item : map.values())
-        pinRetainedEdgeOccurrences(item);
+        pinRetainedEdgeOccurrences(item, visited);
       return;
     }
     if (value instanceof Result row) {
+      if (visited != null && !visited.add(row))
+        return;
       for (final String prop : row.getPropertyNames())
-        pinRetainedEdgeOccurrences(row.getProperty(prop));
+        pinRetainedEdgeOccurrences(row.getProperty(prop), visited);
     }
   }
 
@@ -552,7 +589,7 @@ public class DeleteStep extends AbstractExecutionStep {
       // The lightweight edges of the row are numbered before anything is deleted; the first one with a twin numbers
       // the rest of the statement's too, while their lists still hold every twin (#10008)
       if (pinOccurrences(allEdges)) {
-        pinRetainedEdgeOccurrences(result);
+        pinRetainedEdgeOccurrences(result, getPinnedVisited());
         if (pinRemainingRows != null)
           pinRemainingRows.run();
       }
@@ -970,6 +1007,8 @@ public class DeleteStep extends AbstractExecutionStep {
   public void close() {
     pendingVertices.clear();
     containerMemo.clear();
+    if (pinnedVisited != null)
+      pinnedVisited.clear();
     releaseHeap();
     super.close();
   }

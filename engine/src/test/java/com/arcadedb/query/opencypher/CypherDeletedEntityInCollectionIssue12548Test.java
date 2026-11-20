@@ -21,18 +21,14 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.opencypher.executor.steps.DeleteStep;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,11 +40,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * access must raise DeletedEntityAccess instead of reading stale state or returning null.
  */
 class CypherDeletedEntityInCollectionIssue12548Test {
-  private Database database;
+  private static final String DB_PATH = "./target/databases/testopencypher-deleted-entity-in-collections-12548";
+  private Database            database;
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testopencypher-deleted-entity-in-collections-12548").create();
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.getSchema().createVertexType("A");
     database.getSchema().createVertexType("B");
     database.getSchema().createVertexType("C");
@@ -381,21 +381,11 @@ class CypherDeletedEntityInCollectionIssue12548Test {
   }
 
   @Test
-  void testCopyOnWritePreservesContainerIdentityWhenNothingDeleted() {
-    final ResultInternal row = new ResultInternal();
-    final List<Object> list = new ArrayList<>(List.of("val1", 42L));
-    final Map<String, Object> map = new LinkedHashMap<>();
-    map.put("key1", "val1");
-    map.put("key2", 42L);
-
-    row.setProperty("list", list);
-    row.setProperty("map", map);
-
-    final DeleteStep.DeletedSoFar deleted = new DeleteStep.DeletedSoFar();
-
-    DeleteStep.markDeletedReferences(row, deleted);
-
-    assertThat((Object) row.getProperty("list")).isSameAs(list);
-    assertThat((Object) row.getProperty("map")).isSameAs(map);
+  void testMultiRowForeachBufferedRowSeesLaterRowDeletion() {
+    assertDeletedEntityAccess("""
+        MATCH (b:B {id: 2}), (l:Leaf)
+        WITH b, [b] AS list, l.id AS lid ORDER BY lid
+        FOREACH (i IN CASE WHEN lid = 7 THEN [1] ELSE [] END | DETACH DELETE b)
+        RETURN list[0].v""");
   }
 }

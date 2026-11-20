@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for TraversalPath methods handling deleted entities:
@@ -210,5 +211,26 @@ class TraversalPathDeletedEntitiesTest extends TestHelper {
 
     final TraversalPath concatenated = new TraversalPath(pathWithDel, extPathWithDel);
     assertThat(concatenated.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c, DeletedEntityMarker.INSTANCE);
+
+    // Constructor extending by another path where the shared join vertex is marked deleted in extension
+    final TraversalPath extPath2 = new TraversalPath(c);
+    extPath2.addStep(cd, d);
+    final TraversalPath extPath2WithDel = extPath2.withDeleted(v -> v.getIdentity().equals(c.getIdentity()), e -> false);
+    final TraversalPath concatenatedJoinDeleted = new TraversalPath(path, extPath2WithDel);
+    assertThat(concatenatedJoinDeleted.getNodesOrDeleted()).containsExactly(a, b, DeletedEntityMarker.INSTANCE, d);
+  }
+
+  @Test
+  void testAddStepThrowsOnMarkedPath() {
+    final TraversalPath path = createPath();
+    final TraversalPath markedVertices = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
+    assertThatThrownBy(() -> markedVertices.addStep(cd, d))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
+
+    final TraversalPath markedEdges = path.withDeleted(v -> false, e -> e.getIdentity().equals(ab.getIdentity()));
+    assertThatThrownBy(() -> markedEdges.addStep(cd, d))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
   }
 }
