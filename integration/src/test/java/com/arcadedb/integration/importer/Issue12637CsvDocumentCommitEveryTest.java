@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.AfterEach;
@@ -33,6 +34,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -202,29 +204,49 @@ class Issue12637CsvDocumentCommitEveryTest {
   }
 
   /**
-   * A commit refused on a boundary is a failure of the import, not of a row: the batches before it stay, the refused one is rolled
-   * back, and no transaction is left on the thread. The duplicate key sits in the second batch, the first one is clean.
+   * A commit REFUSED on a boundary, which is a failure of the import and not of a row: the batches before it stay, the batch in
+   * flight is rolled back, and no transaction is left on the thread.
+   * <p>
+   * A key another transaction commits after this import saved it is only found when the import commits, so it is the refusal that
+   * happens at the boundary and not when the row is saved. Another thread commits key 150 once row 150 is saved, which makes the
+   * commit after row 200 (the end of the second batch) the one refused. That it is that commit, and not the save of a row, is what
+   * the number of rows saved says: all 200 of them were, and not one more.
    */
   @Test
   void aCommitRefusedOnABoundaryKeepsTheEarlierBatchesAndRollsBackTheRefusedOne() throws IOException {
-    database.command("sql", "CREATE DOCUMENT TYPE Keyed");
-    database.command("sql", "CREATE PROPERTY Keyed.Id INTEGER");
-    database.command("sql", "CREATE INDEX ON Keyed (Id) UNIQUE");
+    createKeyedType();
+    final AtomicInteger saved = runAfterSaving("Keyed", 150, () -> commitKeyedFromAnotherThread(150));
 
-    final StringBuilder csv = new StringBuilder("Id,Name\n");
-    for (int i = 1; i <= 250; i++)
-      csv.append(i == 150 ? 120 : i).append(",name").append(i).append('\n');
-    final Path file = tempDir.resolve("duplicate-key.csv");
-    Files.writeString(file, csv);
+    final Importer importer = keyedImporter(writeKeyedCsv(250, -1));
 
-    final Importer importer = new Importer(database, null);
-    importer.settings.documents = file.toString();
-    importer.settings.documentTypeName = "Keyed";
-    importer.settings.commitEvery = 100;
+    assertThatThrownBy(importer::load).isInstanceOf(ImportException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class);
 
-    assertThatThrownBy(importer::load).isInstanceOf(ImportException.class);
-
+    assertThat(saved.get()).as("the refusal came from the commit after row 200, with every row of the batch already saved")
+        .isEqualTo(200);
     assertThat(database.isTransactionActive()).as("the refused batch's transaction is not stranded on the thread").isFalse();
+    assertThat(database.countType("Keyed", true))
+        .as("the first batch of 100 is durable, with the one row the other thread committed; the refused batch is not")
+        .isEqualTo(101);
+    assertThat(importer.getContext().createdDocuments.get()).as("only the batch a commit made durable is credited").isEqualTo(100);
+  }
+
+  /**
+   * The same duplicate key inside ONE batch is refused when the row is saved, before any boundary: the failure is that of a row,
+   * and the batches committed before it stay. Not the commit refusal of the test above: that is why 149 rows were saved and not 200.
+   */
+  @Test
+  void aDuplicateKeyRefusedWhenARowIsSavedKeepsTheEarlierBatches() throws IOException {
+    createKeyedType();
+    final AtomicInteger saved = runAfterSaving("Keyed", Integer.MAX_VALUE, () -> {
+    });
+
+    final Importer importer = keyedImporter(writeKeyedCsv(250, 150));
+
+    assertThatThrownBy(importer::load).isInstanceOf(ImportException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(saved.get()).as("rows 1 to 149 were saved, and the save of row 150 refused the duplicate, before the second boundary")
+        .isEqualTo(149);
+    assertThat(database.isTransactionActive()).isFalse();
     assertThat(database.countType("Keyed", true)).as("the first batch is durable, the batch with the duplicate is not").isEqualTo(100);
     assertThat(importer.getContext().createdDocuments.get()).isEqualTo(100);
   }
@@ -235,18 +257,40 @@ class Issue12637CsvDocumentCommitEveryTest {
    */
   private AtomicLong visibleFromAnotherThreadAfterSaving(final int recordNumber) {
     final AtomicLong visible = new AtomicLong(-1);
-    final AtomicInteger saved = new AtomicInteger();
-    database.getSchema().getType("Widget").getEvents().registerListener((AfterRecordCreateListener) record -> {
-      if (saved.incrementAndGet() == recordNumber)
-        visible.set(countWidgetsFromAnotherThread());
-    });
+    runAfterSaving("Widget", recordNumber, () -> visible.set(countWidgetsFromAnotherThread()));
     return visible;
   }
 
+  /**
+   * Runs {@code action} on the importing thread, which is the one calling this, right after it saved the {@code recordNumber}th
+   * document of {@code typeName}, and returns the number of documents of that type that thread saved so far, the rows a failed
+   * import rolled back included. What another thread saves is not counted.
+   */
+  private AtomicInteger runAfterSaving(final String typeName, final int recordNumber, final Runnable action) {
+    final Thread importingThread = Thread.currentThread();
+    final AtomicInteger saved = new AtomicInteger();
+    database.getSchema().getType(typeName).getEvents().registerListener((AfterRecordCreateListener) record -> {
+      if (Thread.currentThread() == importingThread && saved.incrementAndGet() == recordNumber)
+        action.run();
+    });
+    return saved;
+  }
+
   private long countWidgetsFromAnotherThread() {
+    return onAnotherThread(() -> database.countType("Widget", true));
+  }
+
+  private void commitKeyedFromAnotherThread(final int id) {
+    onAnotherThread(() -> {
+      database.transaction(() -> database.newDocument("Keyed").set("Id", id).set("Name", "other thread").save());
+      return null;
+    });
+  }
+
+  private <T> T onAnotherThread(final Callable<T> work) {
     final ExecutorService executor = Executors.newSingleThreadExecutor();
     try {
-      return executor.submit(() -> database.countType("Widget", true)).get(60, TimeUnit.SECONDS);
+      return executor.submit(work).get(60, TimeUnit.SECONDS);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new IllegalStateException(e);
@@ -255,6 +299,34 @@ class Issue12637CsvDocumentCommitEveryTest {
     } finally {
       executor.shutdownNow();
     }
+  }
+
+  private void createKeyedType() {
+    database.command("sql", "CREATE DOCUMENT TYPE Keyed");
+    database.command("sql", "CREATE PROPERTY Keyed.Id INTEGER");
+    database.command("sql", "CREATE INDEX ON Keyed (Id) UNIQUE");
+  }
+
+  private Importer keyedImporter(final Path csv) {
+    final Importer importer = new Importer(database, null);
+    importer.settings.documents = csv.toString();
+    importer.settings.documentTypeName = "Keyed";
+    importer.settings.commitEvery = 100;
+    return importer;
+  }
+
+  /**
+   * {@code rows} rows with the keys 1 to {@code rows}, but for row {@code duplicatedRow} (when it is positive), which repeats the key
+   * of row 120.
+   */
+  private Path writeKeyedCsv(final int rows, final int duplicatedRow) throws IOException {
+    final StringBuilder csv = new StringBuilder("Id,Name\n");
+    for (int i = 1; i <= rows; i++)
+      csv.append(i == duplicatedRow ? 120 : i).append(",name").append(i).append('\n');
+
+    final Path file = tempDir.resolve("keyed-" + rows + "-" + duplicatedRow + ".csv");
+    Files.writeString(file, csv);
+    return file;
   }
 
   private Importer embeddedImporter(final Path csv, final int commitEvery) {
