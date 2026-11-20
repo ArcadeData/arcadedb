@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.literal.LiteralParameterizer.Lookup;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser.ParsedQuery;
 import com.arcadedb.query.opencypher.query.CypherStatementCache;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Statement;
@@ -57,11 +58,12 @@ class BulkLiteralStatementNotCachedIssue12350Test extends TestHelper {
 
     database.transaction(() -> database.command("sql", insert).close());
 
-    assertThat(count("SELECT count(*) AS n FROM T")).isEqualTo(ROWS);
+    // count(@rid) reads the records: count(*) answers from a counter, which is no proof that the rows were written
+    assertThat(count("SELECT count(@rid) AS n FROM T")).isEqualTo(ROWS);
     assertThat(db().getStatementCache().contains(insert)).as("a text with more literals than can be extracted").isFalse();
 
     // the control: a text without literals is still cached as written, through the same lookup
-    final String small = "SELECT count(*) AS n FROM T";
+    final String small = "SELECT count(@rid) AS n FROM T";
     assertThat(count(small)).isEqualTo(ROWS);
     assertThat(db().getStatementCache().contains(small)).as("a text the SQL cache keeps").isTrue();
   }
@@ -76,7 +78,7 @@ class BulkLiteralStatementNotCachedIssue12350Test extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", unwind).close());
 
-    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(ROWS);
+    assertThat(count("SELECT count(@rid) AS n FROM V")).isEqualTo(ROWS);
     assertThat(db().getCypherStatementCache().contains(unwind)).as("a text with more literals than can be extracted").isFalse();
 
     final String small = "MATCH (n:V) RETURN count(n) AS n";
@@ -161,30 +163,34 @@ class BulkLiteralStatementNotCachedIssue12350Test extends TestHelper {
   @Test
   void aBulkTextAnalyzedThenExecutedIsParsedOnce() {
     // classifying a statement before executing it is free for every text the cache keeps; a bulk text is not kept, so the last one
-    // is remembered for the second lookup
+    // is remembered for the second lookup.
+    // The remembered entry is held softly, and the heap may reclaim it whenever nothing else reaches it. Each test below keeps the
+    // Lookup it got in a local and reads it AFTER the repeated lookup, so it is reachable throughout and the test cannot depend on
+    // the heap's mood.
     final String bulk = "SELECT count(*) AS n FROM T WHERE k IN " + list(5000, 0);
-    final Statement first = sql().getParameterized(bulk).statement();
-    assertThat(sql().getParameterized(bulk).statement()).as("SQL, parameterized lookup").isSameAs(first);
-    assertThat(sql().get(bulk)).as("SQL, lookup as written").isSameAs(first);
+    final Lookup<Statement> first = sql().getParameterized(bulk);
+    assertThat(sql().getParameterized(bulk).statement()).as("SQL, parameterized lookup").isSameAs(first.statement());
+    assertThat(sql().get(bulk)).as("SQL, lookup as written").isSameAs(first.statement());
     assertThat(sql().contains(bulk)).as("remembered is not cached").isFalse();
 
     final String cypherBulk = "UNWIND " + list(5000, 0) + " AS x RETURN x";
-    final Object cypherFirst = cypher().getParameterized(cypherBulk).statement();
-    assertThat(cypher().getParameterized(cypherBulk).statement()).as("Cypher, parameterized lookup").isSameAs(cypherFirst);
-    assertThat(cypher().getAsWritten(cypherBulk).statement()).as("Cypher, lookup as written").isSameAs(cypherFirst);
+    final Lookup<ParsedQuery> cypherFirst = cypher().getParameterized(cypherBulk);
+    assertThat(cypher().getParameterized(cypherBulk).statement()).as("Cypher, parameterized lookup").isSameAs(cypherFirst.statement());
+    assertThat(cypher().getAsWritten(cypherBulk).statement()).as("Cypher, lookup as written").isSameAs(cypherFirst.statement());
     // a trailing semicolon is dropped before the lookup, so the text is a new String, and the same statement all the same
-    assertThat(cypher().getParameterized(cypherBulk + ";").statement()).as("Cypher, text with a semicolon").isSameAs(cypherFirst);
+    assertThat(cypher().getParameterized(cypherBulk + ";").statement()).as("Cypher, text with a semicolon")
+        .isSameAs(cypherFirst.statement());
 
     // only the last bulk text is remembered: the heap never holds more than one of them
     final String other = "SELECT count(*) AS n FROM T WHERE k IN " + list(5000, 1);
-    final Statement otherStatement = sql().getParameterized(other).statement();
-    assertThat(sql().getParameterized(other).statement()).isSameAs(otherStatement);
-    assertThat(sql().getParameterized(bulk).statement()).as("the first text was replaced by the second").isNotSameAs(first);
+    final Lookup<Statement> otherFirst = sql().getParameterized(other);
+    assertThat(sql().getParameterized(other).statement()).isSameAs(otherFirst.statement());
+    assertThat(sql().getParameterized(bulk).statement()).as("the first text was replaced by the second").isNotSameAs(first.statement());
 
     // and a cleared cache forgets it, as it forgets every statement
-    final Statement again = sql().getParameterized(bulk).statement();
+    final Lookup<Statement> again = sql().getParameterized(bulk);
     sql().clear();
-    assertThat(sql().getParameterized(bulk).statement()).as("after clear()").isNotSameAs(again);
+    assertThat(sql().getParameterized(bulk).statement()).as("after clear()").isNotSameAs(again.statement());
   }
 
   @Test
