@@ -35,6 +35,15 @@ public interface BinaryCompareOperator {
   }
 
   /**
+   * The operator that answers {@code b op' a} exactly when this one answers {@code a op b} ({@code <} for {@code >}, {@code =} for
+   * itself), or {@code null} when the operator has no such mirror. A comparison written with the literal on the left is evaluated
+   * as its mirror, with the operand that carries the type on the left, as the conversion of the other operand expects (issue #12921).
+   */
+  default BinaryCompareOperator mirrored() {
+    return null;
+  }
+
+  /**
    * SQL three-valued logic: true when a comparison with a null operand is unknown (not false), so a NOT around it stays unknown
    * and a WHERE leaves the record out (issue #8979). False for the operators that test the null itself, such as {@code <=>}.
    */

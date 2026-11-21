@@ -45,6 +45,11 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
   }
 
   @Override
+  public EqualsCompareOperator mirrored() {
+    return this;
+  }
+
+  @Override
   public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass()) && ((EqualsCompareOperator) obj).doubleEquals == doubleEquals;
   }
