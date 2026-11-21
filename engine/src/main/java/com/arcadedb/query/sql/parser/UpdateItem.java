@@ -128,8 +128,23 @@ public class UpdateItem extends SimpleNode {
     if (leftModifier == null) {
       applyOperation(doc, left, rightValue, context);
     } else {
+      // SET m.k += v / SET l[0] *= v: combine with the nested target's current value, as the top-level arm does,
+      // instead of writing the bare right-hand value into it (issue #12916)
+      final Object newValue;
+      switch (operator) {
+      case OPERATOR_PLUSASSIGN, OPERATOR_MINUSASSIGN -> {
+        // a NULL increment leaves the target as it is
+        if (MathExpression.extractScalarFromResultSet(rightValue) == null)
+          return;
+        newValue = calculateNewValue(doc, context, rightValue,
+            operator == OPERATOR_PLUSASSIGN ? MathExpression.Operator.PLUS : MathExpression.Operator.MINUS);
+      }
+      case OPERATOR_SLASHASSIGN -> newValue = calculateNewValue(doc, context, rightValue, MathExpression.Operator.SLASH);
+      case OPERATOR_STARASSIGN -> newValue = calculateNewValue(doc, context, rightValue, MathExpression.Operator.STAR);
+      default -> newValue = rightValue;
+      }
       final Object val = doc.getProperty(left.getStringValue());
-      leftModifier.setValue(doc, val, rightValue, context);
+      leftModifier.setValue(doc, val, newValue, context);
       // SET m.k = v / SET l[0] = v reach into the Map or List the record already holds and write into it, without
       // ever going through MutableDocument.set() - so the owner never learns it changed and SaveElementStep skips
       // a record it believes clean, losing the write while the statement still reports count 1 and RETURN AFTER
