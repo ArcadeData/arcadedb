@@ -404,7 +404,7 @@ class RegexReadFreeWorkTest {
           "{2,}", "[a-z]", "[^a]", "[]a]", "[^]a]", "[a&&[b]]", "[a[b]]", "[\\]]", "[(]", "[#]", "[ ]", "\\A", "\\z", "\\Z", "\\G", "\\b", "\\B", "^", "$",
           ".", "a", "b", "1", "\\1", "\\2", "\\k<n1>", "\\Q", "\\E", "\\Qa*(\\E", "\\Q[\\E", "#", " ", "\n", "(?x)", "(?i)", "(?-x)", "(?x:", "(?d)",
           "\\(", "\\[", "\\{", "\\p{L}", "\\pL", "\\x{41}", "\\x41", "\\cA", "\\c(", "\\R", "\\X", "\\\\", "*?", "++", "??", "*+", "\\u0041", "\\0", "\\012",
-          "\\N{LATIN SMALL LETTER A}", "\\b{g}", "\u0085", " ", "\\h", "\\d" };
+          "\\N{LATIN SMALL LETTER A}", "\\b{g}", "\u0085", String.valueOf((char) 0x2028), "\\h", "\\d" };
       final int[] flagSets = { 0, Pattern.COMMENTS, Pattern.COMMENTS | Pattern.UNIX_LINES, Pattern.MULTILINE | Pattern.DOTALL | Pattern.UNIX_LINES };
       final Random random = new Random(12595);
       int compiled = 0;

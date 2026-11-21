@@ -673,7 +673,7 @@ final class RegexReadFreeWork {
   private boolean isLineEnd(final char c) {
     if ((flags & Pattern.UNIX_LINES) != 0)
       return c == '\n';
-    return c == '\n' || c == '\r' || c == '\u0085' || c == ' ' || c == ' ';
+    return c == 0x0A || c == 0x0D || c == 0x85 || c == 0x2028 || c == 0x2029;
   }
 
   private void note(final long ways) {
