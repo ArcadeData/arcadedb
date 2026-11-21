@@ -727,9 +727,12 @@ class MaterializedViewGroupedDeltaTest extends TestHelper {
     }
     assertThat(committing.get()).isTrue();
     assertViewMatchesQuery("GSums");
-    // and a commit after it still applies as a delta on the rebuilt state
+    // and a commit after it still applies as a delta on the rebuilt state. The rebuild may have left a further pass owed, which its
+    // owner hands to the scheduler thread; that thread then owns the refresh, so this commit asks it for another pass and returns
+    // before it is made (MaterializedViewRefresher.refreshAfterCommit): the view catches up asynchronously, so it is awaited
     database.transaction(() -> insert("b", 1, 9, 9L, "z", 1, "I"));
-    assertViewMatchesQuery("GSums");
+    Awaitility.await("the view catches up with the commit").atMost(30, TimeUnit.SECONDS).pollInterval(5, TimeUnit.MILLISECONDS)
+        .untilAsserted(() -> assertViewMatchesQuery("GSums"));
   }
 
   /** A WHERE that follows a link reads a record that is not a source record: nothing refreshes the view when it changes. */
