@@ -59,6 +59,7 @@ import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -411,6 +412,10 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // Writes of this context's blocks that another node committed: statements a replica forwarded to the leader (issue #12635). Kept
+  // apart from commitCount because the two answer different questions: both make a block unsafe to replay, but only a local commit
+  // publishes the writes buffered HERE, which the async worker's shared batch must otherwise keep tracking (see getLocalCommitCount)
+  private       long                                 writesCommittedByAnotherNode = 0;
   // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
   // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
@@ -527,8 +532,16 @@ public class TransactionContext implements Transaction {
   // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
   private       Map<String, Runnable>                afterCompletionCallbacks    = null;
   private       Thread                               afterCompletionOwner        = null;
+  // Issue #11937: work that reads what the transaction is about to commit, run when the commit starts, see addBeforeCommitCallbackIfAbsent()
+  private       Map<String, Runnable>                beforeCommitCallbacks       = null;
   // Read by begin() on the thread that runs the callbacks, which is the one that sets it
   private       boolean                              runningAfterCompletion      = false;
+  // Issue #12251: a commit that runs the callbacks its transaction owes somewhere else than where the transaction concludes, see
+  // deferCallbacks(). Written by the thread that drives the commit and by the one that concludes it, which is the same thread
+  // today (the apply thread only publishes the pages), but volatile like commitPointReached all the same: the phases of one commit
+  // can be driven from different threads, and a conclusion on another one must not lose the deferral or what it deferred
+  private volatile boolean                           callbacksDeferred           = false;
+  private volatile Runnable                          deferredCallbacks           = null;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
@@ -652,11 +665,30 @@ public class TransactionContext implements Transaction {
    * durable and must neither be replayed onto whatever transaction is open now nor reported as lost. A rollback
    * deliberately does NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make
    * a later commit hand back a value a stale snapshot could match.
+   * <p>
+   * It also counts the writes of the block another node committed (issue #12635, see
+   * {@link #reportWriteCommittedByAnotherNode()}): those are durable too, so the block must not be replayed either.
+   *
+   * @return the number of transactions committed under this context so far, plus the writes another node committed for it
+   */
+  public long getCommitCount() {
+    return commitCount + writesCommittedByAnotherNode;
+  }
+
+  /**
+   * As {@link #getCommitCount()}, without the writes another node committed: whether THIS context's own buffered writes were
+   * published. The async worker asks it of its shared batch (issue #12635): a forwarded write leaves the local writes the batch
+   * buffered uncommitted, so their bookkeeping must survive it, unlike a mid-statement commit's.
    *
    * @return the number of transactions committed under this context so far
    */
-  public long getCommitCount() {
+  public long getLocalCommitCount() {
     return commitCount;
+  }
+
+  /** How many writes of this context's blocks another node committed (issue #12635): see {@link #reportWriteCommittedByAnotherNode()}. */
+  public long getWritesCommittedByAnotherNode() {
+    return writesCommittedByAnotherNode;
   }
 
   /**
@@ -677,6 +709,20 @@ public class TransactionContext implements Transaction {
    */
   public void reportBatchBoundaryOfNestedTransaction() {
     ++commitCount;
+  }
+
+  /**
+   * Records on THIS context a write of the block that another node committed: a statement a replica forwarded to the leader,
+   * which answered it (issue #12635). Called once the leader's answer is in, and only then, on every transaction stacked on the
+   * thread: see {@link DatabaseContext.DatabaseContextTL#reportWriteCommittedByAnotherNode()}.
+   * <p>
+   * The same witness as {@link #reportBatchBoundaryOfNestedTransaction()}, for the same reason: a rollback here takes nothing back
+   * on the leader, so a retry loop that replays the block writes it there a second time. The replica's HTTP handler runs every
+   * request in such a loop, and a write that is not idempotent - a script creating a vertex and an edge - was executed twice by the
+   * leader whenever anything after the forward raised a conflict on the replica.
+   */
+  public void reportWriteCommittedByAnotherNode() {
+    ++writesCommittedByAnotherNode;
   }
 
   /**
@@ -1544,7 +1590,7 @@ public class TransactionContext implements Transaction {
 
     if (completion != null) {
       if (completionOwner == Thread.currentThread())
-        fireAfterCompletionCallbacks(completion);
+        fireOrDefer(null, false, completion);
       else
         LogManager.instance().log(this, Level.INFO,
             "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
@@ -1669,6 +1715,30 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Registers, under {@code key}, work that has to read what this transaction is about to commit (issue #11937): it runs when the
+   * commit starts, on the committing thread, with the transaction still active, so a lookup answers each record as the commit will
+   * write it (an after-commit callback can only read the database once other commits may have changed it again). It runs once,
+   * whatever statements were taken back since it was registered, and is dropped with a transaction that rolls back. An exception it
+   * throws fails the commit, which the caller then rolls back.
+   *
+   * @return true if the callback was registered, false if one is registered under {@code key} already
+   */
+  public boolean addBeforeCommitCallbackIfAbsent(final String key, final Runnable callback) {
+    if (beforeCommitCallbacks == null)
+      beforeCommitCallbacks = new LinkedHashMap<>(4);
+    return beforeCommitCallbacks.putIfAbsent(key, callback) == null;
+  }
+
+  private void fireBeforeCommitCallbacks() {
+    final Map<String, Runnable> callbacks = beforeCommitCallbacks;
+    if (callbacks == null)
+      return;
+    beforeCommitCallbacks = null;
+    for (final Runnable callback : callbacks.values())
+      callback.run();
+  }
+
+  /**
    * Whether this context is running the after-completion callbacks of the transaction that just ended on it. A transaction begun
    * meanwhile must not reuse it (see {@code LocalDatabase.begin()}): the transaction ended inside a failed commit too, whose caller
    * is about to read {@link #getCommitCount()} to tell a retryable failure from a half-committed block (#7916), and a commit of the
@@ -1725,6 +1795,71 @@ public class TransactionContext implements Transaction {
         throw e;
       }
     }
+    fireOrDefer(callbacks, commitPointWasReached, completion);
+  }
+
+  /**
+   * From here until {@link #takeDeferredCallbacks()}, whatever ends this transaction, a commit or a rollback, hands back the callbacks
+   * it owes instead of running them where it concludes (issue #12251). A callback is work of its own, the refresh of a continuous
+   * aggregate or of a materialized view, with a transaction and a commit of its own. The replication layer concludes a commit inside
+   * the locks of its commit protocol, which that work must not run under: its commit waits for a schema session in progress, and the
+   * session waits for the very locks the commit it runs under holds, until the quorum timeout. The layer defers the callbacks of the
+   * commit it drives, and runs them once it has released those locks.
+   * <p>
+   * The transaction ends exactly as it does without the deferral (its records marked clean, the commit counted, the context released
+   * for its next transaction): only the run of what it owes moves. The driver ends the deferral with
+   * {@link #takeDeferredCallbacks()}, whatever the outcome of the commit.
+   */
+  public void deferCallbacks() {
+    callbacksDeferred = true;
+  }
+
+  /** Whether {@link #deferCallbacks()} is in force: the callbacks this transaction owes are kept for the one that deferred them. */
+  public boolean isDeferringCallbacks() {
+    return callbacksDeferred;
+  }
+
+  /**
+   * Ends the deferral of {@link #deferCallbacks()} and hands back what the transaction owed meanwhile: its after-commit callbacks in
+   * order, then its after-completion callbacks, as one piece of work to run once. The after-commit ones are owed by a commit only,
+   * the after-completion ones by a commit and by a rollback, and an {@link Error} escaping one leaves the others to the rules of
+   * {@link #fireCommitCallbacks}, as when they run where the transaction concludes.
+   *
+   * @return the work to run, or {@code null} when the transaction owed none
+   */
+  public Runnable takeDeferredCallbacks() {
+    callbacksDeferred = false;
+    final Runnable owed = deferredCallbacks;
+    deferredCallbacks = null;
+    return owed;
+  }
+
+  /** Runs what a concluded transaction owes where it concludes, or keeps it for {@link #takeDeferredCallbacks()} while deferring. */
+  private void fireOrDefer(final List<Runnable> callbacks, final boolean commitPointWasReached, final Map<String, Runnable> completion) {
+    if (!callbacksDeferred) {
+      fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+      return;
+    }
+    if (callbacks == null && completion == null)
+      return;
+    final Runnable owed = () -> fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+    final Runnable earlier = deferredCallbacks;
+    if (earlier == null)
+      deferredCallbacks = owed;
+    else
+      // a driver can end one transaction twice, a commit whose last step failed and was rolled back: both are owed, in the order they ended
+      deferredCallbacks = () -> {
+        try {
+          earlier.run();
+        } finally {
+          owed.run();
+        }
+      };
+  }
+
+  /** Runs what a concluded commit owes: its after-commit callbacks in order, then its after-completion callbacks. */
+  private void fireCommitCallbacks(final List<Runnable> callbacks, final boolean commitPointWasReached,
+      final Map<String, Runnable> completion) {
     try {
       if (callbacks != null) {
         int next = 0;
@@ -4343,8 +4478,15 @@ public class TransactionContext implements Transaction {
           + "began (" + begunUnderWriteRefusal + "). Retry it");
     }
 
+    // Issue #11937: still BEGUN, so a callback reads the records as the commit is about to write them
+    fireBeforeCommitCallbacks();
+
     // Issue #10588: while the transaction is still BEGUN, the one state an index queues an entry instead of writing it
     reconcileIndexesRegisteredSinceBegin();
+
+    // Issue #11751: the same state, for what was assigned to a record after the save() that queued it, since the flush below writes the
+    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
+    indexPropertiesAssignedAfterTheirSave();
 
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
@@ -4426,7 +4568,8 @@ public class TransactionContext implements Transaction {
 
       if (!hasChanges()) {
         // #7934 review: returning without reset() does NOT strand an index replay conclusion registered earlier in
-        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes).
+        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes, and what was assigned
+        // after the save was queued by indexPropertiesAssignedAfterTheirSave before the status left BEGUN, #11751).
         // Every caller of this method concludes the transaction on the null it gets back: commit() through
         // resetAndFireCallbacks(), and the Raft path through concludeCommitWithoutPublishing() on its own read-only
         // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one:
@@ -4746,9 +4889,11 @@ public class TransactionContext implements Transaction {
       final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
+        FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4760,6 +4905,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index
@@ -4808,6 +4956,7 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().commitPublished();
         countPublicationInEnclosingTransactions();
       }
+      FailPoints.hit(FailPoints.COMMIT_AFTER_PUBLISH);
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -5446,6 +5595,7 @@ public class TransactionContext implements Transaction {
     // Reached with some only when the transaction ends neither by a commit nor by a rollback, which take them out first and run them
     afterCompletionCallbacks = null;
     afterCompletionOwner = null;
+    beforeCommitCallbacks = null;
     attachments = null;
     clientManaged = false;
     implicit = false;
@@ -6391,6 +6541,49 @@ public class TransactionContext implements Transaction {
       // would put them in the wrong transaction, and skipping them would publish records the new index does not know
       database.getSchema().getEmbedded().reconcileIndexesRegisteredSince(this, indexRegistrationSequenceAtBegin);
     } catch (final DuplicatedKeyException | NeedRetryException | TransactionException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Transaction error on commit", e);
+    }
+  }
+
+  /**
+   * Queues the index changes of what was assigned to a record after the {@code save()} that queued it for this commit (issue #11751).
+   * <p>
+   * A save in a transaction queues the record and diffs the indexes against the values it holds then, and the write itself is deferred
+   * to the flush of {@link #commit1stPhase}, which serializes the very instance it queued, as it is by then. Whatever was assigned in
+   * between is therefore persisted with the record and unknown to the indexes: {@code WHERE k = 1} found a row whose k is 2, {@code WHERE
+   * k = 2} found nothing, and a UNIQUE index never saw the key the record ended with. The flush cannot index it, it writes in
+   * {@code COMMIT_1ST_PHASE} and an index queues only while {@code BEGUN} (#8983), so it is done here, like {@link
+   * #reconcileIndexesRegisteredSinceBegin} does, with the same code as the save: the diff is empty for a record whose assignment put back
+   * what the save left, and a UNIQUE key another record holds is refused by the replay of the queue like any other.
+   * <p>
+   * Costs a flag read per updated record: only a record a property was assigned to since its save is diffed (see {@link
+   * MutableDocument#isAssignedAfterSave}), so the common update, set and save, pays nothing. A container changed in place and not
+   * assigned is not seen, as everywhere else: it has to be saved.
+   */
+  private void indexPropertiesAssignedAfterTheirSave() {
+    if (updatedRecords == null)
+      return;
+
+    try {
+      DocumentIndexer indexer = null;
+      for (final Record rec : updatedRecords.values())
+        if (rec instanceof MutableDocument document && document.isAssignedAfterSave()) {
+          if (indexer == null) {
+            // The entries are queued on the transaction on top of the calling thread's stack, through the indexer: from underneath another
+            // transaction they would land in the wrong one
+            if (database.getTransactionIfExists() != this)
+              throw new TransactionException("Cannot commit a transaction that updated a record after saving it while another transaction "
+                  + "is open on top of it: commit or roll back the innermost one first");
+            indexer = database.getIndexer();
+          }
+          indexer.updateDocumentAssignedAfterSave(this, document);
+        }
+    } catch (final ArcadeDBException e) {
+      // a UNIQUE key another record holds (DuplicatedKeyException), a retryable conflict, a refusal of the index
       rollback();
       throw e;
     } catch (final Exception e) {

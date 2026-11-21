@@ -21,6 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -42,7 +43,11 @@ public class SleepStatement extends SimpleExecStatement {
     final ResultInternal item = new ResultInternal(context.getDatabase());
     item.setProperty("operation", "sleep");
 
-    final long millis = ((Number) expression.execute((Identifiable) null, context)).longValue();
+    // A value that is not a number is the script's mistake, not the server's: refuse it the way LIMIT refuses one (issue #11893)
+    final Object value = expression.execute((Identifiable) null, context);
+    if (!(value instanceof Number number))
+      throw new TypeMismatchException("Invalid value for SLEEP: " + value + ". SLEEP takes a number of milliseconds");
+    final long millis = number.longValue();
 
     try {
       Thread.sleep(millis);

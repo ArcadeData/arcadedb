@@ -564,6 +564,20 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       return transactions.size();
     }
 
+    /**
+     * Records on EVERY transaction stacked on this thread a write another node committed on their behalf: a statement a replica
+     * forwarded to the leader, which answered it (issue #12635). See {@link TransactionContext#reportWriteCommittedByAnotherNode()}.
+     * <p>
+     * All of them, not only the innermost: a retry loop samples the context that was open when its block started, and a block that
+     * opened its own transaction runs the forward one level down, where an inner {@code commit()} pops the context that was marked.
+     * Unlike the housekeeping commits {@link TransactionContext#reportBatchBoundaryOfNestedTransaction()} must not carry up, a
+     * forwarded write is the caller's own and no enclosing rollback takes it back, so no enclosing block may replay it.
+     */
+    public void reportWriteCommittedByAnotherNode() {
+      for (int i = 0; i < transactions.size(); ++i)
+        transactions.get(i).reportWriteCommittedByAnotherNode();
+    }
+
     /** Whether any transaction stacked on this thread is still active. */
     public boolean hasActiveTransaction() {
       for (int i = transactions.size() - 1; i > -1; --i)

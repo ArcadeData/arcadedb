@@ -50,8 +50,10 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -2200,6 +2202,15 @@ public class BoltNetworkExecutor extends Thread {
     if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A delete refused for what the database holds - a node that still has relationships (openCypher's DeleteConnectedNode): Neo4j's
+    // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
+      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))
+      return BoltErrorCodes.EXTERNAL_RESOURCE_FAILED_ERROR;
 
     // A CALL of a procedure nothing answers: Neo4j's ProcedureNotFound, where the category alone says SyntaxError, the title of
     // a FUNCTION nothing answers (issue #11384)

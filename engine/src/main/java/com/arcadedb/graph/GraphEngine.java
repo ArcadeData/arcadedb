@@ -46,6 +46,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.exception.VertexNotFoundException;
+import com.arcadedb.graph.olap.NodeIdMapping;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -72,6 +73,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
 import java.util.logging.Level;
 
@@ -278,6 +280,22 @@ public class GraphEngine {
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
                                          final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, true);
+  }
+
+  /**
+   * Creates the lightweight edge as {@link #newLightEdge(VertexInternal, String, Identifiable)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the destination vertex (issue #12602). Engine-internal: public only because the async tasks, which write each vertex from
+   * the one worker its bucket belongs to, live in another package. Every other way to create an edge wires both sides.
+   */
+  public ImmutableLightEdge newOutgoingOnlyLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
+                                                     final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, false);
+  }
+
+  private ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                          final boolean wireIncoming) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -301,7 +319,7 @@ public class GraphEngine {
         fromVertexRID, toVertex.getIdentity());
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (edgeType.isBidirectional())
+    if (wireIncoming && edgeType.isBidirectional())
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -343,7 +361,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
                              final Object... edgeProperties) {
-    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
+    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, true, null, edgeProperties);
     if (edge == null)
       throw RecordVetoedException.ofCreateEdge(edgeTypeName, fromVertex, toVertex);
     return edge;
@@ -361,7 +379,22 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                           final Object... edgeProperties) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, null, edgeProperties);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, null, edgeProperties);
+  }
+
+  /**
+   * Creates the edge as {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the vertex the edge ends at (issue #12602). That is the vertex the edge record names ({@link #newEdgeEndpoint}), which an
+   * {@code @in} among the properties can make another one than {@code toVertex}: read it back with {@link Edge#getIn()}.
+   * Engine-internal: public only because the async tasks, which write each vertex from the one worker its bucket belongs to, live in
+   * another package. Every other way to create an edge wires both sides.
+   *
+   * @return the created edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
+  public MutableEdge newOutgoingOnlyEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                                      final Object... edgeProperties) {
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, false, null, edgeProperties);
   }
 
   /**
@@ -380,7 +413,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeInitializedReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                                      final Consumer<MutableEdge> initializer) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, initializer, NO_PROPERTIES);
   }
 
   /**
@@ -434,9 +467,15 @@ public class GraphEngine {
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
   }
 
-  /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */
+  /**
+   * @param wireIncoming {@code false} leaves the incoming side of a bidirectional type to the caller (issue #12602, see
+   *                     {@link #newOutgoingOnlyEdgeReportingVeto}); every public way to create an edge passes {@code true}
+   *
+   * @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
   private MutableEdge createEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
-                                 final Consumer<MutableEdge> initializer, final Object... edgeProperties) {
+                                 final boolean wireIncoming, final Consumer<MutableEdge> initializer,
+                                 final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -483,7 +522,7 @@ public class GraphEngine {
       if (initializer != null)
         initializer.accept(lightEdge);
       connectOutgoingEdge(fromVertex, toVertex, lightEdge);
-      if (type.isBidirectional())
+      if (wireIncoming && type.isBidirectional())
         connectIncomingEdge(toVertex, fromVertexRID, lightEdge.getIdentity());
 
       return lightEdge;
@@ -495,15 +534,54 @@ public class GraphEngine {
     if (initializer != null)
       initializer.accept(edge);
 
+    // An @out / @in among the properties named another endpoint for the record (MutableEdge.setMetadata): the lists follow the
+    // record (issue #12247), checked before the save so a refused endpoint stores nothing
+    final VertexInternal source = (VertexInternal) newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, fromVertex);
+    final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, toVertex);
+
     // A VETO LEAVES THE EDGE WITHOUT AN IDENTITY: WIRING IT WOULD HAND THE ADJACENCY LIST A null RID (issue #10085)
     if (!(bucketName != null ? edge.saveReportingVeto(bucketName) : edge.saveReportingVeto()))
       return null;
 
-    connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (type.isBidirectional())
-      connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
+    connectOutgoingEdge(source, destination, edge);
+    if (wireIncoming && type.isBidirectional())
+      connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
     return edge;
+  }
+
+  /**
+   * The vertex a new edge is wired to in {@code direction}: {@code given} (the FROM or the TO of the creation), unless the edge's
+   * record names another one through an {@code @out} / {@code @in} set among its properties ({@link MutableEdge#setMetadata}).
+   * Every reader of the edge trusts the record, so the adjacency lists follow it, as an UPDATE re-points an existing edge: wiring
+   * the edge into the lists of {@code given} instead left a record and lists that disagreed, which CHECK DATABASE FIX then
+   * resolved by deleting the edge (issue #12247). The named vertex is refused on the same terms as a FROM or TO is.
+   * <p>
+   * Engine-internal: public only because the SQL {@code ConnectEdgeStep}, which wires an edge after its record was saved, lives in
+   * another package. Every other way to create an edge goes through {@link GraphEngine}, which calls it itself.
+   *
+   * @throws VertexNotFoundException  when the named vertex does not exist or was deleted in this transaction
+   * @throws IllegalArgumentException when the named record is not a vertex
+   */
+  public Identifiable newEdgeEndpoint(final Edge edge, final Vertex.DIRECTION direction, final Identifiable given) {
+    final RID named = direction == Vertex.DIRECTION.OUT ? edge.getOut() : edge.getIn();
+    if (named == null || named.equals(given.getIdentity()))
+      return given;
+
+    final String side = direction == Vertex.DIRECTION.OUT ? "source" : "destination";
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx != null && tx.isDeletedInTransaction(named))
+      throw deletedEndpoint(named, side);
+
+    final Record record;
+    try {
+      record = database.lookupByRID(named, true);
+    } catch (final RecordNotFoundException e) {
+      throw new VertexNotFoundException("Cannot create an edge whose " + side + " vertex " + named + " does not exist", named, e);
+    }
+    if (!(record instanceof Vertex vertex))
+      throw new IllegalArgumentException("Cannot create an edge whose " + side + " is " + named + ": it is not a vertex");
+    return getMostUpdatedVertex(asVertexInternal(vertex));
   }
 
   /**
@@ -607,7 +685,7 @@ public class GraphEngine {
         // AN EARLIER LIGHT EDGE OF THIS BATCH MAY HAVE CREATED THE OUT LIST ON THE TRANSACTION'S COPY OF THE VERTEX: THE UNIQUENESS
         // CHECK HAS TO READ THAT COPY, OR A UNIQUE TYPE ACCEPTS THE SAME PAIR TWICE IN ONE BATCH
         final MutableEdge lightEdge = createEdge(getMostUpdatedVertex(sourceVertex), connection.edgeTypeName, destinationVertex,
-            null, connection.edgeProperties);
+            true, null, connection.edgeProperties);
         if (lightEdge != null)
           edges.add(lightEdge);
         continue;
@@ -618,12 +696,27 @@ public class GraphEngine {
       if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
         setProperties(edge, connection.edgeProperties);
 
+      // AN @out / @in AMONG THE PROPERTIES NAMED ANOTHER ENDPOINT FOR THE RECORD: THE LISTS FOLLOW THE RECORD (issue #12247), AND A
+      // REFUSED ENDPOINT STORES NOTHING OF THIS EDGE
+      final Identifiable source = newEdgeEndpoint(edge, Vertex.DIRECTION.OUT, sourceVertex);
+      final Identifiable destination = newEdgeEndpoint(edge, Vertex.DIRECTION.IN, destinationVertex);
+
       // A REFUSED EDGE HAS NO IDENTITY TO WIRE: IT IS LEFT OUT, AND THE RETURNED LIST HOLDS ONLY THE EDGES CREATED (issue #10085)
       if (!edge.saveReportingVeto())
         continue;
-      recordCreated(edgeType, edge, sourceVertexRID, destinationVertex.getIdentity());
 
-      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destinationVertex);
+      if (source != sourceVertex) {
+        // THE RECORD NAMES ANOTHER SOURCE: THE EDGE BELONGS TO THE OUT LIST OF THAT VERTEX, NOT TO THE BATCH OF sourceVertex
+        connectOutgoingEdge((VertexInternal) source, destination, edge);
+        if (edgeType.isBidirectional())
+          connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
+        edges.add(edge);
+        continue;
+      }
+
+      recordCreated(edgeType, edge, sourceVertexRID, destination.getIdentity());
+
+      final Pair<Identifiable, Identifiable> pair = new Pair<>(edge, destination);
       outEdgePairs.add(pair);
       // THE INCOMING SIDE IS A PROPERTY OF THE TYPE, NOT OF THE CALL: A UNIDIRECTIONAL TYPE HAS NONE (issue #10268)
       if (edgeType.isBidirectional()) {
@@ -1096,6 +1189,15 @@ public class GraphEngine {
         if (tx != null && tx.getWrittenRecord(headRID) instanceof EdgeSegment written)
           return new EdgeLinkedList(vertex, direction, written);
 
+        // #12644: BEFORE the read below, which records a read of the transaction's own image that the commit-time merges would hold
+        // against it. A head the committed page has and the transaction's image of its page cannot hold is not a publication
+        // in flight: no wait makes it visible, so the list is extended without reading the head
+        if (tx != null) {
+          final LocalBucket hiddenHeadBucket = (LocalBucket) database.getSchema().getBucketById(headRID.getBucketId());
+          if (hiddenHeadBucket.isRecordHiddenByOwnPageImage(headRID))
+            return extendListInFrontOfHiddenHead(vertex, direction, headRID, hiddenHeadBucket);
+        }
+
         final Record head = database.lookupByRID(headRID, true);
         if (head instanceof StripeDirectory directory)
           // DO NOT anchor the directory page here: an anchored-but-unmodified page still contributes its FILE
@@ -1149,6 +1251,53 @@ public class GraphEngine {
 
     final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
     database.createRecord(chunk, getEdgesBucketName(mutable.getIdentity().getBucketId(), direction));
+
+    writeEdgeListHead(database, mutable, direction, chunk.getIdentity());
+
+    return new EdgeLinkedList(mutable, direction, chunk);
+  }
+
+  /**
+   * The list of {@code vertex} in {@code direction} whose head chunk {@code hiddenHeadRID} the committed page holds and the
+   * transaction's own image of its page does not (#12644): a commit created the chunk on a page the transaction had already
+   * pinned. The chunk cannot be appended to, the write would go through that image, which has no slot for it. A new chunk is put in
+   * front of it instead, linked to it by its RID and made the head of the vertex, the shape {@link EdgeLinkedList#add} gives a full
+   * head, and the entry goes there. The hidden chunk is never read through the image nor written.
+   * <p>
+   * A directory of a super node is the one head that is not a chunk: the stripes it lists are in buckets of their own, and the
+   * transaction reads it from the committed page. A write of the directory itself, which takes one append in a thousand, finds the
+   * slot missing in the image and is refused as a conflict at that point.
+   */
+  private EdgeLinkedList extendListInFrontOfHiddenHead(final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final RID hiddenHeadRID, final LocalBucket headBucket) {
+    final Binary committedHead = headBucket.getRecordFromCommittedPage(hiddenHeadRID);
+    if (committedHead == null || committedHead.size() == 0)
+      // gone since the check: the same refusal the read of a head that is not there gets
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " head chunk " + hiddenHeadRID + " of vertex " + vertex.getIdentity()
+              + " not visible yet (concurrent commit in flight)");
+
+    if (committedHead.getByte(0) == StripeDirectory.RECORD_TYPE)
+      return new StripedEdgeList(vertex, direction, new StripeDirectory(database, hiddenHeadRID, committedHead.copyOfContent()));
+
+    final MutableVertex mutable;
+    try {
+      mutable = vertex.modify();
+    } catch (final RecordNotFoundException e) {
+      if (vertex.getIdentity() != null && vertex.getIdentity().equals(e.getRID()))
+        throw missingVertexOnEdgeListWrite(vertex.getIdentity(), direction, e);
+      throw e;
+    }
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
+    if (!hiddenHeadRID.equals(reloadedHead))
+      // a concurrent commit moved the head since it was read: look again from the one the vertex has now. Each pass starts from a
+      // head newer than the last, which only a commit can make, and the vertex was just reloaded (it is in the transaction now), so
+      // it ends as soon as the head stops moving, as the same recursion of the first-edge branch does
+      return getOrCreateEdgeList(mutable, direction);
+
+    final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(committedHead.size()));
+    chunk.setPrevious(hiddenHeadRID);
+    database.createRecord(chunk, headBucket.getName());
 
     writeEdgeListHead(database, mutable, direction, chunk.getIdentity());
 
@@ -2999,6 +3148,29 @@ public class GraphEngine {
   }
 
   /**
+   * Whether the edge list(s) of {@code vertex} in {@code direction} hold more than {@code limit} entries, of any type. The
+   * entries are stepped without reading an edge or a vertex record, and never past the one after {@code limit}, so the
+   * answer costs what walking a short list would and stays bounded on a super-node: no list keeps a count to read instead.
+   * <p>
+   * Answers true when a list, or a stripe of one, whose head the vertex names cannot be loaded: such a list is not a short
+   * one, and a vertex with no list at all answers false.
+   * <p>
+   * Used by the openCypher operator that decides per row between walking a vertex's relationships and seeking the far ends
+   * it looks for (issue #11715), which lives outside this package.
+   */
+  public boolean hasMoreEdgeEntriesThan(final VertexInternal vertex, final Vertex.DIRECTION direction, final long limit) {
+    final Iterator<RID> entries = entriesOf(getMostUpdatedVertex(vertex), direction);
+    if (entries == null)
+      return true;
+    for (long i = 0; i < limit; i++) {
+      if (!entries.hasNext())
+        return false;
+      entries.next();
+    }
+    return entries.hasNext();
+  }
+
+  /**
    * Every entry of the list(s) of {@code vertex} in {@code direction}, one per step, no record read; null when a list, or a
    * stripe of one, whose head the vertex names cannot be loaded, which is not the same answer as a vertex with no list.
    */
@@ -3627,6 +3799,25 @@ public class GraphEngine {
   public static int[][] buildAdjacencyList(final List<Vertex> vertices, final Map<RID, Integer> ridToIdx,
       final Vertex.DIRECTION dir, final String[] relTypes, final LongConsumer entryCount) {
     return AdjacencyListBuilder.build(vertices, ridToIdx, dir, relTypes, entryCount);
+  }
+
+  /**
+   * As {@link #buildAdjacencyList(List, Map, Vertex.DIRECTION, String[], LongConsumer)}, for vertices held as the {@link NodeIdMapping}
+   * that numbers them: the row of a vertex is its id in the mapping, and the edge lists are scanned by the position of the vertex, so no
+   * vertex is loaded and no map from RID to row is built. What an algorithm over a large graph passes (issue #12554).
+   * <p>
+   * A vertex deleted since the mapping was made has an empty row, and is no neighbour of any.
+   *
+   * @param vertices      the vertices, numbered by the mapping
+   * @param database      the database the vertices are in
+   * @param entryCount    notified with the total number of neighbour entries about to be allocated; may be null
+   * @param checkpoint    called with a counter that advances by one for every row about to be walked and every entry read, in each of the
+   *                      two passes, so that the caller can abort a long build, a supernode's list included (an exception it throws
+   *                      aborts the build): {@code WorkGuard::checkPeriodically} fits it; may be null
+   */
+  public static int[][] buildAdjacencyList(final NodeIdMapping vertices, final Database database, final Vertex.DIRECTION dir,
+      final String[] relTypes, final LongConsumer entryCount, final IntConsumer checkpoint) {
+    return AdjacencyListBuilder.build(vertices, (DatabaseInternal) database, dir, relTypes, entryCount, checkpoint);
   }
 
   protected RID moveToType(final Vertex vertex, final String typeName) {

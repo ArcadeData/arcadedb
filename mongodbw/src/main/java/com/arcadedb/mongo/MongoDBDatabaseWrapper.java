@@ -91,6 +91,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** What {@code executeUpsert} answers for a document a listener refused: {@code null} is a legal {@code _id}, so it cannot. */
   private static final Object UPSERT_VETOED = new Object();
+  /** What {@code equalityOf} answers for a condition that infers no value: {@code null} is a value an upsert seeds. */
+  private static final Object NO_EQUALITY = new Object();
   /** Stands for a property the record does not have, which differs from one it has with the value {@code null}. */
   private static final Object ABSENT        = new Object();
   /** What {@link #getPath} answers for a path that reaches no stored value, told apart from a stored null. */
@@ -125,11 +127,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * The codes of a refusal mongod reports as an entry of {@code writeErrors} of an {@code insert} or {@code update}, going on with the
    * other statements (issue #11444): the statement's own documents or values are refused (BadValue, FailedToParse, TypeMismatch,
    * PathNotViable, ImmutableField, DocumentValidationFailure, NotImplemented, DuplicateKey, a malformed {@code $and}/{@code $or},
-   * ConflictingUpdateOperators).
+   * ConflictingUpdateOperators, and NotSingleValueField of an upsert whose filter cannot infer the document it would insert, issue
+   * #12071).
    */
   private static final Set<Integer> STATEMENT_ERROR_CODES           = Set.of(ErrorCode.BadValue.getValue(), ErrorCode.FailedToParse.getValue(),
       TYPE_MISMATCH, PATH_NOT_VIABLE, IMMUTABLE_FIELD, DOCUMENT_VALIDATION_FAILURE, NOT_IMPLEMENTED, ErrorCode.DuplicateKey.getValue(),
-      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS);
+      MALFORMED_LOGICAL_OPERATOR, CONFLICTING_UPDATE_OPERATORS, ErrorCode.NotSingleValueField.getValue());
 
   // THE INSTANCE THE SERVER SERVES UNDER THIS NAME: REPLACED BY bind() WHEN A RESTORE, A CLOSE + OPEN OR A DROP + CREATE SWAPS IT
   protected volatile Database                        database;
@@ -1449,31 +1452,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * {@code BeforeRecordCreateListener} refused it
    */
   private Object executeUpsert(final String collectionName, final Document q, final Document u) {
+    // first: a filter mongod cannot infer the document from is refused (a statement error) before anything is created
+    final Document seed = upsertSeed(q);
     final MutableDocument record = database.newDocument(database.getSchema().getOrCreateDocumentType(collectionName).getName());
 
-    // Seed the new document with the filter's top-level equalities, mirroring MongoDB upsert.
-    if (q != null)
-      for (final Map.Entry<String, Object> entry : q.entrySet()) {
-        final String field = entry.getKey();
-        if (field.startsWith("$"))
-          continue;
-        final Object value = entry.getValue();
-        if (value instanceof Document opDoc) {
-          if (opDoc.containsKey("$eq")) {
-            final Object eqValue = opDoc.get("$eq");
-            // a regex in the filter is a pattern to match, not a value to insert
-            if (eqValue instanceof BsonRegularExpression)
-              continue;
-            record.set(field, MongoBsonValues.toStored(field, eqValue));
-          }
-        } else {
-          if (value instanceof BsonRegularExpression)
-            continue;
-          record.set(field, MongoBsonValues.toStored(field, value));
-        }
-      }
+    // Seed the new document with what the filter's equalities infer, as mongod does (issue #12071): a dotted path makes the embedded
+    // documents on its way. A replacement takes the _id alone from the filter, its own fields are the whole document.
+    final boolean replacement = isReplacement(u);
+    for (final Map.Entry<String, Object> entry : seed.entrySet()) {
+      final String path = entry.getKey();
+      final boolean id = "_id".equals(path);
+      if (replacement && !id)
+        continue;
+      setPath(record, path, id ? idValue(entry.getValue()) : toMapValue(entry.getValue()));
+    }
 
-    if (isReplacement(u)) {
+    if (replacement) {
       // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
       for (final Map.Entry<String, Object> entry : u.entrySet()) {
         MongoKeys.checkNotKey(entry.getKey());
@@ -1486,6 +1480,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // must be preserved, whereas a genuinely absent _id needs one generated.
     if (!record.has("_id"))
       record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
+    moveIdFirst(record);
     MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), MongoKeys.uniquePaths(record.getType()));
 
     if (!record.saveReportingVeto())
@@ -1493,6 +1488,120 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     // the stored _id tells an ObjectId from a String with the same hex (issue #12073): read back as a find would answer it
     return MongoDBToSqlTranslator.convertIdToMongoDB(record.get("_id"));
+  }
+
+  /**
+   * mongod stores the {@code _id} as the first field of an inserted document, whichever of the filter, the update or the generator
+   * supplied it (issue #12071).
+   */
+  private static void moveIdFirst(final MutableDocument record) {
+    final List<String> names = new ArrayList<>(record.getPropertyNames());
+    if (names.isEmpty() || "_id".equals(names.getFirst()))
+      return;
+    final Object[] values = new Object[names.size()];
+    for (int i = 0; i < values.length; i++)
+      values[i] = record.get(names.get(i));
+    for (final String name : names)
+      record.remove(name);
+    record.set("_id", values[names.indexOf("_id")]);
+    for (int i = 0; i < values.length; i++)
+      if (!"_id".equals(names.get(i)))
+        record.set(names.get(i), values[i]);
+  }
+
+  /**
+   * The fields an upsert that matches nothing copies from its filter, by path, as mongod infers them (issue #12071): the equality of
+   * each path, dotted or not, at the top level, under {@code $and} and under an {@code $or} of a single branch. An equality is a plain
+   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} of a single value, or
+   * a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one below it, is refused with mongod's
+   * error 54, as is an {@code $all} of several values.
+   * <p>
+   * mongod infers these fields only for a statement that inserts, so the refusal is the insert's: it is raised here and reaches the
+   * client from {@link #executeUpsert} as an entry of {@code writeErrors}, while a filter that matches a document updates it.
+   */
+  static Document upsertSeed(final Document query) {
+    final Document seed = new Document();
+    if (query != null)
+      collectSeed(query, seed);
+    return seed;
+  }
+
+  private static void collectSeed(final Document query, final Document seed) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final String key = entry.getKey();
+      final Object value = entry.getValue();
+      if ("$and".equals(key) || "$or".equals(key)) {
+        // an $or of several branches says nothing about which one the inserted document satisfies
+        if (value instanceof List<?> items && ("$and".equals(key) || items.size() == 1))
+          for (final Object item : items)
+            if (item instanceof Document branch)
+              collectSeed(branch, seed);
+      } else if (!key.startsWith("$")) {
+        final Object equality = equalityOf(key, value);
+        if (equality != NO_EQUALITY)
+          addSeed(seed, key, equality);
+      }
+    }
+  }
+
+  /**
+   * The value the conditions of one path infer, {@link #NO_EQUALITY} when none of them is an equality. {@code $eq}, an {@code $in} of
+   * one value and each value of an {@code $all} are equalities of their own, and mongod refuses two of them on a path. A regular
+   * expression is a pattern to match, never a value (this plugin's matcher does not match a stored one back, so the next run of the
+   * upsert would insert again), and an {@code $elemMatch} document of an {@code $all} says nothing about a value either.
+   */
+  private static Object equalityOf(final String path, final Object value) {
+    if (value instanceof BsonRegularExpression)
+      return NO_EQUALITY;
+    if (!(value instanceof Document operators) || !MongoFilter.isOperatorDocument(operators))
+      return value;
+
+    Object equality = NO_EQUALITY;
+    for (final Map.Entry<String, Object> operator : operators.entrySet()) {
+      final Object operand = operator.getValue();
+      switch (operator.getKey()) {
+      case "$eq" -> equality = addEquality(path, equality, operand);
+      case "$in" -> {
+        if (operand instanceof List<?> in && in.size() == 1)
+          equality = addEquality(path, equality, in.getFirst());
+      }
+      case "$all" -> {
+        if (operand instanceof List<?> all)
+          for (final Object item : all)
+            equality = addEquality(path, equality, item);
+      }
+      default -> {
+        // any other operator is no equality
+      }
+      }
+    }
+    return equality;
+  }
+
+  /** {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern. */
+  private static Object addEquality(final String path, final Object found, final Object candidate) {
+    if (candidate instanceof BsonRegularExpression || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
+      return found;
+    if (found != NO_EQUALITY)
+      throw notSingleValue("path '" + path + "' is matched twice");
+    return candidate;
+  }
+
+  private static void addSeed(final Document seed, final String path, final Object value) {
+    for (final String other : seed.keySet()) {
+      if (other.equals(path))
+        throw notSingleValue("path '" + path + "' is matched twice");
+      final String shorter = path.length() < other.length() ? path : other;
+      final String longer = shorter == path ? other : path;
+      if (longer.startsWith(shorter) && longer.charAt(shorter.length()) == '.')
+        throw notSingleValue("both paths '" + longer + "' and '" + shorter + "' are matched");
+    }
+    seed.put(path, value);
+  }
+
+  private static MongoServerError notSingleValue(final String what) {
+    return new MongoServerError(ErrorCode.NotSingleValueField.getValue(), ErrorCode.NotSingleValueField.getName(),
+        "cannot infer query fields to set, " + what);
   }
 
   /**

@@ -887,7 +887,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parsePredicate(ctx.whereClause().expression()),
           items, distinct || aggregating);
       whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
@@ -1046,7 +1046,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
     // Parse the WHERE condition as a boolean expression, check its operands, then simplify boolean constants
-    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parsePredicate(ctx.expression());
     BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
@@ -1060,7 +1060,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
-    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parsePredicate(ctx.expression());
     BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
@@ -1293,7 +1293,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // by the grammar but silently discarded, so the predicate never filtered anything.
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = booleans.parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
@@ -1371,7 +1371,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Inline WHERE predicate (e.g., [r:KNOWS WHERE r.since < 2019])
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = booleans.parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,

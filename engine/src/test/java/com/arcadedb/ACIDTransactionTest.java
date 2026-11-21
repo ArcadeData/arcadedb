@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Iterator;
@@ -176,7 +178,24 @@ class ACIDTransactionTest extends TestHelper {
   }
 
   @Test
-  void iOExceptionAfterWALIsWritten() {
+  void iOExceptionAfterWALIsWritten() throws IOException {
+    iOExceptionAfterWALIsWritten(false);
+  }
+
+  /**
+   * The same crash, with the dictionary's header page not on disk when the process dies, which the flush thread decides
+   * (issue #11998). The reopen then writes that page in a transaction of its own, before the WAL is replayed, so a callback
+   * left registered on the factory failed the reopen itself. Emptying the file stands for the page the flush never wrote, as
+   * in RecoveryDictionaryPagesNotFlushedTest: the WAL still holds the dictionary's pages, so the replay restores the names
+   * and the crashed row. The commits the open makes are counted, so the variant cannot go on passing after the open stopped
+   * writing that page, which is the one thing it exists to cover.
+   */
+  @Test
+  void iOExceptionAfterWALIsWrittenBeforeTheDictionaryPageReachedTheDisk() throws IOException {
+    iOExceptionAfterWALIsWritten(true);
+  }
+
+  private void iOExceptionAfterWALIsWritten(final boolean dictionaryPageLost) throws IOException {
     final Database db = database;
     db.begin();
 
@@ -201,14 +220,33 @@ class ACIDTransactionTest extends TestHelper {
       assertThat(e.getCause() instanceof WALException).isTrue();
     }
     ((DatabaseInternal) db).kill();
+    // The callbacks belong to the factory the reopen goes through: one left registered fails any commit the open makes (#11998)
+    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
 
     verifyWALFilesAreStillPresent();
 
-    verifyDatabaseWasNotClosedProperly();
+    final AtomicInteger commitsOfTheOpen = new AtomicInteger(0);
+    final Callable<Void> commitCounter = () -> {
+      commitsOfTheOpen.incrementAndGet();
+      return null;
+    };
+
+    if (dictionaryPageLost) {
+      emptyTheDictionaryFile();
+      factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
+    }
+
+    try {
+      verifyDatabaseWasNotClosedProperly();
+    } finally {
+      if (dictionaryPageLost)
+        ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
+    }
+
+    if (dictionaryPageLost)
+      assertThat(commitsOfTheOpen.get()).as("the open wrote the dictionary's header page in a transaction of its own").isPositive();
 
     database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(1));
-
-    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
   }
 
   @Test
@@ -227,17 +265,19 @@ class ACIDTransactionTest extends TestHelper {
     final AtomicInteger total = new AtomicInteger(0);
     final AtomicInteger commits = new AtomicInteger(0);
 
-    try {
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<>() {
-        @Override
-        public Void call() throws IOException {
-          if (commits.incrementAndGet() > TOT - 1) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
-            throw new IOException("Test IO Exception");
-          }
-          return null;
+    final Callable<Void> callback = new Callable<>() {
+      @Override
+      public Void call() throws IOException {
+        if (commits.incrementAndGet() > TOT - 1) {
+          LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
+          throw new IOException("Test IO Exception");
         }
-      });
+        return null;
+      }
+    };
+
+    try {
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
 
       for (; total.get() < TOT; total.incrementAndGet()) {
         final MutableDocument v = db.newDocument("V");
@@ -256,6 +296,7 @@ class ACIDTransactionTest extends TestHelper {
       assertThat(e.getCause() instanceof IOException).isTrue();
     }
     ((DatabaseInternal) db).kill();
+    ((DatabaseInternal) db).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, callback);
 
     verifyWALFilesAreStillPresent();
 
@@ -598,6 +639,15 @@ class ACIDTransactionTest extends TestHelper {
     assertThat(dbDir.isDirectory()).isTrue();
     final File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
     assertThat(files.length > 0).isTrue();
+  }
+
+  /** The dictionary file as a kill leaves it when its header page was still queued for the flush thread: no page on disk. */
+  private void emptyTheDictionaryFile() throws IOException {
+    final File[] dictionaryFiles = new File(getDatabasePath()).listFiles((dir, name) -> name.endsWith("." + Dictionary.DICT_EXT));
+    assertThat(dictionaryFiles).as("the fixture has a dictionary file").hasSize(1);
+    try (final RandomAccessFile raf = new RandomAccessFile(dictionaryFiles[0], "rw")) {
+      raf.setLength(0);
+    }
   }
 
   @Override
