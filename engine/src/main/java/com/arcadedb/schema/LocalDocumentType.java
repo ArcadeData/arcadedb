@@ -596,6 +596,8 @@ public class LocalDocumentType implements DocumentType {
           relinkSuperType(former, position, subPosition);
         throw e;
       }
+      // issue #12031: the views reading the former super type lost this subtree's records
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, former);
       return null;
     });
     return this;
@@ -3688,6 +3690,8 @@ public class LocalDocumentType implements DocumentType {
         unlinkSuperType(embeddedSuperType);
         throw e;
       }
+      // issue #12031: the views reading the super type gained this subtree's records
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, embeddedSuperType);
 
       return null;
     });
