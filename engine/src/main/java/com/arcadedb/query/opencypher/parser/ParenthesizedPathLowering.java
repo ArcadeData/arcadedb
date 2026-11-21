@@ -81,7 +81,7 @@ final class ParenthesizedPathLowering {
       throw new CommandParsingException(
           "InvalidSyntax: a quantified path pattern must contain at least one relationship");
 
-    final BooleanExpression innerWhere = pCtx.WHERE() != null ? booleans.parseBooleanExpression(pCtx.expression()) : null;
+    final BooleanExpression innerWhere = pCtx.WHERE() != null ? booleans.parsePredicate(pCtx.expression()) : null;
 
     // Determine quantifier (defaults to 1..1 when absent, which collapses to a plain triplet)
     final Integer min;
@@ -178,7 +178,7 @@ final class ParenthesizedPathLowering {
     if (pCtx.WHERE() != null) {
       final int last = innerNodes.size() - 1;
       final NodePattern lastNode = innerNodes.get(last);
-      innerNodes.set(last, withWhere(lastNode, and(lastNode.getWhereExpression(), booleans.parseBooleanExpression(pCtx.expression()))));
+      innerNodes.set(last, withWhere(lastNode, and(lastNode.getWhereExpression(), booleans.parsePredicate(pCtx.expression()))));
     }
 
     if (outerNodes.size() == outerRels.size() + 1)
