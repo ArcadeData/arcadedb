@@ -66,7 +66,8 @@ public class BetweenCondition extends BooleanExpression {
     // makes the comparison undefined, not an error: report "not between" rather than let the raw conversion
     // failure (e.g. NumberFormatException) escape (#5900). That verdict is false even when the other bound is null
     // An integer value is compared with a numeric bound as it is, as >= and <= compare it: converted to the value's class, 11.5
-    // read as 11 and 3e9 wrapped around (issue #9021)
+    // read as 11 and 3e9 wrapped around (issue #9021). So is a number against an infinity or NaN, which a decimal has no form
+    // for: the conversion refused it and the answer was "not between" for every row (issue #12694)
     final boolean integralValue = firstValue instanceof Integer || firstValue instanceof Long || firstValue instanceof Short
         || firstValue instanceof Byte;
     // A DATE against a datetime bound is that day at midnight, not the bound narrowed to its day (issue #10206), so
@@ -75,14 +76,14 @@ public class BetweenCondition extends BooleanExpression {
     final int lowerOrder = secondValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, secondValue);
     final int upperOrder = thirdValue == null ? DateUtils.NOT_NUMBER_AND_TEMPORAL : DateUtils.compareNumberAndTemporal(firstValue, thirdValue);
     Object lowerValue = firstValue;
-    if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && secondValue instanceof Number)) {
+    if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, secondValue)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
       secondValue = Type.convertOrNull(context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
     }
     Object upperValue = firstValue;
-    if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && thirdValue instanceof Number)) {
+    if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, thirdValue)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
       thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
@@ -96,6 +97,11 @@ public class BetweenCondition extends BooleanExpression {
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;
+  }
+
+  /** Whether a bound is read as the number it is, without being converted to the class of the value it bounds. */
+  private static boolean comparedAsNumbers(final Object value, final boolean integralValue, final Object bound) {
+    return bound instanceof Number number && (integralValue || (value instanceof Number && !Type.isFinite(number)));
   }
 
   /**

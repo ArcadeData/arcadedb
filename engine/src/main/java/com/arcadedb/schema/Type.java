@@ -2205,6 +2205,15 @@ public enum Type {
   }
 
   /**
+   * The {@code double} a decimal is compared with once the other operand is an infinity or NaN, which has no decimal form: the
+   * decimal itself, or the largest double of its sign when it lies past the double range, so it still orders below an infinity.
+   */
+  public static double finiteDoubleValue(final BigDecimal value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -2418,9 +2427,14 @@ public enum Type {
       // FLOAT
       if (right instanceof Double)
         left = widenFloat(left.floatValue());
-      else if (right instanceof BigDecimal)
-        left = floatToBigDecimal(left.floatValue());
-      else if (right instanceof Byte || right instanceof Short)
+      else if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = floatToBigDecimal(left.floatValue());
+        else {
+          left = left.doubleValue();
+          right = finiteDoubleValue(bigDecimal);
+        }
+      } else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
       else if (right instanceof Integer) {
         // Symmetric case of the INTEGER branch above: narrowing the integral operand to float would lose
@@ -2453,9 +2467,12 @@ public enum Type {
 
     } else if (left instanceof Double) {
       // DOUBLE
-      if (right instanceof BigDecimal)
-        left = BigDecimal.valueOf(left.doubleValue());
-      else if (right instanceof Float float1)
+      if (right instanceof BigDecimal bigDecimal) {
+        if (isFinite(left))
+          left = BigDecimal.valueOf(left.doubleValue());
+        else
+          right = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Float float1)
         right = widenFloat(float1);
       else if (right instanceof Long long1) {
         // Symmetric case of the LONG branch above (issue #7628)
@@ -2515,7 +2532,7 @@ public enum Type {
       } else if (right instanceof BigDecimal)
         left = new BigDecimal(bigInteger);
 
-    } else if (left instanceof BigDecimal) {
+    } else if (left instanceof BigDecimal bigDecimal) {
       // DOUBLE
       if (right instanceof Integer integer)
         right = new BigDecimal(integer);
@@ -2523,11 +2540,20 @@ public enum Type {
         // The Long case was missing, so the couple came back as (BigDecimal, Long) and the caller's compareTo()
         // threw ClassCastException - `WHERE decimalProperty > 3000000000` crashed rather than answered (issue #7609).
         right = new BigDecimal(long1);
-      else if (right instanceof Float float1)
-        right = floatToBigDecimal(float1);
-      else if (right instanceof Double double1)
-        right = BigDecimal.valueOf(double1);
-      else if (right instanceof Short short1)
+      else if (right instanceof Float float1) {
+        if (isFinite(float1))
+          right = floatToBigDecimal(float1);
+        else {
+          // an infinity or NaN has no decimal form: both meet at double, the decimal clamped so it still orders below an infinity (issue #12694)
+          left = finiteDoubleValue(bigDecimal);
+          right = float1.doubleValue();
+        }
+      } else if (right instanceof Double double1) {
+        if (Double.isFinite(double1))
+          right = BigDecimal.valueOf(double1);
+        else
+          left = finiteDoubleValue(bigDecimal);
+      } else if (right instanceof Short short1)
         right = new BigDecimal(short1);
       else if (right instanceof Byte byte1)
         right = new BigDecimal(byte1);
