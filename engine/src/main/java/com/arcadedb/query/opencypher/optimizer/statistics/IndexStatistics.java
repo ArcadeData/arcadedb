@@ -31,6 +31,7 @@ public class IndexStatistics {
   private final String indexName;
   private final boolean caseInsensitive;
   private final boolean ordered;
+  private final boolean answersIsNotNull;
 
   public IndexStatistics(final String typeName, final List<String> propertyNames,
                         final boolean isUnique, final String indexName) {
@@ -44,12 +45,27 @@ public class IndexStatistics {
 
   public IndexStatistics(final String typeName, final List<String> propertyNames,
                         final boolean isUnique, final String indexName, final boolean caseInsensitive, final boolean ordered) {
+    this(typeName, propertyNames, isUnique, indexName, caseInsensitive, ordered, false);
+  }
+
+  public IndexStatistics(final String typeName, final List<String> propertyNames,
+                        final boolean isUnique, final String indexName, final boolean caseInsensitive, final boolean ordered,
+                        final boolean answersIsNotNull) {
     this.ordered = ordered;
     this.typeName = typeName;
     this.propertyNames = propertyNames;
     this.isUnique = isUnique;
     this.indexName = indexName;
     this.caseInsensitive = caseInsensitive;
+    this.answersIsNotNull = answersIsNotNull;
+  }
+
+  /**
+   * Whether iterating the whole index reads each vertex whose (only) indexed property is not null exactly once, and no other
+   * one: what {@code n.property IS NOT NULL} asks for (issue #12285). See {@code SelectExecutionPlanner.isNotNullIndexProperty}.
+   */
+  public boolean answersIsNotNull() {
+    return answersIsNotNull;
   }
 
   /**

@@ -52,6 +52,7 @@ import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GtOperator;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.IsNotNullCondition;
 import com.arcadedb.query.sql.parser.IsNullCondition;
 import com.arcadedb.query.sql.parser.LeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
@@ -608,7 +609,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     SecurityHelper.checkAccessOnIndex((DatabaseInternal) db, index, SecurityDatabaseUser.ACCESS.READ_RECORD);
     indexUnique = index.isUnique();
     try {
-      if (condition == null) {
+      if (condition == null || isNotNullKey(condition)) {
         processFlatIteration();
       } else if (condition instanceof BinaryCondition) {
         processBinaryCondition();
@@ -836,6 +837,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Object[] nullKeys = new Object[keyCount];
     cursor = index.get(nullKeys);
     fetchNextEntry();
+  }
+
+  /**
+   * The key the planner builds for {@code property IS NOT NULL} on an index that holds no null key (issue #12285): every entry of
+   * the index is a record whose property is not null, so it is answered by iterating the whole index.
+   */
+  private static boolean isNotNullKey(final BooleanExpression condition) {
+    return condition instanceof AndBlock and && and.getSubBlocks().size() == 1
+        && and.getSubBlocks().getFirst() instanceof IsNotNullCondition;
   }
 
   /**

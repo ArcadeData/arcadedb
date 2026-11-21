@@ -6442,6 +6442,66 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * The property whose {@code IS NOT NULL} a whole iteration of {@code index} answers exactly, or null (issue #12285). That is an
+   * index on that one property whose null strategy is not INDEX: it holds exactly one entry for each record whose property is not
+   * null and none for the others. Not a composite index (it keeps a record whose first property is null when another one is
+   * not), a BY ITEM/KEY/VALUE property or a collection-typed one (one entry per element, none for an empty collection), nor an
+   * index that does not answer keys by value (FULL_TEXT, vector, geospatial). Shared by SQL and openCypher.
+   *
+   * @throws IndexException when the index was dropped or rebuilt while being read
+   */
+  public static String isNotNullIndexProperty(final TypeIndex index, final DocumentType type) {
+    final Schema.INDEX_TYPE indexType = index.getType();
+    if (indexType == null || !indexType.isExactKeyLookup() || indexType == FULL_TEXT || !index.supportsOrderedIterations()
+        || index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX)
+      return null;
+    final List<String> properties = index.getPropertyNames();
+    if (properties.size() != 1 || hasExpandedProperty(properties))
+      return null;
+    final String propertyName = properties.getFirst();
+
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    if (property == null)
+      return null;
+    final Type propertyType = property.getType();
+    if (propertyType == null || propertyType.isMultiValue() || propertyType == Type.EMBEDDED || propertyType == Type.ARRAY_OF_SHORTS
+        || propertyType == Type.ARRAY_OF_INTEGERS || propertyType == Type.ARRAY_OF_LONGS || propertyType == Type.ARRAY_OF_FLOATS
+        || propertyType == Type.ARRAY_OF_DOUBLES)
+      return null;
+    return propertyName;
+  }
+
+  /**
+   * An index search for {@code property IS NOT NULL}: the whole iteration of an index {@link #isNotNullIndexProperty} accepts.
+   *
+   * @return null when the block has no such condition or the index cannot answer it
+   */
+  private IndexSearchDescriptor buildIsNotNullDescriptor(final TypeIndex index, final AndBlock block,
+      final DocumentType clazz) {
+    final String propertyName;
+    try {
+      propertyName = isNotNullIndexProperty(index, clazz);
+    } catch (final IndexException e) {
+      logSkippedIndex(index, e);
+      return null;
+    }
+    if (propertyName == null)
+      return null;
+
+    final AndBlock remaining = block.copy();
+    for (final Iterator<BooleanExpression> it = remaining.getSubBlocks().iterator(); it.hasNext(); ) {
+      final BooleanExpression conjunct = it.next();
+      if (conjunct instanceof IsNotNullCondition notNull && isPropertyReference(notNull.expression, propertyName)) {
+        it.remove();
+        final AndBlock key = new AndBlock();
+        key.getSubBlocks().add(conjunct.copy());
+        return new IndexSearchDescriptor((RangeIndex) index, key, null, remaining);
+      }
+    }
+    return null;
+  }
+
+  /**
    * Snapshot of the indexes of a type that can be planned on, see {@link TypeIndex#isReadyForQueries()}: neither an index being
    * created nor one being dropped by a concurrent DDL is a candidate for a query that does not name it. The check is a best
    * effort: the callers read an index's metadata under a try/catch of IndexException, and any new planner path that reads
@@ -6483,6 +6543,14 @@ public class SelectExecutionPlanner {
         .toList();
 
     descriptors.addAll(fullTextIndexDescriptors);
+
+    // Only when no key condition reaches an index: walking a whole index for IS NOT NULL never beats a lookup (issue #12285)
+    if (descriptors.isEmpty())
+      for (final TypeIndex index : indexes) {
+        final IndexSearchDescriptor notNull = buildIsNotNullDescriptor(index, block, clazz);
+        if (notNull != null)
+          return notNull;
+      }
 
     // remove the redundant descriptors (eg. if I have one on [a] and one on [a, b], the first one
     // is redundant, just discard it)
