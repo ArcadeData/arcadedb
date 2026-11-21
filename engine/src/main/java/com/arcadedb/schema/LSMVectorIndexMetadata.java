@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorEncoding;
@@ -428,6 +430,23 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be at least 0 (0 = the PQ scores alone)");
     this.rerankOversample = rerankOversample;
+  }
+
+  /**
+   * Refuses {@code dimensions} above {@link GlobalConfiguration#VECTOR_INDEX_MAX_DIMENSIONS} (issue #12822): the index holds
+   * buffers of that many floats, so an unbounded value let one statement allocate gigabytes. Called where an index is
+   * CREATED, never from {@link #fromJSON(JSONObject)}, so an index persisted with a larger value keeps opening. An
+   * {@link IllegalArgumentException}, like the lower bounds of the setters, so the refusal is a client error (HTTP 400).
+   *
+   * @param dimensions    the dimensions the index is about to be created with
+   * @param configuration the configuration of the database the index belongs to
+   */
+  public static void checkDimensionsBound(final int dimensions, final ContextConfiguration configuration) {
+    final int maxDimensions = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS);
+    if (dimensions > maxDimensions)
+      throw new IllegalArgumentException(
+          "dimensions " + dimensions + " exceeds the maximum of " + maxDimensions + " allowed by the setting '"
+              + GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS.getKey() + "': raise it before creating a wider index");
   }
 
   @Override

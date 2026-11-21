@@ -366,6 +366,17 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
     return super.create();
   }
 
+  /**
+   * The upper bound of the dimensions (issue #12822), asked here rather than only where each bucket index is created: a refusal
+   * from this hook reaches the caller as it is, an {@link IllegalArgumentException} answered with a 400, where one from the bucket
+   * index creation is wrapped as a failed build. Reached only when an index is about to be created, so an {@code IF NOT EXISTS}
+   * answered by an index persisted with a larger value is not refused.
+   */
+  @Override
+  protected void checkUnderSchemaLock(final LocalDocumentType type, final TypeIndex replacing) {
+    LSMVectorIndexMetadata.checkDimensionsBound(vectorMetadata().dimensions, database.getConfiguration());
+  }
+
   @Override
   public TypeLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
     // Same guard as the full-text and bucket-level vector builders: a raw cast here would raise the very

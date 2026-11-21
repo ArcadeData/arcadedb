@@ -1701,7 +1701,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
       case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
-          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]), database.getConfiguration());
       case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
@@ -1747,7 +1747,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     for (final String label : labels)
       metadata.add(switch (kind) {
         case VECTOR -> CypherIndexOptions.vectorMetadata(options, label, propertyNames,
-            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]));
+            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]), database.getConfiguration());
         case FULLTEXT -> CypherIndexOptions.fullTextMetadata(options, label, propertyNames);
         case RANGE -> throw new CommandParsingException("Only a vector or a full-text index can span several labels");
       });
