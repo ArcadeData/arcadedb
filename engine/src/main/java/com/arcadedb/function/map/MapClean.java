@@ -28,7 +28,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * map.clean(map, keysToRemove, valuesToRemove) - Remove keys and values from map.
+ * map.clean(map, keysToRemove, valuesToRemove) - Remove the listed keys, the null values and the listed values from a map.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -50,7 +50,7 @@ public class MapClean extends AbstractMapFunction {
 
   @Override
   public String getDescription() {
-    return "Return a new map with specified keys removed and entries with specified values removed";
+    return "Return a new map without the specified keys, the null values and the entries with specified values";
   }
 
   @Override
@@ -79,12 +79,12 @@ public class MapClean extends AbstractMapFunction {
 
     final Set<Object> valuesSet = new HashSet<>(valuesToRemove);
 
-    // Build result, excluding specified keys and values
+    // As in APOC, an entry goes when its key is listed, its value is null, or its value or its value's string form is listed
     final Map<String, Object> result = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (!keysSet.contains(entry.getKey()) && !valuesSet.contains(entry.getValue())) {
-        result.put(entry.getKey(), entry.getValue());
-      }
+      final Object value = entry.getValue();
+      if (!keysSet.contains(entry.getKey()) && value != null && !valuesSet.contains(value) && !valuesSet.contains(value.toString()))
+        result.put(entry.getKey(), value);
     }
 
     return result;

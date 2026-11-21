@@ -328,6 +328,7 @@ public final class CypherFunctionRegistry {
     register(new MapSubmap());
     register(new MapValues());
     register(new MapGroupBy());
+    register(new MapGroupByMulti());
     register(new MapSortedProperties());
   }
 
