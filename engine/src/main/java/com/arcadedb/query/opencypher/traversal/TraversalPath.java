@@ -25,12 +25,14 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * Represents a path through a graph during traversal.
@@ -45,10 +47,14 @@ public class TraversalPath {
 
   private final List<Vertex> vertices;
   private final List<Edge> edges;
+  private final boolean[] deletedVertices;
+  private final boolean[] deletedEdges;
 
   public TraversalPath() {
     this.vertices = new ArrayList<>();
     this.edges = new ArrayList<>();
+    this.deletedVertices = null;
+    this.deletedEdges = null;
   }
 
   public TraversalPath(final Vertex startVertex) {
@@ -68,6 +74,16 @@ public class TraversalPath {
     this.edges = new ArrayList<>(parent.edges);
     this.edges.add(edge);
     this.vertices.add(vertex);
+    if (parent.deletedVertices != null) {
+      this.deletedVertices = new boolean[this.vertices.size()];
+      System.arraycopy(parent.deletedVertices, 0, this.deletedVertices, 0, parent.deletedVertices.length);
+    } else
+      this.deletedVertices = null;
+    if (parent.deletedEdges != null) {
+      this.deletedEdges = new boolean[this.edges.size()];
+      System.arraycopy(parent.deletedEdges, 0, this.deletedEdges, 0, parent.deletedEdges.length);
+    } else
+      this.deletedEdges = null;
   }
 
   /**
@@ -86,11 +102,42 @@ public class TraversalPath {
     // Append vertices from the extension, skipping the first (it's the same as our last)
     for (int i = 1; i < extension.vertices.size(); i++)
       this.vertices.add(extension.vertices.get(i));
+
+    if (base.deletedVertices != null || extension.deletedVertices != null) {
+      this.deletedVertices = new boolean[this.vertices.size()];
+      if (base.deletedVertices != null)
+        System.arraycopy(base.deletedVertices, 0, this.deletedVertices, 0, base.deletedVertices.length);
+      if (extension.deletedVertices != null && extension.deletedVertices.length > 0 && !base.vertices.isEmpty()) {
+        final int baseLastIdx = base.vertices.size() - 1;
+        if (extension.deletedVertices[0])
+          this.deletedVertices[baseLastIdx] = true;
+        for (int i = 1; i < extension.deletedVertices.length; i++)
+          if (extension.deletedVertices[i])
+            this.deletedVertices[baseLastIdx + i] = true;
+      }
+    } else
+      this.deletedVertices = null;
+
+    if (base.deletedEdges != null || extension.deletedEdges != null) {
+      this.deletedEdges = new boolean[this.edges.size()];
+      if (base.deletedEdges != null)
+        System.arraycopy(base.deletedEdges, 0, this.deletedEdges, 0, base.deletedEdges.length);
+      if (extension.deletedEdges != null)
+        System.arraycopy(extension.deletedEdges, 0, this.deletedEdges, base.edges.size(), extension.deletedEdges.length);
+    } else
+      this.deletedEdges = null;
   }
 
   private TraversalPath(final ArrayList<Vertex> vertices, final ArrayList<Edge> edges) {
+    this(vertices, edges, null, null);
+  }
+
+  private TraversalPath(final List<Vertex> vertices, final List<Edge> edges, final boolean[] deletedVertices,
+      final boolean[] deletedEdges) {
     this.vertices = vertices;
     this.edges = edges;
+    this.deletedVertices = deletedVertices;
+    this.deletedEdges = deletedEdges;
   }
 
   /**
@@ -312,6 +359,8 @@ public class TraversalPath {
    * @param vertex vertex to add
    */
   public void addStep(final Edge edge, final Vertex vertex) {
+    if (deletedVertices != null || deletedEdges != null)
+      throw new IllegalStateException("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
     edges.add(edge);
     vertices.add(vertex);
   }
@@ -356,7 +405,88 @@ public class TraversalPath {
         if (rid.equals(liveEdges.get(i).getIdentity()))
           liveEdges.set(i, (Edge) replacement);
       }
-    return new TraversalPath(liveVertices, liveEdges);
+    return new TraversalPath(liveVertices, liveEdges, deletedVertices, deletedEdges);
+  }
+
+  /**
+   * Returns this path with deleted vertices and edges marked according to the provided predicates.
+   * If no vertices or edges are newly deleted, returns this path by identity.
+   * Otherwise, returns a new TraversalPath with defensive copies of the vertex and edge lists so subsequent
+   * modifications to the original path (e.g. addStep) cannot desync list lengths from the deletion masks.
+   *
+   * @param isVertexDeleted predicate testing if a vertex has been deleted
+   * @param isEdgeDeleted   predicate testing if an edge has been deleted
+   * @return this path if unchanged, or a new path with updated deletion masks
+   */
+  public TraversalPath withDeleted(final Predicate<Vertex> isVertexDeleted, final Predicate<Edge> isEdgeDeleted) {
+    boolean[] newDeletedVertices = null;
+    for (int i = 0; i < vertices.size(); i++) {
+      if ((deletedVertices == null || !deletedVertices[i]) && isVertexDeleted.test(vertices.get(i))) {
+        if (newDeletedVertices == null) {
+          newDeletedVertices = new boolean[vertices.size()];
+          if (deletedVertices != null)
+            System.arraycopy(deletedVertices, 0, newDeletedVertices, 0, vertices.size());
+        }
+        newDeletedVertices[i] = true;
+      }
+    }
+
+    boolean[] newDeletedEdges = null;
+    for (int i = 0; i < edges.size(); i++) {
+      if ((deletedEdges == null || !deletedEdges[i]) && isEdgeDeleted.test(edges.get(i))) {
+        if (newDeletedEdges == null) {
+          newDeletedEdges = new boolean[edges.size()];
+          if (deletedEdges != null)
+            System.arraycopy(deletedEdges, 0, newDeletedEdges, 0, edges.size());
+        }
+        newDeletedEdges[i] = true;
+      }
+    }
+
+    if (newDeletedVertices == null && newDeletedEdges == null)
+      return this;
+
+    return new TraversalPath(new ArrayList<>(this.vertices), new ArrayList<>(this.edges),
+        newDeletedVertices != null ? newDeletedVertices : this.deletedVertices,
+        newDeletedEdges != null ? newDeletedEdges : this.deletedEdges);
+  }
+
+  /**
+   * Returns an unmodifiable list of the vertices in this path, with any deleted vertices replaced
+   * by {@link DeletedEntityMarker#INSTANCE}.
+   * <p>
+   * When no vertices in the path are deleted, returns an unmodifiable view over the internal vertices
+   * without allocating a new list. When deleted vertices are present, a new unmodifiable list is allocated per call.
+   *
+   * @return unmodifiable list of vertices or DeletedEntityMarker instances
+   */
+  public List<Object> getNodesOrDeleted() {
+    if (deletedVertices == null)
+      return Collections.unmodifiableList(vertices);
+    final List<Object> result = new ArrayList<>(vertices.size());
+    for (int i = 0; i < vertices.size(); i++)
+      result.add(deletedVertices[i] ? DeletedEntityMarker.INSTANCE : vertices.get(i));
+    return Collections.unmodifiableList(result);
+  }
+
+  /**
+   * Returns an unmodifiable list of the edges in this path, with any deleted edges replaced
+   * by a {@link DeletedEntityMarker} preserving the relationship type.
+   * <p>
+   * When no edges in the path are deleted, returns an unmodifiable view over the internal edges
+   * without allocating a new list. When deleted edges are present, a new unmodifiable list is allocated per call.
+   *
+   * @return unmodifiable list of edges or DeletedEntityMarker instances
+   */
+  public List<Object> getRelationshipsOrDeleted() {
+    if (deletedEdges == null)
+      return Collections.unmodifiableList(edges);
+    final List<Object> result = new ArrayList<>(edges.size());
+    for (int i = 0; i < edges.size(); i++) {
+      final Edge edge = edges.get(i);
+      result.add(deletedEdges[i] ? new DeletedEntityMarker(edge.getTypeName()) : edge);
+    }
+    return Collections.unmodifiableList(result);
   }
 
   /**
@@ -368,8 +498,28 @@ public class TraversalPath {
   public TraversalPath subPath(final int fromEdge, final int toEdge) {
     if (fromEdge < 0 || toEdge > edges.size() || fromEdge > toEdge)
       throw new IndexOutOfBoundsException("Sub-path [" + fromEdge + ", " + toEdge + ") of a path of length " + edges.size());
+    boolean[] subV = null;
+    if (deletedVertices != null) {
+      for (int i = fromEdge; i <= toEdge; i++) {
+        if (deletedVertices[i]) {
+          subV = new boolean[toEdge - fromEdge + 1];
+          System.arraycopy(deletedVertices, fromEdge, subV, 0, subV.length);
+          break;
+        }
+      }
+    }
+    boolean[] subE = null;
+    if (deletedEdges != null) {
+      for (int i = fromEdge; i < toEdge; i++) {
+        if (deletedEdges[i]) {
+          subE = new boolean[toEdge - fromEdge];
+          System.arraycopy(deletedEdges, fromEdge, subE, 0, subE.length);
+          break;
+        }
+      }
+    }
     return new TraversalPath(new ArrayList<>(vertices.subList(fromEdge, toEdge + 1)),
-        new ArrayList<>(edges.subList(fromEdge, toEdge)));
+        new ArrayList<>(edges.subList(fromEdge, toEdge)), subV, subE);
   }
 
   /**
@@ -379,10 +529,29 @@ public class TraversalPath {
     if (vertices.isEmpty())
       return new TraversalPath();
 
-    final TraversalPath reversed = new TraversalPath(vertices.get(vertices.size() - 1));
+    final ArrayList<Vertex> reversedVertices = new ArrayList<>(vertices.size());
+    for (int i = vertices.size() - 1; i >= 0; i--)
+      reversedVertices.add(vertices.get(i));
+
+    final ArrayList<Edge> reversedEdges = new ArrayList<>(edges.size());
     for (int i = edges.size() - 1; i >= 0; i--)
-      reversed.addStep(edges.get(i), vertices.get(i));
-    return reversed;
+      reversedEdges.add(edges.get(i));
+
+    boolean[] reversedDV = null;
+    if (deletedVertices != null) {
+      reversedDV = new boolean[deletedVertices.length];
+      for (int i = 0; i < deletedVertices.length; i++)
+        reversedDV[i] = deletedVertices[deletedVertices.length - 1 - i];
+    }
+
+    boolean[] reversedDE = null;
+    if (deletedEdges != null) {
+      reversedDE = new boolean[deletedEdges.length];
+      for (int i = 0; i < deletedEdges.length; i++)
+        reversedDE[i] = deletedEdges[deletedEdges.length - 1 - i];
+    }
+
+    return new TraversalPath(reversedVertices, reversedEdges, reversedDV, reversedDE);
   }
 
   /**
@@ -391,9 +560,9 @@ public class TraversalPath {
   public List<Object> toAlternatingList() {
     final List<Object> list = new ArrayList<>(vertices.size() + edges.size());
     for (int i = 0; i < vertices.size(); i++) {
-      list.add(vertices.get(i));
+      list.add(deletedVertices != null && deletedVertices[i] ? DeletedEntityMarker.INSTANCE : vertices.get(i));
       if (i < edges.size())
-        list.add(edges.get(i));
+        list.add(deletedEdges != null && deletedEdges[i] ? new DeletedEntityMarker(edges.get(i).getTypeName()) : edges.get(i));
     }
     return list;
   }
@@ -405,8 +574,8 @@ public class TraversalPath {
   public Map<String, Object> toMap() {
     final Map<String, Object> map = new LinkedHashMap<>(6);
     map.put(TYPE_KEY, PATH_TYPE);
-    map.put(NODES_KEY, getVertices());
-    map.put(RELATIONSHIPS_KEY, getEdges());
+    map.put(NODES_KEY, deletedVertices != null ? getNodesOrDeleted() : getVertices());
+    map.put(RELATIONSHIPS_KEY, deletedEdges != null ? getRelationshipsOrDeleted() : getEdges());
     map.put(LENGTH_KEY, edges.size());
     return map;
   }
@@ -421,8 +590,8 @@ public class TraversalPath {
    */
   public Object getMember(final String name) {
     return switch (name) {
-      case NODES_KEY -> getVertices();
-      case RELATIONSHIPS_KEY -> getEdges();
+      case NODES_KEY -> deletedVertices != null ? getNodesOrDeleted() : getVertices();
+      case RELATIONSHIPS_KEY -> deletedEdges != null ? getRelationshipsOrDeleted() : getEdges();
       case LENGTH_KEY -> edges.size();
       case TYPE_KEY -> PATH_TYPE;
       default -> null;
