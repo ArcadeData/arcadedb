@@ -140,12 +140,23 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
   record Communities(int[] community, double modularity) {
   }
 
+  /** {@link #detect(int[][], double[][], int, double, double, WorkGuard)} at the standard resolution of 1. */
+  static Communities detect(final int[][] neighbors, final double[][] weights, final int maxIterations, final double tolerance,
+      final WorkGuard guard) {
+    return detect(neighbors, weights, maxIterations, tolerance, 1.0, guard);
+  }
+
   /**
    * Runs the local-moving passes over an undirected weighted adjacency ({@code BOTH} rows, every edge listed once in the
-   * row of each of its ends, a self-loop twice in its node's own row). In each pass every node, in index order, moves to
-   * the neighbouring community of highest gain {@code w(i, c) - k(i) * Σtot(c) / 2m} when that gain is positive (the
-   * lowest community id among equal gains), until a pass moves nothing, the modularity moves by less than
-   * {@code tolerance}, or {@code maxIterations} passes ran.
+   * row of each of its ends, a self-loop twice in its node's own row). In each pass every node, in index order, is taken out
+   * of its community and put into the community of highest gain {@code w(i, c) - resolution * k(i) * Σtot(c) / 2m}, over its
+   * neighbouring communities and the one it left (whose {@code Σtot} no longer holds the node). It stays unless another
+   * community gains strictly more, and among equal gains the lowest community id wins. The passes run until one moves
+   * nothing, the modularity moves by less than {@code tolerance}, or {@code maxIterations} passes ran.
+   * <p>
+   * The gain of staying is part of the comparison: a node used to move to any neighbouring community whose gain was positive,
+   * which is true of almost every candidate, so nodes left communities they were as well off in and two 4-cliques joined by
+   * one edge ended as four communities.
    * <p>
    * O(E) per pass (issue #12169): the total degree of each community is kept in an array, updated as a node leaves one
    * community for another, where it used to be summed over every node for every candidate community of every node, and
@@ -153,7 +164,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
    * list of those touched, where a map was allocated per node.
    */
   static Communities detect(final int[][] neighbors, final double[][] weights, final int maxIterations, final double tolerance,
-      final WorkGuard guard) {
+      final double resolution, final WorkGuard guard) {
     final int n = neighbors.length;
     final double[] nodeDegree = new double[n];
     double totalWeight = 0.0;
@@ -197,6 +208,8 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         int candidateCount = 0;
         for (int k = 0; k < row.length; k++) {
           guard.checkPeriodically(++work);
+          if (row[k] == i)
+            continue; // a self-loop travels with the node: it is inside every community the node can be in
           final int c = community[row[k]];
           if (!touched[c]) {
             touched[c] = true;
@@ -205,13 +218,17 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
           candidateWeight[c] += rowWeights[k];
         }
 
+        // the node is taken out of its community first: staying is a candidate like the others, with the community's degree
+        // sum as it is without the node
+        final double twoM = 2.0 * totalWeight;
         int bestCommunity = currentCommunity;
-        double bestGain = 0.0;
+        double bestGain = candidateWeight[currentCommunity]
+            - resolution * nodeDegree[i] * (communityDegree[currentCommunity] - nodeDegree[i]) / twoM;
         for (int k = 0; k < candidateCount; k++) {
           guard.checkPeriodically(++work);
           final int c = candidates[k];
           if (c != currentCommunity) {
-            final double gain = candidateWeight[c] - nodeDegree[i] * communityDegree[c] / (2.0 * totalWeight);
+            final double gain = candidateWeight[c] - resolution * nodeDegree[i] * communityDegree[c] / twoM;
             if (gain > bestGain || (gain == bestGain && bestCommunity != currentCommunity && c < bestCommunity)) {
               bestGain = gain;
               bestCommunity = c;
