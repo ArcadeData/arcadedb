@@ -217,6 +217,21 @@ public class OpenCypherWhereClauseTest {
   }
 
   @Test
+  void patternThatBacktracksWithoutReadingIsAbortedByRegexTimeout() {
+    // Issue #12595: anchors and zero-width alternation backtrack 2^n times without one charAt(), the only call the regex
+    // deadline hears of, so the query kept its thread busy for as long as the backtracking took
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> database.query("opencypher", "RETURN $input =~ $regex AS result", Map.of("input", "ab", "regex", regex)).next())
+        .isInstanceOf(TimeoutException.class).hasMessageContaining("without reading");
+
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from a backtrack that reads nothing");
+  }
+
+  @Test
   void catastrophicPatternIsAbortedByRegexTimeout() {
     // Issue #5886: (.*a){20}$ against "a".repeat(40) + "!" triggers catastrophic backtracking in
     // java.util.regex. Matcher.matches() never polls interrupts or a deadline while backtracking, so

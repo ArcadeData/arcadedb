@@ -68,6 +68,21 @@ class TextRegexReplaceTest extends TestHelper {
   }
 
   @Test
+  void patternThatBacktracksWithoutReadingIsAbortedByRegexTimeout() {
+    // Issue #12595: anchors and zero-width alternation backtrack 2^n times without one charAt(), the only call the regex
+    // deadline hears of, so the function kept its thread busy for as long as the backtracking took
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> database.query("sql", "SELECT text.regexReplace('ab', :regex, 'x') AS r", Map.of("regex", regex)).next())
+        .isInstanceOf(IllegalArgumentException.class);
+
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from a backtrack that reads nothing");
+  }
+
+  @Test
   void multiRowReplaceSharesOneTimeoutBudgetAcrossRows() {
     // Issue #5886, 12th review pass: text.regexReplace() has a CommandContext available and now shares one
     // deadline across every row it runs against within the same query (the same treatment MatchesCondition/

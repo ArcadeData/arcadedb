@@ -1080,7 +1080,12 @@ public enum GlobalConfiguration {
       matchers, and schema-level REGEXP property validation. java.util.regex backtracking does not poll interrupts or \
       deadlines, so a pathological pattern (catastrophic backtracking) keeps its worker thread busy regardless of \
       arcadedb.command.timeout; this dedicated bound protects against that even when arcadedb.command.timeout is disabled \
-      (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
+      (0), which is the default. The deadline is only looked at when the pattern reads a character, so a pattern that can \
+      backtrack WITHOUT reading any (anchors, empty alternatives or optional anchors in sequence, like \
+      \\A(?:\\A|\\A)(?:\\A|\\A)...\\z) is refused up front, before it runs, once it can succeed in more than 1,024 different \
+      ways without a read, or, for an operation that scans its input, once those ways times the pattern length times the \
+      input length exceed about a billion steps; it fails with the same timeout exception. Every entry point reached \
+      through a command context - MATCHES, =~, PromQL's matchers \
       and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
       not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \

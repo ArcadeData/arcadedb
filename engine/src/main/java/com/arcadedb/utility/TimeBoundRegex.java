@@ -20,6 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,6 +38,12 @@ import java.util.regex.Pattern;
  * use ({@code MATCHES}/{@code =~}'s nested-quantifier shape and {@code LIKE}/wildcard's sequential-{@code .*}
  * shape both abort correctly) - some JDK regex fast paths read a pattern's literal prefix through a different
  * mechanism, and this class would silently stop bounding anything that took one of those paths instead.
+ * <p>
+ * The same property is the limit of the bound: a pattern that backtracks WITHOUT reading a character (anchors, empty
+ * alternatives and optional anchors in sequence: {@code \A(?:\A|\A)(?:\A|\A)...\z} takes 2^n steps and never calls
+ * {@code charAt()}) gives the deadline nothing to look from, and nothing in {@code java.util.regex} can be told to stop. Those
+ * are refused before they run, by the shape of the pattern ({@link RegexReadFreeWork}, issue #12595), with the same
+ * {@link TimeoutException}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -47,6 +54,18 @@ public final class TimeBoundRegex {
   // finishes essentially instantly anyway, so the coarser granularity only matters for the runaway case this
   // class exists to bound.
   private static final int CHECK_INTERVAL = 256;
+
+  // The most different ways a run of elements that read nothing may succeed (see RegexReadFreeWork). 1,024 paths cost a few
+  // microseconds, far below anything the deadline is for; the pattern of the issue that found this needs 2^11 of them to
+  // pass it, and no pattern written by hand has more than a handful.
+  private static final long   MAX_READ_FREE_WAYS       = 1L << 10;
+  // What a scan may spend on runs that read nothing: ways * pattern length * input length, about 0.17 s per 2^30 on the JDK (a
+  // run of 4,096 ways over 200,000 characters took 8 s, and with no read in it the deadline never got to interrupt it)
+  private static final double MAX_READ_FREE_SCAN_STEPS = 1L << 30;
+  private static final int    MAX_CACHED_PATTERNS      = 4096;
+
+  // The measure of each pattern text, since the same pattern is run against every row of a scan.
+  private static final ConcurrentHashMap<String, Long> READ_FREE_WAYS = new ConcurrentHashMap<>();
 
   private TimeBoundRegex() {
   }
@@ -110,7 +129,7 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
    */
   public static boolean matchesUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
-    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).matches());
+    return run(pattern, input, deadlineNanos, false, bounded -> pattern.matcher(bounded).matches());
   }
 
   /** The outcome of {@link #fullMatchUntil}. */
@@ -131,7 +150,7 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the match does not complete before {@code deadlineNanos}
    */
   public static FullMatch fullMatchUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
-    return run(pattern, input, deadlineNanos, bounded -> {
+    return run(pattern, input, deadlineNanos, false, bounded -> {
       final Matcher matcher = pattern.matcher(bounded);
       if (matcher.matches())
         return FullMatch.MATCH;
@@ -149,7 +168,7 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the search does not complete before {@code deadlineNanos}
    */
   public static boolean findUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos) {
-    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).find());
+    return run(pattern, input, deadlineNanos, true, bounded -> pattern.matcher(bounded).find());
   }
 
   /**
@@ -188,10 +207,14 @@ public final class TimeBoundRegex {
    * @throws TimeoutException if the operation does not complete before {@code deadlineNanos}
    */
   public static String replaceAllUntil(final Pattern pattern, final CharSequence input, final String replacement, final long deadlineNanos) {
-    return run(pattern, input, deadlineNanos, bounded -> pattern.matcher(bounded).replaceAll(replacement));
+    return run(pattern, input, deadlineNanos, true, bounded -> pattern.matcher(bounded).replaceAll(replacement));
   }
 
-  private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final Function<CharSequence, T> operation) {
+  private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final boolean scans,
+      final Function<CharSequence, T> operation) {
+    // the bound is only as good as the reads it hears about: refuse what could backtrack without making any (issue #12595)
+    if (deadlineNanos != Long.MAX_VALUE)
+      refuseIfUnbounded(pattern, input, scans);
     try {
       return operation.apply(deadlineNanos == Long.MAX_VALUE ? input : new DeadlineBoundCharSequence(input, deadlineNanos));
     } catch (final RegexDeadlineExceeded e) {
@@ -209,6 +232,45 @@ public final class TimeBoundRegex {
       // are catastrophic backtracking manifesting through a different symptom.
       throw timeoutException(pattern, input, e);
     }
+  }
+
+  /**
+   * Refuses a pattern whose backtracking the deadline could not interrupt. The deadline is looked at from
+   * {@link CharSequence#charAt(int)} only, and a pattern can backtrack for as long as it likes without calling it: anchors,
+   * empty alternatives, optional anchors and negative look-aheads at the end of the input read nothing, so
+   * {@code \A(?:\A|\A)...\z} costs 2^n steps and no deadline ever fires. {@link RegexReadFreeWork} counts the ways a run of such
+   * elements can succeed; beyond {@link #MAX_READ_FREE_WAYS} the pattern is refused, and for an operation that tries the
+   * pattern at every start position ({@code scans}) the cost of one such run at all of them is held to
+   * {@link #MAX_READ_FREE_SCAN_STEPS}, because none of those attempts reads either.
+   */
+  private static void refuseIfUnbounded(final Pattern pattern, final CharSequence input, final boolean scans) {
+    final long ways = readFreeWays(pattern);
+    if (ways <= 1)
+      return;
+    final boolean tooManyWays = ways > MAX_READ_FREE_WAYS;
+    if (tooManyWays || scans && (double) ways * pattern.pattern().length() * ((double) input.length() + 1) > MAX_READ_FREE_SCAN_STEPS)
+      throw new TimeoutException(
+          "Regular expression operation refused (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' can succeed in "
+              + (ways >= RegexReadFreeWork.SATURATED ? "too many" : ways) + " different ways without reading its input"
+              + (tooManyWays ? "" : ", which an input of length " + input.length() + " multiplies at every start position")
+              + ", so its backtracking could not be aborted by a deadline; rewrite it without the empty alternatives or optional anchors");
+  }
+
+  private static long readFreeWays(final Pattern pattern) {
+    final String regex = pattern.pattern();
+    final int flags = pattern.flags();
+    // comments mode changes how the same text is read, so those patterns are measured every time rather than cached by text
+    if ((flags & (Pattern.COMMENTS | Pattern.UNIX_LINES)) != 0)
+      return RegexReadFreeWork.maxWays(regex, flags);
+    Long ways = READ_FREE_WAYS.get(regex);
+    if (ways == null) {
+      ways = RegexReadFreeWork.maxWays(regex, flags);
+      // patterns can come from the data being queried: the cache must not grow with it
+      if (READ_FREE_WAYS.size() >= MAX_CACHED_PATTERNS)
+        READ_FREE_WAYS.clear();
+      READ_FREE_WAYS.put(regex, ways);
+    }
+    return ways;
   }
 
   private static TimeoutException timeoutException(final Pattern pattern, final CharSequence input, final Throwable cause) {
