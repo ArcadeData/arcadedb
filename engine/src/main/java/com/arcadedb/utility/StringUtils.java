@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import java.math.BigDecimal;
 import java.util.IllegalFormatException;
 import java.util.Locale;
 
@@ -163,7 +164,8 @@ public class StringUtils {
     if (format == null)
       throw new IllegalArgumentException(caller + "() requires a non-null format");
 
-    checkFormatWidth(caller, format);
+    if (checkFormatWidth(caller, format))
+      checkDecimalArguments(caller, format, args);
 
     try {
       return String.format(locale, format, args);
@@ -182,7 +184,8 @@ public class StringUtils {
    * last one read let {@code %2000000.1s} through - the argument is truncated to one character and then padded back
    * out to a two-million-character field.
    */
-  private static void checkFormatWidth(final String caller, final String format) {
+  private static boolean checkFormatWidth(final String caller, final String format) {
+    boolean fixedPoint = false;
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
         continue;
@@ -224,8 +227,29 @@ public class StringUtils {
             caller + "() format '" + format + "' asks for a field of " + widest + " characters, over the " + MAX_FORMAT_WIDTH
                 + " limit");
 
+      if (j < format.length() && (format.charAt(j) == 'f' || format.charAt(j) == 'F'))
+        fixedPoint = true;
+
       i = j;
     }
+    return fixedPoint;
+  }
+
+  /**
+   * Rejects a {@link BigDecimal} argument whose plain spelling is longer than {@link #MAX_FORMAT_WIDTH}, for a pattern with a
+   * fixed-point ({@code %f}) conversion. The width check above measures what the pattern writes, not what the argument expands
+   * to: {@code 1E+999999999} is a few bytes that {@code %f} turns into a billion digits ({@code OutOfMemoryError}), and
+   * {@code 1E-999999999} makes the formatter round at a scale of 999999999. {@code %s}, {@code %e} and {@code %g} print the
+   * scientific text and stay valid (issue #12837).
+   */
+  private static void checkDecimalArguments(final String caller, final String format, final Object[] args) {
+    if (args == null)
+      return;
+    for (final Object arg : args)
+      if (arg instanceof BigDecimal decimal && Math.abs((long) decimal.precision() - decimal.scale()) > MAX_FORMAT_WIDTH)
+        throw new IllegalArgumentException(
+            caller + "() format '" + format + "' would spell the decimal " + decimal + " out in more than " + MAX_FORMAT_WIDTH
+                + " characters, over the limit");
   }
 
   /**
