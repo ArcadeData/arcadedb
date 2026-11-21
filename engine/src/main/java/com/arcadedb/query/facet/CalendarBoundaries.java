@@ -20,6 +20,7 @@ package com.arcadedb.query.facet;
 
 import com.arcadedb.engine.timeseries.TimeBucketGrid;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 
 import java.time.DateTimeException;
 import java.time.DayOfWeek;
@@ -166,9 +167,9 @@ public final class CalendarBoundaries {
     return OffsetDateTime.ofInstant(instant, zone).toString();
   }
 
-  /** The refusal of a histogram above the bucket cap (D18), shared by the numeric histogram. */
-  static CommandExecutionException tooMany(final String alias) {
-    return new CommandExecutionException("HISTOGRAM " + alias + " would produce more than 100000 buckets: use a coarser interval or BOUNDS");
+  /** The refusal of a histogram above the bucket cap (D18), shared by the numeric histogram and worded as the compiler's BOUNDS check. */
+  static CommandSQLParsingException tooMany(final String alias) {
+    return new CommandSQLParsingException("FACETS " + alias + ": the histogram would have more than 100000 buckets");
   }
 
   /** Walks the boundaries: the instant line for minutes and hours, the local calendar for the rest. */

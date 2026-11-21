@@ -19,6 +19,7 @@
 package com.arcadedb.query.facet;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import org.junit.jupiter.api.Test;
 
@@ -199,10 +200,10 @@ class CalendarBoundariesTest {
   void tooManyBucketsRefused() {
     final String message = "more than 100000 buckets";
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, ms("2016-01-01T00:00:00Z"),
-        ms("2026-01-01T00:00:00Z"), MAX)).isInstanceOf(CommandExecutionException.class).hasMessageContaining(message)
-        .hasMessageContaining("HISTOGRAM h would").hasMessageContaining("use a coarser interval or BOUNDS");
+        ms("2026-01-01T00:00:00Z"), MAX)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining(message)
+        .hasMessageContaining("FACETS h: the histogram would").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 60_000L, 0L, ms("2016-01-01T00:00:00Z"), ms("2026-01-01T00:00:00Z"), MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining(message);
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining(message);
     // exactly at the cap is accepted
     assertThat(CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1000L, 0L, 0L, 99_999_999L, MAX).size()).isEqualTo(MAX);
   }
@@ -210,9 +211,9 @@ class CalendarBoundariesTest {
   @Test
   void fixedWideRangeIsRefusedByTheCapNotByOverflow() {
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, -5_000_000_000_000_000_000L,
-        5_000_000_000_000_000_000L, MAX)).isInstanceOf(CommandExecutionException.class).hasMessageContaining("HISTOGRAM h would produce more than 100000 buckets");
+        5_000_000_000_000_000_000L, MAX)).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS h: the histogram would have more than 100000 buckets");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1L, 0L, Long.MIN_VALUE, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("more than 100000 buckets");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("more than 100000 buckets");
   }
 
   @Test
@@ -281,6 +282,6 @@ class CalendarBoundariesTest {
     final CalendarBoundaries ok = CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, min, min + 99_999 * 60_000L, MAX);
     assertThat(ok.size()).isEqualTo(MAX);
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.MINUTES, ZoneOffset.UTC, null, min, min + 100_000 * 60_000L, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("more than 100000 buckets");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("more than 100000 buckets");
   }
 }

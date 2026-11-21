@@ -256,7 +256,7 @@ public final class RangeCollector implements FacetCollector {
 
   private void convertBounds(final DatabaseInternal database, final ColumnConversion extractor) {
     if (column.kind() != ColumnKind.LONG && column.kind() != ColumnKind.DOUBLE)
-      throw new CommandExecutionException(
+      throw new CommandSQLParsingException(
           "FACETS " + spec.alias() + ": RANGES needs a number or date property, '" + spec.property() + "' is " + column.propertyType());
     final List<RangeBound> ranges = spec.ranges();
     final int n = ranges.size();
