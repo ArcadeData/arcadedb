@@ -594,6 +594,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
+    // The resultSetLimit of the user's groups caps the rows the statement answers as a whole, a UNION included, and never the
+    // records it reads (issue #12888). Not a statement run as a part of one already capped: a subquery reads every row it matches
+    if (!explain) {
+      final long profiledLimit = database.getResultSetLimit();
+      if (profiledLimit > -1 && !ProfiledLimitResultSet.isRunning())
+        return ProfiledLimitResultSet.run(profiledLimit,
+            () -> execute(queryString, statement, configuration, parameters, false, profile, timeExecution));
+    }
+
     // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
     // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no

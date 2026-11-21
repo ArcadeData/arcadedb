@@ -769,6 +769,19 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Writes the {@code resultSetLimit} of the current user's groups into this statement's LIMIT where it is tighter than its own,
+   * as {@link #copyWithTighterProfiledLimit} does into a copy. Only for a statement no other user or execution shares: one a
+   * script parsed for this execution and plans without the query engine, for the reason {@link #tighterProfiledLimit} gives.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} reads; may be null
+   */
+  public final void applyTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(database, params);
+    if (profiledLimit > -1)
+      setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
+  }
+
+  /**
    * {@link #tighterProfiledLimit} for the {@code readTimeout} of the current user's groups and this statement's TIMEOUT, which the
    * grammar takes as a literal only.
    */

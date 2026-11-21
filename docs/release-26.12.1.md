@@ -74,6 +74,24 @@ A call written for the old signature keeps its answer: a second argument that is
 `(n, 'OUT')` is the pattern naming that type, as in APOC, and answers `['OUT']` or `[]`. Write `(n, null, 'OUT')` for the
 direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an unknown direction and now answers.
 
+### Security: a group's `resultSetLimit` caps the rows a query answers, not the records it reads (#12888)
+
+The `resultSetLimit` of a security group was applied to every bucket scan, so a member under a quota of N read the first N
+records of each bucket only, without any error: a `WHERE` missed the records past them, and `sum`, `max`, `count` over rows
+and `ORDER BY` ran over those records (in openCypher over the first N of the whole type). The quota now caps the rows a query
+answers and nothing else:
+
+- SQL applies it as the statement's `LIMIT` where it is tighter than the statement's own, as it already did on top of the
+  scan cap. A script statement now does the same: a `LIMIT` below the quota stays in force, where the quota used to replace it;
+- openCypher caps the rows of the whole statement, a `UNION` included (each branch used to get an allowance of its own), and
+  a `LIMIT` below the quota stays in force. The subqueries a statement reads its answer from (`COUNT { }`, `COLLECT { }`,
+  `EXISTS { }`) are not capped, and a write applies every row before the rows it answers are capped;
+- the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
+
+**Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
+answers from every record the member may read. Gremlin, the MongoDB wire protocol and embedded code that reads through
+`iterateType()` were capped only by the scan truncation, and now read every record: they never applied the quota as a row cap.
+
 ## Fixes
 
 - **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a
