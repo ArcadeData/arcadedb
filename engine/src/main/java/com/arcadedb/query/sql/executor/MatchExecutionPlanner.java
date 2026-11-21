@@ -1156,7 +1156,9 @@ public class MatchExecutionPlanner {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
     for (final MatchExpression expr : this.matchExpressions) {
-      pattern.addExpression(expr.copy());
+      // NOT A COPY: rebindFilters() below gives every occurrence of an alias the filter merged from all its occurrences, and it has to
+      // reach the items the pattern's edges traverse, or a node reached through an occurrence that does not carry its where: is not filtered
+      pattern.addExpression(expr);
     }
 
     final Map<String, WhereClause> aliasFilters = new LinkedHashMap<>();
