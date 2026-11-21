@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
@@ -85,6 +86,7 @@ class HaLeadershipTransferIT extends BaseRaftHATest {
 
   private static final int NO_TARGET_TRANSFER_ROUNDS = 3;
   private static final int TARGETED_TRANSFER_ROUNDS  = 12;
+  private static final int PROMPT_TRANSFER_ROUNDS    = 3;
 
   @Override
   protected int getServerCount() {
@@ -185,6 +187,34 @@ class HaLeadershipTransferIT extends BaseRaftHATest {
     // And leadership must actually be on the target.
     Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
         .untilAsserted(() -> assertThat(findLeaderIndex()).isEqualTo(targetIndex));
+  }
+
+  /**
+   * Issue #12127: a targeted transfer returned about 3 s after leadership had moved, every time. The transfer RPC went
+   * through the shared client, which the old leader's {@code notifyLeaderChanged -> refreshRaftClient()} closes; that
+   * close waits up to 3 s for the channel's in-flight calls, and the only one is the transfer, whose reply Ratis sends
+   * only after {@code notifyLeaderChanged} returns. The call now returns once the target holds the leadership.
+   */
+  @Test
+  void aTargetedTransferReturnsOnceLeadershipSettled() {
+    for (int round = 0; round < PROMPT_TRANSFER_ROUNDS; round++) {
+      final int leaderIndex = waitForLeaderIndex(30_000);
+      assertThat(leaderIndex).as("round %d: a Raft leader must be elected", round).isGreaterThanOrEqualTo(0);
+      final int targetIndex = (leaderIndex + 1) % getServerCount();
+      final String targetPeerId = peerIdForIndex(targetIndex);
+      final RaftHAServer leader = getRaftPlugin(leaderIndex).getRaftHAServer();
+
+      final StallAwareStopwatch clock = StallAwareStopwatch.start();
+      leader.transferLeadership(targetPeerId, 10_000);
+      clock.assertGaveUpWithin(1_500L,
+          "a transfer that returns once the target leads from one that waits out the 3 s close of the client it was sent through");
+
+      assertThat(leader.getLeaderId()).as("round %d: the target leads when the transfer returns", round)
+          .hasToString(targetPeerId);
+      Awaitility.await("round " + round + ": the target is leader on its own view")
+          .atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> getRaftPlugin(targetIndex).getRaftHAServer().isLeader());
+    }
   }
 
   /** Issue #8480, from {@code Issue8480NoTargetTransferIsARealHandoffIT}. */
