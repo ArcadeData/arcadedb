@@ -2882,7 +2882,21 @@ public class PageManager extends LockContext {
       if (!isNewPage) {
         // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
         final CachedPage finalPage = page;
-        concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        try {
+          concurrentPageAccess(pageId, false, () -> file.read(finalPage));
+        } catch (final IllegalArgumentException | FileNotFoundException e) {
+          // Issue #12139: the two ways PaginatedComponentFile.read() reports "the file went away under me", the same pair the
+          // flush path absorbs. A DROP INDEX, a bucket drop or an index compaction - local, or applied from the leader - closes
+          // the file after this thread resolved it above and before it read the page: IllegalArgumentException when the
+          // channel is already null, FileNotFoundException when the close lands inside the read and the reopen refuses to
+          // re-create a file closed on purpose. Either reached the client as a non-database error although a retry succeeds.
+          // It is the race the commit's file lock check reports as "has been removed", and answers the same retryable way.
+          // isDropped() - raised BEFORE the close - keeps any other closed file (the database closing under the read) and an
+          // invalid page number on their own errors.
+          if (!file.isDropped() || pageId.getPageNumber() < 0)
+            throw e;
+          throw new ConcurrentModificationException("File with id '" + pageId.getFileId() + "' has been removed", e);
+        }
         // A page read for a bulk scan is its until another reader wants it (issue #11011)
         if (cache)
           page.setLoadedByBulkScan(BULK_SCAN.get());
