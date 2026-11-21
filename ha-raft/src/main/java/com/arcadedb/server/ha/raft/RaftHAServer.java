@@ -3076,6 +3076,50 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public boolean isRatisCloseStuck() {
+    final Thread closer = stuckRatisClose;
+    return closer != null && closer.isAlive();
+  }
+
+  /**
+   * Why this node's replication has stopped while nothing is recovering it, or {@code null} when it has not (issue
+   * #12552): its StateMachineUpdater thread has terminated, so it applies no committed entry whatever its division
+   * reports; the close of a previous Ratis server never finished, so no in-place restart can run beside it; or the
+   * health monitor that runs those restarts has died or is stuck inside one tick. Each is a node that answered ready for
+   * an hour while out of the cluster. {@code null} while shutting down: the threads read here end on purpose then.
+   * <p>
+   * Read by {@link TrafficReadiness#isReadyForTraffic(long)} and, through {@code RaftHAPlugin}, by the readiness probe
+   * whether or not {@code arcadedb.server.readinessRequiresHA} is on, like a critical halt: the node is not behind, it
+   * has stopped.
+   */
+  public String getReplicationFailureReason() {
+    if (shutdownRequested)
+      return null;
+    final String deadUpdater = getDeadStateMachineUpdater();
+    if (deadUpdater != null)
+      return "Raft state machine cannot apply entries: " + deadUpdater;
+    final Thread closer = stuckRatisClose;
+    if (closer != null && closer.isAlive())
+      return "the close of the previous Ratis server is still running on thread '" + closer.getName()
+          + "': the Raft layer cannot be restarted until it ends, and the server stops once "
+          + GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES.getKey() + " restart attempts have failed";
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null ? monitor.describeTickLoopFailure(healthMonitorStallBoundMs()) : null;
+  }
+
+  /**
+   * How long the health monitor may go without ending a tick before it counts as stalled (issue #12552). One tick can
+   * hold an in-place restart, whose close of the old server and swap of the state machine are each bounded by
+   * {@code arcadedb.ha.ratisCloseTimeoutMs}, so the bound covers two of those plus a margin, and never less than ten
+   * tick intervals. A close timeout of 0 (no bound) leaves only the interval floor and a fixed margin.
+   */
+  long healthMonitorStallBoundMs() {
+    final long interval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
+    final long closeTimeout = Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS));
+    return Math.max(10L * interval, 2L * closeTimeout + 60_000L);
+  }
+
+  @Override
   public boolean hasPersistedCrashLoopEscalation() {
     return storageFiles.crashLoopEscalationMarker().isFile();
   }
