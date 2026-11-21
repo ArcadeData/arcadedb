@@ -154,10 +154,59 @@ public final class SetClauseApplier {
     if (reloadedRids != null)
       reloadedRids.clear();
 
-    // Phase 1: evaluate all right-hand-side expressions against the graph state *before* the SET clause runs.
-    // openCypher / Neo4j SET is a simultaneous assignment: every read must observe the pre-clause value, never a
-    // value written by an earlier item in the same clause (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must swap
-    // rather than copy.
+    // The items are applied in order, and each group of them sees the effect of every earlier group (issue #12832): a run of
+    // consecutive property items on the same variable is one simultaneous assignment (issue #5190), and a map item, a label
+    // item or a property item on another variable starts the next group. "SET a.x = a.y, a.y = a.x" swaps, while
+    // "SET m.a = 5, n.l = m.a", "SET n += {b: 1}, n += {c: n.b}" and "SET n.b = 5, n:L, n.c = n.b" read the value written
+    // before them. Every observed answer of the reference implementation follows this rule, which is how it plans the
+    // clause: consecutive property writes on one entity in one operator, every other item in an operator of its own.
+    int from = 0;
+    // The variable the current run of property items writes: the first one a plain item of the run names
+    String runVariable = items.get(0).getVariable();
+    for (int i = 1; i < items.size(); i++) {
+      final SetClause.SetItem item = items.get(i);
+      if (continuesRun(items.get(i - 1), item, runVariable)) {
+        if (runVariable == null)
+          runVariable = item.getVariable();
+        continue;
+      }
+      applyGroup(items.subList(from, i), result, writtenDocs, labelReplacements);
+      // The next group reads what this one wrote, through the row's lists and maps and through a moved vertex too
+      heldCollections.refresh(result);
+      labelReplacements.redirect(result);
+      from = i;
+      runVariable = item.getVariable();
+    }
+    applyGroup(from == 0 ? items : items.subList(from, items.size()), result, writtenDocs, labelReplacements);
+
+    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
+    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
+    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
+    heldCollections.refresh(result);
+    labelReplacements.redirect(result);
+  }
+
+  /**
+   * Whether {@code item}, which follows {@code previous} in the clause, joins the simultaneous run of {@link #apply} that
+   * writes {@code runVariable} instead of starting a new group: only property items on one variable form a run. An expression
+   * target ({@code SET (CASE ... THEN n END).p = ...}) names no variable and joins the run it follows.
+   */
+  private static boolean continuesRun(final SetClause.SetItem previous, final SetClause.SetItem item, final String runVariable) {
+    if (item.getType() != SetClause.SetType.PROPERTY || previous.getType() != SetClause.SetType.PROPERTY)
+      return false;
+    return item.getVariable() == null || runVariable == null || runVariable.equals(item.getVariable());
+  }
+
+  /**
+   * Applies one group of items (see {@link #apply}): every right-hand side of the group is evaluated against the state the
+   * earlier groups left, and only then are the writes of the group applied.
+   */
+  private void applyGroup(final List<SetClause.SetItem> items, final Result result, final Map<RID, MutableDocument> writtenDocs,
+      final LabelReplacements labelReplacements) {
+    // Phase 1: evaluate all right-hand-side expressions of the group against the graph state *before* the group runs.
+    // A run of property items on one variable is a simultaneous assignment: every read must observe the value from before
+    // the run, never a value written by an earlier item of the same run (issue #5190). E.g. "SET a.x = a.y, a.y = a.x" must
+    // swap rather than copy.
     //
     // #5227: for a stand-alone SET the pre-clause snapshot must be the LATEST COMMITTED state (what a locked read
     // would observe), NOT the possibly-stale record snapshot the MATCH loaded. reloadTarget() below reloads each
@@ -206,17 +255,11 @@ public final class SetClauseApplier {
         break;
       }
     }
-
-    // The row's own aliases follow each write as it lands (RowAliases.propagateUpdate); a node the row holds in a list or
-    // a map, such as the collect() the target was read from, follows it here, once per row (issue #11754). A label write
-    // above already moved those to the replacement vertex, and the redirect keeps a copy shared with earlier rows there too
-    heldCollections.refresh(result);
-    labelReplacements.redirect(result);
   }
 
   /**
-   * Phase 1 of {@link #apply}: evaluates every right-hand side (and every computed target and key) of the clause against
-   * the pre-clause state, into the given arrays.
+   * Phase 1 of {@link #applyGroup}: evaluates every right-hand side (and every computed target and key) of the group against
+   * the state before the group, into the given arrays.
    *
    * @param reload whether each variable target is first reloaded to its latest committed version (issue #5227)
    */
