@@ -424,7 +424,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));
+    return markIfReadWentStale(new MutableDocument(database, type, rid, copyOfContentForModify(content)));
   }
 
   @Override
@@ -704,8 +704,13 @@ public class ImmutableDocument extends BaseDocument {
         // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
         // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
         // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
-        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
-        content = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS.
+        // THE STORED IMAGE IS KEPT WITH IT (ISSUE #12579): A WRITE OR A DELETE OF THIS RECORD COMPARES THAT ONE WITH THE SLOT, NOT
+        // THE CONTENT THE LISTENER RETURNED. A LISTENER THAT MODIFIES THE RECORD RELOADS IT ITSELF (NOTHING FIRES THEN), SO THE
+        // IMAGE LOADED LAST IS THE ONE THE RETURNED RECORD WAS BUILT FROM
+        final Binary stored = buffer != null ? buffer : content;
+        content = ListenerRewrittenBinary.of(database.getSerializer().serializeForRead(database, loaded).getNotReusable(),
+            stored.copyOfContent());
         buffer = content;
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
