@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.antlr;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.literal.LiteralParameterizer;
@@ -249,6 +250,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * vector.size()}) for as long as no function is registered under that name: a registered name ({@code vector.max()}) wins
    * over the method of a property called {@code vector}, as the run-time lookup this replaced already did, and back-ticking the
    * property ({@code `vector`.max()}) makes it a property again (issue #9076).
+   * <p>
+   * The set is read for a single identifier before the call only. A longer chain ({@code node.relationship.exists(n)},
+   * {@code apoc.text.indexOf(s, t)}) is a function call when it spells a registered function, or always when it starts with
+   * {@code apoc.}; any other ({@code map.a.size()}) stays a property chain (issue #12086).
    */
   private static final Set<String> FUNCTION_NAMESPACES = Set.of("ts", "geo", "text", "math", "convert", "date", "util", "coll",
       "map", "agg", "node", "rel", "path", "create");
@@ -3964,18 +3969,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (ctx.identifier() != null) {
       final SQLParser.IdentifierContext firstIdCtx = ctx.identifier();
 
-      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v)
-      // Pattern: exactly one base identifier, no additional DOT-identifiers and at least one methodCall, where the first
-      // methodCall names a function of that namespace → rewrite as FunctionCall("namespace.methodName", args) and chain
-      // whatever follows it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether
-      // it aggregates above all) it decides by walking the AST.
-      if (ctx.propertyName().isEmpty() && CollectionUtils.isNotEmpty(ctx.methodCall())
+      // Detect namespace-qualified function calls: geo.methodName(args), vector.sum(v), node.relationship.exists(n),
+      // apoc.text.indexOf(s, t)
+      // Pattern: a base identifier, any DOT-identifiers and at least one methodCall, where the dotted name up to and including
+      // the first methodCall names a function → rewrite as FunctionCall("namespace.methodName", args) and chain whatever follows
+      // it as modifiers. Done here, on the AST, because everything the planner decides about a call (whether it aggregates
+      // above all) it decides by walking the AST.
+      if (CollectionUtils.isNotEmpty(ctx.methodCall())
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null
           && firstIdCtx.CAT_ATTR() == null) {
-        final String baseIdText = firstIdCtx.getText();
-        if (isNamespacedFunctionCall(baseIdText, ctx.methodCall(0)))
-          return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(), ctx);
+        final String qualifier = functionQualifier(firstIdCtx, ctx.propertyName());
+        if (qualifier != null && isNamespacedFunctionCall(qualifier, !ctx.propertyName().isEmpty(), ctx.methodCall(0)))
+          return buildNamespaceQualifiedFunctionCall(qualifier, ctx.methodCall(), ctx);
       }
 
       // Check if the first identifier is a record attribute (@rid, @type, @in, @out, @this),
@@ -4064,15 +4070,47 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Whether {@code <baseIdText>.<methodCall>(...)} is a call of the function {@code <baseIdText>.<methodCall>} rather than a
-   * method call on a property called {@code baseIdText}: the namespaces of {@link #FUNCTION_NAMESPACES} always are, any other is
-   * exactly when that function is registered. A back-ticked identifier is a property, never a namespace (issue #9076), and its
+   * The dotted name a call written as {@code <base>.<p1>...<pN>.<method>(...)} would be a function of: the base alone when the
+   * chain has no property names, {@code base.p1...pN} otherwise. Null when a property name is back-ticked or a record attribute
+   * ({@code @rid}...), since such a chain addresses a record and never spells a function name.
+   */
+  private static String functionQualifier(final SQLParser.IdentifierContext firstIdCtx,
+      final List<SQLParser.PropertyNameContext> propertyNames) {
+    final String baseIdText = firstIdCtx.getText();
+    if (propertyNames.isEmpty())
+      return baseIdText;
+    if (!isPlainNameSegment(baseIdText))
+      return null;
+
+    final StringBuilder qualifier = new StringBuilder(baseIdText);
+    for (final SQLParser.PropertyNameContext propCtx : propertyNames) {
+      final String segment = propCtx.getText();
+      if (!isPlainNameSegment(segment))
+        return null;
+      qualifier.append('.').append(segment);
+    }
+    return qualifier.toString();
+  }
+
+  private static boolean isPlainNameSegment(final String segment) {
+    return !segment.isEmpty() && segment.charAt(0) != '`' && segment.charAt(0) != '@';
+  }
+
+  /**
+   * Whether {@code <qualifier>.<methodCall>(...)} is a call of the function {@code <qualifier>.<methodCall>} rather than a
+   * method call on the property chain {@code qualifier}: exactly when that function is registered (any letter case, with or
+   * without the {@code apoc.} prefix, as {@link FunctionRegistry} resolves it for SQL and Cypher alike), and also, for an unknown
+   * function, when a single-identifier qualifier is one of the {@link #FUNCTION_NAMESPACES} or a multi-part qualifier starts with
+   * {@code apoc.}, so that a typo is reported as an unknown function and not answered as a method call on a missing property
+   * (issue #12086). Any other multi-part qualifier ({@code a.b.size()}, {@code node.label.toUpperCase()}) stays a property chain
+   * unless it spells a registered function. A back-ticked identifier is a property, never a namespace (issue #9076), and its
    * text keeps the back-ticks, so it matches neither.
    */
-  private static boolean isNamespacedFunctionCall(final String baseIdText, final SQLParser.MethodCallContext methodCtx) {
-    if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT)))
+  private static boolean isNamespacedFunctionCall(final String qualifier, final boolean multipart,
+      final SQLParser.MethodCallContext methodCtx) {
+    if (multipart ? FunctionRegistry.hasApocPrefix(qualifier) : FUNCTION_NAMESPACES.contains(qualifier.toLowerCase(Locale.ROOT)))
       return true;
-    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(baseIdText + "." + methodCtx.identifier().getText());
+    return DefaultSQLFunctionFactory.getInstance().hasNamespacedFunction(qualifier + "." + methodCtx.identifier().getText());
   }
 
   /**
