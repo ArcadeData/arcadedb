@@ -237,7 +237,7 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
    * found} since #6778. The empty-body {@code 400} is therefore unreachable for a database that is not there, and
    * {@code 404} is the accurate answer every other database route gives. The property this test protects is
    * unchanged - never a {@code 500} - so it now pins {@code 404} on both shapes.
-   * {@code Issue7831TimeSeriesRoutesNonexistentDatabaseIT} pins the same contract on every
+   * {@code TimeSeriesHttpContractIT.NonexistentDatabaseRoutes} pins the same contract on every
    * {@code /api/v1/ts/{database}} route without a cluster.
    */
   @Test

@@ -26,6 +26,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.log.LogManager;
@@ -1263,6 +1264,60 @@ public class TransactionIndexContext {
   }
 
   /**
+   * The bucket indexes, among those the uniqueness of {@code index} is checked across, that may hold entries an older build wrote under
+   * the old spelling of a list or a number (issues #12160 and #12233, {@link LSMTreeIndex#mayHoldLegacyKeys()}), or null when none
+   * does: an index this build created or rebuilt holds canonical keys only, and its commits pay nothing for the old spellings.
+   */
+  private List<LSMTreeIndex> indexesWithLegacyKeys(final IndexInternal index) {
+    if (!(index instanceof LSMTreeIndex))
+      return null;
+    final TypeIndex typeIndex = index.getTypeName() == null ?
+        null :
+        database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
+    final IndexInternal[] indexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { index };
+    List<LSMTreeIndex> withLegacyKeys = null;
+    for (final IndexInternal bucketIndex : indexes)
+      if (bucketIndex instanceof LSMTreeIndex lsmIndex && lsmIndex.mayHoldLegacyKeys()) {
+        if (withLegacyKeys == null)
+          withLegacyKeys = new ArrayList<>(indexes.length);
+        withLegacyKeys.add(lsmIndex);
+      }
+    return withLegacyKeys;
+  }
+
+  /**
+   * The uniqueness of a list or number key on a property nothing declares, checked under the text an older build keyed the value
+   * by too (issues #12160 and #12233): the entries such a build wrote keep that text until the index is rebuilt, so the check on the
+   * canonical key alone let a copy of an old value in. A holder found under the old text is a duplicate only when it holds this
+   * value: the old text of a list or a number is also the key of a STRING spelled the same way, which is another value.
+   * <p>
+   * Cost, paid only while an index of the type may hold such entries: one record load per unique STRING key starting with a bracket,
+   * a sign or a digit, to learn whether its record holds a list or a number ({@link LSMTreeIndex#legacyKeysOf}), plus one per holder
+   * found under the old text. Every other key pays nothing, and {@code REBUILD INDEX} ends the cost for good.
+   *
+   * @param withLegacyKeys the indexes that may hold such entries, {@link #indexesWithLegacyKeys}
+   */
+  private void checkUniqueLegacyKeys(final LSMTreeIndex index, final IndexKey key, final List<LSMTreeIndex> withLegacyKeys) {
+    final Object[] legacyKeys = index.legacyKeysOf(key.keyValues, key.rid);
+    if (legacyKeys == null)
+      return;
+    for (final LSMTreeIndex lsmIndex : withLegacyKeys) {
+      // the entries as stored: a lookup of the old text as a key drops the holders of the old spelling, which are the ones wanted
+      // here. A holder this transaction deleted no longer holds the value
+      try (final IndexCursor found = lsmIndex.getStored(legacyKeys)) {
+        while (found.hasNext()) {
+          final RID holder = found.next().getIdentity();
+          if (!holder.equals(key.rid) && index.holdsKey(holder, key.keyValues)) {
+            final TypeIndex typeIndex = index.getTypeIndex();
+            throw new DuplicatedKeyException(typeIndex != null ? typeIndex.getName() : index.getName(), Arrays.toString(key.keyValues),
+                holder);
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
    */
   private void checkUniqueIndexKeys() {
@@ -1272,6 +1327,8 @@ public class TransactionIndexContext {
       final IndexInternal index = resolveIndex(indexEntries.getKey());
       if (index.isUnique() && !isUniqueCheckDeferred(index)) {
         final TypeIndex typeIndex = index.getTypeIndex();
+        // once per index and commit: null, and no cost per key, unless an index of the type was written by an older build
+        final List<LSMTreeIndex> withLegacyKeys = indexesWithLegacyKeys(index);
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
         for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
@@ -1285,6 +1342,8 @@ public class TransactionIndexContext {
               final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
               checkUniqueIndexKeys(index, entry, deleted);
+              if (withLegacyKeys != null)
+                checkUniqueLegacyKeys((LSMTreeIndex) index, entry, withLegacyKeys);
             }
           }
         }

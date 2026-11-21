@@ -3688,6 +3688,7 @@ function displaySchema(onReady) {
         html += renderGavSidebarBadges(gavs || [], false);
         html += "</div>";
         $("#dbTypeBadges").html(html);
+        filterTypeSidebar("dbTypeBadges");
         if (onReady) onReady();
       });
     });
@@ -3937,11 +3938,12 @@ var sidebarBadgeColors = {
 };
 
 function populateQuerySidebar() {
-  let container = $("#sidebarPanelOverview");
+  let container = $("#queryOverviewTypes");
   if (container.length == 0) return;
 
   if (globalSchemaTypes == null || globalSchemaTypes.length == 0) {
     container.html("<div class='sidebar-empty'>No types defined.<br><small>Create vertex or document types to see them here.</small></div>");
+    filterTypeSidebar("queryOverviewTypes");
     return;
   }
 
@@ -3994,6 +3996,7 @@ function populateQuerySidebar() {
         finalHtml += "</div>";
       }
       container.html(finalHtml);
+      filterTypeSidebar("queryOverviewTypes");
     });
   });
 }
@@ -4001,6 +4004,93 @@ function populateQuerySidebar() {
 function refreshQuerySidebar() {
   globalSchemaTypes = null;
   fetchSchemaTypes();
+}
+
+// Type filter of the two type sidebars (issue #6550): a schema with a thousand types or more is unreadable as a wall of
+// badges, so a text box above each list hides the badges whose name does not contain what was typed. Each entry maps the
+// container the badges are rendered into to its filter box and to the line that says how many badges match.
+//
+// The filter only hides the badges already in the page: it neither re-renders them nor asks the server anything, so a
+// keystroke costs one pass over the badges. The boxes are static markup outside the containers, so what was typed
+// survives the containers being rebuilt (Refresh, a type created or dropped, another database selected), and the
+// functions that rebuild them call filterTypeSidebar() again once the new badges are in.
+var TYPE_SIDEBAR_FILTERS = {
+  dbTypeBadges: { input: "dbTypeFilter", status: "dbTypeFilterStatus" },
+  queryOverviewTypes: { input: "queryTypeFilter", status: "queryTypeFilterStatus" }
+};
+
+function filterTypeSidebar(containerId) {
+  let config = TYPE_SIDEBAR_FILTERS[containerId];
+  if (config == null) return;
+  let input = document.getElementById(config.input);
+  let filter = input != null ? input.value : "";
+  let result = applyTypeSidebarFilter(document.getElementById(containerId), filter);
+  let status = document.getElementById(config.status);
+  // textContent, never markup: the filter is whatever was typed.
+  if (status != null) status.textContent = typeSidebarFilterStatus(result, filter);
+}
+
+function normalizeTypeSidebarFilter(filter) {
+  return filter == null ? "" : String(filter).trim().toLowerCase();
+}
+
+// `needle` is already normalized. A case-insensitive substring match on the name alone, never on the record count the
+// badge also shows, so typing "12" does not keep every type holding 12 records.
+function typeNameMatchesFilter(name, needle) {
+  return needle === "" || String(name).toLowerCase().indexOf(needle) >= 0;
+}
+
+// Shows the badges of `container` whose name matches `filter` and hides the others, then hides what is left empty: a
+// section with no match, and inside the OLAP section the header of a group (materialized views, graph analytical views)
+// with no match. An empty filter shows everything again, empty sections included, since those carry the buttons that
+// create a type. The name is read back from the badge's text, so it is the type's real name whatever escaping the markup
+// needed. Returns how many badges matched out of how many there are.
+function applyTypeSidebarFilter(container, filter) {
+  const HIDDEN = "sidebar-filter-hidden";
+  let result = { matched: 0, total: 0 };
+  if (container == null) return result;
+
+  let needle = normalizeTypeSidebarFilter(filter);
+  let filtering = needle !== "";
+  let sections = container.querySelectorAll(".sidebar-section");
+  for (let s = 0; s < sections.length; s++) {
+    let section = sections[s];
+    let sectionMatched = 0;
+    let groupHeader = null;
+    let children = section.children;
+    for (let c = 0; c < children.length; c++) {
+      let child = children[c];
+      if (child.classList.contains("sidebar-subsection-header")) {
+        // Hidden until a badge of its group matches; a group with no badge at all has nothing to match.
+        groupHeader = child;
+        groupHeader.classList.toggle(HIDDEN, filtering);
+      } else if (child.classList.contains("sidebar-badges")) {
+        let badges = child.querySelectorAll(".sidebar-badge");
+        let groupMatched = 0;
+        for (let b = 0; b < badges.length; b++) {
+          let badge = badges[b];
+          let nameEl = badge.querySelector(".sidebar-badge-name");
+          let matches = typeNameMatchesFilter(nameEl != null ? nameEl.textContent : badge.textContent, needle);
+          badge.classList.toggle(HIDDEN, !matches);
+          if (matches) groupMatched++;
+        }
+        child.classList.toggle(HIDDEN, filtering && groupMatched === 0);
+        if (groupHeader != null && groupMatched > 0) groupHeader.classList.remove(HIDDEN);
+        groupHeader = null;
+        result.total += badges.length;
+        result.matched += groupMatched;
+        sectionMatched += groupMatched;
+      }
+    }
+    section.classList.toggle(HIDDEN, filtering && sectionMatched === 0);
+  }
+  return result;
+}
+
+function typeSidebarFilterStatus(result, filter) {
+  if (normalizeTypeSidebarFilter(filter) === "") return "";
+  if (result.matched === 0) return "No match";
+  return result.matched.toLocaleString() + " of " + result.total.toLocaleString() + " match";
 }
 
 function findTypeInResult(name, results) {

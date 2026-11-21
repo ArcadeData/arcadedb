@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.network;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
@@ -226,5 +228,40 @@ class PreAuthConnectionGateTest {
         delegate.flush();
       }
     };
+  }
+
+  // ------------------------------------------------------------------------------------------------------------
+  // Regression: #7233
+  // Issue #7233: {@code arcadedb.network.maxPreAuthConnections} is SCOPE.SERVER, so a value written into the server's
+  // {@link ContextConfiguration} - by the server configuration file, {@code SET SERVER SETTING} or the MCP tool - has
+  // to reach the gate. It used to be read off the {@link GlobalConfiguration} enum, which only a system property or
+  // an environment variable ever writes, so every listener ran on the compiled-in default instead.
+  //
+  // @author Luca Garulli (l.garulli@arcadedata.com)
+  // ------------------------------------------------------------------------------------------------------------
+
+  // Regression: #7233 the cap was read off the GlobalConfiguration enum only
+  @Test
+  void theCapComesFromTheServerConfiguration() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.NETWORK_MAX_PREAUTH_CONNECTIONS, 7);
+
+    assertThat(new PreAuthConnectionGate("TEST", configuration).getMaxConnections()).isEqualTo(7);
+  }
+
+  // Regression: #7233 the cap was read off the GlobalConfiguration enum only
+  @Test
+  void aServerConfigurationFileValueReachesTheCapToo() {
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.fromJSON("{\"configuration\":{\"network.maxPreAuthConnections\":11}}");
+
+    assertThat(new PreAuthConnectionGate("TEST", configuration).getMaxConnections()).isEqualTo(11);
+  }
+
+  // Regression: #7233 the cap was read off the GlobalConfiguration enum only
+  @Test
+  void anEmptyConfigurationStillReadsTheDefault() {
+    assertThat(new PreAuthConnectionGate("TEST", new ContextConfiguration()).getMaxConnections()).isEqualTo(
+        GlobalConfiguration.NETWORK_MAX_PREAUTH_CONNECTIONS.getValueAsInteger());
   }
 }
