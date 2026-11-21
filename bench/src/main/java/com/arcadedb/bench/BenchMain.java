@@ -111,7 +111,7 @@ public final class BenchMain {
       }
     case "upload":
       try {
-        return upload(parse(args, true, UPLOAD_OPTIONS), System.err);
+        return upload(parse(args, true, UPLOAD_OPTIONS), out, System.err);
       } catch (final IllegalArgumentException e) {
         System.err.println("error: " + e.getMessage());
         return 2;
@@ -140,7 +140,10 @@ public final class BenchMain {
   static final Set<String> EXPORT_OPTIONS = Set.of("url", "user", "password-env", "out");
   static final Set<String> LDBC_CONVERT_OPTIONS = Set.of("summary", "dataset", "commit", "out", "started-at", "version", "tag",
       "trigger", "machine-id", "bench-commit", "commit-date");
-  static final Set<String> UPLOAD_OPTIONS = Set.of("url", "user", "password-env");
+  static final Set<String> UPLOAD_OPTIONS = Set.of("url", "user", "password-env", "replace-release");
+
+  /** Options that are flags: present or absent, they take no value. */
+  private static final Set<String> FLAGS = Set.of("skip-idle-check", "replace-release");
 
   static Map<String, String> parse(final String[] args, final boolean allowPositional, final Set<String> known) {
     final Map<String, String> options = new HashMap<>();
@@ -155,7 +158,7 @@ public final class BenchMain {
       final String key = arg.substring(2);
       if (!known.contains(key))
         throw new IllegalArgumentException("unknown option " + arg);
-      if (key.equals("skip-idle-check"))
+      if (FLAGS.contains(key))
         options.put(key, "true");
       else {
         if (i + 1 >= args.length)
@@ -241,7 +244,12 @@ public final class BenchMain {
     return 0;
   }
 
-  private static int upload(final Map<String, String> o, final PrintStream err) {
+  /**
+   * The {@code upload} command. With {@code --replace-release} each run also replaces the earlier runs of its release (see
+   * {@link Uploader}), and every replaced runId is printed as {@code replaced <runId>} so the caller can drop its raw file.
+   */
+  private static int upload(final Map<String, String> o, final PrintStream out, final PrintStream err) {
+    final boolean replaceRelease = o.containsKey("replace-release");
     final String url = required(o, "url");
     final String user = required(o, "user");
     final String password = passwordFromEnv(o, "password-env");
@@ -264,7 +272,8 @@ public final class BenchMain {
     int failed = 0;
     for (final Path file : files) {
       try {
-        Uploader.upload(url, user, password, RunResult.read(file));
+        for (final String replaced : Uploader.upload(url, user, password, RunResult.read(file), replaceRelease))
+          out.println("replaced " + replaced);
       } catch (final RuntimeException e) {
         failed++;
         err.println("upload of " + file + " failed: " + e.getMessage());
