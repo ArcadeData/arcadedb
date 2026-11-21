@@ -1306,7 +1306,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
       final boolean loadRecordContent;
-      if (!loadContent && tx.getIsolationLevel() == TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+      if (!loadContent && tx.isRepeatableRead())
         // FORCE LOAD OF CONTENT TO GUARANTEE THE LOADING OF MULTI-PAGE RECORD INTO THE TX CONTEXT
         loadRecordContent = true;
       else
