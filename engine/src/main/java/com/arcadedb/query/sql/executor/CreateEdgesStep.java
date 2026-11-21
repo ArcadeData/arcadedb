@@ -28,6 +28,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableLightEdge;
 import com.arcadedb.graph.Vertex;
@@ -131,7 +132,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
                 if (existingEdge.getIn().equals(currentTo)) {
                   currentTo = null;
                   currentBatch++;
-                  return new UpdatableResult(forUpsert(existingEdge.modify()));
+                  return new UpdatableResult(existingEdgeAsResult(existingEdge));
                 }
               }
             }
@@ -392,5 +393,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private static MutableEdge forUpsert(final MutableEdge edge) {
     edge.clearBasedOnStaleRead();
     return edge;
+  }
+
+  /**
+   * The edge {@code IF NOT EXISTS} found, as the row the statement returns. A lightweight edge has no record to modify, so it
+   * is returned as the mutable form of itself, the one a creation of it returns (issue #12133): it carries no properties, so
+   * nothing of it is lost. As for a record-backed edge, a SET of the statement is not applied to an edge that already exists.
+   */
+  private static MutableEdge existingEdgeAsResult(final Edge existing) {
+    if (existing instanceof LightEdge)
+      return new MutableLightEdge(existing.getDatabase(), (EdgeType) existing.getType(), existing.getOut(), existing.getIn());
+    return forUpsert(existing.modify());
   }
 }
