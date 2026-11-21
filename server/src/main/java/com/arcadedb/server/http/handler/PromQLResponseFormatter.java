@@ -22,6 +22,8 @@ import com.arcadedb.engine.timeseries.promql.PromQLResult;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.InstantVector;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixResult;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.MatrixSeries;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.RangeSeries;
+import com.arcadedb.engine.timeseries.promql.PromQLResult.RangeVector;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.ScalarResult;
 import com.arcadedb.engine.timeseries.promql.PromQLResult.VectorSample;
 import com.arcadedb.serializer.json.JSONArray;
@@ -45,18 +47,35 @@ final class PromQLResponseFormatter {
     response.put("status", "success");
 
     final JSONObject data = new JSONObject();
-    if (result instanceof InstantVector iv) {
+    // A switch over the sealed result, so a kind without a branch is a compile error: a range vector - what an instant query of
+    // `metric[5m]` answers - had none, and was answered as a success with an empty 'data' (issue #11982)
+    switch (result) {
+    case InstantVector iv -> {
       data.put("resultType", "vector");
       data.put("result", formatVector(iv));
-    } else if (result instanceof MatrixResult mr) {
+    }
+    case MatrixResult mr -> {
       data.put("resultType", "matrix");
-      data.put("result", formatMatrix(mr));
-    } else if (result instanceof ScalarResult sr) {
+      final JSONArray series = new JSONArray();
+      for (final MatrixSeries s : mr.series())
+        series.put(formatSeries(s.labels(), s.values()));
+      data.put("result", series);
+    }
+    case RangeVector rv -> {
+      // the raw samples of each series in the window, as Prometheus answers an instant query of a range selector
+      data.put("resultType", "matrix");
+      final JSONArray series = new JSONArray();
+      for (final RangeSeries s : rv.series())
+        series.put(formatSeries(s.labels(), s.values()));
+      data.put("result", series);
+    }
+    case ScalarResult sr -> {
       data.put("resultType", "scalar");
       final JSONArray val = new JSONArray();
       val.put(sr.timestampMs() / 1000.0);
       val.put(doubleToString(sr.value()));
       data.put("result", val);
+    }
     }
 
     response.put("data", data);
@@ -77,22 +96,19 @@ final class PromQLResponseFormatter {
     return result;
   }
 
-  private static JSONArray formatMatrix(final MatrixResult mr) {
-    final JSONArray result = new JSONArray();
-    for (final MatrixSeries series : mr.series()) {
-      final JSONObject entry = new JSONObject();
-      entry.put("metric", labelsToJson(series.labels()));
-      final JSONArray values = new JSONArray();
-      for (final double[] point : series.values()) {
-        final JSONArray pair = new JSONArray();
-        pair.put(point[0] / 1000.0);
-        pair.put(doubleToString(point[1]));
-        values.put(pair);
-      }
-      entry.put("values", values);
-      result.put(entry);
+  /** One series of a matrix: its labels and its {@code [seconds, "value"]} pairs. */
+  private static JSONObject formatSeries(final Map<String, String> labels, final List<double[]> points) {
+    final JSONObject entry = new JSONObject();
+    entry.put("metric", labelsToJson(labels));
+    final JSONArray values = new JSONArray();
+    for (final double[] point : points) {
+      final JSONArray pair = new JSONArray();
+      pair.put(point[0] / 1000.0);
+      pair.put(doubleToString(point[1]));
+      values.put(pair);
     }
-    return result;
+    entry.put("values", values);
+    return entry;
   }
 
   static String formatLabelsResponse(final List<String> labels) {
