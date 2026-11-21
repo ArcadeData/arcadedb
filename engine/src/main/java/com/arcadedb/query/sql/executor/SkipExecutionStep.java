@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.Skip;
 
 import java.util.ArrayDeque;
@@ -55,6 +56,8 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     checkForPrevious();
 
     final int skipValue = skip.getValue(context);
+    if (skipValue < 0)
+      throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
     while (skipped < skipValue) {
       //fetch and discard
       final ResultSet rs = prev.syncPull(context, Math.min(100, skipValue - skipped));//fetch blocks of 100, at most
