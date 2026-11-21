@@ -68,8 +68,8 @@ public final class ExistingRecordsCheck {
       return;
     if (type instanceof LocalTimeSeriesType tsType) {
       for (final String propertyName : propertyNames)
-        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOTNULL", null, null, null,
-            mandatory ? "MANDATORY" : "NOTNULL");
+        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? ValidationException.Kind.MANDATORY :
+            ValidationException.Kind.NOT_NULL, null, null, null, mandatory ? "MANDATORY" : "NOTNULL");
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -80,7 +80,7 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw new CommandExecutionException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
+          throw storedDataRefusal(kindOf(unmet), "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
               "MANDATORY" :
               "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
               + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
@@ -128,7 +128,7 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw new CommandExecutionException(
+        throw storedDataRefusal(kindOf(unmet),
             createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
@@ -149,7 +149,8 @@ public final class ExistingRecordsCheck {
    * the constraint or the sample came first.
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
-      final boolean required, final String requiredBy, final String min, final String max, final String regexp, final String what) {
+      final boolean required, final ValidationException.Kind requiredBy, final String min, final String max, final String regexp,
+      final String what) {
     final TimeSeriesEngine engine = type.getEngine();
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
@@ -172,7 +173,7 @@ public final class ExistingRecordsCheck {
     final int index = column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP ? 0 : position + 1;
 
     final TimeSeriesColumnConstraints.ColumnCheck check = TimeSeriesColumnConstraints.columnCheck(db, column, property.getType(),
-        required, requiredBy, min, max, regexp);
+        required, !required ? null : requiredBy == ValidationException.Kind.MANDATORY ? "MANDATORY" : "NOTNULL", min, max, regexp);
     if (check == null)
       return;
 
@@ -196,12 +197,35 @@ public final class ExistingRecordsCheck {
       throw new CommandExecutionException("Cannot set " + what + ": the samples of the TIMESERIES type '" + type.getName()
           + "' could not be read to check it", e);
     }
-    if (violation[1] != null)
+    if (violation[1] != null) {
       // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
-      throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+      final String message = "Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
-          + "<value> ...], and insert them again if they are to be kept");
+          + "<value> ...], and insert them again if they are to be kept";
+      if (required)
+        throw storedDataRefusal(requiredBy, message);
+      // the column check answers its reason as one sentence, whichever of MIN, MAX and REGEXP the sample breaks, so this refusal
+      // names no kind (as SaveElementStep#refuseViolation, the write path of the same check)
+      throw new CommandExecutionException(message, new ValidationException(message));
+    }
+  }
+
+  /**
+   * The refusal of a constraint the stored data break (issue #12436): the caller's to resolve, so every protocol answers it as the
+   * validation error it is (HTTP 400, as the same refusal of a MIN, a MAX or a REGEXP already answered), and not as a server fault.
+   * It stays the {@link CommandExecutionException} it always was, so an embedded caller that catches one keeps catching it. The
+   * {@link ValidationException} under it carries the kind, which a protocol with a code for a violated constraint answers with
+   * (Postgres {@code 23502}), and the whole message: a protocol reports the message of the ValidationException it finds in the
+   * chain, so the record, the constraint and the remedy reach the caller.
+   */
+  private static CommandExecutionException storedDataRefusal(final ValidationException.Kind kind, final String message) {
+    return new CommandExecutionException(message, new ValidationException(kind, message));
+  }
+
+  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
+        ValidationException.Kind.NOT_NULL;
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
