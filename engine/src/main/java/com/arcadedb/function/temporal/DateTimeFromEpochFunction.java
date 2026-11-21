@@ -18,10 +18,13 @@
  */
 package com.arcadedb.function.temporal;
 
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.time.DateTimeException;
 
 /**
  * datetime.fromepoch() function - creates a CypherDateTime from epoch seconds and nanoseconds.
@@ -50,6 +53,11 @@ public class DateTimeFromEpochFunction implements StatelessFunction {
     // Issue #10850: whole numbers or a type error - longValue() read 1.9 as 1, and a non-number was a ClassCastException
     final long seconds = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "seconds");
     final long nanos = CypherFunctionHelper.requireWholeNumberArgument(args[1], getName(), "nanoseconds");
-    return CypherDateTime.fromEpoch(seconds, nanos);
+    try {
+      return CypherDateTime.fromEpoch(seconds, nanos);
+    } catch (final DateTimeException | ArithmeticException e) {
+      // an instant past the supported range is the caller's error, as it is for the temporal constructors (issue #12885)
+      throw new CommandSemanticException(getName() + "() " + e.getMessage());
+    }
   }
 }

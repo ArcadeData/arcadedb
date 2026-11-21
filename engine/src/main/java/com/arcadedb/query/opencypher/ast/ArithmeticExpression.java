@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -323,6 +324,19 @@ public class ArithmeticExpression implements Expression {
     if (op != Operator.ADD && op != Operator.SUBTRACT)
       return null;
 
+    try {
+      return instantPlusDuration(leftValue, rightValue, op);
+    } catch (final DateTimeException | ArithmeticException e) {
+      // A result past the supported year range is the operands' fault, as a duration overflow is: the caller's error, kept
+      // with the java.time message rather than surfaced raw as a server fault (issue #12885)
+      throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Instant + duration or instant - duration, with the instant on the left; null if the operands are not that.
+   */
+  private static Object instantPlusDuration(final Object leftValue, final Object rightValue, final Operator op) {
     // java.time.LocalDate (from ArcadeDB storage) ± Duration
     if (leftValue instanceof LocalDate ld && rightValue instanceof CypherDuration dur) {
       // For dates, full days from the seconds component must be carried over

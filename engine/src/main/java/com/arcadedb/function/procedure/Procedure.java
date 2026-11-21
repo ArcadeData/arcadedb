@@ -239,6 +239,22 @@ public interface Procedure {
   }
 
   /**
+   * Returns the numeric argument at {@code index}, refusing a missing or {@code null} one and any other value naming the
+   * parameter, where a {@code (Number)} cast surfaced as a bare {@code ClassCastException} or a {@code NullPointerException}
+   * (issue #12885).
+   *
+   * @param paramName the parameter name the error message reports
+   *
+   * @throws IllegalArgumentException when the argument is missing, {@code null} or not a number
+   */
+  default Number requiredNumberArg(final Object[] args, final int index, final String paramName) {
+    final Number value = optionalNumberArg(args, index, paramName, null);
+    if (value == null)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+    return value;
+  }
+
+  /**
    * Returns the map argument at {@code index}, the empty map when it is absent or {@code null} (see
    * {@link #argOrDefault}), and refuses any other value naming the parameter.
    *
