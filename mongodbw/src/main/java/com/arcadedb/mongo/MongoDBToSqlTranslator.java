@@ -18,11 +18,15 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
+import de.bwaldvogel.mongo.bson.BinData;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.LegacyUUID;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
 import java.math.BigDecimal;
@@ -38,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -550,7 +555,10 @@ public class MongoDBToSqlTranslator {
   /**
    * Maps a stored value onto a type the BSON encoder accepts. A temporal property is held as a {@code java.time} value, and
    * the encoder handles exactly one of those, {@link Instant}, rejecting the rest outright and failing the whole response.
-   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact.
+   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact. The encoder takes no
+   * {@code Float}, {@code Short} or {@code Byte}, no primitive array, no record identity and no embedded document either, and
+   * the value it rejects closes the connection (issue #12796): each of those is converted to the BSON value that carries it,
+   * and any other class to its text.
    */
   private static Object toBsonValue(final Object value) {
     if (value instanceof Instant)
@@ -573,16 +581,56 @@ public class MongoDBToSqlTranslator {
       return dateTime.toInstant();
     else if (value instanceof Date date)
       return date.toInstant();
+    else if (value instanceof Float number)
+      // the text the float is written as, so that 1.1f reads 1.1 as it does on every other protocol, not 1.100000023841858
+      return Double.valueOf(number.toString());
+    else if (value instanceof Short || value instanceof Byte)
+      return ((Number) value).intValue();
+    else if (value instanceof com.arcadedb.database.Document embedded && embedded.getIdentity() == null)
+      return convertMapToMongoDB(embedded.toMap());
+    else if (value instanceof Identifiable identifiable)
+      return identifiable.getIdentity().toString();
     else if (value instanceof Map<?, ?> map)
       // an embedded document can hold a temporal property of its own
       return convertMapToMongoDB(map);
-    else if (value instanceof List<?> list) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list)
+    else if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
+      for (final Object item : collection)
         converted.add(toBsonValue(item));
       return converted;
+    } else if (value instanceof byte[] bytes)
+      return new BinData(bytes);
+    else if (value instanceof int[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final int item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof long[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final long item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof short[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final short item : array)
+        converted.add((int) item);
+      return converted;
+    } else if (value instanceof float[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final float item : array)
+        converted.add(Double.valueOf(Float.toString(item)));
+      return converted;
+    } else if (value instanceof double[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final double item : array)
+        converted.add(item);
+      return converted;
     }
-    return value;
+    if (value == null || value instanceof String || value instanceof Integer || value instanceof Long || value instanceof Double
+        || value instanceof Boolean || value instanceof ObjectId || value instanceof Decimal128 || value instanceof BinData
+        || value instanceof UUID || value instanceof LegacyUUID)
+      return value;
+    return value.toString();
   }
 
   protected static ObjectId getObjectId(final String s) {
