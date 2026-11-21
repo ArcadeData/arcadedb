@@ -1084,13 +1084,12 @@ public enum GlobalConfiguration {
       backtrack WITHOUT reading any (anchors, empty alternatives or optional anchors in sequence, like \
       \\A(?:\\A|\\A)(?:\\A|\\A)...\\z, or a counted loop of an empty group nested a few levels deep) is refused up front, \
       before it runs, with the same timeout exception: when it can succeed in more than 1,024 different ways without a \
-      read, when one attempt makes more than about 65,000 steps without one (a repeated empty group, a look-behind with a long \
-      range), or, for an operation that scans its \
-      input (a search or a replace-all), when the steps one start position makes without a read times the length of the \
-      input exceed about 130 million. Every entry point reached \
-      through a command context - MATCHES, =~, PromQL's matchers \
-      and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
-      not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
+      read, when one attempt makes more than about 65,000 steps without one (a repeated empty group, a look-behind with a \
+      long range), or, for an operation that scans its input (a search or a replace-all), when the steps one start \
+      position makes without a read times the length of the input exceed about 130 million. Every entry point reached \
+      through a command context - MATCHES, =~, PromQL's matchers and the text.regexReplace()/.normalize() functions - \
+      shares ONE deadline for the whole command: not one per row, not one per function, and not one per worker of a \
+      parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
       wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
       inside the regular expressions. SQL LIKE/ILIKE match their pattern without a regular expression, so they never \
