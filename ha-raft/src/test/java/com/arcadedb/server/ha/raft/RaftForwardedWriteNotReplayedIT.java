@@ -91,8 +91,9 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
 
   /**
    * The follower answers a forwarded write only once it has applied it, so the records the answer carries are read from a copy
-   * that holds them. The follower's apply thread is held off the database until the leader holds the write, and the answer must
-   * still be pending then: without the wait it was serialized at once, and the vertex the statement created was not found there.
+   * that holds them. The follower's apply thread is held off the database until the request is seen waiting for that apply, past
+   * the leader's answer, and the answer must still be pending then: without the wait it was serialized at once, and the vertex
+   * the statement created was not found there.
    */
   @Test
   void aForwardedWriteIsAnsweredWithTheRecordsItCreated() throws Exception {
@@ -123,10 +124,14 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
       final CompletableFuture<HttpResponse<String>> write = client.sendAsync(
           commandRequest(followerIndex, "CREATE VERTEX " + VERTEX_TYPE + " SET k = 1"), HttpResponse.BodyHandlers.ofString());
 
-      // The leader commits with the other follower: the write is durable while this follower still cannot apply it
+      // The leader commits with the other follower and answers; the request then waits for this follower to apply the write,
+      // which it cannot while the gate is held. Seen on the request's own stack: the leader holding the write would not prove
+      // its answer reached the follower, and releasing the gate before then would let the test pass without the wait
       Awaitility.await().atMost(HTTP_TIMEOUT).pollInterval(Duration.ofMillis(50))
-          .until(() -> write.isDone() || countOnTheLeader(countOfTheVertex) == 1L);
-      assertThat(write.isDone()).as("the follower answered the forwarded write before applying it").isFalse();
+          .until(() -> write.isDone() || aForwardWaitsForTheLocalApply());
+      assertThat(write.isDone()).as("the follower answered the forwarded write before applying it: %s",
+          write.isDone() ? write.get().body() : "").isFalse();
+      assertThat(countOnTheLeader(countOfTheVertex)).as("the leader answered, so it holds the write").isEqualTo(1L);
 
       release.countDown();
       final HttpResponse<String> response = write.get(HTTP_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
@@ -149,6 +154,21 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
     leader.command("sql", "CREATE VERTEX TYPE " + VERTEX_TYPE + " IF NOT EXISTS").close();
     waitForAllServers();
     return (leaderIndex + 1) % getServerCount();
+  }
+
+  /** Whether a thread of this JVM is in the forward's wait for the local apply of the write the leader answered. */
+  private static boolean aForwardWaitsForTheLocalApply() {
+    for (final StackTraceElement[] stack : Thread.getAllStackTraces().values()) {
+      boolean waits = false;
+      for (final StackTraceElement frame : stack) {
+        if (frame.getClassName().equals(AppliedIndexWaits.class.getName()) && frame.getMethodName().equals("awaitAppliedIndex"))
+          waits = true;
+        else if (waits && frame.getClassName().equals(RaftReplicatedDatabase.class.getName())
+            && frame.getMethodName().equals("forwardCommandToLeaderViaRaft"))
+          return true;
+      }
+    }
+    return false;
   }
 
   private long countOnTheLeader(final String sql) {

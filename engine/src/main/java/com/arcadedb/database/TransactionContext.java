@@ -412,6 +412,10 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // Writes of this context's blocks that another node committed: statements a replica forwarded to the leader (issue #12635). Kept
+  // apart from commitCount because the two answer different questions: both make a block unsafe to replay, but only a local commit
+  // publishes the writes buffered HERE, which the async worker's shared batch must otherwise keep tracking (see getLocalCommitCount)
+  private       long                                 writesCommittedByAnotherNode = 0;
   // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
   // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
@@ -653,11 +657,30 @@ public class TransactionContext implements Transaction {
    * durable and must neither be replayed onto whatever transaction is open now nor reported as lost. A rollback
    * deliberately does NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make
    * a later commit hand back a value a stale snapshot could match.
+   * <p>
+   * It also counts the writes of the block another node committed (issue #12635, see
+   * {@link #reportWriteCommittedByAnotherNode()}): those are durable too, so the block must not be replayed either.
+   *
+   * @return the number of transactions committed under this context so far, plus the writes another node committed for it
+   */
+  public long getCommitCount() {
+    return commitCount + writesCommittedByAnotherNode;
+  }
+
+  /**
+   * As {@link #getCommitCount()}, without the writes another node committed: whether THIS context's own buffered writes were
+   * published. The async worker asks it of its shared batch (issue #12635): a forwarded write leaves the local writes the batch
+   * buffered uncommitted, so their bookkeeping must survive it, unlike a mid-statement commit's.
    *
    * @return the number of transactions committed under this context so far
    */
-  public long getCommitCount() {
+  public long getLocalCommitCount() {
     return commitCount;
+  }
+
+  /** How many writes of this context's blocks another node committed (issue #12635): see {@link #reportWriteCommittedByAnotherNode()}. */
+  public long getWritesCommittedByAnotherNode() {
+    return writesCommittedByAnotherNode;
   }
 
   /**
@@ -691,7 +714,7 @@ public class TransactionContext implements Transaction {
    * leader whenever anything after the forward raised a conflict on the replica.
    */
   public void reportWriteCommittedByAnotherNode() {
-    ++commitCount;
+    ++writesCommittedByAnotherNode;
   }
 
   /**
