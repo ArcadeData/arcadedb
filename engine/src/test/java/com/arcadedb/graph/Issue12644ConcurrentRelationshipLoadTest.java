@@ -51,6 +51,7 @@ class Issue12644ConcurrentRelationshipLoadTest extends TestHelper {
   private static final long TIMEOUT_SECOND = 120;
 
   private final RID[] vertices = new RID[VERTICES];
+
   @Override
   protected void beginTest() {
     database.transaction(() -> {

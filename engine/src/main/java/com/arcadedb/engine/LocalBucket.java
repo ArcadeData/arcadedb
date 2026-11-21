@@ -795,6 +795,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of
       // its own; the head chunk of a placeholder's CONTENT holds somebody else's bytes and answers false here exactly
       // as the negated size marker of a content record that fitted its page always has.
+      // committedWhenHidden = true: a record only the committed page has (see isRecordHiddenByOwnPageImage) is a record that is there
       final long recordSize = readRecordSizeMarker(rid, true);
       return recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK;
 
@@ -828,6 +829,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     try {
+      // committedWhenHidden = false: the slot of the transaction's own image, as the commit-time rebase has to see it
       return readRecordSizeMarker(rid, false) > 0;
 
     } catch (final IOException e) {
@@ -4024,9 +4026,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * a page THIS transaction has also modified (#5279).
    */
   public boolean existsRecordInCommittedPage(final RID rid) {
+    // A ZERO SIZE MARKS A RECORD DELETED BEFORE v24.1.1; ANY OTHER VALUE (INCLUDING PLACEHOLDERS AND CHUNKS) IS A RECORD
+    return committedSizeMarker(rid) != 0L;
+  }
+
+  /**
+   * The size marker of the slot of {@code rid} in the CURRENT COMMITTED state of its page, ignoring the calling transaction's own
+   * image of that page, or {@code 0} when no record is committed there (a free slot, a page that is not there or not readable).
+   * See {@link #readRecordSizeMarker} for the values.
+   */
+  private long committedSizeMarker(final RID rid) {
     final long position = rid.getPosition();
     if (position < 0)
-      return false;
+      return 0L;
 
     final int pageNumber = (int) (position / maxRecordsInPage);
     final int positionInPage = (int) (position % maxRecordsInPage);
@@ -4034,19 +4046,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final BasePage committed = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
       if (committed == null || positionInPage >= committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
-        return false;
+        return 0L;
 
       final int recordPositionInPage = getRecordPositionInPage(committed, positionInPage);
       if (recordPositionInPage == 0)
         // FREE SLOT (NEVER USED OR DELETED)
-        return false;
+        return 0L;
 
-      // A ZERO SIZE MARKS A RECORD DELETED BEFORE v24.1.1; ANY OTHER VALUE (INCLUDING PLACEHOLDERS AND CHUNKS) IS A RECORD
-      return committed.readNumber(recordPositionInPage) != 0L;
+      return committed.readNumber(recordPositionInPage);
 
     } catch (final Exception e) {
       // The page is not there (or not readable): the record is certainly not committed at that position.
-      return false;
+      return 0L;
     }
   }
 
@@ -4091,7 +4102,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         return false;
       }
 
-    return existsRecordInCommittedPage(rid);
+    // A record of its own, the shapes isRecordPresent accepts and getRecordFromCommittedPage serves: the continuation chunk of a
+    // multi-page record or the content behind a placeholder pointer, which a concurrent commit can put there as well, is not one
+    final long committedMarker = committedSizeMarker(rid);
+    return committedMarker > 0 || committedMarker == RECORD_PLACEHOLDER_POINTER || committedMarker == FIRST_CHUNK;
   }
 
   /**

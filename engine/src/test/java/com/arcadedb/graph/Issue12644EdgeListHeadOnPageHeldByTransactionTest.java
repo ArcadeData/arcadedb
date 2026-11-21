@@ -261,6 +261,30 @@ class Issue12644EdgeListHeadOnPageHeldByTransactionTest extends TestHelper {
   }
 
   @Test
+  void aContinuationChunkCommittedMeanwhileIsNotARecordHiddenByTheImage() throws Exception {
+    final AtomicReference<RID> created = new AtomicReference<>();
+    final List<RID> hidden = new ArrayList<>();
+
+    // the continuation chunks of a record that outgrew its page are slots of the same bucket, and no record of their own. The
+    // commit of the first transaction is not the subject here, the commit that rewrote its page may well refuse it
+    interleave(() -> vertex(0).modify().set("name", "zero").save(),
+        () -> created.set(compute(() -> database.newVertex("V").set("id", 6).set("blob", "x".repeat(200_000)).save().getIdentity())),
+        () -> {
+          final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(created.get().getBucketId());
+          for (int page = 0; page < bucket.getTotalPages(); page++)
+            for (int slot = 0; slot < bucket.getMaxRecordsInPage(); slot++) {
+              final RID rid = new RID(created.get().getBucketId(), (long) page * bucket.getMaxRecordsInPage() + slot);
+              if (bucket.isRecordHiddenByOwnPageImage(rid))
+                hidden.add(rid);
+            }
+        });
+
+    // the record is on a page the transaction does not hold, and the chunk that is on its page is not a record
+    assertThat(hidden).isEmpty();
+    assertThat(database.lookupByRID(created.get(), true).asVertex().getString("blob")).hasSize(200_000);
+  }
+
+  @Test
   void aRecordTheTransactionDeletedItselfIsNotBroughtBackFromTheCommittedPage() {
     database.transaction(() -> {
       final RID doomed = id(3);

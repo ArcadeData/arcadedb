@@ -1290,7 +1290,9 @@ public class GraphEngine {
     }
     final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
     if (!hiddenHeadRID.equals(reloadedHead))
-      // a concurrent commit moved the head since it was read: look again from the one the vertex has now
+      // a concurrent commit moved the head since it was read: look again from the one the vertex has now. Each pass starts from a
+      // head newer than the last, which only a commit can make, and the vertex was just reloaded (it is in the transaction now), so
+      // it ends as soon as the head stops moving, as the same recursion of the first-edge branch does
       return getOrCreateEdgeList(mutable, direction);
 
     final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(committedHead.size()));
