@@ -504,9 +504,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } finally {
       registrationEndsWithDrop = false;
       // WHATEVER BECAME OF THE DELETE, AND WHEN THE CLOSE THREW AFTER MARKING THE INSTANCE CLOSED: NOTHING IS LEFT TO KEEP THE PATH
-      // FOR. IDEMPOTENT, SO AN INSTANCE THAT WAS ALREADY CLOSED (AND UNREGISTERED) IS NOT AFFECTED
-      if (!open)
+      // FOR. ONLY WHEN THE CLOSE LEFT THE UNREGISTRATION TO THIS CALL: A DROP REFUSED BEFORE ANY CLOSE (THE INSTANCE WAS CLOSED
+      // ALREADY, OR HAS A TRANSACTION) HAS NOTHING TO UNREGISTER, AND A LocalDatabase EQUALS EVERY OTHER ONE OF ITS PATH, SO A
+      // CLOSED HANDLE'S REFUSED DROP WOULD TAKE THE INSTANCE OPENED SINCE OUT OF THE REGISTRY
+      if (unregistrationLeftToDrop) {
+        unregistrationLeftToDrop = false;
         unregisterClosedInstance();
+      }
     }
   }
 
@@ -4401,6 +4405,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   private volatile boolean registrationEndsWithDrop = false;
 
+  /** Set by the close of a {@link #drop()} that left its unregistration to the end of the drop, see {@link #registrationEndsWithDrop}. */
+  private volatile boolean unregistrationLeftToDrop = false;
+
   /**
    * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
    * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
@@ -4565,8 +4572,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // lookup reused the dead instance instead of opening the files. An instance that is still open - the teardown
       // failed before marking it closed - keeps its registration and its PageManager reference, which is what it
       // still holds.
-      if (!open && !registrationEndsWithDrop)
-        unregisterClosedInstance();
+      if (!open) {
+        if (registrationEndsWithDrop)
+          unregistrationLeftToDrop = true;
+        else
+          unregisterClosedInstance();
+      }
     }
   }
 

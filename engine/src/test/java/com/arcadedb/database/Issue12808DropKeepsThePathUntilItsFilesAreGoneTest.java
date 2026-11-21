@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -147,5 +148,22 @@ class Issue12808DropKeepsThePathUntilItsFilesAreGoneTest {
 
     assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
     assertThat(new File(PATH, "schema.json")).exists();
+  }
+
+  @Test
+  @Timeout(60)
+  void aDropOfAnInstanceClosedEarlierLeavesTheRegistrationOfTheInstanceOpenedSinceAlone() {
+    final Database stale = new DatabaseFactory(PATH).open();
+    stale.close();
+    final Database live = new DatabaseFactory(PATH).open();
+
+    // A LocalDatabase EQUALS EVERY OTHER ONE OF ITS PATH: THE STALE HANDLE'S REFUSED DROP MUST NOT TAKE THE LIVE ONE OUT OF THE REGISTRY
+    assertThatThrownBy(stale::drop).isInstanceOf(DatabaseIsClosedException.class);
+
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isSameAs(live);
+    assertThatThrownBy(() -> new DatabaseFactory(PATH).open()).isInstanceOf(DatabaseOperationException.class)
+        .hasMessageContaining("Found active instance");
+    assertThat(live.isOpen()).isTrue();
+    live.close();
   }
 }
