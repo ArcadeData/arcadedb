@@ -596,7 +596,7 @@ class WholeNumberArgumentsTest {
         Map.entry("function/vector/VectorCreateFunction#toShorts: l2i", 1),
         Map.entry("function/vector/VectorCreateFunction#wholeCoordinate: d2l", 1),
         // the srid, tested to be a whole number in [0, Integer.MAX_VALUE] before the cast
-        Map.entry("function/geo/CypherPointFunction#execute: d2i", 1),
+        Map.entry("function/geo/CypherPointFunction#fromXY: d2i", 1),
         // hashCode() of a double pair
         Map.entry("function/sql/geo/LightweightPoint#hashCode: l2i", 2),
         // the bucket id unpacked from the high bits of an encoded id, not a read of a number
