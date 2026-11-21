@@ -585,7 +585,17 @@ public class LocalDocumentType implements DocumentType {
       final LocalDocumentType former = (LocalDocumentType) superType;
       final int position = superTypes.indexOf(former);
       final int subPosition = former.subTypes.indexOf(this);
+      // issue #12038: what the subtree inherits before the link goes, to tell which of its indexed properties it loses
+      final Map<LocalDocumentType, Set<String>> inheritedBefore =
+          schema.isTypeBeingDropped() ? null : polymorphicPropertyNamesOfSubtree();
       unlinkSuperType(former);
+      if (inheritedBefore != null) {
+        final String refusal = findIndexOnPropertyNoLongerInherited(former, inheritedBefore);
+        if (refusal != null) {
+          relinkSuperType(former, position, subPosition);
+          throw new SchemaException(refusal);
+        }
+      }
       // issue #10421: a refusal before the first sub-index is dropped puts the link back, so the statement either completes or
       // leaves the type as it found it. Nothing irreversible has happened until then: the link is the in-memory part
       final boolean[] dropping = new boolean[1];
@@ -608,6 +618,42 @@ public class LocalDocumentType implements DocumentType {
     superType.rebuildPolymorphicBucketsCache();
     // the inherited properties changed back
     schema.typesChanged();
+  }
+
+  /** The polymorphic property names of this type and of every type below it, keyed by type. */
+  private Map<LocalDocumentType, Set<String>> polymorphicPropertyNamesOfSubtree() {
+    final Map<LocalDocumentType, Set<String>> result = new IdentityHashMap<>();
+    final List<LocalDocumentType> toVisit = new ArrayList<>();
+    toVisit.add(this);
+    while (!toVisit.isEmpty()) {
+      final LocalDocumentType type = toVisit.removeLast();
+      if (result.putIfAbsent(type, type.getPolymorphicPropertyNames()) == null)
+        toVisit.addAll(type.subTypes);
+    }
+    return result;
+  }
+
+  /**
+   * The refusal of {@link #removeSuperType(DocumentType)} when an index of this type or of a type below it stands on a property
+   * that type stops inheriting with the link just severed, the rule {@link #dropProperty} applies to the same declaration (issue
+   * #12038): the index would be left keyed on a property its type no longer declares. A property the type still has, declared by
+   * itself or reached through another super type, does not count. {@code null} when nothing is lost.
+   */
+  private String findIndexOnPropertyNoLongerInherited(final LocalDocumentType formerSuperType,
+      final Map<LocalDocumentType, Set<String>> inheritedBefore) {
+    for (final Map.Entry<LocalDocumentType, Set<String>> entry : inheritedBefore.entrySet()) {
+      final LocalDocumentType type = entry.getKey();
+      final Set<String> stillInherited = type.getPolymorphicPropertyNames();
+      for (final TypeIndex index : type.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          if (entry.getValue().contains(property) && !stillInherited.contains(property))
+            return "Cannot remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "' because the property '"
+                + property + "' that type '" + type.getName() + "' would no longer inherit is used by index '" + index.getName()
+                + "'. Drop the index first, or declare the property on '" + type.getName() + "'";
+        }
+    }
+    return null;
   }
 
   /**
