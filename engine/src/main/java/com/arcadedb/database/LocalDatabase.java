@@ -527,6 +527,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * True once {@link #closeForReopen()} has started: from then on {@code begin()} is refused, so close-time work that needs a
+   * transaction (a vector index's graph build on flush) must be deferred rather than attempted.
+   */
+  public boolean isClosedForReopen() {
+    return closedForReopen;
+  }
+
+  /**
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
    * <p>
    * NOTE (#4927): kill() deliberately does NOT release this instance's PageManager lifecycle reference -
