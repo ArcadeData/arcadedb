@@ -27,6 +27,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
@@ -370,7 +371,7 @@ public class MatchExecutionPlanner {
           edge.setLeftCluster(aliasBuckets.get(edge.edge.out.alias));
           edge.setLeftRid(aliasRids.get(edge.edge.out.alias));
           edge.setLeftClass(aliasTypes.get(edge.edge.out.alias));
-          edge.setLeftFilter(aliasFilters.get(edge.edge.out.alias));
+          edge.setLeftFilter(withoutDepthConditions(aliasFilters.get(edge.edge.out.alias)));
         }
       }
 
@@ -867,6 +868,26 @@ public class MatchExecutionPlanner {
   private static boolean readsDepth(final Object root) {
     // ANY USE OF $depth COUNTS HERE, ALSO ONE FOLLOWED BY A MODIFIER ($depth.asInteger())
     return root != null && !SqlAstInspector.allNodesMatch(root, node -> !isDepthIdentifier(node));
+  }
+
+  /**
+   * The merged {@code where:} of an alias without the conditions that read {@code $depth}. Such a condition belongs to the variable-depth hop
+   * the alias is the target of, where the walk gives {@code $depth} a value; the filter the other hops apply to the node they arrive at (the
+   * left filter of a backwards walk) has no depth, so the condition would read {@code null} and drop every candidate (issue #12960). Each
+   * occurrence of the alias is one conjunct of the merged filter, see {@link #addAliases}.
+   */
+  private static WhereClause withoutDepthConditions(final WhereClause merged) {
+    if (merged == null || !readsDepth(merged) || !(merged.getBaseExpression() instanceof AndBlock block))
+      return merged;
+    final AndBlock kept = new AndBlock();
+    for (final BooleanExpression conjunct : block.getSubBlocks())
+      if (!readsDepth(conjunct))
+        kept.getSubBlocks().add(conjunct);
+    if (kept.getSubBlocks().isEmpty())
+      return null;
+    final WhereClause result = new WhereClause();
+    result.setBaseExpression(kept);
+    return result;
   }
 
   /**
