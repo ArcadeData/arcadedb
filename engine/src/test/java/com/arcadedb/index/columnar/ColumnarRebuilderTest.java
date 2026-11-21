@@ -312,6 +312,54 @@ class ColumnarRebuilderTest extends TestHelper {
   }
 
   @Test
+  void theReconcileAfterAFailedCreateWaitsForItsBackoff() throws Exception {
+    // the race behind the flaky test above: the first reconcile of the DDL ran after the create it scheduled had failed, saw the column
+    // neither published nor rebuilding, and scheduled a second create at once, before the backoff the failure had just set
+    createIndexedAssets(2_000);
+    final int bucketId = database.getSchema().getType("Asset").getBuckets(false).getFirst().getFileId();
+    final ColumnarProjection projection = manager().projection(bucketId);
+    final long[] now = { 1_000_000L };
+    manager().setClockForTesting(() -> now[0]);
+    final AtomicInteger scans = new AtomicInteger();
+    final AtomicBoolean failing = new AtomicBoolean(true);
+    ColumnarTestHooks.killPoint = name -> {
+      if (name.equals(ColumnarRebuilder.SCANNED)) {
+        scans.incrementAndGet();
+        if (failing.get())
+          throw new IllegalStateException("Simulated write failure of a columnar rebuild");
+      }
+    };
+    final CountDownLatch columnAdded = new CountDownLatch(1);
+    manager().addSchemaEventListener(event -> {
+      if (event.kind() == ColumnarSchemaEvent.Kind.ADD_COLUMN && event.bucketFileId() == bucketId)
+        columnAdded.countDown();
+    });
+
+    // the passes are held until the create of the DDL has failed, so its reconcile comes after the failure
+    final AutoCloseable passes = manager().suspendApply();
+    database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
+    awaitRebuildRuns(projection, scans, 1);
+    assertThat(manager().rebuildBackoffMsForTesting(bucketId)).isEqualTo(ColumnarIndexManager.REBUILD_RETRY_BASE_MS);
+    passes.close();
+    // a hang detector, not a latency bound
+    assertThat(columnAdded.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+    // the listeners hear the event once the reconcile applied it: nothing was scheduled before the backoff elapsed
+    assertThat(projection.rebuildRequest.get()).as("the reconcile scheduled a create before the backoff elapsed").isNull();
+    assertThat(scans.get()).isEqualTo(1);
+
+    // the retry on schedule builds the column the reconcile added
+    failing.set(false);
+    now[0] += ColumnarIndexManager.REBUILD_RETRY_BASE_MS;
+    manager().scheduleMaintenanceForTesting();
+    awaitRebuildRuns(projection, scans, 2);
+    ColumnarTestHooks.killPoint = null;
+    awaitCaughtUp();
+    assertThat(projection.isPublishedWith(columnarIndex("color").getFileId())).isTrue();
+    assertMatchesGroupBy("color");
+  }
+
+  @Test
   void aFailedRebuildOfAnUncheckedProjectionWithoutCheckMarkerMovesTheObligationToTheRebuildMarker() throws Exception {
     // batch 2 N3: an unclean check whose CHECK marker cannot be written, and whose rebuild fails, must not keep the WAL for the session
     createIndexedAssets(500);
