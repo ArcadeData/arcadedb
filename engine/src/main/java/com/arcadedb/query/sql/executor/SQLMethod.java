@@ -77,6 +77,22 @@ public interface SQLMethod extends Comparable<SQLMethod> {
   }
 
   /**
+   * Whether two calls to this method on the same value and arguments always return the same result and never read or write
+   * anything outside them: no wall clock, no random source, no database setting, no schema or record lookup. The planner reads it,
+   * without invoking the method, to decide whether a statement containing the call can have its execution plan cached, the same
+   * question {@link SQLFunction#isDeterministic()} answers for functions (#6190). A method that does not say so is assumed not to
+   * be, so a statement calling it is planned again on every execution.
+   * <p>
+   * Answering {@code true} wrongly is silent and reaches user data: a plan that holds a call whose result changes between
+   * executions would be reused. Defaults to {@code false}.
+   *
+   * @return {@code true} only when the method is a pure, total function of the value it is applied to and its arguments
+   */
+  default boolean isDeterministic() {
+    return false;
+  }
+
+  /**
    * Process a record.
    *
    * @param self          current object
