@@ -83,7 +83,9 @@ public class SQLMethodAsJSON extends AbstractSQLMethod {
     } else if (MultiValue.isMultiValue(me)) {
       final JSONArray json = new JSONArray();
       for (final Object o : MultiValue.getMultiValueIterable(me, false))
-        json.put(execute(o, currentRecord, context, params));
+        // A number or a boolean is already a JSON value: the element has no other conversion, and answering null for it
+        // turned [1,2] into [null,null] (issue #12835)
+        json.put(o instanceof Number || o instanceof Boolean ? o : execute(o, currentRecord, context, params));
       return json;
     }
 
