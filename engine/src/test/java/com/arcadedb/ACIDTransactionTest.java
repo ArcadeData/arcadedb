@@ -185,9 +185,10 @@ class ACIDTransactionTest extends TestHelper {
   /**
    * The same crash, with the dictionary's header page not on disk when the process dies, which the flush thread decides
    * (issue #11998). The reopen then writes that page in a transaction of its own, before the WAL is replayed, so a callback
-   * left registered on the factory failed the reopen itself. Emptying the file stands for the page the flush never wrote,
-   * as in SchemaReloadDictionaryPagesNotFlushedTest; it also drops what the WAL replay of the crashed transaction builds on,
-   * so this variant pins the reopen only.
+   * left registered on the factory failed the reopen itself. Emptying the file stands for the page the flush never wrote, as
+   * in RecoveryDictionaryPagesNotFlushedTest: the WAL still holds the dictionary's pages, so the replay restores the names
+   * and the crashed row. The commits the open makes are counted, so the variant cannot go on passing after the open stopped
+   * writing that page, which is the one thing it exists to cover.
    */
   @Test
   void iOExceptionAfterWALIsWrittenBeforeTheDictionaryPageReachedTheDisk() throws IOException {
@@ -224,15 +225,22 @@ class ACIDTransactionTest extends TestHelper {
 
     verifyWALFilesAreStillPresent();
 
-    if (dictionaryPageLost)
+    final AtomicInteger commitsOfTheOpen = new AtomicInteger(0);
+    final Callable<Void> commitCounter = () -> {
+      commitsOfTheOpen.incrementAndGet();
+      return null;
+    };
+
+    if (dictionaryPageLost) {
       emptyTheDictionaryFile();
+      factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
+    }
 
     verifyDatabaseWasNotClosedProperly();
 
     if (dictionaryPageLost) {
-      assertThat(((DatabaseInternal) database).getSchema().getEmbedded().getDictionary().wasHeaderPageRecreated())
-          .as("the reopen wrote the dictionary's header page in a transaction of its own").isTrue();
-      return;
+      ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
+      assertThat(commitsOfTheOpen.get()).as("the open wrote the dictionary's header page in a transaction of its own").isPositive();
     }
 
     database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(1));
