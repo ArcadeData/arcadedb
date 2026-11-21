@@ -280,6 +280,22 @@ public class GraphEngine {
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
                                          final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, true);
+  }
+
+  /**
+   * Creates the lightweight edge as {@link #newLightEdge(VertexInternal, String, Identifiable)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the destination vertex (issue #12602). Engine-internal: public only because the async tasks, which write each vertex from
+   * the one worker its bucket belongs to, live in another package. Every other way to create an edge wires both sides.
+   */
+  public ImmutableLightEdge newOutgoingOnlyLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
+                                                     final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, false);
+  }
+
+  private ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                          final boolean wireIncoming) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -303,7 +319,7 @@ public class GraphEngine {
         fromVertexRID, toVertex.getIdentity());
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (edgeType.isBidirectional())
+    if (wireIncoming && edgeType.isBidirectional())
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -345,7 +361,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
                              final Object... edgeProperties) {
-    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
+    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, true, null, edgeProperties);
     if (edge == null)
       throw RecordVetoedException.ofCreateEdge(edgeTypeName, fromVertex, toVertex);
     return edge;
@@ -363,7 +379,22 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                           final Object... edgeProperties) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, null, edgeProperties);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, null, edgeProperties);
+  }
+
+  /**
+   * Creates the edge as {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the vertex the edge ends at (issue #12602). That is the vertex the edge record names ({@link #newEdgeEndpoint}), which an
+   * {@code @in} among the properties can make another one than {@code toVertex}: read it back with {@link Edge#getIn()}.
+   * Engine-internal: public only because the async tasks, which write each vertex from the one worker its bucket belongs to, live in
+   * another package. Every other way to create an edge wires both sides.
+   *
+   * @return the created edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
+  public MutableEdge newOutgoingOnlyEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                                      final Object... edgeProperties) {
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, false, null, edgeProperties);
   }
 
   /**
@@ -382,7 +413,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeInitializedReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                                      final Consumer<MutableEdge> initializer) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, initializer, NO_PROPERTIES);
   }
 
   /**
@@ -436,9 +467,15 @@ public class GraphEngine {
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
   }
 
-  /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */
+  /**
+   * @param wireIncoming {@code false} leaves the incoming side of a bidirectional type to the caller (issue #12602, see
+   *                     {@link #newOutgoingOnlyEdgeReportingVeto}); every public way to create an edge passes {@code true}
+   *
+   * @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
   private MutableEdge createEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
-                                 final Consumer<MutableEdge> initializer, final Object... edgeProperties) {
+                                 final boolean wireIncoming, final Consumer<MutableEdge> initializer,
+                                 final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -485,7 +522,7 @@ public class GraphEngine {
       if (initializer != null)
         initializer.accept(lightEdge);
       connectOutgoingEdge(fromVertex, toVertex, lightEdge);
-      if (type.isBidirectional())
+      if (wireIncoming && type.isBidirectional())
         connectIncomingEdge(toVertex, fromVertexRID, lightEdge.getIdentity());
 
       return lightEdge;
@@ -507,7 +544,7 @@ public class GraphEngine {
       return null;
 
     connectOutgoingEdge(source, destination, edge);
-    if (type.isBidirectional())
+    if (wireIncoming && type.isBidirectional())
       connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -648,7 +685,7 @@ public class GraphEngine {
         // AN EARLIER LIGHT EDGE OF THIS BATCH MAY HAVE CREATED THE OUT LIST ON THE TRANSACTION'S COPY OF THE VERTEX: THE UNIQUENESS
         // CHECK HAS TO READ THAT COPY, OR A UNIQUE TYPE ACCEPTS THE SAME PAIR TWICE IN ONE BATCH
         final MutableEdge lightEdge = createEdge(getMostUpdatedVertex(sourceVertex), connection.edgeTypeName, destinationVertex,
-            null, connection.edgeProperties);
+            true, null, connection.edgeProperties);
         if (lightEdge != null)
           edges.add(lightEdge);
         continue;
