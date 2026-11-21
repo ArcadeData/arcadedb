@@ -4334,7 +4334,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final TimeSeriesBucket.Builder bucket = TimeSeriesBucket.newBuilder().setTimestamp(timestamp);
       for (int r = 0; r < requests.size(); r++)
         // NOT setDoubleValue: an absent MIN/MAX answers NaN, which a client would otherwise read as a number.
-        bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getValue(timestamp, r)));
+        bucket.addValues(GrpcTimeSeriesSupport.toSampleValue(result.getWireValue(timestamp, r)));
       final TimeSeriesBucket built = bucket.build();
       batch.add(built);
       batchBytes += built.getSerializedSize();
