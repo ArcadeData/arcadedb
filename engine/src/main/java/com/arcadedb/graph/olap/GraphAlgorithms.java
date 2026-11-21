@@ -1895,7 +1895,8 @@ public final class GraphAlgorithms {
    */
   private static double[] lccBuildAndIntersect(final GraphAnalyticalView.Pinned view, final String[] types, final int n,
       final WorkCheckpoint checkpoint) {
-    final boolean singleType = types.length == 1;
+    // A type with no edges has no CSR slice: with only that one type there is nothing to merge, and the general branch below skips it
+    final boolean singleType = types.length == 1 && view.getCSRIndex(types[0]) != null;
     // First pass: compute degree per node
     final int[] degree = new int[n];
     for (final String edgeType : types) {
