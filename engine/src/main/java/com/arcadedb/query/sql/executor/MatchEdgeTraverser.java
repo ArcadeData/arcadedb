@@ -523,16 +523,24 @@ public class MatchEdgeTraverser {
     return item.getFilter().getFilter();
   }
 
+  /**
+   * The type, bucket and RID of the node this walk reaches: the ones written on the walked item, else the ones the pattern gives the alias on
+   * another of its occurrences (the planner merges them over all of them, as the backwards walk already relies on), so a node is not
+   * accepted by a hop merely because its type, bucket or RID was written on a different occurrence of the alias (issue #12937).
+   */
   protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getTypeName(iCommandContext);
+    final String own = item.getFilter().getTypeName(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightClass();
   }
 
   protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getBucketName(iCommandContext);
+    final String own = item.getFilter().getBucketName(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightCluster();
   }
 
   protected Rid targetRid(final MatchPathItem item, final CommandContext iCommandContext) {
-    return item.getFilter().getRid(iCommandContext);
+    final Rid own = item.getFilter().getRid(iCommandContext);
+    return own != null || edge == null || item != this.item ? own : edge.getRightRid();
   }
 
   private boolean matchesClass(final String className, final Identifiable origin) {
