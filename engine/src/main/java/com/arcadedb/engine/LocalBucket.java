@@ -795,12 +795,23 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // #6196: FIRST_CHUNK and not isChunkHead(), deliberately. A record EXISTS at this RID when the slot holds one of
       // its own; the head chunk of a placeholder's CONTENT holds somebody else's bytes and answers false here exactly
       // as the negated size marker of a content record that fitted its page always has.
-      final long recordSize = readRecordSizeMarker(rid);
+      // committedWhenHidden = true: a record only the committed page has (see isRecordHiddenByOwnPageImage) is a record that is there
+      final long recordSize = readRecordSizeMarker(rid, true);
       return recordSize > 0 || recordSize == RECORD_PLACEHOLDER_POINTER || recordSize == FIRST_CHUNK;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on checking record existence for " + rid, e);
     }
+  }
+
+  /**
+   * {@link #isRecordHiddenByOwnPageImage} for a transaction that reads what is committed: under {@code READ_COMMITTED} the image of a
+   * page the transaction wrote is an artifact of the write, so the committed record is the one it reads. {@code REPEATABLE_READ} asked
+   * for a snapshot, and a record committed after it was taken is not in it.
+   */
+  private boolean isHiddenFromReadCommittedByOwnPageImage(final RID rid) {
+    return database.getTransaction().getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED
+        && isRecordHiddenByOwnPageImage(rid);
   }
 
   /**
@@ -818,7 +829,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       return false;
 
     try {
-      return readRecordSizeMarker(rid) > 0;
+      // committedWhenHidden = false: the slot of the transaction's own image, as the commit-time rebase has to see it
+      return readRecordSizeMarker(rid, false) > 0;
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on checking record layout for " + rid, e);
@@ -830,8 +842,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * record, {@link #RECORD_PLACEHOLDER_POINTER}, {@link #FIRST_CHUNK}, {@link #NEXT_CHUNK}, negative =
    * placeholder content), or {@code 0} (the deleted marker) when the page or slot does not exist or the record was
    * deleted. A plain long rather than the {size, bytes} pair: no caller needs the size of the marker (#10656).
+   *
+   * @param committedWhenHidden for a caller that only asks whether a record is there (#12644): a slot the transaction's own image of
+   *                            the page has no record in, while a commit put one there after the image was taken, answers {@code 1},
+   *                            a record of its own, as {@link #getRecordInternal} serves that record from the committed page, and
+   *                            no read of the image is recorded. The marker of the committed record is not read. {@code false}
+   *                            for a caller that wants the slot of the image itself, as the commit-time rebase does
    */
-  private long readRecordSizeMarker(final RID rid) throws IOException {
+  private long readRecordSizeMarker(final RID rid, final boolean committedWhenHidden) throws IOException {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -843,16 +861,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     final TransactionContext transaction = database.getTransaction();
     final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
+
+    final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+    final int recordPositionInPage = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
+
+    if (recordPositionInPage == 0 && committedWhenHidden && isHiddenFromReadCommittedByOwnPageImage(rid))
+      return 1L;
+
     // #11590: an answer read from the transaction's own image of the page may be stale, which its commit has to know
     transaction.trackReadFromPage(page, positionInPage);
 
-    final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
-    if (positionInPage >= recordCountInPage)
-      return 0L;
-
-    final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
     if (recordPositionInPage == 0)
-      // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
+      // BEYOND THE RECORD COUNT, OR A DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
       return 0L;
 
     return page.readNumber(recordPositionInPage);
@@ -3056,17 +3076,29 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // ONE LOOKUP OF THE TRANSACTION'S PAGES PER RECORD, NOT TWO: getPage() WOULD ASK THEM AGAIN (#11007). EVERY READ OF THE
       // PAGE BELOW IS AT AN ABSOLUTE POSITION, THE CONTENT IS HANDED OUT AS A VIEW OF ITS OWN: THE SHARED VIEW SERVES IT (#10820)
       final BasePage page = heldPage != null ? heldPage : readTransaction.getPageNotHeldForAbsoluteReads(headPageId, pageSize);
+
+      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
+      final int recordPositionInPage = positionInPage < recordCountInPage ? getRecordPositionInPage(page, positionInPage) : 0;
+
+      // #12644: a slot the transaction's own image of the page has no record in is read from the committed page when a commit put
+      // the record there after the image was taken, which only a transaction that holds the page can be told apart from. Under
+      // READ_COMMITTED the image is an artifact of the transaction having written the page, not a snapshot it asked for. No read of
+      // the image is recorded: the record read is the committed one
+      if (recordPositionInPage == 0 && heldPage != null && !readPlaceHolderContent && isHiddenFromReadCommittedByOwnPageImage(rid)) {
+        final Binary committed = getRecordFromCommittedPage(rid);
+        if (committed != null)
+          return committed;
+      }
+
       // #11590: a record read from the transaction's own image of the page, which misses what others committed there after its
       // first write, is recorded so the commit does not merge the page when this read may have been stale. A slot found empty
       // too: the record may have been committed there since
       if (heldPage != null)
         readTransaction.trackReadFromPage(heldPage, positionInPage);
 
-      final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      final int recordPositionInPage = getRecordPositionInPage(page, positionInPage);
       if (recordPositionInPage == 0)
         // DELETED RECORD (>= 24.1.1, IT WAS CLEANED CORRUPTED RECORD BEFORE)
         return null;
@@ -3994,9 +4026,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * a page THIS transaction has also modified (#5279).
    */
   public boolean existsRecordInCommittedPage(final RID rid) {
+    // A ZERO SIZE MARKS A RECORD DELETED BEFORE v24.1.1; ANY OTHER VALUE (INCLUDING PLACEHOLDERS AND CHUNKS) IS A RECORD
+    return committedSizeMarker(rid) != 0L;
+  }
+
+  /**
+   * The size marker of the slot of {@code rid} in the CURRENT COMMITTED state of its page, ignoring the calling transaction's own
+   * image of that page, or {@code 0} when no record is committed there (a free slot, a page that is not there or not readable).
+   * See {@link #readRecordSizeMarker} for the values.
+   */
+  private long committedSizeMarker(final RID rid) {
     final long position = rid.getPosition();
     if (position < 0)
-      return false;
+      return 0L;
 
     final int pageNumber = (int) (position / maxRecordsInPage);
     final int positionInPage = (int) (position % maxRecordsInPage);
@@ -4004,20 +4046,66 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       final BasePage committed = database.getPageManager()
               .getImmutablePage(new PageId(database, file.getFileId(), pageNumber), pageSize, false, false);
       if (committed == null || positionInPage >= committed.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
-        return false;
+        return 0L;
 
       final int recordPositionInPage = getRecordPositionInPage(committed, positionInPage);
       if (recordPositionInPage == 0)
         // FREE SLOT (NEVER USED OR DELETED)
-        return false;
+        return 0L;
 
-      // A ZERO SIZE MARKS A RECORD DELETED BEFORE v24.1.1; ANY OTHER VALUE (INCLUDING PLACEHOLDERS AND CHUNKS) IS A RECORD
-      return committed.readNumber(recordPositionInPage) != 0L;
+      return committed.readNumber(recordPositionInPage);
 
     } catch (final Exception e) {
       // The page is not there (or not readable): the record is certainly not committed at that position.
-      return false;
+      return 0L;
     }
+  }
+
+  /**
+   * Tells whether the calling transaction holds an image of the page of {@code rid} that cannot contain the record, while the
+   * committed page has it (#12644). The image is older than a commit that created the record there: the transaction pinned or
+   * wrote the page first, so every read of the page goes through that image, which stops at the record count the page had then,
+   * and no wait makes the record visible to it. It is not a publication in flight, which a retry outlasts.
+   * <p>
+   * The slot is beyond the record count of the image, or a hole below it: the transaction's own insert past the committed
+   * count leaves the slots it skipped as holes of its image, which is where a concurrent commit put its record. A hole the
+   * transaction made itself, by deleting the record, is not hidden: the committed page still holds it, and for the transaction
+   * it is gone.
+   * <p>
+   * Cheap on the common path: a transaction that holds no page of the record answers without reading any page.
+   */
+  public boolean isRecordHiddenByOwnPageImage(final RID rid) {
+    final long position = rid.getPosition();
+    if (position < 0)
+      return false;
+
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null)
+      return false;
+
+    final int pageNumber = (int) (position / maxRecordsInPage);
+    if (pageNumber >= pageCount.get())
+      // A page no commit has published yet: the transaction's image of it is the only one there is
+      return false;
+
+    final BasePage held = tx.getPinnedPage(new PageId(database, file.getFileId(), pageNumber));
+    if (held == null)
+      return false;
+
+    final int slot = (int) (position % maxRecordsInPage);
+    if (slot < held.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET))
+      try {
+        if (getRecordPositionInPage(held, slot) != 0 || tx.isDeletedInTransaction(rid))
+          return false;
+      } catch (final IOException e) {
+        // not being able to read the image does not make the record hidden
+        return false;
+      }
+
+    // A record of its own, the shapes isRecordPresent accepts and getRecordFromCommittedPage serves: the continuation chunk of a
+    // multi-page record or the content behind a placeholder pointer, which a concurrent commit can put there as well, is not one
+    final long committedMarker = committedSizeMarker(rid);
+    return committedMarker > 0 || committedMarker == RECORD_PLACEHOLDER_POINTER || committedMarker == FIRST_CHUNK;
   }
 
   /**
