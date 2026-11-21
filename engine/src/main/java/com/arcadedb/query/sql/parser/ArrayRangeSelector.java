@@ -45,7 +45,7 @@ public class ArrayRangeSelector extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (from != null) {
       builder.append(from);
-    } else {
+    } else if (fromSelector != null) {
       fromSelector.toString(params, builder);
     }
     if (newRange) {
@@ -58,7 +58,7 @@ public class ArrayRangeSelector extends SimpleNode {
     }
     if (to != null) {
       builder.append(to);
-    } else {
+    } else if (toSelector != null) {
       toSelector.toString(params, builder);
     }
   }
@@ -74,33 +74,11 @@ public class ArrayRangeSelector extends SimpleNode {
     if (fromSelector != null) {
       lFrom = fromSelector.getValue(currentRecord, result, context);
     }
-    if (lFrom == null) {
-      lFrom = 0;
-    }
     Integer lTo = to;
     if (toSelector != null) {
       lTo = toSelector.getValue(currentRecord, result, context);
     }
-    if (included) {
-      lTo++;
-    }
-    if (lFrom > lTo) {
-      return null;
-    }
-    final Object[] arrayResult = MultiValue.array(result);
-
-    if (arrayResult == null || arrayResult.length == 0) {
-      return arrayResult;
-    }
-    lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom) {
-      return null;
-    }
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
-
-    lTo = Math.min(lTo, arrayResult.length);
-
-    return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
+    return slice(result, lFrom, lTo);
   }
 
   public Object execute(final Result currentRecord, final Object result, final CommandContext context) {
@@ -114,17 +92,23 @@ public class ArrayRangeSelector extends SimpleNode {
     if (fromSelector != null) {
       lFrom = fromSelector.getValue(currentRecord, result, context);
     }
-    if (lFrom == null) {
-      lFrom = 0;
-    }
     Integer lTo = to;
     if (toSelector != null) {
       lTo = toSelector.getValue(currentRecord, result, context);
     }
-    if (included) {
-      lTo++;
-    }
-    if (lFrom > lTo) {
+    return slice(result, lFrom, lTo);
+  }
+
+  /**
+   * The elements from {@code lFrom} (0 when absent) up to {@code lTo} (the end when absent), the end included for the inclusive
+   * form. The bounds are clamped into the list, so a range that lies outside it is empty: it used to answer the last element
+   * for a start at the list's length, wrap an inclusive end of {@code Integer.MAX_VALUE} to {@code null}, and throw for an end
+   * below zero (issue #12849). A reversed range ({@code [3..1]}) answers {@code null}, as before.
+   */
+  private Object slice(final Object result, final Integer lFrom, final Integer lTo) {
+    final long start = lFrom == null ? 0 : lFrom;
+    final long end = lTo == null ? Long.MAX_VALUE : (long) lTo + (included ? 1 : 0);
+    if (start > end) {
       return null;
     }
     final Object[] arrayResult = MultiValue.array(result);
@@ -132,14 +116,10 @@ public class ArrayRangeSelector extends SimpleNode {
     if (arrayResult == null || arrayResult.length == 0) {
       return arrayResult;
     }
-    lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom)
-      return null;
+    final int first = (int) Math.min(Math.max(start, 0), arrayResult.length);
+    final int last = (int) Math.min(Math.max(end, first), arrayResult.length);
 
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
-    lTo = Math.min(lTo, arrayResult.length);
-
-    return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
+    return Arrays.asList(Arrays.copyOfRange(arrayResult, first, last));
   }
 
   /**

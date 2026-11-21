@@ -8572,6 +8572,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * Sets the FROM and TO of a range selector from the expressions of its context. The context lists only the expressions that
+   * are written, so an open range ({@code [ .. 2]}, {@code [1 ..]}) has one and its position, before or after the operator
+   * token, says which side it is: reading the first one as the FROM made {@code [ .. 2]} start at 2 (issue #12849).
+   */
+  private void readRangeBounds(final ArrayRangeSelector selector, final List<SQLParser.ExpressionContext> expressions,
+      final TerminalNode operator) {
+    final int operatorIndex = operator.getSymbol().getTokenIndex();
+    for (final SQLParser.ExpressionContext expressionCtx : expressions) {
+      final boolean isFrom = expressionCtx.getStart().getTokenIndex() < operatorIndex;
+      final Expression expression = (Expression) visit(expressionCtx);
+      final Integer literal = tryExtractIntegerLiteral(expression);
+      if (isFrom) {
+        if (literal != null)
+          // Simple integer literal - set from field directly
+          selector.from = literal;
+        else
+          selector.fromSelector = createArrayNumberSelectorFromExpression(expression);
+      } else if (literal != null)
+        selector.to = literal;
+      else
+        selector.toSelector = createArrayNumberSelectorFromExpression(expression);
+    }
+  }
+
+  /**
    * Visit array range selector: [0..3] (exclusive)
    */
   @Override
@@ -8585,32 +8610,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Set included flag (false for .. = exclusive)
       selector.included = false;
 
-      // Handle FROM expression (optional)
-      if (!ctx.expression().isEmpty() && ctx.expression(0) != null) {
-        final Expression fromExpr = (Expression) visit(ctx.expression(0));
-        final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
-        if (fromInt != null) {
-          // Simple integer literal - set from field directly
-          selector.from = fromInt;
-        } else {
-          // Complex expression - use fromSelector
-          selector.fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-        }
-      }
-
-      // Handle TO expression (optional)
-      if (ctx.expression().size() >= 2 && ctx.expression(1) != null) {
-        final Expression toExpr = (Expression) visit(ctx.expression(1));
-        final Integer toInt = tryExtractIntegerLiteral(toExpr);
-        if (toInt != null) {
-          // Simple integer literal - set to field directly
-          selector.to = toInt;
-        } else {
-          // Complex expression - use toSelector
-          final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
-          selector.toSelector = toSelector;
-        }
-      }
+      readRangeBounds(selector, ctx.expression(), ctx.RANGE());
 
     } catch (final Exception e) {
       throw new CommandSQLParsingException("Failed to build array range selector: " + e.getMessage(), e);
@@ -8633,32 +8633,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Set included flag (true for ... = inclusive)
       selector.included = true;
 
-      // Handle FROM expression (optional)
-      if (!ctx.expression().isEmpty() && ctx.expression(0) != null) {
-        final Expression fromExpr = (Expression) visit(ctx.expression(0));
-        final Integer fromInt = tryExtractIntegerLiteral(fromExpr);
-        if (fromInt != null) {
-          // Simple integer literal - set from field directly
-          selector.from = fromInt;
-        } else {
-          // Complex expression - use fromSelector
-          selector.fromSelector = createArrayNumberSelectorFromExpression(fromExpr);
-        }
-      }
-
-      // Handle TO expression (optional)
-      if (ctx.expression().size() >= 2 && ctx.expression(1) != null) {
-        final Expression toExpr = (Expression) visit(ctx.expression(1));
-        final Integer toInt = tryExtractIntegerLiteral(toExpr);
-        if (toInt != null) {
-          // Simple integer literal - set to field directly
-          selector.to = toInt;
-        } else {
-          // Complex expression - use toSelector
-          final ArrayNumberSelector toSelector = createArrayNumberSelectorFromExpression(toExpr);
-          selector.toSelector = toSelector;
-        }
-      }
+      readRangeBounds(selector, ctx.expression(), ctx.ELLIPSIS());
 
     } catch (final CommandSQLParsingException e) {
       throw e;
