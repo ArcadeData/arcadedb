@@ -183,19 +183,36 @@ public class SelectExecutor {
    * would keep a retired compacted file undroppable until the next restart.
    */
   long executeCount() {
+    return countMatches(Long.MAX_VALUE);
+  }
+
+  /**
+   * #5662: same as {@link #executeCount()}, and more acutely so - this method stops on the FIRST match, so the
+   * cursor is abandoned partway on every positive answer. It is the count loop capped at one: whether a row is left
+   * after the SKIP and the duplicates of a multi-cursor plan are skipped is the same question for both (#12685).
+   */
+  boolean executeExists() {
+    return countMatches(1L) > 0;
+  }
+
+  /**
+   * The records the select returns, counted with the SKIP and LIMIT of {@link SelectIterator} and at most {@code cap}.
+   */
+  private long countMatches(final long cap) {
     startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     try {
       final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
       final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
           ? ConcurrentHashMap.newKeySet() : null;
+      final long limit = select.limit > -1 ? Math.min(select.limit, cap) : cap;
 
       long count = 0;
       int skipped = 0;
       while (iterator.hasNext()) {
         // #6815: count() NEVER BUILDS A SelectIterator, IT DRAINS THE SOURCE IN THIS LOOP, SO THE DEADLINE HAS TO BE
         // CHECKED HERE TOO. A NON-THROWING TIMEOUT RETURNS THE PARTIAL TALLY, MATCHING THE TRUNCATED RESULT SET THE
-        // STREAMING PATH RETURNS
+        // STREAMING PATH RETURNS (exists() ANSWERS false: NO MATCH WAS FOUND WITHIN THE BUDGET)
         if (checkForTimeout())
           break;
 
@@ -203,6 +220,10 @@ public class SelectExecutor {
         if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
           continue;
         if (select.rootTreeElement == null || evaluateWhere(record)) {
+          // #12685: BEFORE THE SKIP TEST, AS SelectIterator.fetchNext() DOES. A SKIPPED RECORD THAT ANOTHER CURSOR DELIVERS
+          // AGAIN WAS COUNTED, AS IF IT WERE A NEW ROW
+          if (filterOutRecords != null)
+            filterOutRecords.add(record.getIdentity());
           if (skipped < select.skip) {
             skipped++;
             continue;
@@ -215,46 +236,17 @@ public class SelectExecutor {
           // ONCE THE LIMIT IS REACHED THE LOOP CAN ONLY BREAK ON THE *NEXT* MATCHING RECORD - VIA THE break BEING
           // NESTED INSIDE THIS evaluateWhere() BRANCH - SO A SELECTIVE WHERE WITH NO (limit+1)TH MATCH DEGRADES A
           // BOUNDED count() INTO A FULL SCAN OF THE REST OF THE TYPE)
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
-          if (filterOutRecords != null)
-            filterOutRecords.add(record.getIdentity());
           count++;
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
         }
       }
       return count;
     } finally {
-      // only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
+      // #5662: only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
       // MultiIterator over several buckets) hold no per-series file registration and are not closeable at all
-      if (iteratorFromIndexes != null)
-        iteratorFromIndexes.close();
-    }
-  }
-
-  /**
-   * #5662: same as {@link #executeCount()}, and more acutely so - this method returns on the FIRST match, so the
-   * cursor is abandoned partway on every positive answer.
-   */
-  boolean executeExists() {
-    startTimeout();
-    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
-    try {
-      final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-
-      while (iterator.hasNext()) {
-        // #6815: SAME AS executeCount(). A NON-THROWING TIMEOUT ANSWERS false - THE SCAN NEVER FOUND A MATCH WITHIN
-        // THE BUDGET IT WAS GIVEN, WHICH IS THE PARTIAL ANSWER THE CALLER ASKED TO BE GIVEN RATHER THAN AN EXCEPTION
-        if (checkForTimeout())
-          return false;
-
-        final Document record = iterator.next().asDocument();
-        if (select.rootTreeElement == null || evaluateWhere(record))
-          return true;
-      }
-      return false;
-    } finally {
       if (iteratorFromIndexes != null)
         iteratorFromIndexes.close();
     }
