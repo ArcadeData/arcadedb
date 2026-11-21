@@ -40,6 +40,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -980,9 +981,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final float[] effectiveWeights = new float[queryValues.length];
     if (useIDF) {
       final long n = totalDocuments();
-      // df is computed against engine.totalPostings under each dim. Cached per dim within this
-      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf
-      // mid-query don't multiply the cost.
+      // df is the postings under each dim of EVERY bucket of the type, as n counts every record of the type: a bucket's own
+      // postings against the type's records would weigh the same dim differently in each bucket. Cached per dim within this
+      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf mid-query don't multiply
+      // the cost.
       final HashMap<Integer, Long> dfCache = new HashMap<>();
       for (int i = 0; i < queryIndices.length; i++) {
         final int qDim = queryIndices[i];
@@ -994,7 +996,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         }
         Long df = dfCache.get(qDim);
         if (df == null) {
-          df = countPostings(qDim);
+          df = countPostingsInType(qDim);
           dfCache.put(qDim, df);
         }
         effectiveWeights[i] = queryValues[i] * idf(n, df);
@@ -1003,6 +1005,20 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
     }
     return effectiveWeights;
+  }
+
+  /** Counts the live postings under one dimension in every bucket index of the type this index belongs to. O(df). */
+  private long countPostingsInType(final int dim) {
+    final IndexInternal[] bucketIndexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : null;
+    if (bucketIndexes == null)
+      return countPostings(dim);
+    final List<LSMSparseVectorIndex> siblings = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMSparseVectorIndex.class, null);
+    if (!siblings.contains(this))
+      return countPostings(dim);
+    long df = 0L;
+    for (final LSMSparseVectorIndex sibling : siblings)
+      df += sibling.countPostings(dim);
+    return df;
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
