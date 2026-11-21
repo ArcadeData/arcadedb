@@ -280,10 +280,34 @@ public class RemoteSchema implements Schema {
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
         .collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
+    final ResultSet result = remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
+    return createdIndex(result, typeName);
+  }
+
+  /**
+   * The index a CREATE INDEX answered, as the server lists it (issue #12193): the methods creating an index returned null, so
+   * {@code createTypeIndex(...).setNullStrategy(...)} threw a {@link NullPointerException}.
+   */
+  private TypeIndex createdIndex(final ResultSet result, final String typeName) {
+    final String indexName;
+    try (result) {
+      indexName = result.hasNext() ? result.next().getProperty("name") : null;
+    }
+    if (indexName == null)
+      return null;
+
+    final DocumentType type = getType(typeName);
+    try (final ResultSet rows = remoteDatabase.commandUncounted("sql", "select from schema:indexes where name = :name",
+        Map.of("name", indexName))) {
+      while (rows.hasNext()) {
+        final Result row = rows.next();
+        if (RemoteTypeIndex.isTypeIndexRow(row))
+          return new RemoteTypeIndex(remoteDatabase, (RemoteDocumentType) type, row);
+      }
+    }
     return null;
   }
 
@@ -311,11 +335,11 @@ public class RemoteSchema implements Schema {
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
         .collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
+    final ResultSet result = remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
-    return null;
+    return createdIndex(result, typeName);
   }
 
   @Override
