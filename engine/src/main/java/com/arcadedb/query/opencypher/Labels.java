@@ -713,6 +713,29 @@ public final class Labels {
     return result;
   }
 
+  /**
+   * The same read as {@link #matchesDynamicLabels(DocumentType, Object, boolean)} for an element that has no schema type
+   * and carries exactly the labels {@code own}: a virtual node or relationship (issue #12109).
+   *
+   * @throws TypeMismatchException when the value is not a string or a list of strings
+   */
+  public static boolean matchesDynamicLabels(final Collection<String> own, final Object value, final boolean any) {
+    if (value instanceof String label)
+      return own.contains(label);
+    boolean result = !any;
+    if (value instanceof Iterable<?> iterable) {
+      for (final Object item : iterable)
+        if (own.contains(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else if (value instanceof Object[] array) {
+      for (final Object item : array)
+        if (own.contains(requireDynamicMatchLabel(item)) == any)
+          result = any;
+    } else
+      throw dynamicMatchLabelTypeError(value, false);
+    return result;
+  }
+
   private static String requireDynamicMatchLabel(final Object item) {
     if (item instanceof String label)
       return label;
