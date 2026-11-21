@@ -306,6 +306,10 @@ public class HttpSession implements QuerySession {
               + "' was rolled back after a failed command and cannot run anything more. Send /rollback to end the session");
 
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
+        // THIS WORKER CARRIES THE SESSION'S TRANSACTION UNTIL IT LETS GO OF THE LOCK: A ROLLBACK IT RUNS (THE /rollback ROUTE, A FAILED
+        // COMMAND) RUNS THE WORK THE TRANSACTION OWES WHICHEVER WAY IT ENDS, REGISTERED BY THE WORKER OF AN EARLIER REQUEST (issue #12805)
+        if (transaction != null)
+          transaction.transferToCurrentThread();
         callback.call();
         // REFRESH WHILE STILL HOLDING THE LOCK: OTHERWISE THE IDLE-TIMEOUT SWEEP COULD tryLock() SUCCESSFULLY
         // IN THE GAP BETWEEN UNLOCK AND THIS ASSIGNMENT, SEE A STALE lastUpdate, AND ROLL BACK A TRANSACTION
