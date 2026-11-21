@@ -157,9 +157,9 @@ class ForwardedWriteRequestPropagationTest {
 
   static void forward(final RaftReplicatedDatabase db, final String command) throws Exception {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class);
+        String.class, String.class, Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
-    m.invoke(db, "sql", command, null, new Object[0]);
+    m.invoke(db, "sql", command, null, new Object[0], true);
   }
 
   static ContextConfiguration config() {
@@ -178,7 +178,7 @@ class ForwardedWriteRequestPropagationTest {
 
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
       final String clusterToken) {
-    return database(leader, localIsLeader, clusterToken, mock(LocalDatabase.class));
+    return database(leader, localIsLeader, clusterToken, localDatabase());
   }
 
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
@@ -352,7 +352,7 @@ class ForwardedWriteRequestPropagationTest {
   @Test
   void aWriteIssuedByACommandExecutedLocallyRelaysNoKey() throws Exception {
     try (final RecordingLeader leader = new RecordingLeader()) {
-      final LocalDatabase proxied = mock(LocalDatabase.class);
+      final LocalDatabase proxied = localDatabase();
       final QueryEngineManager engines = mock(QueryEngineManager.class);
       final QueryEngine engine = mock(QueryEngine.class);
       when(proxied.getQueryEngineManager()).thenReturn(engines);
@@ -574,9 +574,9 @@ class ForwardedWriteRequestPropagationTest {
 
     private static void forward(final RaftReplicatedDatabase db) throws Exception {
       final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-          String.class, String.class, Map.class, Object[].class);
+          String.class, String.class, Map.class, Object[].class, boolean.class);
       m.setAccessible(true);
-      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0]);
+      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0], true);
     }
 
     private static ContextConfiguration serverConfig() {
@@ -591,7 +591,7 @@ class ForwardedWriteRequestPropagationTest {
       final FakeRaftHAServer raft = FakeRaftHAServer.detached();
       raft.leaderHttpAddress(leader.address());
       raft.clusterToken(clusterToken);
-      final LocalDatabase local = mock(LocalDatabase.class);
+      final LocalDatabase local = localDatabase();
       when(local.getConfiguration()).thenReturn(databaseConfig);
       return new RaftReplicatedDatabase(server, local, raft);
     }
@@ -630,5 +630,15 @@ class ForwardedWriteRequestPropagationTest {
       }
     }
 
+  }
+
+  /**
+   * A mocked database with a path: a forward the leader answered marks the transactions stacked on the thread, looked up by the
+   * database path, and a null key fails that lookup once the thread has any database context left by an earlier test.
+   */
+  static LocalDatabase localDatabase() {
+    final LocalDatabase local = mock(LocalDatabase.class);
+    when(local.getDatabasePath()).thenReturn("ForwardedWriteRequestPropagationTest");
+    return local;
   }
 }
