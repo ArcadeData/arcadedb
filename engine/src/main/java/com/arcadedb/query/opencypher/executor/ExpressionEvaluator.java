@@ -162,6 +162,11 @@ public class ExpressionEvaluator {
       return expression.finishCoalesce(function, value, result, context);
     }
 
+    // size() of a one-hop pattern comprehension is a degree: the list is not built (issue #11891)
+    final Long size = expression.sizeWithoutList(function, result, context);
+    if (size != null)
+      return size;
+
     // Evaluate arguments
     final Object[] args = new Object[expression.getArguments().size()];
     for (int i = 0; i < args.length; i++) {
