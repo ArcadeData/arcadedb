@@ -2553,6 +2553,20 @@ public class LocalDocumentType implements DocumentType {
     return family == Schema.INDEX_TYPE.COLUMNAR ? base + COLUMNAR_NAME_SUFFIX : base;
   }
 
+  /**
+   * The user-supplied name an index of {@code typeName} on {@code propertyNames} is created under: {@code name} when it differs from
+   * the name {@link #defaultIndexName} derives, {@code null} otherwise. A name that IS the derived one (a REBUILD hands it back, and
+   * a user may spell it out) is no manual name and must not travel in the index metadata: the metadata outlives a rename of the type,
+   * and a copy of it made afterwards (TRUNCATE TYPE re-creating the index) would then compare the stale name with the derived one of
+   * the NEW type name and take it for a manual name (issue #12774).
+   */
+  public static String manualIndexName(final String typeName, final List<String> propertyNames, final Schema.INDEX_TYPE family,
+      final String name) {
+    if (name == null || name.isEmpty() || name.equals(defaultIndexName(typeName, propertyNames, family)))
+      return null;
+    return name;
+  }
+
   @Override
   public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
     return getPolymorphicIndexByProperties(Arrays.asList(properties));
