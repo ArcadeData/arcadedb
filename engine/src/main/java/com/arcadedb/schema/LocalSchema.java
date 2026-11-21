@@ -648,6 +648,16 @@ public class LocalSchema implements Schema {
    */
   public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines)
       throws IOException {
+    load(mode, initialize, deferTimeSeriesEngines, Collections.emptySet());
+  }
+
+  /**
+   * @param retiringFileIds files the new generation must not have, that the previous one still reads from until the barrier
+   *                        replaces it: those of a replicated compaction an HA replica retires only once this load has
+   *                        published (issue #12358). Left out of the components this load builds, as if already deleted
+   */
+  public void load(final ComponentFile.MODE mode, final boolean initialize, final boolean deferTimeSeriesEngines,
+      final Set<Integer> retiringFileIds) throws IOException {
     // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
     // has to leave the schema exactly as it found it.
     // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
@@ -716,7 +726,7 @@ public class LocalSchema implements Schema {
         throw new ConfigurationException("Dictionary file not found in database directory");
 
       for (final ComponentFile file : filesToOpen) {
-        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension()) && !retiringFileIds.contains(file.getFileId())) {
           final Component pf = componentFactory.createComponent(file, mode);
 
           if (pf != null)

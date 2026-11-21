@@ -19,6 +19,7 @@
 package com.arcadedb.exception;
 
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 
 /**
@@ -154,6 +155,8 @@ public enum ErrorCategory {
       new Rule(QueryTerminatedException.class, TERMINATED),
       new Rule(NeedRetryException.class, RETRY),
       new Rule(DatabaseIsReopeningException.class, RETRY),
+      // Above IllegalArgumentException, which its cause is: an index a replica replaced under the read, not a bad request (#12358)
+      new Rule(IndexReplacedException.class, RETRY),
       new Rule(TimeSeriesWalkCoarsenedException.class, RETRY),
       new Rule(QueryHeapBudgetExceededException.class, RETRY),
       new Rule(QueryAdmissionException.class, RETRY),

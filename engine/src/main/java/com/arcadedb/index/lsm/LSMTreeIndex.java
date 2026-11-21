@@ -42,6 +42,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplacedException;
 import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
@@ -65,6 +66,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Map;
 import java.util.Objects;
@@ -639,10 +641,35 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return total;
   }
 
+  /**
+   * {@code read} under the index read lock. A read that cannot reach the index's files because they were retired reads an
+   * index that a newer schema generation has replaced, as on an HA replica that applied a compaction while a query still held
+   * this instance (issue #12358). That is an {@link IndexReplacedException}, an {@link IndexException} as for an index dropped
+   * or rebuilt under a statement, which plans the statement again on the current generation, and retryable on every wire; not
+   * the {@link IllegalArgumentException} a missing or closed file is reported with, which a client takes for a bad request.
+   */
+  private IndexCursor readLive(final Callable<IndexCursor> read) {
+    try {
+      return lock.executeInReadLock(read);
+    } catch (final IllegalArgumentException e) {
+      final LSMTreeIndexMutable current = mutable;
+      final LSMTreeIndexCompacted subIndex = current.getSubIndex();
+      if (!isRetired(current.getFileId()) && (subIndex == null || !isRetired(subIndex.getFileId())))
+        throw e;
+      throw new IndexReplacedException("Index '" + getName() + "' was replaced while it was read: its file is retired", e);
+    }
+  }
+
+  /** Whether file {@code fileId} has left the database, or is on its way out: a drop closes it before it unlists it. */
+  private boolean isRetired(final int fileId) {
+    final ComponentFile file = getDatabase().getFileManager().getFileIfExists(fileId);
+    return file == null || file.isDropped();
+  }
+
   @Override
   public IndexCursor iterator(final boolean ascendingOrder) {
     checkIsValid();
-    return lock.executeInReadLock(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
+    return readLive(() -> new LSMTreeIndexCursor(mutable, ascendingOrder));
   }
 
   @Override
@@ -651,7 +678,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     // A bound of a kind the key type cannot hold bounds no entry (issue #10541): it used to be read as "no bound" and answer every one
     if (!canReadAsKeys(fromKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
+    return readLive(() -> mutable.iterator(ascendingOrder, fromKeys, inclusive));
   }
 
   @Override
@@ -660,8 +687,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     if (!canReadAsKeys(beginKeys) || !canReadAsKeys(endKeys))
       return EMPTY_CURSOR;
-    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys,
-        endKeysInclusive));
+    return readLive(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
 
   /**
@@ -839,7 +865,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       // the disk rows that a pending removal hides do not count towards the limit: each pending entry hides at most one row, so
       // that many more are read and the limit is applied to the merged rows below. A key-wide removal hides every row
       final int diskLimit = removals == null || removals.isKeyWide() || limit < 0 ? limit : (int) Math.min(Integer.MAX_VALUE, (long) limit + pendingEntries);
-      final IndexCursor result = lock.executeInReadLock(() -> mutable.get(convertedKeys, diskLimit));
+      final IndexCursor result = readLive(() -> mutable.get(convertedKeys, diskLimit));
 
       if (txChanges != null || removals != null) {
         if (txChanges == null)
@@ -858,7 +884,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       return result;
     }
 
-    return lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
+    return readLive(() -> mutable.get(convertedKeys, limit));
   }
 
   /**
