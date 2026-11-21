@@ -1319,7 +1319,7 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Applies retention policy: removes every sealed sample older than the given timestamp, dropping the blocks entirely older
-   * and rewriting a block that straddles it from the samples it keeps (issue #12887).
+   * and rewriting every block that straddles it from the samples it keeps (issue #12887).
    * Note: this only truncates sealed stores. To ensure mutable bucket data is also
    * covered, call {@link #compactAll()} before this method.
    * <p>
@@ -1329,6 +1329,21 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public void applyRetention(final long cutoffTimestamp) throws IOException {
     runSealedMaintenanceReplicated(shard -> shard.getSealedStore().truncateBefore(cutoffTimestamp));
+  }
+
+  /**
+   * Applies retention the way the maintenance scheduler does: as {@link #applyRetention(long)}, except that a block straddling the
+   * cutoff is rewritten only when at least half of its samples are older than the cutoff, or its oldest sample is older than the
+   * cutoff by a whole {@code retentionMs} more (see {@link TimeSeriesSealedStore#truncateBefore(long, long)}). A rewrite copies the
+   * whole sealed file, so a pass does not make one for the few samples that expired since the last pass; an expired sample stays at
+   * most one extra retention period.
+   *
+   * @param retentionMs the retention period of the type, positive
+   */
+  public void applyRetention(final long cutoffTimestamp, final long retentionMs) throws IOException {
+    // held at the smallest timestamp rather than wrapped around by a retention longer than the clock goes back
+    final long staleBefore = cutoffTimestamp < Long.MIN_VALUE + retentionMs ? Long.MIN_VALUE : cutoffTimestamp - retentionMs;
+    runSealedMaintenanceReplicated(shard -> shard.getSealedStore().truncateBefore(cutoffTimestamp, staleBefore));
   }
 
   /**

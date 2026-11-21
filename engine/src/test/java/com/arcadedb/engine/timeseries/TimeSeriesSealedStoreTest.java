@@ -1193,10 +1193,10 @@ class TimeSeriesSealedStoreTest {
       retention.join();
       engine.mergeSmallBlocks();
 
-      // retention drops whole blocks, so how many rows survive depends on how far the merge got: never more than were
-      // fed, never fewer than those at or after the cutoff
+      // retention removes every row before the cutoff whatever block a merge left it in (issue #12887), so exactly the rows at or
+      // after the cutoff survive, however far the merge got
       final List<Object[]> rows = allRows(engine);
-      assertThat(rows.size()).isBetween(750, 1_000);
+      assertThat(rows).hasSize(750);
       final int survivors = rows.size();
       assertThat(engine.checkIntegrity().problems()).isEmpty();
       reopenDatabase();

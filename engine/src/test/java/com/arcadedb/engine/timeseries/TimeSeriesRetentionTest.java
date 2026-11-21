@@ -21,6 +21,8 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockEntry;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -30,16 +32,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for TimeSeries retention policy execution.
- * Retention removes every sample older than the cutoff: a block entirely older than it is dropped, and a block that
- * straddles it is rewritten from the samples it keeps (issue #12887).
+ * Retention removes the samples older than the cutoff: a block entirely older than it is dropped, and a block that
+ * straddles it is rewritten from the samples it keeps (issue #12887). The maintenance pass rewrites such a block only once
+ * half of it expired or its oldest sample is a whole retention period past the cutoff.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class TimeSeriesRetentionTest extends TestHelper {
 
   private static final long DAY = 86_400_000L;
-  /** A fixed "now": retention is applied with an explicit cutoff, never by the clock or the scheduler. */
+  /** A fixed "now" for the tests that apply retention with an explicit cutoff rather than through the clock and the scheduler. */
   private static final long NOW = 1_800_000_000_000L;
+  private static final long RETENTION = 30 * DAY;
 
   /** Samples to append in one transaction: the timestamp, the sensor tag and the temperature of each. */
   private record Batch(long[] timestamps, Object[] sensors, Object[] values) {
@@ -326,8 +330,9 @@ class TimeSeriesRetentionTest extends TestHelper {
       assertThat(sealed.getBlockCount()).as("the old and the recent samples share one block").isEqualTo(1);
       assertThat(sealed.getTotalSampleCount()).isEqualTo(1_000L);
 
-      final long cutoff = NOW - 30 * DAY;
-      engine.applyRetention(cutoff);
+      final long cutoff = NOW - RETENTION;
+      // the bounded pass the scheduler runs: half of the block expired, and its oldest sample is 60 days past the cutoff
+      engine.applyRetention(cutoff, RETENTION);
 
       assertThat(sealed.getBlockCount()).isEqualTo(1);
       assertThat(sealed.getTotalSampleCount()).as("only the samples within the retention are stored").isEqualTo(500L);
@@ -376,15 +381,16 @@ class TimeSeriesRetentionTest extends TestHelper {
     try {
       final TimeSeriesShard shard = engine.getShard(0);
       appendAndCompact(shard, samples(NOW - 90 * DAY, 1_000L, 10, 0.0));
-      // daily from 40 to 21 days ago: the first ten are older than a 30-day cutoff, the one exactly at it is kept
+      // daily from 40 to 21 days ago: the first ten are older than a 30-day cutoff, the one exactly at it is kept. Half of the block
+      // expired, so the bounded pass rewrites it
       appendAndCompact(shard, samples(NOW - 40 * DAY, DAY, 20, 100.0));
       appendAndCompact(shard, samples(NOW - DAY, 1_000L, 10, 200.0));
 
       final List<BlockEntry> before = blocks(shard);
       assertThat(before).hasSize(3);
 
-      final long cutoff = NOW - 30 * DAY;
-      engine.applyRetention(cutoff);
+      final long cutoff = NOW - RETENTION;
+      engine.applyRetention(cutoff, RETENTION);
 
       final List<BlockEntry> after = blocks(shard);
       assertThat(after).hasSize(2);
@@ -412,7 +418,7 @@ class TimeSeriesRetentionTest extends TestHelper {
       }
 
       // A second pass at the same cutoff finds nothing older than it and rewrites nothing
-      engine.applyRetention(cutoff);
+      engine.applyRetention(cutoff, RETENTION);
       assertThat(blocks(shard).stream().map(b -> b.blockId).toList()).isEqualTo(after.stream().map(b -> b.blockId).toList());
     } finally {
       engine.close();
@@ -430,8 +436,8 @@ class TimeSeriesRetentionTest extends TestHelper {
       appendAndCompact(engine.getShard(2), samples(NOW - 5 * DAY, DAY, 5, 200.0));
       final long untouchedId = blocks(engine.getShard(2)).getFirst().blockId;
 
-      final long cutoff = NOW - 30 * DAY;
-      engine.applyRetention(cutoff);
+      final long cutoff = NOW - RETENTION;
+      engine.applyRetention(cutoff, RETENTION);
 
       final long[] expected = { 10, 5, 5 };
       for (int s = 0; s < 3; s++) {
@@ -487,11 +493,11 @@ class TimeSeriesRetentionTest extends TestHelper {
       final TimeSeriesSealedStore sealed = shard.getSealedStore();
       assertThat(sealed.getDownsampleRewriteCount()).isEqualTo(1L);
 
-      final long cutoff = NOW - 30 * DAY;
+      final long cutoff = NOW - RETENTION;
       assertThat(blocks(shard)).as("a downsampled block straddles the cutoff")
           .anyMatch(b -> b.minTimestamp < cutoff && b.maxTimestamp >= cutoff && b.downsampledGranularityMs == DAY);
 
-      engine.applyRetention(cutoff);
+      engine.applyRetention(cutoff, RETENTION);
 
       assertThat(blocks(shard)).isNotEmpty().allSatisfy(b -> {
         assertThat(b.minTimestamp).isGreaterThanOrEqualTo(cutoff);
@@ -510,6 +516,143 @@ class TimeSeriesRetentionTest extends TestHelper {
     } finally {
       engine.close();
     }
+  }
+
+  /**
+   * The bound on the rewrite (issue #12887): a rewrite copies the whole sealed file, so a straddling block whose expired samples are
+   * fewer than half of it, none of them a whole retention period past the cutoff, is left for a later pass rather than rewritten for
+   * the few samples that expired since the previous one.
+   */
+  // #12887
+  @Test
+  void aStraddlingBlockWithFewRecentlyExpiredSamplesIsLeftForALaterPass() throws Exception {
+    final TimeSeriesEngine engine = createEngine("retention_deferred_test", 1);
+    try {
+      final TimeSeriesShard shard = engine.getShard(0);
+      appendAndCompact(shard, expiredAndRecent(NOW, 2, 8));
+      final long blockId = blocks(shard).getFirst().blockId;
+
+      engine.applyRetention(NOW - RETENTION, RETENTION);
+
+      final List<BlockEntry> after = blocks(shard);
+      assertThat(after).hasSize(1);
+      assertThat(after.getFirst().blockId).as("the block is not rewritten").isEqualTo(blockId);
+      assertThat(after.getFirst().sampleCount).isEqualTo(10);
+      assertThat(after.getFirst().minTimestamp).as("its expired samples are still there").isEqualTo(NOW - 35 * DAY);
+    } finally {
+      engine.close();
+    }
+  }
+
+  /**
+   * The same block, on later passes: it stays while its oldest sample is younger than a whole retention period past the cutoff, and is
+   * rewritten by the first pass after that, although its expired samples are still fewer than half of it.
+   */
+  // #12887
+  @Test
+  void theSameBlockIsTrimmedOnceItsOldestSampleIsAWholeRetentionPastTheCutoff() throws Exception {
+    final TimeSeriesEngine engine = createEngine("retention_stale_test", 1);
+    try {
+      final TimeSeriesShard shard = engine.getShard(0);
+      appendAndCompact(shard, expiredAndRecent(NOW, 2, 8));
+      final long blockId = blocks(shard).getFirst().blockId;
+
+      // 24 days later the cutoff is 6 days ago and the oldest sample, 35 days before NOW, is not older than 36 days before NOW
+      final long earlier = NOW + 24 * DAY;
+      engine.applyRetention(earlier - RETENTION, RETENTION);
+      assertThat(blocks(shard).getFirst().blockId).isEqualTo(blockId);
+
+      // 26 days later the cutoff is 4 days ago, and the oldest sample is older than 34 days before NOW
+      final long later = NOW + 26 * DAY;
+      engine.applyRetention(later - RETENTION, RETENTION);
+
+      final List<BlockEntry> after = blocks(shard);
+      assertThat(after).hasSize(1);
+      assertThat(after.getFirst().blockId).as("the block is rewritten").isNotEqualTo(blockId);
+      assertThat(after.getFirst().sampleCount).isEqualTo(8);
+      assertThat(after.getFirst().minTimestamp).isEqualTo(NOW - DAY);
+    } finally {
+      engine.close();
+    }
+  }
+
+  /** Half of the block expired: rewritten at once, however young its expired samples are. */
+  // #12887
+  @Test
+  void aStraddlingBlockHalfOfWhichExpiredIsTrimmedAtOnce() throws Exception {
+    final TimeSeriesEngine engine = createEngine("retention_half_test", 1);
+    try {
+      final TimeSeriesShard shard = engine.getShard(0);
+      appendAndCompact(shard, expiredAndRecent(NOW, 5, 5));
+
+      engine.applyRetention(NOW - RETENTION, RETENTION);
+
+      final List<BlockEntry> after = blocks(shard);
+      assertThat(after).hasSize(1);
+      assertThat(after.getFirst().sampleCount).isEqualTo(5);
+      assertThat(after.getFirst().minTimestamp).isEqualTo(NOW - DAY);
+    } finally {
+      engine.close();
+    }
+  }
+
+  /**
+   * The maintenance pass applies the bounded rule with the type's own retention: the block of the issue (old samples a whole retention
+   * past the cutoff, half of the block) is trimmed, and a block with a few recently expired samples is left as it is. Timestamps are
+   * relative to the clock here, because the pass reads it; the automatic pass of both types is cancelled so only this one runs.
+   */
+  // #12887
+  @Test
+  void theMaintenancePassTrimsTheIssueBlockAndLeavesAYoungOne() throws Exception {
+    final LocalTimeSeriesType issue = createTypeWithRetention("RetentionIssue");
+    final LocalTimeSeriesType young = createTypeWithRetention("RetentionYoung");
+
+    // the layout of the issue in one block: 500 samples 90 days old, 500 from the last minute
+    final long now = System.currentTimeMillis();
+    final long[] timestamps = new long[1_000];
+    final Object[] sensors = new Object[1_000];
+    final Object[] values = new Object[1_000];
+    for (int i = 0; i < 1_000; i++) {
+      timestamps[i] = i < 500 ? now - 90 * DAY + i * 1_000L : now - 60_000L + (i - 500) * 100L;
+      sensors[i] = "sensor_A";
+      values[i] = (double) i;
+    }
+    final TimeSeriesShard issueShard = issue.getEngine().getShard(0);
+    appendAndCompact(issueShard, new Batch(timestamps, sensors, values));
+    assertThat(issueShard.getSealedStore().getBlockCount()).isEqualTo(1);
+
+    final TimeSeriesShard youngShard = young.getEngine().getShard(0);
+    appendAndCompact(youngShard, expiredAndRecent(now, 2, 8));
+    final long youngId = blocks(youngShard).getFirst().blockId;
+
+    TimeSeriesMaintenanceScheduler.runMaintenance(database, issue, "RetentionIssue");
+    TimeSeriesMaintenanceScheduler.runMaintenance(database, young, "RetentionYoung");
+
+    assertThat(issueShard.getSealedStore().getTotalSampleCount()).isEqualTo(500L);
+    assertThat(issueShard.getSealedStore().getGlobalMinTimestamp()).isEqualTo(now - 60_000L);
+    assertThat(blocks(youngShard).getFirst().blockId).isEqualTo(youngId);
+    assertThat(youngShard.getSealedStore().getTotalSampleCount()).isEqualTo(10L);
+  }
+
+  private LocalTimeSeriesType createTypeWithRetention(final String name) {
+    database.command("sql", "CREATE TIMESERIES TYPE " + name
+        + " TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE) SHARDS 1 RETENTION 30 DAYS");
+    ((LocalSchema) database.getSchema()).getTimeSeriesMaintenanceScheduler().cancel(name);
+    return (LocalTimeSeriesType) database.getSchema().getType(name);
+  }
+
+  /** {@code expired} samples 35 days before {@code now} (older than a 30-day cutoff), then {@code kept} samples from a day before it. */
+  private static Batch expiredAndRecent(final long now, final int expired, final int kept) {
+    final int count = expired + kept;
+    final long[] timestamps = new long[count];
+    final Object[] sensors = new Object[count];
+    final Object[] values = new Object[count];
+    for (int i = 0; i < count; i++) {
+      timestamps[i] = i < expired ? now - 35 * DAY + i * 1_000L : now - DAY + (i - expired) * 1_000L;
+      sensors[i] = "sensor_A";
+      values[i] = (double) i;
+    }
+    return new Batch(timestamps, sensors, values);
   }
 
   private TimeSeriesEngine createEngine(final String name, final int shards) throws Exception {

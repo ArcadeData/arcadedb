@@ -319,8 +319,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * that legitimately drops one of its blocks AND an unrelated downsample cycle elsewhere in the store, and
    * would then refuse an answer it could have given honestly. This closes it: {@link #truncateBefore} drops every
    * block OLDER than its cutoff, so a block with {@code maxTimestamp < retentionRemovedBelowTs} is gone because
-   * of retention, whatever else ran. A block that straddles the cutoff is rebuilt rather than dropped (issue #12887): it is not below
-   * the boundary, and a walk follows it to the rebuilt block through {@link #mergeLedger} instead.
+   * of retention, whatever else ran. A block that straddles the cutoff is rebuilt, or left for a later pass, rather than dropped
+   * (issue #12887): it is not below the boundary, and a walk follows a rebuilt one through {@link #mergeLedger} instead.
    * <p>
    * <b>It is monotonic, and only a LOWER boundary can be.</b> A retention cutoff is permanent and forward-only,
    * and time moves forward, so no legitimate later write lands below one already swept and the claim cannot
@@ -2746,21 +2746,38 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Removes every sample older than {@code timestamp}, the cutoff of a retention pass. A block entirely older is dropped without being
+   * Removes every sample older than {@code timestamp}: {@link #truncateBefore(long, long)} with every block that straddles the
+   * cutoff rebuilt, whatever share of it expired.
+   */
+  public void truncateBefore(final long timestamp) throws IOException {
+    truncateBefore(timestamp, Long.MAX_VALUE);
+  }
+
+  /**
+   * Removes the samples older than {@code timestamp}, the cutoff of a retention pass. A block entirely older is dropped without being
    * read, a block entirely newer is copied as it is, and a block that STRADDLES the cutoff is rebuilt from its samples at or after it
    * (issue #12887), as {@link #deleteSamples} rebuilds a block it removes rows from: it keeps its place in the time order and the
-   * granularity of a downsampled block, and takes a fresh identity. Only the straddling blocks are decoded, one per shard unless
-   * blocks overlap.
+   * granularity of a downsampled block, and takes a fresh identity.
    * <p>
    * Dropping whole blocks alone left expired samples behind: a slow series seals a small block per maintenance pass, and the merge of
    * small blocks folds them together whatever the time gap, so samples far older than the retention sat in a block whose newest
    * sample is recent, and stayed stored and queryable until the block filled up and aged out as a whole.
    * <p>
+   * A rebuild rewrites the whole file, and the oldest block of a store usually straddles the cutoff, so rebuilding it on every pass
+   * would rewrite a store of any size every pass for the few samples that expired since the last one. A straddling block is
+   * therefore rebuilt only when at least half of its samples are older than the cutoff, or when its oldest sample is older than
+   * {@code staleBefore}; otherwise it is left for a later pass. The maintenance scheduler passes a whole retention period before the
+   * cutoff, so an expired sample stays at most one extra retention period, and a block is rebuilt again only once either condition
+   * holds again. Deciding costs the decode of the timestamps of the straddling blocks, one per shard unless blocks overlap.
+   * <p>
    * A walk in flight that meets a block this dropped counts it as removed ({@link #retentionRemovedBelowTs}); one that meets a block
    * this rebuilt follows it to the rebuilt block through {@link #mergeLedger}, which hands it the rows the rebuild kept. The rows it
    * dropped are gone for good, as those of a dropped block, so either way the walk is answered short rather than refused.
+   *
+   * @param staleBefore a straddling block whose oldest sample is older than this is rebuilt whatever share of it expired;
+   *                    {@link Long#MAX_VALUE} rebuilds every straddling block
    */
-  public void truncateBefore(final long timestamp) throws IOException {
+  public void truncateBefore(final long timestamp, final long staleBefore) throws IOException {
     // nothing is older than the smallest timestamp, and the range below it would wrap
     if (timestamp == Long.MIN_VALUE)
       return;
@@ -2769,7 +2786,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
       final RebuildPlan trimmed = new RebuildPlan(findTimestampColumnIndex());
-      if (planRemoval(Long.MIN_VALUE, timestamp - 1, null, retained, trimmed) == 0L)
+      if (planRemoval(Long.MIN_VALUE, timestamp - 1, null, staleBefore, retained, trimmed) == 0L)
         return; // Nothing to truncate
 
       final BlockEntry[] rebuilt = rewriteWithBlocks(retained, trimmed);
@@ -2823,7 +2840,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.size());
       final RebuildPlan rebuilt = new RebuildPlan(findTimestampColumnIndex());
-      final long deleted = planRemoval(fromTs, toTs, tagFilter, retained, rebuilt);
+      final long deleted = planRemoval(fromTs, toTs, tagFilter, Long.MAX_VALUE, retained, rebuilt);
       if (deleted == 0L)
         return 0L;
 
@@ -2845,9 +2862,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * ({@code null} for any tags), and answers how many samples go: {@code retained} receives the blocks that keep every sample,
    * {@code rebuilt} the ones that keep some, and a block that keeps none is in neither. What each block costs is described at
    * {@link #deleteSamples}. Called under the directory write lock, which must still be held when the plan is written.
+   *
+   * @param staleBefore a block that would keep some of its samples is rebuilt only when at least half of them go or its oldest sample
+   *                    is older than this, and is otherwise retained whole, removing nothing (the retention bound of
+   *                    {@link #truncateBefore(long, long)}); {@link Long#MAX_VALUE} rebuilds every such block, as a delete must
    */
-  private long planRemoval(final long fromTs, final long toTs, final TagFilter tagFilter, final List<BlockEntry> retained,
-      final RebuildPlan rebuilt) throws IOException {
+  private long planRemoval(final long fromTs, final long toTs, final TagFilter tagFilter, final long staleBefore,
+      final List<BlockEntry> retained, final RebuildPlan rebuilt) throws IOException {
     final int tsColIdx = rebuilt.tsColIdx;
     final int[] filterColumns = tagFilter != null ? tagFilterColumns(tagFilter) : null;
     long removed = 0L;
@@ -2873,7 +2894,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
       final BitSet doomed = rowsToDelete(entry, timestamps, tagMatch, tagFilter, filterColumns, fromTs, toTs, tsColIdx);
       final int doomedCount = doomed.cardinality();
-      if (doomedCount == 0) {
+      if (doomedCount == 0 || (doomedCount * 2L < timestamps.length && entry.minTimestamp >= staleBefore)) {
         retained.add(entry);
         continue;
       }
