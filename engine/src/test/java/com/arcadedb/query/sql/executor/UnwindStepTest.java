@@ -23,8 +23,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -97,5 +100,64 @@ class UnwindStepTest extends TestHelper {
 
     assertThat(unwound).isEqualTo(expanded);
     assertThat(unwound).isEqualTo(1);
+  }
+
+  /**
+   * UNWIND hands its rows over as the caller reads them: a {@code LIMIT 1} over a list of a million elements used to build all
+   * million rows first (1.6 s and 700 MB of heap for two million elements), because the expansion of one input row was a list
+   * filled before its first row was returned.
+   */
+  @Test
+  void unwindReadsOnlyTheElementsTheCallerPulls() {
+    final AtomicInteger reads = new AtomicInteger();
+    final List<Integer> big = new AbstractList<>() {
+      @Override
+      public Integer get(final int index) {
+        reads.incrementAndGet();
+        return index;
+      }
+
+      @Override
+      public int size() {
+        return 1_000_000;
+      }
+    };
+
+    try (final ResultSet result = database.query("sql", "SELECT l FROM (SELECT :l AS l) UNWIND l LIMIT 3", Map.of("l", big))) {
+      final List<Integer> values = new ArrayList<>();
+      while (result.hasNext())
+        values.add(result.next().getProperty("l"));
+      assertThat(values).containsExactly(0, 1, 2);
+    }
+
+    assertThat(reads.get()).as("elements of the list read to answer LIMIT 3").isLessThan(100);
+  }
+
+  @Test
+  void unwindOfSeveralFieldsKeepsTheNestedOrderAndTheSingleRowCases() {
+    database.getSchema().createDocumentType("MultiUnwind");
+    database.transaction(() -> {
+      database.newDocument("MultiUnwind").set("id", 1).set("a", List.of(1, 2)).set("b", List.of("x", "y")).save();
+      database.newDocument("MultiUnwind").set("id", 2).set("a", List.of(3)).set("b", List.of()).save();
+      database.newDocument("MultiUnwind").set("id", 3).set("b", List.of("q")).save();
+    });
+
+    final List<String> rows = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT id, a, b FROM MultiUnwind UNWIND a, b")) {
+      while (result.hasNext()) {
+        final Result row = result.next();
+        rows.add(row.getProperty("id") + ":" + row.getProperty("a") + ":" + row.getProperty("b"));
+      }
+    }
+    assertThat(rows).containsExactly("1:1:x", "1:1:y", "1:2:x", "1:2:y", "2:3:null", "3:null:q");
+
+    rows.clear();
+    try (final ResultSet result = database.query("sql", "SELECT id, a, b FROM MultiUnwind UNWIND a, b SKIP 3 LIMIT 2")) {
+      while (result.hasNext()) {
+        final Result row = result.next();
+        rows.add(row.getProperty("id") + ":" + row.getProperty("a") + ":" + row.getProperty("b"));
+      }
+    }
+    assertThat(rows).containsExactly("1:2:y", "2:3:null");
   }
 }
