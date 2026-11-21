@@ -1498,6 +1498,12 @@ public class LocalDocumentType implements DocumentType {
         throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
 
+      // The OF type is refused BEFORE the property is built, for the same reason the construction below stays after the checks: the
+      // constructor registers the name in the dictionary, a commit of its own that a refusal after it leaves behind. On a Raft leader
+      // that commit is a page version no other node has, and the refused statement was quarantining the leader (issue #12958)
+      if (ofType != null)
+        LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType);
+
       // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
       // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
       // transaction of its own, so the write lock is held across that commit and the schema save it triggers.
