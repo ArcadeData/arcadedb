@@ -82,6 +82,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
 
+  /** Serializes this node's cluster-wide creates, see {@link #createDatabaseInCluster}. */
+  private final Object createDatabaseLock = new Object();
+
   /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
   static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
 
@@ -555,6 +558,57 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft != null)
       raft.waitForLocalApply();
+  }
+
+  /**
+   * Submits the install-database entry and waits for THIS node's apply of it, which is what creates the database here, as it
+   * does on every other node (issue #11848). Nothing is created before the entry commits, so an entry the cluster never
+   * commits leaves no database on any node, the submitting one included, and one that commits after the wait gave up
+   * creates the database everywhere through the same apply.
+   * <p>
+   * The name is checked first, as a local create checks it, and the check, the submit and the wait run under
+   * {@link #createDatabaseLock}: the apply skips an install of a database already present, so two creates of one name on this
+   * node would otherwise both pass the check and both report the database as created by them.
+   * <p>
+   * Holding the lock across the submit and the strict apply wait is deliberate: releasing it after the submit would let a second
+   * create of the name pass the check before the first entry applied. The cost is that a create waiting on a slow quorum (up to
+   * about twice {@code HA_QUORUM_TIMEOUT}) delays every other create on this node, which is acceptable for an operation this
+   * rare and this far from any read or write path.
+   * <p>
+   * A strict wait that gives up is reported as a {@link TransactionException}, as {@code createInReplicas} and the drop report
+   * theirs: the entry is already committed and creates the database everywhere when this node applies it, so a caller that sees
+   * the failure checks for the database before it retries.
+   * <p>
+   * No leader-exclusive window ({@code ArcadeStateMachine.beginLeaderExclusive}), unlike the install of an existing database:
+   * that window orders the entry after the transactions of the database the log already accepted, and a database that does not
+   * exist yet has none.
+   */
+  @Override
+  public boolean createDatabaseInCluster(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      throw new NeedRetryException("Database '" + databaseName + "' was not created: the Raft HA server is not available "
+          + "(the server may be restarting)");
+    if (raft.isRemovedFromConfiguration())
+      throw new NeedRetryException("Database '" + databaseName + "' cannot be created on this server: it is not a member of the "
+          + "Raft cluster's configuration any more (it left or was removed), so it receives no entries and could not apply this "
+          + "one. Send the request to a server of the cluster, or add this server back to it");
+
+    final long appliedIndex;
+    synchronized (createDatabaseLock) {
+      server.checkDatabaseCanBeCreated(databaseName);
+      try {
+        appliedIndex = RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(databaseName, false);
+        raft.waitForAppliedIndex(databaseName, appliedIndex, true);
+      } catch (final TransactionException | NeedRetryException e) {
+        throw e;
+      } catch (final Exception e) {
+        throw new TransactionException("Error creating database '" + databaseName + "' via Raft", e);
+      }
+    }
+    LogManager.instance().log(this, Level.INFO, "Database '%s' created through the install-database entry at index %d",
+        databaseName, appliedIndex);
+    return true;
   }
 
   @Override

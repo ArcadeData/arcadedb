@@ -30,6 +30,7 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
@@ -1070,10 +1071,15 @@ public class ServerControlPlane {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Creates {@code databaseName} on the whole cluster: locally first, then - when the resulting
-   * database is replicated - through the Raft install-database entry, so every peer installs it too.
+   * Creates {@code databaseName} on the whole cluster.
    * <p>
-   * Lives here rather than in a transport because a create that skips the second half is a cluster
+   * With high availability active the database is created by the replicated log alone
+   * ({@link HAServerPlugin#createDatabaseInCluster}): the install-database entry first, and the database on every node,
+   * this one included, when the entry is applied. Creating it here first and replicating it second left the database on
+   * this node only whenever the entry never committed (issue #11848): the cluster reported itself converged while this node
+   * served reads of a database the others did not have.
+   * <p>
+   * Lives here rather than in a transport because a create that skips the replication is a cluster
    * that disagrees about which databases exist, with no error reported to the caller. gRPC's
    * {@code CreateDatabase} called {@code server.createDatabase} alone until issue #7389, so the same
    * operation replicated over HTTP and did not over gRPC.
@@ -1085,8 +1091,19 @@ public class ServerControlPlane {
   public ServerDatabase createDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
+    final HAServerPlugin ha = server.getHA();
+    if (ha != null && ha.createDatabaseInCluster(databaseName)) {
+      final ServerDatabase created = server.getRegisteredDatabase(databaseName);
+      if (created == null)
+        throw new DatabaseOperationException("Database '" + databaseName + "' was created through the replicated log, "
+            + "but this server has not registered it: its apply failed here or a drop of it followed");
+      return created;
+    }
+
     final ServerDatabase database = server.createDatabase(databaseName, ComponentFile.MODE.READ_WRITE);
 
+    // The window of a starting server whose HA plugin already wraps the databases but is not registered as the server's HA
+    // implementation yet: the database is replicated the way an embedder's registered database is
     if (database.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase haDb)
       haDb.createInReplicas();
 
