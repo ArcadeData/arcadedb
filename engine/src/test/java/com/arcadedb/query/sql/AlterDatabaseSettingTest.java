@@ -21,6 +21,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
@@ -577,6 +578,23 @@ class AlterDatabaseSettingTest {
 
       assertThat(first.get()).isInstanceOf(NumberFormatException.class);
       assertThat(second.get()).isNull();
+      assertThat(database.countType("D", true)).isEqualTo(1);
+    }
+
+    /**
+     * The same failure on a thread that already had a context on this database: its transactions are rolled back before the new
+     * one is built, and the context is kept because it carries the current user. The next begin() read its missing transaction.
+     */
+    @Test
+    void aContextThatLostItsTransactionsGetsANewOneAtTheNextBegin() {
+      database.getSchema().createDocumentType("D");
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, "abc");
+
+      assertThatThrownBy(() -> DatabaseContext.INSTANCE.init((DatabaseInternal) database)).isInstanceOf(NumberFormatException.class);
+      assertThat(DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getLastTransaction()).isNull();
+
+      database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 0);
+      database.transaction(() -> database.newDocument("D").set("x", 1).save());
       assertThat(database.countType("D", true)).isEqualTo(1);
     }
   }
