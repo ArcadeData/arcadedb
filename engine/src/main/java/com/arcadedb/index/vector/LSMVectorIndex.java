@@ -149,6 +149,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.stream.IntStream;
@@ -519,8 +520,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // Delta vectors inserted since last graph build, cached in RAM for brute-force scan during search.
   // Writers (put/remove/rebuild) hold write lock; readers (search) take a volatile snapshot.
   /**
-   * Package-private rather than private so {@link VectorIndexReplayUndo} can hold the entries a rolled back
-   * replay's deletes dropped from the buffer (issue #7931).
+   * Package-private rather than private so the tests of this package can read the buffer's entries.
    */
   static final class DeltaVectorEntry {
     final int vectorId;
@@ -1173,9 +1173,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * sequence, so no id the pages answered for, which the page replay may have left out on purpose) that the pages did not
    * yield, live or tombstoned.
    * <p>
-   * Some of those tombstones belong to a commit replay whose transaction can still abort, and a rebuild cannot tell them
-   * apart: {@link #undoReplay} lifts them in whatever generation is current, which is why they are carried rather than
-   * dropped.
+   * A commit replay holds its vectors back until its commit concludes (issue #11962), so one that committed while the pages
+   * were being read published into {@code replaced} ids it had allocated BEFORE {@code idsFrom}. Its tombstones are taken
+   * over by the first rule; an added vector is in the delta buffer, and is taken over when the pages yielded no live vector
+   * for its record. An id the pages left out on purpose (a record that two ids name, collapsed to the latest) does not
+   * qualify: the pages did yield one for its record.
    *
    * @param replaced the location index being replaced, or null when no commit can have landed since the pages were read
    * @param idsFrom  the first id handed out after the pages started being read
@@ -1205,6 +1207,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else if (replaced.isDeleted(id))
             rebuilt.addOrUpdate(id, false, 0L, null, true);
         }
+    if (replaced != null)
+      for (final DeltaVectorEntry entry : deltaVectors)
+        if (entry.vectorId < idsFrom && !rebuilt.isLive(entry.vectorId) && !rebuilt.isDeleted(entry.vectorId)
+            && replaced.isLocationOf(entry.vectorId, entry.rid) && noLiveVectorFor(rebuilt, entry.rid)) {
+          final long offsetAndFlag = replaced.getOffsetAndFlag(entry.vectorId);
+          rebuilt.addOrUpdate(entry.vectorId, VectorLocationIndex.isCompactedOf(offsetAndFlag),
+              VectorLocationIndex.offsetOf(offsetAndFlag), entry.rid, false);
+        }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
     // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,
@@ -1226,6 +1236,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // time and then overwrite this instance with the result. Ordered after the swap: a reader that sees the flag
     // flip must see the instance it vouches for.
     locationsMaterialized = true;
+  }
+
+  /** Whether {@code locations} holds no live vector id for {@code rid}. */
+  private static boolean noLiveVectorFor(final VectorLocationIndex locations, final RID rid) {
+    for (final int id : locations.getVectorIdsForRid(rid))
+      if (locations.isLocationOf(id, rid))
+        return false;
+    return true;
   }
 
   /**
@@ -4600,13 +4618,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         currentInsertPageNum = -1;
 
         // Keep the delta entries this build did not incorporate: the ones inserted DURING it (vectorId >= snapshot), and
-        // the ones before its snapshot that it could not read but are still live (issue #11962). A commit replays its
-        // vectors into the location index and the delta before its pages and records are published - on a Raft leader for
-        // the whole quorum round trip - so a build in that window finds neither, and validation drops the vector like a
-        // deleted one. Trimmed here as well, it was in neither the graph nor the delta once its commit completed, and no
-        // search found it until a later rebuild. An abort takes such an entry back out of both (undoReplay). A vector the
-        // build leaves out by its value - one this index cannot score, such as an all-zero placeholder under COSINE - is
-        // not kept: the delta scan would score it as NaN, which is why the graph leaves it out in the first place.
+        // the ones before its snapshot that are live but not in its graph (issue #11962). A commit replay allocates its ids
+        // and writes its pages before it publishes the vectors, which it does once its commit concludes: a build that read
+        // the pages before that commit's does not have them, and its snapshot is past their ids. Trimmed here, they were in
+        // neither the graph nor the delta, and no search found them until a later rebuild. A vector the build leaves out by
+        // its value - one this index cannot score, such as an all-zero placeholder under COSINE - is not kept: the delta
+        // scan would score it as NaN, which is why the graph leaves it out in the first place.
         final VectorLocationIndex liveLocations = vectorIndex();
         final List<DeltaVectorEntry> remaining = new ArrayList<>();
         for (final DeltaVectorEntry e : deltaVectors)
@@ -7107,11 +7124,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return entriesRead;
   }
 
-  /**
-   * Persist a single vector and add its location to the vectorIndex.
-   * Used during put() operations.
-   */
+  /** Persists a single vector and publishes its location at once: the path of a write no transaction can roll back. */
   private void persistVectorWithLocation(final int id, final RID rid, final float[] vector) {
+    vectorIndex().addOrUpdate(id, false, persistVector(id, rid, vector), rid, false);
+  }
+
+  /**
+   * Persists a single vector on the index pages and answers the absolute file offset of its entry (isCompacted=false: the
+   * mutable file). Publishing the location is the caller's: a commit replay holds it back until the commit concludes
+   * (issue #11962).
+   */
+  private long persistVector(final int id, final RID rid, final float[] vector) {
     try {
       // Quantize vector if quantization is enabled
       final VectorQuantizationMetadata qmeta = (VectorQuantizationMetadata) quantizeVector(vector);
@@ -7246,9 +7269,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       currentPage.writeInt(OFFSET_FREE_CONTENT, offsetFreeContent);
       currentPage.writeInt(OFFSET_NUM_ENTRIES, numberOfEntries);
 
-      // Add location to vectorIndex with absolute file offset (isCompacted=false for mutable file)
-      vectorIndex().addOrUpdate(id, false, entryFileOffset, rid, false);
-
+      return entryFileOffset;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error persisting vector with location", e);
       throw new IndexException("Error persisting vector with location", e);
@@ -11807,21 +11828,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final VectorIndexReplayUndo undo = openReplayUndo();
 
           final int id = allocateVectorId();
-          // Recorded as soon as the id is minted, not after the writes below succeed: forgetting an id that never
-          // reached the location index is a no-op, while missing one that did is the leak this exists to close.
-          if (undo != null)
-            undo.recordAllocated(id);
 
-          // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
-          persistVectorWithLocation(id, rid, vector);
+          // Persist vector to page
+          final long entryFileOffset = persistVector(id, rid, vector);
 
+          // The already-converted VectorFloat is reused so the search path never re-converts (issue #5391).
           final VectorFloat<?> vf = vts.createFloatVector(vector);
 
-          // Add to delta buffer so the vector is visible in search via mergeWithDeltaScan.
-          // Skipping expensive O(log n) HNSW graph inserts during commit replay (issue #3864):
-          // the inactivity rebuild timer will incorporate delta vectors into the graph.
-          // The already-converted VectorFloat is reused so the search path never re-converts (issue #5391).
-          queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
+          // The location and the delta entry make the vector visible to every search (the delta scan, until a rebuild takes
+          // it into the graph: issue #3864). A commit replay holds both back until its commit concludes (issue #11962).
+          if (undo != null)
+            undo.recordAdded(id, rid, entryFileOffset, vf);
+          else
+            publishAdded(vectorIndex(), id, rid, entryFileOffset, vf);
 
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
             if (undo != null)
@@ -11999,42 +12018,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Whether no id the journal tombstoned is also one it allocated. Assertion support for {@link #undoReplay},
-   * which passes the set it has already built for its own sweep.
-   */
-  private static boolean disjoint(final IntHashSet allocated, final VectorIndexReplayUndo undo) {
-    for (int i = undo.tombstonedAtRebase; i < undo.tombstonedCount; i++)
-      if (allocated.contains(undo.tombstonedIds[i]))
-        return false;
-    return true;
-  }
-
-  /**
-   * The journal this transaction's commit replay accumulates its NON-transactional side effects into, created on
-   * first use, or null when there is no transaction that could still abort (issue #7931).
+   * The journal this transaction's commit replay accumulates into, created on first use, or null when there is no
+   * transaction that could still abort (issues #7931 and #11962).
    * <p>
    * The window is exactly {@link TransactionContext.STATUS#COMMIT_1ST_PHASE}: that is where
    * {@code TransactionIndexContext.commit()} replays the queued operations, and it is the only state from which a
    * transaction can still reach {@code rollback()} with its pages undone. A write outside a transaction has nothing
-   * to roll back, and one that has already reached the 2nd phase is durable.
+   * to roll back or to hold back, and one that has already reached the 2nd phase is durable.
    */
   private VectorIndexReplayUndo openReplayUndo() {
     final TransactionContext tx = replayableTransaction();
     if (tx == null)
       return null;
 
-    final VectorLocationIndex locations = vectorIndex();
-
     VectorIndexReplayUndo undo = (VectorIndexReplayUndo) tx.getIndexReplayConclusion(this);
     if (undo == null) {
-      undo = new VectorIndexReplayUndo(this, locations);
+      undo = new VectorIndexReplayUndo(this);
       tx.addIndexReplayConclusion(this, undo);
-    } else if (undo.locationsAtReplay != locations)
-      // A rebuild or a compaction republished the locations since an EARLIER operation of this same replay: put
-      // and remove hold the write lock per call, not for the whole replay, so the window is between two of this
-      // transaction's own operations. See VectorIndexReplayUndo.rebaseTo.
-      undo.rebaseTo(locations);
-
+    }
     return undo;
   }
 
@@ -12058,155 +12059,103 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Puts back everything one aborted transaction's commit replay published into this index's process-wide state
-   * (issue #7931). Called by {@link VectorIndexReplayUndo#undoIndexReplay()} from
-   * {@code TransactionContext.rollback()}, on the transaction's own thread and while it still holds this index
-   * file's commit lock - so no other transaction can have moved these ids meanwhile.
+   * Makes what one committed transaction's replay held back visible to every reader (issue #11962): the vectors its REMOVEs
+   * retired are tombstoned and leave the delta buffer, then the vectors it added get their location and their delta entry.
+   * Called by {@link VectorIndexReplayUndo#publishIndexReplay()} from {@code TransactionContext.reset()}, once the
+   * transaction's pages are published - so a search that finds the vector can read its record - and while it still holds
+   * this index file's commit lock, so no other transaction, and no compaction, can have moved these ids meanwhile.
    * <p>
-   * The order is the reverse of the replay's: the ids this transaction ALLOCATED are forgotten first, then the
-   * tombstones are lifted, then the delta entries the deletes dropped go back. The two id sets are DISJOINT, which
-   * is what makes that unconditional: {@code TransactionIndexContext.commit()} replays every REMOVE of an index
-   * before any ADD/REPLACE of it, and {@link #allocateVectorId()} never reuses an id, so an id this transaction
-   * allocated cannot also be one it tombstoned. Asserted below rather than merely stated, because the invariant
-   * lives in another class: were it to break, forgetting an allocated id and then restoring its tombstoned
-   * location would publish an offset into a page the rollback has just discarded. (Assertions are on under
-   * Surefire, whose {@code enableAssertions} defaults to true and which this build does not turn off, so the
-   * tripwire is live in every {@code mvn test} run - the same basis {@link #queueDeltaEntry} relies on.)
-   * <p>
-   * The second implicit dependency is in {@link #remove}: it resolves the ids to tombstone purely by RID through
-   * {@code getVectorIdsForRid}, and {@code markDeleted} clears the id's presence bit before returning, so a RID
-   * whose replay reaches {@code removeReplay} twice - the ordered lane can, when a same-transaction rewrite
-   * collapses into one queued key - finds nothing live the second time and records nothing twice here.
-   * <p>
-   * What is deliberately NOT undone: the vector ids themselves, which stay burnt - handing one back would let a
-   * concurrent allocation collide with it, and an unused id costs nothing but a hole in the id space that the
-   * location index is already chunked to tolerate - and the insert/delete metric counters, which count attempts.
-   * <p>
-   * <b>The persisted graph is not compensated either, and does not need to be.</b> A rebuild can publish between
-   * the replay and this call - it takes the same write lock, and both halves run inside it - folding an
-   * uncommitted delta entry into the graph as a node. Forgetting that id here is exactly what makes the node
-   * harmless: {@code LiveVectorBitsFilter} refuses a non-live id during the walk, which is the same state a
-   * committed DELETE leaves behind and the state issue #7842 made cheap to carry.
+   * A full rebuild is not held off by that lock and can have republished the locations since the replay. Everything is
+   * applied to the generation in force here: a retired id is tombstoned only where it still names the record it was retired
+   * for, and a rebuild that read the pages before this transaction's carries the publication into the generation it
+   * publishes after it ({@link #publishLocationIndex(Collection, VectorLocationIndex, int)}).
    */
-  void undoReplay(final VectorIndexReplayUndo undo) {
+  void publishReplay(final VectorIndexReplayUndo undo) {
+    if (undo.retiredCount == 0 && undo.addedCount == 0)
+      return;
     // Materialising cannot be needed (the replay already did it) but is the contract of every other write path here.
     vectorIndex();
 
     lock.writeLock().lock();
     try {
-      // Read under the lock: a rebuild publishes under it, and the tombstones below are judged against the generation in
-      // force, which a read before the lock could already have lost to a publish
       final VectorLocationIndex locations = vectorIndex();
-      // A compaction or a rebuild may have republished the location index wholesale since the replay. Only the
-      // disjointness assertion below needs to know: the tombstones are decided per id against the current generation.
-      final boolean locationsStillOurs = locations == undo.locationsAtReplay;
 
-      // Built once and used twice - by the assertion below and by the delta-buffer sweep further down - so the
-      // invariant check costs O(tombstoned) rather than the O(allocated x tombstoned) a nested scan would, on a
-      // path where assertions are live (see the note on disjointness above). Sized in TABLE slots, which is what
-      // the constructor takes: at the element count itself the set would rehash on the last few adds.
-      final IntHashSet allocated;
-      if (undo.allocatedCount > 0) {
-        allocated = new IntHashSet(undo.allocatedCount * 2);
-        for (int i = 0; i < undo.allocatedCount; i++)
-          allocated.add(undo.allocatedIds[i]);
-      } else
-        allocated = null;
-
-      assert !locationsStillOurs || allocated == null || disjoint(allocated, undo) :
-          "an id was both allocated and tombstoned by one replay: TransactionIndexContext.commit() no longer "
-              + "replays every REMOVE before any ADD, which this compensation depends on";
-
-      // UNCONDITIONAL, unlike the two blocks below: nothing here reads a captured offset, and every id in this set
-      // was minted by the aborted replay and can never be legitimate. It must not be skipped when the locations
-      // were republished, either - a rebuild trims the delta buffer to `vectorId >= deltaSnapshotId`, and when it
-      // captured that snapshot BEFORE the replay allocated (its own publish then runs after, under this same write
-      // lock) the aborted id clears the trim and survives. The delta scan filters on the TOMBSTONE set, not on
-      // liveness, so a forgotten id reads as perfectly live there: leaving that entry is exactly the "search
-      // matches a record on an embedding no transaction committed" window this whole fix exists to close.
-      if (allocated != null) {
-        for (int i = 0; i < undo.allocatedCount; i++) {
-          final int id = undo.allocatedIds[i];
-          locations.forget(id);
-          // A search that ran between the replay and the abort could have pulled the uncommitted vector into the
-          // shared cache, where it would outlive the id itself (the same reason the delete path evicts, #5412).
-          evictFromSearchCaches(id);
-        }
-
-        if (!deltaVectors.isEmpty()) {
-          // Counted inside the predicate rather than by a recount afterwards, for the reason given in remove().
-          final int[] releasedPayloads = new int[1];
-          deltaVectors.removeIf(entry -> {
-            if (!allocated.contains(entry.vectorId))
-              return false;
-            if (entry.vector != null)
-              releasedPayloads[0]++;
-            return true;
-          });
-          if (releasedPayloads[0] > 0)
-            deltaResidentPayloadsChanged(-releasedPayloads[0]);
-        }
-      }
-
-      // A tombstone is lifted only where the current generation still holds it. On the generation the replay wrote to,
-      // that is every one. A full rebuild that published since carries them over (issue #11099) and reads the same data
-      // file, so the captured offsets still address it. A compaction publishes no tombstone at all, and its rewritten file
-      // is exactly what the captured offsets no longer address, so nothing is lifted there. Walked in reverse, so an id
-      // tombstoned twice across a republish is restored from its newest record and then reads as live to the older one.
-      // `lifted` collects the ids made live again, `buffered` those of them that are back in the delta buffer.
-      IntHashSet lifted = null;
-      IntHashSet buffered = null;
-      for (int i = undo.tombstonedCount - 1; i >= 0; i--) {
-        final long offsetAndFlag = undo.tombstonedOffsetAndFlag[i];
-        if (offsetAndFlag == VectorLocationIndex.ABSENT || !locations.isDeleted(undo.tombstonedIds[i]))
-          // ABSENT cannot happen - the id was live when it was recorded - but restoring a location from a sentinel would
-          // publish a wild offset, so decline instead: the id then stays tombstoned, which is the pre-fix behaviour.
+      IntHashSet retired = null;
+      for (int i = 0; i < undo.retiredCount; i++) {
+        final int id = undo.retiredIds[i];
+        if (!locations.isLocationOf(id, undo.retiredRids[i]))
           continue;
-        // addOrUpdate with deleted=false is the exact inverse of markDeleted: it lifts the id out of the tombstone
-        // set and puts its location back, in that order.
-        locations.addOrUpdate(undo.tombstonedIds[i], VectorLocationIndex.isCompactedOf(offsetAndFlag),
-            VectorLocationIndex.offsetOf(offsetAndFlag), undo.tombstonedRids[i], false);
-        if (lifted == null) {
-          lifted = new IntHashSet(undo.tombstonedCount * 2);
-          buffered = new IntHashSet(undo.tombstonedCount * 2);
-        }
-        lifted.add(undo.tombstonedIds[i]);
+        locations.markDeleted(id);
+        // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
+        evictFromSearchCaches(id);
+        if (retired == null)
+          retired = new IntHashSet(undo.retiredCount * 2);
+        retired.add(id);
+      }
+      if (retired != null) {
+        final IntHashSet dropped = retired;
+        dropFromDeltaBuffer(entry -> dropped.contains(entry.vectorId));
       }
 
-      if (undo.droppedDeltaEntries != null) {
-        // The entries of the ids just made live again, still the same record's (a renumbering compaction reuses id
-        // numbers). After a full rebuild the vector may also be in the graph it built, which costs nothing but a
-        // duplicate the delta scan skips by RID; one written after the rebuild read the pages is findable only here
-        // until the next rebuild.
-        //
-        // Re-added directly rather than through queueDeltaEntry(): these entries were in the buffer a moment ago,
-        // so re-applying the heap budget to them could only strip payloads the buffer had already accounted for.
-        int restoredPayloads = 0;
-        for (final DeltaVectorEntry entry : undo.droppedDeltaEntries) {
-          if (!locations.isLocationOf(entry.vectorId, entry.rid))
-            continue;
-          deltaVectors.add(entry);
-          if (entry.vector != null)
-            ++restoredPayloads;
-          if (lifted != null)
-            buffered.add(entry.vectorId);
-        }
-        if (restoredPayloads > 0)
-          deltaResidentPayloadsChanged(restoredPayloads);
-      }
+      for (int i = 0; i < undo.addedCount; i++)
+        publishAdded(locations, undo.addedIds[i], undo.addedRids[i], undo.addedOffsets[i], undo.addedVectors[i]);
+    } finally {
+      lock.writeLock().unlock();
+    }
 
-      // A full rebuild that published since the replay built its graph without the ids it read as deleted, so a lifted id
-      // that neither the graph nor a restored entry holds is queued again, the way a restart re-queues the vectors its
-      // graph lacks. Without a payload: the delta scan reads it from the pages, and nothing is read under this lock.
-      if (lifted != null)
-        for (int i = 0; i < undo.tombstonedCount; i++) {
-          final int id = undo.tombstonedIds[i];
-          if (lifted.contains(id) && !buffered.contains(id) && !graphHolds(id)) {
-            deltaVectors.add(new DeltaVectorEntry(id, undo.tombstonedRids[i], null));
-            buffered.add(id);
-          }
-        }
+    // The after-commit hook asked whether the file is bloated enough to compact before this publication, while the vectors
+    // the commit retired were still live: asked again now that the live count is the committed one
+    if (undo.retiredCount > 0)
+      onAfterCommit();
+  }
 
+  /**
+   * Makes one added vector visible to every search: its location, and its delta entry, which the delta scan answers until a
+   * rebuild takes it into the graph (issue #3864). The caller holds the write lock.
+   */
+  private void publishAdded(final VectorLocationIndex locations, final int id, final RID rid, final long entryFileOffset,
+      final VectorFloat<?> vector) {
+    locations.addOrUpdate(id, false, entryFileOffset, rid, false);
+    queueDeltaEntry(new DeltaVectorEntry(id, rid, vector));
+  }
+
+  /**
+   * Drops the delta entries {@code dropped} accepts. The payloads those entries held are gone with them, so the heap
+   * accounting has to give them back: leaving it high would keep declining payloads for writes the buffer now has room for
+   * (issue #7357). Counted inside the predicate rather than by a recount afterwards, because this runs on every delete and
+   * not only during a bulk load, and a recount walks the whole buffer a second time right after removeIf() has already
+   * walked it (PR #7360 review). The caller holds the write lock, so nothing else is reading the counter meanwhile.
+   */
+  private void dropFromDeltaBuffer(final Predicate<DeltaVectorEntry> dropped) {
+    if (deltaVectors.isEmpty())
+      return;
+    final int[] releasedPayloads = new int[1];
+    deltaVectors.removeIf(entry -> {
+      if (!dropped.test(entry))
+        return false;
+      if (entry.vector != null)
+        releasedPayloads[0]++;
+      return true;
+    });
+    if (releasedPayloads[0] > 0)
+      deltaResidentPayloadsChanged(-releasedPayloads[0]);
+  }
+
+  /**
+   * Refunds what one aborted transaction's commit replay charged this index (issue #7931). Called by
+   * {@link VectorIndexReplayUndo#undoIndexReplay()} from {@code TransactionContext.rollback()}, while the transaction still
+   * holds this index file's commit lock.
+   * <p>
+   * There is nothing to take back from the readers: the replay held its locations, delta entries and tombstones back for the
+   * commit to publish (issue #11962), so dropping the journal drops them, and its page entries go away with the
+   * transaction's pages. What the replay did charge is the mutation counter, the graph state and the page gauge, and it
+   * moved the insert cursor. What is deliberately NOT refunded: the vector ids themselves, which stay burnt - handing one back
+   * would let a concurrent allocation collide with it, and an unused id costs nothing but a hole in the id space that the
+   * location index is already chunked to tolerate - and the insert/delete metric counters, which count attempts.
+   */
+  void undoReplay(final VectorIndexReplayUndo undo) {
+    lock.writeLock().lock();
+    try {
       // Floored at zero on both counters: a rebuild that ran in the window already subtracted the mutations this
       // replay charged, and a compaction resets the page gauge outright, so an unclamped refund could drive either
       // negative - which reads to every policy that consults them as "nothing pending, ever".
@@ -12233,9 +12182,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // old number back would aim the next insert at a page of a file that no longer exists.
       //
       // Not gated on mutablePagesCreated: the cursor moves whenever a page is WRITTEN, not only when one is
-      // created - persistVectorWithLocation and persistDeletionTombstones both set it from getTotalPages() - 1
-      // when they find it at -1 - so gating would leave the value this replay installed behind on the common
-      // path. The cost of resetting it anyway is one getTotalPages() call, which is a counter read, not a scan.
+      // created - persistVector and persistDeletionTombstones both set it from getTotalPages() - 1 when they find it
+      // at -1 - so gating would leave the value this replay installed behind on the common path. The cost of resetting
+      // it anyway is one getTotalPages() call, which is a counter read, not a scan.
       //
       // The one unconditional write in an otherwise conditioned method, and it discards no other writer's work:
       // no CONCURRENT TRANSACTION can have advanced this cursor, because advancing it means writing this index's
@@ -12328,16 +12277,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         final int id = allocateVectorId();
-        if (undo != null)
-          undo.recordAllocated(id);
+        final long entryFileOffset = persistVector(id, rid, vector);
 
-        persistVectorWithLocation(id, rid, vector);
-
+        // Reusing the already-converted VectorFloat so the search path never re-converts the whole buffer per query (issue
+        // #5391). Published to the searches at once, or, by a commit replay, once its commit concludes (issue #11962).
         final VectorFloat<?> vf = vts.createFloatVector(vector);
-
-        // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
-        // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
-        queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
+        if (undo != null)
+          undo.recordAdded(id, rid, entryFileOffset, vf);
+        else
+          publishAdded(vectorIndex(), id, rid, entryFileOffset, vf);
 
         mutationsSinceSerialize.incrementAndGet();
         if (undo != null)
@@ -12463,43 +12411,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final List<Integer> deletedIds = new ArrayList<>();
         final VectorLocationIndex locations = vectorIndex();
         for (final int vectorId : locations.getVectorIdsForRid(rid)) {
-          if (locations.isLocationOf(vectorId, rid)) {
-            // Read the location BEFORE the tombstone releases it: un-tombstoning has to restore the exact offset,
-            // and after markDeleted() it is no longer readable from the index (issue #7931).
-            if (undo != null)
-              undo.recordTombstoned(vectorId, locations.getOffsetAndFlag(vectorId), rid);
+          if (!locations.isLocationOf(vectorId, rid))
+            continue;
+          if (undo != null) {
+            // A commit replay retires the vector once its commit concludes (issue #11962): until then the record and its
+            // committed vector are what every other reader sees. A REMOVE replayed twice for one RID - the ordered lane can,
+            // when a same-transaction rewrite collapses into one queued key - finds the id still live, so it is skipped here.
+            if (undo.retires(vectorId))
+              continue;
+            undo.recordRetired(vectorId, rid);
+          } else {
             locations.markDeleted(vectorId);
-            deletedIds.add(vectorId);
             // Do not let the shared search cache pin a vector that no longer exists (issue #5412)
             evictFromSearchCaches(vectorId);
           }
+          deletedIds.add(vectorId);
         }
 
-        // Persist deletion tombstones
+        // Persist deletion tombstones. Written by a replay too, not held back like the in-memory tombstone: the page entry is
+        // part of the transaction's pages, which readers see only once the commit publishes them, and which go away with a
+        // rollback
         if (!deletedIds.isEmpty()) {
           persistDeletionTombstones(deletedIds, rid);
 
-          // Remove matching entries from delta buffer
-          if (!deltaVectors.isEmpty()) {
-            // The payloads those entries held are gone with them, so the heap accounting has to give them back:
-            // leaving it high would keep declining payloads for writes the buffer now has room for (issue #7357).
-            // Counted inside the predicate rather than by a recount afterwards, because this runs on every delete
-            // and not only during a bulk load, and a recount walks the whole buffer a second time right after
-            // removeIf() has already walked it (PR #7360 review). The holder array is what a lambda needs to
-            // accumulate; the write lock is held throughout, so nothing else is reading the counter meanwhile.
-            final int[] releasedPayloads = new int[1];
-            deltaVectors.removeIf(entry -> {
-              if (!entry.rid.equals(rid))
-                return false;
-              if (entry.vector != null)
-                releasedPayloads[0]++;
-              if (undo != null)
-                undo.recordDroppedDelta(entry);
-              return true;
-            });
-            if (releasedPayloads[0] > 0)
-              deltaResidentPayloadsChanged(-releasedPayloads[0]);
-          }
+          if (undo == null)
+            dropFromDeltaBuffer(entry -> entry.rid.equals(rid));
 
           // Phase 5+: Periodic rebuild strategy (amortizes cost over many operations)
           if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
@@ -14381,33 +14317,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
     beforeOnDiskGraphSwapForTest = hook;
-  }
-
-  /** Whether the resident graph has a node for {@code vectorId}. */
-  private boolean graphHolds(final int vectorId) {
-    final int[] ordinalMap = ordinalToVectorId;
-    if (ordinalMap == null)
-      return false;
-    // A map a renumbering compaction translated holds -1 entries and is not sorted (issue #9241)
-    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
-    return (lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId)) >= 0;
-  }
-
-  /** Takes the delta-buffer entry of {@code vectorId} out of the buffer, as a delete's replay drops it, or null. */
-  DeltaVectorEntry takeDeltaEntryForTest(final int vectorId) {
-    lock.writeLock().lock();
-    try {
-      for (final DeltaVectorEntry entry : deltaVectors)
-        if (entry.vectorId == vectorId) {
-          deltaVectors.remove(entry);
-          if (entry.vector != null)
-            deltaResidentPayloadsChanged(-1);
-          return entry;
-        }
-      return null;
-    } finally {
-      lock.writeLock().unlock();
-    }
   }
 
   /**
