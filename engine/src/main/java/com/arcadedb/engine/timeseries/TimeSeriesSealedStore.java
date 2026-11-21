@@ -3665,6 +3665,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * per-block property that the rewrite carries) and, when the type aligns its compaction to a bucket interval, if the
    * run still sits inside one bucket: those type options exist so that a block never straddles a boundary, and the
    * merge must not undo that. A run of one block is not a merge and is not reported.
+   * <p>
+   * A DOWNSAMPLED block also joins a run only if it starts after the run ends. The rows of such a block sit on bucket starts, and
+   * two blocks that reach the same bucket - a bucket that straddled the boundary between two downsampling passes - hold a row of the
+   * same (tag values, bucket) each: merged, they would put both into one block, which a finer tier is entitled to fold once a
+   * restart has reset the marker, flooring every row of it onto a grid that need not be nested in theirs (issue #11984). A block that
+   * starts after the run ends shares no bucket with it.
    */
   // The bucket check uses the epoch grid on purpose: that is the grid compaction aligns its blocks to, whatever offset queries use.
   static List<int[]> planMergeGroups(final List<BlockEntry> blocks, final int targetSamples, final long bucketIntervalMs) {
@@ -3686,6 +3692,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       if (start >= 0 && samples + b.sampleCount <= targetSamples && b.downsampledGranularityMs == granularity
+          && (granularity == 0 || b.minTimestamp > groupMax)
           && (bucketIntervalMs <= 0 || Math.floorDiv(Math.min(groupMin, b.minTimestamp), bucketIntervalMs) == Math.floorDiv(
           Math.max(groupMax, b.maxTimestamp), bucketIntervalMs))) {
         samples += b.sampleCount;

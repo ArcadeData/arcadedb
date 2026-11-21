@@ -271,11 +271,80 @@ class Issue11984DownsampleReducibilityTest {
     }
   }
 
+  /**
+   * A bucket that straddles the boundary between two downsampling passes leaves a row of the same group in the block of each. Merged
+   * into one block, they would be two rows of one (tag values, bucket) in a block that a restart strips of its marker, and the hourly
+   * tier would fold them and floor EVERY row of the block onto 18:00, into the previous daily bucket. The merge keeps them apart, so
+   * after the restart nothing is rewritten and nothing moves.
+   */
+  @Test
+  void downsampledBlocksThatShareABucketAreNotMergedAndNothingMovesAfterARestart() throws Exception {
+    final long off = 18 * H + 30 * MINUTE;
+    final List<Sample> rows;
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      appendBlock(store, List.of(new Sample(off, "a", "x", 1), new Sample(off + 10 * MINUTE, "a", "x", 3),
+          new Sample(off + DAY, "a", "x", 5), new Sample(off + DAY + 10 * MINUTE, "a", "x", 7)));
+      appendBlock(store, List.of(new Sample(off + DAY + 20 * MINUTE, "a", "x", 9), new Sample(off + DAY + 30 * MINUTE, "a", "x", 11),
+          new Sample(off + 2 * DAY, "a", "x", 13), new Sample(off + 2 * DAY + 10 * MINUTE, "a", "x", 15)));
+      // the first pass sees the first block only, the second the one that had not aged enough by then: day 1 is in both outputs
+      store.downsampleBlocks(off + DAY + 15 * MINUTE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      rows = readAll(store);
+      assertThat(rows).containsExactly(new Sample(off, "a", "x", 2.0), new Sample(off + DAY, "a", "x", 6.0),
+          new Sample(off + DAY, "a", "x", 10.0), new Sample(off + 2 * DAY, "a", "x", 14.0));
+      assertThat(store.getBlockCount()).isEqualTo(2);
+
+      assertThat(store.prepareMerge(DeltaOfDeltaCodec.MAX_BLOCK_SIZE, 0L, 1)).as("a merge of two blocks that hold a row of day 1 each")
+          .isNull();
+      assertThat(store.getBlockCount()).isEqualTo(2);
+    }
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+      assertThat(store.getDownsampleRewriteCount()).isZero();
+      assertThat(readAll(store)).containsExactlyElementsOf(rows);
+    }
+  }
+
+  /** The control: downsampled blocks whose buckets are apart are still merged, and what they hold survives the merge and a restart. */
+  @Test
+  void downsampledBlocksOfDisjointBucketsAreStillMerged() throws Exception {
+    final long off = 18 * H + 30 * MINUTE;
+    final List<Sample> rows;
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      appendBlock(store, List.of(new Sample(off, "a", "x", 1), new Sample(off + 10 * MINUTE, "a", "x", 3),
+          new Sample(off + DAY, "a", "x", 5), new Sample(off + DAY + 10 * MINUTE, "a", "x", 7)));
+      appendBlock(store, List.of(new Sample(off + 2 * DAY, "a", "x", 9), new Sample(off + 2 * DAY + 10 * MINUTE, "a", "x", 11),
+          new Sample(off + 3 * DAY, "a", "x", 13), new Sample(off + 3 * DAY + 10 * MINUTE, "a", "x", 15)));
+      store.downsampleBlocks(off + 2 * DAY, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      rows = readAll(store);
+      assertThat(rows).extracting(Sample::ts).containsExactly(off, off + DAY, off + 2 * DAY, off + 3 * DAY);
+      assertThat(store.getBlockCount()).isEqualTo(2);
+
+      final TimeSeriesSealedStore.MergePlan plan = store.prepareMerge(DeltaOfDeltaCodec.MAX_BLOCK_SIZE, 0L, 1);
+      assertThat(plan).isNotNull();
+      assertThat(store.commitMerge(plan)).isTrue();
+      assertThat(store.getBlockCount()).isEqualTo(1);
+      assertThat(readAll(store)).containsExactlyElementsOf(rows);
+    }
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+      assertThat(store.getDownsampleRewriteCount()).isZero();
+      assertThat(readAll(store)).containsExactlyElementsOf(rows);
+    }
+  }
+
   // ---- Helpers ----
 
   private static List<Sample> sorted(final List<Sample> samples) {
     final List<Sample> copy = new ArrayList<>(samples);
-    copy.sort(Comparator.comparingLong(Sample::ts).thenComparing(Sample::host).thenComparing(Sample::dc));
+    copy.sort(Comparator.comparingLong(Sample::ts).thenComparing(Sample::host).thenComparing(Sample::dc).thenComparingDouble(Sample::v));
     return copy;
   }
 
