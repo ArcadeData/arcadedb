@@ -434,8 +434,10 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
   /**
    * Refuses {@code dimensions} above {@link GlobalConfiguration#VECTOR_INDEX_MAX_DIMENSIONS} (issue #12822): the index holds
-   * buffers of that many floats, so an unbounded value let one statement allocate gigabytes. Called where an index is
-   * CREATED, never from {@link #fromJSON(JSONObject)}, so an index persisted with a larger value keeps opening. An
+   * buffers of that many floats, so an unbounded value let one statement allocate gigabytes. Called where the dimensions of a
+   * new index are DECLARED (the builders, the Cypher options) and where an index sized on its first vector is offered one,
+   * never from {@link #fromJSON(JSONObject)} nor where an existing definition is created again (a rebuild, a truncate, a new
+   * bucket of the type), so an index persisted with a larger value keeps opening and keeps being maintained. An
    * {@link IllegalArgumentException}, like the lower bounds of the setters, so the refusal is a client error (HTTP 400).
    *
    * @param dimensions    the dimensions the index is about to be created with

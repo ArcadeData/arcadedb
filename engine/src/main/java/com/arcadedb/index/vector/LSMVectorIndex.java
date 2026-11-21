@@ -1330,11 +1330,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "): it must match the number of components of the indexed vectors, e.g. METADATA {\"dimensions\": 384}, or the "
                 + "index must take them from its first vector: METADATA {\"sizeOnFirstVector\": true}");
 
-      // The upper bound (issue #12822). TypeLSMVectorIndexBuilder refuses it first, as a client error; this covers every other
-      // creation path (the bucket-level builder, the importers). Not applied when an index is loaded, so one persisted with a
-      // larger value keeps opening.
-      LSMVectorIndexMetadata.checkDimensionsBound(vectorMetadata.dimensions, builder.getDatabase().getConfiguration());
-
       // Reject the (encoding=INT8, quantization=INT8) combination: wire/storage is already int8,
       // and JVector's internal INT8 scalar quantization re-runs the same lossy reduction on the
       // float vectors we just dequantized at ingest. The user's intent is almost certainly one or
@@ -11771,7 +11766,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // index, not size the index a second time (issue #10993). Outside the decision lock: it reads records
         deriveDimensionsFromData();
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, !replay);
       }
 
       if (vector.length != metadata.dimensions)
@@ -11871,14 +11866,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * learn it from this call, nor from a schema the leader ships (a commit of records ships none, only a schema change does): it
    * learns it from the vectors it replicates ({@link #deriveDimensionsFromData}), before its first search, graph build or put.
    *
-   * @param length the length of the vector being put
+   * <p>
+   * A first vector wider than {@code arcadedb.vectorIndex.maxDimensions} is refused like the same number declared when the
+   * index is created (issue #12822), and the index goes on waiting for its size. Only where the vector is first offered: a
+   * replayed one was accepted already, here or on another node, and {@link #deriveDimensionsFromData} takes whatever the
+   * records hold, so an index that got its size before the bound existed, or while it was higher, keeps it.
+   *
+   * @param length       the length of the vector being put
+   * @param checkedBound whether the length is held to the bound: false on a replay
    */
-  private void sizeOnVector(final int length) {
+  private void sizeOnVector(final int length, final boolean checkedBound) {
     synchronized (dimensionsDecisionLock()) {
       if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
         return;
       if (length < 1)
         throw new IllegalArgumentException("A vector must have at least one component to size index '" + indexName + "'");
+      if (checkedBound)
+        LSMVectorIndexMetadata.checkDimensionsBound(length, getDatabase().getConfiguration());
       decideDimensions(length);
     }
   }
@@ -12330,8 +12334,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
         // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+        // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
+        // the index on, or the copy of one another node accepted
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, false);
 
         if (vector.length != metadata.dimensions) {
           LogManager.instance().log(this, Level.WARNING,

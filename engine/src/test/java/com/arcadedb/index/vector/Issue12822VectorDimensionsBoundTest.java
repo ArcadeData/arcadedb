@@ -27,10 +27,14 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.database.TransactionIndexContext.ComparableKey;
 import com.arcadedb.database.TransactionIndexContext.IndexKey;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -52,6 +56,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue12822VectorDimensionsBoundTest extends TestHelper {
   private static final int SMALL_DIMENSIONS = 8;
+  private static final int WIDE_DIMENSIONS  = 32;
 
   @Test
   void sqlRefusesDimensionsAboveTheBound() {
@@ -158,6 +163,91 @@ class Issue12822VectorDimensionsBoundTest extends TestHelper {
   }
 
   @Test
+  void rebuildIndexKeepsAnIndexAboveTheBound() {
+    final RID rid = createIndexAboveTheBoundWithOneVector();
+
+    database.command("sql", "REBUILD INDEX `Doc[embedding]`");
+
+    assertThat(bucketMetadata("Doc[embedding]").dimensions).isEqualTo(WIDE_DIMENSIONS);
+    assertThat(neighbors("Doc[embedding]", vector(WIDE_DIMENSIONS, 1))).containsExactly(rid);
+  }
+
+  @Test
+  void theDefinitionOfADroppedIndexAboveTheBoundIsCreatedAgain() {
+    // what REBUILD INDEX does where it cannot rebuild in place (a replicated database), and CHECK DATABASE FIX: the index is
+    // dropped and created again from its own definition. Refusing the definition there would leave the type without its index
+    final RID rid = createIndexAboveTheBoundWithOneVector();
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+    final IndexMetadata definition = IndexMetadata.reconstructForRebuild(index, "Doc", new String[] { "embedding" });
+
+    database.getSchema().dropIndex("Doc[embedding]");
+    database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" }).withType(Schema.INDEX_TYPE.LSM_VECTOR)
+        .withMetadata(definition).create();
+
+    assertThat(bucketMetadata("Doc[embedding]").dimensions).isEqualTo(WIDE_DIMENSIONS);
+    assertThat(neighbors("Doc[embedding]", vector(WIDE_DIMENSIONS, 1))).containsExactly(rid);
+  }
+
+  @Test
+  void truncateTypeKeepsAnIndexAboveTheBound() {
+    createIndexAboveTheBoundWithOneVector();
+
+    database.command("sql", "TRUNCATE TYPE Doc");
+
+    assertThat(database.getSchema().existsIndex("Doc[embedding]")).isTrue();
+    assertThat(bucketMetadata("Doc[embedding]").dimensions).isEqualTo(WIDE_DIMENSIONS);
+    final RID[] rid = new RID[1];
+    database.transaction(
+        () -> rid[0] = database.newDocument("Doc").set("embedding", vector(WIDE_DIMENSIONS, 2)).save().getIdentity());
+    assertThat(neighbors("Doc[embedding]", vector(WIDE_DIMENSIONS, 2))).containsExactly(rid[0]);
+  }
+
+  @Test
+  void aBucketAddedToTheTypeGetsTheIndexAboveTheBound() {
+    createIndexAboveTheBoundWithOneVector();
+
+    database.command("sql", "CREATE BUCKET DocExtra");
+    database.command("sql", "ALTER TYPE Doc BUCKET +DocExtra");
+
+    final IndexInternal[] onBuckets = ((TypeIndex) database.getSchema().getIndexByName("Doc[embedding]")).getIndexesOnBuckets();
+    assertThat(onBuckets).hasSize(2);
+    for (final IndexInternal onBucket : onBuckets)
+      assertThat(((LSMVectorIndex) onBucket).getMetadata().dimensions).isEqualTo(WIDE_DIMENSIONS);
+  }
+
+  @Test
+  void bucketBuilderRefusesDeclaredDimensionsAboveTheBound() {
+    createType("Doc");
+    final String bucketName = database.getSchema().getType("Doc").getBuckets(false).getFirst().getName();
+    final BucketLSMVectorIndexBuilder builder = (BucketLSMVectorIndexBuilder) database.getSchema()
+        .buildBucketIndex("Doc", bucketName, new String[] { "embedding" }).withType(Schema.INDEX_TYPE.LSM_VECTOR);
+    builder.withDimensions(bound() + 1).withSimilarity("COSINE");
+
+    assertThatThrownBy(builder::create)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS.getKey());
+    assertThat(database.getSchema().getType("Doc").getAllIndexes(false)).isEmpty();
+  }
+
+  @Test
+  void anIndexSizedOnItsFirstVectorRefusesOneAboveTheBound() {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS, SMALL_DIMENSIONS);
+    // no dimensions and no vector to take them from: the index takes them from the first vector it is given
+    database.command("opencypher", "CREATE VECTOR INDEX v FOR (n:Sized) ON n.e");
+    assertThat(bucketMetadata("v").sizeOnFirstVector).isTrue();
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newVertex("Sized").set("e", vector(SMALL_DIMENSIONS + 1, 1)).save()))
+        .hasStackTraceContaining(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS.getKey());
+    assertThat(bucketMetadata("v").dimensions).as("the index still waits for its size").isLessThan(1);
+
+    final RID[] rid = new RID[1];
+    database.transaction(() -> rid[0] = database.newVertex("Sized").set("e", vector(SMALL_DIMENSIONS, 1)).save().getIdentity());
+    assertThat(bucketMetadata("v").dimensions).isEqualTo(SMALL_DIMENSIONS);
+    assertThat(neighbors("v", vector(SMALL_DIMENSIONS, 1))).containsExactly(rid[0]);
+  }
+
+  @Test
   void aRemovalWithoutAVectorQueuesOneConstantEmptyKeyPerRecord() {
     final int dimensions = 1536;
     createType("Doc");
@@ -231,6 +321,21 @@ class Issue12822VectorDimensionsBoundTest extends TestHelper {
     });
 
     assertThat(neighbors("Doc[embedding]", vector(SMALL_DIMENSIONS, 4))).containsExactly(rids[0]);
+  }
+
+  /**
+   * An index of {@link #WIDE_DIMENSIONS} on {@code Doc.embedding}, holding one vector, on a database whose bound was lowered
+   * below it afterwards: the state of an index created before the bound existed, or while the setting was higher.
+   */
+  private RID createIndexAboveTheBoundWithOneVector() {
+    createType("Doc");
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS, WIDE_DIMENSIONS);
+    database.command("sql", "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA {dimensions: " + WIDE_DIMENSIONS + "}");
+    final RID[] rid = new RID[1];
+    database.transaction(
+        () -> rid[0] = database.newDocument("Doc").set("embedding", vector(WIDE_DIMENSIONS, 1)).save().getIdentity());
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS, SMALL_DIMENSIONS);
+    return rid[0];
   }
 
   private void createType(final String name) {

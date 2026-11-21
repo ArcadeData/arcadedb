@@ -34,6 +34,15 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
+  /**
+   * Whether the dimensions were DECLARED to this builder - {@link #withDimensions}, a {@code METADATA} clause, an imported
+   * definition - rather than taken over with the definition of an index that already exists, which is what
+   * {@link #withMetadata(IndexMetadata)} hands in (REBUILD INDEX, TRUNCATE TYPE, copyType(), the restore of a replaced index).
+   * Only declared dimensions are held to {@code arcadedb.vectorIndex.maxDimensions} (issue #12822): each of those statements
+   * drops the index before it creates it again, so refusing the definition there would cost the type an index it already had.
+   */
+  private boolean dimensionsDeclared;
+
   protected TypeLSMVectorIndexBuilder(final TypeIndexBuilder copyFrom) {
     // Every common setting is carried over by the shared copy constructor, which is the ONE place a new builder field
     // has to be added - see TypeIndexBuilder(TypeIndexBuilder, INDEX_TYPE, IndexMetadata) and issue #5606.
@@ -57,6 +66,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    */
   public TypeLSMVectorIndexBuilder withDimensions(final int dimensions) {
     vectorMetadata().dimensions = dimensions;
+    dimensionsDeclared = true;
     return this;
   }
 
@@ -367,14 +377,16 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
-   * The upper bound of the dimensions (issue #12822), asked here rather than only where each bucket index is created: a refusal
+   * The upper bound of the dimensions (issue #12822), asked here rather than where each bucket index is created: a refusal
    * from this hook reaches the caller as it is, an {@link IllegalArgumentException} answered with a 400, where one from the bucket
    * index creation is wrapped as a failed build. Reached only when an index is about to be created, so an {@code IF NOT EXISTS}
-   * answered by an index persisted with a larger value is not refused.
+   * answered by an index persisted with a larger value is not refused, and asked only of dimensions this builder was told, see
+   * {@link #dimensionsDeclared}.
    */
   @Override
   protected void checkUnderSchemaLock(final LocalDocumentType type, final TypeIndex replacing) {
-    LSMVectorIndexMetadata.checkDimensionsBound(vectorMetadata().dimensions, database.getConfiguration());
+    if (dimensionsDeclared)
+      LSMVectorIndexMetadata.checkDimensionsBound(vectorMetadata().dimensions, database.getConfiguration());
   }
 
   @Override
@@ -385,6 +397,8 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
       throw new IllegalArgumentException(
           "An LSM_VECTOR index requires LSMVectorIndexMetadata but got " + metadata.getClass().getName());
     this.metadata = metadata;
+    // the definition of an existing index, dimensions included: not a declaration
+    dimensionsDeclared = false;
     return this;
   }
 
@@ -400,6 +414,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    */
   public void withMetadata(final JSONObject json) {
     vectorMetadata().fromUserMetadata(json, Schema.INDEX_TYPE.LSM_VECTOR);
+    dimensionsDeclared = true;
   }
 
   /**
@@ -413,8 +428,11 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeLSMVectorIndexBuilder withPersistedMetadata(final JSONObject json) {
-    if (json != null)
+    if (json != null) {
       readPersistedDefinition(vectorMetadata(), json);
+      // an import creates the index on this database, whatever the one it was exported from allowed
+      dimensionsDeclared = true;
+    }
     return this;
   }
 }
