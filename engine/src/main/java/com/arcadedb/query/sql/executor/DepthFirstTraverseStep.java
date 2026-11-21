@@ -102,13 +102,18 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       // avoids both a duplicate emission and a redundant (deeper) expansion; the better copy carries the correct depth and re-expands the subtree.
       if (rid != null) {
         final Integer best = bestDepthByRid.get(rid);
-        if (best != null && depth > best)
+        if (best != null && depth > best) {
+          releaseFrontier(item);
           return;
+        }
       }
 
       // Emit each node at most once (its first non-stale visit). Non-element results carry no RID and keep the historical emit-always behavior.
+      // A row emitted stays charged until it is handed downstream; the others leave the frontier here.
       if ((rid == null || emitted.add(rid)) && (postFilter == null || postFilter.matchesFilters(item, context)))
         this.results.add(item);
+      else
+        releaseFrontier(item);
 
       // Test the depth first: the projection (an out() loads the vertex and its edge segment) must not run on vertices that can no longer expand
       if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth)
@@ -214,6 +219,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.addFirst(res);
+      chargeFrontier(res);
     }
 
     if (res.isElement())
@@ -223,8 +229,10 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   private void tryAddEntryPointAtTheEnd(final Result res, final CommandContext context) {
-    if (whileClause == null || whileClause.matchesFilters(res, context))
+    if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.add(res);
+      chargeFrontier(res);
+    }
 
     if (res.isElement())
       markTraversed(res.getElement().get().getIdentity());

@@ -21,6 +21,7 @@ package com.arcadedb.integration.importer.format;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -29,7 +30,6 @@ import com.arcadedb.integration.importer.Source;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
-import com.univocity.parsers.common.TextParsingException;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,9 +91,9 @@ class RDFImporterFormatCommitCadenceTest {
   }
 
   /**
-   * The value that makes {@code csvParser.parseNext()} itself throw a {@link TextParsingException} on the row
-   * that carries it, which is what induces the mid-file failure the durability assertions need: only edges an
-   * intermediate commit already made durable can survive it.
+   * The value that makes the load refuse the row that carries it ({@code maxPropertySize}: an {@link ImportException}
+   * since the statements are read as N-Triples, issue #12049), which is what induces the mid-file failure the
+   * durability assertions need: only edges an intermediate commit already made durable can survive it.
    */
   private static final String ROW_THAT_ABORTS_THE_PARSE = "v99,rel,TOOLONGVALUEHERE";
 
@@ -132,7 +132,7 @@ class RDFImporterFormatCommitCadenceTest {
         """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(2)))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(countOf("Related"))
         .as("an even -commitEvery must still commit mid-file: the three batches of two that completed are durable")
@@ -160,7 +160,7 @@ class RDFImporterFormatCommitCadenceTest {
         """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(3)))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(countOf("Related"))
         .as("-commitEvery 3 must commit once every three rows, not once every one-and-a-half")
@@ -190,7 +190,7 @@ class RDFImporterFormatCommitCadenceTest {
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(0)))
         .as("the failure that propagates is the malformed row, not an ArithmeticException from the boundary")
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(countOf("Related"))
         .as("-commitEvery 0 commits after every row, so all three rows before the malformed one are durable")
@@ -222,15 +222,15 @@ class RDFImporterFormatCommitCadenceTest {
         """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(2)))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(countOf("Related"))
         .as("the boundary is measured in rows: three batches of two completed before the malformed row")
         .isEqualTo(6);
     assertThat(context.parsed.get())
-        .as("each source row is counted exactly once: the six data rows - the seventh throws inside parseNext(), "
-            + "in the loop condition, so the loop body never counts it")
-        .isEqualTo(6);
+        .as("each source row is counted exactly once: the seven rows read, the seventh being the one refused for its "
+            + "length after it was read (#12049)")
+        .isEqualTo(7);
   }
 
   /**
@@ -302,7 +302,7 @@ class RDFImporterFormatCommitCadenceTest {
         """ + ROW_THAT_ABORTS_THE_PARSE + "\n");
 
     assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settingsWithCommitEvery(2)))
-        .isInstanceOf(TextParsingException.class);
+        .isInstanceOf(ImportException.class);
 
     assertThat(database.isTransactionActive())
         .as("six rows and three boundaries later, the caller's transaction is still theirs and still open")

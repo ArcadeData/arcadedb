@@ -299,7 +299,13 @@ public final class CypherValues {
    * would leave open.
    */
   public static boolean isPointShaped(final Map<?, ?> map) {
-    return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
+    try {
+      return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
+    } catch (final ClassCastException e) {
+      // A map whose keys cannot be compared with a String, such as a TreeMap with Integer keys (a Java parameter), is not a
+      // point; the map order and the inclusive comparison ask this of every map they meet (issue #12274)
+      return false;
+    }
   }
 
   /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of

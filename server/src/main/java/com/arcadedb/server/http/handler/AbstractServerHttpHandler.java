@@ -35,6 +35,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BackupRefusedException;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
 import com.arcadedb.server.ErrorConcealment;
@@ -194,6 +195,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // The label of that refusal, the same whether this node refused the retry or relays the leader's refusal of it.
   private static final String     IN_FLIGHT_ERROR_LABEL         =
       "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
+  // The label of a write whose outcome could not be learned (issue #11887), the same on the node that handed it to the
+  // replication and on a follower that forwarded it to the leader.
+  private static final String     OUTCOME_UNKNOWN_ERROR_LABEL   =
+      "Transaction outcome unknown: the write may have been applied, check before retrying it";
   private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
   // The Retry-After of a retryable 503 (issues #12440, #12441). At once for a refusal that clears by itself - a conflict whose
   // competing commit has already landed, a lock wait that ran out, a read a downsample overtook, a database reopened under the
@@ -1260,6 +1265,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
 
+    // 504 Gateway Timeout, before the TransactionException arm below, which it extends: the write was handed on - to the
+    // replication by the leader, or to the leader by a follower that forwarded it - and its outcome could not be learned. It
+    // may have been applied, or not (issue #11887): a 500 tells a client the server failed, and a 503 that it may retry,
+    // which runs the write twice whenever it did land. The label says so, since 'detail' is concealed in production mode.
+    // 504 is also what a follower answers a forwarded server command whose leader did not answer (LeaderCommandForwarder).
+    final TransactionOutcomeUnknownException outcomeUnknown = firstOf(e, cause, TransactionOutcomeUnknownException.class);
+    if (outcomeUnknown != null)
+      return new ErrorClassification(504, OUTCOME_UNKNOWN_ERROR_LABEL, outcomeUnknown, null, ErrorLogKind.INTERNAL_TRANSACTION);
+
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
     // would be written as, so nothing was submitted (issue #7511). A conflict rather than a 5xx for the same
     // reason the two arms below are: the request is well formed and authorized, the server is healthy, and what
@@ -1296,6 +1310,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (inProgress != null) {
       return new ErrorClassification(409, "Cannot execute command", inProgress, null, ErrorLogKind.USER);
     }
+
+    // 409 Conflict: a GraphBatch load refused because another one is open on the same database (issue #11907). The same
+    // "retryable once the other one finishes" as the arm above, and nothing of the refused load ran, yet it answered the
+    // generic 500 "Internal error" and was logged with a stack trace per refused request. It needs an arm of its own because
+    // its parent DatabaseOperationException has none and also stands for real faults, which must stay a 500. The label names
+    // the condition, since 'detail' is concealed in production mode.
+    final GraphBatchInProgressException batchInProgress = firstOf(e, cause, GraphBatchInProgressException.class);
+    if (batchInProgress != null)
+      return new ErrorClassification(409, "A GraphBatch load is already in progress on this database", batchInProgress, null,
+          ErrorLogKind.USER);
 
     // 409 Conflict: the user name is taken (issue #10073). Not a security failure - it was answered 403 "Security error"
     // before, the status a non-root caller gets, so a client could not tell the two apart without matching on the
@@ -1566,6 +1590,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final JSONException invalidJson = firstOf(e, cause, JSONException.class);
     if (invalidJson != null) {
       return new ErrorClassification(400, "Invalid JSON payload", invalidJson, null, ErrorLogKind.USER);
+    }
+
+    // A backup command refused for what the caller asked: a file name it does not accept, an archive that is not there, a target
+    // database that is taken without overwrite, an archive that cannot be read (issue #12406). The reason goes in the label, not
+    // only in 'detail': detail is concealed in production mode, and the generic "Cannot execute command" left the operator unable
+    // to tell the four apart. Ahead of the IllegalArgumentException arm below, which it extends
+    final BackupRefusedException backupRefused = firstOf(e, cause, BackupRefusedException.class);
+    if (backupRefused != null) {
+      return new ErrorClassification(400, backupRefused.getMessage(), backupRefused, null, ErrorLogKind.USER);
     }
 
     // Bad client input (malformed parameter, unparseable marker, ...).

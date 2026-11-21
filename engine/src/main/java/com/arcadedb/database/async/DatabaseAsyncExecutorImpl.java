@@ -41,6 +41,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
@@ -2131,21 +2132,39 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           backPressurePercentage);
     else {
       // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION
-      // VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
+      // VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED). EACH SLOT IS THE SINGLE WRITER OF ITS OWN
+      // VERTICES, SO THE FIRST TASK WIRES ONLY THE OUT SIDE OF A BIDIRECTIONAL EDGE: IT USED TO WIRE BOTH, AND THE
+      // CASCADE THEN APPENDED THE EDGE A SECOND TIME TO THE IN LIST OF THE DESTINATION (issue #12602)
       scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light,
-          (newEdge, createdSourceVertex, createdDestinationVertex) -> {
-            if (bidirectional) {
-              scheduleTask(destinationSlot,
-                  new CreateIncomingEdgeAsyncTask(sourceVertex.getIdentity(), destinationVertexRID, newEdge,
-                      (newEdge1, createdSourceVertex1, createdDestinationVertex1) -> {
-                        if (callback != null)
-                          callback.call(newEdge1, createdSourceVertex1, createdDestinationVertex1);
-                      }), true, 0);
-            } else if (callback != null)
+          bidirectional, (newEdge, createdSourceVertex, createdDestinationVertex) -> {
+            if (bidirectional)
+              wireIncomingSideOfCrossSlotEdge(newEdge, callback);
+            else if (callback != null)
               callback.call(newEdge, createdSourceVertex, createdDestinationVertex);
 
           }), true, backPressurePercentage);
     }
+  }
+
+  /**
+   * The second half of a cross-slot bidirectional edge, called from the callback of the task that created it on the worker of the
+   * source's slot: appends the edge to the IN list of the vertex it ends at, from the worker that owns that vertex.
+   * <p>
+   * The vertex is the one the edge RECORD names, which an {@code @in} (or {@code @out}) among the properties makes another one than
+   * the vertices given to {@code newEdge} (issue #12247): the slot is that vertex's, and the far end of the entry is the vertex the
+   * record names as its source. A destination that turns out to belong to the calling worker is wired right here, never through
+   * its own queue: a worker that offers into a full queue of its own would only be waiting for itself.
+   */
+  private void wireIncomingSideOfCrossSlotEdge(final Edge edge, final NewEdgeCallback callback) {
+    final RID destination = edge.getIn();
+    final CreateIncomingEdgeAsyncTask incoming = new CreateIncomingEdgeAsyncTask(edge.getOut(), destination, edge, callback);
+
+    final int destinationSlot = getSlot(destination.getBucketId());
+    final AsyncThread[] threads = executorThreads;
+    if (threads != null && destinationSlot < threads.length && threads[destinationSlot] == Thread.currentThread())
+      incoming.connectIncomingSide(database);
+    else
+      scheduleTask(destinationSlot, incoming, true, 0);
   }
 
   @Override

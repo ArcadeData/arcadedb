@@ -377,6 +377,37 @@ public class Statement extends SimpleNode {
   }
 
   /**
+   * Whether this statement is a transaction control, {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK}. Sent as a request of its
+   * own outside any transaction or session of the caller, it acts on the transaction the server opens around that one request
+   * and ends with it, so a server refuses it there (issue #12202).
+   */
+  public boolean isTransactionControl() {
+    return false;
+  }
+
+  /**
+   * Whether running this statement can execute a {@code RETURN} that ends the script holding it (issue #11892): a RETURN itself,
+   * or a block (IF with either of its branches, FOREACH, WHILE) holding a statement that can, at any depth. The script executor
+   * asks it of every line that is not the last one, to tell the lines it has to run for their answer from the lines it only
+   * drains, so a block that is not recognised here has its RETURN drained and the script goes on as if it had not run.
+   * <p>
+   * Structural, not a reflective walk: only the blocks a RETURN can be written in are descended into, so it stays cheap enough
+   * to be asked again on every iteration of a loop.
+   */
+  public boolean containsReturn() {
+    return false;
+  }
+
+  /** Whether any of the statements {@linkplain #containsReturn() can execute a RETURN}. A null list holds none. */
+  public static boolean anyContainsReturn(final List<? extends Statement> statements) {
+    if (statements != null)
+      for (final Statement statement : statements)
+        if (statement.containsReturn())
+          return true;
+    return false;
+  }
+
+  /**
    * Whether this statement reports on the files of the node that runs it and writes nothing, so a replica of a cluster must run
    * it itself rather than forward it to the leader: forwarded, it answers for the leader's files, and a replica whose own copy
    * drifted is reported clean (issues #12347, #12348). Deliberately apart from {@link #isIdempotent()}, which also opens a

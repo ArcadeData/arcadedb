@@ -28,6 +28,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
@@ -61,9 +62,10 @@ class LeaderExceptionReconstructionTest {
   // The same exact-name lookup dropped the other refusals the leader's group committer raises BEFORE the entry reaches
   // the Raft log - {@link ReplicationQueueFullException} and a plain {@link QuorumNotReachedException} - so they are
   // rebuilt too. The two outcomes that mean the entry did, or may have, reached the log
-  // ({@link MajorityCommittedAllFailedException}, {@link ReplicationDispatchedTimeoutException}) are deliberately NOT: a
-  // retry of either can apply the write twice, so they stay non-retryable on the follower (and, since issue #8481, are no
-  // longer {@link QuorumNotReachedException} subtypes on the leader either).
+  // ({@link MajorityCommittedAllFailedException}, {@link ReplicationDispatchedTimeoutException}) are deliberately NOT
+  // retryable: a retry of either can apply the write twice, so they stay non-retryable on the follower (and, since issue
+  // #8481, are no longer {@link QuorumNotReachedException} subtypes on the leader either). Since issue #11887 the dispatched
+  // timeout is rebuilt as the engine's {@code TransactionOutcomeUnknownException}, which the follower answers 504.
 
   private static final String CONFLICT_DETAIL = "[6965 db='graph' page=28/25 base=75 cluster=76] Concurrent modification on "
       + "page 28/25 of database 'graph': the transaction was validated against version 75 but the cluster is at version 76. "
@@ -154,7 +156,7 @@ class LeaderExceptionReconstructionTest {
         null);
 
     assertThat(rebuilt).isNotInstanceOf(NeedRetryException.class);
-    assertThat(rebuilt).isInstanceOf(TransactionException.class);
+    assertThat(rebuilt).isExactlyInstanceOf(TransactionOutcomeUnknownException.class);
   }
 
   // Regression for #8479: the followers transaction retry loop retries the rebuilt conflict only
