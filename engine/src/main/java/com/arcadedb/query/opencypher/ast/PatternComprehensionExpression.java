@@ -57,6 +57,9 @@ public class PatternComprehensionExpression implements Expression {
   private final Expression whereExpression;  // Optional filter
   private final Expression mapExpression;    // Required mapping (after |)
   private final String text;
+  // The comprehension's size as a one-hop degree, when no element can change it: no filter, and a projection that is a
+  // variable or a literal, so evaluating it per match can neither fail nor be skipped (issue #11891)
+  private final OneHopPattern sizeAsDegree;
 
   public PatternComprehensionExpression(final String pathVariable, final PathPattern pathPattern,
       final Expression whereExpression, final Expression mapExpression, final String text) {
@@ -65,6 +68,20 @@ public class PatternComprehensionExpression implements Expression {
     this.whereExpression = whereExpression;
     this.mapExpression = mapExpression;
     this.text = text;
+    this.sizeAsDegree = whereExpression == null
+        && (mapExpression instanceof VariableExpression || mapExpression instanceof LiteralExpression) ?
+        OneHopPattern.of(pathPattern) :
+        OneHopPattern.UNSUPPORTED;
+  }
+
+  /**
+   * The number of elements {@link #evaluate} would answer, read off the edge list of the bound vertex without building the
+   * list, or {@link OneHopPattern#NOT_ANSWERED} when the list has to be built to know it. What {@code size()} of the
+   * comprehension asks for (issue #11891).
+   */
+  public long countElements(final Result result, final CommandContext context) {
+    // The list is built from the relationship records, so the user's permission to read them is still asked
+    return sizeAsDegree.count(result, context, OneHopPattern.Question.SIZE);
   }
 
   /**
@@ -117,7 +134,7 @@ public class PatternComprehensionExpression implements Expression {
       // All hops matched - apply WHERE filter and map expression
       if (whereExpression != null) {
         final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, currentResult, context);
-        if (filterValue == null || (filterValue instanceof Boolean b && !b))
+        if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(filterValue)))
           return;
       }
       // Bind path variable if present (e.g., [p = (n)-->() | p])

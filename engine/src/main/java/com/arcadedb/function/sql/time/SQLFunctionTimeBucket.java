@@ -75,10 +75,19 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 2;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 3;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params.length < 2)
-      throw new IllegalArgumentException("time_bucket() requires 2 parameters: interval and timestamp");
+    checkArity(params);
 
     if (params[0] == null || params[1] == null)
       return null;

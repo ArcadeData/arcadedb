@@ -62,7 +62,6 @@ class AlgoProcedureGuardCensusTest {
    * and gain a guard, not the other way round.
    */
   private static final Map<String, String> SINGLE_PASS_EXEMPT = new TreeMap<>(Map.ofEntries(
-      Map.entry(ALGO + "AlgoAdamicAdar", "one node's own adjacency plus each neighbour's own adjacency: O(deg + sum of neighbour degrees), not the graph"),
       Map.entry(ALGO + "AlgoArticulationPoints", "Tarjan-style single DFS, O(V + E)"),
       Map.entry(ALGO + "AlgoAssortativity", "two O(V + E) passes: degree computation, then one edge-endpoint-degree sum"),
       Map.entry(ALGO + "AlgoAStar", "single priority-queue search bounded by the path found, not the whole graph"),
@@ -70,7 +69,6 @@ class AlgoProcedureGuardCensusTest {
       Map.entry(ALGO + "AlgoBiconnectedComponents", "DFS forest over unvisited starts, each vertex/edge visited once overall, O(V + E)"),
       Map.entry(ALGO + "AlgoBipartiteCheck", "single two-colouring BFS/DFS, O(V + E)"),
       Map.entry(ALGO + "AlgoBridges", "single low-link DFS, O(V + E)"),
-      Map.entry(ALGO + "AlgoCommonNeighbors", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))"),
       Map.entry(ALGO + "AlgoConductance", "a handful of O(V) / O(V + E) passes over precomputed degree and community arrays"),
       Map.entry(ALGO + "AlgoCycleDetection", "single DFS with a recursion-stack colour array, O(V + E)"),
       Map.entry(ALGO + "AlgoDegreeCentrality", "one degree lookup per node, O(V) (or O(1) per node CSR-backed, issue #6316)"),
@@ -79,17 +77,14 @@ class AlgoProcedureGuardCensusTest {
       Map.entry(ALGO + "AlgoDijkstraSingleSource", "single priority-queue search from one source, O((V + E) log V)"),
       Map.entry(ALGO + "AlgoGraphColoring", "single greedy pass, one node's own adjacency scanned once each, O(V + E)"),
       Map.entry(ALGO + "AlgoGraphSummary", "a handful of O(V) / O(V + E) aggregate passes over the loaded graph"),
-      Map.entry(ALGO + "AlgoJaccardSimilarity", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))"),
       Map.entry(ALGO + "AlgoKCore", "bucket-queue peeling, each vertex removed once and each edge relaxed once, O(V + E)"),
       Map.entry(ALGO + "AlgoLongestPathDAG", "topological order plus one relaxation pass over each vertex's own adjacency, O(V + E)"),
       Map.entry(ALGO + "AlgoModularityScore", "a handful of O(V) / O(V + E) passes over precomputed degree and community arrays"),
       Map.entry(ALGO + "AlgoPreferentialAttachment", "O(1) product of two precomputed degrees"),
-      Map.entry(ALGO + "AlgoResourceAllocation", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))"),
       Map.entry(ALGO + "AlgoSameCommunity", "O(1) lookup of two precomputed community labels"),
       Map.entry(ALGO + "AlgoSCC", "single Tarjan/Kosaraju pass, O(V + E)"),
       Map.entry(ALGO + "AlgoTopologicalSort", "single Kahn's-algorithm pass, O(V + E)"),
-      Map.entry(ALGO + "AlgoTotalNeighbors", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))"),
-      Map.entry(ALGO + "AlgoWCC", "single union-find pass over every edge, O(V + E)")));
+      Map.entry(ALGO + "AlgoTotalNeighbors", "one node's own adjacency plus one other node's own adjacency: O(deg(a) + deg(b))")));
 
   @Test
   void everyAlgoProcedureIsEitherGuardedOrAJustifiedSinglePassExemption() throws Exception {

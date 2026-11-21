@@ -36,8 +36,11 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.EncryptionException;
 import com.arcadedb.exception.EquivalentIndexException;
+import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
@@ -58,6 +61,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.UnknownProcedureException;
@@ -125,7 +129,12 @@ public final class RemoteExceptionRebuilder {
       Map.entry(TypeMismatchException.class.getName(), TypeMismatchException::new),
       // A STATEMENT REFUSED FOR WHAT THE DATABASE HOLDS NOW: A NON-EMPTY TYPE, AN INDEXED PROPERTY (ISSUE #11803)
       Map.entry(ObjectInUseException.class.getName(), ObjectInUseException::new),
+      // A STATEMENT REFUSED FOR THE TRANSACTION THE CALLER HOLDS: CALL { ... } IN TRANSACTIONS (ISSUE #12161)
+      Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
       Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
+      // AN ENTITY THE STATEMENT DELETED ITSELF, AND AN EXTERNAL RESOURCE (A LOAD CSV URL) THAT CANNOT BE READ (ISSUE #11974)
+      Map.entry(DeletedEntityException.class.getName(), DeletedEntityException::new),
+      Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)
@@ -148,6 +157,7 @@ public final class RemoteExceptionRebuilder {
       Map.entry(DatabaseIsReopeningException.class.getName(), DatabaseIsReopeningException::new),
       Map.entry(DatabaseOperationException.class.getName(), DatabaseOperationException::new),
       Map.entry(DatabaseOperationInProgressException.class.getName(), DatabaseOperationInProgressException::new),
+      Map.entry(GraphBatchInProgressException.class.getName(), GraphBatchInProgressException::new),
       Map.entry(DatabaseMetadataException.class.getName(), DatabaseMetadataException::new),
       Map.entry(InvalidDatabaseInstanceException.class.getName(), InvalidDatabaseInstanceException::new),
       Map.entry(ConfigurationException.class.getName(), ConfigurationException::new),

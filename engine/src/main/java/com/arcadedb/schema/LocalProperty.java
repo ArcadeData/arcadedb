@@ -52,7 +52,7 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
   private volatile JSONObject unrestoredAttributes;
 
   public LocalProperty(final LocalDocumentType owner, final String name, final Type type) {
-    super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
+    super(owner, name, type, owner.schema.dictionaryIdOfPropertyName(name));
   }
 
   /**

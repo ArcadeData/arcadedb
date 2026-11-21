@@ -303,7 +303,7 @@ public final class CypherValues {
       return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
     } catch (final ClassCastException e) {
       // A map whose keys cannot be compared with a String, such as a TreeMap with Integer keys (a Java parameter), is not a
-      // point; the type rank asks this of every map it orders (issue #11949)
+      // point; the map order and the inclusive comparison ask this of every map they meet (issue #12274)
       return false;
     }
   }

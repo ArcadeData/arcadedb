@@ -198,6 +198,30 @@ class MatchesConditionTest extends TestHelper {
   }
 
   @Test
+  void patternThatBacktracksWithoutReadingIsAbortedByRegexTimeout() {
+    // Issue #12595: anchors and zero-width alternation backtrack 2^n times without one charAt(), the only call the regex
+    // deadline hears of, so the query kept its thread busy for as long as the backtracking took
+    database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE ZeroWidth");
+      database.command("sql", "INSERT INTO ZeroWidth SET name = 'ab'");
+    });
+
+    // 11 groups are 2,048 ways, the smallest fixture past the limit: if the refusal regressed the query would return at once and
+    // the test fail, where the issue's n = 40 would hang the JVM
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(11) + "\\z";
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    assertThatThrownBy(() -> {
+      final ResultSet rs = database.query("sql", "SELECT FROM ZeroWidth WHERE name MATCHES :regex", Map.of("regex", regex));
+      while (rs.hasNext())
+        rs.next();
+    }).isInstanceOf(TimeoutException.class).hasMessageContaining("without reading");
+
+    stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from a backtrack that reads nothing");
+  }
+
+  @Test
   void multiValueMatchesSharesOneTimeoutBudgetAcrossItems() {
     // A multi-value (list) property must not multiply the regex timeout budget by its item count: each
     // catastrophic item getting its own full budget would let a crafted 10-item list run for 10 * regexTimeout

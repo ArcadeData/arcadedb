@@ -44,15 +44,24 @@ public class CountExpression implements Expression {
   private final String          subquery;
   private final String          text;
   private final CypherStatement parsedSubquery;
+  // Whether the body is a one-hop pattern the edge list answers, decided once (issue #11891)
+  private final OneHopPattern oneHop;
 
   public CountExpression(final String subquery, final String text, final CypherStatement parsedSubquery) {
     this.subquery = subquery;
     this.text = text;
     this.parsedSubquery = parsedSubquery;
+    this.oneHop = OneHopPattern.ofBody(parsedSubquery);
   }
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
+    // A one-hop body is the degree of the bound vertex, read off its edge list without planning a subquery (#11891)
+    // The count push-down this replaces reads the edge list alone, so no record permission is asked here either
+    final long degree = oneHop.count(result, context, OneHopPattern.Question.COUNT);
+    if (degree != OneHopPattern.NOT_ANSWERED)
+      return degree;
+
     // The number is asked for directly rather than counted off the rows: a body whose row count is its match count -
     // the shape a bare pattern is normalised into - is then answered by a count push-down instead of a scan (#5715).
     if (CorrelatedSubqueryRunner.canRun(parsedSubquery))

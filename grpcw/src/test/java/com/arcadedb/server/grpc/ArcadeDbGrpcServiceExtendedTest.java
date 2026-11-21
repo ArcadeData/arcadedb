@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -703,5 +704,55 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGrpcServerTest {
 
     assertThatThrownBy(() -> blockingStub.executeQuery(request))
         .isInstanceOf(StatusRuntimeException.class);
+  }
+
+  /**
+   * Issue #11738: both gRPC row encoders take a row's properties from {@code ResultInternal.propertiesOf} in one read of the
+   * record behind it. A top-level row goes through {@code convertResultToGrpcRecord}; a row nested in a value (a LET
+   * sub-query) goes through the {@code Result} arm of {@code toGrpcValue}, which swallows any error and would then send the
+   * row with its columns missing. Both must still carry every column, a null one included, with its value.
+   */
+  @Test
+  void aWideRowKeepsEveryColumnTopLevelAndNested() {
+    final int properties = 40;
+    command("CREATE DOCUMENT TYPE Issue11738Wide IF NOT EXISTS");
+    final StringBuilder insert = new StringBuilder("INSERT INTO Issue11738Wide SET nothing = null");
+    for (int i = 0; i < properties; i++)
+      insert.append(", p").append(i).append(" = 'value-").append(i).append('\'');
+    command(insert.toString());
+
+    final Map<String, GrpcValue> topLevel = query("SELECT FROM Issue11738Wide").getResults(0).getRecords(0).getPropertiesMap();
+    assertEveryColumn(topLevel, properties);
+
+    final GrpcValue rows = query("SELECT $rows AS rows LET $rows = (SELECT *, 7 AS extra FROM Issue11738Wide)")
+        .getResults(0).getRecords(0).getPropertiesMap().get("rows");
+    assertThat(rows.getListValue().getValuesCount()).isEqualTo(1);
+    final Map<String, GrpcValue> nested = rows.getListValue().getValues(0).getMapValue().getEntriesMap();
+    assertEveryColumn(nested, properties);
+    assertThat(nested.get("extra").getInt32Value()).isEqualTo(7);
+  }
+
+  private static void assertEveryColumn(final Map<String, GrpcValue> row, final int properties) {
+    for (int i = 0; i < properties; i++)
+      assertThat(row.get("p" + i)).as("column p%d", i).isNotNull()
+          .extracting(GrpcValue::getStringValue).isEqualTo("value-" + i);
+    assertThat(row).as("a null column is sent as an unset value").containsKey("nothing");
+    assertThat(row.get("nothing").getKindCase()).isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+  }
+
+  private void command(final String sql) {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setCommand(sql)
+        .build());
+  }
+
+  private ExecuteQueryResponse query(final String sql) {
+    return authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery(sql)
+        .build());
   }
 }

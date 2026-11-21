@@ -79,10 +79,19 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     super(NAME);
   }
 
+  @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length < 3 || params.length > 4)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     if (params[0] == null)
       throw new CommandSQLParsingException("index name is null");

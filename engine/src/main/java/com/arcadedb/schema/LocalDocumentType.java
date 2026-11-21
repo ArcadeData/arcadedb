@@ -39,6 +39,7 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -349,7 +350,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterCreate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterCreate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterCreate(record);
   }
@@ -358,7 +359,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeUpdate(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeUpdate(record))
           return false;
@@ -368,7 +369,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterUpdate(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterUpdate(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterUpdate(record);
   }
@@ -377,7 +378,7 @@ public class LocalDocumentType implements DocumentType {
     checkOwnsBucketOf(record);
     if (!events.onBeforeDelete(record))
       return false;
-    if (hasTriggers())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         if (!registry.onBeforeDelete(record))
           return false;
@@ -387,7 +388,7 @@ public class LocalDocumentType implements DocumentType {
   public void fireAfterDelete(final Record record) {
     checkOwnsBucketOf(record);
     events.onAfterDelete(record);
-    if (hasAfterWriteListenersInLineage())
+    if (hasWriteListenersInLineage())
       for (final RecordEventsRegistry registry : getTriggerLineage())
         registry.onAfterDelete(record);
   }
@@ -471,12 +472,13 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * As {@link #hasTriggers()}, for the AFTER CREATE / UPDATE / DELETE events only, which an INCREMENTAL materialized view
-   * listens to on the same registries (issue #10205). Kept apart so that a view adds nothing to the read path. While any such
-   * view exists, an AFTER write on any type walks its lineage (an array cached per type graph, each registry a list that is
-   * empty unless something listens), not only a write on a source type of the view.
+   * As {@link #hasTriggers()}, for the write events an INCREMENTAL materialized view listens to on the same registries: AFTER CREATE
+   * / UPDATE / DELETE (issue #10205), and BEFORE UPDATE / DELETE, for the state a record had before, which a grouped view maintained
+   * by delta takes (issue #11937). Kept apart so that a view adds nothing to the read path. While any such view exists, a write on
+   * any type walks its lineage (an array cached per type graph, each registry a list that is empty unless something listens), not
+   * only a write on a source type of the view.
    */
-  private boolean hasAfterWriteListenersInLineage() {
+  private boolean hasWriteListenersInLineage() {
     return schema != null && (schema.hasTriggerListeners() || schema.hasPolymorphicViewListeners());
   }
 
@@ -1595,13 +1597,33 @@ public class LocalDocumentType implements DocumentType {
    * otherwise survive a rename or a drop, left pointing at a name the type no longer has under that meaning.
    */
   private TypeIndex findIndexOnProperty(final String propertyName) {
-    for (final TypeIndex index : getAllIndexes(true))
-      if (index.getPropertyNames().contains(propertyName))
-        return index;
-    return findDescendantIndexOnProperty(propertyName);
+    return findIndexOnProperty(propertyName, List.of());
   }
 
-  private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
+  /** As {@link #findIndexOnProperty(String)}, passing over the indexes in {@code ignored}. */
+  private TypeIndex findIndexOnProperty(final String propertyName, final Collection<TypeIndex> ignored) {
+    for (final TypeIndex index : getAllIndexes(true))
+      if (index.getPropertyNames().contains(propertyName) && !ignored.contains(index))
+        return index;
+    for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+      if (!ignored.contains(index))
+        return index;
+    return null;
+  }
+
+  /**
+   * Every index a SUBTYPE declared on the property {@code propertyName} this type owns, at any depth: the indexes {@link
+   * #getIndexesByProperties} does not list (they belong to the sub types) but {@link #dropProperty} and {@link #renameProperty} refuse
+   * for. {@code DROP PROPERTY ... FORCE} drops them with the type's own (issue #12034). Walks the {@link #subTypes} lists, so it runs
+   * inside a {@link #recordFileChanges} frame (issue #7672).
+   */
+  private List<TypeIndex> getSubTypeIndexesOnProperty(final String propertyName) {
+    final List<TypeIndex> result = new ArrayList<>();
+    collectSubTypeIndexesOnProperty(propertyName, result);
+    return result;
+  }
+
+  private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
     for (final LocalDocumentType subType : subTypes) {
       if (subType.getPropertyIfExists(propertyName) != null)
         // addSuperType lets a subtype declare its own property under a name a super type already uses - a
@@ -1611,14 +1633,33 @@ public class LocalDocumentType implements DocumentType {
         continue;
 
       for (final TypeIndex index : subType.getAllIndexes(false))
-        if (index.getPropertyNames().contains(propertyName))
-          return index;
+        if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
+          result.add(index);
 
-      final TypeIndex foundDeeper = subType.findDescendantIndexOnProperty(propertyName);
-      if (foundDeeper != null)
-        return foundDeeper;
+      subType.collectSubTypeIndexesOnProperty(propertyName, result);
     }
-    return null;
+  }
+
+  /**
+   * The refusals of {@link #dropProperty}, asked by {@link #dropPropertyAndItsIndexes} before it drops anything (issue #12034): a
+   * refusal of the property after the indexes were gone left the property in place and its UNIQUE index dropped. The indexes in
+   * {@code droppedWithIt} are the ones dropped with the property, so they are not reasons to refuse.
+   */
+  private void checkPropertyCanBeDropped(final String propertyName, final Collection<TypeIndex> droppedWithIt) {
+    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+      // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
+      // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
+      // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
+      // property that is NOT a declared column is still droppable, which is how a database written before that
+      // issue gets rid of the stray one it may already carry.
+      throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
+          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
+          + "whole type to remove the column");
+
+    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName, droppedWithIt);
+    if (indexOnProperty != null)
+      throw new SchemaException(
+          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
   }
 
   /**
@@ -1644,38 +1685,77 @@ public class LocalDocumentType implements DocumentType {
     checkForSchemaMutation();
 
     return recordFileChanges(() -> {
-      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
-        // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
-        // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
-        // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
-        // property that is NOT a declared column is still droppable, which is how a database written before that
-        // issue gets rid of the stray one it may already carry.
-        throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
-            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
-            + "whole type to remove the column");
-
-      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
-      if (indexOnProperty != null)
-        throw new SchemaException(
-            "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
-
-      final Property removed = properties.remove(propertyName);
-      if (removed != null) {
-        schema.typesChanged();
-        // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
-        if (removed.isExternal())
-          ownExternalPropertyCount.decrementAndGet();
-        // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
-        // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
-        // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
-        // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
-        // the failure looked like it healed on restart.
-        setPropertyHasDefault(propertyName, false);
-      } else
-        // the one way to remove a definition the load could not create (#11301)
-        forgetUnrestorableProperty(propertyName);
-      return removed;
+      checkPropertyCanBeDropped(propertyName, List.of());
+      return removeProperty(propertyName);
     });
+  }
+
+  /**
+   * {@code DROP PROPERTY}, with the indexes on the property, as ONE schema change (issue #12034). The indexes on the property are the
+   * type's own and the ones a SUBTYPE declared on the inherited property (a sub type that declares a property of the same name
+   * shadows it, and its indexes are left alone): {@link #dropProperty} refuses for both.
+   * <p>
+   * Without {@code force} an index on the property refuses the drop with an {@link ObjectInUseException} naming every one of them.
+   * With {@code force} every refusal of the property drop is asked BEFORE the first index goes, then the indexes are dropped and the
+   * property removed. The collection, the checks and the drops run in a single {@link #recordFileChanges} frame, under the database
+   * write lock: the walk of the {@link #subTypes} lists is serialised against {@code linkSuperType}/{@code unlinkSuperType} (issue
+   * #7672), and no concurrent {@code CREATE INDEX} or {@code ALTER TYPE ... SUPERTYPE} can land between the check and the drops. A
+   * refusal found after the indexes were dropped used to leave the property in place and its UNIQUE index gone, so duplicates got in.
+   *
+   * @param propertyName the property to drop
+   * @param force        whether the indexes on the property are dropped with it instead of refusing the drop
+   *
+   * @return the names of the indexes dropped with the property, empty if there were none
+   */
+  public List<String> dropPropertyAndItsIndexes(final String propertyName, final boolean force) {
+    checkForSchemaMutation();
+
+    return recordFileChanges(() -> {
+      final List<TypeIndex> indexes = new ArrayList<>(getIndexesByProperties(propertyName));
+      for (final TypeIndex index : getSubTypeIndexesOnProperty(propertyName))
+        if (!indexes.contains(index))
+          indexes.add(index);
+
+      final List<String> indexNames = new ArrayList<>(indexes.size());
+      for (final TypeIndex index : indexes)
+        indexNames.add(index.getName());
+
+      if (!indexNames.isEmpty()) {
+        if (!force)
+          throw new ObjectInUseException("Property used in indexes (" + String.join(", ", indexNames)
+              + "). Please drop these indexes before removing property or use FORCE parameter.");
+
+        // everything the property drop can refuse for is asked before the first index goes
+        checkPropertyCanBeDropped(propertyName, indexes);
+
+        // One drop: the indexes go together or not at all (issue #10589). A nested frame: the save is left to this one
+        schema.dropIndexes(indexNames);
+      } else
+        checkPropertyCanBeDropped(propertyName, List.of());
+
+      removeProperty(propertyName);
+      return indexNames;
+    });
+  }
+
+  /** Removes the property, once {@link #checkPropertyCanBeDropped} let it go. Runs inside a {@link #recordFileChanges} frame. */
+  private Property removeProperty(final String propertyName) {
+    final Property removed = properties.remove(propertyName);
+    if (removed != null) {
+      schema.typesChanged();
+      // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
+      if (removed.isExternal())
+        ownExternalPropertyCount.decrementAndGet();
+      // Issue #6799: and the same for the default-property cache. A dropped property must stop participating in
+      // default-value processing at once, or the next record create looks the name up with getPolymorphicProperty()
+      // and fails with "Cannot find property '<name>' in type '<type>'". Only the in-memory view was ever wrong -
+      // schema.json holds the default on the property itself, so a reload rebuilt the set correctly - which is why
+      // the failure looked like it healed on restart.
+      setPropertyHasDefault(propertyName, false);
+    } else
+      // the one way to remove a definition the load could not create (#11301)
+      forgetUnrestorableProperty(propertyName);
+    return removed;
   }
 
   /**
@@ -2957,9 +3037,11 @@ public class LocalDocumentType implements DocumentType {
                   + "': it is already a primary bucket of another user type. The paired external bucket is named"
                   + " <primaryBucketName>_ext, so a primary bucket called '" + extName + "' (or one whose name"
                   + " ends in '_ext' that matches another type's primary bucket) collides with this convention."
-                  + " Resolve by renaming the conflicting primary bucket via 'ALTER BUCKET " + extName
-                  + " NAME ...' so its name no longer ends in '_ext' or no longer collides, then retry the EXTERNAL"
-                  + " property change.");
+                  + " A bucket cannot be renamed (issue #11796): resolve by moving the records of bucket '" + extName
+                  + "' to a bucket with another name (CREATE BUCKET, ALTER TYPE ... BUCKET +<new>, MOVE VERTEX or"
+                  + " INSERT ... SELECT, ALTER TYPE ... BUCKET -" + extName + ", DROP BUCKET " + extName
+                  + "; a copied record gets a new RID, so rewrite the links to the old RIDs before the DROP), then retry the"
+                  + " EXTERNAL property change.");
       } else {
         // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (256 vs 2048: file-format
         // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via

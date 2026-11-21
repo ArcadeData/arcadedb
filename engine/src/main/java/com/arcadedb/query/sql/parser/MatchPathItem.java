@@ -49,10 +49,18 @@ public class MatchPathItem extends SimpleNode {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    method.toString(params, builder);
+    traversalToString(params, builder);
     if (filter != null) {
       filter.toString(params, builder);
     }
+  }
+
+  /**
+   * Renders the traversal of this step without its target filter, as EXPLAIN prints it between the two aliases. A nested path
+   * `.( )` or a field step has no method of its own, which EXPLAIN used to print as `{x}null{y}`.
+   */
+  public void traversalToString(final Map<String, Object> params, final StringBuilder builder) {
+    method.toString(params, builder);
   }
 
   public Iterable<Identifiable> executeTraversal(final MatchStatement.MatchContext matchContext, final CommandContext iCommandContext,

@@ -21,7 +21,9 @@ package com.arcadedb.function.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * text.capitalizeAll(string) - Capitalize first letter of each word.
+ * text.capitalizeAll(string) - Capitalize the first letter of each word, as {@code apoc.text.capitalizeAll} does (issue #12104): the
+ * words are separated by spaces, their first character goes to title case, and the result is trimmed, so {@code '  padded  '} is
+ * {@code 'Padded'}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -43,33 +45,19 @@ public class TextCapitalizeAll extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Capitalize the first letter of each word in the string";
+    return "Capitalize the first letter of each space-separated word in the string, then trim it";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
-    if (str == null || str.isEmpty())
-      return str;
-
-    final StringBuilder result = new StringBuilder(str.length());
-    boolean capitalizeNext = true;
+    if (str == null)
+      return null;
 
     // By code point (issue #10484): a cased letter outside the BMP is two UTF-16 units, and neither of them has a case
-    for (int i = 0; i < str.length(); ) {
-      final int c = str.codePointAt(i);
-      i += Character.charCount(c);
-      if (Character.isWhitespace(c)) {
-        capitalizeNext = true;
-        result.appendCodePoint(c);
-      } else if (capitalizeNext) {
-        result.appendCodePoint(Character.toUpperCase(c));
-        capitalizeNext = false;
-      } else {
-        result.appendCodePoint(c);
-      }
-    }
-
-    return result.toString();
+    final StringBuilder result = new StringBuilder(str.length());
+    for (final String word : str.split(" "))
+      result.append(titleCaseFirst(word)).append(' ');
+    return result.toString().trim();
   }
 }
