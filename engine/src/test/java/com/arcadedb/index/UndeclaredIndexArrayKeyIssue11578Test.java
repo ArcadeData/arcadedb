@@ -138,7 +138,9 @@ class UndeclaredIndexArrayKeyIssue11578Test extends TestHelper {
 
     final DocumentType type = database.getSchema().createDocumentType("Conv");
     final Property property = type.createProperty("s", Type.STRING);
-    assertThatThrownBy(() -> Type.convert(database, new long[] { 1 }, String.class, property))
+    // a declared STRING property holds the same text, as it does for the same list (issue #12896); a byte[] is still refused
+    assertThat(Type.convert(database, new long[] { 1 }, String.class, property)).isEqualTo("[1]");
+    assertThatThrownBy(() -> Type.convert(database, new byte[] { 1 }, String.class, property))
         .isInstanceOf(IllegalArgumentException.class);
   }
 

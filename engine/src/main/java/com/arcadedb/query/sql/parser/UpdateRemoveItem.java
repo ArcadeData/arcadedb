@@ -72,7 +72,8 @@ public class UpdateRemoveItem extends SimpleNode {
 
   public void applyUpdate(final ResultInternal result, final CommandContext context) {
     if (right != null) {
-      final Object leftVal = left.execute(result, context);
+      // a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES comes back as the list that replaced it, which can lose items (issue #12896)
+      final Object leftVal = left.executeForRemove(result, context);
       final Object rightVal = right.execute(result, context);
       if (MultiValue.isMultiValue(leftVal)) {
         MultiValue.remove(leftVal, rightVal, false);

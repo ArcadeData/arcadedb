@@ -587,6 +587,17 @@ public class Expression extends SimpleNode {
     }
   }
 
+  /**
+   * The value {@code REMOVE <this> = <value>} takes items out of: the value of the expression, with a list stored as an array
+   * (ARRAY_OF_LONGS / ARRAY_OF_DOUBLES) replaced by the list of its items where it is held, since an array cannot lose items in
+   * place (issue #12896).
+   */
+  public Object executeForRemove(final ResultInternal result, final CommandContext context) {
+    if (!isNull && rid == null && mathExpression != null)
+      return mathExpression.executeForRemove(result, context);
+    return execute(result, context);
+  }
+
   public boolean isCount() {
     if (mathExpression == null) {
       return false;

@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
 import java.util.Collection;
@@ -54,7 +55,10 @@ public class SQLFunctionDifference extends SQLAggregatedCollectionFunction<Set<O
     final Set<Object> result = new DistinctValueSet();
 
     boolean first = true;
-    for (final Object iParameter : params) {
+    for (final Object param : params) {
+      // a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array: it is the list of its items, not one item (issue
+      // #12896). A byte[] is a BINARY value and stays one item
+      final Object iParameter = MultiValue.isSequenceArray(param) ? MultiValue.getMultiValueAsList(param) : param;
       if (first) {
         if (iParameter instanceof Collection<?>) {
           result.addAll((Collection<Object>) iParameter);

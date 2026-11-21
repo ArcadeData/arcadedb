@@ -27,9 +27,11 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -587,10 +589,36 @@ public class BaseExpression extends MathExpression {
       if (modifier == null) {
         identifier.applyRemove(result, context);
       } else {
-        final Object val = identifier.execute(result, context);
+        Object val = identifier.execute(result, context);
+        // REMOVE l[0] on a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES: the array cannot lose items in place, the list of
+        // its items replaces it in the record and loses them (issue #12896)
+        if (identifier.getSuffix() != null && modifier.removesItemsOf(val))
+          val = replaceWithItems(result, val, context);
         modifier.applyRemove(val, result, context);
       }
     }
+  }
+
+  /**
+   * The value {@code REMOVE <this> = <value>} takes items out of. A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a
+   * primitive array, which cannot lose items in place: the list of its items replaces it where it is held, in the record or in
+   * an embedded map, and is the value answered (issue #12896). Any other value is answered as {@link #execute} answers it.
+   */
+  @Override
+  public Object executeForRemove(final ResultInternal result, final CommandContext context) {
+    final Object value = execute(result, context);
+    if (!MultiValue.isSequenceArray(value) || identifier == null || identifier.getSuffix() == null)
+      return value;
+    if (modifier == null)
+      return replaceWithItems(result, value, context);
+    final List<Object> items = modifier.replaceArrayWithItems(result, identifier.execute(result, context), context);
+    return items != null ? items : value;
+  }
+
+  private List<Object> replaceWithItems(final ResultInternal result, final Object array, final CommandContext context) {
+    final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(array));
+    identifier.getSuffix().setValue(result, items, context);
+    return items;
   }
 
   @Override

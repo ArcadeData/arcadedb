@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
 import java.util.Collection;
@@ -67,7 +68,9 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
     if (params[0] == null)
       return null;
 
-    final Object value = params[0];
+    // a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array: it is the list of its items, not one item (issue
+    // #12896). A byte[] is a BINARY value and stays one item
+    final Object value = asItems(params[0]);
 
     if (params.length == 1) {
       // AGGREGATION MODE (STATEFUL)
@@ -87,7 +90,8 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
       final Set<Object> result = new DistinctValueSet();
       final Set<Object> rejected = new DistinctValueSet();
 
-      for (final Object iParameter : params) {
+      for (final Object param : params) {
+        final Object iParameter = asItems(param);
         if (iParameter instanceof Collection<?>) {
           addItemsToResult((Collection<Object>) iParameter, result, rejected);
         } else {
@@ -97,6 +101,10 @@ public class SQLFunctionSymmetricDifference extends SQLAggregatedCollectionFunct
 
       return result;
     }
+  }
+
+  private static Object asItems(final Object value) {
+    return MultiValue.isSequenceArray(value) ? MultiValue.getMultiValueAsList(value) : value;
   }
 
   public String getSyntax() {

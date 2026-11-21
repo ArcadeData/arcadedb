@@ -303,7 +303,12 @@ public class Modifier extends SimpleNode {
 
   public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (next != null) {
-      final Object val = calculateLocal(originalRecord, currentValue, context);
+      Object val = calculateLocal(originalRecord, currentValue, context);
+      if (next.removesItemsOf(val)) {
+        final List<Object> items = replaceWithItems(originalRecord, currentValue, val, context);
+        if (items != null)
+          val = items;
+      }
       next.applyRemove(val, originalRecord, context);
     } else {
       if (arrayRange != null)
@@ -321,6 +326,36 @@ public class Modifier extends SimpleNode {
         throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
   }
+
+  /**
+   * Whether this modifier, the last of the chain, removes items by position or by value from {@code value} and {@code value} is
+   * an array: a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, which the removal cannot shrink, so the
+   * caller has to replace it with the list of its items first (issue #12896).
+   */
+  boolean removesItemsOf(final Object value) {
+    return next == null && (arrayRange != null || arraySingleValues != null) && MultiValue.isSequenceArray(value);
+  }
+
+  /**
+   * Replaces the array this chain reaches from {@code target} with the list of its items, where it is held, and answers that
+   * list, so a REMOVE can take items out of it (issue #12896). Answers null when the value reached is not a sequence array or
+   * when the last modifier cannot write it back (a method call, a filter): the caller then keeps the value as it was.
+   */
+  List<Object> replaceArrayWithItems(final ResultInternal record, final Object target, final CommandContext context) {
+    final Object val = calculateLocal(record, target, context);
+    if (next != null)
+      return next.replaceArrayWithItems(record, val, context);
+    return MultiValue.isSequenceArray(val) ? replaceWithItems(record, target, val, context) : null;
+  }
+
+  private List<Object> replaceWithItems(final ResultInternal record, final Object holder, final Object array, final CommandContext context) {
+    if (suffix == null && arraySingleValues == null)
+      return null;
+    final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(array));
+    doSetValue(record, holder, items, context);
+    return items;
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();
