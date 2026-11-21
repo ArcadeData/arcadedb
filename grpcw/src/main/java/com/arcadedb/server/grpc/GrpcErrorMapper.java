@@ -109,6 +109,35 @@ public final class GrpcErrorMapper {
    */
   static final String CONCEALED_DESCRIPTION = ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
 
+  /**
+   * The longest error description this transport sends, in characters.
+   * <p>
+   * The description travels as the {@code grpc-message} metadata entry, and gRPC caps the metadata a peer receives at 16 KB
+   * (issue #5048 raised the cap for the INBOUND side; the OUTBOUND one is the client's hard limit). An engine message
+   * that carries the offending statement - a SQL syntax error quotes the line it failed on - therefore does not fit once
+   * the statement is longer than about 12 KB, and the client is answered with a bare {@code RESOURCE_EXHAUSTED} instead of
+   * the error: the failure is reported as a transport failure, and the caller cannot tell a malformed statement from a
+   * server that ran out of room. The other transports carry the same message in a body with no such cap, so the same
+   * statement is refused by gRPC and accepted by Bolt and HTTP.
+   * <p>
+   * A description longer than this is cut, with the cut marked, so the verdict (which status, which exception class) still
+   * reaches the client: the class name travels in its own trailer, and the status code is the verdict.
+   */
+  static final int MAX_DESCRIPTION_LENGTH = 8 * 1024;
+
+  /**
+   * The description of a failure, cut to {@link #MAX_DESCRIPTION_LENGTH} characters.
+   * <p>
+   * The cut is at the end of the text, where the exception's own words are: a SQL syntax error puts the statement it
+   * quotes after the sentence that says what was wrong, so the sentence survives the cut and only the quoted statement is
+   * shortened.
+   */
+  static String boundDescription(final String description) {
+    if (description == null || description.length() <= MAX_DESCRIPTION_LENGTH)
+      return description;
+    return description.substring(0, MAX_DESCRIPTION_LENGTH) + "... (truncated)";
+  }
+
   private GrpcErrorMapper() {
   }
 
@@ -277,7 +306,7 @@ public final class GrpcErrorMapper {
     // DETAIL FROM AN EXCEPTION, AND IT IS THE ONLY THING THAT MAKES A FOLLOWER'S REFUSAL ACTIONABLE
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
-    return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
+    return code.toStatus().withDescription(boundDescription(description)).withCause(cause).asRuntimeException(trailers);
   }
 
   /**
