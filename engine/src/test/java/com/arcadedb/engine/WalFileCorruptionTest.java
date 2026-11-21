@@ -150,6 +150,100 @@ class WalFileCorruptionTest {
       }
     }
 
+    /**
+     * The scan reads the file in 64 KB chunks and overlaps them by 7 bytes so that a footer magic number straddling a chunk boundary
+     * is not missed. Every gap that puts the magic number of the next transaction within a few bytes of the first chunk's end must
+     * still find it, or recovery would read a corrupt record followed by intact transactions as a benign torn tail and drop them.
+     */
+    @Test
+    void findsValidTransactionWhoseMagicNumberStraddlesAChunkBoundary() throws Exception {
+      final int txSize = transactionSize();
+      final int chunkSize = 1 << 16;
+      // the scan starts one byte past the end of the first transaction; the magic number of the second one starts at
+      // (gap + txSize - 8) bytes from there, minus the byte skipped
+      for (int magicOffset = chunkSize - 12; magicOffset <= chunkSize + 4; magicOffset++) {
+        final int gap = magicOffset - txSize + 9;
+        final File walFile = File.createTempFile("wal-chunk-", ".wal");
+        try {
+          try (final RandomAccessFile raf = new RandomAccessFile(walFile, "rw")) {
+            final FileChannel ch = raf.getChannel();
+            ch.write(buildTransaction(BASE_TX_ID, MISSING_FILE_ID), 0);
+            ch.write(ByteBuffer.allocate(gap), txSize);
+            ch.write(buildTransaction(BASE_TX_ID + 1, MISSING_FILE_ID), txSize + gap);
+          }
+          final WALFile wf = new WALFile(walFile.getAbsolutePath());
+          try {
+            assertThat(wf.findNextValidTransactionPosition(txSize))
+                .as("gap %d puts the magic number %d bytes into the scan", gap, magicOffset)
+                .isEqualTo((long) txSize + gap);
+          } finally {
+            wf.close();
+          }
+        } finally {
+          walFile.delete();
+        }
+      }
+    }
+
+    @Test
+    void findsValidTransactionSeveralChunksAfterTheTornRecord() throws Exception {
+      final int txSize = transactionSize();
+      final int gap = 3 * (1 << 16) + 17;
+      final File walFile = File.createTempFile("wal-far-", ".wal");
+      try {
+        try (final RandomAccessFile raf = new RandomAccessFile(walFile, "rw")) {
+          final FileChannel ch = raf.getChannel();
+          ch.write(buildTransaction(BASE_TX_ID, MISSING_FILE_ID), 0);
+          ch.write(ByteBuffer.allocate(gap), txSize);
+          ch.write(buildTransaction(BASE_TX_ID + 1, MISSING_FILE_ID), txSize + gap);
+          ch.write(buildTransaction(BASE_TX_ID + 2, MISSING_FILE_ID), (long) txSize * 2 + gap);
+        }
+        final WALFile wf = new WALFile(walFile.getAbsolutePath());
+        try {
+          // the NEXT valid transaction, not a later one
+          assertThat(wf.findNextValidTransactionPosition(txSize)).isEqualTo((long) txSize + gap);
+          // an intact transaction that follows immediately is the next one too; and past the last one there is none
+          assertThat(wf.findNextValidTransactionPosition((long) txSize * 2 + gap)).isEqualTo((long) txSize * 2 + gap);
+          assertThat(wf.findNextValidTransactionPosition((long) txSize * 3 + gap)).isEqualTo(-1L);
+        } finally {
+          wf.close();
+        }
+      } finally {
+        walFile.delete();
+      }
+    }
+
+    @Test
+    void aMagicNumberInsideTheGarbageDoesNotMakeTheScanStopOrPickABogusStart() throws Exception {
+      final int txSize = transactionSize();
+      final File walFile = File.createTempFile("wal-coincidence-", ".wal");
+      try {
+        // garbage that carries the footer magic number, but no transaction that ends on it: right after the failed record's start (the
+        // derived start would precede it), and further in, where the derived start is inside the garbage and does not parse
+        final ByteBuffer garbage = ByteBuffer.allocate(200);
+        garbage.position(2);
+        garbage.putLong(WALFile.MAGIC_NUMBER);
+        garbage.position(100);
+        garbage.putInt(40);
+        garbage.putLong(WALFile.MAGIC_NUMBER);
+        garbage.rewind();
+        try (final RandomAccessFile raf = new RandomAccessFile(walFile, "rw")) {
+          final FileChannel ch = raf.getChannel();
+          ch.write(buildTransaction(BASE_TX_ID, MISSING_FILE_ID), 0);
+          ch.write(garbage, txSize);
+          ch.write(buildTransaction(BASE_TX_ID + 1, MISSING_FILE_ID), txSize + 200);
+        }
+        final WALFile wf = new WALFile(walFile.getAbsolutePath());
+        try {
+          assertThat(wf.findNextValidTransactionPosition(txSize)).isEqualTo((long) txSize + 200);
+        } finally {
+          wf.close();
+        }
+      } finally {
+        walFile.delete();
+      }
+    }
+
     // ---------------------------------------------------------------------------------------------------------
     // Integration tests: the recovery loop in TransactionManager.checkIntegrity().
     // ---------------------------------------------------------------------------------------------------------

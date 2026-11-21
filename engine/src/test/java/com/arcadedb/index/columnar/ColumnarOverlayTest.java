@@ -280,6 +280,91 @@ class ColumnarOverlayTest {
     })).isInstanceOf(IllegalArgumentException.class);
   }
 
+  /**
+   * The bulk visit skips a stored word that holds no match by the number of rows the word stores, so that the row index of the next word
+   * still names its own rows. A page whose stored slots span several words and whose matches sit only in later ones reads those rows.
+   */
+  @Test
+  void forEachOrdinalSkipsWordsThatHoldNoMatchWithoutLosingTheRowIndex() {
+    // stored slots: 1, 2, 3 (word 0), 70, 71, 72 (word 1), 130, 131 (word 2)
+    overlay.replacePage(block(4, 1, 1000, 1, 2, 3, 70, 71, 72, 130, 131));
+    final PositionBitmap matches = new PositionBitmap(MRP);
+    matches.set(pos(4, 72));
+    matches.set(pos(4, 130));
+    // a match on a slot the block does not store, in a word that stores rows
+    matches.set(pos(4, 100));
+
+    final ColumnarSegmentView view = overlay.publish();
+    final List<String> brands = new ArrayList<>();
+    view.column("brand").forEachOrdinal(matches, (position, ordinal) -> brands.add(position + ":" + ordinal));
+    assertThat(brands).containsExactly(pos(4, 72) + ":1072", pos(4, 130) + ":1130");
+
+    final List<String> tags = new ArrayList<>();
+    view.column("tags").forEachOrdinal(matches, (position, ordinal) -> tags.add(position + ":" + ordinal));
+    assertThat(tags).containsExactly(pos(4, 72) + ":0", pos(4, 72) + ":5", pos(4, 130) + ":1", pos(4, 130) + ":6");
+
+    // the same page with only its last stored word matched
+    final PositionBitmap last = new PositionBitmap(MRP);
+    last.set(pos(4, 131));
+    final List<String> lastVisits = new ArrayList<>();
+    view.column("brand").forEachOrdinal(last, (position, ordinal) -> lastVisits.add(position + ":" + ordinal));
+    assertThat(lastVisits).containsExactly(pos(4, 131) + ":1131");
+  }
+
+  @Test
+  void pointReadsOutsideTheViewAnswerMissingAndAReaderOfAnotherKindIsRefused() {
+    overlay.replacePage(block(0, 1, 0, 2047));
+    overlay.replacePage(block(1, 1, 0, 4));
+    final ColumnarSegmentView view = overlay.publish();
+    final ColumnReader brand = view.column("brand");
+
+    // a negative position is no position of page 0: it must not be divided into one
+    assertThat(brand.isPresent(-1)).isFalse();
+    assertThat(brand.ordinal(-1)).isEqualTo(-1);
+    assertThat(brand.isPresent(-2048)).isFalse();
+    // a page the view does not hold, a slot of a held page that is not stored, a position past every int page
+    assertThat(brand.isPresent(pos(2, 4))).isFalse();
+    assertThat(brand.isPresent(pos(1, 5))).isFalse();
+    assertThat(brand.isPresent((long) Integer.MAX_VALUE * MRP + 1)).isFalse();
+    assertThat(brand.isPresent(Long.MAX_VALUE)).isFalse();
+    assertThat(brand.isPresent(pos(1, 4))).isTrue();
+    assertThat(brand.isPresent(pos(0, 2047))).isTrue();
+
+    assertThatThrownBy(() -> brand.ordinals(pos(1, 4), new int[2])).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> brand.longValue(pos(1, 4))).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> brand.doubleValue(pos(1, 4))).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> view.column("tags").ordinal(pos(1, 4))).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> view.column("size").ordinal(pos(1, 4))).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> view.column("score").longValue(pos(1, 4))).isInstanceOf(IllegalStateException.class);
+    assertThat(view.column("nothing")).isNull();
+  }
+
+  @Test
+  void liveOfAPageRangeIsTheStoredSlotsOfThosePagesOnly() {
+    overlay.replacePage(block(2, 1, 0, 1));
+    overlay.replacePage(block(5, 1, 0, 2));
+    overlay.replacePage(block(9, 1, 0, 3));
+    final ColumnarSegmentView view = overlay.publish();
+    assertThat(positions(view.live(0, 100))).containsExactly(pos(2, 1), pos(5, 2), pos(9, 3));
+    assertThat(positions(view.live(2, 9))).containsExactly(pos(2, 1), pos(5, 2));
+    assertThat(positions(view.live(3, 10))).containsExactly(pos(5, 2), pos(9, 3));
+    assertThat(positions(view.live(5, 6))).containsExactly(pos(5, 2));
+    assertThat(positions(view.live(6, 9))).isEmpty();
+    assertThat(positions(view.live(-4, 3))).containsExactly(pos(2, 1));
+  }
+
+  @Test
+  void aBlockStagedForAnotherPageSizeOrOtherColumnsIsRefusedByBuild() {
+    final RowBuffer otherSize = new RowBuffer(MRP * 2, COLUMNS);
+    assertThatThrownBy(() -> OverlayPageBlock.build(1, MRP, COLUMNS, 1, otherSize)).isInstanceOf(IllegalArgumentException.class);
+    final ColumnDefinition[] fewer = new ColumnDefinition[] { COLUMNS[0] };
+    assertThatThrownBy(() -> OverlayPageBlock.build(1, MRP, COLUMNS, 1, new RowBuffer(MRP, fewer)))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> OverlayPageBlock.build(-1, MRP, COLUMNS, 1, buffer)).isInstanceOf(IllegalArgumentException.class);
+    // no staged rows at all is the empty block that removes a page
+    assertThat(OverlayPageBlock.build(1, MRP, COLUMNS, 1, null).rowCount()).isZero();
+  }
+
   @Test
   void oldestRowAgeRestartsAtFreeze() {
     assertThat(overlay.oldestRowMs()).isZero();
