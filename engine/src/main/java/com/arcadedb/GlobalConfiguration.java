@@ -1500,6 +1500,20 @@ public enum GlobalConfiguration {
       database open. Lookups then behave exactly as they did before the feature existed.""",
       Float.class, 0.01f),
 
+  VECTOR_INDEX_MAX_DIMENSIONS("arcadedb.vectorIndex.maxDimensions", SCOPE.DATABASE,
+      """
+      Largest 'dimensions' an LSM_VECTOR index may be created with (issue #12822). The index keeps several buffers \
+      of 'dimensions' floats each (4 bytes per component, per buffer), so a value with no upper bound let one \
+      CREATE INDEX allocate gigabytes and run the whole server out of heap. The default, 16384 (64 KB per vector), \
+      sits well above the widest dense embeddings in common use (a few thousand components) and next to the \
+      16,000-component cap other vector stores apply. Checked only when the dimensions of a new index are declared, \
+      through SQL CREATE INDEX, Cypher CREATE VECTOR INDEX, the Java builders or an import, and when an index created \
+      with 'sizeOnFirstVector' is offered its first vector: an index persisted with a larger value keeps opening and \
+      working, and REBUILD INDEX, TRUNCATE TYPE and a bucket added to its type re-create it as it is. \
+      A larger value is refused as a client error naming this setting; raise it before creating the index if your \
+      vectors really are wider.""",
+      Integer.class, 16384),
+
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """
       DEPRECATED and ignored since issue #5568: the location index is always unlimited, and a positive value is \
