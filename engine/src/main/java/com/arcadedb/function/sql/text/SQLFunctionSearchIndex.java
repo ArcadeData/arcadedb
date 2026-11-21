@@ -221,12 +221,21 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   /**
-   * Resolves a function expression parameter to a string value.
+   * Resolves a function expression parameter to a string value while the plan is built, or null when it cannot be resolved there.
    */
   static String resolveStringParam(final Expression expr, final CommandContext context) {
-    if (expr == null)
-      return null;
-    final Object value = expr.execute((Identifiable) null, context);
+    final Object value = resolveParam(expr, context);
     return value != null ? value.toString() : null;
+  }
+
+  /**
+   * Resolves a function expression parameter while the plan is built, with no current record, or null when it depends on the record
+   * ({@code @type}, a property): such a call cannot be answered by an index, and is evaluated per record like any other function
+   * call. Evaluating it without a record threw a {@code NullPointerException} from the planner (issue #12795).
+   */
+  static Object resolveParam(final Expression expr, final CommandContext context) {
+    if (expr == null || !expr.isEarlyCalculated(context))
+      return null;
+    return expr.execute((Identifiable) null, context);
   }
 }
