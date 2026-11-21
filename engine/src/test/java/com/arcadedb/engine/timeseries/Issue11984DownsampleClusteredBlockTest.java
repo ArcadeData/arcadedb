@@ -35,6 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for issue #11984: a downsampling tier skipped every raw sealed block whose AVERAGE sample spacing was at least the
  * granularity, reading it as "already at the target resolution". Nine samples of one series inside one hour plus a tenth nine hours
  * later average one hour of spacing, so the nine stayed raw forever under a one-hour tier, while the same nine alone were downsampled.
+ * <p>
+ * A block is downsampled when that reduces it, that is when two of its samples share a (tag values, bucket); the tests below pin that
+ * from both sides, and what it means for the replication: every rewrite leaves fewer samples, so the shipping decision of the engine,
+ * which reads the counts, sees every one of them.
  */
 class Issue11984DownsampleClusteredBlockTest extends TestHelper {
 
@@ -42,13 +46,8 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
 
   @Test
   void aBlockWhoseSamplesShareABucketIsDownsampledWhateverItsAverageSpacing() throws Exception {
-    final List<ColumnDefinition> columns = List.of(
-        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
-        new ColumnDefinition("host", Type.STRING, ColumnDefinition.ColumnRole.TAG),
-        new ColumnDefinition("v", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
-
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984", columns, 1);
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984", columns(), 1);
     final long[] timestamps = new long[10];
     final Object[] hosts = new Object[10];
     final Object[] values = new Object[10];
@@ -125,58 +124,87 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
   }
 
   /**
-   * A block with one sample per bucket is rewritten with as many blocks and samples as it had: only the timestamps move, to the
-   * start of their bucket. The rewritten file is handed to the replication all the same, or the followers, which never downsample
-   * by themselves, keep answering the raw timestamps the leader no longer holds.
+   * A block with one sample per (tag values, bucket) has nothing to fold: it stays as it is, with its raw timestamps, and nothing is
+   * handed to the replication. Before, the pass moved every timestamp to its bucket start and left as many blocks and samples as it
+   * found, so the followers, which never downsample by themselves and are told of a rewrite by its counts, kept answering the raw
+   * timestamps the leader no longer held.
    */
   @Test
-  void aDownsampleThatKeepsEverySampleIsStillHandedToTheReplication() throws Exception {
+  void aBlockWithOneSamplePerBucketIsLeftAsItIsAndNothingIsShipped() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984_ship", columns(), 1);
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984_sparse", columns(), 1);
     engine.appendSamples(new long[] { 30 * 60_000L, H + 10 * 60_000L, 2 * H + 20 * 60_000L }, new Object[] { "a", "a", "a" },
         new Object[] { 1.0, 2.0, 3.0 });
     database.commit();
 
     final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
     final DatabaseInternal wrapped = local.getWrappedDatabaseInstance();
-    final AtomicInteger shipped = new AtomicInteger();
     try {
       database.begin();
       engine.compactAll();
       database.commit();
-      final TimeSeriesSealedStore sealed = engine.getShard(0).getSealedStore();
-      final int blocks = sealed.getBlockCount();
-      final long samples = sealed.getTotalSampleCount();
 
-      local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
-          new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
-            if ("recordTimeSeriesSealedChange".equals(method.getName())) {
-              shipped.incrementAndGet();
-              return null;
-            }
-            try {
-              return method.invoke(wrapped, args);
-            } catch (final InvocationTargetException e) {
-              throw e.getCause();
-            }
-          }));
+      final AtomicInteger shipped = countShippedSealedFiles(local, wrapped);
+      final List<DownsamplingTier> tiers = List.of(new DownsamplingTier(1L, H));
+      engine.applyDownsampling(tiers, 10 * H);
+      engine.applyDownsampling(tiers, 10 * H);
 
+      assertThat(engine.getShard(0).getSealedStore().getDownsampleRewriteCount()).isZero();
+      assertThat(shipped.get()).as("sealed files handed to the replication").isZero();
+      assertThat(rows(engine)).containsExactly(row(30 * 60_000L, 1.0), row(H + 10 * 60_000L, 2.0), row(2 * H + 20 * 60_000L, 3.0));
+    } finally {
+      local.setWrappedDatabaseInstance(wrapped);
+      engine.close();
+    }
+  }
+
+  /** A rewrite that reduced the block is handed to the replication, once: the next pass finds nothing to fold and ships nothing. */
+  @Test
+  void aDownsampleThatReducedABlockIsHandedToTheReplicationOnce() throws Exception {
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984_ship", columns(), 1);
+    engine.appendSamples(new long[] { 10 * 60_000L, 20 * 60_000L, 30 * 60_000L, 9 * H }, new Object[] { "a", "a", "a", "a" },
+        new Object[] { 1.0, 2.0, 3.0, 100.0 });
+    database.commit();
+
+    final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
+    final DatabaseInternal wrapped = local.getWrappedDatabaseInstance();
+    try {
+      database.begin();
+      engine.compactAll();
+      database.commit();
+
+      final AtomicInteger shipped = countShippedSealedFiles(local, wrapped);
       final List<DownsamplingTier> tiers = List.of(new DownsamplingTier(1L, H));
       engine.applyDownsampling(tiers, 10 * H);
 
-      // the control: the rewrite kept the counts, which is what the shipping decision used to read
-      assertThat(sealed.getBlockCount()).isEqualTo(blocks);
-      assertThat(sealed.getTotalSampleCount()).isEqualTo(samples);
-      assertThat(rows(engine)).containsExactly(row(0L, 1.0), row(H, 2.0), row(2 * H, 3.0));
-      assertThat(shipped.get()).as("sealed files handed to the replication by a downsample that kept every sample").isEqualTo(1);
+      assertThat(rows(engine)).containsExactly(row(0L, 2.0), row(9 * H, 100.0));
+      assertThat(shipped.get()).as("sealed files handed to the replication by a downsample that reduced a block").isEqualTo(1);
 
-      // nothing left to rewrite: nothing shipped
       engine.applyDownsampling(tiers, 10 * H);
       assertThat(shipped.get()).isEqualTo(1);
     } finally {
       local.setWrappedDatabaseInstance(wrapped);
       engine.close();
     }
+  }
+
+  /** Counts the sealed files the engine hands to the replication; the database answers everything else as it did. */
+  private static AtomicInteger countShippedSealedFiles(final LocalDatabase local, final DatabaseInternal wrapped) {
+    final AtomicInteger shipped = new AtomicInteger();
+    local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, (proxy, method, args) -> {
+          if ("recordTimeSeriesSealedChange".equals(method.getName())) {
+            shipped.incrementAndGet();
+            return null;
+          }
+          try {
+            return method.invoke(wrapped, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        }));
+    return shipped;
   }
 
   private static List<ColumnDefinition> columns() {

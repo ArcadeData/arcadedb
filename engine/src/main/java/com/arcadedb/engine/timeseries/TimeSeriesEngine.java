@@ -1485,9 +1485,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Applies downsampling tiers to sealed data. For each tier (sorted by afterMs ascending),
    * blocks older than (nowMs - tier.afterMs) are reduced to tier.granularityMs resolution
    * by averaging numeric fields per time bucket. Tag columns are preserved as group keys.
-   * The granularity marker a rewrite leaves on its blocks provides idempotency: a block already downsampled to the
-   * target resolution or coarser is left untouched, and every other block older than the cutoff is rewritten once,
-   * whatever the spacing of its samples (issue #11984).
+   * A block is rewritten only when that reduces it, that is when two of its samples share a (tag values, bucket), which
+   * is what makes a pass idempotent: a block already at or coarser than the target resolution, or one that never had two
+   * samples in a bucket, is left untouched (issue #11984).
    */
   public void applyDownsampling(final List<DownsamplingTier> tiers, final long nowMs) throws IOException {
     if (tiers == null || tiers.isEmpty())
@@ -1548,15 +1548,12 @@ public class TimeSeriesEngine implements AutoCloseable {
           shard.runSealedRewrite(() -> {
             final int blocksBefore = sealed.getBlockCount();
             final long samplesBefore = sealed.getTotalSampleCount();
-            final long rewritesBefore = sealed.getDownsampleRewriteCount();
             work.apply(shard);
             // Only ship when the file actually changed, so a steady-state no-op cycle (nothing old
             // enough to trim/downsample) does not re-ship the whole sealed file every maintenance tick.
-            // The counts alone do not say so: a downsample of blocks that hold at most one sample per (tags, bucket)
-            // moves every timestamp to its bucket start and leaves as many blocks and samples as it found, and the
-            // followers, which never downsample by themselves, would keep answering the raw timestamps (issue #11984).
-            if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore
-                || sealed.getDownsampleRewriteCount() != rewritesBefore)
+            // The counts say so for every rewrite: retention drops blocks, and a downsample only rewrites blocks that hold
+            // two samples of one (tag values, bucket), so it always leaves fewer samples than it found (issue #11984).
+            if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
               db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
                   sealed.readWholeSealedFile());
           });
