@@ -953,6 +953,8 @@ public class OrientDBImporter {
     final RID newOut = compressedRecordsRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
@@ -970,6 +972,8 @@ public class OrientDBImporter {
     final RID newIn = compressedRecordsRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)

@@ -347,15 +347,18 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
       final RID outRid = idMapping.get(edgeData.outV);
       final RID inRid = idMapping.get(edgeData.inV);
 
+      // A DROPPED EDGE IS COUNTED IN THE REPORT, AS THE CSV, NEO4J AND ORIENTDB ROUTES COUNT IT, NOT ONLY LOGGED (ISSUE #12047)
       if (outRid == null) {
         LogManager.instance().log(this, Level.WARNING,
             "Skipping edge: source vertex with ID '%s' not found", edgeData.outV);
+        context.skippedEdges.incrementAndGet();
         continue;
       }
 
       if (inRid == null) {
         LogManager.instance().log(this, Level.WARNING,
             "Skipping edge: target vertex with ID '%s' not found", edgeData.inV);
+        context.skippedEdges.incrementAndGet();
         continue;
       }
 
