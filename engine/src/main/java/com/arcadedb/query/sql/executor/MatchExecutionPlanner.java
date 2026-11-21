@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -259,7 +260,7 @@ public class MatchExecutionPlanner {
       final String attribute = item.getRecordAttr();
       if (attribute == null || isReturnedColumn(attribute))
         continue;
-      throw new CommandExecutionException("ORDER BY " + attribute
+      throw new CommandSQLParsingException("ORDER BY " + attribute
           + " has no meaning on the rows of this MATCH: its RETURN builds new rows out of the matched aliases, which have no "
           + attribute + " of their own. Order by <alias>." + attribute + " or by a column of the RETURN instead, for example "
           + "RETURN a." + attribute + " AS key ... ORDER BY key");
