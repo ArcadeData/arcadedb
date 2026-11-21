@@ -546,7 +546,7 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       if (record instanceof MutableEdgeSegment segment)
         segment.restoreContent(pendingSnapshots.get(i));
       else
-        ((MutableDocument) record).restoreContent(pendingSnapshots.get(i), pendingDirty[i], pendingAssigned[i]);
+        ((MutableDocument) record).restoreQueuedContent(pendingSnapshots.get(i), pendingDirty[i], pendingAssigned[i]);
     }
 
     // A record the statement changed in place, or read clean and left dirty, holds content that never reached a page
