@@ -201,6 +201,116 @@ class ContentOwnerMapTest {
     }
   }
 
+  /**
+   * {@code ownsExactly} decides whether the apply pass rewrites an owner's pages: a wrong "true" leaves a stale content page on the owner,
+   * a wrong "false" only costs a rewrite. It must say true exactly when the distinct entries among the first {@code count} listed pages
+   * are the owner's pages, whatever the churn that built the map (the first chain node of an owner is not always node 0, and removed owners
+   * recycle nodes).
+   */
+  @Test
+  void ownsExactlyMatchesAReferenceModelUnderChurn() {
+    final Random random = new Random(7);
+    final ContentOwnerMap map = new ContentOwnerMap();
+    final int owners = 200;
+    final int pagesRange = 40;
+    final int[][] model = new int[owners][];
+    for (int step = 0; step < 20_000; step++) {
+      final int owner = random.nextInt(owners);
+      final int action = random.nextInt(6);
+      if (action == 0) {
+        map.removeOwner(owner);
+        model[owner] = null;
+      } else if (action == 1) {
+        map.setOwnerPages(owner, new int[] { 1, 2, 3 }, 0); // an owner given no page owns none
+        model[owner] = null;
+      } else {
+        final int count = 1 + random.nextInt(4);
+        final int[] pages = new int[count];
+        for (int i = 0; i < count; i++)
+          pages[i] = random.nextInt(pagesRange);
+        map.setOwnerPages(owner, pages, count);
+        model[owner] = Arrays.stream(pages).distinct().toArray();
+      }
+
+      // ask about a random owner with the listed pages of its model, a variant of them, and a random list
+      final int asked = random.nextInt(owners);
+      final int[] current = model[asked] == null ? new int[0] : model[asked];
+      final int[] exact = shuffledWithDuplicates(current, random);
+      assertThat(map.ownsExactly(asked, exact, exact.length)).as("owner %d with its own pages %s", asked, Arrays.toString(current)).isTrue();
+
+      final int[] listed = new int[random.nextInt(5)];
+      for (int i = 0; i < listed.length; i++)
+        listed[i] = random.nextInt(pagesRange);
+      final boolean expected = Arrays.equals(Arrays.stream(listed).distinct().sorted().toArray(), Arrays.stream(current).sorted().toArray());
+      assertThat(map.ownsExactly(asked, listed, listed.length)).as("owner %d owning %s asked about %s", asked, Arrays.toString(current),
+          Arrays.toString(listed)).isEqualTo(expected);
+
+      if (current.length > 0) {
+        // one page more, one page fewer, one page swapped: none of them is what the owner owns
+        final int[] more = Arrays.copyOf(current, current.length + 1);
+        more[current.length] = pagesRange + 5;
+        assertThat(map.ownsExactly(asked, more, more.length)).as("owner %d with an extra page", asked).isFalse();
+        assertThat(map.ownsExactly(asked, current, current.length - 1)).as("owner %d with a page fewer", asked).isFalse();
+        final int[] swapped = current.clone();
+        swapped[0] = pagesRange + 6;
+        assertThat(map.ownsExactly(asked, swapped, swapped.length)).as("owner %d with a page swapped", asked).isFalse();
+        // only the first count entries are read
+        assertThat(map.ownsExactly(asked, more, current.length)).as("owner %d, count cuts the extra page off", asked).isTrue();
+        assertThat(map.ownsExactly(asked, new int[0], 0)).as("owner %d owns pages, none listed", asked).isFalse();
+      }
+    }
+  }
+
+  private static int[] shuffledWithDuplicates(final int[] pages, final Random random) {
+    final int[] result = new int[pages.length == 0 ? 0 : pages.length + random.nextInt(3)];
+    for (int i = 0; i < result.length; i++)
+      result[i] = i < pages.length ? pages[i] : pages[random.nextInt(pages.length)];
+    for (int i = result.length - 1; i > 0; i--) {
+      final int j = random.nextInt(i + 1);
+      final int t = result[i];
+      result[i] = result[j];
+      result[j] = t;
+    }
+    return result;
+  }
+
+  @Test
+  void aMapChurnedThroughRemovalsSurvivesWriteAndRead() throws IOException {
+    final Random random = new Random(11);
+    final ContentOwnerMap map = new ContentOwnerMap();
+    final int owners = 400;
+    final int pagesRange = 60;
+    final int[][] model = new int[owners][];
+    for (int step = 0; step < 15_000; step++) {
+      final int owner = random.nextInt(owners);
+      if (random.nextInt(3) == 0) {
+        map.removeOwner(owner);
+        model[owner] = null;
+      } else {
+        final int count = 1 + random.nextInt(5);
+        final int[] pages = new int[count];
+        for (int i = 0; i < count; i++)
+          pages[i] = random.nextInt(pagesRange);
+        map.setOwnerPages(owner, pages, count);
+        model[owner] = Arrays.stream(pages).distinct().toArray();
+      }
+    }
+    final Path file = dir.resolve("owners.churn");
+    map.writeTo(file);
+    final ContentOwnerMap read = ContentOwnerMap.readFrom(file);
+    for (int page = 0; page < pagesRange; page++) {
+      final int p = page;
+      final long[] expected = IntStream.range(0, owners)
+          .filter(o -> model[o] != null && Arrays.stream(model[o]).anyMatch(x -> x == p)).asLongStream().toArray();
+      assertThat(owners(read, page)).as("page %d", page).containsExactly(expected);
+    }
+    for (int owner = 0; owner < owners; owner++) {
+      final int[] current = model[owner] == null ? new int[0] : model[owner];
+      assertThat(read.ownsExactly(owner, current, current.length)).as("read map, owner %d", owner).isTrue();
+    }
+    assertThat(read.isEmpty()).isEqualTo(Arrays.stream(model).allMatch(m -> m == null));
+  }
+
   @Test
   void scalesWithoutBoxing() {
     final ContentOwnerMap map = new ContentOwnerMap();
