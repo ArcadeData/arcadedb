@@ -195,15 +195,17 @@ class RegexReadFreeWorkTest {
 
     @Test
     void aSequenceVisitsEachElementOncePerPathThatReachesIt() {
-      assertThat(work("a")).isEqualTo(1);
+      // a character test is a read, which polls the deadline: its visit is not work nobody looks at
+      assertThat(work("a")).isZero();
+      assertThat(work("[a-z]+@x\\w*")).isZero();
       assertThat(work("\\A")).isEqualTo(1);
       assertThat(work("(?:|)")).isEqualTo(2);
       // 2 visits to the first group, then 2 paths reach the second
       assertThat(work("(?:\\A|\\A)(?:\\A|\\A)")).isEqualTo(6);
       // what follows a read is work too: the read is a poll of the deadline, not a bound on the visits after it
-      assertThat(work("a\\z")).isEqualTo(2);
-      assertThat(work("a\\Ab")).isEqualTo(3);
-      assertThat(work("a(?:(?:(?:){1000}){1000}){1000}")).isEqualTo(1_000_000_001L);
+      assertThat(work("a\\z")).isEqualTo(1);
+      assertThat(work("a\\Ab")).isEqualTo(1);
+      assertThat(work("a(?:(?:(?:){1000}){1000}){1000}")).isEqualTo(1_000_000_000L);
     }
 
     @Test
@@ -218,10 +220,33 @@ class RegexReadFreeWorkTest {
     }
 
     @Test
-    void aBodyThatReadsIsAttemptedOnceWhateverItIsRepeated() {
-      assertThat(work("a{1000000}")).isEqualTo(1);
-      assertThat(work("(?:ab){1000}")).isEqualTo(2);
-      assertThat(work("[a-z]*")).isEqualTo(1);
+    void aBodyThatReadsHasNoWorkOfItsOwnToRepeat() {
+      assertThat(work("a{1000000}")).isZero();
+      assertThat(work("(?:ab){1000}")).isZero();
+      assertThat(work("[a-z]*")).isZero();
+      assertThat(work("(?:foo|bar|baz)+")).isZero();
+    }
+
+    @Test
+    void aBodyThatReadsPaysItsReadFreeWorkForTheTurnsBetweenTwoLooksAtTheClock() {
+      // each turn reads once, the clock is looked at every 256 reads: as many turns as that are done between two looks
+      assertThat(work("(?:a\\A){3}")).isEqualTo(3);
+      assertThat(work("(?:a\\A){1000}")).isEqualTo(256);
+      assertThat(work("(?:a\\A)*")).isEqualTo(2);
+      // so a body of 16,000,000 visits that reads once is 255 of them between looks, and 4,080,000,000 in all
+      assertThat(work("(?:a(?:(?:){1000}){16000}){255}")).isEqualTo(255L * 16_000_000);
+    }
+
+    @Test
+    void aLookBehindPaysItsBodyAtEveryStartPositionOfItsRange() {
+      // a fixed length is a few positions, and a body that reads has no read-free work to repeat
+      assertThat(work("(?<=a)")).isEqualTo(1);
+      assertThat(work("(?<!\\d{3})")).isEqualTo(1);
+      assertThat(work("(?<=\\A)")).isEqualTo(2);
+      // a long range of a body that fails before it reads: 200,001 positions of its 2 visits
+      assertThat(work("(?<=\\A\\z.{0,100000})")).isEqualTo(400_003L);
+      // and one inside another multiplies the attempts
+      assertThat(work("(?<=(?<=\\A\\z.{0,100000}).{0,100000})")).isGreaterThan(80_000_000_000L);
     }
 
     @Test

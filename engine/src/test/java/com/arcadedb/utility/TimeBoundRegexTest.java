@@ -275,6 +275,26 @@ class TimeBoundRegexTest {
     }
 
     @Test
+    void theWorkOfEachTurnThatReadsOnceIsCountedForTheTurnsBetweenTwoLooksAtTheClock() {
+      // the clock is looked at once every 256 reads and each of the 255 turns reads once: 255 turns of 16,000,000 visits are
+      // 4 billion between two looks, and the work of one turn alone (16,000,000) is under the 2^24 the limit used to be
+      final Pattern pattern = Pattern.compile("(?:a(?:(?:){1000}){16000}){255}");
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "a".repeat(255), 10_000)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("steps in a single attempt");
+    }
+
+    @Test
+    void aLookBehindIsChargedForEveryStartPositionItTries() {
+      // a look-behind of a range tries its body at each position of it and one inside another multiplies them, none of which
+      // reads when the body fails first: ~10^10 attempts from 40 characters of pattern
+      final Pattern pattern = Pattern.compile("(?<=(?<=\\A\\z.{0,100000}).{0,100000})");
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "", 10_000)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("steps in a single attempt");
+      // a look-behind of a few characters is nothing
+      assertThat(TimeBoundRegex.matches(Pattern.compile("a(?<=\\d{0,3}a)b?"), "a", 10_000)).isTrue();
+    }
+
+    @Test
     void aTrailingInlineFlagDoesNotHideTheStateThePatternStartedIn() {
       // Pattern.flags() answers the state at the END of the pattern, so the trailing (?x) makes it COMMENTS and the '#' in front
       // of 2,048 ways is a character that has to be read, not the start of a comment that would hide them

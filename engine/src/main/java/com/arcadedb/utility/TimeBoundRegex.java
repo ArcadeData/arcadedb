@@ -57,16 +57,17 @@ public final class TimeBoundRegex {
   // System.nanoTime() is not free. An operation that finishes in fewer than CHECK_INTERVAL total charAt() calls
   // finishes essentially instantly anyway, so the coarser granularity only matters for the runaway case this
   // class exists to bound.
-  private static final int CHECK_INTERVAL = 256;
+  static final int CHECK_INTERVAL = 256;
 
   // The most different ways a run of elements that read nothing may succeed (see RegexReadFreeWork). 1,024 paths cost a few
   // microseconds, far below anything the deadline is for; the pattern of the issue that found this needs 2^11 of them to
   // pass it, and no pattern written by hand has more than a handful.
   private static final long   MAX_READ_FREE_WAYS       = 1L << 10;
-  // The most read-free node visits ONE attempt may make, counted at the end of the input where every test fails without a read: it
-  // bounds counted loops of bodies that match nothing (a nested (?:(?:(?:\A){1000}){1000}){1000} is 10^9 visits, one way, no
-  // read, 1.5 s). About 25 ms of the JDK's 1.5 ns a visit.
-  private static final long   MAX_READ_FREE_WORK       = 1L << 24;
+  // The most read-free node visits ONE attempt may make, those no character read accompanies. It bounds counted loops of bodies
+  // that match nothing (a nested (?:(?:(?:\A){1000}){1000}){1000} is 10^9 visits, one way, no read, 1.5 s), and the work of each
+  // attempt that reads once, since the clock is looked at once every CHECK_INTERVAL reads: 2^16 visits, times the 256 attempts
+  // that can go by between two looks, is 2^24 visits, about 25 ms at the JDK's 1.5 ns a visit.
+  private static final long   MAX_READ_FREE_WORK       = 1L << 16;
   // What a scan may spend on read-free visits: the visits one start position makes in the middle of the input times the length of
   // the input, 0.13 to 0.45 s on the JDK at 1 to 3 ns a visit (4,096 ways of an empty option over 200,000 characters took 8 s,
   // and a hundred anchored alternatives over 5,000,000 half a second, with no read for the deadline to hear)

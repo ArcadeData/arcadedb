@@ -50,13 +50,17 @@ import java.util.regex.Pattern;
  * answer. An element that must read ends the run because it either reads (and the deadline gets a look) or fails right there.
  * <p>
  * The ways are not the whole cost, so every element also carries its WORK: the read-free node visits one attempt makes
- * through it. A sequence pays each element once per path that reaches it, an alternation pays every option, and a counted
+ * through it, those no character read accompanies (a read polls the deadline, so the visit of a character test is not work
+ * nobody looks at). A sequence pays each element once per path that reaches it, an alternation pays every option, and a counted
  * loop whose body can match nothing pays its body once per iteration, because the JDK does not leave a deterministic loop
- * before its minimum (a nested {@code (?:(?:(?:\A){1000}){1000}){1000}x} is 10^9 visits, one way, and not one read). Two
+ * before its minimum (a nested {@code (?:(?:(?:\A){1000}){1000}){1000}x} is 10^9 visits, one way, and not one read). A loop
+ * whose body reads pays it for as many turns as go by between two looks at the clock, which is as many as there are reads in
+ * the poll interval, and a look-behind pays its body at every start position of the range of lengths it can have. Two
  * measures of it are taken, each with its own reading of the pattern:
  * <ul>
- *   <li>{@link Measure#work} at the END of the input, where every test fails without a read: what ONE attempt can cost, and the
- *   only attempt a {@code matches()} makes;</li>
+ *   <li>{@link Measure#work} at the END of the input, where every read-free test succeeds: what ONE attempt can cost between
+ *   two looks at the clock (the clock is looked at once every poll interval of reads, so an attempt that reads once can be made
+ *   that many times before it is), and the only attempt a {@code matches()} makes;</li>
  *   <li>{@link Measure#scanWork} in the MIDDLE of the input, where a character test reads and an anchor fails without one: what
  *   each start position of a {@code find()} costs when nothing reads (a hundred {@code \Ax} alternatives fail a hundred times at
  *   every position and never call {@code charAt()}). A pattern whose paths read at every position needs no bound here, since
@@ -73,6 +77,9 @@ import java.util.regex.Pattern;
 final class RegexReadFreeWork {
   /** every count stops here, so a product of large ones cannot overflow */
   static final long SATURATED = 1L << 40;
+
+  /** how many character reads go by between two looks at the clock, which is how much work can be done between them */
+  private static final int POLL_INTERVAL = TimeBoundRegex.CHECK_INTERVAL;
 
   private final String               source;
   // true: the middle of the input, where a character test reads; false: its end, where every test fails without a read
@@ -103,8 +110,15 @@ final class RegexReadFreeWork {
     }
   }
 
-  /** What an element can do without reading: the ways it succeeds, and the node visits it makes doing so. */
-  private record Cost(long ways, long work) {
+  /**
+   * What an element can do without reading.
+   *
+   * @param ways   the ways it succeeds
+   * @param work   the node visits it makes that no read accompanies: a character test is not one, since its read polls the
+   *               deadline
+   * @param maxLen the most characters it can consume, which a look-behind needs to know how many start positions it tries
+   */
+  private record Cost(long ways, long work, long maxLen) {
   }
 
   /** The syntax of the pattern is not one this class follows. */
@@ -263,14 +277,16 @@ final class RegexReadFreeWork {
     }
     long ways = first.ways();
     long work = first.work();
+    long maxLen = first.maxLen();
     while (current() == '|') {
       ++position;
       final Cost option = sequence();
       ways = add(ways, option.ways());
       work = add(work, option.work());
+      maxLen = Math.max(maxLen, option.maxLen());
     }
     note(ways);
-    return new Cost(ways, work);
+    return new Cost(ways, work, maxLen);
   }
 
   private Cost sequence() {
@@ -284,6 +300,7 @@ final class RegexReadFreeWork {
     // suffix that matches nothing a billion times must not be hidden behind the character in front of it
     long arriving = 1;
     long work = 0;
+    long maxLen = 0;
     boolean any = false;
     for (; ; ) {
       final int c = current();
@@ -291,6 +308,7 @@ final class RegexReadFreeWork {
         break;
       any = true;
       final Cost element = quantified(c);
+      maxLen = add(maxLen, element.maxLen());
       work = add(work, multiply(arriving, element.work()));
       arriving = element.ways() == 0 ? (middle ? 0 : 1) : multiply(arriving, element.ways());
       if (element.ways() == 0) {
@@ -304,7 +322,7 @@ final class RegexReadFreeWork {
       }
     }
     // an empty option is a visit that succeeds
-    return new Cost(whole, any ? work : 1);
+    return new Cost(whole, any ? work : 1, maxLen);
   }
 
   private Cost quantified(final int first) {
@@ -363,20 +381,27 @@ final class RegexReadFreeWork {
     // a possessive loop keeps the first thing it finds
     if (possessive)
       ways = Math.min(1, ways);
+    final long iterations = Math.max(min, 1) + (max < 0 || max > min ? 1 : 0);
     final long work;
+    final long maxLen;
     if (max == 0) {
       // never entered: one visit, and the peaks inside the body do not count
       maxWays = maxWaysBefore;
       work = 1;
-    } else if (body.ways() == 0)
-      // a body that has to read is attempted once, whatever it is repeated
-      work = body.work();
-    else
-      // a body that can match nothing is entered once per iteration: its minimum, since a deterministic loop does not stop
-      // early on a turn that consumed nothing, and one more when the loop may go on
-      work = multiply(Math.max(min, 1) + (max < 0 || max > min ? 1 : 0), body.work());
+      maxLen = 0;
+    } else {
+      if (body.ways() == 0)
+        // Each turn of a body that has to read reads, and a read is a poll of the deadline only every POLL_INTERVAL of them: the
+        // read-free work of that many turns is done between two looks at the clock, and no more is, since the next poll comes
+        work = multiply(Math.min(iterations, POLL_INTERVAL), body.work());
+      else
+        // a body that can match nothing is entered once per iteration: its minimum, since a deterministic loop does not stop
+        // early on a turn that consumed nothing, and one more when the loop may go on
+        work = multiply(iterations, body.work());
+      maxLen = max < 0 ? (body.maxLen() == 0 ? 0 : SATURATED) : multiply(max, body.maxLen());
+    }
     note(ways);
-    return new Cost(ways, work);
+    return new Cost(ways, work, maxLen);
   }
 
   private static long quantify(final long ways, final long min, final long max) {
@@ -403,24 +428,27 @@ final class RegexReadFreeWork {
     return value;
   }
 
-  /** A character, a class, {@code .}: it reads, so at the end of the input it fails there (one visit) and in the middle it reads. */
-  private Cost reading() {
-    return new Cost(0, middle ? 0 : 1);
+  /**
+   * A character, a class, {@code .}: it reads, which polls the deadline, so its visit is not work nobody looks at. It can consume
+   * a code point, which is two characters.
+   */
+  private static Cost reading() {
+    return new Cost(0, 0, 2);
   }
 
   /** An anchor: one visit, and in the middle of the input it fails there, without a read. */
   private Cost anchor() {
-    return new Cost(middle ? 0 : 1, 1);
+    return new Cost(middle ? 0 : 1, 1, 0);
   }
 
   /** A word boundary looks at the characters around it: in the middle of the input it reads. */
   private Cost boundary() {
-    return new Cost(middle ? 0 : 1, middle ? 0 : 1);
+    return new Cost(middle ? 0 : 1, middle ? 0 : 1, 0);
   }
 
   /** What matches nothing without a test of its own: an empty group or option, an inline flag, an empty repetition. */
   private static Cost empty() {
-    return new Cost(1, 1);
+    return new Cost(1, 1, 0);
   }
 
   private Cost atom(final int c) {
@@ -454,6 +482,7 @@ final class RegexReadFreeWork {
     boolean positiveLook = false;
     boolean negativeLook = false;
     boolean atomic = false;
+    boolean behind = false;
 
     if (current() == '?') {
       ++position;
@@ -472,9 +501,11 @@ final class RegexReadFreeWork {
         if (next == '=') {
           ++position;
           positiveLook = true;
+          behind = true;
         } else if (next == '!') {
           ++position;
           negativeLook = true;
+          behind = true;
         } else {
           final String name = readName();
           capturing = ++groups;
@@ -511,12 +542,19 @@ final class RegexReadFreeWork {
         groupWays = Arrays.copyOf(groupWays, Math.max(capturing + 1, groupWays.length * 2));
       groupWays[capturing] = body.ways();
     }
-    // a look-around and an atomic group run their body once and keep its first match; a negative one succeeds where its body
-    // fails, which can be without a read
+    // A look-around and an atomic group run their body once and keep its first match; a negative one succeeds where its body
+    // fails, which can be without a read. A look-behind runs it at every start position of the range of lengths its body can
+    // have, from the nearest to the farthest, and one inside another multiplies the attempts: each is read-free work when the
+    // body fails before it reads
+    final long attempts = behind ? add(body.maxLen(), 1) : 1;
+    final long work = add(multiply(attempts, body.work()), 1);
     if (negativeLook)
-      return new Cost(1, add(body.work(), 1));
-    if (positiveLook || atomic)
-      return new Cost(Math.min(1, body.ways()), add(body.work(), 1));
+      return new Cost(1, work, 0);
+    if (positiveLook)
+      return new Cost(Math.min(1, body.ways()), work, 0);
+    // an atomic group consumes what its body does
+    if (atomic)
+      return new Cost(Math.min(1, body.ways()), work, body.maxLen());
     return body;
   }
 
@@ -607,7 +645,8 @@ final class RegexReadFreeWork {
 
   private Cost backReference(final int group) {
     // a reference to a group that is still open, or has not been seen, fails: it can not succeed without reading either
-    return new Cost(group > 0 && group < groupWays.length ? Math.min(1, groupWays[group]) : 0, 1);
+    // and it can be as long as its group, which nothing says: a look-behind may not hold one for that reason
+    return new Cost(group > 0 && group < groupWays.length ? Math.min(1, groupWays[group]) : 0, 1, SATURATED);
   }
 
   /** Skips a character class, nested ones included, with the cursor on its '['. */
