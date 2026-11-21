@@ -469,6 +469,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // WARNING per streak (issue #11497), since every query that reaches the missing graph is refused the same way while the
   // heap stays that full, and the second line of a streak tells the operator nothing the first did not.
   private volatile boolean searchBuildRefusalLogged = false;
+  // Whether the issue #3722 document scan of a build found no vector missing from the pages (issue #11938). An index on a
+  // property only some records carry always parses fewer vectors than its bucket has records, so the cross-check would
+  // scan the whole bucket on every build to recover nothing. What the scan guards against is pages written by an older
+  // version, which a load finds or does not, so a scan that recovered nothing is not repeated until the index is loaded
+  // again; one that did recover something keeps the cross-check on every build.
+  private volatile boolean documentScanFoundNothing = false;
   // Heap figures pinned by a test in place of the live readings the search-build heap gate takes, -1 when not pinned
   private volatile long    pinnedAvailableHeapForTest   = -1L;
   private volatile long    pinnedReclaimableCacheForTest = -1L;
@@ -3753,12 +3759,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       try {
         final Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
         final long docCount = database.countBucket(bucket.getName());
-        if (ridToLatestVector.size() < docCount * 8 / 10) {
-          LogManager.instance().log(this, Level.WARNING,
+        if (!documentScanFoundNothing && ridToLatestVector.size() < docCount * 8 / 10) {
+          // FINE: an index on a property only some records carry gets here too, and the scan finds nothing to recover there
+          // (issue #11938). What it does recover is reported after it, at WARNING.
+          LogManager.instance().log(this, Level.FINE,
               """
               Page-parsed vectors (%d) significantly less than document count (%d) for index %s. \
               Falling back to document scan to recover missing vectors.""",
               ridToLatestVector.size(), docCount, indexName);
+          final int pageParsed = ridToLatestVector.size();
 
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
           final String vectorProp =
@@ -3789,6 +3798,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           LogManager.instance().log(this, Level.INFO,
               "After document scan fallback: %d active vectors for graph build (was %d from pages only)",
               ridToLatestVector.size(), activeVectorIds.length);
+          if (ridToLatestVector.size() == pageParsed)
+            documentScanFoundNothing = true;
+          else
+            LogManager.instance().log(this, Level.WARNING,
+                "Document scan of index %s recovered %d vectors missing from its pages (%d parsed, %d records in the bucket)",
+                indexName, ridToLatestVector.size() - pageParsed, pageParsed, docCount);
         }
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
