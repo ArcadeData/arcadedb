@@ -455,6 +455,26 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
   Docker appends them after the `ENTRYPOINT` array, and the binary parses them exactly like JVM
   system properties.
 
+## Memory and garbage collection
+
+The binary uses GraalVM's Serial collector. Heap and collector options are runtime flags on the
+binary's own command line, passed like the `-D` flags above (trailing arguments to `docker run`):
+
+| Flag | Meaning |
+|---|---|
+| `-Xmx<size>` | Maximum heap. Default: 80% of the memory the process sees, so the container limit when there is one. |
+| `-XX:MaximumYoungGenerationSizePercent=<n>` | Maximum size of the young generation as a percentage of the maximum heap. This image is built with 16. |
+| `-XX:MaxNewSize=<size>` | Maximum size of the young generation in bytes. When set, it replaces the percentage. It must not be larger than the maximum heap. |
+| `-XX:+PrintGC -XX:+VerboseGC` | One log line per collection, on standard output. |
+
+GraalVM CE 25.0.x caps the young generation at one third of the maximum heap by default, which
+leaves the old generation two thirds. A server whose live data in the old generation reaches that
+limit spends its time in back-to-back full collections (#12639: the 10M x 96-d `LSM_VECTOR` build,
+about 16.5 GiB live under a 24 GiB maximum heap). The image therefore sets the young generation to
+16 percent of the maximum heap, which leaves the old generation 84 percent: about 20.2 GiB of 24 GiB.
+The share scales with `-Xmx`. A larger percentage gives the young collections more room, a smaller
+one gives the old generation more.
+
 ## Known limitations and caveats
 
 ### JS scripting is included, but with a security caveat
