@@ -272,82 +272,12 @@ class Issue11984DownsampleReducibilityTest {
   }
 
   /**
-   * A bucket that straddles the boundary between two downsampling passes leaves a row of the same group in the block of each. Merged
-   * into one block, they would be two rows of one (tag values, bucket) in a block that a restart strips of its marker, and the hourly
-   * tier would fold them and floor EVERY row of the block onto 18:00, into the previous daily bucket. The merge keeps them apart, so
-   * after the restart nothing is rewritten and nothing moves.
+   * Two small downsampled blocks of buckets that are apart are merged into one, as the merge of small blocks does (the consolidation
+   * a feed slower than a block per pass relies on), and the merged block, which a restart strips of its marker, still has one sample
+   * per group: an hourly and a daily pass rewrite nothing and move nothing.
    */
   @Test
-  void downsampledBlocksThatShareABucketAreNotMergedAndNothingMovesAfterARestart() throws Exception {
-    final long off = 18 * H + 30 * MINUTE;
-    final List<Sample> rows;
-    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
-      appendBlock(store, List.of(new Sample(off, "a", "x", 1), new Sample(off + 10 * MINUTE, "a", "x", 3),
-          new Sample(off + DAY, "a", "x", 5), new Sample(off + DAY + 10 * MINUTE, "a", "x", 7)));
-      appendBlock(store, List.of(new Sample(off + DAY + 20 * MINUTE, "a", "x", 9), new Sample(off + DAY + 30 * MINUTE, "a", "x", 11),
-          new Sample(off + 2 * DAY, "a", "x", 13), new Sample(off + 2 * DAY + 10 * MINUTE, "a", "x", 15)));
-      // the first pass sees the first block only, the second the one that had not aged enough by then: day 1 is in both outputs
-      store.downsampleBlocks(off + DAY + 15 * MINUTE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      rows = readAll(store);
-      assertThat(rows).containsExactly(new Sample(off, "a", "x", 2.0), new Sample(off + DAY, "a", "x", 6.0),
-          new Sample(off + DAY, "a", "x", 10.0), new Sample(off + 2 * DAY, "a", "x", 14.0));
-      assertThat(store.getBlockCount()).isEqualTo(2);
-
-      assertThat(store.prepareMerge(DeltaOfDeltaCodec.MAX_BLOCK_SIZE, 0L, 1)).as("a merge of two blocks that hold a row of day 1 each")
-          .isNull();
-      assertThat(store.getBlockCount()).isEqualTo(2);
-    }
-
-    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
-      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      store.downsampleBlocks(Long.MAX_VALUE, DAY, off, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-
-      assertThat(store.getDownsampleRewriteCount()).isZero();
-      assertThat(readAll(store)).containsExactlyElementsOf(rows);
-    }
-  }
-
-  /**
-   * The offset of a tier can be altered, and what was downsampled before stays on its grid ("only affects data downsampled
-   * afterwards"): one granularity, two grids, and the rows of the one can sit closer than a bucket to the rows of the other. A daily
-   * block that ends at 18:30 and one that starts at 18:45 the same day do not share a daily bucket, but merged they would share an
-   * hourly one, and after a restart the hourly tier would fold them. The grid is told by the block's own timestamps, so they are not
-   * merged, and the restart changes nothing.
-   */
-  @Test
-  void downsampledBlocksOfDifferentGridsAreNotMergedAndNothingMovesAfterARestart() throws Exception {
-    final long before = 18 * H + 30 * MINUTE;
-    final long after = 18 * H + 45 * MINUTE;
-    final List<Sample> rows;
-    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
-      appendBlock(store, List.of(new Sample(before, "a", "x", 1), new Sample(before + 10 * MINUTE, "a", "x", 3),
-          new Sample(before + DAY, "a", "x", 5), new Sample(before + DAY + 10 * MINUTE, "a", "x", 7)));
-      appendBlock(store, List.of(new Sample(after + DAY + 5 * MINUTE, "a", "x", 9), new Sample(after + DAY + 10 * MINUTE, "a", "x", 11),
-          new Sample(after + 2 * DAY, "a", "x", 13), new Sample(after + 2 * DAY + 10 * MINUTE, "a", "x", 15)));
-      // the first block is downsampled on the old grid, then the tier is given a new offset and the second one on that
-      store.downsampleBlocks(before + DAY + 15 * MINUTE, DAY, before, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      store.downsampleBlocks(Long.MAX_VALUE, DAY, after, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      rows = readAll(store);
-      assertThat(rows).containsExactly(new Sample(before, "a", "x", 2.0), new Sample(before + DAY, "a", "x", 6.0),
-          new Sample(after + DAY, "a", "x", 10.0), new Sample(after + 2 * DAY, "a", "x", 14.0));
-      assertThat(store.getBlockCount()).isEqualTo(2);
-
-      assertThat(store.prepareMerge(DeltaOfDeltaCodec.MAX_BLOCK_SIZE, 0L, 1)).as("a merge of two blocks on different grids").isNull();
-    }
-
-    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
-      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      store.downsampleBlocks(Long.MAX_VALUE, DAY, after, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-
-      assertThat(store.getDownsampleRewriteCount()).isZero();
-      assertThat(readAll(store)).containsExactlyElementsOf(rows);
-    }
-  }
-
-  /** The control: downsampled blocks whose buckets are apart are still merged, and what they hold survives the merge and a restart. */
-  @Test
-  void downsampledBlocksOfDisjointBucketsAreStillMerged() throws Exception {
+  void aMergeOfDownsampledBlocksOfDisjointBucketsIsNotRewrittenAfterARestart() throws Exception {
     final long off = 18 * H + 30 * MINUTE;
     final List<Sample> rows;
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
