@@ -43,6 +43,9 @@ public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
 
   private static final Set<String> OPTIONS = Set.of("quadrantSegments", "endCapStyle", "joinStyle");
 
+  /** The most segments per quarter circle a buffer is built with: 4 * this many vertices for the buffer of a point. */
+  static final int MAX_QUADRANT_SEGMENTS = 10_000;
+
   public SQLFunctionGeoBuffer() {
     super(NAME);
   }
@@ -63,8 +66,15 @@ public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
     if (iParams.length >= 3 && iParams[2] instanceof Map<?, ?> rawMap) {
       final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
       final BufferParameters bufferParams = new BufferParameters();
-      if (opts.containsKey("quadrantSegments"))
-        bufferParams.setQuadrantSegments(opts.getInt("quadrantSegments", BufferParameters.DEFAULT_QUADRANT_SEGMENTS));
+      if (opts.containsKey("quadrantSegments")) {
+        // the buffer of a point has 4 * n vertices: n is a ceiling on the work a statement asks for, and below 1 JTS reads it as 1 (#12762)
+        final int quadrantSegments = opts.getInt("quadrantSegments", BufferParameters.DEFAULT_QUADRANT_SEGMENTS);
+        if (quadrantSegments < 1 || quadrantSegments > MAX_QUADRANT_SEGMENTS)
+          throw new CommandSQLParsingException(
+              "Option 'quadrantSegments' for function 'geo.buffer' must be between 1 and " + MAX_QUADRANT_SEGMENTS + ", got: "
+                  + quadrantSegments);
+        bufferParams.setQuadrantSegments(quadrantSegments);
+      }
       if (opts.containsKey("endCapStyle"))
         bufferParams.setEndCapStyle(parseEndCapStyle(opts.getString("endCapStyle", "ROUND")));
       if (opts.containsKey("joinStyle"))
