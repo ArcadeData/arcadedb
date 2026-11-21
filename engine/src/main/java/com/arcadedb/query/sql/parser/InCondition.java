@@ -71,6 +71,13 @@ public class InCondition extends BooleanExpression {
   /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
   private volatile String searchedKey;
 
+  /** Lazily assigned key of {@link #evaluateAgainst}'s per-execution memo of the sub-query rows last seen. */
+  private volatile String subQueryKey;
+
+  /** The sub-query rows last read on the right-hand side, and their membership once they were read a second time. */
+  private record SubQueryRows(Object rows, InListMembership membership) {
+  }
+
   public InCondition() {
   }
 
@@ -88,7 +95,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
@@ -128,7 +135,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
@@ -167,6 +174,57 @@ public class InCondition extends BooleanExpression {
       context.setCachedValue(key, membership);
     }
     return membership;
+  }
+
+  /**
+   * The membership test against a right-hand side evaluated for this row. The rows of a sub-query the planner lifted into a
+   * LET ({@code x IN (SELECT ...)}) are answered from an {@link InListMembership} once the very same rows are read a second
+   * time, and the membership is then reused for every further row of the execution (issue #12736).
+   * <p>
+   * An uncorrelated sub-query is a global LET, computed once: every row reads the same list, and walking it for each of them
+   * cost {@code outerRows * subQueryRows} comparisons. A correlated one (it reads {@code $parent}) is a per-record LET, a new
+   * list for every row: identity tells the two apart without asking the planner, and a list read only once is never indexed.
+   * Nothing modifies the list once the LET has built it, so the same list holds the same rows. Each row is keyed by the value
+   * of its only column, as {@link #subQueryRowScalar} compares it; a row of several columns, a record, a collection or a value
+   * that is neither a string nor a number declines the hash probe, and the membership answers from the rows as they are.
+   */
+  private Boolean evaluateAgainst(final Object leftVal, final Object rightVal, final CommandContext context) {
+    final boolean searched = operandIsSearched(context);
+    if (!rightIsSubQueryAlias())
+      return evaluateExpressionThreeValued(leftVal, rightVal, searched);
+
+    String key = subQueryKey;
+    if (key == null) {
+      // Same benign race as memoKey
+      key = "$IN$Q" + MEMO_KEY_SEQUENCE.incrementAndGet();
+      subQueryKey = key;
+    }
+
+    final SubQueryRows seen = (SubQueryRows) context.getCachedValue(key);
+    if (seen == null || seen.rows() != rightVal) {
+      context.setCachedValue(key, new SubQueryRows(rightVal, null));
+      return evaluateExpressionThreeValued(leftVal, rightVal, searched);
+    }
+
+    InListMembership membership = seen.membership();
+    if (membership == null) {
+      membership = InListMembership.build(rightVal, searched, InCondition::subQueryItemValue);
+      context.setCachedValue(key, new SubQueryRows(rightVal, membership));
+    }
+    return membership.evaluate(leftVal);
+  }
+
+  /** Whether the right-hand side is the alias {@link SubQueryCollector} put in place of an {@code IN (SELECT ...)}. */
+  private boolean rightIsSubQueryAlias() {
+    if (!(rightMathExpression instanceof BaseExpression base) || base.getModifier() != null || base.getIdentifier() == null)
+      return false;
+    final SuffixIdentifier suffix = base.getIdentifier().getSuffix();
+    return suffix != null && suffix.identifier != null && SubQueryCollector.isGeneratedAlias(suffix.identifier.getStringValue());
+  }
+
+  /** The value a sub-query row is keyed by: its only column, or {@link #NOT_A_SINGLE_VALUE_ROW}, which declines the hash probe. */
+  private static Object subQueryItemValue(final Object item) {
+    return item instanceof Result row ? singleRowValue(row) : item;
   }
 
   public Object evaluateRight(final Result currentRecord, final CommandContext context) {

@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 /**
  * A membership test over an {@code IN} right-hand side that is constant for the whole command execution -
@@ -113,6 +114,16 @@ public final class InListMembership {
 
   /** @param convertOperand false when the left side is a record property, which is never converted to the item type */
   public static InListMembership build(final Object rightValue, final boolean convertOperand) {
+    return build(rightValue, convertOperand, UnaryOperator.identity());
+  }
+
+  /**
+   * {@link #build(Object, boolean)} keying each element by the value {@code itemValue} stands it for, while the
+   * fallback still answers from {@code rightValue} as it is: the rows of an {@code IN (SELECT ...)} are keyed by the
+   * value of their only column (issue #12736). A mapped value that is neither a string nor a number declines the
+   * fast path for the whole list, as an unmapped one does.
+   */
+  static InListMembership build(final Object rightValue, final boolean convertOperand, final UnaryOperator<Object> itemValue) {
     if (!(rightValue instanceof Collection) && (rightValue == null || !rightValue.getClass().isArray()))
       // Only the two re-readable shapes a constant list ever takes. A scalar right-hand side degrades to an
       // equality test anyway; a ResultSet or a bare Iterable is a one-shot cursor that indexing here would
@@ -125,7 +136,8 @@ public final class InListMembership {
     Set<Float> floats = null;
     final Set<Object> keys = new HashSet<>();
 
-    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
+    for (final Object element : MultiValue.getMultiValueIterable(rightValue, false)) {
+      final Object item = itemValue.apply(element);
       if (item == null) {
         containsNull = true;
         continue;
