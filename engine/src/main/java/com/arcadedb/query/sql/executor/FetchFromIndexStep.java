@@ -894,6 +894,10 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (!mapInexactIntegralBounds(seek, rangeKeySize))
         continue;
 
+      // An infinity or NaN has no decimal form: on a DECIMAL key it bounds every key or none, as it does in a scan (#12694)
+      if (!mapNonFiniteDecimalBounds(seek, rangeKeySize))
+        continue;
+
       // A bound a DOUBLE or FLOAT key cannot hold is rounded by the index: the seek covers the keys around it and the entries are
       // checked afterwards (#8970). Decided per run, as the plan is reused with other parameter values
       if (widenLossyFloatingBounds(seek))
@@ -919,9 +923,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       // Null keys sort lowest: start past them, a comparison with null is never true (issue #8833). A NULL_STRATEGY SKIP index
       // holds them too when it is composite, as it drops a key only when every property is null (issue #8978)
-      if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length)
-          && index.supportsOrderedIterations() && (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
-          || (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1))) {
+      if (convertedTo != null && (convertedFrom == null || convertedTo.length > convertedFrom.length) && nullKeysAreOrdered()) {
         final int prefix = convertedFrom == null ? 0 : convertedFrom.length;
         final Object[] extended = new Object[prefix + 1];
         if (prefix > 0)
@@ -950,6 +952,77 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       cursor = nextCursors.removeFirst();
       fetchNextEntry();
     }
+  }
+
+  /**
+   * Whether the index holds the records whose key is null, ordered below every other key: an index keeping its nulls, and a
+   * composite one that skips them, since it drops a key only when every property is null (issue #8978). Such an entry has to be
+   * stepped over by a range that has no lower bound, as a comparison with null is never true.
+   */
+  private boolean nullKeysAreOrdered() {
+    return index.supportsOrderedIterations() && (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX
+        || (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && index.getPropertyNames().size() > 1));
+  }
+
+  /**
+   * Maps the bounds of one seek that a DECIMAL key cannot hold, an infinite or NaN {@code double}/{@code float}, onto the keys that
+   * bound the same set (issue #12694). The index would refuse to convert such a bound and so match no row, where a scan orders it
+   * against a decimal in {@code double}: every decimal is above negative infinity and below positive infinity and NaN. The range
+   * slot of a range condition therefore loses the bound that holds for every key (no lower bound for negative infinity, no upper
+   * bound for positive infinity or NaN), keeping the null keys out, and the seek matches none when the bound holds for no key. A
+   * slot matched exactly (an equality, or the prefix before the range) has no key equal to such a bound, and the seek matches none.
+   *
+   * @return false when no key can match the seek
+   */
+  private boolean mapNonFiniteDecimalBounds(final Object[][] seek, final int rangeKeySize) {
+    if (!(index instanceof IndexInternal internalIndex))
+      return true;
+    final byte[] keyTypes = internalIndex.getBinaryKeyTypes();
+    if (keyTypes == null)
+      return true;
+    final int rangeSlot = isRangeCondition() ? rangeKeySize - 1 : -1;
+    boolean noLowerBound = false, noUpperBound = false;
+    for (int side = 0; side < 2; side++) {
+      final Object[] key = seek[side];
+      if (key == null)
+        continue;
+      for (int i = 0; i < key.length && i < keyTypes.length; i++) {
+        if (keyTypes[i] != BinaryTypes.TYPE_DECIMAL || !(key[i] instanceof Number number) || Type.isFinite(number))
+          continue;
+        if (i != rangeSlot)
+          return false;
+        final boolean negativeInfinity = number.doubleValue() == Double.NEGATIVE_INFINITY;
+        // a lower bound holds for every decimal only when it is negative infinity, an upper one only when it is not
+        if ((side == 0) != negativeInfinity)
+          return false;
+        if (side == 0)
+          noLowerBound = true;
+        else
+          noUpperBound = true;
+      }
+    }
+    if (!noLowerBound && !noUpperBound)
+      return true;
+
+    final Object[] from = seek[0], to = seek[1];
+    // The keys before the range slot, which both sides share
+    final Object[] prefix = Arrays.copyOf(from != null && from.length >= rangeSlot ? from : to, rangeSlot);
+    final boolean fromHasRangeSlot = !noLowerBound && from != null && from.length > rangeSlot;
+    if (noUpperBound) {
+      seek[1] = prefix.length == 0 ? null : prefix;
+      seek[2][1] = Boolean.TRUE;
+    }
+    if (noLowerBound || !fromHasRangeSlot) {
+      // the null keys sort lowest and are no match: start past them where the index holds them, else at the prefix
+      if (nullKeysAreOrdered()) {
+        seek[0] = Arrays.copyOf(prefix, rangeSlot + 1);
+        seek[2][0] = Boolean.FALSE;
+      } else {
+        seek[0] = prefix.length == 0 ? null : prefix;
+        seek[2][0] = Boolean.TRUE;
+      }
+    }
+    return true;
   }
 
   /**

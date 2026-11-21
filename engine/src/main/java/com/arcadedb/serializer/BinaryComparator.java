@@ -1029,7 +1029,9 @@ public class BinaryComparator {
       return -compareIntegralAgainstFloatingNumber(b.longValue(), a);
 
     if (!Type.isFinite(a) || !Type.isFinite(b))
-      return compareDoubles(a.doubleValue(), b.doubleValue());
+      // a decimal past the double range still orders below an infinity: clamped, not read as the infinity it overflows to (#12694)
+      return compareDoubles(a instanceof BigDecimal decimalA ? Type.finiteDoubleValue(decimalA) : a.doubleValue(),
+          b instanceof BigDecimal decimalB ? Type.finiteDoubleValue(decimalB) : b.doubleValue());
     return Type.floatingToBigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
   }
 

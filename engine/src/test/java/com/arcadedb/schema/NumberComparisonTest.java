@@ -515,6 +515,16 @@ class NumberComparisonTest {
     }
 
     @Test
+    void theUntypedComparatorOrdersADecimalAgainstANonFiniteNumber() {
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+          assertThat(Integer.signum(BinaryComparator.compareTo(decimal, nonFinite))).as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+          assertThat(Integer.signum(BinaryComparator.compareTo(nonFinite, decimal))).as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
     void theTypedComparatorOrdersADecimalKeyAgainstANonFiniteBound() {
       final BinaryComparator comparator = new BinaryComparator();
       for (final BigDecimal decimal : decimals)
