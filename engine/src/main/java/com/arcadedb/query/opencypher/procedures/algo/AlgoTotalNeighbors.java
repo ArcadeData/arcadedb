@@ -95,9 +95,10 @@ public class AlgoTotalNeighbors extends AbstractAlgoProcedure {
     if (idx1 < 0 || idx2 < 0)
       return Stream.empty();
 
-    // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|, every entry of N(v) found among N(u) counting once per entry
-    final int[] adj1 = graph.neighbors(idx1, dir);
-    final int[] adj2 = graph.neighbors(idx2, dir);
+    // |N(u) ∪ N(v)| = |N(u)| + |N(v)| - |N(u) ∩ N(v)|, over the distinct neighbours: a parallel or a reciprocal relationship is one
+    // neighbour (issue #12934)
+    final int[] adj1 = graph.distinctNeighbors(idx1, dir);
+    final int[] adj2 = graph.distinctNeighbors(idx2, dir);
     final int[] n1Set = adj1.clone();
     Arrays.sort(n1Set);
 

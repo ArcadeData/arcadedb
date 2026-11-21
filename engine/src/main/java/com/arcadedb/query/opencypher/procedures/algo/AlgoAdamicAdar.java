@@ -99,21 +99,12 @@ public class AlgoAdamicAdar extends AbstractAlgoProcedure {
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Accumulate the Adamic-Adar contributions of the nodes reached, in the order the rows list them
-    final NodeScores aaScores = new NodeScores(graph.memory());
-    int step = 0;
-    for (final int w : graph.neighbors(srcIdx, dir)) {
-      final int[] wRow = graph.neighbors(w, dir);
-      final int degree = wRow.length;
-      if (degree <= 1)
-        continue;  // log(1) = 0, skip to avoid division by zero / zero contribution
-      final double contribution = 1.0 / Math.log(degree);
-      for (final int v : wRow) {
-        guard.checkPeriodically(step++);
-        if (v != srcIdx)
-          aaScores.add(v, 0, contribution);
-      }
-    }
+    // score = the sum of 1 / log(degree(w)) over the common neighbours w of the source and v, in the direction asked; a
+    // neighbour of degree 1 has log(1) = 0 and adds nothing
+    final NodeScores aaScores = scoresThroughNeighbours(graph, srcIdx, dir, w -> {
+      final int degree = graph.distinctNeighbors(w, dir).length;
+      return degree > 1 ? 1.0 / Math.log(degree) : 0.0;
+    }, guard);
 
     // Collect results above cutoff, sorted by score descending. A node no walk reached scores 0, and is listed only when the
     // cutoff admits 0 (a negative one)
