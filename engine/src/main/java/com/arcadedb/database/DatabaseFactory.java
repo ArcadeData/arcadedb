@@ -28,6 +28,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -126,7 +127,7 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
-    final Path path = getNormalizedPath(databasePath);
+    final Path path = getRegistryKey(databasePath);
     final PathLock lock = acquirePathLock(path);
     try {
       synchronized (lock) {
@@ -168,7 +169,7 @@ public class DatabaseFactory implements AutoCloseable {
   /** Whether an {@code open} or {@code create} of {@code databasePath} is in flight or queued: false once none is (test only). */
   // @VisibleForTesting
   static boolean isPathLockInUse(final String databasePath) {
-    return OPEN_LOCKS.containsKey(getNormalizedPath(databasePath));
+    return OPEN_LOCKS.containsKey(getRegistryKey(databasePath));
   }
 
   private Database openLocked(final ComponentFile.MODE mode) {
@@ -200,7 +201,7 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database create() {
-    final Path path = getNormalizedPath(databasePath);
+    final Path path = getRegistryKey(databasePath);
     final PathLock lock = acquirePathLock(path);
     try {
       synchronized (lock) {
@@ -281,17 +282,39 @@ public class DatabaseFactory implements AutoCloseable {
     return Path.of(path).toAbsolutePath().normalize();
   }
 
+  /**
+   * The key of the registry of open instances, and of the per-path monitors of {@code open} and {@code create}: the REAL path of
+   * the directory, which sees through a symbolic link (and, where the file system is case insensitive, through a difference of
+   * case) that {@link #getNormalizedPath} does not. A second factory reaching an open database by a link used to pass the
+   * "already in use" check, build an instance over the same files and be refused by the file lock, whose clean-up closed the lock
+   * file: on Linux and macOS that releases every lock the process holds on the file, so the winner stayed registered but no other
+   * process was kept out of its database any more. A path that does not exist (yet) has no real path and keeps its normalised one.
+   */
+  private static Path getRegistryKey(final String path) {
+    final Path normalized = getNormalizedPath(path);
+    try {
+      return normalized.toRealPath();
+    } catch (final IOException | SecurityException e) {
+      return normalized;
+    }
+  }
+
   public static Database getActiveDatabaseInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    return ACTIVE_INSTANCES.get(normalizedPath);
+    return ACTIVE_INSTANCES.get(getRegistryKey(databasePath));
   }
 
   protected static boolean removeActiveDatabaseInstance(final String databasePath, final Database instance) {
-    final var normalizedPath = getNormalizedPath(databasePath);
     // Keyed to the instance (#5070): when registerActiveInstance closes a same-path open-race LOSER,
     // the loser's close must not remove the WINNER's still-live mapping - a plain remove(path) did, orphaning
     // the winner from the registry and letting a third open of the same path pass checkForActiveInstance.
-    ACTIVE_INSTANCES.remove(normalizedPath, instance);
+    // By IDENTITY, not Map.remove(key, value): that compares with equals(), and a LocalDatabase equals every other one of its path,
+    // so the loser's removal took the winner's entry anyway
+    final Path key = getRegistryKey(databasePath);
+    if (ACTIVE_INSTANCES.get(key) == instance)
+      ACTIVE_INSTANCES.computeIfPresent(key, (path, registered) -> registered == instance ? null : registered);
+    else
+      // THE REAL PATH THE INSTANCE WAS REGISTERED UNDER IS GONE WITH ITS DIRECTORY (A DELETE FROM OUTSIDE, A DROP): FIND IT BY IDENTITY
+      ACTIVE_INSTANCES.values().removeIf(registered -> registered == instance);
     return ACTIVE_INSTANCES.isEmpty();
   }
 
@@ -472,16 +495,16 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   private static void checkForActiveInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    if (ACTIVE_INSTANCES.get(normalizedPath) != null)
-      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
+    final Path key = getRegistryKey(databasePath);
+    if (ACTIVE_INSTANCES.get(key) != null)
+      throw new DatabaseOperationException("Found active instance of database '" + key + "' already in use");
   }
 
   private static void registerActiveInstance(final LocalDatabase database) {
-    var normalizedPath = getNormalizedPath(database.databasePath);
-    if (ACTIVE_INSTANCES.putIfAbsent(normalizedPath, database) != null) {
+    final Path key = getRegistryKey(database.databasePath);
+    if (ACTIVE_INSTANCES.putIfAbsent(key, database) != null) {
       database.close();
-      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
+      throw new DatabaseOperationException("Found active instance of database '" + key + "' already in use");
     }
   }
 }

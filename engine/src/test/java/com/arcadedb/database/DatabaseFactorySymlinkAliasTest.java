@@ -1,0 +1,126 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.database;
+
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+/**
+ * The registry of open databases was keyed by the absolute, normalised path, which does not see through a symbolic link: a second
+ * factory reaching an open database by the link passed the "already in use" check, built an instance over the same files and was
+ * refused by the file lock afterwards. Its refusal closed the lock file it had opened, and on Linux and macOS closing ANY descriptor
+ * of a file releases ALL the locks the process holds on it: the winner kept its in-process lock but no other process was kept out
+ * of the database any more, which is the one protection {@code database.lck} exists for.
+ */
+class DatabaseFactorySymlinkAliasTest {
+  private static final String PATH  = "target/databases/DatabaseFactorySymlinkAliasTest";
+  private static final String ALIAS = "target/databases/DatabaseFactorySymlinkAliasTestLink";
+
+  @BeforeEach
+  void setUp() throws IOException {
+    cleanUp();
+    try (final Database db = new DatabaseFactory(PATH).create()) {
+      db.command("sql", "CREATE DOCUMENT TYPE T");
+    }
+    try {
+      Files.createSymbolicLink(Path.of(ALIAS).toAbsolutePath(), Path.of(PATH).toAbsolutePath());
+    } catch (final UnsupportedOperationException | IOException | SecurityException e) {
+      assumeTrue(false, "symbolic links are not available here: " + e);
+    }
+  }
+
+  @AfterEach
+  void tearDown() throws IOException {
+    cleanUp();
+  }
+
+  private static void cleanUp() throws IOException {
+    final Database leftOpen = DatabaseFactory.getActiveDatabaseInstance(PATH);
+    if (leftOpen != null && leftOpen.isOpen())
+      leftOpen.close();
+    Files.deleteIfExists(Path.of(ALIAS).toAbsolutePath());
+    FileUtils.deleteRecursively(new File(PATH));
+  }
+
+  @Test
+  @Timeout(60)
+  void anOpenThroughALinkOfAnOpenDatabaseIsRefusedAsActiveBeforeAnythingIsBuilt() {
+    try (final Database db = new DatabaseFactory(PATH).open()) {
+      assertThatThrownBy(() -> new DatabaseFactory(ALIAS).open()).isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("Found active instance");
+      assertThatThrownBy(() -> new DatabaseFactory(ALIAS).create()).isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("Found active instance");
+
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(ALIAS)).isSameAs(db);
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isSameAs(db);
+      db.transaction(() -> db.newDocument("T").set("i", 1).save());
+      assertThat(db.countType("T", false)).isEqualTo(1);
+    }
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(ALIAS)).isNull();
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+  }
+
+  @Test
+  @Timeout(120)
+  void aRefusedOpenThroughALinkLeavesTheDatabaseLockedAgainstOtherProcesses() throws Exception {
+    try (final Database db = new DatabaseFactory(PATH).open()) {
+      assertThatThrownBy(() -> new DatabaseFactory(ALIAS).open()).isInstanceOf(DatabaseOperationException.class);
+
+      // ANOTHER PROCESS: THE LOCK OF THIS JVM ON database.lck IS WHAT KEEPS IT OUT, IF IT WAS RELEASED THE PROBE TAKES IT AND EXITS WITH 3
+      final String lockFile = new File(PATH, "database.lck").getAbsolutePath();
+      final Process probe = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
+          System.getProperty("java.class.path"), LockProbe.class.getName(), lockFile).redirectErrorStream(true).start();
+      assertThat(probe.waitFor(60, TimeUnit.SECONDS)).isTrue();
+      assertThat(probe.exitValue()).as("the other process found database.lck %s", new String(probe.getInputStream().readAllBytes()))
+          .isEqualTo(LockProbe.LOCKED);
+      assertThat(db.isOpen()).isTrue();
+    }
+  }
+
+  /** Runs in its own JVM: tries the lock on the file named by the argument and says whether it was held by someone else. */
+  public static final class LockProbe {
+    static final int LOCKED   = 0;
+    static final int ACQUIRED = 3;
+
+    public static void main(final String[] args) throws IOException {
+      try (final FileChannel channel = FileChannel.open(Path.of(args[0]), StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+        final FileLock lock = channel.tryLock();
+        System.out.println(lock == null ? "locked by another process" : "ACQUIRED: nobody holds the lock");
+        System.exit(lock == null ? LOCKED : ACQUIRED);
+      }
+    }
+  }
+}
