@@ -188,8 +188,11 @@ public class ArraySingleValuesSelector extends SimpleNode {
     case List list -> {
       values.sort(this::compareKeysForRemoval);
       for (final Object val : values) {
-        if (val instanceof Integer) {
-          list.remove((int) (Integer) val);
+        if (val instanceof Integer index) {
+          // an index outside the list, negative included, reads null and so selects nothing: it removes nothing, where it
+          // used to answer an IndexOutOfBoundsException (issue #12914)
+          if (index >= 0 && index < list.size())
+            list.remove((int) index);
         } else {
           list.remove(val);
         }

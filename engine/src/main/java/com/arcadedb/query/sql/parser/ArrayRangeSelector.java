@@ -312,15 +312,11 @@ public class ArrayRangeSelector extends SimpleNode {
     if (from >= to) {
       return;
     }
-    final int range = to - from;
     if (currentValue instanceof List list) {
-      for (int i = 0; i < range; i++) {
-        if (list.size() > from) {
-          list.remove(from);
-        } else {
-          break;
-        }
-      }
+      // the elements l[from..to] reads, end exclusive and clamped to the list. Not a loop of list.remove(from): from is an
+      // Integer, so that called remove(Object) and looked for an element EQUAL to the index, removing nothing (issue #12914)
+      if (from < list.size())
+        list.subList(from, Math.min(to, list.size())).clear();
     } else if (currentValue instanceof Set set) {
       final Iterator iter = set.iterator();
       int count = 0;
