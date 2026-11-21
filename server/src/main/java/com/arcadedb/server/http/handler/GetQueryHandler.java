@@ -30,8 +30,10 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.URLUtils;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -65,7 +67,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
     try {
       // "Deserialization" for the GET endpoint is the URL query-parameter parsing (decode + lookup).
       final long deserializationStart = System.nanoTime();
-      final String text = getQueryParameter(exchange, "command");
+      final String text = commandSegment(exchange);
       if (text == null)
         return new ExecutionResponse(400, "{ \"error\" : \"Command text is null\"}");
 
@@ -189,6 +191,25 @@ public class GetQueryHandler extends AbstractQueryHandler {
       LogManager.instance().log(this, Level.FINE, "Could not extract execution plan for profiling", e);
     }
     serverProfiler.recordQuery(databaseName, language, queryText, profile, planJson);
+  }
+
+  /**
+   * The command is the last segment of the request path, decoded exactly once from the raw request URI. The template parameter
+   * cannot be used: Undertow decodes the path before matching (a {@code %3F} becomes a {@code ?} that then cuts the segment) but
+   * deliberately keeps {@code %2F} and {@code %5C} encoded, so the engine got {@code a%2Fb} for {@code a/b} (issue #12913). A
+   * {@code +} stays a plus, as in any path. The route has a single {@code {command}} segment, so an unencoded slash is still a 404
+   * and only the encoded spelling reaches the statement.
+   */
+  private String commandSegment(final HttpServerExchange exchange) {
+    final String uri = exchange.getRequestURI();
+    final String raw = uri == null ? "" : uri.substring(uri.lastIndexOf('/') + 1);
+    if (raw.isEmpty())
+      return getQueryParameter(exchange, "command");
+    try {
+      return URLUtils.decode(raw, StandardCharsets.UTF_8.name(), true, false, new StringBuilder());
+    } catch (final IllegalArgumentException e) {
+      return getQueryParameter(exchange, "command");
+    }
   }
 
   @Override
