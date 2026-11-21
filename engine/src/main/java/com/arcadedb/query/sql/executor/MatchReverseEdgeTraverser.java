@@ -50,6 +50,26 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
   }
 
   /**
+   * This walk started at the hop's target and ended at its source, so the vertices it crossed come in the opposite direction of the pattern.
+   * The path a forward walk reports is the one from the source to the target, excluding the source and ending at the target: the crossed
+   * vertices reversed, without the source this walk ended at, followed by the target this walk started from (issue #12945).
+   */
+  @Override
+  protected Object pathAliasValue(final ResultInternal reached) {
+    final Object walked = reached.getMetadata("$matchPath");
+    if (!(walked instanceof List<?> crossed) || crossed.isEmpty())
+      return walked;
+    Identifiable target = sourceRecord.getElementProperty(startingPointAlias);
+    if (target instanceof Result result)
+      target = result.getElement().orElse(null);
+    final List<Identifiable> path = new ArrayList<>(crossed.size());
+    for (int i = crossed.size() - 2; i >= 0; i--)
+      path.add((Identifiable) crossed.get(i));
+    path.add(target);
+    return path;
+  }
+
+  /**
    * {@code item.getMethod()} is still the pattern edge's method as parsed from its syntactic out-side (this class
    * never rewrites it), so the direction it names is relative to that side, not to {@link #getStartingPointAlias()}
    * (the in-side, which this reverse traverser actually starts from) - the same out<->in flip

@@ -79,9 +79,17 @@ public class MatchEdgeTraverser {
       result.setProperty(edge.edge.item.getFilter().getDepthAlias(), nextR.getMetadata("$depth"));
 
     if (edge.edge.item.getFilter().getPathAlias() != null)
-      result.setProperty(edge.edge.item.getFilter().getPathAlias(), nextR.getMetadata("$matchPath"));
+      result.setProperty(edge.edge.item.getFilter().getPathAlias(), pathAliasValue(nextR));
 
     return result;
+  }
+
+  /**
+   * The value of the {@code pathAlias} of this hop: the vertices the walk crossed to reach {@code reached}, in the direction of the pattern
+   * (from the hop's source to its target).
+   */
+  protected Object pathAliasValue(final ResultInternal reached) {
+    return reached.getMetadata("$matchPath");
   }
 
   /**
