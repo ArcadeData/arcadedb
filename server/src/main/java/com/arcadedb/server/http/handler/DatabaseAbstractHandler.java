@@ -788,6 +788,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         return null;
       }
 
+      // A SESSION BELONGS TO THE DATABASE (INSTANCE) IT WAS BEGUN ON: ATTACHED TO ANOTHER ONE THE ENGINE REFUSES ITS TRANSACTION LATER,
+      // AND THE FAILURE ROLLS THE SESSION BACK. THE REQUEST THAT NAMED THE WRONG DATABASE IS REFUSED HERE INSTEAD, BEFORE IT CAN
+      // TOUCH THE SESSION (issue #12810)
+      final DatabaseInternal sessionDatabase = session.transaction != null ? session.transaction.getDatabase() : null;
+      if (sessionDatabase != null && sessionDatabase.getEmbedded() != ((DatabaseInternal) database).getEmbedded())
+        throw new HttpSessionException("Remote transaction '" + session.id + "' was not begun on database '" + database.getName()
+            + "' (or on the instance of it that is open now) and cannot run in it");
+
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database,
           session.transaction);
