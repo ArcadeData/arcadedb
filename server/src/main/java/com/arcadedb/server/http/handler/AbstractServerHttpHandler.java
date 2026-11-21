@@ -1166,6 +1166,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       if (t instanceof QueryTerminatedException terminated)
         return new ErrorClassification(409, "Query terminated", terminated, null, ErrorLogKind.USER);
 
+    // 408: the query ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+    // readTimeout, arcadedb.command.timeout). Every other wire protocol already answers it as its own timeout code
+    // (ErrorCategory.TIMEOUT); here it fell through to the generic 500, which monitoring counts as a server failure and a client
+    // cannot tell from one (issue #12923). Walked along the cause chain like a termination: the engine wraps it in a planner or
+    // commit failure, more than once on some paths.
+    depth = 0;
+    for (Throwable t = e; t != null && depth++ < 16; t = t.getCause())
+      if (t instanceof TimeoutException timeout)
+        return new ErrorClassification(408, "Query timeout", timeout, null, ErrorLogKind.USER);
+
     // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
     // stopped reading it - in readRequestBody above, or in PostBatchHandler's CountingInputStream for the route
     // that streams instead of buffering. Reached only by a body that declared no length; a declared one is

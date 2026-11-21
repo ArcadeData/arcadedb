@@ -38,6 +38,7 @@ import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
@@ -243,6 +244,10 @@ class HttpErrorStatusMappingTest {
         // of it ran, so the same request re-issued later can succeed. It extends CommandExecutionException too.
         new MappedFailure("QueryAdmissionException", 503,
             () -> new QueryAdmissionException("Query not started because it waited 30000ms in the queue")),
+        // A query that ran out of the time its caller gave it (a TIMEOUT clause) or the operator gave the caller (the group
+        // readTimeout): the server did what it was told, so not a 5xx, and the same request with a larger limit or a narrower
+        // query can succeed (issue #12923). It answered the generic 500.
+        new MappedFailure("TimeoutException", 408, () -> new TimeoutException("Timeout expired: TIMEOUT clause of 1ms")),
         // A permanent DROP DATABASE race (not the transient resync above) that lost the retry-then-reresolve round trip:
         // allowLoad=false found no database under the name. An accurate 404, not the generic 500 the un-typed
         // DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up), and since issue #10872 the
