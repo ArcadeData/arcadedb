@@ -44,7 +44,7 @@ public class DatabaseFactory implements AutoCloseable {
   private              boolean                                                    replicatedNode       = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
-  private static final Map<Path, Object>                                          OPEN_LOCKS           = new ConcurrentHashMap<>();
+  private static final Map<Path, PathLock>                                        OPEN_LOCKS           = new ConcurrentHashMap<>();
   /**
    * The databases whose committed pages may be in neither a forced data file nor a forced WAL because of how their last
    * instance closed (issue #12025), keyed by path, valued by the {@link LocalDatabase#getInstanceSequence() sequence} of the
@@ -126,8 +126,14 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
-    synchronized (pathLock(databasePath)) {
-      return openLocked(mode);
+    final Path path = getNormalizedPath(databasePath);
+    final PathLock lock = acquirePathLock(path);
+    try {
+      synchronized (lock) {
+        return openLocked(mode);
+      }
+    } finally {
+      releasePathLock(path);
     }
   }
 
@@ -138,9 +144,31 @@ public class DatabaseFactory implements AutoCloseable {
    * {@code LocalDatabase} equals every other of its path, so that clean-up dropped the winner's cached and queued pages and rolled
    * back its transactions (record counters off, commits failing with NullPointerException). Callers of one path now take turns:
    * the second finds the winner registered and is refused before it builds anything.
+   * <p>
+   * Counted, and removed with its last user: a monitor kept for every path ever opened would grow for the life of the JVM in an
+   * application that creates databases under names it never reuses.
    */
-  private static Object pathLock(final String databasePath) {
-    return OPEN_LOCKS.computeIfAbsent(getNormalizedPath(databasePath), path -> new Object());
+  private static final class PathLock {
+    // GUARDED BY THE ConcurrentHashMap BIN LOCK: ONLY EVER TOUCHED INSIDE compute / computeIfPresent
+    private int users;
+  }
+
+  private static PathLock acquirePathLock(final Path path) {
+    return OPEN_LOCKS.compute(path, (key, lock) -> {
+      final PathLock result = lock != null ? lock : new PathLock();
+      result.users++;
+      return result;
+    });
+  }
+
+  private static void releasePathLock(final Path path) {
+    OPEN_LOCKS.computeIfPresent(path, (key, lock) -> --lock.users == 0 ? null : lock);
+  }
+
+  /** Whether an {@code open} or {@code create} of {@code databasePath} is in flight or queued: false once none is (test only). */
+  // @VisibleForTesting
+  static boolean isPathLockInUse(final String databasePath) {
+    return OPEN_LOCKS.containsKey(getNormalizedPath(databasePath));
   }
 
   private Database openLocked(final ComponentFile.MODE mode) {
@@ -172,8 +200,14 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database create() {
-    synchronized (pathLock(databasePath)) {
-      return createLocked();
+    final Path path = getNormalizedPath(databasePath);
+    final PathLock lock = acquirePathLock(path);
+    try {
+      synchronized (lock) {
+        return createLocked();
+      }
+    } finally {
+      releasePathLock(path);
     }
   }
 
