@@ -236,12 +236,15 @@ class ACIDTransactionTest extends TestHelper {
       factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
     }
 
-    verifyDatabaseWasNotClosedProperly();
-
-    if (dictionaryPageLost) {
-      ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
-      assertThat(commitsOfTheOpen.get()).as("the open wrote the dictionary's header page in a transaction of its own").isPositive();
+    try {
+      verifyDatabaseWasNotClosedProperly();
+    } finally {
+      if (dictionaryPageLost)
+        ((DatabaseInternal) database).unregisterCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, commitCounter);
     }
+
+    if (dictionaryPageLost)
+      assertThat(commitsOfTheOpen.get()).as("the open wrote the dictionary's header page in a transaction of its own").isPositive();
 
     database.transaction(() -> assertThat(database.countType("V", true)).isEqualTo(1));
   }
