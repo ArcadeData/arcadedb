@@ -147,7 +147,8 @@ public class MatchExecutionPlanner {
         .filter(x -> x.getValue() >= 0 && x.getValue() < threshold && matchedDependencies(aliasFilters.get(x.getKey())).isEmpty()
             && !ridReadsMatched(x.getKey()) && !recursiveTargets.contains(x.getKey()))
         .map(x -> x.getKey()).collect(Collectors.toSet());
-    if (estimatedRootEntries.containsValue(0L)) {
+    // AN OPTIONAL NODE WITH NOTHING TO MATCH IS BOUND TO null, IT DOES NOT EMPTY THE RESULT (ISSUE #12749)
+    if (hasMandatoryEmptyAlias(estimatedRootEntries)) {
       result.chain(new EmptyStep(context));
       return result;
     }
@@ -1088,6 +1089,17 @@ public class MatchExecutionPlanner {
     } else {
       plan.chain(new MatchStep(context, edge));
     }
+  }
+
+  private boolean hasMandatoryEmptyAlias(final Map<String, Long> estimatedRootEntries) {
+    for (final Map.Entry<String, Long> entry : estimatedRootEntries.entrySet()) {
+      if (entry.getValue() != 0L)
+        continue;
+      final PatternNode node = pattern.aliasToNode.get(entry.getKey());
+      if (node == null || !node.isOptionalNode())
+        return true;
+    }
+    return false;
   }
 
   private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch,
