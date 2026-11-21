@@ -163,6 +163,16 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return arg.toString();
   }
 
+  /** A string option of a config map: null when absent or null; anything else than a string is refused, by name. */
+  protected String configString(final Map<String, Object> config, final String key) {
+    final Object value = config == null ? null : config.get(key);
+    if (value == null)
+      return null;
+    if (value instanceof String text)
+      return text;
+    throw new IllegalArgumentException(getName() + "(): " + key + " must be a string, got " + value.getClass().getSimpleName());
+  }
+
   /**
    * Parses a relationship-type filter (a name, a comma- or pipe-separated list, or a collection; null or blank means every
    * type) and checks every name against the schema. A name that is not an edge type is refused rather than answered with

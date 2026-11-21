@@ -115,10 +115,10 @@ public class AlgoMaxKCut extends AbstractAlgoProcedure {
     final Map<String, Object> config = extractConfig(argOrDefault(args, 1, null), "config", CONFIG_KEYS);
     final int maxIter = config != null && config.get("maxIterations") instanceof Number n ? extractInt(n, "maxIterations", 1) : 100;
     final int restarts = config != null && config.get("restarts") instanceof Number n ? extractInt(n, "restarts", 1) : 3;
-    final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    final String weightProperty = configString(config, "weightProperty");
     final long seed = config != null && config.get("seed") instanceof Number n ? n.longValue() : -1L;
     final String[] relTypes = config != null ? extractRelTypes(config.get("relTypes"), context) : null;
-    final Vertex.DIRECTION dir = parseDirection(config != null ? (String) config.get("direction") : null);
+    final Vertex.DIRECTION dir = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.BOTH);
 
     final Database db = context.getDatabase();
     final GraphData graph = loadGraph(db, null, relTypes, context);

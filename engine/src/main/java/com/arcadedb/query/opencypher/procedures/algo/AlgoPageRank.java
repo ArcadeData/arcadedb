@@ -107,7 +107,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
         extractInt(n, "maxIterations", 1) : 20;
     final double tolerance = config != null && config.get("tolerance") instanceof Number n ?
         n.doubleValue() : 0.0001;
-    final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
+    final String weightProperty = configString(config, "weightProperty");
     // OUT, not the BOTH most algorithms default to: rank is pushed along the stored edges
     final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.OUT);
 
