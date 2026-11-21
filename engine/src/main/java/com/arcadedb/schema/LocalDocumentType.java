@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -1848,6 +1849,9 @@ public class LocalDocumentType implements DocumentType {
             + "'. Drop the index first, rename the property, then recreate the index on the new name");
 
       final LocalProperty renamed = property.copyWithName(newPropertyName);
+      // The values stay under the old name (#7589) while the constraints move to the new one: refused when that would leave a stored
+      // record violating them, as declaring the same constraints over those records is (issue #12930). Asked before anything changes
+      ExistingRecordsCheck.requireRename(schema.getDatabase(), this, propertyName, renamed);
 
       properties.remove(propertyName);
       properties.put(newPropertyName, renamed);
