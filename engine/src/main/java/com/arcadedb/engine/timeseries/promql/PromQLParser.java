@@ -32,6 +32,8 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.StringLiteral;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -208,7 +210,7 @@ public class PromQLParser {
     }
 
     // String literal
-    if (lexer.peekChar() == '"' || lexer.peekChar() == '\'')
+    if (lexer.peekChar() == '"' || lexer.peekChar() == '\'' || lexer.peekChar() == '`')
       return new StringLiteral(lexer.readString());
 
     // Number literal
@@ -541,31 +543,102 @@ public class PromQLParser {
       return Double.parseDouble(input.substring(start, pos));
     }
 
+    /**
+     * Reads a string literal the way PromQL does (issue #12680). Inside backticks nothing is escaped, a newline included. In single
+     * or double quotes a backslash starts a Go escape: {@code \a \b \f \n \r \t \v \\}, the string's own quote, octal {@code \nnn},
+     * hexadecimal {@code \xnn} and the Unicode forms of four and eight hexadecimal digits. Any other escape is an error, as is an
+     * unterminated string.
+     */
     String readString() {
       skipWhitespace();
       final char quote = input.charAt(pos);
       if (quote != '"' && quote != '\'' && quote != '`')
         throw new IllegalArgumentException("Expected string at position " + pos);
       pos++;
+      if (quote == '`') {
+        final int end = input.indexOf('`', pos);
+        if (end < 0)
+          throw new IllegalArgumentException("Unterminated string");
+        final String raw = input.substring(pos, end);
+        pos = end + 1;
+        return raw;
+      }
+
       final StringBuilder sb = new StringBuilder();
+      // the bytes of \xnn and \nnn escapes: a run of them is UTF-8 text, as in Go, so \xc3\xa9 is one character
+      final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
       while (pos < input.length() && input.charAt(pos) != quote) {
-        if (input.charAt(pos) == '\\' && pos + 1 < input.length()) {
-          pos++;
-          sb.append(switch (input.charAt(pos)) {
-            case 'n' -> '\n';
-            case 't' -> '\t';
-            case '\\' -> '\\';
-            default -> input.charAt(pos);
-          });
-        } else {
-          sb.append(input.charAt(pos));
+        final char c = input.charAt(pos++);
+        if (c != '\\') {
+          flushBytes(sb, bytes);
+          sb.append(c);
+          continue;
         }
-        pos++;
+        if (pos >= input.length())
+          throw new IllegalArgumentException("Unterminated string");
+        final int escapeStart = pos - 1;
+        final char escape = input.charAt(pos++);
+        switch (escape) {
+        case 'x' -> bytes.write(readEscapeNumber(2, 16, escapeStart));
+        case '0', '1', '2', '3', '4', '5', '6', '7' -> {
+          pos--;
+          final int value = readEscapeNumber(3, 8, escapeStart);
+          if (value > 255)
+            throw new IllegalArgumentException("Octal escape value " + value + " > 255 at position " + escapeStart);
+          bytes.write(value);
+        }
+        default -> {
+          flushBytes(sb, bytes);
+          switch (escape) {
+          case 'a' -> sb.append((char) 7);
+          case 'b' -> sb.append('\b');
+          case 'f' -> sb.append('\f');
+          case 'n' -> sb.append('\n');
+          case 'r' -> sb.append('\r');
+          case 't' -> sb.append('\t');
+          case 'v' -> sb.append((char) 11);
+          case '\\' -> sb.append('\\');
+          case 'u', 'U' -> {
+            final int codePoint = readEscapeNumber(escape == 'u' ? 4 : 8, 16, escapeStart);
+            if (!Character.isValidCodePoint(codePoint) || (codePoint >= 0xD800 && codePoint < 0xE000))
+              throw new IllegalArgumentException("Escape sequence is an invalid Unicode code point at position " + escapeStart);
+            sb.appendCodePoint(codePoint);
+          }
+          default -> {
+            if (escape != quote)
+              throw new IllegalArgumentException("Unknown escape sequence '\\" + escape + "' at position " + escapeStart);
+            sb.append(escape);
+          }
+          }
+        }
+        }
       }
       if (pos >= input.length())
         throw new IllegalArgumentException("Unterminated string");
       pos++; // closing quote
+      flushBytes(sb, bytes);
       return sb.toString();
+    }
+
+    private static void flushBytes(final StringBuilder sb, final ByteArrayOutputStream bytes) {
+      if (bytes.size() > 0) {
+        sb.append(bytes.toString(StandardCharsets.UTF_8));
+        bytes.reset();
+      }
+    }
+
+    /** Reads exactly {@code digits} digits of {@code radix} at the current position, as the number of a string escape. */
+    private int readEscapeNumber(final int digits, final int radix, final int escapeStart) {
+      long value = 0;
+      for (int i = 0; i < digits; i++) {
+        final char d = pos < input.length() ? input.charAt(pos) : '\0';
+        final int digit = d >= '0' && d <= '9' ? d - '0' : d >= 'a' && d <= 'f' ? d - 'a' + 10 : d >= 'A' && d <= 'F' ? d - 'A' + 10 : -1;
+        if (digit < 0 || digit >= radix)
+          throw new IllegalArgumentException("Illegal character in the escape sequence at position " + escapeStart);
+        value = value * radix + digit;
+        pos++;
+      }
+      return (int) Math.min(value, Integer.MAX_VALUE);
     }
 
     MatchOp readMatchOp() {
