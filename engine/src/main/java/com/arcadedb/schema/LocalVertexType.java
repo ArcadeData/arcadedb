@@ -95,7 +95,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
           // Edge bucket of a bucket attached with addBucket(): named after that bucket, not after the type.
           continue;
 
-        ((LocalBucket) bucket).rename(newBucketName);
+        moveBucketTo(bucket, newBucketName);
 
         removedBuckets.add(bucket);
 
@@ -107,9 +107,16 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       // Any RuntimeException too, SchemaException included: letting one past this catch would leave the edge buckets and
       // the stripe pool already renamed on disk with a schema.json that still names the old files.
     } catch (IOException | RuntimeException e) {
-      renameDocumentPart(oldName);
-
       boolean corrupted = false;
+      try {
+        renameDocumentPart(oldName);
+      } catch (final RuntimeException rollbackFailure) {
+        // The original failure is the one reported: the edge buckets below still go back, and the document part left under the
+        // new name is said in the message (issue #12715: an old name taken meanwhile refuses the move back)
+        e.addSuppressed(rollbackFailure);
+        corrupted = true;
+      }
+
       for (Bucket bucket : removedBuckets) {
         final String renamedBucketName = bucket.getName();
         try {
@@ -117,8 +124,8 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
           if (restoredName == null)
             corrupted = true;
           else
-            ((LocalBucket) bucket).rename(restoredName);
-        } catch (IOException ex) {
+            moveBucketTo(bucket, restoredName);
+        } catch (IOException | RuntimeException ex) {
           corrupted = true;
         } finally {
           rekeyBucket(bucket, renamedBucketName);
@@ -128,6 +135,11 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       if (corrupted)
         throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
             + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, e);
+
+      // A bucket name taken after the check made before anything moved is unwound cleanly, so it is reported as the conflict it
+      // is, as the document part reports it (issue #12715)
+      if (e instanceof AlreadyExistsException taken)
+        throw taken;
 
       throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
     }
@@ -185,7 +197,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
       if (bucket == null)
         continue;
       final String oldBucketName = bucket.getName();
-      ((LocalBucket) bucket).rename(StripedEdgeList.stripeBucketName(newName, slot));
+      moveBucketTo(bucket, StripedEdgeList.stripeBucketName(newName, slot));
       renamedBuckets.add(bucket);
       rekeyBucket(bucket, oldBucketName);
     }
