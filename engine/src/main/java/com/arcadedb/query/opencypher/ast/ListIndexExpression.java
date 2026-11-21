@@ -124,9 +124,10 @@ public class ListIndexExpression implements PropertyReadExpression {
       return MultiValue.getValue(listValue, actualIndex);
     }
 
-    // In Cypher, numeric indexing is only valid for lists, not for strings or other types
-    throw new TypeMismatchException(
-        "TypeError: InvalidArgumentType - Cannot index into type: " + CypherFunctionHelper.cypherTypeName(listValue));
+    // In Cypher, numeric indexing is only valid for lists, not for strings or other types. A byte[] is named as such, the
+    // way the slice error names it, not as the LIST<ANY> it is not (issue #12780)
+    throw new TypeMismatchException("TypeError: InvalidArgumentType - Cannot index into type: "
+        + (listValue instanceof byte[] ? "byte[]" : CypherFunctionHelper.cypherTypeName(listValue)));
   }
 
   /** {@code n['v']} and {@code properties(n)['v']} read the property {@code v} of the record {@code n}. */
