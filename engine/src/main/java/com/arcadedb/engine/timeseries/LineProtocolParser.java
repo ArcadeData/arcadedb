@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * Parser for InfluxDB Line Protocol.
@@ -36,6 +37,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LineProtocolParser {
+
+  private static final Pattern LINE_END = Pattern.compile("\r\n|\r|\n");
 
   public enum Precision {
     NANOSECONDS(1_000_000L, 1L),
@@ -126,8 +129,9 @@ public class LineProtocolParser {
     if (text == null || text.isEmpty())
       return samples;
 
-    // Use \R (any line terminator) to handle Unix (\n), Windows (\r\n), and classic Mac (\r)
-    final String[] lines = text.split("\\R");
+    // Only \n, \r\n and \r end a line, as in InfluxDB: Java's \R also matches U+000B, U+000C, U+0085, U+2028 and U+2029, which are
+    // ordinary characters of a tag value or a quoted string and must not cut the line in two (issue #12672)
+    final String[] lines = LINE_END.split(text);
     for (int i = 0; i < lines.length; i++) {
       final String line = lines[i].trim();
       if (line.isEmpty() || line.startsWith("#"))
