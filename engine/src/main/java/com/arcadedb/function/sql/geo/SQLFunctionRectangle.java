@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
+import org.locationtech.spatial4j.exception.InvalidShapeException;
 import org.locationtech.spatial4j.shape.Point;
 
 /**
@@ -55,9 +56,18 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     checkArity(params);
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
-    final Point topLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[1]));
-    final Point bottomRight = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[2]), GeoUtils.getDoubleValue(params[3]));
-    return spatialContext.getShapeFactory().rect(topLeft, bottomRight);
+    final double topY = GeoUtils.getDoubleValue(params[1]);
+    final double bottomY = GeoUtils.getDoubleValue(params[3]);
+    try {
+      // spatial4j wants the lower-left and the upper-right corner (minY <= maxY), while the arguments are named top and bottom: a
+      // top-left and a bottom-right corner, the natural order, has the larger Y first and was refused. Y is ordered here; X is not,
+      // as a minX past maxX is a rectangle across the antimeridian (issue #12744)
+      final Point lowerLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), Math.min(topY, bottomY));
+      final Point upperRight = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[2]), Math.max(topY, bottomY));
+      return spatialContext.getShapeFactory().rect(lowerLeft, upperRight);
+    } catch (final InvalidShapeException e) {
+      throw new IllegalArgumentException(NAME + "() " + e.getMessage(), e);
+    }
   }
 
   @Override
