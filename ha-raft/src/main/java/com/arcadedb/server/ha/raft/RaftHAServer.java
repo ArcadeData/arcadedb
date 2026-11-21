@@ -4159,6 +4159,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     @Override
     public long triggerSnapshot(final long creationGap) {
+      // The data files are forced here first, on the scheduler's thread (issue #11989): the checkpoint forces them again on
+      // the apply thread, where every commit of the node waits for it, and only what was written in between is left there.
+      // Not when Ratis is going to skip the checkpoint (below the creation gap): that tick stays free
+      final ArcadeStateMachine sm = stateMachine;
+      if (sm != null)
+        sm.syncDataFilesAheadOfCheckpoint(creationGap);
       return takeLocalSnapshot(creationGap);
     }
 
