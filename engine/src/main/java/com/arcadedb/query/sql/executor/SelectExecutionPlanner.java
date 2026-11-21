@@ -2426,7 +2426,8 @@ public class SelectExecutionPlanner {
       if (item instanceof Identifiable identifiable && identifiable.getIdentity() != null)
         rids.add(identifiable.getIdentity());
       else
-        throw new CommandExecutionException(
+        // The caller's mistake, like every other target that names no record (issue #12904): not a server fault
+        throw new CommandSemanticException(
             "Function '" + functionCall.getName().getStringValue() + "' used as target did not return a record or RID, but: " + item);
     }
 

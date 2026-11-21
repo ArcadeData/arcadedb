@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.function.java.JavaMethodFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -240,12 +241,12 @@ public class JavaQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new QueryNotIdempotentException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    throw new UnsupportedOperationException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
+    throw new QueryNotIdempotentException("Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   private ResultSet executeUserCode(final Callable task, final long executionTimeoutMs) throws Exception {

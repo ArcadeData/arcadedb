@@ -1296,6 +1296,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               capabilityNotReady.toExceptionArgs(), ErrorLogKind.USER);
     }
 
+    // 400: the operation cannot run on this server at all - 'connect cluster', 'disconnect cluster' or 'shutdown server <name>'
+    // with HA not enabled (issue #12904). A permanent property of the deployment, so neither the 503 of a retry nor the 500 of a
+    // server fault, which is what the generic CommandExecutionException arm below, which it extends, answered. gRPC answers it
+    // FAILED_PRECONDITION. After the arm above, whose type extends this one. The label carries the fact for production mode,
+    // where 'detail' is concealed
+    final ServerControlPlane.OperationNotAvailableException notAvailableHere = firstOf(e, cause,
+        ServerControlPlane.OperationNotAvailableException.class);
+    if (notAvailableHere != null)
+      return new ErrorClassification(400, "Operation not available on this server", notAvailableHere, null, ErrorLogKind.USER);
+
     // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
     // BackupCoordinator hands out refused this one. The request is well formed and authorized, and retrying once
     // the other operation finishes is the fix - so it is a conflict, not a 500. 'trigger backup' answered this in

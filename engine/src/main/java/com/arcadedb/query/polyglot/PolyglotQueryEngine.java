@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.function.polyglot.JavascriptFunctionDefinition;
 import com.arcadedb.query.QueryEngine;
@@ -276,15 +277,20 @@ public class PolyglotQueryEngine implements QueryEngine {
     return ANALYZED_QUERY;
   }
 
+  /**
+   * A script is never provably read-only, so it has no query mode. Refused as the type a statement that writes is refused with
+   * by {@code query()}, which every protocol answers as the caller's mistake (issue #12904): it was an
+   * {@link UnsupportedOperationException}, which the HTTP layer answered 500.
+   */
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    throw new UnsupportedOperationException(
+    throw new QueryNotIdempotentException(
         "Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
-    throw new UnsupportedOperationException(
+    throw new QueryNotIdempotentException(
         "Execution of a query (idempotent) is not supported for polyglot engine. Use command instead");
   }
 

@@ -21,6 +21,7 @@ package com.arcadedb.schema.trigger;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -73,6 +74,27 @@ public class ScriptTriggerExecutor implements TriggerExecutor {
   public ScriptTriggerExecutor(final String triggerName, final String script) {
     this.triggerName = triggerName;
     this.script = script;
+  }
+
+  /**
+   * Refuses a script that does not parse, where the trigger is created (issue #12904): accepted, it failed every later write
+   * on the type. Compiled without being run, in a context built like the one the trigger fires in.
+   *
+   * @throws CommandParsingException when the script has a syntax error
+   */
+  public static void checkSyntax(final Database database, final String triggerName, final String script) {
+    try (final GraalPolyglotEngine engine = GraalPolyglotEngine.newBuilder(database,
+            PolyglotEngineManager.getInstance().getSharedEngine())
+        .setLanguage("js")
+        .setAllowedPackages(ALLOWED_PACKAGES)
+        .build()) {
+      engine.parse(script);
+    } catch (final PolyglotException e) {
+      if (e.isSyntaxError())
+        throw new CommandParsingException(
+            "JavaScript trigger '" + triggerName + "' does not parse: " + GraalPolyglotEngine.endUserMessage(e, true), e);
+      throw e;
+    }
   }
 
   @Override

@@ -247,7 +247,7 @@ public class ServerControlPlane {
    *       {@code SelfJoinNotSupportedException} (issue #7515): it is the shape the "make THIS node join"
    *       mistake takes, and it used to be answered 200 while doing nothing;</li>
    *   <li>HA not enabled at all, and an HA implementation that cannot change membership at runtime,
-   *       are both {@link OperationNotAvailableException} - HTTP 500, gRPC
+   *       are both {@link OperationNotAvailableException} - HTTP 400 (issue #12904), gRPC
    *       {@code FAILED_PRECONDITION} - a precondition of this server, not a fault of the request.</li>
    * </ul>
    * <b>Not leader-routed</b>, matching {@code POST /api/v1/cluster/peer} and matching
