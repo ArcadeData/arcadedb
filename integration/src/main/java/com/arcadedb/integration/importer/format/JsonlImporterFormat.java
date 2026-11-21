@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.DocumentValidator.LinkTargetTypeDeferral;
+import com.arcadedb.database.DocumentValidator.ReadonlyDeferral;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
@@ -1512,10 +1513,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
         // A save validates the whole record; a record none of whose links was found to replace is validated as it stands. That is one
-        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore
-        if (changed)
-          mutable.save();
-        else
+        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore.
+        // The rewrite of the links is the second half of creating the record, so a READONLY link property is not refused as altered
+        // here (issue #12722): only for the one save, and every other constraint is checked as always
+        if (changed) {
+          try (final ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks()) {
+            mutable.save();
+          }
+        } else
           mutable.validate();
 
         // Skip mode commits each record inside its handler, as load() does, so a refused commit skips this record only
