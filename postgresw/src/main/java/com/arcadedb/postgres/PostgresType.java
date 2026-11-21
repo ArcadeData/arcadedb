@@ -19,7 +19,9 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -27,6 +29,7 @@ import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.google.gson.JsonArray;
@@ -216,6 +219,16 @@ public enum PostgresType {
       .appendOffset("+HH:mm", "+00").toFormatter();
   private static final DateTimeFormatter POSTGRES_TIMESTAMPTZ_OUTPUT = new DateTimeFormatterBuilder().appendPattern("uuuu-MM-dd ")
       .append(POSTGRES_TIMETZ_OUTPUT).toFormatter();
+
+  /**
+   * Renders a record, a row, a map or a path of a json column as the HTTP API does (issue #11958), vertex edge counts left out as
+   * {@code toJSON(true)} left them out. One instance serves every connection: it is configured here and never again, and a
+   * serialization keeps no state in the serializer (the date patterns and type hints it needs live in locals of each call).
+   */
+  private static final JsonSerializer JSON_DOCUMENT_SERIALIZER = JsonSerializer.createJsonSerializer()
+      .setIncludeVertexEdges(false)
+      .setUseCollectionSize(false)
+      .setUseCollectionSizeForEdges(false);
 
   /**
    * A timestamptz parameter (issue #11960): {@code 2024-02-29 13:14:15.123456+02} as PostgreSQL and pgjdbc write it, or the ISO
@@ -1148,16 +1161,8 @@ public enum PostgresType {
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
-    } else if (value instanceof Map<?, ?> map) {
-      serializedValue = new JSONObject(map).toString();
-    } else if (value instanceof TraversalPath path) {
-      serializedValue = new JSONObject(path.toMap()).toString();
-    } else if (value instanceof Record record) {
-      serializedValue = record.toJSON(true).toString();
-    } else if (value instanceof Result result) {
-      serializedValue = result.toJSON().toString();
-    } else if (value instanceof EmbeddedDocument embeddedDocument) {
-      serializedValue = embeddedDocument.toJSON(true).toString();
+    } else if (isJsonDocument(value)) {
+      serializedValue = toJsonDocument(value).toString();
     } else if (value != null) {
       serializedValue = value.toString();
     }
@@ -1465,15 +1470,15 @@ public enum PostgresType {
       case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
       case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
       case Binary binary -> binary.getString();
-      case Collection<?> nested -> new JSONArray(nested).toString();
-      case Result result -> result.toJSON().toString();
+      case Collection<?> nested -> serializeNestedAsJsonArray(nested).toString();
+      case Result result -> toJsonDocument(result).toString();
       case JSONObject json -> json.toString();
-      case Map<?, ?> map -> new JSONObject(map).toString();
+      case Map<?, ?> map -> toJsonDocument(map).toString();
       // a Cypher path as the same JSON object the text array carries, not its toString() (issue #9913)
-      case TraversalPath path -> new JSONObject(path.toMap()).toString();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true).toString();
-      case Record record -> record.toJSON(true).toString();
-      default -> element.getClass().isArray() ? new JSONArray(convertPrimitiveArrayToCollection(element)).toString() : element.toString();
+      case TraversalPath path -> toJsonDocument(path).toString();
+      case Record record -> toJsonDocument(record).toString();
+      default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)).toString()
+          : element.toString();
     };
   }
 
@@ -1547,22 +1552,15 @@ public enum PostgresType {
       } else if (element instanceof Collection<?> subCollection) {
         // A nested list is carried as a JSON document (issue #5365): the column is advertised as json[], so the
         // element must be a quoted JSON array. Emitting a nested "{...}" literal instead made the announced OID
-        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension.
-        appendQuoted(sb, new JSONArray(subCollection).toString());
+        // and the payload disagree, and clients re-parsed the inner braces as a second array dimension. A record or a map inside
+        // it is rendered as the scalar json column renders it (issue #11958).
+        appendQuoted(sb, serializeNestedAsJsonArray(subCollection).toString());
       } else if (element.getClass().isArray()) {
-        appendQuoted(sb, new JSONArray(convertPrimitiveArrayToCollection(element)).toString());
-      } else if (element instanceof Result result) {
-        appendQuoted(sb, result.toJSON().toString());
+        appendQuoted(sb, serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)).toString());
       } else if (element instanceof JSONObject json) {
         appendQuoted(sb, json.toString());
-      } else if (element instanceof Map<?, ?> map) {
-        appendQuoted(sb, new JSONObject(map).toString());
-      } else if (element instanceof TraversalPath path) {
-        appendQuoted(sb, new JSONObject(path.toMap()).toString());
-      } else if (element instanceof Record record) {
-        appendQuoted(sb, record.toJSON(true).toString());
-      } else if (element instanceof EmbeddedDocument embeddedDocument) {
-        appendQuoted(sb, embeddedDocument.toJSON(true).toString());
+      } else if (isJsonDocument(element)) {
+        appendQuoted(sb, toJsonDocument(element).toString());
       } else if (element instanceof String str) {
         appendQuoted(sb, str);
       } else {
@@ -1603,16 +1601,42 @@ public enum PostgresType {
       case null -> null;
       case JSONObject json -> json;
       case JSONArray json -> json;
-      case Result result -> result.toJSON();
-      case EmbeddedDocument embeddedDocument -> embeddedDocument.toJSON(true);
-      case Record record -> record.toJSON(true);
-      case Map<?, ?> map -> new JSONObject(map);
+      case Result result -> toJsonDocument(result);
+      case Record record -> toJsonDocument(record);
+      case Map<?, ?> map -> toJsonDocument(map);
+      case TraversalPath path -> toJsonDocument(path);
       case Collection<?> nested -> serializeNestedAsJsonArray(nested);
       case Binary binary -> binary.getString();
       case Date date -> LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC).format(POSTGRES_DATETIME_FORMATTER);
       case LocalDateTime ldt -> ldt.format(POSTGRES_DATETIME_FORMATTER);
       default -> element.getClass().isArray() ? serializeNestedAsJsonArray(convertPrimitiveArrayToCollection(element)) : element;
     };
+  }
+
+  /** A record, a row, a map or a path: the values a json column carries as one JSON document. */
+  private static boolean isJsonDocument(final Object value) {
+    return value instanceof Map || value instanceof TraversalPath || value instanceof Record || value instanceof Result;
+  }
+
+  /**
+   * A record, a row, a map or a path as the JSON the HTTP API sends for it (issue #11958). {@code toJSON()} and {@code new
+   * JSONObject(map)} wrote a temporal as an epoch number whose unit depended on where it sat (a DATE was days in a record and
+   * milliseconds in a map) and dropped the zone of a ZONED_DATETIME and the sub-millisecond digits of a DATETIME_NANOS inside a map.
+   * The date patterns are those of the database the value comes from (the record's, or the row's when it knows one; each node and
+   * relationship of a path uses its own); a value no database owns (a map literal, a row built without one) gets the defaults.
+   */
+  private static Object toJsonDocument(final Object value) {
+    // A record that is not a document (an edge segment, a stripe directory, the payload of an EXTERNAL property) is engine
+    // infrastructure the serializer has no form for: it would hand the record back and the column would carry its toString().
+    // Its own toJSON(true) stays the rendering, as before.
+    if (value instanceof Record record && !(record instanceof Document))
+      return record.toJSON(true);
+    final Database database = switch (value) {
+      case Document document -> document.getDatabase();
+      case Result result -> result.isElement() ? result.toElement().getDatabase() : result.getDatabase();
+      default -> null;
+    };
+    return JSON_DOCUMENT_SERIALIZER.serializeValue(database, value);
   }
 
   private JSONArray serializeNestedAsJsonArray(final Collection<?> collection) {
