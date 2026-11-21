@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.postgres.PostgresWireMessages.WireMessage;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONArray;
@@ -29,7 +30,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.math.BigDecimal;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -37,18 +43,27 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
+import java.sql.Types;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
+import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
+import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
+import static com.arcadedb.postgres.PostgresWireMessages.sendDescribe;
+import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
+import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
+import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The type a result column is announced with over the PostgreSQL wire protocol (RowDescription), and the values sent for it:
  * whether it comes from the schema or from the rows that happened to come back, through an alias, for a declared column that
- * is NULL on every row, for an excluded projection item, for a graph traversal and for a LIST OF BINARY, on the simple and
- * the extended query protocol alike.
+ * is NULL on every row, for an excluded projection item, for a graph traversal, for a LIST OF BINARY and for a Cypher date or
+ * datetime, on the simple and the extended query protocol alike.
  */
 class PostgresColumnTypeResolutionIT extends PostgresWireProtocolTestBase {
 
@@ -796,6 +811,155 @@ class PostgresColumnTypeResolutionIT extends PostgresWireProtocolTestBase {
           assertThat((byte[]) elements[1]).as(sql).containsExactly((byte) 0xff, 0);
         }
         default -> throw new AssertionError("Unexpected row " + n + " for " + filter);
+        }
+      }
+    }
+  }
+
+  /**
+   * Issue #11955: a Cypher date, time or datetime (a function result, or a DATE / DATETIME property read through Cypher) was
+   * announced as varchar and sent as its text, where SQL announces the same property as date / timestamp. It is now typed as the
+   * java.time value it wraps, whatever the query mode and the result format.
+   */
+  @Nested
+  class CypherTemporalColumn {
+    private static final String SQL    = "SELECT da, dt FROM T11955";
+    private static final String CYPHER = "{cypher}MATCH (n:T11955) RETURN n.da AS da, n.dt AS dt, date('2024-01-02') AS d, "
+        + "localdatetime('2024-01-02T03:04:05') AS ldt";
+
+    @BeforeEach
+    void createVertex() {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.transaction(() -> {
+        final VertexType type = database.getSchema().createVertexType("T11955");
+        type.createProperty("da", Type.DATE);
+        type.createProperty("dt", Type.DATETIME);
+      });
+      database.transaction(
+          () -> database.command("sql", "INSERT INTO T11955 SET da = '2024-02-29', dt = '2024-02-29 13:14:15.123'"));
+    }
+
+    // Regression: #11955
+    @Test
+    void simpleQueryTypesCypherAsSqlIs() throws Exception {
+      final Properties properties = new Properties();
+      properties.setProperty("preferQueryMode", "simple");
+      assertCypherTypedAsSql(properties);
+    }
+
+    // Regression: #11955
+    @Test
+    void extendedQueryTypesCypherAsSqlIs() throws Exception {
+      final Properties properties = new Properties();
+      properties.setProperty("prepareThreshold", "0");
+      assertCypherTypedAsSql(properties);
+    }
+
+    // Regression: #11955
+    /**
+     * A client that asks for binary results (Bind with result format code 1, which pgjdbc cannot do for Cypher: it describes the
+     * statement before it runs, and a Cypher statement has no columns to describe until then): the date and the timestamp travel
+     * as the binary date and timestamp, whose encoding only a java.time value has.
+     */
+    @Test
+    void aBinaryResultFormatCarriesTheDateAndTheTimestampAsTheirBinaryTypes() throws Exception {
+      try (final Socket socket = new Socket()) {
+        socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+        final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+        final DataInputStream in = new DataInputStream(socket.getInputStream());
+        sendStartupMessage(out, "root", getDatabaseName());
+        readMessage(in); // AuthenticationCleartextPassword
+        sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+        readMessageOfType(in, 'Z');
+
+        sendParse(out, "", "{cypher}MATCH (n:T11955) RETURN n.da AS da, n.dt AS dt");
+        sendBindAskingForBinaryResults(out);
+        sendDescribe(out, 'P', "");
+        sendExecute(out, "");
+        sendSync(out);
+
+        final List<WireMessage> messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).as("a result, not an error").containsSubsequence('1', '2', 'T', 'D', 'C', 'Z');
+
+        final ByteBuffer description = ByteBuffer.wrap(messages.stream().filter(m -> m.type() == 'T').findFirst().orElseThrow().body());
+        assertThat(description.getShort()).isEqualTo((short) 2);
+        for (final int expectedOid : new int[] { 1082, 1114 }) {
+          while (description.get() != 0) {
+            // the column name
+          }
+          description.getInt(); // table oid
+          description.getShort(); // attribute number
+          assertThat(description.getInt()).as("type oid").isEqualTo(expectedOid);
+          description.getShort(); // type size
+          description.getInt(); // type modifier
+          assertThat(description.getShort()).as("format code").isEqualTo((short) 1);
+        }
+
+        final ByteBuffer row = ByteBuffer.wrap(messages.stream().filter(m -> m.type() == 'D').findFirst().orElseThrow().body());
+        assertThat(row.getShort()).isEqualTo((short) 2);
+        assertThat(row.getInt()).as("length of the date").isEqualTo(4);
+        assertThat(row.getInt()).as("days since 2000-01-01").isEqualTo(
+            (int) (LocalDate.of(2024, 2, 29).toEpochDay() - LocalDate.of(2000, 1, 1).toEpochDay()));
+        assertThat(row.getInt()).as("length of the timestamp").isEqualTo(8);
+        assertThat(row.getLong()).as("microseconds since 2000-01-01").isEqualTo(
+            (LocalDateTime.of(2024, 2, 29, 13, 14, 15).toEpochSecond(ZoneOffset.UTC) - LocalDateTime.of(2000, 1, 1, 0, 0)
+                .toEpochSecond(ZoneOffset.UTC)) * 1_000_000L + 123_000L);
+      }
+    }
+
+    // Regression: #11955
+    @Test
+    void aListOfDatetimesIsWrittenAsSqlWritesIt() throws Exception {
+      final Properties properties = new Properties();
+      properties.setProperty("preferQueryMode", "simple");
+      try (final Connection connection = connect(properties); final Statement statement = connection.createStatement()) {
+        final String sql;
+        try (final ResultSet rs = statement.executeQuery("SELECT [dt] AS l FROM T11955")) {
+          assertThat(rs.next()).isTrue();
+          sql = rs.getString("l");
+        }
+        assertThat(sql).contains("2024-02-29 13:14:15.123000");
+        try (final ResultSet rs = statement.executeQuery("{cypher}MATCH (n:T11955) RETURN [n.dt] AS l")) {
+          assertThat(rs.next()).isTrue();
+          assertThat(rs.getString("l")).isEqualTo(sql);
+        }
+      }
+    }
+
+    /** A Bind of the unnamed statement to the unnamed portal, with no parameter and one result format code, 1 (binary), for every column. */
+    private static void sendBindAskingForBinaryResults(final DataOutputStream out) throws Exception {
+      out.writeByte('B');
+      out.writeInt(14); // this length field, the two empty names, and four int16
+      out.writeByte(0); // portal name
+      out.writeByte(0); // statement name
+      out.writeShort(0); // no parameter format codes
+      out.writeShort(0); // no parameters
+      out.writeShort(1); // one result format code, applied to every column
+      out.writeShort(1); // binary
+      out.flush();
+    }
+
+    private void assertCypherTypedAsSql(final Properties properties) throws Exception {
+      try (final Connection connection = connect(properties)) {
+        // twice: pgjdbc switches to a named statement on a later execution
+        for (int i = 0; i < 2; i++) {
+          try (final PreparedStatement statement = connection.prepareStatement(SQL); final ResultSet rs = statement.executeQuery()) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getMetaData().getColumnType(1)).as("SQL da").isEqualTo(Types.DATE);
+            assertThat(rs.getMetaData().getColumnType(2)).as("SQL dt").isEqualTo(Types.TIMESTAMP);
+          }
+          try (final PreparedStatement statement = connection.prepareStatement(CYPHER); final ResultSet rs = statement.executeQuery()) {
+            assertThat(rs.next()).isTrue();
+            final ResultSetMetaData meta = rs.getMetaData();
+            assertThat(meta.getColumnType(1)).as("n.da").isEqualTo(Types.DATE);
+            assertThat(meta.getColumnType(2)).as("n.dt").isEqualTo(Types.TIMESTAMP);
+            assertThat(meta.getColumnType(3)).as("date()").isEqualTo(Types.DATE);
+            assertThat(meta.getColumnType(4)).as("localdatetime()").isEqualTo(Types.TIMESTAMP);
+            assertThat(rs.getObject(1, LocalDate.class)).isEqualTo(LocalDate.of(2024, 2, 29));
+            assertThat(rs.getObject(2, LocalDateTime.class)).isEqualTo(LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123_000_000));
+            assertThat(rs.getObject(3, LocalDate.class)).isEqualTo(LocalDate.of(2024, 1, 2));
+            assertThat(rs.getObject(4, LocalDateTime.class)).isEqualTo(LocalDateTime.of(2024, 1, 2, 3, 4, 5));
+          }
         }
       }
     }

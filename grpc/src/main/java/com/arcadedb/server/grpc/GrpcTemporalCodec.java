@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.google.protobuf.Timestamp;
 
 import java.time.Instant;
@@ -74,10 +75,12 @@ public final class GrpcTemporalCodec {
   }
 
   /**
-   * Encodes a temporal value, or returns {@code null} when {@code o} is not one of the temporal types the wire carries, so
-   * the caller goes on with its own dispatch.
+   * Encodes a temporal value, or returns {@code null} when {@code value} is not one of the temporal types the wire carries, so
+   * the caller goes on with its own dispatch. A Cypher date, time or datetime is encoded as the {@code java.time} value it wraps,
+   * so a property read through Cypher gets the same kind and tag as through SQL (issue #11955).
    */
-  public static GrpcValue encode(final Object o) {
+  public static GrpcValue encode(final Object value) {
+    final Object o = CypherTemporalValue.toJavaTime(value);
     if (o instanceof Date v)
       return timestamp(Math.floorDiv(v.getTime(), 1000L), (int) (Math.floorMod(v.getTime(), 1000L) * 1_000_000L), DATETIME);
     if (o instanceof LocalDate ld)
