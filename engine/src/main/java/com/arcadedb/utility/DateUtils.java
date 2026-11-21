@@ -604,6 +604,25 @@ public class DateUtils {
   }
 
   /**
+   * The date-time a bare numeric string names when it is ORDERED against a date-time of class {@code dateTimeClass}: an epoch count
+   * whose precision its digit count tells, read exactly as {@link com.arcadedb.serializer.BinaryComparator#compareTo(Object, Object)}
+   * reads it through {@link #dateTimeToTimestampInferringStringPrecision} (issue #5956). An index range bound of a DATETIME key is
+   * converted with this, so the lookup answers what the scan of the same comparison answers (issue #12936): {@code Type.convert}
+   * leaves such a string as it is for a {@link LocalDateTime}, {@link ZonedDateTime} or {@link Instant} key, deliberately (an
+   * all-digits string is refused on write, #9110), and the lookup matched nothing.
+   *
+   * @return null when {@code value} is not a numeric string or {@code dateTimeClass} is not one of those three classes (a
+   * {@link Date} or a {@link Calendar} reads the string through its own conversion, on both paths)
+   */
+  public static Object numericStringAsDateTime(final Database database, final Object value, final Class<?> dateTimeClass) {
+    if (!(value instanceof String string) || !FileUtils.isLong(string)
+        || (dateTimeClass != LocalDateTime.class && dateTimeClass != ZonedDateTime.class && dateTimeClass != Instant.class))
+      return null;
+    return dateTime(database, dateTimeToTimestampInferringStringPrecision(string, ChronoUnit.NANOS), ChronoUnit.NANOS, dateTimeClass,
+        ChronoUnit.NANOS);
+  }
+
+  /**
    * Infers the epoch precision a bare numeric string most likely represents, from its digit count: for a
    * present-day moment, an epoch value grows by roughly 3 digits per finer precision step (~10 digits for
    * seconds, ~13 for millis, ~16 for micros, ~19 for nanos).
