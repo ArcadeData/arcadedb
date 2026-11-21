@@ -324,8 +324,13 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
         return ((BigDecimal) value1).compareTo((BigDecimal) value2);
       case BinaryTypes.TYPE_FLOAT:
+        // an infinity or NaN has no decimal form: ordered in double, the decimal clamped to the double range (issue #12694)
+        if (!Type.isFinite((Float) value2))
+          return compareDoubles(Type.finiteDoubleValue((BigDecimal) value1), ((Float) value2).doubleValue());
         return ((BigDecimal) value1).compareTo(Type.floatToBigDecimal((Float) value2));
       case BinaryTypes.TYPE_DOUBLE:
+        if (!Type.isFinite((Double) value2))
+          return compareDoubles(Type.finiteDoubleValue((BigDecimal) value1), (Double) value2);
         return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
         return ((BigDecimal) value1).compareTo(new BigDecimal((String) value2));

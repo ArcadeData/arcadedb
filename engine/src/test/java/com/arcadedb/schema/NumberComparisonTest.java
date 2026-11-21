@@ -484,4 +484,77 @@ class NumberComparisonTest {
       assertThat(Type.isExactAsDouble(Long.MIN_VALUE)).isFalse();
     }
   }
+
+  /**
+   * Regression for #12694: the BigDecimal arms of {@link Type#castComparableNumber} (and the DECIMAL arm of
+   * {@link BinaryComparator#compare}) converted the other operand with {@code BigDecimal.valueOf(double)} or
+   * {@code floatToBigDecimal}, which throw {@link NumberFormatException} for an infinity or NaN, so {@code WHERE dec < (1.0 / 0)}
+   * failed where the same predicate on any other numeric property answers every row.
+   */
+  @Nested
+  class DecimalAgainstNonFinite extends TestHelper {
+    private final BigDecimal[] decimals   = { new BigDecimal("-1E+400"), new BigDecimal("-1.5"), BigDecimal.ZERO, new BigDecimal("2"),
+        new BigDecimal("1E+400") };
+    private final Number[]     nonFinites = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY,
+        Float.NEGATIVE_INFINITY, Float.NaN };
+
+    @Test
+    void aDecimalOrdersBelowPositiveInfinityAndNaNAndAboveNegativeInfinityInBothOperandOrders() {
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+
+          final Number[] forward = Type.castComparableNumber(decimal, nonFinite);
+          assertThat(Integer.signum(((Comparable<Object>) forward[0]).compareTo(forward[1])))
+              .as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+
+          final Number[] reverse = Type.castComparableNumber(nonFinite, decimal);
+          assertThat(Integer.signum(((Comparable<Object>) reverse[0]).compareTo(reverse[1])))
+              .as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
+    void theTypedComparatorOrdersADecimalKeyAgainstANonFiniteBound() {
+      final BinaryComparator comparator = new BinaryComparator();
+      for (final BigDecimal decimal : decimals)
+        for (final Number nonFinite : nonFinites) {
+          final byte type = nonFinite instanceof Float ? BinaryTypes.TYPE_FLOAT : BinaryTypes.TYPE_DOUBLE;
+          final int expected = Double.isNaN(nonFinite.doubleValue()) || nonFinite.doubleValue() > 0 ? -1 : 1;
+
+          assertThat(Integer.signum(comparator.compare(decimal, BinaryTypes.TYPE_DECIMAL, nonFinite, type)))
+              .as("%s vs %s", decimal, nonFinite).isEqualTo(expected);
+          assertThat(Integer.signum(comparator.compare(nonFinite, type, decimal, BinaryTypes.TYPE_DECIMAL)))
+              .as("%s vs %s", nonFinite, decimal).isEqualTo(-expected);
+        }
+    }
+
+    @Test
+    void aDecimalPropertyAnswersTheSameAsADoublePropertyForAnInfiniteOrNaNBound() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NonFinite");
+        database.command("sql", "CREATE PROPERTY NonFinite.dec DECIMAL");
+        database.command("sql", "CREATE PROPERTY NonFinite.dbl DOUBLE");
+        for (int i = 1; i <= 3; i++)
+          database.command("sql", "INSERT INTO NonFinite SET dec = " + i + ", dbl = " + i + ".5");
+      });
+
+      final String[] bounds = { "(1.0 / 0)", "(-1.0 / 0)", "(0.0 / 0)", "1e999" };
+      for (final String operator : new String[] { "<", "<=", ">", ">=", "<>", "=" })
+        for (final String bound : bounds)
+          assertThat(count("dec " + operator + " " + bound)).as("dec %s %s", operator, bound)
+              .isEqualTo(count("dbl " + operator + " " + bound));
+
+      assertThat(count("dec < (1.0 / 0)")).isEqualTo(3);
+      assertThat(count("dec > (-1.0 / 0)")).isEqualTo(3);
+      assertThat(count("dec > (1.0 / 0)")).isZero();
+      assertThat(count("dec < (-1.0 / 0)")).isZero();
+    }
+
+    private long count(final String where) {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM NonFinite WHERE " + where)) {
+        return rs.next().<Long>getProperty("c");
+      }
+    }
+  }
 }
