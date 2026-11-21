@@ -2922,11 +2922,13 @@ public class LocalDocumentType implements DocumentType {
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
 
     if (!existentIndexes.isEmpty()) {
-      // ONE TRANSACTION OF ITS OWN, and unlike the sibling propagation in addSuperType() this one does NOT have to
-      // join the caller's - do not "fix" it by symmetry (issue #6359, item 1). A bucket attached here is either just
-      // created or one no type owns (`ALTER TYPE x BUCKET +y`, checked free above), so no transaction can be holding
-      // uncommitted writes into it through a type and the scan has nothing to miss; joining would only cost the build
-      // its chunked commit.
+      // ONE TRANSACTION OF ITS OWN, committed before the schema lock is released, as createSubIndexesFor() and TypeIndexBuilder
+      // create their components (issue #6359, item 1 meant this one too, but the call joined the caller's transaction). Joined,
+      // the sub-indexes were published to every writer while their first page was still pending in the caller's transaction,
+      // which an HTTP command always runs in: a record another transaction wrote into the new bucket and committed before the
+      // caller did met a sub-index with no page, and its commit failed with "the file is invalid" (issue #11835). A record the
+      // caller itself wrote into the bucket before the attach (a bucket detached and attached again in one transaction) is not
+      // seen by this build, and is given its entries when the caller commits (issue #10588).
       //
       // A bucket that is not new can hold records, and so a key a UNIQUE index of this type already holds: the attach is
       // then refused and handed back whole, exactly as addSuperType hands back a link (issue #11302). Every component an
@@ -2939,12 +2941,12 @@ public class LocalDocumentType implements DocumentType {
           created.clear();
           for (final TypeIndex idx : existentIndexes)
             created.add(createBucketIndexFor(idx, bucket));
-        }, true, txRetries(database), null, failure -> dropFailedAttempt(created));
+        }, false, txRetries(database), null, failure -> dropFailedAttempt(created));
       } catch (final RuntimeException e) {
         // The refusal is what the caller has to see: a step of the clean-up that fails too travels with it rather than in its
         // place, and does not skip the steps after it (the detach drops the bucket's sub-indexes on its own too)
         final RuntimeException refusal = asDuplicatedKeyIfOne(e);
-        // A joined transaction hands a retryable failure straight back without calling the callback
+        // A no-op when the transaction already dropped them through its callback
         runCleanupStep(refusal, () -> dropFailedAttempt(created));
         runCleanupStep(refusal, () -> removeBucketInternal(bucket));
         if (!needsRepartitionBefore)
@@ -2958,7 +2960,7 @@ public class LocalDocumentType implements DocumentType {
       ensureExternalBucketFor((LocalBucket) bucket);
   }
 
-  /** The sub-index of {@code idx} over {@code bucket}, created and built in the caller's (own) transaction. */
+  /** The sub-index of {@code idx} over {@code bucket}, created and built in the current transaction (one of its own). */
   private Index createBucketIndexFor(final TypeIndex idx, final Bucket bucket) {
     // getPageSizeForNewFile(), not getPageSize(): this creates a NEW index file, so the page size carried over has
     // to be one the creation path accepts. A HASH index predating #5713 can hold an unaddressable one, and
