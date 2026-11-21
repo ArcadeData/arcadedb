@@ -281,21 +281,25 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     for (final LSMSparseVectorIndex idx : indexes)
       overlays.add(idx.transactionOverlay());
 
-    final List<Callable<List<RidScore>>> searches = new ArrayList<>(indexes.size());
-    for (int i = 0; i < indexes.size(); i++) {
-      final LSMSparseVectorIndex idx = indexes.get(i);
-      final SparseTransactionOverlay overlay = overlays.get(i);
-      if (groupBy == null)
-        searches.add(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs, overlay));
-      else
-        searches.add(() -> idx.topKGrouped(queryIndices, queryValues, groupBudget, fetchGroupSize, allowedRIDs, groupKeyResolver,
-            overlay));
-    }
     // Serial on the caller's thread whenever it holds uncommitted changes. A pool worker has no view of the caller's
     // transaction: it reads committed pages only, and a group key it resolves comes from the committed record, never
     // the pending or updated one - so the transaction's own rows would be grouped wrongly (issue #8002), and a flush
     // inside the transaction would go unseen. The engine refuses to split its own traversal for the same reason.
     final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(databaseRef.getDatabasePath());
+
+    // The weights actually scored, resolved ONCE for the pass and shared by every search below, the top-ups included.
+    final float[] weights = indexes.isEmpty() ? queryValues : resolveWeights(indexes.get(0), queryIndices, queryValues, serial);
+
+    final List<Callable<List<RidScore>>> searches = new ArrayList<>(indexes.size());
+    for (int i = 0; i < indexes.size(); i++) {
+      final LSMSparseVectorIndex idx = indexes.get(i);
+      final SparseTransactionOverlay overlay = overlays.get(i);
+      if (groupBy == null)
+        searches.add(() -> idx.topKWeighted(queryIndices, weights, fetchK, allowedRIDs, overlay));
+      else
+        searches.add(() -> idx.topKGroupedWeighted(queryIndices, weights, groupBudget, fetchGroupSize, allowedRIDs,
+            groupKeyResolver, overlay));
+    }
     final List<List<RidScore>> perIndex = runAll(searches, serial);
     for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
@@ -329,8 +333,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         for (final GroupedTopUpPlanner.TopUp topUp : topUps) {
           final LSMSparseVectorIndex idx = indexes.get(topUp.source());
           final SparseTransactionOverlay overlay = overlays.get(topUp.source());
-          topUpSearches.add(() -> idx.topKForGroups(queryIndices, queryValues, topUp.groupKeys(), fetchGroupSize, topUp.floor(),
-              allowedRIDs, groupKeyResolver, overlay));
+          topUpSearches.add(() -> idx.topKForGroupsWeighted(queryIndices, weights, topUp.groupKeys(), fetchGroupSize,
+              topUp.floor(), allowedRIDs, groupKeyResolver, overlay));
         }
         for (final List<RidScore> partial : runAll(topUpSearches, serial))
           merged.addAll(partial);
@@ -399,6 +403,31 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   }
 
   /**
+   * The weights every search of a pass scores with: the query's own, or, with the IDF modifier, scaled by each dim's
+   * inverse document frequency in the whole TYPE. That frequency is the same whichever bucket index resolves it, so it is
+   * counted once here and handed to every per-bucket search, rather than each search counting the postings of every bucket
+   * (which would cost a query the number of buckets times the counting it needs). Each bucket index counts its own
+   * postings, concurrently as the searches themselves are, so the counting costs what it did when every search counted
+   * only its own bucket. The count covers every bucket index of the type, not just the ones this query searches.
+   */
+  private static float[] resolveWeights(final LSMSparseVectorIndex first, final int[] queryIndices, final float[] queryValues,
+      final boolean serial) {
+    if (!first.usesIdf())
+      return first.effectiveWeights(queryIndices, queryValues);
+
+    final List<LSMSparseVectorIndex> typeIndexes = first.bucketIndexesOfType();
+    final List<Callable<long[]>> counts = new ArrayList<>(typeIndexes.size());
+    for (final LSMSparseVectorIndex idx : typeIndexes)
+      counts.add(() -> idx.countPostings(queryIndices, queryValues));
+
+    final long[] documentFrequency = new long[queryIndices.length];
+    for (final long[] partial : runAll(counts, serial))
+      for (int i = 0; i < documentFrequency.length; i++)
+        documentFrequency[i] += partial[i];
+    return first.effectiveWeights(queryIndices, queryValues, documentFrequency);
+  }
+
+  /**
    * Runs one search per sub-index and returns their answers in the same order. A single search runs on the calling
    * thread: there is no parallelism to gain and no pool dispatch to pay for. So does every search when {@code serial}
    * is set, for a caller whose transaction a worker could not see.
@@ -408,10 +437,10 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
    * dedicated SparseVectorScoringPool; its CallerRuns rejection policy guarantees the call always completes - worst
    * case it runs inline on the submitter thread, which is exactly the serial fallback.
    */
-  private static List<List<RidScore>> runAll(final List<Callable<List<RidScore>>> searches, final boolean serial) {
-    final List<List<RidScore>> out = new ArrayList<>(searches.size());
+  private static <T> List<T> runAll(final List<Callable<T>> searches, final boolean serial) {
+    final List<T> out = new ArrayList<>(searches.size());
     if (serial || searches.size() <= 1) {
-      for (final Callable<List<RidScore>> search : searches) {
+      for (final Callable<T> search : searches) {
         try {
           out.add(search.call());
         } catch (final RuntimeException e) {
@@ -424,8 +453,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     }
 
     final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
-    final List<Future<List<RidScore>>> futures = new ArrayList<>(searches.size());
-    for (final Callable<List<RidScore>> search : searches)
+    final List<Future<T>> futures = new ArrayList<>(searches.size());
+    for (final Callable<T> search : searches)
       futures.add(pool.submit(search));
     // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
     // contending for index I/O after the caller has moved on. Collect the per-future errors,
@@ -443,9 +472,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
         : Long.MAX_VALUE;
     final List<Throwable> errors = new ArrayList<>();
-    for (final Future<List<RidScore>> f : futures) {
+    for (final Future<T> f : futures) {
       try {
-        final List<RidScore> partial;
+        final T partial;
         if (timeoutSeconds <= 0) {
           partial = f.get();
         } else {
