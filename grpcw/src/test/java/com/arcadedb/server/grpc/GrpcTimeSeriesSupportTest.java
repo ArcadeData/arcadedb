@@ -159,6 +159,23 @@ class GrpcTimeSeriesSupportTest {
         TimeSeriesPrecision.TS_PRECISION_MILLISECONDS).getFirst().getTimestampMs()).isEqualTo(5L);
   }
 
+  // Issue #11985: a sub-millisecond precision is narrowed to the millisecond that CONTAINS the instant, so a point one
+  // nanosecond before the epoch is stored at -1 ms, not moved forward to 0 ms by a truncating division.
+  @Test
+  void aSubMillisecondTimestampBeforeTheEpochIsFlooredNotTruncated() {
+    final TimeSeriesPoint nanos = TimeSeriesPoint.newBuilder().setType("weather").setTimestamp(-1L)
+        .putFields("temperature", GrpcValue.newBuilder().setDoubleValue(1.0).build())
+        .build();
+    assertThat(GrpcTimeSeriesSupport.toSamples(List.of(nanos), "weather",
+        TimeSeriesPrecision.TS_PRECISION_NANOSECONDS).getFirst().getTimestampMs()).isEqualTo(-1L);
+
+    final TimeSeriesPoint micros = TimeSeriesPoint.newBuilder().setType("weather").setTimestamp(-1_500L)
+        .putFields("temperature", GrpcValue.newBuilder().setDoubleValue(1.0).build())
+        .build();
+    assertThat(GrpcTimeSeriesSupport.toSamples(List.of(micros), "weather",
+        TimeSeriesPrecision.TS_PRECISION_MICROSECONDS).getFirst().getTimestampMs()).isEqualTo(-2L);
+  }
+
   @Test
   void aPointNamingNoTypeAndHavingNoDefaultIsRefused() {
     final TimeSeriesPoint untyped = TimeSeriesPoint.newBuilder().setTimestamp(1L)
