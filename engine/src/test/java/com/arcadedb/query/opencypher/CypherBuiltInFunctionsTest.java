@@ -778,10 +778,10 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final StatelessFunction decompress = CypherFunctionRegistry.get("util.decompress");
 
     final String original = "Hello, World! This is a test string for compression.";
-    final String compressed = (String) compress.execute(new Object[] { original, "gzip" }, null);
-    assertThat(compressed).isNotNull();
+    final byte[] compressed = (byte[]) compress.execute(new Object[] { original, Map.of("compression", "GZIP") }, null);
+    assertThat(compressed).isNotEmpty();
 
-    final String decompressed = (String) decompress.execute(new Object[] { compressed, "gzip" }, null);
+    final String decompressed = (String) decompress.execute(new Object[] { compressed, Map.of("compression", "GZIP") }, null);
     assertThat(decompressed).isEqualTo(original);
   }
 
