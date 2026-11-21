@@ -22,16 +22,21 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Nested;
@@ -46,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -233,6 +239,194 @@ class VectorNeighborsPrefilterTest {
       for (final Result r : byWhere)
         assertThat(r.<String>getProperty("space")).isEqualTo("b");
       assertThat(rids(byWhere)).containsExactlyElementsOf(rids(byFilter));
+    }
+  }
+
+  /**
+   * Issue #12112: a subquery in the {@code where} condition of {@code vector.neighbors} / {@code vector.sparseNeighbors} ran again
+   * for every candidate the search tested, so a membership test such as {@code external_id IN (SELECT ...)} cost the subquery
+   * times the candidates, 20x to 35x the equivalent {@code filter}. An uncorrelated subquery now runs once per call, as the
+   * {@code WHERE} of a {@code SELECT} lifts it into a LET evaluated once.
+   * <p>
+   * The subqueries project every row through a counting function, so the count is the number of rows the subquery produced
+   * over the whole call: one execution of a two-row subquery counts 2, one per candidate counts 2 per candidate tested.
+   */
+  @Nested
+  class WhereSubqueryRunsOncePerCall extends TestHelper {
+    private static final String        COUNTED = "issue12112Counted";
+    private static final int           RECORDS = 600;
+    private static final float[]       QUERY   = { 1.0f, 0.2f, 0.1f, 0.0f };
+    private final        AtomicInteger calls   = new AtomicInteger();
+
+    @Override
+    protected void beginTest() {
+      functions().register(new SQLFunctionAbstract(COUNTED) {
+        @Override
+        public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+            final CommandContext context) {
+          calls.incrementAndGet();
+          return params[0];
+        }
+
+        @Override
+        public String getSyntax() {
+          return COUNTED + "(<value>)";
+        }
+      });
+
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Passage BUCKETS 2");
+        database.command("sql", "CREATE PROPERTY Passage.space STRING");
+        database.command("sql", "CREATE PROPERTY Passage.year INTEGER");
+        database.command("sql", "CREATE PROPERTY Passage.embedding ARRAY_OF_FLOATS");
+        database.command("sql", "CREATE INDEX ON Passage (embedding) LSM_VECTOR METADATA { dimensions: 4, similarity: 'COSINE' }");
+        database.command("sql", "CREATE DOCUMENT TYPE Allowed");
+        database.command("sql", "CREATE PROPERTY Allowed.name STRING");
+      });
+      final Random random = new Random(12112);
+      database.transaction(() -> {
+        for (int i = 0; i < RECORDS; i++)
+          database.newDocument("Passage")
+              .set("space", switch (i % 3) {
+                case 0 -> "a";
+                case 1 -> "b";
+                default -> "c";
+              })
+              .set("year", 2000 + i % 25)
+              .set("embedding", new float[] { random.nextFloat(), random.nextFloat(), random.nextFloat(), random.nextFloat() })
+              .save();
+        database.newDocument("Allowed").set("name", "a").save();
+        database.newDocument("Allowed").set("name", "c").save();
+      });
+    }
+
+    @Override
+    protected void endTest() {
+      functions().unregister(COUNTED);
+    }
+
+    private DefaultSQLFunctionFactory functions() {
+      return ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
+    }
+
+    private List<Result> query(final String sql, final Map<String, Object> params) {
+      final List<Result> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", sql, params)) {
+        rs.forEachRemaining(rows::add);
+      }
+      return rows;
+    }
+
+    private static List<RID> rids(final List<Result> rows) {
+      final List<RID> out = new ArrayList<>(rows.size());
+      for (final Result r : rows)
+        out.add(r.getProperty("@rid"));
+      return out;
+    }
+
+    @Test
+    void anUncorrelatedSubqueryRunsOncePerCallAndAnswersWhatTheFilterAnswers() {
+      final Map<String, Object> params = Map.of("q", QUERY, "minYear", 2005);
+      final List<Result> byFilter = query("""
+          SELECT expand(`vector.neighbors`('Passage[embedding]', :q, 10,
+            { filter: (SELECT @rid FROM Passage WHERE space IN (SELECT issue12112Counted(name) AS name FROM Allowed)
+                       AND year >= :minYear).@rid }))""", params);
+
+      calls.set(0);
+      final List<Result> byWhere = query("""
+          SELECT expand(`vector.neighbors`('Passage[embedding]', :q, 10,
+            { where: 'space IN (SELECT issue12112Counted(name) AS name FROM Allowed) AND year >= :minYear' }))""", params);
+
+      assertThat(byWhere).hasSize(10);
+      for (final Result r : byWhere) {
+        assertThat(r.<String>getProperty("space")).isIn("a", "c");
+        assertThat(r.<Integer>getProperty("year")).isGreaterThanOrEqualTo(2005);
+      }
+      assertThat(rids(byWhere)).containsExactlyElementsOf(rids(byFilter));
+      assertThat(calls.get()).as("the two-row subquery ran once for the call, not once per candidate").isEqualTo(2);
+    }
+
+    @Test
+    void sparseNeighborsRunsTheSubqueryOncePerCallToo() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Sparse BUCKETS 2");
+        database.command("sql", "CREATE PROPERTY Sparse.space STRING");
+        database.command("sql", "CREATE PROPERTY Sparse.tokens ARRAY_OF_INTEGERS");
+        database.command("sql", "CREATE PROPERTY Sparse.weights ARRAY_OF_FLOATS");
+        database.command("sql", "CREATE INDEX ON Sparse (tokens, weights) LSM_SPARSE_VECTOR METADATA { dimensions: 16 }");
+      });
+      final Random random = new Random(12112);
+      database.transaction(() -> {
+        for (int i = 0; i < 200; i++)
+          database.newDocument("Sparse")
+              .set("space", i % 2 == 0 ? "a" : "b")
+              .set("tokens", new int[] { 0, 1 + random.nextInt(15) })
+              .set("weights", new float[] { random.nextFloat(), random.nextFloat() })
+              .save();
+      });
+
+      final List<Result> byFilter = query("""
+          SELECT expand(`vector.sparseNeighbors`('Sparse[tokens,weights]', [0], [1.0], 6,
+            { filter: (SELECT @rid FROM Sparse WHERE space IN (SELECT name FROM Allowed)).@rid }))""", Map.of());
+
+      calls.set(0);
+      final List<Result> byWhere = query("""
+          SELECT expand(`vector.sparseNeighbors`('Sparse[tokens,weights]', [0], [1.0], 6,
+            { where: 'space IN (SELECT issue12112Counted(name) AS name FROM Allowed)' }))""", Map.of());
+
+      assertThat(byWhere).hasSize(6);
+      for (final Result r : byWhere)
+        assertThat(r.<String>getProperty("space")).isEqualTo("a");
+      assertThat(rids(byWhere)).containsExactlyElementsOf(rids(byFilter));
+      assertThat(calls.get()).as("the two-row subquery ran once for the call, not once per candidate").isEqualTo(2);
+    }
+
+    @Test
+    void eachCallReadsItsOwnSubqueryNotTheEnclosingStatementsOne() {
+      // The enclosing SELECT lifts its own subquery under the same generated alias the condition's subquery gets: each must
+      // read its own value, and each condition's subquery runs once per call (two outer rows, one row per subquery)
+      calls.set(0);
+      final List<Result> rows = query("""
+          SELECT name,
+                 `vector.neighbors`('Passage[embedding]', :q, 5, { where: "space IN (SELECT issue12112Counted(name) AS name FROM Allowed WHERE name = 'a')" }) AS a,
+                 `vector.neighbors`('Passage[embedding]', :q, 5, { where: "space IN (SELECT issue12112Counted(name) AS name FROM Allowed WHERE name = 'c')" }) AS c
+          FROM Allowed WHERE name IN (SELECT name FROM Allowed) ORDER BY name""", Map.of("q", QUERY));
+
+      assertThat(rows).hasSize(2);
+      for (final Result row : rows) {
+        assertThat(spaces(row.getProperty("a"))).containsOnly("a").hasSize(5);
+        assertThat(spaces(row.getProperty("c"))).containsOnly("c").hasSize(5);
+      }
+      assertThat(calls.get()).as("two outer rows, two calls each, one one-row subquery per call").isEqualTo(4);
+    }
+
+    @Test
+    void aSubqueryReturningNothingAcceptsNoCandidate() {
+      assertThat(query("""
+          SELECT expand(`vector.neighbors`('Passage[embedding]', :q, 5,
+            { where: "space IN (SELECT issue12112Counted(name) AS name FROM Allowed WHERE name = 'none')" }))""",
+          Map.of("q", QUERY))).isEmpty();
+    }
+
+    @Test
+    void aSubqueryThatRefersToItsParentStillFollowsTheEnclosingRow() {
+      final List<Result> rows = query("""
+          SELECT name,
+                 `vector.neighbors`('Passage[embedding]', :q, 5, { where: "space IN (SELECT name FROM Allowed WHERE name = $parent.$current.name)" }) AS n
+          FROM Allowed ORDER BY name""", Map.of("q", QUERY));
+
+      assertThat(rows).hasSize(2);
+      for (final Result row : rows)
+        assertThat(spaces(row.getProperty("n"))).containsOnly(row.<String>getProperty("name")).hasSize(5);
+    }
+
+    private List<String> spaces(final Object neighbors) {
+      final List<String> out = new ArrayList<>();
+      for (final Object neighbor : (List<?>) neighbors) {
+        final Object record = neighbor instanceof Result r ? r.getProperty("record") : ((Map<?, ?>) neighbor).get("record");
+        out.add(((Document) (record instanceof Result r ? r.getElement().orElseThrow() : record)).getString("space"));
+      }
+      return out;
     }
   }
 
