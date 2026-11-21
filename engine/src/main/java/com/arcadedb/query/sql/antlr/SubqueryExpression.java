@@ -23,14 +23,24 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.UncorrelatedSubQuery;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
 
 import java.util.Map;
 
 /**
  * Expression wrapper that executes a SELECT subquery when evaluated.
- * Used for left-side subqueries in IN conditions: (SELECT ...) IN collection
+ * Used for left-side subqueries in IN conditions: (SELECT ...) IN collection, and for every parenthesized SELECT written as
+ * an operand.
+ * <p>
+ * A sub-query that does not depend on the outer row (see {@link UncorrelatedSubQuery}) is lifted by the planner into a LET
+ * that runs once ({@link #extractSubQueries}): from then on this node reads the LET variable, through the
+ * {@link BaseExpression#identifier} it is given, instead of running the statement. It keeps {@link #statement} all the same,
+ * because that is what it renders as - the default name of an unaliased projection column, and the EXPLAIN text, must not
+ * change with the way the value is produced (issue #12714).
  */
 public class SubqueryExpression extends BaseExpression {
   private final SelectStatement statement;
@@ -43,8 +53,27 @@ public class SubqueryExpression extends BaseExpression {
     return statement;
   }
 
+  /**
+   * Lifts the sub-query into a LET of the enclosing statement, which the planner runs once, when it does not depend on the
+   * outer row. Any other sub-query is left in place and runs for every row.
+   */
+  @Override
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (identifier == null && UncorrelatedSubQuery.isHoistable(statement))
+      identifier = new BaseIdentifier(collector.addStatement(statement));
+  }
+
+  /** Never a bare column name, even once lifted: the variable it reads is an implementation detail, not the column. */
+  @Override
+  public boolean isBaseIdentifier() {
+    return false;
+  }
+
   @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
+    if (identifier != null)
+      return super.execute(currentRecord, context);
+
     Object result = executeSubquery(context);
 
     // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
@@ -56,6 +85,9 @@ public class SubqueryExpression extends BaseExpression {
 
   @Override
   public Object execute(final Result currentRecord, final CommandContext context) {
+    if (identifier != null)
+      return super.execute(currentRecord, context);
+
     Object result = executeSubquery(context);
 
     // Apply modifier if present (e.g., (SELECT ...).name or (SELECT ...)[0])
@@ -109,6 +141,7 @@ public class SubqueryExpression extends BaseExpression {
   @Override
   public SubqueryExpression copy() {
     final SubqueryExpression copy = new SubqueryExpression(statement);
+    copy.identifier = identifier == null ? null : identifier.copy();
     if (modifier != null)
       copy.setModifier(modifier.copy());
     return copy;

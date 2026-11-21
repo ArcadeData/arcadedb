@@ -615,6 +615,9 @@ public class BaseExpression extends MathExpression {
   public void extractSubQueries(final SubQueryCollector collector) {
     if (this.identifier != null)
       this.identifier.extractSubQueries(collector);
+    // A PARENTHESIZED EXPRESSION, (a + (SELECT max(x) FROM U)): THE SUB-QUERY SITS BENEATH IT (issue #12714)
+    if (this.expression != null)
+      this.expression.extractSubQueries(collector);
   }
 
   /**
