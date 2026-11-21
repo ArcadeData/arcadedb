@@ -653,6 +653,54 @@ class PropertyDefaultValueTest extends TestHelper {
   }
 
   /**
+   * Issue #12040. A literal default that parses but cannot be converted to the property's type ({@code INTEGER DEFAULT 'dflt'},
+   * {@code DATE DEFAULT 'notadate'}) was accepted, and every record create of the type then failed with a 500. It is refused at DDL
+   * time now, by CREATE PROPERTY and ALTER PROPERTY, and the property keeps the default it had.
+   */
+  @Test
+  void aLiteralDefaultThatCannotBeConvertedIsRejectedAtDdlTime() {
+    database.command("sql", "CREATE DOCUMENT TYPE Probe");
+    database.command("sql", "CREATE PROPERTY Probe.n INTEGER");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY Probe.n DEFAULT 'dflt'")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Probe.n").hasMessageContaining("cannot be converted to the property type INTEGER");
+    assertThat(database.getSchema().getType("Probe").getProperty("n").getDefaultValueDefinition()).isNull();
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY Probe.d DATE (DEFAULT 'notadate')"))
+        .hasMessageContaining("cannot be converted to the property type DATE");
+    assertThatThrownBy(() -> database.getSchema().getType("Probe").createProperty("m", Type.LONG).setDefaultValue("'x' + 1"))
+        .isInstanceOf(SchemaException.class).hasMessageContaining("cannot be converted to the property type LONG");
+
+    // records are still created, with no default applied
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().has("n")).isFalse());
+
+    // what converts stays legal: a number in a string, a number, null, and a per-record function
+    database.command("sql", "ALTER PROPERTY Probe.n DEFAULT '7'");
+    database.command("sql", "CREATE PROPERTY Probe.k INTEGER (DEFAULT 4)");
+    database.command("sql", "CREATE PROPERTY Probe.z INTEGER (DEFAULT null)");
+    database.command("sql", "CREATE PROPERTY Probe.t DATETIME (DEFAULT sysdate())");
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Probe").save();
+      assertThat(doc.getInteger("n")).isEqualTo(7);
+      assertThat(doc.getInteger("k")).isEqualTo(4);
+      assertThat(doc.get("t")).isNotNull();
+    });
+  }
+
+  /** A database whose schema.json already holds such a default still opens, and ALTER PROPERTY repairs it. */
+  @Test
+  void aLegacyUnconvertibleDefaultDoesNotBlockTheSchemaLoad() throws Exception {
+    database.transaction(() -> database.getSchema().createDocumentType("Probe").createProperty("n", Type.INTEGER).setDefaultValue("1"));
+
+    reopenWithPersistedDefault("n", "'dflt'");
+
+    assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Probe").save())).hasMessageContaining("Probe.n");
+
+    database.command("sql", "ALTER PROPERTY Probe.n DEFAULT 2");
+    database.transaction(() -> assertThat(database.newDocument("Probe").save().getInteger("n")).isEqualTo(2));
+  }
+
+  /**
    * Closes the database, rewrites one property's persisted default in schema.json to something this release would
    * reject at DDL time, and reopens - standing in for a database created by an earlier release.
    */
