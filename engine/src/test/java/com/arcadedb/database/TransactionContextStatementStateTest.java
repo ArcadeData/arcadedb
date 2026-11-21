@@ -113,6 +113,10 @@ class TransactionContextStatementStateTest {
     // Issue #11937: work that reads what the commit writes, whatever statements were taken back: a callback a statement registered
     // and then lost is run all the same, and reads the state the commit writes
     CLASSIFICATION.put("beforeCommitCallbacks", NOT_STATEMENT_STATE);
+    // Issue #12251: the work a commit that deferred its callbacks (deferCallbacks()) owes them, kept for the one that takes it. A
+    // statement taken back does not undo it: the callbacks the transaction owes stay owed, and takeDeferredCallbacks() consumes it at
+    // the end of the commit, never a statement
+    CLASSIFICATION.put("deferredCallbacks", NOT_STATEMENT_STATE);
 
     // What a statement reads or the commit writes, and the services of the context
     CLASSIFICATION.put("database", NOT_STATEMENT_STATE);
