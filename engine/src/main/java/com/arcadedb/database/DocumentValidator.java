@@ -129,6 +129,68 @@ public class DocumentValidator {
     return depth != null && depth[0] > 0;
   }
 
+  // Threads with a readonly deferral open (issue #12722), so the write path pays one volatile read for it, and only for a READONLY property
+  private static final AtomicInteger      READONLY_DEFERRING_THREADS = new AtomicInteger();
+  private static final ThreadLocal<int[]> READONLY_DEFERRAL_DEPTH    = new ThreadLocal<>();
+
+  /**
+   * The scope returned by {@link #deferReadonlyChecks()}. Closing it ends the scope once, on the thread that opened it, exactly as
+   * {@link LinkTargetTypeDeferral} does.
+   */
+  public interface ReadonlyDeferral extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  private static final class ReadonlyScope implements ReadonlyDeferral {
+    private final Thread  owner = Thread.currentThread();
+    // Plain: only the owner thread reads and writes it, close() refuses any other thread before touching it
+    private       boolean closed;
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      if (Thread.currentThread() != owner)
+        throw new IllegalStateException("A readonly deferral has to be closed on the thread that opened it ('" + owner.getName()
+            + "'), not on '" + Thread.currentThread().getName() + "'");
+      closed = true;
+      final int[] depth = READONLY_DEFERRAL_DEPTH.get();
+      if (depth != null && depth[0] > 0 && --depth[0] == 0) {
+        READONLY_DEFERRING_THREADS.decrementAndGet();
+        READONLY_DEFERRAL_DEPTH.remove();
+      }
+    }
+  }
+
+  /**
+   * Suspends, on the calling thread until the returned scope is closed, the refusal to alter a {@code READONLY} property of a record that
+   * already exists. For a restore that creates a record in two writes: it holds a link to a record the file reaches later, which only the
+   * second write can name, and that write is part of creating the record, not an alteration of it (issue #12722). Nothing else is relaxed:
+   * MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are checked as always. Scopes nest.
+   * <p>
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources. It relaxes the check for
+   * every record that thread writes while it is open, a listener's or a trigger's included, so keep it as narrow as the one write that
+   * needs it.
+   */
+  public static ReadonlyDeferral deferReadonlyChecks() {
+    int[] depth = READONLY_DEFERRAL_DEPTH.get();
+    if (depth == null) {
+      depth = new int[1];
+      READONLY_DEFERRAL_DEPTH.set(depth);
+    }
+    if (depth[0]++ == 0)
+      READONLY_DEFERRING_THREADS.incrementAndGet();
+    return new ReadonlyScope();
+  }
+
+  private static boolean readonlyCheckDeferred() {
+    if (READONLY_DEFERRING_THREADS.get() == 0)
+      return false;
+    final int[] depth = READONLY_DEFERRAL_DEPTH.get();
+    return depth != null && depth[0] > 0;
+  }
+
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     // One shared deadline for every REGEXP-constrained property on this document (issue #5886 follow-up): each
@@ -918,7 +980,7 @@ public class DocumentValidator {
       }
     }
 
-    if (p.isReadonly()) {
+    if (p.isReadonly() && !readonlyCheckDeferred()) {
       if (document.isDirty() && document.getIdentity() != null) {
         // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
         // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before
