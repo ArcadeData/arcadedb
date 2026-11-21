@@ -31,6 +31,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
@@ -136,6 +137,80 @@ public final class ExistingRecordsCheck {
         throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
       }
     }
+  }
+
+  /**
+   * The declarations a type is about to inherit from a new super type, held against its stored records and those of its sub types
+   * (issue #12030): {@code ALTER TYPE T SUPERTYPE +S} accepted a super type whose MANDATORY, NOTNULL, MIN, MAX, REGEXP or declared type
+   * the stored records of {@code T} violate, and every later write to them failed. One pass over the type, counting the records that
+   * violate any of {@code properties}; a record whose own type already declares the property (directly or through a super type it
+   * keeps) is governed by that declaration, not the inherited one, and is passed over for it.
+   *
+   * @param superTypeName the super type about to be linked, for the message
+   * @param properties    the properties of the super type the type does not see yet
+   */
+  public static void requireInheritedDeclarations(final Database db, final DocumentType type, final String superTypeName,
+      final List<Property> properties) {
+    final List<Property> checked = new ArrayList<>(properties.size());
+    final List<DocumentValidator.StoredValueConstraints> constraints = new ArrayList<>(properties.size());
+    for (final Property property : properties) {
+      final DocumentValidator.StoredValueConstraints c = DocumentValidator.StoredValueConstraints.of(db, property);
+      // Nothing a stored record holds can violate this declaration (e.g. a plain LINK with no flags)
+      if (!property.isMandatory() && !property.isNotNull() && !c.canBeViolatedOn(property))
+        continue;
+      checked.add(property);
+      constraints.add(c);
+    }
+    if (checked.isEmpty())
+      return;
+
+    long violating = 0;
+    Document first = null;
+    String firstReason = null;
+    ValidationException.Kind firstKind = null;
+    final Iterator<Record> records = db.iterateType(type.getName(), true);
+    while (records.hasNext()) {
+      if (!(records.next() instanceof Document document))
+        continue;
+      final DocumentType recordType = document.getType();
+      for (int i = 0; i < checked.size(); i++) {
+        final Property property = checked.get(i);
+        if (recordType.getPolymorphicPropertyIfExists(property.getName()) != null)
+          continue;
+
+        String reason = null;
+        ValidationException.Kind kind = null;
+        final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
+        if (unmet != null) {
+          reason = DocumentValidator.describeUnmetExistenceConstraint(document, property);
+          kind = unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
+              ValidationException.Kind.NOT_NULL;
+        } else
+          try {
+            DocumentValidator.validateStoredValue(document, property, constraints.get(i));
+          } catch (final ValidationException e) {
+            reason = e.getMessage();
+            kind = e.getKind();
+          }
+
+        if (reason != null) {
+          if (first == null) {
+            first = document;
+            firstReason = reason;
+            firstKind = kind;
+          }
+          ++violating;
+          break;
+        }
+      }
+    }
+
+    if (violating > 0)
+      throw new ValidationException(firstKind,
+          "Cannot make type '" + type.getName() + "' a sub type of '" + superTypeName + "': " + violating + " stored record"
+              + (violating == 1 ? "" : "s") + " of '" + type.getName() + "' violate" + (violating == 1 ? "s" : "")
+              + " the properties it would inherit, the first is " + first.getIdentity() + ": " + firstReason
+              + ". Fix or delete the non-conforming records first");
   }
 
   /**

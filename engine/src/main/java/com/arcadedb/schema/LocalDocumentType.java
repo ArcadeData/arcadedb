@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ExistingRecordsCheck;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -3560,7 +3561,24 @@ public class LocalDocumentType implements DocumentType {
         if (lightweight != null)
           LocalEdgeType.checkCanBeLightweight(lightweight.getName(), superType);
       }
+
+      // Last, being the one that reads the records: the stored records of this type and of its sub types must meet what they are about
+      // to inherit, as CREATE PROPERTY and ALTER PROPERTY require of them (issue #12030)
+      checkStoredRecordsMeetInheritedProperties(superType);
     }
+  }
+
+  /**
+   * Holds the stored records of this type, and of its sub types, against the properties {@code superType} would add to what they see
+   * (issue #12030). A property this type already sees, declared here or inherited from another super type, is not new to its records.
+   */
+  private void checkStoredRecordsMeetInheritedProperties(final LocalDocumentType superType) {
+    final List<Property> inherited = new ArrayList<>();
+    for (final Property property : superType.getPolymorphicProperties())
+      if (getPolymorphicPropertyIfExists(property.getName()) == null)
+        inherited.add(property);
+    if (!inherited.isEmpty())
+      ExistingRecordsCheck.requireInheritedDeclarations(schema.getDatabase(), this, superType.getName(), inherited);
   }
 
   /**
