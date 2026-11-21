@@ -46,6 +46,7 @@ public class PhysicalPlan {
   private final double totalEstimatedCost;
   private final long totalEstimatedCardinality;
   private final boolean indexOrdered;
+  private final boolean firstWithIndexOrdered;
   // The views the planner passed over because they were not ready, see passesOverAReadyView(). Set once, before the plan is put
   // in the plan cache; volatile so the threads reusing the plan see it whatever map the cache keeps plans in
   private volatile GraphTraversalProvider[] viewsPassedOver = NO_VIEWS;
@@ -58,18 +59,20 @@ public class PhysicalPlan {
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final PhysicalOperator rootOperator,
                      final double totalEstimatedCost, final long totalEstimatedCardinality) {
-    this(logicalPlan, anchor, rootOperator, totalEstimatedCost, totalEstimatedCardinality, false);
+    this(logicalPlan, anchor, rootOperator, totalEstimatedCost, totalEstimatedCardinality, false, false);
   }
 
   public PhysicalPlan(final LogicalPlan logicalPlan, final AnchorSelection anchor,
                      final PhysicalOperator rootOperator,
-                     final double totalEstimatedCost, final long totalEstimatedCardinality, final boolean indexOrdered) {
+                     final double totalEstimatedCost, final long totalEstimatedCardinality, final boolean indexOrdered,
+                     final boolean firstWithIndexOrdered) {
     this.logicalPlan = logicalPlan;
     this.anchor = anchor;
     this.rootOperator = rootOperator;
     this.totalEstimatedCost = totalEstimatedCost;
     this.totalEstimatedCardinality = totalEstimatedCardinality;
     this.indexOrdered = indexOrdered;
+    this.firstWithIndexOrdered = firstWithIndexOrdered;
   }
 
   /**
@@ -78,6 +81,15 @@ public class PhysicalPlan {
    */
   public boolean isIndexOrdered() {
     return indexOrdered;
+  }
+
+  /**
+   * Whether the operator tree produces its rows in the order the ORDER BY of the statement's first WITH asks for, read from
+   * an index, so that WITH needs no sort (issue #12141). The rows reach it straight from the MATCH clauses. Told by position
+   * rather than by the clause, because a cached plan runs against the statement as parsed again.
+   */
+  public boolean isFirstWithIndexOrdered() {
+    return firstWithIndexOrdered;
   }
 
   /**

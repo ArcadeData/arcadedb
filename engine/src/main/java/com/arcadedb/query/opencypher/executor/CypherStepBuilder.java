@@ -281,7 +281,9 @@ final class CypherStepBuilder {
         case WITH: {
           final WithClause withClause = entry.getTypedClause();
           currentStep = EagerBarriers.withLimitBarrier(currentStep, context, eagerness, functionFactory, withClause);
-          currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory);
+          // The rows reach the first WITH in the order of an index when the physical plan answers its ORDER BY (issue #12141)
+          currentStep = buildWithStepForOptimizer(withClause, currentStep, context, functionFactory,
+              physicalPlan.isFirstWithIndexOrdered() && withClause == firstWith(clausesInOrder));
           EagerBarriers.markDrainOnZeroLimit(currentStep, withClause, eagerness);
           eagerness.observeClause(entry, false, optimizerBoundVariables);
           if (withClause.hasAggregations())
@@ -1066,6 +1068,15 @@ final class CypherStepBuilder {
    */
   private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
       final CommandContext context, final CypherFunctionFactory functionFactory) {
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory, false);
+  }
+
+  /**
+   * @param orderedByIndex whether the rows already arrive in the order of the ORDER BY, read from an index (issue #12141): the
+   *                       sort is left out, the SKIP, LIMIT and projection stay
+   */
+  private AbstractExecutionStep addWithOrderSkipLimit(final WithClause withClause, AbstractExecutionStep currentStep,
+      final CommandContext context, final CypherFunctionFactory functionFactory, final boolean orderedByIndex) {
     final boolean ordered = withClause.getOrderByClause() != null;
     if (!ordered && !withClause.hasAggregations())
       return currentStep;
@@ -1076,7 +1087,7 @@ final class CypherStepBuilder {
     final Integer limitVal = withClause.getLimit() != null ?
         evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
 
-    if (ordered) {
+    if (ordered && !orderedByIndex) {
       // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
       Integer topKVal = null;
       if (limitVal != null) {
@@ -1123,7 +1134,7 @@ final class CypherStepBuilder {
    */
   private AbstractExecutionStep buildWithStepForOptimizer(final WithClause withClause,
       AbstractExecutionStep currentStep, final CommandContext context,
-      final CypherFunctionFactory functionFactory) {
+      final CypherFunctionFactory functionFactory, final boolean orderedByIndex) {
     if (withClause.hasAggregations()) {
       if (withClause.hasNonAggregations()) {
         // Try to fuse aggregation into the GAVFusedChainOperator for parallel count(*)
@@ -1161,7 +1172,15 @@ final class CypherStepBuilder {
       currentStep = withStep;
     }
 
-    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory);
+    return addWithOrderSkipLimit(withClause, currentStep, context, functionFactory, orderedByIndex);
+  }
+
+  /** The first WITH of {@code clausesInOrder}, or null. */
+  private static WithClause firstWith(final List<ClauseEntry> clausesInOrder) {
+    for (final ClauseEntry entry : clausesInOrder)
+      if (entry.getType() == ClauseEntry.ClauseType.WITH)
+        return entry.getTypedClause();
+    return null;
   }
 
   /**
