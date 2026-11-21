@@ -66,6 +66,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.facet.FacetResults;
+import com.arcadedb.query.sql.executor.CommandTimeoutOverride;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
@@ -1798,6 +1799,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     QueryProfile.pushCurrent(profile);
     ProtocolContext.set("grpc");
     String profileLanguage = null;
+    // The request's timeout_ms is the budget the engine enforces on the query (arcadedb.command.timeout), as the Postgres
+    // statement_timeout and the Bolt transaction timeout are: the earlier of it and the database setting wins (issue #11813).
+    // Restored afterwards, not cleared: the thread may serve a forwarded request that published its own budget
+    final long publishedBudget = CommandTimeoutOverride.get();
+    if (request.getTimeoutMs() > 0) {
+      final long databaseTimeout = database != null ?
+          database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) :
+          0L;
+      CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, request.getTimeoutMs()) : request.getTimeoutMs());
+    }
     try {
       final long deserStart = System.nanoTime();
       ProjectionConfig projectionConfig = getProjectionConfig(request);
@@ -1902,6 +1913,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return response;
       }
     } finally {
+      if (request.getTimeoutMs() > 0)
+        CommandTimeoutOverride.set(publishedBudget);
       ProtocolContext.clear();
       recordGrpcProfile("grpc.query", profile, database != null ? database.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
