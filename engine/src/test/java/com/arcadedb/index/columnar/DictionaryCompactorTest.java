@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -416,7 +417,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 1: the merge drops 2_400 rows; brand (0.6) and tags (0.6) are compacted
     deleteBrands(0, 1_200);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainUntilMerged(stats, 1);
     assertThat(stats.mergeCount(TYPE)).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "brand")).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -425,7 +426,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 2, same minute: one record of every surviving brand deleted, tags reach 0.5 again, but the property was checked just now
     deleteOnePerBrand(1_200, 2_000, 0);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainUntilMerged(stats, 2);
     assertThat(stats.mergeCount(TYPE)).isEqualTo(2);
     assertThat(DictionaryCompactor.deadOrdinalRatio(projection(), "tags")).isEqualTo(0.5);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -434,7 +435,7 @@ class DictionaryCompactorTest extends TestHelper {
     now[0] += TEN_MINUTES;
     deleteOnePerBrand(1_200, 1_600, 1);
     FacetOracle.awaitCaughtUp(database);
-    manager().maintainForTesting(bucketId());
+    maintainUntilMerged(stats, 3);
     assertThat(stats.mergeCount(TYPE)).isEqualTo(3);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(2);
     assertThat(stats.dictionaryOrdinalsReclaimed(TYPE, "tags")).isEqualTo(2_400 + 1_200);
@@ -485,6 +486,18 @@ class DictionaryCompactorTest extends TestHelper {
       for (int b = from; b < to; b++)
         database.deleteRecord(database.lookupByRID(byBrand.get(b).get(copy), true));
     });
+  }
+
+  /**
+   * One maintenance pass of the bucket, made again while a job of the background pool holds the projection's maintenance slot (the
+   * pass skips then, as the pool's own next pass retries): ends once the merge is counted and no job of the pool is left.
+   */
+  private void maintainUntilMerged(final ColumnarStats stats, final long merges) {
+    Awaitility.await("the pass merges once no background job holds the maintenance slot").atMost(30, TimeUnit.SECONDS)
+        .pollInterval(1, TimeUnit.MILLISECONDS).until(() -> {
+          manager().maintainForTesting(bucketId());
+          return stats.mergeCount(TYPE) >= merges && manager().isMaintenanceIdleForTesting();
+        });
   }
 
   /** Applies, flushes (dead sets persisted) and merges every segment into one, dropping the dead rows. */
