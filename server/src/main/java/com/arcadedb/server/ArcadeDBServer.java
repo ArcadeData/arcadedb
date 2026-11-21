@@ -2662,9 +2662,14 @@ public class ArcadeDBServer {
           final Database activeDatabase = DatabaseFactory.getActiveDatabaseInstance(path);
           if (activeDatabase != null && activeDatabase.isOpen())
             embDatabase = (DatabaseInternal) activeDatabase;
-          else
+          else {
+            // A name with no directory is answered here, with the name alone: the engine's own message carries the absolute
+            // database directory of the server, which every binary protocol would hand to its client (issue #12830)
+            if (!databaseDirectory.exists())
+              throw new DatabaseNotFoundException("Database '" + databaseName + "' does not exist");
             // OPEN A NEW DATABASE. THIS IS MOSTLY FOR TESTS WHERE MULTIPLE SERVERS SHARE THE SAME JVM
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
+          }
         }
 
         embDatabase = wrapForHA(embDatabase);
