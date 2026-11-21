@@ -32,6 +32,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
@@ -279,7 +280,11 @@ class HttpErrorStatusMappingTest {
         // snapshot install). Rebuilt by the follower, it reached this chain as a plain TransactionException and left as
         // a 500 with no back-off, so the wrapped shapes are again the ones that matter.
         new MappedFailure("RetryLaterException", 503,
-            () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)));
+            () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)),
+        // Issue #11907: a load refused because another GraphBatch is open on the database. Nothing of it ran and it succeeds once
+        // the other one is closed, but it answered the generic 500 "Internal error" with a logged stack trace.
+        new MappedFailure("GraphBatchInProgressException", 409,
+            () -> new GraphBatchInProgressException("A GraphBatch is already in progress on this database")));
 
     /**
      * The property itself: bare, wrapped in {@code TransactionException} (what the auto-commit wrapper produced),
@@ -626,6 +631,29 @@ class HttpErrorStatusMappingTest {
         final JSONObject json = new JSONObject(response.body);
         assertThat(json.getString("exception")).isEqualTo(RetryLaterException.class.getName());
         assertThat(json.getString("exceptionArgs")).isEqualTo("8");
+      }
+    }
+
+    /**
+     * Issue #11907: the refusal of a second GraphBatch load is a conflict with work in progress, logged as a caller's error
+     * (message only, below WARNING) and not as an internal one with a stack trace, and its label names the condition, which is
+     * all production mode leaves of the answer. Bare, inside the auto-commit wrapper and inside a command planner alike.
+     */
+    @Test
+    void aGraphBatchAlreadyInProgressIsAConflictLoggedAsTheCallersError() {
+      for (final RuntimeException shape : List.<RuntimeException>of(
+          new GraphBatchInProgressException("A GraphBatch is already in progress on this database"),
+          new TransactionException("Error on executing command",
+              new GraphBatchInProgressException("A GraphBatch is already in progress on this database")),
+          new CommandExecutionException("Error on command execution",
+              new GraphBatchInProgressException("A GraphBatch is already in progress on this database")))) {
+        final AbstractServerHttpHandler.ErrorClassification classification = handler(shape).classifyError(shape);
+
+        assertThat(classification.status()).isEqualTo(409);
+        assertThat(classification.message()).isEqualTo("A GraphBatch load is already in progress on this database");
+        assertThat(classification.reported()).isInstanceOf(GraphBatchInProgressException.class);
+        assertThat(classification.logKind()).isEqualTo(AbstractServerHttpHandler.ErrorLogKind.USER);
+        assertThat(classification.retryAfter()).isNull();
       }
     }
 

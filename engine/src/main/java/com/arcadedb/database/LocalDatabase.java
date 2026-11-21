@@ -58,6 +58,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -3374,11 +3375,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * loser's segment chain is orphaned. Called by {@code GraphBatch.Builder.build()}, released by
    * {@link #batchFinished()}.
    *
-   * @throws DatabaseOperationException if a batch is already open on this database
+   * @throws GraphBatchInProgressException if a batch is already open on this database
    */
   public void batchStarted() {
     if (!batchInProgress.compareAndSet(false, true))
-      throw new DatabaseOperationException(
+      throw new GraphBatchInProgressException(
           "A GraphBatch is already in progress on this database. Concurrent batches silently lose edges. "
               + "Use a single GraphBatch (parallelFlush for parallel fan-out).");
   }
