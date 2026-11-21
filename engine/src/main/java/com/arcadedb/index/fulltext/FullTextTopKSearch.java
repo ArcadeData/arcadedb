@@ -76,7 +76,13 @@ final class FullTextTopKSearch {
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
-    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null);
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null, null);
+  }
+
+  /** As {@link #search(List, String, int, WorkGuard, List, RIDFilter)}, taking the postings from {@code reuse} when it holds them. */
+  static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final FullTextPostingsReuse reuse) {
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, null, reuse);
   }
 
   /**
@@ -85,6 +91,12 @@ final class FullTextTopKSearch {
    */
   static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final long[] exactScores) {
+    return search(bucketIndexes, queryText, limit, guard, restrictedFields, ridFilter, exactScores, null);
+  }
+
+  private static Map<RID, Float> search(final List<LSMTreeFullTextIndex> bucketIndexes, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final long[] exactScores,
+      final FullTextPostingsReuse reuse) {
     // a predicate on the records decides some buckets only once their records are loaded, which no limit here can wait for
     if (ridFilter != null && ridFilter.hasRecordPredicate())
       return null;
@@ -102,14 +114,15 @@ final class FullTextTopKSearch {
 
     // Pass one: every posting of every token in every bucket, read once. A bucket the filter rejects is read too: its share of the
     // document frequencies is what keeps the scores of the others those of the unfiltered search
-    final LSMTreeIndexPostings[][] postings = new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
+    final LSMTreeIndexPostings[][] reused = reuse != null ? reuse.get(bucketIndexes, tokenKeys) : null;
+    final LSMTreeIndexPostings[][] postings = reused != null ? reused : new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
     final long[] documentFrequencies = new long[tokenCount];
     for (int b = 0; b < bucketIndexes.size(); ++b) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(b);
       final int bucketId = ftIndex.getAssociatedBucketId();
       for (int t = 0; t < tokenCount; ++t) {
         guard.check();
-        final LSMTreeIndexPostings read = ftIndex.readPostings(tokenKeys[t]);
+        final LSMTreeIndexPostings read = reused != null ? reused[b][t] : ftIndex.readPostings(tokenKeys[t]);
         // the walk orders a bucket's documents by position alone: postings of another bucket (sorted first by bucket, so they show
         // at an end) are left to the general path
         if (read.size() > 0 && (read.bucketIds()[0] != bucketId || read.bucketIds()[read.size() - 1] != bucketId))
@@ -118,6 +131,8 @@ final class FullTextTopKSearch {
         documentFrequencies[t] += read.size();
       }
     }
+    if (reuse != null && reused == null)
+      reuse.put(bucketIndexes, tokenKeys, postings);
 
     final Map<String, Long> frequencies = new HashMap<>(tokenCount);
     for (int t = 0; t < tokenCount; ++t)

@@ -81,6 +81,7 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.MathExpression;
+import com.arcadedb.query.sql.parser.MethodCall;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
@@ -110,6 +111,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
@@ -5057,9 +5059,13 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return -1;
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
-    // empty), so the function's condition is the very instance the block holds
+    // empty), so the function's condition is the very instance the block holds. A function that answers past its limit takes
+    // the limit as where its answer starts: the filter can reject rows and the rows after them still come, in order.
+    final boolean continues = function.indexedFunctionContinuesPastLimit(context);
     for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function && !containsInstance(recordConditions, condition))
+      if (condition != function && !containsInstance(recordConditions, condition)
+          && (!continues || mayChangeScore(condition, context)))
+        // a condition that sets $score itself would give the rows another order than the one the function answers them in
         return -1;
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
       return -1;
@@ -5077,6 +5083,36 @@ public class SelectExecutionPlanner {
       // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
       return -1;
     }
+  }
+
+  /**
+   * Whether evaluating {@code condition} on a row may set {@code $score}: a call that sets it anywhere in the condition, not only
+   * at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), a call the engine does not ship, whose
+   * behaviour it cannot know, {@code eval()}, whose condition is parsed only at run time, or a nested statement.
+   */
+  private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
+    if (condition.setsScore(context))
+      return true;
+    return !SqlAstInspector.allNodesMatch(condition, node -> {
+      if (node instanceof Statement)
+        return false;
+      if (node instanceof MethodCall call)
+        return SqlAstInspector.isBuiltInMethod(call);
+      if (!(node instanceof FunctionCall call))
+        return true;
+      if (call.getName() == null)
+        return false;
+      final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
+      // eval() runs a condition parsed at run time, which may hold a search that sets $score
+      if (!DefaultSQLFunctionFactory.getInstance().isBuiltIn(name) || SQLFunctionEval.NAME.equals(name))
+        return false;
+      try {
+        final SQLFunction function = call.getSQLFunction(context);
+        return function != null && !function.setsScore();
+      } catch (final RuntimeException e) {
+        return false;
+      }
+    });
   }
 
   /**
