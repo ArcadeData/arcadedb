@@ -160,7 +160,7 @@ class PluginApiSpecTest {
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
         "capabilitiesUnknownReason", "capabilitiesUnknownKind",
         "replicationRttP99Ms", "capabilities", "version");
-    // The same four names PeerCapabilityRegistry.UnknownKind declares, which Issue8655CapabilityUnknownKindTest pins
+    // The same four names PeerCapabilityRegistry.UnknownKind declares, which PeerCapabilityRegistryTest.UnknownCapabilityKind pins
     // from the other side: Studio gates on the literal, so a renamed constant must break a test, not the gate.
     assertThat(peerItemSchema.getProperties().get("capabilitiesUnknownKind").getEnum())
         .containsExactly("ROUTE_MISSING", "UNREACHABLE", "ADDRESS_REFUSED", "STALE");

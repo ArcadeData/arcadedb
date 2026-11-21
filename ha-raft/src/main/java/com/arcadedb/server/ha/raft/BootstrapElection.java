@@ -295,7 +295,7 @@ class BootstrapElection {
 
   /**
    * Holds this node's own copies of {@code dbNames} for the pass {@code passId} it is running (issue #8409), with no
-   * deadline at all - see {@link ArcadeStateMachine#holdOwnBootstrapPass}.
+   * deadline at all - see {@link BootstrapPasses#holdOwnBootstrapPass}.
    * <p>
    * A follower's hold needs a deadline because a leader that dies mid-pass sends it no conclusion. This hold is taken
    * by the pass itself, on its own thread, and every way out of {@link #runIfEligible} settles it: the conclusion in
@@ -1000,7 +1000,7 @@ class BootstrapElection {
         continue;
       try {
         final ArcadeStateMachine.BootstrapBaseline local = ArcadeStateMachine.localBootstrapState(server.getDatabaseForOperator(dbName),
-            ArcadeStateMachine.settleBudget(settleDeadline));
+            BootstrapDivergenceCheck.settleBudget(settleDeadline));
         if (local == null)
           continue;
         result.put(dbName, new PeerState(localId, dbName, local.fingerprint(), local.lastTxId()));

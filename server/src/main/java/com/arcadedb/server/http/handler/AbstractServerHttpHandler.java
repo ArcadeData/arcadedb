@@ -35,8 +35,10 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BackupRefusedException;
 import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.DatabaseAlreadyExistsException;
+import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ForwardedRequestIdContext;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -91,9 +93,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -195,7 +195,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // The label of that refusal, the same whether this node refused the retry or relays the leader's refusal of it.
   private static final String     IN_FLIGHT_ERROR_LABEL         =
       "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
+  // The label of a write whose outcome could not be learned (issue #11887), the same on the node that handed it to the
+  // replication and on a follower that forwarded it to the leader.
+  private static final String     OUTCOME_UNKNOWN_ERROR_LABEL   =
+      "Transaction outcome unknown: the write may have been applied, check before retrying it";
   private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
+  // The Retry-After of a retryable 503 (issues #12440, #12441). At once for a refusal that clears by itself - a conflict whose
+  // competing commit has already landed, a lock wait that ran out, a read a downsample overtook, a database reopened under the
+  // request - so a client that reads the header, and not only the status, retries the way the Java client always has. One second,
+  // the floor of the in-flight refusal above, for a server too busy to start the request, which is not helped by an immediate retry.
+  static final         String     RETRY_AT_ONCE                 = "0";
+  static final         String     RETRY_WHEN_LESS_BUSY          = "1";
   // The same back-off in band, on the error line of a streamed response that can no longer send the header (#8899).
   public static final  String     STREAMED_RETRY_AFTER_MEMBER   = "retryAfter";
   // Tags the forward-ordinal section of an idempotency key (issue #8323).
@@ -1255,6 +1265,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
 
+    // 504 Gateway Timeout, before the TransactionException arm below, which it extends: the write was handed on - to the
+    // replication by the leader, or to the leader by a follower that forwarded it - and its outcome could not be learned. It
+    // may have been applied, or not (issue #11887): a 500 tells a client the server failed, and a 503 that it may retry,
+    // which runs the write twice whenever it did land. The label says so, since 'detail' is concealed in production mode.
+    // 504 is also what a follower answers a forwarded server command whose leader did not answer (LeaderCommandForwarder).
+    final TransactionOutcomeUnknownException outcomeUnknown = firstOf(e, cause, TransactionOutcomeUnknownException.class);
+    if (outcomeUnknown != null)
+      return new ErrorClassification(504, OUTCOME_UNKNOWN_ERROR_LABEL, outcomeUnknown, null, ErrorLogKind.INTERNAL_TRANSACTION);
+
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
     // would be written as, so nothing was submitted (issue #7511). A conflict rather than a 5xx for the same
     // reason the two arms below are: the request is well formed and authorized, the server is healthy, and what
@@ -1292,6 +1311,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(409, "Cannot execute command", inProgress, null, ErrorLogKind.USER);
     }
 
+    // 409 Conflict: a GraphBatch load refused because another one is open on the same database (issue #11907). The same
+    // "retryable once the other one finishes" as the arm above, and nothing of the refused load ran, yet it answered the
+    // generic 500 "Internal error" and was logged with a stack trace per refused request. It needs an arm of its own because
+    // its parent DatabaseOperationException has none and also stands for real faults, which must stay a 500. The label names
+    // the condition, since 'detail' is concealed in production mode.
+    final GraphBatchInProgressException batchInProgress = firstOf(e, cause, GraphBatchInProgressException.class);
+    if (batchInProgress != null)
+      return new ErrorClassification(409, "A GraphBatch load is already in progress on this database", batchInProgress, null,
+          ErrorLogKind.USER);
+
     // 409 Conflict: the user name is taken (issue #10073). Not a security failure - it was answered 403 "Security error"
     // before, the status a non-root caller gets, so a client could not tell the two apart without matching on the
     // detail text. The label carries the fact for production mode, where 'detail' is concealed.
@@ -1325,10 +1354,22 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (inUse != null)
       return new ErrorClassification(409, "Object in use", inUse, null, ErrorLogKind.USER);
 
+    // 409 Conflict: a statement that runs only in the implicit transaction of one request (CALL { ... } IN TRANSACTIONS), sent in
+    // the transaction the caller opened with /begin. The session's state is the cause, the same request outside the transaction
+    // runs, and it is refused again while the transaction is open (issue #12161). Before the generic CommandExecutionException
+    // arm, which it extends and which answers 500
+    final ImplicitTransactionRequiredException implicitOnly = firstOf(e, cause, ImplicitTransactionRequiredException.class);
+    if (implicitOnly != null)
+      return new ErrorClassification(409, "Cannot execute command in an explicit transaction", implicitOnly, null, ErrorLogKind.USER);
+
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
     // server-availability problem. 503 told clients/load balancers the request was retry-worthy, amplifying the
-    // bad write. See issue #4350.
-    final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    // bad write. See issue #4350. Searched down the whole chain when the classifier finds one there (issue #11973): a unique
+    // index built over values that are not unique fails with the duplicated key under two IndexException wrappers, and the
+    // statement wrapper on top, so a look at the first two links answered 500 for a CREATE CONSTRAINT ... IS UNIQUE
+    DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
+    if (dup == null && ErrorCategory.of(e) == ErrorCategory.DUPLICATED_KEY)
+      dup = CauseChain.find(e, DuplicatedKeyException.class);
     if (dup != null) {
       return new ErrorClassification(409, "Found duplicate key in index", dup,
               dup.getIndexName() + "|" + (isProductionMode() ? ArcadeDBServer.CONCEALED_DUPLICATED_KEYS : dup.getKeys()) + "|"
@@ -1351,7 +1392,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // auto-commit wrapper as well since #6201, which is where the engine raises most of them.
     final NeedRetryException retryable = firstOf(e, cause, NeedRetryException.class);
     if (retryable != null) {
-      return retryable(retryable);
+      return retryable(retryable, RETRY_AT_ONCE);
     }
 
     // 503: a TimeSeries read was overtaken by a DOWNSAMPLE, which replaced the rows it had not reached yet with
@@ -1363,7 +1404,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // answering short was that the caller be able to act on it.
     final TimeSeriesWalkCoarsenedException coarsened = firstOf(e, cause, TimeSeriesWalkCoarsenedException.class);
     if (coarsened != null) {
-      return retryable(coarsened);
+      return retryable(coarsened, RETRY_AT_ONCE);
     }
 
     // 503: the queries running at the same time hold the heap budget all the queries share, and this one was refused
@@ -1374,7 +1415,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // plain CommandExecutionException instead, since no retry can help it.
     final QueryHeapBudgetExceededException heapBudget = firstOf(e, cause, QueryHeapBudgetExceededException.class);
     if (heapBudget != null) {
-      return retryable(heapBudget);
+      return retryable(heapBudget, RETRY_WHEN_LESS_BUSY);
     }
 
     // 503: the query admission gate did not start the query, because it waited in the queue too long or found the queue
@@ -1382,7 +1423,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // CommandExecutionException arm below for the same reason as the arm above.
     final QueryAdmissionException admission = firstOf(e, cause, QueryAdmissionException.class);
     if (admission != null) {
-      return retryable(admission);
+      return retryable(admission, RETRY_WHEN_LESS_BUSY);
     }
 
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
@@ -1399,7 +1440,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // UNAVAILABLE, not a server fault, for the plain close (issue #10692).
     final DatabaseIsReopeningException databaseReopening = firstOf(e, cause, DatabaseIsReopeningException.class);
     if (databaseReopening != null) {
-      return retryable(databaseReopening);
+      return retryable(databaseReopening, RETRY_AT_ONCE);
     }
 
     // 404: the caller named a database this server does not have - permanent, and the caller's to correct. The resolver raises
@@ -1431,7 +1472,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
       if (isServerShuttingDown())
-        return retryable(databaseClosed);
+        // no Retry-After: how long the server takes to come back is not known here
+        return retryable(databaseClosed, null);
       final ArcadeDBServer server = httpServer != null ? httpServer.getServer() : null;
       final String closedName = databaseClosed.getDatabaseName();
       // Reported as the typed refusal the resolver gives the next request, with its reason: an untyped 503 would reach the remote
@@ -1447,6 +1489,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (notFound != null) {
       return new ErrorClassification(404, "Record not found", notFound, null, ErrorLogKind.USER);
     }
+
+    // 404 Not Found: an entity the statement deleted itself, read or linked later in it (openCypher's DeletedEntityAccess, issue
+    // #11974). The caller's statement, which no retry fixes, as Neo4j answers it (EntityNotFound). Before the generic
+    // CommandExecutionException arm, which it extends and which answers 500
+    final DeletedEntityException deletedEntity = CauseChain.find(e, DeletedEntityException.class);
+    if (deletedEntity != null)
+      return new ErrorClassification(404, "Entity deleted", deletedEntity, null, ErrorLogKind.USER);
 
     final QueryNotIdempotentException notIdempotent = firstOf(e, cause, QueryNotIdempotentException.class);
     if (notIdempotent != null) {
@@ -1541,6 +1590,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final JSONException invalidJson = firstOf(e, cause, JSONException.class);
     if (invalidJson != null) {
       return new ErrorClassification(400, "Invalid JSON payload", invalidJson, null, ErrorLogKind.USER);
+    }
+
+    // A backup command refused for what the caller asked: a file name it does not accept, an archive that is not there, a target
+    // database that is taken without overwrite, an archive that cannot be read (issue #12406). The reason goes in the label, not
+    // only in 'detail': detail is concealed in production mode, and the generic "Cannot execute command" left the operator unable
+    // to tell the four apart. Ahead of the IllegalArgumentException arm below, which it extends
+    final BackupRefusedException backupRefused = firstOf(e, cause, BackupRefusedException.class);
+    if (backupRefused != null) {
+      return new ErrorClassification(400, backupRefused.getMessage(), backupRefused, null, ErrorLogKind.USER);
     }
 
     // Bad client input (malformed parameter, unparseable marker, ...).
@@ -1797,10 +1855,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * A 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read a
    * downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
    * {@link DatabaseIsReopeningException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}, and
-   * by a database closed by a shutdown.
+   * by a database closed by a shutdown. {@code retryAfter} is the {@code Retry-After} the answer carries ({@link #RETRY_AT_ONCE},
+   * {@link #RETRY_WHEN_LESS_BUSY}), null for none: a commit that lost a race used to answer without one, so a client reading the
+   * status alone could not tell a conflict that clears by itself from a busy server (issues #12440, #12441).
    */
-  private static ErrorClassification retryable(final Throwable retryable) {
-    return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE);
+  private static ErrorClassification retryable(final Throwable retryable, final String retryAfter) {
+    return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE, retryAfter);
   }
 
   /**
@@ -2519,9 +2579,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   protected static void emitCommitIndexBookmark(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    final long lastApplied = haDb.getLastAppliedIndex();
-    if (lastApplied >= 0)
-      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(lastApplied));
+    // Not the bare applied index: a write this request forwarded to the leader may not be applied here yet (issue #11740)
+    final long bookmark = haDb.getCommitIndexBookmark();
+    if (bookmark >= 0)
+      exchange.getResponseHeaders().put(COMMIT_INDEX_HEADER, String.valueOf(bookmark));
   }
 
   /**
@@ -2563,21 +2624,30 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       final HAReplicatedDatabase haDb) {
     if (haDb == null)
       return;
-    exchange.addResponseCommitListener(ex -> {
-      if (ex.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
-        return;
-      try {
-        emitCommitIndexBookmark(ex, haDb);
-      } catch (final RuntimeException e) {
-        // This runs from inside Undertow's response-commit path, not from the handler, so it is outside the
-        // exception mapping in handleRequest: letting anything escape here would tear down a response that is
-        // otherwise complete and correct. A missing bookmark costs the client one stale follower read; a torn
-        // response costs it the answer.
-        LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
-            "Cannot read the last applied index while committing the response, the read-your-writes bookmark is "
-                + "not emitted for this request", e);
-      }
-    });
+    exchange.addResponseCommitListener(ex -> emitCommitIndexBookmarkIfAbsent(ex, haDb));
+  }
+
+  /**
+   * Emits the bookmark unless the response already carries one, and never throws. Called by the response-commit listener of
+   * {@link #emitCommitIndexBookmarkOnResponseCommit} and by {@link DatabaseAbstractHandler#execute} just before it clears the
+   * request's read-consistency context, which also holds the bookmark of any write the request forwarded to the leader (issue
+   * #11740): a request that leaves through an exception is answered after that, so the listener alone would answer it with
+   * this node's own applied index, below a write the leader had already committed.
+   */
+  protected static void emitCommitIndexBookmarkIfAbsent(final HttpServerExchange exchange, final HAReplicatedDatabase haDb) {
+    if (exchange.getResponseHeaders().contains(COMMIT_INDEX_HEADER))
+      return;
+    try {
+      emitCommitIndexBookmark(exchange, haDb);
+    } catch (final RuntimeException e) {
+      // Run from inside Undertow's response-commit path, or from a finally block, so outside the exception mapping in
+      // handleRequest: letting anything escape would tear down a response that is otherwise complete and correct, or replace
+      // the request's own failure. A missing bookmark costs the client one stale follower read; a torn response costs it the
+      // answer.
+      LogManager.instance().log(AbstractServerHttpHandler.class, Level.FINE,
+          "Cannot read the last applied index while answering, the read-your-writes bookmark is not emitted for this request",
+          e);
+    }
   }
 
   /**
@@ -2869,7 +2939,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // The cause chain is the only free-form field: conceal it outside development/test to avoid leaking
     // internal file paths and engine errors to a client probing endpoints.
     if (verbose && e != null)
-      json.put("detail", encodeError(buildDetailChain(e)));
+      json.put("detail", encodeError(ErrorConcealment.detailChain(e)));
 
     return json.toString();
   }
@@ -2895,26 +2965,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // Not in seconds: the client gets the line without a back-off hint
       }
     return error;
-  }
-
-  /**
-   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping when a cause
-   * has already been seen to avoid an infinite loop on cyclic chains. Uses identity comparison so distinct exceptions
-   * with equal {@code equals}/{@code hashCode} are still walked. Package-private for direct unit testing.
-   */
-  static String buildDetailChain(final Throwable e) {
-    final StringBuilder buffer = new StringBuilder();
-    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
-
-    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    visited.add(e);
-    Throwable current = e.getCause();
-    while (current != null && visited.add(current)) {
-      buffer.append(" -> ");
-      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-      current = current.getCause();
-    }
-    return buffer.toString();
   }
 
   /**

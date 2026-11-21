@@ -482,7 +482,10 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       assertThat(samples.getFirst().labels()).doesNotContainKey("__name__").containsEntry("host", "api");
 
       assertThat(vectorOf("m8926_errors + m8926_total").getFirst().value()).isEqualTo(15.0);
-      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).hasSize(1);
+      // a range function drops the name, so the two sides match on their labels. Not rate(): each series holds ONE sample, and
+      // rate() answers no sample for it, as Prometheus does (issue #11980)
+      assertThat(vectorOf("sum_over_time(m8926_errors[5m]) / sum_over_time(m8926_total[5m])")).hasSize(1);
+      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).isEmpty();
     }
 
     // #8926

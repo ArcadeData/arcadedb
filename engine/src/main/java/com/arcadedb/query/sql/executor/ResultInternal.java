@@ -66,12 +66,14 @@ public class ResultInternal implements Result {
   /**
    * The aliases a {@code SELECT *, !alias} projection excluded, or null when it excluded nothing.
    * <p>
-   * Read by {@link #toJSON()} alone, and only for the record attributes it seeds. The exclusion is NOT a
-   * {@link #tombstones} entry: {@code Projection#calculateSingle} implements {@code !alias} by never writing the
-   * value, which is a different thing from {@code removeProperty()}'s "written, then taken back" - turning one
-   * into the other would change what {@link #getProperty} answers for an excluded column, which the projection
-   * deliberately leaves reading through to the record. So the exclusion has to travel as itself (found in review
-   * of issue #7895: {@code SELECT *, !@rid} had its {@code @rid} put back by the seed).
+   * Read by {@link #toJSON()} for the record attributes it seeds, and by every accessor that can fall back to the
+   * backing {@link #element} (issue #11628: {@code hasProperty()} answered {@code true} for an excluded column that
+   * {@link #getPropertyNames()} did not list). The exclusion is NOT a {@link #tombstones} entry:
+   * {@code Projection#calculateSingle} implements {@code !alias} by never writing the value, which is a different
+   * thing from {@code removeProperty()}'s "written, then taken back". A tombstone hides the name from both stores;
+   * an exclusion hides it from the ELEMENT only, so a later item of the same projection that writes the same alias
+   * into {@link #content} still answers. So the exclusion has to travel as itself (found in review of issue #7895:
+   * {@code SELECT *, !@rid} had its {@code @rid} put back by the seed).
    * <p>
    * One reference write per row, of a set built once per statement and shared by every row it produces, exactly
    * as {@link #projectionSourceColumns} is - and written only by the {@code *} branch, the only one that leaves
@@ -113,6 +115,94 @@ public class ResultInternal implements Result {
     if (!(value instanceof Record) && value instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       return identifiable.getIdentity();
     return value;
+  }
+
+  /**
+   * Every name {@code row}'s {@link Result#getPropertyNames()} lists, with the value its {@link Result#getProperty(String)}
+   * answers, for a consumer that reads the whole row: the HTTP and gRPC row serializers (issue #11738).
+   * <p>
+   * Asking for each name in turn reads a row backed by a stored record once per property, since
+   * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
+   * properties cost P walks. The values of a plain row come from {@link #toPropertyMap(boolean)} instead, which reads the
+   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. A projection row
+   * (one that holds its own values) gets the map {@code toPropertyMap} built and nothing else: its names are that map's keys,
+   * so neither a name set nor a second map is built for it. The names still decide what a record row holds: the single read
+   * leaves out a property whose value does not decode (a damaged record), which a read by name answers with {@code null}.
+   * A subclass may answer a name differently from the fields {@code toPropertyMap} reads, so it is read name by name, as
+   * {@link #copyBindings} draws the same line.
+   *
+   * @return a map the caller may keep, in the order {@code getPropertyNames()} lists the names
+   */
+  public static Map<String, Object> propertiesOf(final Result row) {
+    return propertiesOf(row, Collections.emptySet());
+  }
+
+  /**
+   * {@link #propertiesOf(Result)} without the names in {@code excluded}, which are not read at all: a {@code SELECT *, !payload}
+   * projection must not decode the payload it drops (issue #12558). A record row the statement narrowed (by {@code excluded},
+   * by a removed property or by the exclusions an earlier projection recorded) is read once for the names it still lists, so
+   * a dropped value is never decoded, and a row with no name left is not read at all.
+   */
+  public static Map<String, Object> propertiesOf(final Result row, final Set<String> excluded) {
+    // EXACT CLASS ONLY, AS IN copyBindings(): A SUBCLASS MAY OVERRIDE getPropertyNames() OR getProperty() AND ANSWER A NAME
+    // DIFFERENTLY FROM THE content AND element FIELDS toPropertyMap() READS, SO ITS ROWS KEEP THE READ BY NAME
+    if (row.getClass() != ResultInternal.class) {
+      final Set<String> names = row.getPropertyNames();
+      final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+      for (final String name : names)
+        if (!excluded.contains(name))
+          properties.put(name, row.getProperty(name));
+      return properties;
+    }
+
+    final ResultInternal plain = (ResultInternal) row;
+    // A projection row (content present) or a row without a record: its names are exactly the content keys toPropertyMap()
+    // walks, in that order, and its values are already in memory, so its map is the answer
+    if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
+      return plain.toPropertyMap(false);
+
+    // The names getPropertyNames() lists, minus the caller's exclusions, noting whether any stored name was dropped
+    final Set<String> names = new LinkedHashSet<>();
+    boolean narrowed = false;
+    for (final String name : plain.element.getPropertyNames())
+      if ((plain.tombstones != null && plain.tombstones.contains(name)) || plain.isExcludedFromElement(name) || excluded.contains(name))
+        narrowed = true;
+      else
+        names.add(name);
+
+    if (narrowed) {
+      if (names.isEmpty())
+        return new LinkedHashMap<>();
+      if (plain.element instanceof ImmutableDocument stored) {
+        final Map<String, Object> read = stored.propertiesAsMap(names.toArray(new String[0]));
+        final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+        for (final String name : names)
+          properties.put(name, toPropertyValue(read.get(name)));
+        return properties;
+      }
+    }
+
+    final Map<String, Object> read = plain.toPropertyMap(false);
+    if (!narrowed && sameNamesInOrder(names, read))
+      return read;
+
+    // A damaged record, or a narrowed record whose values are already in memory: a value missing from the single read did not
+    // decode and was logged. A read by name would decode the same bytes, fail the same way, log it a second time and answer
+    // null, so the name takes null directly
+    final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+    for (final String name : names)
+      properties.put(name, read.get(name));
+    return properties;
+  }
+
+  private static boolean sameNamesInOrder(final Set<String> names, final Map<String, Object> read) {
+    if (names.size() != read.size())
+      return false;
+    final Iterator<String> readNames = read.keySet().iterator();
+    for (final String name : names)
+      if (!name.equals(readNames.next()))
+        return false;
+    return true;
   }
 
   /**
@@ -244,7 +334,7 @@ public class ResultInternal implements Result {
     else if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
-    else if (element != null)
+    else if (element != null && !isExcludedFromElement(name))
       result = (T) element.get(name);
     else
       result = null;
@@ -265,7 +355,7 @@ public class ResultInternal implements Result {
       result = (T) defaultValue;
     else if (content != null && content.containsKey(name))
       result = (T) content.get(name);
-    else if (element != null)
+    else if (element != null && !isExcludedFromElement(name))
       result = (T) element.getIfPresent(name, defaultValue);
     else
       result = (T) defaultValue;
@@ -300,6 +390,23 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * The aliases the projection that built this row excluded from its backing element, or null when it excluded none.
+   * A projection over this row that keeps the same element carries them on (issue #11628), or the element would
+   * answer them again. The set is shared by every row of the statement and must not be mutated.
+   */
+  public Set<String> getProjectionExcludes() {
+    return projectionExcludes;
+  }
+
+  /**
+   * Whether the projection that built this row excluded {@code name}, so the backing element must not answer for it
+   * (issue #11628). The content still answers: see the {@link #projectionExcludes} field javadoc.
+   */
+  private boolean isExcludedFromElement(final String name) {
+    return projectionExcludes != null && projectionExcludes.contains(name);
+  }
+
+  /**
    * THE PROJECTION IS ASKED FIRST, the backing element second - the same precedence {@link #getProperty(String)}
    * itself applies, and for the same reason. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
    * a computed value under {@code d} in {@code content}, so the value this row answers for {@code d} is the
@@ -325,7 +432,7 @@ public class ResultInternal implements Result {
         return null;
     }
 
-    if (element != null) {
+    if (element != null && !isExcludedFromElement(name)) {
       final DocumentType elementType = element.getType();
       final Property declared = elementType != null ? elementType.getPolymorphicPropertyIfExists(name) : null;
       if (declared != null)
@@ -345,7 +452,7 @@ public class ResultInternal implements Result {
       result = null;
     else if (content != null && content.containsKey(name))
       result = content.get(name);
-    else if (element != null)
+    else if (element != null && !isExcludedFromElement(name))
       result = element.get(name);
 
     if (result instanceof Result result1)
@@ -394,17 +501,30 @@ public class ResultInternal implements Result {
     // (issue #5613: a Cypher `RETURN n` row carries content {n: vertex} plus the vertex as element,
     // and every declared property of the vertex's type surfaced as an extra null column).
     if (element != null && (content == null || content.isEmpty())) {
-      if (tombstones == null || tombstones.isEmpty())
+      if ((tombstones == null || tombstones.isEmpty()) && projectionExcludes == null)
         result.addAll(element.getPropertyNames());
       else
         for (final String name : element.getPropertyNames())
-          if (!tombstones.contains(name))
+          if ((tombstones == null || !tombstones.contains(name)) && !isExcludedFromElement(name))
             result.add(name);
     }
 
     if (content != null)
       result.addAll(content.keySet());
     return result;
+  }
+
+  /**
+   * {@link #getPropertyNames()}'s answer for one name, without the set it builds (issue #12340). A row with content lists
+   * exactly its content keys - the element is not consulted once there is content, and {@link #removeProperty(String)} takes
+   * the key out of the content - so the answer is one map look-up. A row that only wraps an element, and a subclass, which may
+   * list its names its own way, answer through the name set.
+   */
+  @Override
+  public boolean listsProperty(final String name) {
+    if (getClass() == ResultInternal.class && content != null && !content.isEmpty())
+      return content.containsKey(name);
+    return getPropertyNames().contains(name);
   }
 
   /**
@@ -426,12 +546,15 @@ public class ResultInternal implements Result {
    * {@link #getProperty(String)} resolves to {@code null}. FinalProjectionStep uses it to decide which
    * requested properties to project, not to describe columns, so narrowing it here would change
    * projection selection rather than the reported column list. See the note on {@link #toMap()}.
+   * <p>
+   * The union leaves out what the row dropped: a removed property, and a column a {@code SELECT *, !name} projection
+   * excluded, which the element still holds but the row does not (issue #11628).
    */
   public boolean hasProperty(final String propName) {
     if (tombstones != null && tombstones.contains(propName))
       return false;
 
-    if (element != null && element.has(propName))
+    if (element != null && !isExcludedFromElement(propName) && element.has(propName))
       return true;
 
     return content != null && content.containsKey(propName);
@@ -454,9 +577,9 @@ public class ResultInternal implements Result {
     Object result;
     if (content != null && !content.isEmpty()) {
       result = content.get(name);
-      if (result == null && !content.containsKey(name) && (element == null || !element.has(name)))
+      if (result == null && !content.containsKey(name) && (element == null || isExcludedFromElement(name) || !element.has(name)))
         return absentValue;
-    } else if (element != null) {
+    } else if (element != null && !isExcludedFromElement(name)) {
       result = element.getIfPresent(name, absentValue);
       if (result == absentValue)
         return absentValue;
@@ -504,9 +627,13 @@ public class ResultInternal implements Result {
    * Used by DISTINCT to decide whether the cheap RID-based deduplication is still semantically
    * valid: once a projection has reshaped the row (e.g. excluding {@code @rid}), two different
    * records can map to the same output and must be compared by value instead of by identity.
+   * <p>
+   * A projection that excluded a column has reshaped the row even when it left nothing in the content
+   * ({@code SELECT *, !a, !b, !@rid, !@type} over a type with only {@code a} and {@code b}): answering {@code false}
+   * there handed the whole record back through {@link #toJSON()}, excluded columns included (issue #11628).
    */
   public boolean hasProjectedProperties() {
-    return content != null && !content.isEmpty();
+    return (content != null && !content.isEmpty()) || projectionExcludes != null;
   }
 
   /**
@@ -573,7 +700,7 @@ public class ResultInternal implements Result {
       }
     } else
       for (final Map.Entry<String, Object> entry : stored.entrySet())
-        if (tombstones == null || !tombstones.contains(entry.getKey()))
+        if ((tombstones == null || !tombstones.contains(entry.getKey())) && !isExcludedFromElement(entry.getKey()))
           map.put(entry.getKey(), toPropertyValue(entry.getValue()));
     return map;
   }
@@ -635,13 +762,16 @@ public class ResultInternal implements Result {
     if (element == null)
       return content;
 
-    if (tombstones == null || tombstones.isEmpty())
+    if ((tombstones == null || tombstones.isEmpty()) && projectionExcludes == null)
       return element.toMap();
 
-    // When tombstones are present, build a merged view: element properties minus tombstones,
-    // overlaid with any content overrides.
+    // When tombstones or projection exclusions are present, build a merged view: element properties minus both,
+    // overlaid with any content overrides (issue #11628 for the exclusions).
     final Map<String, Object> merged = new LinkedHashMap<>(element.toMap());
-    merged.keySet().removeAll(tombstones);
+    if (tombstones != null)
+      merged.keySet().removeAll(tombstones);
+    if (projectionExcludes != null)
+      merged.keySet().removeAll(projectionExcludes);
     if (content != null)
       merged.putAll(content);
     return merged;
@@ -658,7 +788,8 @@ public class ResultInternal implements Result {
   @Override
   public Optional<RID> getIdentity() {
     if (element != null)
-      return Optional.of(element.getIdentity());
+      // a record not saved yet has no identity: @rid read while an INSERT builds it is null, like a row with no record (#11850)
+      return Optional.ofNullable(element.getIdentity());
 
     if (hasProperty(RID_PROPERTY)) {
       final Object rid = getProperty(RID_PROPERTY);

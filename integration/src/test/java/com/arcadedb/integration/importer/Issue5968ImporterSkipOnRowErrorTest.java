@@ -311,10 +311,12 @@ class Issue5968ImporterSkipOnRowErrorTest {
   }
 
   /**
-   * Default "abort" mode must guarantee no partial import: {@code loadDocuments} persists the whole file in one
-   * synchronous transaction ({@code document.save()} per row, no {@code database.async()}), so if row 2 (Bob, whose
-   * Score overflows SHORT) fails, row 1 (Alice) must never survive either - even though it was already {@code save()}d
-   * into the still-open transaction before the failure was thrown.
+   * Default "abort" mode rolls back the rows not yet committed: {@code loadDocuments} saves synchronously
+   * ({@code document.save()} per row, no {@code database.async()}) and commits every {@code -commitEvery} rows (5000 by
+   * default, issue #12637), so with only 3 rows the whole file is still one transaction. If row 2 (Bob, whose Score
+   * overflows SHORT) fails, row 1 (Alice) must never survive either - even though it was already {@code save()}d into
+   * the still-open transaction before the failure was thrown. Past a {@code -commitEvery} boundary the batches already
+   * committed stay (see {@code Issue12637CsvDocumentCommitEveryTest}).
    */
   @Test
   void csvDocumentImportAbortsOnOutOfRangeValueByDefaultAndRollsBackPartialRows() {

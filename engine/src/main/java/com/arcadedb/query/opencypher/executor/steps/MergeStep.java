@@ -26,6 +26,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -50,16 +51,19 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
@@ -113,6 +117,11 @@ public class MergeStep extends AbstractExecutionStep {
   // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
   // the step, read by prettyPrint after it
   private       String              usedIndexName;
+  // THE ROWS A DRAINING WRITE HOLDS UNTIL IT HANDS THEM OUT, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES,
+  // AS EAGERSTEP HOLDS THEM (ISSUE #12656). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private       OperationHeapLimit  heapLimit;
+  // No clause after this one reads the rows: they are handed out as they are written, one pull batch at a time (issue #12656)
+  private       boolean             streamsRows;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -158,7 +167,17 @@ public class MergeStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return buffer.get(bufferIndex++);
+        final Result result = buffer.get(bufferIndex++);
+        // A LATER row of the same batch may have replaced a record this row holds after this row was merged: served with
+        // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
+        labelReplacements.redirect(result);
+        if (heapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          releaseHeap();
+        }
+        return result;
       }
 
       private void fetchMore(final int n) {
@@ -171,24 +190,47 @@ public class MergeStep extends AbstractExecutionStep {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n && prevResults.hasNext()) {
-            final Result inputResult = prevResults.next();
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
+          // A MERGE that writes properties runs for every row before it hands out the first one (issue #12656)
+          final boolean writesForEveryRowFirst = drainsBeforeHandingOut();
+          // The drain is one uninterrupted region the statement-level deadline check cannot reach, as in EagerStep (#6266)
+          final WorkGuard guard = writesForEveryRowFirst ? WorkGuard.forCommandDeadline(context) : null;
+          if (writesForEveryRowFirst)
+            heapLimit = OperationHeapLimit.of(context, "MERGE read/write barrier");
+          try {
+            while ((writesForEveryRowFirst || buffer.size() < n) && prevResults.hasNext()) {
+              if (guard != null)
+                guard.check();
+              final Result inputResult = prevResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-              final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
-              buffer.addAll(mergedResults);
-            } finally {
-              if (context.isProfiling())
-                cost += System.nanoTime() - begin;
+                final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
+                buffer.addAll(mergedResults);
+                if (heapLimit != null)
+                  for (final Result merged : mergedResults)
+                    heapLimit.add(buffer.size(), merged);
+              } finally {
+                if (context.isProfiling())
+                  cost += System.nanoTime() - begin;
+              }
             }
+          } catch (final RuntimeException | Error e) {
+            // A FAILED DRAIN HANDS OUT NOTHING: ITS ROWS AND THEIR CHARGE GO NOW, NOT WHEN THE QUERY IS CLOSED
+            buffer.clear();
+            releaseHeap();
+            throw e;
           }
 
           if (!prevResults.hasNext()) {
             finished = true;
           }
+          // When several rows bind the same node, the clauses after the MERGE read the ON CREATE / ON MATCH SET of every
+          // row, as on Neo4j (issue #12627): a row that created the pattern holds its own copy of a bound endpoint, which the
+          // write of a later row did not reach, so it is lined up with the copy the transaction wrote (issue #12656)
+          if (writesForEveryRowFirst)
+            WrittenCopy.resolveRows(context, buffer);
         } else {
           // Standalone MERGE: merge once
           if (!mergedStandalone) {
@@ -214,6 +256,16 @@ public class MergeStep extends AbstractExecutionStep {
         MergeStep.this.close();
       }
     };
+  }
+
+  /**
+   * Whether the MERGE runs for its whole input before it hands out a row: it writes properties or labels besides the pattern it
+   * merges (an ON CREATE SET, an ON MATCH SET or a SET it absorbed), and a clause after it reads its rows. As Neo4j's
+   * {@code Eager} does: a row is never read before a later row binding the same node has written it, however many pull batches
+   * the input takes (issue #12656). The plain MERGE, and one that ends the statement, keep streaming.
+   */
+  private boolean drainsBeforeHandingOut() {
+    return !streamsRows && (mergeClause.hasOnCreateSet() || mergeClause.hasOnMatchSet() || absorbedSet != null);
   }
 
   /**
@@ -299,10 +351,11 @@ public class MergeStep extends AbstractExecutionStep {
           ((ResultInternal) r).removeProperty(CREATE_SET_FOLDED);
         }
         // A node whose ON CREATE SET was folded into its first save (issue #8735) already carries it
+        // Repeated ON CREATE / ON MATCH SET clauses are separate SETs, each reading the writes of the previous (#11691)
         if (wasCreated && !createSetFolded && mergeClause.hasOnCreateSet())
-          applySetClause(mergeClause.getOnCreateSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnCreateActions(), (ResultInternal) r, labelReplacements);
         else if (!wasCreated && mergeClause.hasOnMatchSet())
-          applySetClause(mergeClause.getOnMatchSet(), (ResultInternal) r, labelReplacements);
+          applySetClauses(mergeClause.getOnMatchActions(), (ResultInternal) r, labelReplacements);
         // The SET this step absorbed, for a row whose node was not created with it (issue #8735)
         if (absorbedSet != null && !createSetFolded)
           // A fresh map per row, as applySetClause does: the folded shape never reads the node, so nothing has to be read
@@ -1820,6 +1873,40 @@ public class MergeStep extends AbstractExecutionStep {
     // a path pattern matching several existing rows fans out inside ONE executeMerge(), and those rows do not see
     // each other's writes. They target different records, which is why it has never mattered.
     setApplier.apply(setClause, result, new HashMap<>(), labelReplacements);
+  }
+
+  /**
+   * Applies repeated ON CREATE / ON MATCH SET clauses in source order (issue #11691). Each is a SET of its own, so its
+   * values are evaluated after the previous one was applied; the shared map carries the read-your-writes reach across
+   * them, as it would across consecutive SET clauses.
+   */
+  private void applySetClauses(final List<SetClause> setClauses, final Result result, final LabelReplacements labelReplacements) {
+    if (setClauses.size() == 1) {
+      applySetClause(setClauses.getFirst(), result, labelReplacements);
+      return;
+    }
+    final Map<RID, MutableDocument> written = new HashMap<>();
+    for (final SetClause setClause : setClauses)
+      if (!setClause.isEmpty())
+        setApplier.apply(setClause, result, written, labelReplacements);
+  }
+
+  /** Called when this step ends the statement: nothing reads its rows, so it does not hold them until every row has written. */
+  public void streamRows() {
+    streamsRows = true;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null) {
+      heapLimit.release();
+      heapLimit = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   /**
