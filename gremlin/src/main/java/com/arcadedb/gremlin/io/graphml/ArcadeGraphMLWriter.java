@@ -58,6 +58,11 @@ public class ArcadeGraphMLWriter implements GraphWriter {
   public static final String ARCADEDB_NAMESPACE = "https://arcadedb.com/xmlns/graphml";
   public static final String ARCADEDB_PREFIX    = "arcadedb";
   public static final String TYPE_ATTRIBUTE     = "type";
+  /** Attribute of a {@code <key>} that holds the name of the key as a JSON string, when an attribute cannot hold the name as it is. */
+  public static final String NAME_ATTRIBUTE     = "name";
+  /** Value of {@code arcadedb:type} for a text that is a JSON string literal, which XML could not carry as it is. */
+  public static final String JSON_STRING        = "JSON_STRING";
+  private static final String STAND_IN_KEY_ID   = "arcadedb-key-";
 
   @Override
   public void writeGraph(final OutputStream outputStream, final Graph graph) throws IOException {
@@ -178,13 +183,25 @@ public class ArcadeGraphMLWriter implements GraphWriter {
     }
   }
 
-  /** Unique key ids: a name both vertices and edges use gets the suffix of its element, as TinkerPop's writer does. */
+  /**
+   * Unique key ids: a name both vertices and edges use gets the suffix of its element, as TinkerPop's writer does. A name an
+   * attribute cannot hold as it is gets a stand-in id of its own, which the key's {@code arcadedb:name} resolves.
+   */
   private static Map<String, String> keyIds(final Map<String, String> keys, final Map<String, String> otherKeys, final String suffix) {
     final Map<String, String> ids = new LinkedHashMap<>();
-    for (final String name : keys.keySet())
-      ids.put(name, otherKeys.containsKey(name) || name.equals(GraphMLConstants.LABEL_V) || name.equals(GraphMLConstants.LABEL_E) ?
-          name + suffix :
-          name);
+    int standIns = 0;
+    for (final String name : keys.keySet()) {
+      if (!isSafeAttributeValue(name)) {
+        String standIn;
+        do {
+          standIn = STAND_IN_KEY_ID + standIns++ + suffix;
+        } while (keys.containsKey(standIn) || otherKeys.containsKey(standIn));
+        ids.put(name, standIn);
+      } else
+        ids.put(name, otherKeys.containsKey(name) || name.equals(GraphMLConstants.LABEL_V) || name.equals(GraphMLConstants.LABEL_E) ?
+            name + suffix :
+            name);
+    }
     return ids;
   }
 
@@ -205,7 +222,13 @@ public class ArcadeGraphMLWriter implements GraphWriter {
     writer.writeStartElement(GraphMLConstants.KEY);
     writer.writeAttribute(GraphMLConstants.ID, id);
     writer.writeAttribute(GraphMLConstants.FOR, forElement);
-    writer.writeAttribute(GraphMLConstants.ATTR_NAME, name);
+    if (isSafeAttributeValue(name))
+      writer.writeAttribute(GraphMLConstants.ATTR_NAME, name);
+    else {
+      // AN ATTRIBUTE CANNOT HOLD THIS NAME AS IT IS: PLAIN READERS GET A STAND-IN, ARCADEDB'S READER THE NAME ITSELF
+      writer.writeAttribute(GraphMLConstants.ATTR_NAME, id);
+      writer.writeAttribute(ARCADEDB_PREFIX, ARCADEDB_NAMESPACE, NAME_ATTRIBUTE, jsonLiteral(name));
+    }
     writer.writeAttribute(GraphMLConstants.ATTR_TYPE, type);
     writer.writeEndElement();
   }
@@ -218,17 +241,114 @@ public class ArcadeGraphMLWriter implements GraphWriter {
     writer.writeStartElement(GraphMLConstants.DATA);
     writer.writeAttribute(GraphMLConstants.KEY, keyId);
 
-    if (graphMLType(value).equals(keyType) && (!keyType.equals(GraphMLConstants.STRING) || value instanceof String))
+    if (graphMLType(value).equals(keyType) && (!keyType.equals(GraphMLConstants.STRING) || value instanceof String)) {
       // THE KEY'S OWN TYPE: PLAIN GRAPHML
-      writer.writeCharacters(value.toString());
-    else {
+      final String text = value.toString();
+      if (hasCharacterXmlCannotCarry(text)) {
+        // NOT EVEN A CHARACTER REFERENCE CAN SPELL IT: THE TEXT TRAVELS AS A JSON STRING, WHICH THE READER UNQUOTES
+        writer.writeAttribute(ARCADEDB_PREFIX, ARCADEDB_NAMESPACE, TYPE_ATTRIBUTE, JSON_STRING);
+        writeText(writer, jsonLiteral(text));
+      } else
+        writeText(writer, text);
+    } else {
       final ValueTypeHints.Encoded encoded = ValueTypeHints.encode(value, true);
       final String typeAttribute = typeAttribute(value, encoded.hint());
       if (typeAttribute != null)
-        writer.writeAttribute(ARCADEDB_PREFIX, ARCADEDB_NAMESPACE, TYPE_ATTRIBUTE, typeAttribute);
-      writer.writeCharacters(encoded.json() instanceof String text ? text : String.valueOf(encoded.json()));
+        writer.writeAttribute(ARCADEDB_PREFIX, ARCADEDB_NAMESPACE, TYPE_ATTRIBUTE, escapeInJson(typeAttribute));
+      // A LIST OR MAP IS JSON TEXT, WHICH SPELLS A CHARACTER XML CANNOT CARRY AS AN ESCAPE
+      writeText(writer, escapeInJson(encoded.json() instanceof String text ? text : String.valueOf(encoded.json())));
     }
     writer.writeEndElement();
+  }
+
+  /**
+   * Writes text, a carriage return as the character reference {@code &#13;}: a raw one is read back as a line feed, since an XML
+   * parser normalizes line ends.
+   */
+  private static void writeText(final XMLStreamWriter writer, final String text) throws XMLStreamException {
+    int from = 0;
+    for (int cr = text.indexOf('\r'); cr >= 0; cr = text.indexOf('\r', from)) {
+      writer.writeCharacters(text.substring(from, cr));
+      writer.writeEntityRef("#13");
+      from = cr + 1;
+    }
+    writer.writeCharacters(from == 0 ? text : text.substring(from));
+  }
+
+  /** Whether {@code c} (a code point) is a character XML 1.0 can hold, as text or through a character reference. */
+  private static boolean isXmlCharacter(final int c) {
+    return c == 0x9 || c == 0xA || c == 0xD || (c >= 0x20 && c <= 0xD7FF) || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0x10000 && c <= 0x10FFFF);
+  }
+
+  /** The code point at {@code i}, 0xFFFF for an unpaired surrogate (no XML character). */
+  private static int codePointAt(final String text, final int i) {
+    final char c = text.charAt(i);
+    if (!Character.isSurrogate(c))
+      return c;
+    if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1)))
+      return Character.toCodePoint(c, text.charAt(i + 1));
+    return 0xFFFF;
+  }
+
+  /** Whether {@code text} has a character that XML 1.0 cannot hold at all: a control character, U+FFFE, U+FFFF, an unpaired surrogate. */
+  static boolean hasCharacterXmlCannotCarry(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      final int c = codePointAt(text, i);
+      if (!isXmlCharacter(c))
+        return true;
+      if (c >= 0x10000)
+        i++;
+    }
+    return false;
+  }
+
+  /** Whether {@code name} is read back from an attribute value as it is written: no character XML cannot hold, no tab, line feed or carriage return. */
+  private static boolean isSafeAttributeValue(final String name) {
+    return !hasCharacterXmlCannotCarry(name) && name.indexOf('\t') < 0 && name.indexOf('\n') < 0 && name.indexOf('\r') < 0;
+  }
+
+  /** {@code text} as a JSON string literal, every control character and every character XML cannot hold as a {@code \}{@code uXXXX} escape. */
+  static String jsonLiteral(final String text) {
+    final StringBuilder sb = new StringBuilder(text.length() + 2).append('"');
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == '"' || c == '\\')
+        sb.append('\\').append(c);
+      else if (c < 0x20 || !isXmlCharacter(codePointAt(text, i)))
+        appendEscape(sb, c);
+      else {
+        sb.append(c);
+        if (Character.isHighSurrogate(c))
+          sb.append(text.charAt(++i));
+      }
+    }
+    return sb.append('"').toString();
+  }
+
+  /**
+   * JSON text with every character XML cannot hold replaced by its {@code \}{@code uXXXX} escape. Such a character can only be inside a
+   * string literal of the JSON, where the escape reads back as the same character.
+   */
+  private static String escapeInJson(final String json) {
+    if (!hasCharacterXmlCannotCarry(json))
+      return json;
+    final StringBuilder sb = new StringBuilder(json.length() + 16);
+    for (int i = 0; i < json.length(); i++) {
+      final char c = json.charAt(i);
+      if (!isXmlCharacter(codePointAt(json, i)))
+        appendEscape(sb, c);
+      else {
+        sb.append(c);
+        if (Character.isHighSurrogate(c))
+          sb.append(json.charAt(++i));
+      }
+    }
+    return sb.toString();
+  }
+
+  private static void appendEscape(final StringBuilder sb, final char c) {
+    sb.append("\\u").append(Character.forDigit(c >> 12 & 0xF, 16)).append(Character.forDigit(c >> 8 & 0xF, 16))
+        .append(Character.forDigit(c >> 4 & 0xF, 16)).append(Character.forDigit(c & 0xF, 16));
   }
 
   /**

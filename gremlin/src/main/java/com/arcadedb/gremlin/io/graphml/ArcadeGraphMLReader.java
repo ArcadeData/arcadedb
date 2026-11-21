@@ -96,8 +96,13 @@ public class ArcadeGraphMLReader implements GraphReader {
         final int event = reader.next();
         if (event == XMLStreamConstants.START_ELEMENT) {
           switch (reader.getLocalName()) {
-          case GraphMLConstants.KEY -> keys.put(reader.getAttributeValue(null, GraphMLConstants.ID),
-              new Key(reader.getAttributeValue(null, GraphMLConstants.ATTR_NAME), reader.getAttributeValue(null, GraphMLConstants.ATTR_TYPE)));
+          case GraphMLConstants.KEY -> {
+            // THE NAME ATTRIBUTE IS A STAND-IN WHEN THE WRITER ADDED THE NAME ITSELF, AS A JSON STRING, IN ONE OF OUR OWN
+            final String jsonName = reader.getAttributeValue(ArcadeGraphMLWriter.ARCADEDB_NAMESPACE, ArcadeGraphMLWriter.NAME_ATTRIBUTE);
+            keys.put(reader.getAttributeValue(null, GraphMLConstants.ID),
+                new Key(jsonName != null ? jsonString(jsonName) : reader.getAttributeValue(null, GraphMLConstants.ATTR_NAME),
+                    reader.getAttributeValue(null, GraphMLConstants.ATTR_TYPE)));
+          }
           case GraphMLConstants.NODE -> {
             inVertex = true;
             elementId = reader.getAttributeValue(null, GraphMLConstants.ID);
@@ -199,6 +204,9 @@ public class ArcadeGraphMLReader implements GraphReader {
 
   /** A value read through its {@code arcadedb:type}, or else through the GraphML type of its key. */
   static Object value(final DatabaseInternal database, final String text, final String keyType, final String typeAttribute) {
+    if (ArcadeGraphMLWriter.JSON_STRING.equals(typeAttribute))
+      // A TEXT XML COULD NOT CARRY AS IT IS: THE WRITER SENT IT AS A JSON STRING LITERAL
+      return jsonString(text);
     if (typeAttribute != null && !typeAttribute.isEmpty()) {
       final char first = typeAttribute.charAt(0);
       final Object hint = first == '[' ? new JSONArray(typeAttribute) : first == '{' ? new JSONObject(typeAttribute) : typeAttribute;
@@ -224,6 +232,18 @@ public class ArcadeGraphMLReader implements GraphReader {
     } catch (final NumberFormatException e) {
       // A VALUE THAT IS NOT OF ITS KEY'S TYPE STAYS THE TEXT IT IS, RATHER THAN ABORTING THE WHOLE FILE
       return text;
+    }
+  }
+
+  /** The string a JSON string literal spells, the text itself when it is no such literal: a hand-written file stays readable. */
+  private static String jsonString(final String literal) {
+    final String trimmed = literal.trim();
+    if (trimmed.length() < 2 || trimmed.charAt(0) != '"')
+      return literal;
+    try {
+      return new JSONArray("[" + trimmed + "]").getString(0);
+    } catch (final RuntimeException e) {
+      return literal;
     }
   }
 
