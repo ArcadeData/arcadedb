@@ -31,10 +31,14 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -383,22 +387,29 @@ class ReplicatedApplyPublicationTest {
     void aReaderSeesTheSequenceOddWhileAnEntryIsBeingApplied() throws Exception {
       final DatabaseInternal db = (DatabaseInternal) database;
       final PageManager pageManager = db.getPageManager();
-      final AtomicBoolean stop = new AtomicBoolean();
-      final AtomicInteger oddSamples = new AtomicInteger();
-      final Thread reader = new Thread(() -> {
-        while (!stop.get())
-          if ((pageManager.getPublicationSequence() & 1) != 0)
-            oddSamples.incrementAndGet();
-      });
-      reader.start();
-      try {
-        for (int i = 0; i < 300 && oddSamples.get() == 0; i++)
-          db.getTransactionManager().applyChanges(entryAdvancingTheBucketPage(), Collections.emptyMap(), null, false);
-      } finally {
-        stop.set(true);
-        reader.join();
-      }
-      assertThat(oddSamples.get()).isPositive();
+      final AtomicLong sampledByAReader = new AtomicLong(-1);
+      // The apply asks for the record deltas of its buckets after its pages reached the read cache and before it closes its
+      // publication, so a reader started from there samples the sequence in the middle of an apply on every run. A reader
+      // looping beside the applies and hoping to land in one of those windows is a race for a CPU, and loses it on a loaded
+      // machine. The map is empty, so nothing else of the apply changes.
+      final Map<Integer, Integer> deltas = new HashMap<>() {
+        @Override
+        public Set<Map.Entry<Integer, Integer>> entrySet() {
+          final Thread reader = new Thread(() -> sampledByAReader.set(pageManager.getPublicationSequence()), "publication-reader");
+          reader.start();
+          try {
+            reader.join();
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+          return super.entrySet();
+        }
+      };
+
+      assertThat(db.getTransactionManager().applyChanges(entryAdvancingTheBucketPage(), deltas, null, false)).isTrue();
+
+      assertThat(sampledByAReader.get()).as("the apply must have reached the point where the reader samples").isNotNegative();
+      assertThat(sampledByAReader.get() & 1).as("a reader sampling during the apply sees the sequence odd").isOne();
       assertThat(pageManager.getPublicationSequence() & 1).isZero();
     }
 
