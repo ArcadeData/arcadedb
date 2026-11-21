@@ -364,8 +364,8 @@ class LightweightEdgeScanAndWriteTest {
 
       assertThatThrownBy(() -> database.transaction(
           () -> database.command("sql", "update Mentions set since = 2020").close()))
-          .isInstanceOf(IllegalStateException.class)
-          .hasMessageContaining("Lightweight edges cannot be modified");
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("is declared LIGHTWEIGHT, so its edges cannot have properties");
 
       // the record-backed half was modified before the refusal, and the transaction took it back with everything else
       database.transaction(() -> {
@@ -640,8 +640,8 @@ class LightweightEdgeScanAndWriteTest {
       assertThat(query("select from Cite")).hasSize(1);
 
       assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "update Cite set since = 2020").close()))
-          .isInstanceOf(IllegalStateException.class)
-          .hasMessageContaining("Lightweight edges cannot be modified");
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("is declared LIGHTWEIGHT, so its edges cannot have properties");
     }
 
     private RID[] newWorks(final int count) {

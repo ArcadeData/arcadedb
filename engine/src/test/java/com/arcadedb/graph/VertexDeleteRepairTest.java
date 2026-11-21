@@ -1718,13 +1718,13 @@ class VertexDeleteRepairTest {
       // Door 1: a persisted lightweight edge reached through its endpoint's list cannot be made mutable at all.
       database.transaction(() -> assertThatThrownBy(
           () -> rids[0].asVertex().getEdges(Vertex.DIRECTION.OUT, "Link").iterator().next().asEdge().modify())
-          .isInstanceOf(IllegalStateException.class).hasMessageContaining("cannot be modified"));
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("LIGHTWEIGHT"));
 
       // Door 2: the MutableLightEdge newEdge() hands back inside the creating session refuses set() outright, so
       // the "@in"/"@out" override in MutableEdge - the only caller of moveEdge - is never entered.
       database.transaction(() -> assertThatThrownBy(
           () -> rids[0].asVertex().modify().newEdge("Link", rids[1].asVertex()).set("@in", rids[0]))
-          .isInstanceOf(IllegalStateException.class).hasMessageContaining("LIGHTWEIGHT"));
+          .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("LIGHTWEIGHT"));
 
       assertIntegrityClean();
     }

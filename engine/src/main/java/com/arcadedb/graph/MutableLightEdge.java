@@ -96,14 +96,22 @@ public class MutableLightEdge extends MutableEdge implements LightEdge {
     return includeMetadata ? new JSONObject(lightEdgeMetadata()) : new JSONObject();
   }
 
+  /**
+   * Refused with the {@link IllegalArgumentException} {@link GraphEngine#newEdge} raises for the same mistake (issue #12871). An
+   * empty property map describes no property and is accepted, as it is on creation.
+   */
   @Override
   public MutableEdge set(final Object... properties) {
-    throw cannotHaveProperties();
+    if (GraphEngine.describesProperties(properties))
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
   public MutableEdge set(final Map<String, Object> properties) {
-    throw cannotHaveProperties();
+    if (!properties.isEmpty())
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
@@ -124,22 +132,29 @@ public class MutableLightEdge extends MutableEdge implements LightEdge {
 
   @Override
   public MutableEdge fromMap(final Map<String, Object> map) {
-    throw cannotHaveProperties();
+    if (!map.isEmpty())
+      throw cannotHaveProperties();
+    return this;
   }
 
+  /**
+   * An empty object is accepted, so a client that always sends a {@code CONTENT} sends {@code {}} for an edge without data, as
+   * openCypher {@code CREATE (a)-[:K {}]->(b)} and the batch loader accept the same empty map (issue #12871).
+   */
   @Override
   public MutableEdge fromJSON(final JSONObject json) {
-    throw cannotHaveProperties();
+    if (!json.isEmpty())
+      throw cannotHaveProperties();
+    return this;
   }
 
   @Override
   public void merge(final Map<String, Object> other) {
-    throw cannotHaveProperties();
+    if (!other.isEmpty())
+      throw cannotHaveProperties();
   }
 
-  private IllegalStateException cannotHaveProperties() {
-    return new IllegalStateException("Edge type '" + getTypeName()
-        + "' is declared LIGHTWEIGHT, so its edges are stored inside the vertices and cannot have properties. "
-        + "Use a regular edge type if the edge needs to carry data");
+  private IllegalArgumentException cannotHaveProperties() {
+    return GraphEngine.lightweightEdgeCannotHaveProperties(getTypeName());
   }
 }

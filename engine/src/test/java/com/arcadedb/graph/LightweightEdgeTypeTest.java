@@ -152,7 +152,7 @@ class LightweightEdgeTypeTest extends TestHelper {
       // save() is a no-op rather than a throw: the edge is already connected.
       assertThat(edge.save()).isSameAs(edge);
 
-      assertThatThrownBy(() -> edge.set("since", 2020)).isInstanceOf(IllegalStateException.class)
+      assertThatThrownBy(() -> edge.set("since", 2020)).isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("LIGHTWEIGHT");
     });
   }

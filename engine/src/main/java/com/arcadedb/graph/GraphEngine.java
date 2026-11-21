@@ -508,9 +508,7 @@ public class GraphEngine {
       // The storage shape is a property of the type, not of the call: on a LIGHTWEIGHT type every edge is stored
       // inside the two vertices, so there is no record to create, save or place in a bucket.
       if (describesProperties(edgeProperties))
-        throw new IllegalArgumentException("Edge type '" + type.getName()
-            + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge "
-            + "needs to carry data");
+        throw lightweightEdgeCannotHaveProperties(type.getName());
       if (bucketName != null)
         throw new IllegalArgumentException("Edge type '" + type.getName()
             + "' is declared LIGHTWEIGHT, so its edges have no record and cannot be targeted at bucket '" + bucketName
@@ -3564,6 +3562,16 @@ public class GraphEngine {
       return InternalBucketNaming.inEdgesBucketName(vertexBucket.getName());
 
     throw new IllegalArgumentException("Invalid direction");
+  }
+
+  /**
+   * The refusal of a property on an edge of a type declared LIGHTWEIGHT, whatever path writes it: the edge is stored inside
+   * its two vertices and has nowhere to keep one. An {@link IllegalArgumentException}, because the statement asks for something
+   * the type rules out, which is a caller mistake (400 over HTTP) on every path alike (issue #12871).
+   */
+  public static IllegalArgumentException lightweightEdgeCannotHaveProperties(final String edgeTypeName) {
+    return new IllegalArgumentException("Edge type '" + edgeTypeName
+        + "' is declared LIGHTWEIGHT, so its edges cannot have properties. Use a regular edge type if the edge needs to carry data");
   }
 
   /**
