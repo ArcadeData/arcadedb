@@ -5084,6 +5084,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *                     the original and skip the steps after it, leaving database.lck locked.
    */
   private void releaseResourcesOnOpenFailure(final Error primaryError) {
+    // THE TRANSACTION CONTEXT openInternal() REGISTERED FOR THIS THREAD, FIRST, WHILE THE MANAGERS IT MAY HOLD LOCKS IN ARE STILL
+    // THERE: IT BELONGS TO AN INSTANCE THAT NEVER OPENED. LEFT BEHIND, IT PINNED THAT INSTANCE FOR AS LONG AS THE THREAD LIVES AND
+    // FAILED THE THREAD'S FIRST USE OF A DATABASE OF THE SAME PATH OPENED LATER, BY ANY THREAD ("Invalid transactional context
+    // (different db)"). NO LIVE INSTANCE OF THE PATH CAN OWN A CONTEXT OF THIS THREAD: THE FACTORY REFUSES AN OPEN OF A PATH THAT HAS ONE
+    try {
+      final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.removeContext(databasePath);
+      if (context != null)
+        for (int i = context.transactions.size() - 1; i > -1; --i) {
+          final TransactionContext tx = context.transactions.get(i);
+          if (tx.isActive())
+            tx.rollback();
+        }
+    } catch (final Throwable e) {
+      onOpenFailureReleaseError(primaryError, e, "Error on clearing the transaction context after a failed open of database '%s'", name);
+    }
+
     try {
       if (columnarIndexManager != null) {
         // a failed open is no clean close: nothing is flushed, the projections opened by the schema load only release their files
