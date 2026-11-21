@@ -110,6 +110,8 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     final String weightProperty = config != null ? (String) config.get("weightProperty") : null;
     // OUT, not the BOTH most algorithms default to: rank is pushed along the stored edges
     final Vertex.DIRECTION direction = extractDirection(config != null ? config.get("direction") : null, Vertex.DIRECTION.OUT);
+    requireInterval("dampingFactor", dampingFactor, 0.0, 1.0);
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

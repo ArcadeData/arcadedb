@@ -160,6 +160,8 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
       direction = Vertex.DIRECTION.OUT;
       weightProperty = null;
     }
+    requireInterval("dampingFactor", dampingFactor, 0.0, 1.0);
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

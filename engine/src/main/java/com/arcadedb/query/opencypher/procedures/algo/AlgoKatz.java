@@ -88,6 +88,8 @@ public class AlgoKatz extends AbstractAlgoProcedure {
     final double alpha         = optionalNumberArg(args, 1, "alpha", 0.005).doubleValue();
     final int maxIterations    = extractInt(optionalNumberArg(args, 2, "maxIterations", 100), "maxIterations", 1);
     final double tolerance     = optionalNumberArg(args, 3, "tolerance", 1e-6).doubleValue();
+    requireNonNegativeFinite("alpha", alpha);
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);

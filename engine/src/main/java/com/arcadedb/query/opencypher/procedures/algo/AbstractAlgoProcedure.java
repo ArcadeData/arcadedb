@@ -391,6 +391,23 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     return count;
   }
 
+  /**
+   * Refuses a real-valued knob outside the interval {@code [min, max]}, by name: a damping factor, a probability, a decay or a
+   * threshold has a domain, and outside it the algorithm does not run a smaller or larger instance of the same question, it
+   * answers a different one (a negative PageRank, a probability of 7.5) without saying so. NaN is outside every interval.
+   */
+  protected void requireInterval(final String paramName, final double value, final double min, final double max) {
+    if (!(value >= min && value <= max))
+      throw new IllegalArgumentException(
+          getName() + "(): " + paramName + " must be between " + min + " and " + max + ", got " + value);
+  }
+
+  /** Refuses a real-valued knob that is negative, NaN or infinite (a tolerance, a resolution, an attenuation), by name. */
+  protected void requireNonNegativeFinite(final String paramName, final double value) {
+    if (!(value >= 0.0) || Double.isInfinite(value))
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " must be a finite number, not negative, got " + value);
+  }
+
   // ── Work bounds ──────────────────────────────────────────────────────────
 
   /**

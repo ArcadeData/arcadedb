@@ -83,6 +83,7 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
     final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 1, "BOTH"), "direction"));
     final int maxIterations    = extractInt(optionalNumberArg(args, 2, "maxIterations", 20), "maxIterations", 1);
     final double tolerance     = optionalNumberArg(args, 3, "tolerance", 1e-6).doubleValue();
+    requireNonNegativeFinite("tolerance", tolerance);
 
     final Database db = context.getDatabase();
     final WorkGuard guard = newWorkGuard(context);
