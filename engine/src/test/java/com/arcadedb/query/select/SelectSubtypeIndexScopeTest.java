@@ -260,4 +260,87 @@ class SelectSubtypeIndexScopeTest extends TestHelper {
     return database.select().fromType(type).polymorphic(polymorphic).where().property("a").eq().value(1).compile().parallel()
         .documents();
   }
+
+  // ---- the same hierarchy under a composite index P(a, b): a = i % 4, b = (i / 4) % 2, so 10 rows per type match a = 1 and b = 1 ----
+
+  private record CompositeRow(String type, int a, int b, int id) {
+  }
+
+  private List<CompositeRow> createCompositeHierarchy() {
+    final List<CompositeRow> model = new ArrayList<>();
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("P").createProperty("a", Type.INTEGER);
+      database.getSchema().getType("P").createProperty("b", Type.INTEGER);
+      database.getSchema().getType("P").createProperty("id", Type.INTEGER);
+      database.getSchema().createDocumentType("Q").addSuperType("P");
+      database.getSchema().createDocumentType("R").addSuperType("Q");
+      database.getSchema().createDocumentType("S").addSuperType("P");
+      int id = 0;
+      for (int i = 0; i < 40; i++)
+        for (final String type : HIERARCHY_TYPES) {
+          final CompositeRow row = new CompositeRow(type, i % 4, (i / 4) % 2, id++);
+          database.newDocument(type).set("a", row.a, "b", row.b, "id", row.id).save();
+          model.add(row);
+        }
+    });
+    database.getSchema().getType("P").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a", "b");
+    return model;
+  }
+
+  private static List<Integer> expectedCompositeIds(final List<CompositeRow> model, final String type, final boolean polymorphic,
+      final boolean withB) {
+    final Set<String> types = scope(type, polymorphic);
+    return model.stream().filter(r -> r.a == 1 && (!withB || r.b == 1) && types.contains(r.type)).map(CompositeRow::id).sorted()
+        .toList();
+  }
+
+  @Test
+  void aCompositeIndexOnTheSupertypeKeepsTheIndexAndTheScopeOfEverySubtype() {
+    final List<CompositeRow> model = createCompositeHierarchy();
+    for (final boolean withB : new boolean[] { true, false })
+      for (final String type : HIERARCHY_TYPES)
+        for (final boolean polymorphic : new boolean[] { true, false }) {
+          final String label = type + " polymorphic " + polymorphic + (withB ? " a and b" : " prefix a");
+          final List<Integer> expected = expectedCompositeIds(model, type, polymorphic, withB);
+
+          final SelectIterator<Document> iterator = compositeIterator(type, polymorphic, withB, -1, 0);
+          final List<Integer> actual = ids(iterator);
+          Collections.sort(actual);
+          assertThat(actual).as(label).isEqualTo(expected);
+          assertThat(iterator.getMetrics().get("usedIndexes")).as(label).isEqualTo(1);
+          assertThat(iterator.getMetrics().get("evaluatedRecords")).as(label).isEqualTo((long) expected.size());
+
+          assertThat(compositeCount(type, polymorphic, withB, -1, 0)).as(label + " count").isEqualTo((long) expected.size());
+          assertThat(compositeCount(type, polymorphic, withB, 3, 0)).as(label + " count limit").isEqualTo(3L);
+          assertThat(compositeCount(type, polymorphic, withB, -1, expected.size() - 2)).as(label + " count skip").isEqualTo(2L);
+          assertThat(compositeCount(type, polymorphic, withB, 4, expected.size() - 2)).as(label + " count skip limit").isEqualTo(2L);
+          assertThat(compositeCount(type, polymorphic, withB, -1, expected.size())).as(label + " count past the end").isZero();
+
+          // THE SUB-INDEXES ARE READ IN BUCKET ORDER, SO THE ROWS OF THE SUPERTYPE AND OF THE OTHER BRANCH COME FIRST: A CAP COUNTING
+          // CANDIDATES BEFORE THE SCOPE FILTER WOULD COME BACK SHORT
+          assertThat(ids(compositeIterator(type, polymorphic, withB, 3, 0))).as(label + " limit").hasSize(3).isSubsetOf(expected);
+          assertThat(ids(compositeIterator(type, polymorphic, withB, 4, expected.size() - 2))).as(label + " skip limit").hasSize(2)
+              .isSubsetOf(expected);
+          assertThat(ids(compositeIterator(type, polymorphic, withB, -1, expected.size() - 1))).as(label + " skip").hasSize(1)
+              .isSubsetOf(expected);
+        }
+  }
+
+  private SelectIterator<Document> compositeIterator(final String type, final boolean polymorphic, final boolean withB,
+      final int limit, final int skip) {
+    return compositeSelect(type, polymorphic, withB, limit, skip).documents();
+  }
+
+  private long compositeCount(final String type, final boolean polymorphic, final boolean withB, final int limit, final int skip) {
+    return compositeSelect(type, polymorphic, withB, limit, skip).count();
+  }
+
+  private Select compositeSelect(final String type, final boolean polymorphic, final boolean withB, final int limit, final int skip) {
+    final SelectWhereAfterBlock where = withB ?
+        database.select().fromType(type).polymorphic(polymorphic).where().property("a").eq().value(1).and().property("b").eq()
+            .value(1) :
+        database.select().fromType(type).polymorphic(polymorphic).where().property("a").eq().value(1);
+    final Select select = where.skip(skip);
+    return limit > -1 ? select.limit(limit) : select;
+  }
 }
