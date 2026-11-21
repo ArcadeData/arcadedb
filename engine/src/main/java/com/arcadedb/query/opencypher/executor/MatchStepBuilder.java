@@ -48,6 +48,7 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -347,6 +348,18 @@ final class MatchStepBuilder {
           }
         }
 
+        // Issue #12149: a single hop from an unlabelled, unconstrained source to a target a UNIQUE index pins starts from the
+        // target: an index lookup and a walk of its relationships backwards, instead of a scan of every vertex of every type
+        // (repeated for every row an UNWIND or a WITH hands over) and an expansion of all of them
+        if (!reversed && !sourceAlreadyBound
+            && startsFromUniquelyKeyedTarget(pathPattern, sourceNode, sourceVar, whereClause, isOptional, boundVariables,
+            matchVariables)) {
+          final NodePattern targetNode = pathPattern.getLastNode();
+          reversed = true;
+          sourceNode = targetNode;
+          sourceVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("  tgt" + nextAnonymousId());
+        }
+
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
         }
@@ -439,8 +452,9 @@ final class MatchStepBuilder {
 
           // When reversed, swap source/target variables and use the original source as target.
           // This mapping only holds for a single-relationship pattern: the written source is the
-          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
-          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // end of the one reversed hop. Every entry point into `reversed` enforces that (the
+          // bound-target reversal above, the uniquely keyed target one of issue #12149 and
+          // shouldReverseVariableLengthPathFromIndexedAnchor);
           // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
@@ -804,6 +818,62 @@ final class MatchStepBuilder {
         return false;
     }
     return true;
+  }
+
+  /**
+   * Whether a pattern of one fixed-length hop is better started from its target (issue #12149): the source is unlabelled and
+   * unconstrained, so starting from it scans every vertex of every type, while the target is pinned by an equality on every
+   * column of a UNIQUE index of its label, through its inline map (whose values may read an earlier clause, an UNWIND or WITH
+   * variable) or through the {@code WHERE} clause (equalities or {@code IN}-lists over literals and parameters). The step that
+   * starts the pattern then finds the target through that index, once per row, and the hop walks its relationships backwards.
+   * <p>
+   * Not over a relationship of no type or of a unidirectional type, whose incoming side no vertex stores, and not for an OPTIONAL
+   * MATCH or a path variable, which bind the pattern in the order written.
+   */
+  private boolean startsFromUniquelyKeyedTarget(final PathPattern pathPattern, final NodePattern sourceNode, final String sourceVar,
+      final WhereClause whereClause, final boolean isOptional, final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (isOptional || pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return false;
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || !rel.hasTypes())
+      return false;
+    for (final String type : rel.getTypes())
+      if (!(database.getSchema().getTypeOrNull(type) instanceof EdgeType edgeType) || !edgeType.isBidirectional())
+        return false;
+
+    // the source is a scan of every vertex: no label, no property, no inline predicate, no id
+    if (sourceNode.hasLabels() || sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
+        || boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar) || plan.extractIdFilter(whereClause, sourceVar) != null)
+      return false;
+
+    final NodePattern target = pathPattern.getLastNode();
+    final String targetVar = target.getVariable();
+    if (target.hasDynamicLabels() || target.hasWhereExpression() || target.getPropertiesParameterName() != null)
+      return false;
+    if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
+      return false;
+    if (isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+      return true;
+    return targetVar != null && whereClause != null && isUniquelyKeyedByWhere(target, targetVar, whereClause.getConditionExpression());
+  }
+
+  /**
+   * Whether the {@code WHERE} clause pins every column of a UNIQUE index of the node's one label with equalities or {@code IN}-lists
+   * over literals and parameters (issue #12149), the predicates the node step seeks an index with.
+   */
+  private boolean isUniquelyKeyedByWhere(final NodePattern node, final String variable, final BooleanExpression where) {
+    if (!node.hasLabels() || node.getLabels().size() != 1 || !database.getSchema().existsType(node.getLabels().getFirst()))
+      return false;
+    final Map<String, Object> pinned = new LinkedHashMap<>();
+    EdgeIndexSeedPlanner.collectWherePredicates(variable, where, pinned);
+    if (pinned.isEmpty())
+      return false;
+    for (final TypeIndex index : database.getSchema().getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys != null && pinned.keySet().containsAll(keys))
+        return true;
+    }
+    return false;
   }
 
   /**
