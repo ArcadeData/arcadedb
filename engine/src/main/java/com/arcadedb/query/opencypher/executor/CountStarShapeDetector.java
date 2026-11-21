@@ -699,6 +699,7 @@ final class CountStarShapeDetector {
     // guard. An inline property map is a per-vertex filter on the central node (issue #9595), written on
     // one occurrence of a mandatory clause: in an OPTIONAL clause it is a condition of that arm alone, which
     // a filter on the central node does not express.
+    final ArrayList<NodePattern> optionalLabeled = new ArrayList<>();
     NodePattern centralWithProperties = null;
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns()) continue;
@@ -716,6 +717,10 @@ final class CountStarShapeDetector {
           }
           if (!node.hasLabels())
             continue;
+          if (mc.isOptional()) {
+            optionalLabeled.add(node);
+            continue;
+          }
           if (!hasPushDownRepresentableLabel(node))
             return null;
           if (labelsConflict(centralLabel, node.getLabels().get(0)))
@@ -723,6 +728,11 @@ final class CountStarShapeDetector {
           centralLabel = node.getLabels().get(0);
         }
     }
+    // A label written on the central node inside an OPTIONAL clause is a condition of that arm alone: it never
+    // removes a row, so it may only repeat the label a mandatory occurrence already enforces (issue #12726)
+    for (final NodePattern node : optionalLabeled)
+      if (centralLabel == null || node.getLabels().size() != 1 || !centralLabel.equals(node.getLabels().get(0)))
+        return null;
 
     // The WHERE of each clause may hold conjuncts that read one node of the star: a mandatory clause filters the
     // central node or the node a mandatory arm reaches, an OPTIONAL clause only what its own arms reach, because there
