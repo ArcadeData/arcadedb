@@ -237,6 +237,15 @@ public class JSONImporterFormat implements FormatImporter {
     JSONObject mappingObject;
 
     long recordIndex = 0;
+    // The records saved into the transaction the import owns and not yet committed, and the counters as they stood at its
+    // beginning, which a rolled-back transaction restores. "skip" mode commits every record on its own, so for it the batch is
+    // always the one record being read: only a rollback that takes back no other record can keep the rest of the file importable.
+    final boolean batched = ownsTransaction && !settings.isSkipOnRowError();
+    long pendingRecords = 0;
+    long committedRecords = 0;
+    long batchDocumentsBefore = context.createdDocuments.get();
+    long batchVerticesBefore = context.createdVertices.get();
+    long batchEdgesBefore = context.createdEdges.get();
     while (true) {
       final JsonToken next;
       try {
@@ -271,12 +280,9 @@ public class JSONImporterFormat implements FormatImporter {
       final AtomicBoolean recordFailed = new AtomicBoolean();
 
       // createRecord()/convertMap() count a new document/vertex/edge as soon as it is allocated, well before
-      // save()/commit(), either of which can still fail - snapshot the counters so a rolled-back record can have
-      // its counts undone below instead of leaking into the summary.
-      final long createdDocumentsBefore = context.createdDocuments.get();
-      final long createdVerticesBefore = context.createdVertices.get();
-      final long createdEdgesBefore = context.createdEdges.get();
-
+      // save()/commit(), either of which can still fail: the counters at the beginning of the transaction the record is saved in
+      // (batchDocumentsBefore and its two siblings) are what a rollback restores, so a rolled-back record does not leak into the
+      // summary.
       try {
         final Object record = parseRecord(reader, settings, context, database, mappingObject, ignore, recordFailed);
         if (recordFailed.get())
@@ -291,18 +297,30 @@ public class JSONImporterFormat implements FormatImporter {
 
         // The flag is cleared BEFORE the call (a commit that pops our nested level leaves somebody else's transaction
         // on top, issue #7860) and restored when the commit is refused without popping it, so the catch below still
-        // rolls it back (issue #11208)
-        if (ownsTransaction)
+        // rolls it back (issue #11208). In "abort" mode only every -commitEvery records: one commit per record made a large
+        // array import dominated by the write-ahead log and the page flush, not by parsing.
+        if (ownsTransaction && (!batched || ++pendingRecords >= settings.commitEvery)) {
           ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+          committedRecords += pendingRecords;
+          pendingRecords = 0;
+          batchDocumentsBefore = context.createdDocuments.get();
+          batchVerticesBefore = context.createdVertices.get();
+          batchEdgesBefore = context.createdEdges.get();
+        }
       } catch (final RuntimeException e) {
         ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
 
-        context.createdDocuments.set(createdDocumentsBefore);
-        context.createdVertices.set(createdVerticesBefore);
-        context.createdEdges.set(createdEdgesBefore);
+        context.createdDocuments.set(batchDocumentsBefore);
+        context.createdVertices.set(batchVerticesBefore);
+        context.createdEdges.set(batchEdgesBefore);
 
-        if (!settings.isSkipOnRowError())
+        if (!settings.isSkipOnRowError()) {
+          if (committedRecords > 0)
+            LogManager.instance().log(this, Level.WARNING,
+                "JSON import failed: the import is PARTIAL - %,d records were made durable by earlier batch commits and stay on the disk, the other %,d saved since the last commit were rolled back",
+                null, committedRecords, pendingRecords);
           throw e;
+        }
 
         // The underlying JsonReader is positioned right after the offending record, so it's safe to continue with
         // the next array entry.
@@ -310,7 +328,7 @@ public class JSONImporterFormat implements FormatImporter {
         context.errors.incrementAndGet();
       }
 
-      if (ownsTransaction)
+      if (ownsTransaction && !txOpen[0])
         ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
