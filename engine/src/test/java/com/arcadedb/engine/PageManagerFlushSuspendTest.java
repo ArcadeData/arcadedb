@@ -36,6 +36,9 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -436,6 +439,109 @@ class PageManagerFlushSuspendTest {
       while (flush.pageIndex.hasPendingOf(database) && System.currentTimeMillis() < deadline)
         Thread.sleep(5);
       assertThat(database.query("sql", "select count(*) as c from Race5").next().<Long>getProperty("c")).isEqualTo(2L);
+    }
+  }
+
+  /**
+   * Regression test for issue #12893: a batch the flush thread defers while the resume of the LAST suspender detaches
+   * the deferred backlog is never left behind.
+   * <p>
+   * The flush thread defers a batch under the per-database suspend monitor: it resolves the database's backlog queue in
+   * {@code deferredByDatabase} and offers the batch to it. Phase 1 of the resume detaches that queue with
+   * {@code remove()} and walks it, and does so WITHOUT the suspend monitor (the walk writes the pages and the flush
+   * thread needs the monitor to decide). A detach landing between the lookup and the offer took the queue away empty:
+   * the batch then went into a queue nothing referenced any more, Phase 2 found no entry, and the batch was neither
+   * written nor re-enqueued - its pages stayed in {@code pageIndex}, pinning the database's pending count above zero, so
+   * every later drain (a backup, a close) waited on a page that would never be written.
+   * <p>
+   * {@link PageManagerFlushThread#testHookWhileABatchIsBeingDeferred} holds that moment open (the flush thread has
+   * resolved the backlog and not yet offered the batch), and the test holds the monitor Phase 1 starts with, so the
+   * resume reaches its detach only after the flush thread has resolved the backlog.
+   */
+  @Nested
+  class BatchDeferredWhileTheResumeDetachesTheBacklog12893 extends TestHelper {
+    @Test
+    void aBatchDeferredWhileTheResumeDetachesTheBacklogIsStillFlushed() throws Exception {
+      final Database db = (Database) database;
+      final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+      final PageManagerFlushThread flush = pageManager.getFlushThread();
+
+      database.getSchema().createDocumentType("Detach");
+
+      final CountDownLatch firstInside = new CountDownLatch(1);
+      final CountDownLatch releaseFirst = new CountDownLatch(1);
+      final CountDownLatch deferring = new CountDownLatch(1);
+      final CountDownLatch deferralMayGoOn = new CountDownLatch(1);
+      flush.testHookWhileABatchIsBeingDeferred = () -> {
+        deferring.countDown();
+        try {
+          deferralMayGoOn.await();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      };
+
+      final Thread suspender = new Thread(() -> {
+        try {
+          pageManager.suspendFlushAndExecute(db, () -> {
+            firstInside.countDown();
+            releaseFirst.await();
+          });
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      }, "test-suspender-detach");
+
+      try {
+        suspender.start();
+        assertThat(firstInside.await(30, TimeUnit.SECONDS)).as("the suspender must hold the freeze").isTrue();
+
+        synchronized (flush.replayDrainLock(db)) {
+          // The resume starts and stops at the monitor its Phase 1 begins with, short of the detach of the backlog.
+          releaseFirst.countDown();
+          awaitBlockedOnAMonitorOwnedBy(suspender, Thread.currentThread());
+
+          // The commit's batch is polled by the flush thread, which finds the database suspended, resolves its backlog
+          // and is held there by the hook.
+          database.transaction(() -> database.newDocument("Detach").set("id", 1).save());
+          assertThat(deferring.await(30, TimeUnit.SECONDS)).as("the flush thread must be in the middle of deferring the batch")
+              .isTrue();
+        }
+
+        // The resume now detaches the backlog and is held up by the flush thread that is still deferring: at the
+        // detach itself, or (a detach that did not wait) at the monitor Phase 2 takes.
+        awaitBlockedOnAMonitorOwnedBy(suspender, flush);
+
+        deferralMayGoOn.countDown();
+        suspender.join();
+      } finally {
+        deferralMayGoOn.countDown();
+        releaseFirst.countDown();
+        suspender.join();
+        flush.testHookWhileABatchIsBeingDeferred = null;
+      }
+
+      // Wherever the batch ended up it must reach the disk. Poll rather than assert at once: a batch deferred after the
+      // detach is re-enqueued by Phase 2 and written by the flush thread, not by the resume itself.
+      final long deadline = System.currentTimeMillis() + 10_000;
+      while (flush.pageIndex.hasPendingOf(database) && System.currentTimeMillis() < deadline)
+        Thread.sleep(5);
+      assertThat(flush.pageIndex.hasPendingOf(database))
+          .as("the batch deferred while the resume detached the backlog must have been flushed, not left in an unreachable queue")
+          .isFalse();
+      assertThat(database.query("sql", "select count(*) as c from Detach").next().<Long>getProperty("c")).isEqualTo(1L);
+    }
+
+    /** Waits until {@code waiter} is blocked on a monitor {@code owner} holds. */
+    private static void awaitBlockedOnAMonitorOwnedBy(final Thread waiter, final Thread owner) throws InterruptedException {
+      final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+      final long deadline = System.currentTimeMillis() + 30_000;
+      while (System.currentTimeMillis() < deadline && waiter.isAlive()) {
+        final ThreadInfo info = threads.getThreadInfo(waiter.threadId());
+        if (info != null && info.getThreadState() == Thread.State.BLOCKED && info.getLockOwnerId() == owner.threadId())
+          return;
+        Thread.sleep(1);
+      }
     }
   }
 
