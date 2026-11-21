@@ -44,6 +44,7 @@ public class DatabaseFactory implements AutoCloseable {
   private              boolean                                                    replicatedNode       = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
+  private static final Map<Path, Object>                                          OPEN_LOCKS           = new ConcurrentHashMap<>();
   /**
    * The databases whose committed pages may be in neither a forced data file nor a forced WAL because of how their last
    * instance closed (issue #12025), keyed by path, valued by the {@link LocalDatabase#getInstanceSequence() sequence} of the
@@ -125,6 +126,24 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
+    synchronized (pathLock(databasePath)) {
+      return openLocked(mode);
+    }
+  }
+
+  /**
+   * The monitor of one database PATH. {@code open} and {@code create} are {@code synchronized} on their factory, which is a new
+   * object per caller, so threads opening the same path passed {@link #checkForActiveInstance} together and each built a whole
+   * {@link LocalDatabase} over the same files. The one refused afterwards still ran its open and its failure clean-up, and a
+   * {@code LocalDatabase} equals every other of its path, so that clean-up dropped the winner's cached and queued pages and rolled
+   * back its transactions (record counters off, commits failing with NullPointerException). Callers of one path now take turns:
+   * the second finds the winner registered and is refused before it builds anything.
+   */
+  private static Object pathLock(final String databasePath) {
+    return OPEN_LOCKS.computeIfAbsent(getNormalizedPath(databasePath), path -> new Object());
+  }
+
+  private Database openLocked(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
     // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
@@ -153,6 +172,12 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database create() {
+    synchronized (pathLock(databasePath)) {
+      return createLocked();
+    }
+  }
+
+  private Database createLocked() {
     checkForActiveInstance(databasePath);
 
     // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
