@@ -91,7 +91,11 @@ public class AlgoRandomWalk extends AbstractAlgoProcedure {
     validateArgs(args);
 
     final Vertex startVertex = extractVertex(args[0], "startNode");
-    final int steps = extractInt((Number) args[1], "steps");
+    // refused by name rather than cast, which surfaced a non-number as a bare ClassCastException (issue #12847)
+    final Number stepsArg = optionalNumberArg(args, 1, "steps", null);
+    if (stepsArg == null)
+      throw new IllegalArgumentException(getName() + "(): steps cannot be null");
+    final int steps = extractInt(stepsArg, "steps");
     final String[] relTypes   = extractRelTypes(argOrDefault(args, 2, null), context);
     final Vertex.DIRECTION dir = parseDirection(extractString(argOrDefault(args, 3, "BOTH"), "direction"));
     final long seed = optionalNumberArg(args, 4, "seed", System.currentTimeMillis()).longValue();
