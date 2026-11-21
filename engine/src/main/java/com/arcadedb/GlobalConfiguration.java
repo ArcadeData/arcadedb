@@ -232,7 +232,9 @@ public enum GlobalConfiguration {
       A replicated commit of an HA cluster is made durable by the replication log, which a majority of the nodes flushes \
       before the commit completes: its WAL record is written on the node that originated it without a flush, whatever this \
       setting says, and the other nodes write none""",
-      Integer.class, 0),
+      // Allow-listed so every writer refuses another integer before storing it: one in a database's configuration made every
+      // write of that database fail, and the open and drop that read it as well (issue #12817)
+      Integer.class, 0, integerRangeAsStrings(0, 2)),
 
   FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
       FOR TESTING ONLY. Set it to false to skip every fsync ArcadeDB issues: data and WAL files, the directory \
