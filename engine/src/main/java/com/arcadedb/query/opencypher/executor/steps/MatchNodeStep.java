@@ -318,6 +318,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
       private       int                    bufferIndex        = 0;
       private       boolean                finished           = false;
       private       Result                 currentInputResult = null;
+      // The inline property map resolved against currentInputResult: an expression in it ({k: toInteger(rand() * 10)}) is
+      // evaluated once per input row, and the same value is used to look the vertex up and to check every candidate. Two
+      // evaluations of a non-deterministic one drew two values, and the vertex found with the first failed the check with the
+      // second (issue #12179)
+      private       Map<String, Object>    rowProperties      = null;
 
       @Override
       public boolean hasNext() {
@@ -362,6 +367,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 break;
               }
               currentInputResult = prevResults.next();
+              rowProperties = InlineProperties.resolveAll(pattern.getProperties(), currentInputResult, context);
 
               // Check if the variable is already bound in the input result.
               // This happens in OPTIONAL MATCH when a variable from a previous MATCH
@@ -371,7 +377,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Object boundValue = currentInputResult.getProperty(variable);
                 if (boundValue instanceof Vertex) {
                   final Vertex boundVertex = (Vertex) boundValue;
-                  if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, currentInputResult))
+                  if (matchesAllLabelsBound(boundVertex, currentInputResult) && matchesProperties(boundVertex, rowProperties))
                     iterator = Collections.singletonList((Identifiable) boundVertex).iterator();
                   else
                     iterator = Collections.<Identifiable>emptyList().iterator();
@@ -379,7 +385,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   iterator = Collections.<Identifiable>emptyList().iterator();
                 }
               } else {
-                iterator = getVertexIterator(currentInputResult);
+                iterator = getVertexIterator(currentInputResult, rowProperties);
               }
             }
 
@@ -407,7 +413,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                   final Vertex vertex = (Vertex) record;
 
                   // Apply label and property filters
-                  if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, currentInputResult))
+                  if (!matchesAllLabels(vertex, currentInputResult) || !matchesProperties(vertex, rowProperties))
                     continue;
 
                   // Copy input result and add our vertex
@@ -435,7 +441,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
           // Standalone mode: no input, create fresh results
           // Initialize iterator on first call
           if (iterator == null) {
-            iterator = getVertexIterator();
+            rowProperties = InlineProperties.resolveAll(pattern.getProperties(), null, context);
+            iterator = getVertexIterator(null, rowProperties);
           }
 
           // Fetch up to n vertices
@@ -454,7 +461,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 final Vertex vertex = (Vertex) record;
 
                 // Apply label and property filters
-                if (!matchesAllLabels(vertex) || !matchesProperties(vertex))
+                if (!matchesAllLabels(vertex) || !matchesProperties(vertex, rowProperties))
                   continue;
 
                 // Create result with vertex bound to variable
@@ -492,15 +499,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Supports composite indexes with partial key matching (leftmost prefix).
    * OPTIMIZATION: Uses ID filter when available to return single vertex.
    */
-  private Iterator<Identifiable> getVertexIterator() {
-    return getVertexIterator(null);
-  }
-
-  private Iterator<Identifiable> getVertexIterator(final Result currentInputResult) {
+  private Iterator<Identifiable> getVertexIterator(final Result currentInputResult, final Map<String, Object> rowProperties) {
     if (cachedFullScanCandidates != null)
       return cachedFullScanCandidates.iterator();
 
-    final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult);
+    final Iterator<Identifiable> computed = computeVertexIterator(currentInputResult, rowProperties);
 
     // prev != null: only a chained match re-opens this scan per outer input row, which is the only
     // situation where a live re-open can observe a downstream write made mid-query (issue #6602). The
@@ -638,7 +641,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return expr instanceof PropertyAccessExpression propAccess && variable.equals(propAccess.getVariableName());
   }
 
-  private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult) {
+  private Iterator<Identifiable> computeVertexIterator(final Result currentInputResult, final Map<String, Object> rowProperties) {
     candidatesDependOnTheRow = false;
     // OPTIMIZATION: Resolve ID filter - either static (from plan time) or dynamic (from runtime).
     // Static idFilter handles literals/parameters; dynamicIdExpression handles expressions like
@@ -702,7 +705,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
           // Support composite indexes with partial keys (leftmost prefix matching)
-          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult, false);
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, rowProperties, false);
           if (indexedIter != null)
             return indexedIter;
         }
@@ -724,7 +727,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // OPTIMIZATION: no whole-key index answers the pattern or the WHERE clause, so a leading prefix of a composite index
         // may (issue #11576). Tried only after every whole-key choice: an exact lookup beats a range, a UNIQUE one included.
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final Iterator<Identifiable> prefixIter = tryFindAndUseIndex(type, label, currentInputResult, true);
+          final Iterator<Identifiable> prefixIter = tryFindAndUseIndex(type, label, rowProperties, true);
           if (prefixIter != null)
             return prefixIter;
         }
@@ -763,7 +766,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // No index available - a chained match re-opens this scan per outer row, which a transient hash answers
         // without the repeated full scans (issue #8695)
         if (prev != null && !pattern.hasDynamicLabels() && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final Iterator<Identifiable> hashed = tryScanHashIndex(label, currentInputResult);
+          final Iterator<Identifiable> hashed = tryScanHashIndex(label, rowProperties);
           if (hashed != null)
             return hashed;
         }
@@ -797,7 +800,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       }
       // The types the labels select are the types of an unlabelled node narrowed down, and a property they pin is answered by the
       // index of the buckets of those types the same way (issue #12522)
-      final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, labels);
+      final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
       if (indexed != null)
         return indexed;
       @SuppressWarnings("unchecked") final Iterator<Identifiable> labelled =
@@ -812,7 +815,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // database, and only the buckets no index covers are walked (issue #12522). The candidates of that branch
     // report themselves in candidatesDependOnTheRow, which isRowIndependentFullScan() reads: the walk below is
     // the one it relies on to be the same for every row.
-    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, labels);
+    final Iterator<Identifiable> indexed = tryFindAndUseIndexAcrossTypes(currentInputResult, rowProperties, labels);
     if (indexed != null)
       return indexed;
 
@@ -825,7 +828,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Answers a chained, unindexed inline-equality match from a hash built over one full scan, or returns null to
    * leave the plain scan in charge (first open, unsupported value type, type too large).
    */
-  private Iterator<Identifiable> tryScanHashIndex(final String label, final Result currentInputResult) {
+  private Iterator<Identifiable> tryScanHashIndex(final String label, final Map<String, Object> rowProperties) {
     if (scanHashDeclined)
       return null;
     if (scanHashIndex == null) {
@@ -845,7 +848,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       String fallback = null;
       for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
         final Object declared = entry.getValue();
-        if (!ScanPropertyHashIndex.isSupported(InlineProperties.resolve(declared, currentInputResult, context)))
+        if (!ScanPropertyHashIndex.isSupported(rowProperties.get(entry.getKey())))
           continue;
         if (!(declared instanceof String) && !(declared instanceof Number) && !(declared instanceof Boolean)
             && !(declared instanceof CypherASTBuilder.ParameterReference) && !(declared instanceof ParameterExpression)) {
@@ -874,7 +877,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       scanHashIndex = built;
     }
 
-    final Object value = InlineProperties.resolve(pattern.getProperties().get(scanHashProperty), currentInputResult, context);
+    final Object value = rowProperties.get(scanHashProperty);
     if (value == null)
       return Collections.emptyIterator(); // a null inline value equals nothing (InlineProperties.matchesResolvedValue)
     return ScanPropertyHashIndex.isSupported(value) ? scanHashIndex.candidates(value) : null; // null: plain scan for this row
@@ -892,18 +895,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
   }
 
   private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
-      final Result currentInputResult, final boolean prefixOnly) {
-    // Prepare property names and values from the pattern
+      final Map<String, Object> rowProperties, final boolean prefixOnly) {
+    // Property names in the order of the pattern, with the values resolved for this row
     final Map<String, Object> properties = new LinkedHashMap<>();
-    for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
-      final String propertyName = entry.getKey();
-      Object propertyValue = entry.getValue();
-
-      // Resolve parameters and dynamic expressions (e.g., e.src_id from UNWIND) against the current input
-      // result. A parameter map field like $edge_data.uuid resolves from the context alone, so a bare MATCH
-      // with no input row still reaches the index (issue #4909); a value that does not resolve gives up on
-      // the index rather than looking up a null key, and the scan that follows filters identically.
-      propertyValue = InlineProperties.resolve(propertyValue, currentInputResult, context);
+    for (final String propertyName : pattern.getProperties().keySet()) {
+      // Parameters and dynamic expressions (e.g., e.src_id from UNWIND) were resolved against the current input result. A
+      // parameter map field like $edge_data.uuid resolves from the context alone, so a bare MATCH with no input row still
+      // reaches the index (issue #4909); a value that does not resolve gives up on the index rather than looking up a null
+      // key, and the scan that follows filters identically.
+      final Object propertyValue = rowProperties.get(propertyName);
       if (propertyValue == null)
         return null;
 
@@ -999,9 +999,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * they used to be walked once and cached (issues #6602, #8695): when one of them holds a record, the walk of the types answers the
    * statement instead.
    *
-   * @param labels the labels of the pattern, none for an unlabelled node
+   * @param rowProperties the inline property map resolved for this row ({@link InlineProperties#resolveAll}), so the value sought
+   *                      is the value every candidate is checked with (issue #12179)
+   * @param labels        the labels of the pattern, none for an unlabelled node
    */
-  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult, final List<String> labels) {
+  private Iterator<Identifiable> tryFindAndUseIndexAcrossTypes(final Result currentInputResult,
+      final Map<String, Object> rowProperties, final List<String> labels) {
     if (pattern.hasDynamicLabels())
       return null; // the types are only known per row
 
@@ -1010,7 +1013,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : pattern.getProperties().entrySet()) {
       final Object declared = entry.getValue();
       rowDependent |= declared instanceof Expression expression && !RowIndependentValues.isRowIndependent(expression);
-      final Object value = InlineProperties.resolve(declared, currentInputResult, context);
+      final Object value = rowProperties.get(entry.getKey());
       if (value == null) {
         // A null equals nothing: no vertex matches this row. For a value the row decides the next row has its own candidates, so
         // the none of this one must not be cached for it, nor the walk of every vertex stand in for the seek of the rows after it
@@ -1634,7 +1637,10 @@ public class MatchNodeStep extends AbstractExecutionStep {
         }
       }
 
-      if (propertyName != null && valueExpr != null) {
+      // A value whose second evaluation can differ (rand()) is not sought: the WHERE checks every candidate with a value of its
+      // own, so a vertex sought with one draw was rejected by the next and the match kept about one row in ten for
+      // a.k = toInteger(rand() * 10) (issue #12179). The scan evaluates it once per candidate, as the predicate is written
+      if (propertyName != null && valueExpr != null && RowIndependentValues.isDeterministic(valueExpr)) {
         // Resolve the value expression. Literals and $parameters resolve without an input row; a
         // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
         // be resolved and is skipped for index selection - the query then falls back to the full
@@ -1719,15 +1725,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
     return emptyDisjunct && pattern.isLabelDisjunction() ? List.of() : result;
   }
 
-  private boolean matchesProperties(final Vertex vertex) {
-    return matchesProperties(vertex, null);
-  }
-
-  private boolean matchesProperties(final Vertex vertex, final Result currentResult) {
-    // A row-dependent value evaluated without an input row resolves to null and therefore matches nothing,
-    // which is no worse than the previous no-match behavior; a parameter still resolves from the context
-    // alone, so a bare MATCH with no input row keeps binding (issue #4909).
-    return InlineProperties.matches(vertex, pattern.getProperties(), currentResult, context);
+  /**
+   * Checks the inline property map, already resolved for the row by {@link InlineProperties#resolveAll}: a row-dependent
+   * value resolved without an input row is null and therefore matches nothing, while a parameter still resolves from the
+   * context alone, so a bare MATCH with no input row keeps binding (issue #4909).
+   */
+  private static boolean matchesProperties(final Vertex vertex, final Map<String, Object> rowProperties) {
+    if (rowProperties == null)
+      return true;
+    for (final Map.Entry<String, Object> entry : rowProperties.entrySet())
+      if (!InlineProperties.matchesProperty(vertex, entry.getKey(), entry.getValue()))
+        return false;
+    return true;
   }
 
   @Override
