@@ -101,6 +101,19 @@ public final class GrpcTemporalCodec {
   }
 
   /**
+   * Decodes a {@code timestamp_value}: a {@link LocalDate} when it is tagged {@link #DATE}, the inverse of {@link #encode} for
+   * a {@link LocalDate} (the epoch day times 86,400 seconds, UTC), otherwise the {@link Instant} it holds, with its full
+   * nanosecond precision (issue #4149). A date decoded as an instant was a datetime to the engine: a Cypher equality on a DATE
+   * property never matched it, an undeclared property stored it as a DATETIME and its echo came back tagged datetime (issue
+   * #11956).
+   */
+  public static Object decodeTimestamp(final Timestamp timestamp, final String logicalType) {
+    if (DATE.equalsIgnoreCase(logicalType))
+      return LocalDate.ofEpochDay(Math.floorDiv(timestamp.getSeconds(), 86_400L));
+    return Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos());
+  }
+
+  /**
    * Decodes a {@code string_value}: the temporal its {@code logical_type} names, or the text itself when it names none. Text
    * that does not parse as the type it claims is returned as is rather than failing the whole row, so a hand-built message
    * from a third-party client degrades to the string it would have been before the tag existed.

@@ -37,7 +37,6 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -303,8 +302,8 @@ class PostgresParameterBindingTest {
     values.put(PostgresType.ARRAY_BPCHAR, strings);
     values.put(PostgresType.ARRAY_JSON, Arrays.asList("{\"k\":1}", null, "[1,\"a,b\"]"));
     values.put(PostgresType.ARRAY_BYTEA, Arrays.asList(new byte[] { 1, 2, (byte) 0xff }, null, new byte[0]));
-    values.put(PostgresType.ARRAY_DATE,
-        Arrays.asList(Date.from(LocalDate.of(2024, 2, 29).atStartOfDay(ZoneOffset.UTC).toInstant()), null));
+    // a date element decodes to the LocalDate it names (issue #11956)
+    values.put(PostgresType.ARRAY_DATE, Arrays.asList(LocalDate.of(2024, 2, 29), null));
     values.put(PostgresType.ARRAY_TIMESTAMP, Arrays.asList(LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123456000), null));
     // the array types of #12449
     values.put(PostgresType.ARRAY_TIME, Arrays.asList(LocalTime.of(13, 14, 15, 123456000), null, LocalTime.MIDNIGHT));
@@ -352,13 +351,12 @@ class PostgresParameterBindingTest {
     return data;
   }
 
-  /** Byte arrays compare by content and dates by instant, so the comparison is on the value and not on the Java identity. */
+  /** Byte arrays compare by content, so the comparison is on the value and not on the Java identity. */
   private static List<Object> normalize(final Object list) {
     final List<Object> normalized = new ArrayList<>();
     for (final Object element : (List<?>) list)
       normalized.add(switch (element) {
         case byte[] bytes -> Arrays.toString(bytes);
-        case Date date -> date.getTime();
         case null -> null;
         default -> element;
       });

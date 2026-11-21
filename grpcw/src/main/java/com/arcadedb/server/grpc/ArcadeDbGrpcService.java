@@ -5381,12 +5381,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return dbgDec("fromGrpcValue", v, GrpcTemporalCodec.decodeString(v.getStringValue(), v.getLogicalType()), null);
       case BYTES_VALUE:
         return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
-      case TIMESTAMP_VALUE: {
-        // Issue #4149: keep nanosecond precision through parameter binding so DATETIME_MICROS /
-        // DATETIME_NANOS columns receive the precision the proto Timestamp natively carries.
-        final Timestamp ts = v.getTimestampValue();
-        return dbgDec("fromGrpcValue", v, Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos()), null);
-      }
+      case TIMESTAMP_VALUE:
+        // Issue #4149: an Instant keeps nanosecond precision for DATETIME_MICROS / DATETIME_NANOS. Issue #11956: a timestamp
+        // tagged "date" is a LocalDate
+        return dbgDec("fromGrpcValue", v, GrpcTemporalCodec.decodeTimestamp(v.getTimestampValue(), v.getLogicalType()), null);
       case LINK_VALUE:
         return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
 

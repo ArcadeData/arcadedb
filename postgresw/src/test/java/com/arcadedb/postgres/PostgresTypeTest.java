@@ -590,12 +590,10 @@ class PostgresTypeTest {
 
   @Test
   void deserializeTextDateIsoFormat() {
-    // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text
-    Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
-    assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = LocalDate.of(2024, 8, 22)
-        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
+    // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text, decoded to the engine's default DATE
+    // value: a java.util.Date at UTC midnight was a datetime to openCypher (issue #11956)
+    final Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
+    assertThat(result).isEqualTo(LocalDate.of(2024, 8, 22));
   }
 
   @Test
@@ -1043,11 +1041,8 @@ class PostgresTypeTest {
     final int daysSince2000 = 9000; // 2000-01-01 + 9000 days = 2024-08-22
     ByteBuffer buffer = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
     buffer.putInt(daysSince2000);
-    Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
-    assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = LocalDate.of(2000, 1, 1).plusDays(daysSince2000)
-        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
+    final Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
+    assertThat(result).isEqualTo(LocalDate.of(2000, 1, 1).plusDays(daysSince2000));
   }
 
   @Test
@@ -1532,8 +1527,7 @@ class PostgresTypeTest {
     final byte[] bytes = new byte[4];
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
-    assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate()).isEqualTo(ld);
+    assertThat(decoded).isEqualTo(ld);
   }
 
   @Test
@@ -2243,9 +2237,7 @@ class PostgresTypeTest {
     final byte[] bytes = new byte[4];
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
-    assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate())
-        .isEqualTo(LocalDate.of(2024, 8, 22));
+    assertThat(decoded).isEqualTo(LocalDate.of(2024, 8, 22));
   }
 
   @Test

@@ -76,6 +76,14 @@ direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an un
 
 ## Fixes
 
+- **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a
+  `timestamp_value` tagged `date`, in a parameter, a `CreateRecord` or `UpdateRecord` value, or inside a list or map) and over
+  the Postgres wire (`date`, OID 1082, in text and binary format, and the elements of a `date[]`). It used to arrive as an
+  `Instant` or as a `java.util.Date` at UTC midnight, which the engine reads as a datetime: an openCypher equality on a DATE
+  property (`WHERE n.da = $p`) matched no row, an undeclared property stored the value as a DATETIME, and `RETURN $p` over gRPC
+  came back tagged `datetime`. SQL comparisons, `datetime` and untagged gRPC timestamps (still an `Instant`, with its
+  nanoseconds) and the Postgres `timestamp` are unchanged. A date-tagged timestamp written as a time series tag, or converted
+  to a STRING property, is now the text `2024-02-29` and no longer an ISO instant.
 - **#12023** `vector.dotProduct`, `vector.l2Distance`, `vector.l1Distance` / `vector.manhattanDistance`, `vector.l1Norm`,
   `vector.multiScore` (`AVG`, `WEIGHTED`), `vector.sparseDot`, the sparse magnitude and the openCypher
   `vector_distance(..., EUCLIDEAN_SQUARED)` widen each component to double before multiplying or subtracting and sum in double,
