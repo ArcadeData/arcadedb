@@ -6675,6 +6675,17 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
+   * What the walk of a multi-page record keeps of a chunk until it assembles the record (issue #12370): the chunk's view as it
+   * is, or a copy of its bytes when the view holds an array more than twice the chunk's size. A view of an
+   * {@link ImmutablePage} shares the whole page array, which the walk would keep reachable until it ends, even once the page
+   * cache has evicted the page: a chain of small chunks on many pages would hold far more memory than the record itself. A
+   * chunk filling at least half of its page, the common case, is kept as a view and copied only once, into the record.
+   */
+  static Binary keptChunk(final Binary view) {
+    return view.getContent().length > 2L * view.size() ? view.copyOfContent() : view;
+  }
+
+  /**
    * Loads a multi-page record, validating that what it assembled is one committed state of the record and not a mix
    * of two.
    * <p>
@@ -6780,7 +6791,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       boolean brokenHopRefreshable = false;
 
       boolean chainInconsistent = false;
-      final Binary record = new Binary();
+      // The chunks are kept as views of their pages and copied once, into a buffer of the record's exact size, when the walk
+      // is over (issue #12370). Appended one at a time, the buffer grew half again at each overflow, so a record of a few
+      // pages was allocated and copied about three times over.
+      Binary[] chunkViews = new Binary[8];
+      long recordSize = 0;
       try {
         BasePage page = firstPage;
         int currentSlot = firstChunkSlot;
@@ -6794,7 +6809,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           final Binary chunk = page.getImmutableView(
                   (int) (currentRecordPositionInPage + currentRecordHeaderSize + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE),
                   chunkSize);
-          record.append(chunk);
+          // Refused BEFORE the chunk is counted, so the record assembled after the walk holds exactly the chunks it registered:
+          // the partial record a broken chain is confirmed against, and never a size past 2GB cast to a negative int
+          if (recordSize + chunkSize > Integer.MAX_VALUE)
+            throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
+          if (chunks == chunkViews.length)
+            chunkViews = Arrays.copyOf(chunkViews, chunks * 2);
+          chunkViews[chunks] = keptChunk(chunk);
+          recordSize += chunkSize;
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
             chainTrace = Arrays.copyOf(chainTrace, chainTrace.length * 2);
@@ -6875,6 +6897,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         brokenChainReason = "error walking the chain: " + e.getMessage();
         brokenChainCause = e;
       }
+
+      final Binary record = new Binary((int) recordSize);
+      for (int i = 0; i < chunks; i++)
+        record.append(chunkViews[i]);
 
       if (brokenChainReason != null) {
         // A CHAIN THAT DOES NOT PARSE IS NOT CONTENTION (#6258). Retrying can only change the answer if the chain the
