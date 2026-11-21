@@ -406,7 +406,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /** The most grids a block remembers to be irreducible on: more than the tiers of any type that is not being rewritten all day. */
-  private static final int              MAX_VERIFIED_GRIDS = 8;
+  static final         int              MAX_VERIFIED_GRIDS = 8;
   private static final DownsampleGrid[] NO_GRIDS           = new DownsampleGrid[0];
 
   static final class BlockEntry {
@@ -498,8 +498,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // of a type has a grid of its own and a single verdict would be overwritten by each in turn, which reads the block again
     // on every pass for all of them but one. In-memory only, like the marker above: a restart, or an install of the file,
     // loses them, and the next pass proves it again by reading the timestamps and tags of the block, which costs a read and
-    // never a rewrite. Replaced as a whole, never changed in place, and guarded by the directory lock.
-    DownsampleGrid[] irreducibleOn = NO_GRIDS;
+    // never a rewrite. Replaced as a whole, never changed in place. Written by the one downsampling pass of the store at a time
+    // (the shard's rewrite mutex), under the directory READ lock while it proves blocks and the WRITE lock while it selects them,
+    // and read by whichever rewrite copies the block, hence volatile.
+    volatile DownsampleGrid[] irreducibleOn = NO_GRIDS;
 
     /**
      * {@code blockStartOffset} is a CONSTRUCTOR PARAMETER and not a field a caller may forget (#6360 item 3): every
@@ -3133,6 +3135,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (int t = 0; t < tagCols.length; t++)
       tagCols[t] = tagColIndices.get(t);
 
+    // Reading the blocks to see which cannot be reduced is the one cost a restart adds (every verdict is lost with the process), and
+    // it is paid here, a block at a time under the READ lock like a walk does, so queries and compactions go on between two blocks;
+    // under the write lock below it would keep them all waiting for as long as the whole history takes to read
+    proveBlocksIrreducible(cutoffTs, grid, tsColIdx, tagCols);
+
     directoryLock.writeLock().lock();
     try {
       final List<BlockEntry> toDownsample = new ArrayList<>();
@@ -3159,7 +3166,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // that reason in either direction: it left a block whose samples share a bucket raw forever as soon as ONE of them was
         // far from the others, and the marker alone, which a restart resets, would have rewritten every old block once again,
         // an already coarse one onto a bucket of the next finer tier that is not nested in its own. A block this proves
-        // irreducible is remembered, so a pass reads it once.
+        // irreducible is remembered, so a pass reads it once. The blocks proveBlocksIrreducible has just read are not read again
+        // but for the reducible ones, which the rewrite reads anyway, and a block that landed since.
         if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
           entry.markIrreducibleOn(grid);
           toKeep.add(entry);
@@ -3194,6 +3202,39 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       rewriteWithBlocks(toKeep, output);
     } finally {
       directoryLock.writeLock().unlock();
+    }
+  }
+
+  /**
+   * Reads, a block at a time, every block older than {@code cutoffTs} that {@link #downsampleBlocks} would have to read to decide
+   * about, and remembers on the ones that cannot be reduced on {@code grid} that they cannot. Nothing is rewritten and no block is
+   * kept from the directory for more than its own read: the directory is looked at once to name the candidates, and each of them is
+   * then found again in the live directory, as a walk does, under the read lock it is read with. A block a rewrite replaced since
+   * is skipped (the pass that follows reads whatever is live), and the verdict of one that was only copied travels with the copy
+   * ({@link #writeRetainedBlock}).
+   */
+  private void proveBlocksIrreducible(final long cutoffTs, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols)
+      throws IOException {
+    final List<BlockEntry> candidates = new ArrayList<>();
+    directoryLock.readLock().lock();
+    try {
+      for (final BlockEntry entry : blockDirectory)
+        if (entry.maxTimestamp < cutoffTs && entry.sampleCount > 1 && entry.downsampledGranularityMs < grid.granularityMs()
+            && !entry.isIrreducibleOn(grid))
+          candidates.add(entry);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    for (final BlockEntry candidate : candidates) {
+      directoryLock.readLock().lock();
+      try {
+        final BlockEntry live = resolveLiveBlock(candidate, Integer.MAX_VALUE);
+        if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols))
+          live.markIrreducibleOn(grid);
+      } finally {
+        directoryLock.readLock().unlock();
+      }
     }
   }
 

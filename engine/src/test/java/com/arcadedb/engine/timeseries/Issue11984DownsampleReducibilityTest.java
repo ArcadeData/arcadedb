@@ -230,18 +230,20 @@ class Issue11984DownsampleReducibilityTest {
   /** What a block remembers is bounded: the grids of tiers altered over and over push the oldest verdicts out instead of piling up. */
   @Test
   void aBlockRemembersAtMostAFewGrids() throws Exception {
+    // samples far enough apart to share no bucket of any grid below
     final List<Sample> raw = new ArrayList<>();
-    for (int day = 0; day < 3; day++)
-      raw.add(new Sample(day * DAY, "a", "x", day));
+    for (int i = 0; i < 3; i++)
+      raw.add(new Sample(i * 1_000 * DAY, "a", "x", i));
 
+    final int grids = TimeSeriesSealedStore.MAX_VERIFIED_GRIDS + 12;
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
       appendBlock(store, raw);
-      for (int i = 1; i <= 20; i++)
+      for (int i = 1; i <= grids; i++)
         store.downsampleBlocks(Long.MAX_VALUE, i * H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
 
       assertThat(store.getDownsampleRewriteCount()).isZero();
       assertThat(store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks()).singleElement()
-          .extracting(block -> block.irreducibleOn.length).isEqualTo(8);
+          .extracting(block -> block.irreducibleOn.length).isEqualTo(TimeSeriesSealedStore.MAX_VERIFIED_GRIDS);
     }
   }
 
