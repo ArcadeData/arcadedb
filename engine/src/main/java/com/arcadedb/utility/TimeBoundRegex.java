@@ -20,6 +20,10 @@ package com.arcadedb.utility;
 
 import com.arcadedb.exception.TimeoutException;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -59,13 +63,28 @@ public final class TimeBoundRegex {
   // microseconds, far below anything the deadline is for; the pattern of the issue that found this needs 2^11 of them to
   // pass it, and no pattern written by hand has more than a handful.
   private static final long   MAX_READ_FREE_WAYS       = 1L << 10;
-  // What a scan may spend on runs that read nothing: ways * pattern length * input length, about 0.17 s per 2^30 on the JDK (a
-  // run of 4,096 ways over 200,000 characters took 8 s, and with no read in it the deadline never got to interrupt it)
-  private static final double MAX_READ_FREE_SCAN_STEPS = 1L << 30;
+  // The most read-free node visits ONE attempt may make, counted at the end of the input where every test fails without a read: it
+  // bounds counted loops of bodies that match nothing (a nested (?:(?:(?:\A){1000}){1000}){1000} is 10^9 visits, one way, no
+  // read, 1.5 s). About 25 ms of the JDK's 1.5 ns a visit.
+  private static final long   MAX_READ_FREE_WORK       = 1L << 24;
+  // What a scan may spend on read-free visits: the visits one start position makes in the middle of the input times the length of
+  // the input, 0.13 to 0.45 s on the JDK at 1 to 3 ns a visit (4,096 ways of an empty option over 200,000 characters took 8 s,
+  // and a hundred anchored alternatives over 5,000,000 half a second, with no read for the deadline to hear)
+  private static final double MAX_READ_FREE_SCAN_STEPS = 1L << 27;
   private static final int    MAX_CACHED_PATTERNS      = 4096;
+  // A pattern longer than this is not cached by its text, which the cache would keep alive: it is cached by the Pattern itself
+  private static final int    MAX_CACHED_TEXT_LENGTH   = 1024;
 
-  // The measure of each pattern text, since the same pattern is run against every row of a scan.
-  private static final ConcurrentHashMap<String, Long> READ_FREE_WAYS = new ConcurrentHashMap<>();
+  // The measure of each pattern text, since the same pattern is run against every row of a scan. One map per way the text is read
+  // (plain, comments mode, UNIX_LINES, both): the same text can mean something else in each, and a measure taken for one must
+  // never answer for another.
+  private static final List<ConcurrentHashMap<String, RegexReadFreeWork.Measure>> MEASURES = List.of(new ConcurrentHashMap<>(),
+      new ConcurrentHashMap<>(), new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
+  // The measure of the long ones, which live as long as their Pattern does and not a moment longer
+  private static final Map<Pattern, RegexReadFreeWork.Measure>                    LONG_MEASURES  = Collections.synchronizedMap(
+      new WeakHashMap<>());
+  // A literal pattern has nothing to backtrack
+  private static final RegexReadFreeWork.Measure                                  LITERAL_MEASURE = new RegexReadFreeWork.Measure(1, 0, 0, 0);
 
   private TimeBoundRegex() {
   }
@@ -239,38 +258,59 @@ public final class TimeBoundRegex {
    * {@link CharSequence#charAt(int)} only, and a pattern can backtrack for as long as it likes without calling it: anchors,
    * empty alternatives, optional anchors and negative look-aheads at the end of the input read nothing, so
    * {@code \A(?:\A|\A)...\z} costs 2^n steps and no deadline ever fires. {@link RegexReadFreeWork} counts the ways a run of such
-   * elements can succeed; beyond {@link #MAX_READ_FREE_WAYS} the pattern is refused, and for an operation that tries the
-   * pattern at every start position ({@code scans}) the cost of one such run at all of them is held to
+   * elements can succeed and the visits one attempt makes through them; the pattern is refused beyond
+   * {@link #MAX_READ_FREE_WAYS} ways or {@link #MAX_READ_FREE_WORK} visits, and for an operation that tries the pattern at every
+   * start position ({@code scans}) the visits of one position times the length of the input are held to
    * {@link #MAX_READ_FREE_SCAN_STEPS}, because none of those attempts reads either.
    */
   private static void refuseIfUnbounded(final Pattern pattern, final CharSequence input, final boolean scans) {
-    final long ways = readFreeWays(pattern);
-    if (ways <= 1)
+    final RegexReadFreeWork.Measure measure = readFreeMeasure(pattern);
+    final String reason;
+    if (measure.maxWays() > MAX_READ_FREE_WAYS)
+      reason = "can succeed in " + count(measure.maxWays()) + " different ways";
+    else if (measure.work() > MAX_READ_FREE_WORK)
+      reason = "makes about " + count(measure.work()) + " steps in a single attempt";
+    else if (scans && measure.scanWork() > 0 && (double) measure.scanWork() * ((double) input.length() + 1) > MAX_READ_FREE_SCAN_STEPS)
+      reason = "makes about " + count(measure.scanWork()) + " steps at each of the " + input.length() + " start positions of this input";
+    else
       return;
-    final boolean tooManyWays = ways > MAX_READ_FREE_WAYS;
-    if (tooManyWays || scans && (double) ways * pattern.pattern().length() * ((double) input.length() + 1) > MAX_READ_FREE_SCAN_STEPS)
-      throw new TimeoutException(
-          "Regular expression operation refused (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' can succeed in "
-              + (ways >= RegexReadFreeWork.SATURATED ? "too many" : ways) + " different ways without reading its input"
-              + (tooManyWays ? "" : ", which an input of length " + input.length() + " multiplies at every start position")
-              + ", so its backtracking could not be aborted by a deadline; rewrite it without the empty alternatives or optional anchors");
+    throw new TimeoutException(
+        "Regular expression operation refused (arcadedb.command.regexTimeout): pattern '" + pattern.pattern() + "' " + reason
+            + " without reading its input, so its backtracking could not be aborted by a deadline; rewrite it without the empty"
+            + " alternatives, optional anchors or repeated empty groups");
   }
 
-  private static long readFreeWays(final Pattern pattern) {
-    final String regex = pattern.pattern();
+  private static String count(final long value) {
+    return value >= RegexReadFreeWork.SATURATED ? "too many" : Long.toString(value);
+  }
+
+  private static RegexReadFreeWork.Measure readFreeMeasure(final Pattern pattern) {
     final int flags = pattern.flags();
-    // comments mode changes how the same text is read, so those patterns are measured every time rather than cached by text
-    if ((flags & (Pattern.COMMENTS | Pattern.UNIX_LINES)) != 0)
-      return RegexReadFreeWork.maxWays(regex, flags);
-    Long ways = READ_FREE_WAYS.get(regex);
-    if (ways == null) {
-      ways = RegexReadFreeWork.maxWays(regex, flags);
-      // patterns can come from the data being queried: the cache must not grow with it
-      if (READ_FREE_WAYS.size() >= MAX_CACHED_PATTERNS)
-        READ_FREE_WAYS.clear();
-      READ_FREE_WAYS.put(regex, ways);
+    // A literal pattern is only characters, so there is nothing to backtrack; and the same text compiled without the flag is a
+    // different pattern, which no measure taken here may answer for (nor the other way round)
+    if ((flags & Pattern.LITERAL) != 0)
+      return LITERAL_MEASURE;
+    final String regex = pattern.pattern();
+    if (regex.length() > MAX_CACHED_TEXT_LENGTH) {
+      RegexReadFreeWork.Measure measure = LONG_MEASURES.get(pattern);
+      if (measure == null) {
+        measure = RegexReadFreeWork.measureOrUnbounded(regex, flags);
+        LONG_MEASURES.put(pattern, measure);
+      }
+      return measure;
     }
-    return ways;
+    final ConcurrentHashMap<String, RegexReadFreeWork.Measure> cache = MEASURES.get(
+        ((flags & Pattern.COMMENTS) != 0 ? 1 : 0) | ((flags & Pattern.UNIX_LINES) != 0 ? 2 : 0));
+    RegexReadFreeWork.Measure measure = cache.get(regex);
+    if (measure == null) {
+      measure = RegexReadFreeWork.measureOrUnbounded(regex, flags);
+      // Distinct patterns can come from the data being queried, so the cache must not grow with it. Emptying it costs one more
+      // parse per pattern, which is less than the Pattern.compile each of them has already paid
+      if (cache.size() >= MAX_CACHED_PATTERNS)
+        cache.clear();
+      cache.put(regex, measure);
+    }
+    return measure;
   }
 
   private static TimeoutException timeoutException(final Pattern pattern, final CharSequence input, final Throwable cause) {

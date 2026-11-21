@@ -135,8 +135,10 @@ class TimeBoundRegexTest {
   @Nested
   @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)  // a hang detector: a pattern nobody bounds runs for hours
   class BacktrackingThatReadsNothing {
-    private final String zeroWidthAlternation = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
-    private final String zeroWidthOptionals   = "(?:\\A?)".repeat(40) + "\\z";
+    // 11 groups are 2,048 ways, the smallest fixture past the limit: were the refusal to regress, the match would take
+    // microseconds and the test would fail, instead of a pattern the size of the issue's (n = 40) hanging the whole JVM
+    private final String zeroWidthAlternation = "\\A" + "(?:\\A|\\A)".repeat(11) + "\\z";
+    private final String zeroWidthOptionals   = "(?:\\A?)".repeat(11) + "\\z";
 
     @Test
     void matchesIsAbortedWithinTheDeadline() {
@@ -214,6 +216,88 @@ class TimeBoundRegexTest {
       assertThat(TimeBoundRegex.findUntil(pattern, "abc", TimeBoundRegex.newDeadline(1000))).isTrue();
       assertThat(TimeBoundRegex.matches(pattern, "ab", 1000)).isTrue();
       assertThat(TimeBoundRegex.replaceAll(pattern, "abc", "x", 1000)).isEqualTo("xc");
+    }
+
+    @Test
+    void failingAlternativesOverALongInputAreRefusedToo() {
+      // one way, so no run to multiply: but each of the 125 anchored alternatives fails, without a read, at every one of the
+      // 5,000,000 start positions of a find() (half a second of the JDK before the bound counted visits and not only ways)
+      final Pattern pattern = Pattern.compile("(?:" + "\\Ax|".repeat(124) + "\\Ax)");
+      final String input = "y".repeat(5_000_000);
+
+      assertThatThrownBy(() -> TimeBoundRegex.findUntil(pattern, input, TimeBoundRegex.newDeadline(200))).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("start positions");
+      assertThatThrownBy(() -> TimeBoundRegex.replaceAll(pattern, input, "x", 200)).isInstanceOf(TimeoutException.class);
+      // the same pattern over a short input, and a full match (one attempt, at the start), are cheap and run
+      assertThat(TimeBoundRegex.findUntil(pattern, "y".repeat(1000), TimeBoundRegex.newDeadline(200))).isFalse();
+      assertThat(TimeBoundRegex.matches(pattern, input, 200)).isFalse();
+    }
+
+    @Test
+    void nestedCountedLoopsOfAnEmptyBodyAreRefused() {
+      // 10^9 iterations of an anchor, one way, and not one read: 1.5 s of the JDK that the deadline never heard of
+      final Pattern pattern = Pattern.compile("(?:(?:(?:\\A){1000}){1000}){1000}x");
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "ab", 200)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("steps in a single attempt");
+      stopwatch.assertGaveUpWithin(5000, "the refusal, which looks at the pattern and not at the input");
+      // a loop of a few iterations is nothing
+      assertThat(TimeBoundRegex.matches(Pattern.compile("(?:(?:\\A){10}){10}a"), "a", 200)).isTrue();
+    }
+
+    @Test
+    void aBodyRepeatedNoTimesIsNotCounted() {
+      // the body is never entered, so a match that does not go through it must not be refused for what it would cost
+      final Pattern pattern = Pattern.compile("(?:\\A|\\A){0}".repeat(20) + "a");
+      assertThat(TimeBoundRegex.matches(pattern, "a", 200)).isTrue();
+    }
+
+    @Test
+    void aLongPatternIsMeasuredOncePerPatternAndNeverKeptByItsText() {
+      final Pattern refused = Pattern.compile("\\A" + "(?:\\A|\\A)".repeat(150) + "\\z");
+      assertThat(refused.pattern().length()).isGreaterThan(1024);
+      assertThatThrownBy(() -> TimeBoundRegex.matches(refused, "ab", 200)).isInstanceOf(TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.matches(refused, "ab", 200)).isInstanceOf(TimeoutException.class);
+
+      final Pattern benign = Pattern.compile("a".repeat(2000));
+      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 200)).isTrue();
+      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 200)).isTrue();
+    }
+
+    @Test
+    void aLiteralPatternIsNotMeasuredAsTheSameTextCompiledWithoutTheFlag() {
+      // the measure is cached by text: a LITERAL pattern (nothing to backtrack) must not leave 1 way behind for the same text
+      // compiled as a pattern, or the refusal is bypassed by whoever runs the literal one first
+      final Pattern literal = Pattern.compile(zeroWidthAlternation, Pattern.LITERAL);
+      final Pattern pattern = Pattern.compile(zeroWidthAlternation);
+
+      assertThat(TimeBoundRegex.matches(literal, "ab", 200)).isFalse();
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "ab", 200)).isInstanceOf(TimeoutException.class);
+    }
+
+    @Test
+    void aPatternRefusedIsNotRefusedForTheSameTextCompiledAsALiteral() {
+      // and the other way round: running the pattern first must not turn the literal one into a refusal
+      final String text = "\\A" + "(?:\\A|\\A)".repeat(12) + "\\z";
+      final Pattern pattern = Pattern.compile(text);
+      final Pattern literal = Pattern.compile(text, Pattern.LITERAL);
+
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "ab", 200)).isInstanceOf(TimeoutException.class);
+      assertThat(TimeBoundRegex.matches(literal, text, 200)).isTrue();
+    }
+
+    @Test
+    void aMeasureTakenInCommentsModeDoesNotAnswerForThePlainText() {
+      // the spaces are ignored in comments mode and literals (that must read) without it: the same text is two patterns
+      final String text = "\\A" + "(?:\\A| \\A )".repeat(11) + "\\z";
+      final Pattern plain = Pattern.compile(text);
+      final Pattern comments = Pattern.compile(text, Pattern.COMMENTS);
+
+      assertThat(TimeBoundRegex.matches(plain, "ab", 200)).isFalse();
+      assertThatThrownBy(() -> TimeBoundRegex.matches(comments, "ab", 200)).isInstanceOf(TimeoutException.class);
+      // in the other order too, and from the cache the second time
+      assertThatThrownBy(() -> TimeBoundRegex.matches(comments, "ab", 200)).isInstanceOf(TimeoutException.class);
+      assertThat(TimeBoundRegex.matches(plain, "ab", 200)).isFalse();
     }
 
     @Test

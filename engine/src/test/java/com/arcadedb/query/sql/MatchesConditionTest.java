@@ -208,7 +208,9 @@ class MatchesConditionTest extends TestHelper {
       database.command("sql", "INSERT INTO ZeroWidth SET name = 'ab'");
     });
 
-    final String regex = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
+    // 11 groups are 2,048 ways, the smallest fixture past the limit: if the refusal regressed the query would return at once and
+    // the test fail, where the issue's n = 40 would hang the JVM
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(11) + "\\z";
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> {
       final ResultSet rs = database.query("sql", "SELECT FROM ZeroWidth WHERE name MATCHES :regex", Map.of("regex", regex));

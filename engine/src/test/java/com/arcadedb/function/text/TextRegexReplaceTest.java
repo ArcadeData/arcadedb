@@ -20,6 +20,7 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
@@ -73,11 +74,14 @@ class TextRegexReplaceTest extends TestHelper {
     // deadline hears of, so the function kept its thread busy for as long as the backtracking took
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
 
-    final String regex = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
+    // 11 groups are 2,048 ways, the smallest fixture past the limit: if the refusal regressed the function would return at once
+    // and the test fail, where the issue's n = 40 would hang the JVM
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(11) + "\\z";
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    // text.regexReplace() keeps its own IllegalArgumentException contract for an aborted pattern, with the refusal as its cause
     assertThatThrownBy(() -> database.query("sql", "SELECT text.regexReplace('ab', :regex, 'x') AS r", Map.of("regex", regex)).next())
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(IllegalArgumentException.class).hasCauseInstanceOf(TimeoutException.class);
 
     stopwatch.assertGaveUpWithin(5000, "the configured 200ms deadline from a backtrack that reads nothing");
   }

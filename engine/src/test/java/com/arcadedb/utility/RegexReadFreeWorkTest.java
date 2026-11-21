@@ -100,10 +100,12 @@ class RegexReadFreeWorkTest {
 
     @Test
     void aRepetitionOfNothingIsOneWay() {
-      // the body is still counted once (its own two ways), but twenty of them are not 2^20: nothing outside multiplies it
-      assertThat(ways("(?:\\A|\\A){0}")).isEqualTo(2);
-      assertThat(ways("(?:\\A|\\A){0}".repeat(20))).isEqualTo(2);
-      assertThat(ways("(?:\\A|\\A){0,0}".repeat(20))).isEqualTo(2);
+      // the body is parsed and never entered, so what it peaks at is not the pattern's
+      assertThat(ways("(?:\\A|\\A){0}")).isEqualTo(1);
+      assertThat(ways("(?:\\A|\\A){0}".repeat(20))).isEqualTo(1);
+      assertThat(ways("(?:\\A|\\A){0,0}".repeat(20))).isEqualTo(1);
+      // but it is still parsed: its groups count
+      assertThat(RegexReadFreeWork.measure("(a){0}(b)", 0).groups()).isEqualTo(2);
     }
 
     @Test
@@ -173,6 +175,77 @@ class RegexReadFreeWorkTest {
     @Test
     void theCountsStopAtTheSaturationPoint() {
       assertThat(ways("(?:\\A|\\A)".repeat(200))).isEqualTo(RegexReadFreeWork.SATURATED);
+    }
+  }
+
+  @Nested
+  class WorkOfAnAttempt {
+    private long work(final String regex) {
+      return RegexReadFreeWork.measure(regex, 0).work();
+    }
+
+    private long scanWork(final String regex) {
+      return RegexReadFreeWork.measure(regex, 0).scanWork();
+    }
+
+    @Test
+    void aSequenceVisitsEachElementOncePerPathThatReachesIt() {
+      assertThat(work("a")).isEqualTo(1);
+      assertThat(work("\\A")).isEqualTo(1);
+      assertThat(work("(?:|)")).isEqualTo(2);
+      // 2 visits to the first group, then 2 paths reach the second
+      assertThat(work("(?:\\A|\\A)(?:\\A|\\A)")).isEqualTo(6);
+      // at the end of the input 'a' fails there, and nothing after it is visited
+      assertThat(work("a\\Ab")).isEqualTo(1);
+    }
+
+    @Test
+    void aCountedLoopOfABodyThatMatchesNothingVisitsItOncePerIteration() {
+      assertThat(work("(?:\\A){1000}")).isEqualTo(1000);
+      assertThat(work("(?:(?:\\A){1000}){1000}")).isEqualTo(1_000_000);
+      // nested three deep: a billion visits, one way, and not one read
+      assertThat(work("(?:(?:(?:\\A){1000}){1000}){1000}")).isEqualTo(1_000_000_000L);
+      assertThat(work("(?:\\A){1000}(?:\\A){1000}")).isEqualTo(2000);
+      assertThat(work("(?:\\A)*")).isEqualTo(2);
+      assertThat(work("(?:\\A){2000000000}")).isEqualTo(2_000_000_000L);
+    }
+
+    @Test
+    void aBodyThatReadsIsAttemptedOnceWhateverItIsRepeated() {
+      assertThat(work("a{1000000}")).isEqualTo(1);
+      assertThat(work("(?:ab){1000}")).isEqualTo(1);
+      assertThat(work("[a-z]*")).isEqualTo(1);
+    }
+
+    @Test
+    void aBodyRepeatedNoTimesCostsOneVisit() {
+      assertThat(work("(?:\\A){0}")).isEqualTo(1);
+      assertThat(work("(?:(?:\\A){1000}){0}")).isEqualTo(1);
+    }
+
+    @Test
+    void aLookAroundVisitsItsBodyOnce() {
+      assertThat(work("(?=\\A)")).isEqualTo(2);
+      assertThat(work("(?!\\A)")).isEqualTo(2);
+      assertThat(work("(?>\\A|\\A)")).isEqualTo(3);
+    }
+
+    @Test
+    void aScanVisitsOnlyWhatFailsWithoutAReadAtEveryPosition() {
+      // a character test reads in the middle of the input, so the deadline hears of it
+      assertThat(scanWork("a")).isZero();
+      assertThat(scanWork("[a-z]+@x\\b\\w+")).isZero();
+      assertThat(scanWork("(?:foo|bar|baz)\\d*")).isZero();
+      // an anchor fails there, without one
+      assertThat(scanWork("^foo")).isEqualTo(1);
+      assertThat(scanWork("\\Ax")).isEqualTo(1);
+      assertThat(scanWork("(?!a)b")).isEqualTo(1);
+      // a hundred and twenty-five of them are a hundred and twenty-five visits at every position
+      assertThat(scanWork("(?:" + "\\Ax|".repeat(124) + "\\Ax)")).isEqualTo(125);
+      // an empty option succeeds everywhere: 126 visits of the six groups, and the 64 paths that get to the anchor
+      assertThat(scanWork("(?:|)(?:|)(?:|)(?:|)(?:|)(?:|)\\z")).isEqualTo(190);
+      // a counted group is entered once per iteration, and the JDK leaves it there: 6 times 2, and the 2 ways to the anchor
+      assertThat(scanWork("(?:|){6}\\z")).isEqualTo(14);
     }
   }
 
@@ -247,7 +320,10 @@ class RegexReadFreeWorkTest {
       assertThatThrownBy(() -> RegexReadFreeWork.measure("[a", 0)).isInstanceOf(Unparseable.class);
       assertThatThrownBy(() -> RegexReadFreeWork.measure("a\\", 0)).isInstanceOf(Unparseable.class);
       assertThatThrownBy(() -> RegexReadFreeWork.measure("*a", 0)).isInstanceOf(Unparseable.class);
-      assertThat(RegexReadFreeWork.maxWays("(a", 0)).isEqualTo(RegexReadFreeWork.SATURATED);
+      final RegexReadFreeWork.Measure unbounded = RegexReadFreeWork.measureOrUnbounded("(a", 0);
+      assertThat(unbounded.maxWays()).isEqualTo(RegexReadFreeWork.SATURATED);
+      assertThat(unbounded.work()).isEqualTo(RegexReadFreeWork.SATURATED);
+      assertThat(unbounded.scanWork()).isEqualTo(RegexReadFreeWork.SATURATED);
     }
 
     /**
@@ -301,8 +377,12 @@ class RegexReadFreeWorkTest {
           "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d+)?)?(?:Z|[+-]\\d{2}:?\\d{2})?)?$", "^(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*)$",
           "(\\s*,?\\s*)*", ".*a.*b.*c.*", "^foo.*bar$", "\\bword\\b", "^(?=.*[A-Z])(?=.*[a-z])(?=.*\\d).{8,}$", "(?<year>\\d{4})-(?<month>\\d{2})", "(\\w)\\1+",
           "^(?:(?:\\+|00)33|0)\\s*[1-9](?:[\\s.-]*\\d{2}){4}$", "[^\\s]+(?:\\s+[^\\s]+)*", "^$", "", "(?:)", "(|a)", "(a|)", "x*" };
-      for (final String pattern : patterns)
-        assertThat(ways(pattern)).as(pattern).isLessThanOrEqualTo(4);
+      for (final String pattern : patterns) {
+        final RegexReadFreeWork.Measure measure = RegexReadFreeWork.measure(pattern, 0);
+        assertThat(measure.maxWays()).as("ways of %s", pattern).isLessThanOrEqualTo(4);
+        assertThat(measure.work()).as("work of %s", pattern).isLessThanOrEqualTo(4096);
+        assertThat(measure.scanWork()).as("scan work of %s", pattern).isLessThanOrEqualTo(8);
+      }
     }
   }
 }

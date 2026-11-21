@@ -49,6 +49,20 @@ import java.util.regex.Pattern;
  * ones between two that must read, is what a match multiplies out before it reads again; the largest run of the pattern is the
  * answer. An element that must read ends the run because it either reads (and the deadline gets a look) or fails right there.
  * <p>
+ * The ways are not the whole cost, so every element also carries its WORK: the read-free node visits one attempt makes
+ * through it. A sequence pays each element once per path that reaches it, an alternation pays every option, and a counted
+ * loop whose body can match nothing pays its body once per iteration, because the JDK does not leave a deterministic loop
+ * before its minimum (a nested {@code (?:(?:(?:\A){1000}){1000}){1000}x} is 10^9 visits, one way, and not one read). Two
+ * measures of it are taken, each with its own reading of the pattern:
+ * <ul>
+ *   <li>{@link Measure#work} at the END of the input, where every test fails without a read: what ONE attempt can cost, and the
+ *   only attempt a {@code matches()} makes;</li>
+ *   <li>{@link Measure#scanWork} in the MIDDLE of the input, where a character test reads and an anchor fails without one: what
+ *   each start position of a {@code find()} costs when nothing reads (a hundred {@code \Ax} alternatives fail a hundred times at
+ *   every position and never call {@code charAt()}). A pattern whose paths read at every position needs no bound here, since
+ *   the deadline hears from every one of them.</li>
+ * </ul>
+ * <p>
  * The structure is parsed here and nothing else: what a character matches is never asked, and the pattern is known to compile
  * before this class sees it, so it never has to diagnose a syntax error, only to keep up with the syntax {@link Pattern}
  * accepts (comments mode, {@code \Q..\E} quoting, inline flags, nested classes, named groups). A pattern it cannot follow is
@@ -60,8 +74,32 @@ final class RegexReadFreeWork {
   /** every count stops here, so a product of large ones cannot overflow */
   static final long SATURATED = 1L << 40;
 
-  /** the structure measured: the largest run, and how many capturing groups the pattern opens (the JDK's own count) */
-  record Measure(long maxWays, int groups) {
+  private final String               source;
+  // true: the middle of the input, where a character test reads; false: its end, where every test fails without a read
+  private final boolean              middle;
+  private       int                  position;
+  private       int                  flags;
+  private       long                 maxWays   = 1;
+  private       int                  groups;
+  // the ways of each capturing group once it is closed (0 while open or unknown), indexed by group number
+  private       long[]               groupWays = new long[8];
+  private       Map<String, Integer> names;
+
+  /**
+   * The structure measured.
+   *
+   * @param maxWays  the most different ways a run of elements can succeed without a read
+   * @param groups   how many capturing groups the pattern opens (the JDK's own count)
+   * @param work     the read-free node visits one attempt can make at the end of the input
+   * @param scanWork the read-free node visits one start position of a scan makes in the middle of the input
+   */
+  record Measure(long maxWays, int groups, long work, long scanWork) {
+    /** what is not understood is never trusted: as much work as can be counted */
+    private static final Measure UNBOUNDED = new Measure(SATURATED, 0, SATURATED, SATURATED);
+  }
+
+  /** What an element can do without reading: the ways it succeeds, and the node visits it makes doing so. */
+  private record Cost(long ways, long work) {
   }
 
   /** The syntax of the pattern is not one this class follows. */
@@ -71,41 +109,40 @@ final class RegexReadFreeWork {
     }
   }
 
-  private final String           source;
-  private       int              position;
-  private       int              flags;
-  private       long             maxWays = 1;
-  private       int              groups;
-  // the ways of each capturing group once it is closed (0 while open or unknown), indexed by group number
-  private       long[]           groupWays = new long[8];
-  private       Map<String, Integer> names;
-
-  private RegexReadFreeWork(final String source, final int flags) {
+  private RegexReadFreeWork(final String source, final int flags, final boolean middle) {
     this.source = source;
     this.flags = flags;
+    this.middle = middle;
   }
 
   /**
-   * @return the most different ways a run of {@code regex} can succeed without reading, {@link #SATURATED} at most; also when
-   * the pattern cannot be followed, so that what is not understood is never trusted
+   * @return what {@code regex} can do without reading, {@link Measure#UNBOUNDED} when the pattern cannot be followed, so that
+   * what is not understood is never trusted
    */
-  static long maxWays(final String regex, final int flags) {
+  static Measure measureOrUnbounded(final String regex, final int flags) {
     try {
-      return measure(regex, flags).maxWays();
+      return measure(regex, flags);
     } catch (final Unparseable | StackOverflowError e) {
-      return SATURATED;
+      return Measure.UNBOUNDED;
     }
   }
 
   /** @throws Unparseable when the syntax is not one this class follows */
   static Measure measure(final String regex, final int flags) {
     if ((flags & Pattern.LITERAL) != 0)
-      return new Measure(1, 0);
-    final RegexReadFreeWork work = new RegexReadFreeWork(unquote(regex), flags);
-    work.alternation();
-    if (work.position < work.source.length())
-      throw new Unparseable("unbalanced ')' at " + work.position);
-    return new Measure(work.maxWays, work.groups);
+      return new Measure(1, 0, 0, 0);
+    final String unquoted = unquote(regex);
+    final RegexReadFreeWork end = new RegexReadFreeWork(unquoted, flags, false);
+    final Cost endCost = end.parse();
+    final Cost middleCost = new RegexReadFreeWork(unquoted, flags, true).parse();
+    return new Measure(end.maxWays, end.groups, endCost.work(), middleCost.work());
+  }
+
+  private Cost parse() {
+    final Cost cost = alternation();
+    if (position < source.length())
+      throw new Unparseable("unbalanced ')' at " + position);
+    return cost;
   }
 
   /**
@@ -154,40 +191,61 @@ final class RegexReadFreeWork {
     return out.toString();
   }
 
-  private long alternation() {
-    long total = sequence();
+  private Cost alternation() {
+    Cost first = sequence();
+    if (current() != '|') {
+      note(first.ways());
+      return first;
+    }
+    long ways = first.ways();
+    long work = first.work();
     while (current() == '|') {
       ++position;
-      total = add(total, sequence());
+      final Cost option = sequence();
+      ways = add(ways, option.ways());
+      work = add(work, option.work());
     }
-    note(total);
-    return total;
+    note(ways);
+    return new Cost(ways, work);
   }
 
-  private long sequence() {
+  private Cost sequence() {
     // the product of the elements since the last one that has to read: what a match multiplies out before it reads again
     long run = 1;
     // the product of all of them, 0 as soon as one has to read
     long whole = 1;
+    // how many paths reach the next element: the product of the ways before it, 0 once one has to read (at the end of the input
+    // it fails there, in the middle of it that is a read the deadline hears of), and so what each element's work is multiplied by
+    long arriving = 1;
+    long work = 0;
+    boolean any = false;
     for (; ; ) {
       final int c = current();
       if (c < 0 || c == '|' || c == ')')
-        return whole;
-      final long ways = quantified(c);
-      if (ways == 0) {
+        break;
+      any = true;
+      final Cost element = quantified(c);
+      work = add(work, multiply(arriving, element.work()));
+      arriving = multiply(arriving, element.ways());
+      if (element.ways() == 0) {
         run = 1;
         whole = 0;
       } else {
-        run = multiply(run, ways);
+        run = multiply(run, element.ways());
         note(run);
         if (whole != 0)
-          whole = multiply(whole, ways);
+          whole = multiply(whole, element.ways());
       }
     }
+    // an empty option is a visit that succeeds
+    return new Cost(whole, any ? work : 1);
   }
 
-  private long quantified(final int first) {
-    final long ways = atom(first);
+  private Cost quantified(final int first) {
+    // a body repeated {0} times is parsed (its syntax and its groups count) but never entered, so what it peaks at is not the
+    // pattern's
+    final long maxWaysBefore = maxWays;
+    final Cost body = atom(first);
     final int q = current();
     final long min;
     final long max;
@@ -223,7 +281,7 @@ final class RegexReadFreeWork {
       max = upper;
     }
     default -> {
-      return ways;
+      return body;
     }
     }
 
@@ -235,12 +293,24 @@ final class RegexReadFreeWork {
       ++position;
       possessive = true;
     }
-    long result = quantify(ways, min, max);
+    long ways = quantify(body.ways(), min, max);
     // a possessive loop keeps the first thing it finds
     if (possessive)
-      result = Math.min(1, result);
-    note(result);
-    return result;
+      ways = Math.min(1, ways);
+    final long work;
+    if (max == 0) {
+      // never entered: one visit, and the peaks inside the body do not count
+      maxWays = maxWaysBefore;
+      work = 1;
+    } else if (body.ways() == 0)
+      // a body that has to read is attempted once, whatever it is repeated
+      work = body.work();
+    else
+      // a body that can match nothing is entered once per iteration: its minimum, since a deterministic loop does not stop
+      // early on a turn that consumed nothing, and one more when the loop may go on
+      work = multiply(Math.max(min, 1) + (max < 0 || max > min ? 1 : 0), body.work());
+    note(ways);
+    return new Cost(ways, work);
   }
 
   private static long quantify(final long ways, final long min, final long max) {
@@ -267,30 +337,50 @@ final class RegexReadFreeWork {
     return value;
   }
 
-  private long atom(final int c) {
+  /** A character, a class, {@code .}: it reads, so at the end of the input it fails there (one visit) and in the middle it reads. */
+  private Cost reading() {
+    return new Cost(0, middle ? 0 : 1);
+  }
+
+  /** An anchor: one visit, and in the middle of the input it fails there, without a read. */
+  private Cost anchor() {
+    return new Cost(middle ? 0 : 1, 1);
+  }
+
+  /** A word boundary looks at the characters around it: in the middle of the input it reads. */
+  private Cost boundary() {
+    return new Cost(middle ? 0 : 1, middle ? 0 : 1);
+  }
+
+  /** What matches nothing without a test of its own: an empty group or option, an inline flag, an empty repetition. */
+  private static Cost empty() {
+    return new Cost(1, 1);
+  }
+
+  private Cost atom(final int c) {
     switch (c) {
     case '(':
       return group();
     case '[':
       skipClass();
-      return 0;
+      return reading();
     case '\\':
       return escape();
     case '^', '$':
       ++position;
-      return 1;
+      return anchor();
     case '*', '+', '?':
       throw new Unparseable("dangling '" + (char) c + "' at " + position);
     case '{':
       // Pattern reads a '{' where an atom should be as an empty one, and the repetition that follows applies to it
-      return 1;
+      return empty();
     default:
       ++position;
-      return 0;
+      return reading();
     }
   }
 
-  private long group() {
+  private Cost group() {
     // the cursor is on the '('
     ++position;
     final int savedFlags = flags;
@@ -337,7 +427,7 @@ final class RegexReadFreeWork {
         final int f = current();
         if (f == ')') {
           ++position;
-          return 1;
+          return empty();
         }
         if (f != ':')
           throw new Unparseable("unknown inline modifier at " + position);
@@ -347,7 +437,7 @@ final class RegexReadFreeWork {
     } else
       capturing = ++groups;
 
-    final long body = alternation();
+    final Cost body = alternation();
     if (current() != ')')
       throw new Unparseable("unclosed group at " + position);
     ++position;
@@ -356,11 +446,15 @@ final class RegexReadFreeWork {
     if (capturing > 0) {
       if (capturing >= groupWays.length)
         groupWays = Arrays.copyOf(groupWays, Math.max(capturing + 1, groupWays.length * 2));
-      groupWays[capturing] = body;
+      groupWays[capturing] = body.ways();
     }
+    // a look-around and an atomic group run their body once and keep its first match; a negative one succeeds where its body
+    // fails, which can be without a read
     if (negativeLook)
-      return 1;
-    return positiveLook || atomic ? Math.min(1, body) : body;
+      return new Cost(1, add(body.work(), 1));
+    if (positiveLook || atomic)
+      return new Cost(Math.min(1, body.ways()), add(body.work(), 1));
+    return body;
   }
 
   /** The inline flags at the cursor; only the two that change how the pattern is read matter here. */
@@ -382,20 +476,22 @@ final class RegexReadFreeWork {
     }
   }
 
-  private long escape() {
+  private Cost escape() {
     // the cursor is on the '\\'; the character after it is taken as it is
     ++position;
     if (position >= source.length())
       throw new Unparseable("a trailing backslash");
     final char e = source.charAt(position++);
     switch (e) {
-    case 'A', 'G', 'z', 'Z', 'B':
-      return 1;
+    case 'A', 'G', 'z', 'Z':
+      return anchor();
+    case 'B':
+      return boundary();
     case 'b':
       // \b{g}
       if (position < source.length() && source.charAt(position) == '{')
         skipPast('}');
-      return 1;
+      return boundary();
     case 'k': {
       if (position >= source.length() || source.charAt(position) != '<')
         throw new Unparseable("a named back reference without a name at " + position);
@@ -421,20 +517,20 @@ final class RegexReadFreeWork {
     case 'x', 'p', 'P', 'N':
       if (position < source.length() && source.charAt(position) == '{')
         skipPast('}');
-      return 0;
+      return reading();
     case 'c':
       // the control character is the one after it, whatever it is
       ++position;
-      return 0;
+      return reading();
     default:
       // classes (\d \w \s \h \v), \R, \X, the escapes of one character and the escaped punctuation: each reads
-      return 0;
+      return reading();
     }
   }
 
-  private long backReference(final int group) {
+  private Cost backReference(final int group) {
     // a reference to a group that is still open, or has not been seen, fails: it can not succeed without reading either
-    return group > 0 && group < groupWays.length ? Math.min(1, groupWays[group]) : 0;
+    return new Cost(group > 0 && group < groupWays.length ? Math.min(1, groupWays[group]) : 0, 1);
   }
 
   /** Skips a character class, nested ones included, with the cursor on its '['. */

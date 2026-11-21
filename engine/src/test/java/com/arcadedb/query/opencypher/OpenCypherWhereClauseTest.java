@@ -222,7 +222,9 @@ public class OpenCypherWhereClauseTest {
     // deadline hears of, so the query kept its thread busy for as long as the backtracking took
     database.getConfiguration().setValue(GlobalConfiguration.COMMAND_REGEX_TIMEOUT, 200L);
 
-    final String regex = "\\A" + "(?:\\A|\\A)".repeat(40) + "\\z";
+    // 11 groups are 2,048 ways, the smallest fixture past the limit: if the refusal regressed the query would return at once and
+    // the test fail, where the issue's n = 40 would hang the JVM
+    final String regex = "\\A" + "(?:\\A|\\A)".repeat(11) + "\\z";
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
     assertThatThrownBy(() -> database.query("opencypher", "RETURN $input =~ $regex AS result", Map.of("input", "ab", "regex", regex)).next())
