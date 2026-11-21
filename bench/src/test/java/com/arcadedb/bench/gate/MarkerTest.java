@@ -69,7 +69,8 @@ class MarkerTest {
   @Test
   void renderIsDeterministicAndNeverEmitsACommentTerminator() {
     final Marker marker = sample();
-    marker.putLine("a/b/c/d/e/f", new JSONObject().put("baseStatus", "x --> y > z").put("streak", 0));
+    marker.putLine("a/b/c/d/e/f", new JSONObject().put("baseRef", "def5678").put("baseMedian", 1.0).put("baseValues", new JSONArray())
+        .put("baseStatus", "x --> y > z").put("lastRun", "abc1234").put("streak", 0));
 
     final String rendered = marker.render();
     final String json = rendered.substring("<!-- perf-regression ".length(), rendered.length() - " -->".length());
@@ -88,6 +89,51 @@ class MarkerTest {
     assertThat(Marker.parse("<!-- perf-regression {\"v\":2,\"trigger\":\"nightly\",\"ref\":\"a\"} -->")).isNull();
     assertThat(Marker.parse("<!-- perf-regression {\"v\":1,\"ref\":\"a\"} -->")).isNull();
     assertThat(Marker.parse("<!-- perf-regression {\"v\":1,\"trigger\":\"nightly\"} -->")).isNull();
+  }
+
+  @Test
+  void entryOfTheWrongShapeMakesTheMarkerUnusable() {
+    final Marker wrongStreak = sample();
+    wrongStreak.line("perf-01/jvm/M/ingestion/bulk-import/time").put("streak", "two");
+    assertThat(Marker.parse(wrongStreak.render())).isNull();
+
+    final Marker noMedian = sample();
+    noMedian.line("perf-01/jvm/M/ingestion/bulk-import/time").remove("baseMedian");
+    assertThat(Marker.parse(noMedian.render())).isNull();
+
+    final Marker statusWithMedian = sample();
+    statusWithMedian.line("perf-01/jvm/M/ingestion/bulk-import/_status").put("baseMedian", 1.0);
+    assertThat(Marker.parse(statusWithMedian.render())).isNull();
+
+    final Marker textValues = sample();
+    textValues.line("perf-01/jvm/M/ingestion/bulk-import/time").put("baseValues", new JSONArray().put("12"));
+    assertThat(Marker.parse(textValues.render())).isNull();
+
+    final Marker noLastRun = sample();
+    noLastRun.line("perf-01/jvm/M/ingestion/bulk-import/time").remove("lastRun");
+    assertThat(Marker.parse(noLastRun.render())).isNull();
+
+    final Marker lineNotAnObject = sample();
+    final String rendered = lineNotAnObject.render().replace("\"lines\":{", "\"lines\":{\"x/y\":3,");
+    assertThat(Marker.parse(rendered)).isNull();
+
+    assertThat(Marker.parse(sample().render())).isNotNull();
+  }
+
+  @Test
+  void aWronglyTypedMarkerIsSkippedWithAWarning() throws IOException {
+    final Marker bad = sample();
+    bad.line("perf-01/jvm/M/ingestion/bulk-import/time").put("streak", "two");
+    final JSONArray issues = new JSONArray();
+    issues.put(new JSONObject().put("number", 1).put("state", "open").put("body", bad.render()));
+    issues.put(new JSONObject().put("number", 2).put("state", "open").put("body", sample().render()));
+    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+    final List<TrackedIssue> read = TrackedIssue.readAll(issuesFile(issues.toString()), new PrintStream(bytes, true, StandardCharsets.UTF_8));
+
+    assertThat(read).hasSize(1);
+    assertThat(read.get(0).number()).isEqualTo(2);
+    assertThat(bytes.toString(StandardCharsets.UTF_8)).contains("#1").contains("invalid marker");
   }
 
   private Path issuesFile(final String json) throws IOException {

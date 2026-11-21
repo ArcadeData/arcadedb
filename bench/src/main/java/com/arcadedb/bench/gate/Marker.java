@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bench.gate;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
@@ -79,12 +80,35 @@ public final class Marker {
         return null;
       final Marker marker = create(trigger, ref, json.getString("baseRef", null));
       final JSONObject lineObjects = json.getJSONObject("lines", new JSONObject());
-      for (final String id : lineObjects.keySet())
-        marker.lines.put(id, lineObjects.getJSONObject(id));
+      for (final String id : lineObjects.keySet()) {
+        final Object entry = lineObjects.get(id, null);
+        if (!(entry instanceof JSONObject e) || !isValidEntry(id, e))
+          return null;
+        marker.lines.put(id, e);
+      }
       return marker;
     } catch (final RuntimeException e) {
       return null;
     }
+  }
+
+  /**
+   * Whether an entry has the shape the planner reads: baseRef, lastRun and baseStatus strings, a numeric streak, baseValues an array of
+   * numbers, and a numeric baseMedian present exactly when the line is not a status line. A marker a human edited into another shape is
+   * unusable as a whole, so the issue is skipped with a warning instead of failing the gate.
+   */
+  private static boolean isValidEntry(final String lineId, final JSONObject entry) {
+    if (!(entry.get("baseRef", null) instanceof String) || !(entry.get("lastRun", null) instanceof String)
+        || !(entry.get("baseStatus", null) instanceof String) || !(entry.get("streak", null) instanceof Number))
+      return false;
+    if (!(entry.get("baseValues", null) instanceof JSONArray values))
+      return false;
+    for (int i = 0; i < values.length(); i++)
+      if (!(values.get(i) instanceof Number))
+        return false;
+    final boolean statusLine = lineId.endsWith("/" + LineKey.STATUS);
+    final Object median = entry.get("baseMedian", null);
+    return statusLine ? !entry.has("baseMedian") : median instanceof Number;
   }
 
   /** Renders the marker deterministically (lines and their fields sorted by name), without {@code -->} or {@code >} inside the JSON. */
