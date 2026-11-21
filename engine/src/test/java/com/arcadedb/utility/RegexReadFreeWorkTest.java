@@ -358,6 +358,15 @@ class RegexReadFreeWorkTest {
     }
 
     @Test
+    void anInlineFlagIsFoundWhereverItIsInTheOpenersOfTheText() {
+      // nested openers share the delimiter that ends them: the letter is found once, wherever it is among them
+      final String nested = "(?=(?<n>(?=(?x)" + "a".repeat(100) + ")))" + "(?:\\A|\\A)".repeat(11);
+      assertThat(Pattern.compile(nested).matcher("").groupCount()).isEqualTo(1);
+      assertThat(RegexReadFreeWork.measure(nested, 0).maxWays()).isEqualTo(2048);
+      assertThat(RegexReadFreeWork.measure(nested, 0).groups()).isEqualTo(1);
+    }
+
+    @Test
     void aPatternWithoutInlineFlagsIsReadInTheStateItWasCompiledIn() {
       // with nothing to change the flags the end state is the start state, and no other is considered: in comments mode the
       // text after '#' is a comment and hides what a plain reading would count

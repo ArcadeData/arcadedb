@@ -232,12 +232,13 @@ public final class TimeBoundRegex {
   private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final boolean scans,
       final Function<CharSequence, T> operation) {
     if (deadlineNanos != Long.MAX_VALUE) {
-      // The deadline is looked at from charAt() every CHECK_INTERVAL calls of a new wrapper, so an operation on a short input never
-      // looks at all: one that starts after the shared deadline has gone by must not be given a match
-      if (System.nanoTime() - deadlineNanos >= 0)
-        throw timeoutException(pattern, input, RegexDeadlineExceeded.INSTANCE);
       // the bound is only as good as the reads it hears about: refuse what could backtrack without making any (issue #12595)
       refuseIfUnbounded(pattern, input, scans);
+      // The deadline is looked at from charAt() every CHECK_INTERVAL calls of a new wrapper, so an operation on a short input never
+      // looks at all: one that starts after the shared deadline has gone by, the measure of a pattern met for the first time
+      // included, must not be given a match
+      if (System.nanoTime() - deadlineNanos >= 0)
+        throw timeoutException(pattern, input, RegexDeadlineExceeded.INSTANCE);
     }
     try {
       return operation.apply(deadlineNanos == Long.MAX_VALUE ? input : new DeadlineBoundCharSequence(input, deadlineNanos));

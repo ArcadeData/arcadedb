@@ -180,16 +180,25 @@ final class RegexReadFreeWork {
     return new Measure(end.maxWays, end.groups, endCost.work(), middleCost.work());
   }
 
-  /** Whether an inline flag group of the text may set or clear {@code letter}: some "(?" is followed by it before a ')' or a ':'. */
+  /**
+   * Whether an inline flag group of the text may set or clear {@code letter}: some "(?" is followed by it before a ')' or a ':'.
+   * One forward pass: an opener inside a region ends at the same delimiter as the region it is in, so scanning each of them again
+   * would only find the letters this pass has already seen.
+   */
   private static boolean mentionsFlag(final String text, final char letter) {
-    for (int i = text.indexOf("(?"); i >= 0; i = text.indexOf("(?", i + 2))
-      for (int j = i + 2; j < text.length(); ++j) {
-        final char c = text.charAt(j);
+    boolean inRegion = false;
+    for (int i = 0; i < text.length(); ++i) {
+      final char c = text.charAt(i);
+      if (inRegion) {
         if (c == letter)
           return true;
         if (c == ')' || c == ':')
-          break;
+          inRegion = false;
+      } else if (c == '(' && i + 1 < text.length() && text.charAt(i + 1) == '?') {
+        inRegion = true;
+        ++i;
       }
+    }
     return false;
   }
 
