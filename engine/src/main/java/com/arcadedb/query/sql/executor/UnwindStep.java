@@ -143,66 +143,82 @@ public class UnwindStep extends AbstractExecutionStep {
       }
 
       final Result nextAggregateItem = lastResult.next();
-      nextSubsequence = unwind(nextAggregateItem, 0, context).iterator();
+      nextSubsequence = unwind(nextAggregateItem, 0, context);
 
     } while (true);
 
   }
 
-  private Collection<Result> unwind(final Result doc, final int itemIndex, final CommandContext context) {
-    final List<Result> result = new ArrayList<>();
+  /**
+   * The rows one input row unwinds into, produced on demand: a list of a million elements costs a million rows only if the
+   * caller reads them, so a {@code LIMIT 1} (or a timeout, or a closed result set) leaves the rest of the list unread and
+   * unallocated, instead of building every row before the first one is returned.
+   */
+  private Iterator<Result> unwind(final Result doc, final int itemIndex, final CommandContext context) {
+    if (itemIndex >= unwindFields.size())
+      return Collections.singletonList(doc).iterator();
 
-    if (itemIndex >= unwindFields.size()) {
-      result.add(doc);
+    final String firstField = unwindFields.get(itemIndex);
+    final int nextFields = itemIndex + 1;
+    final Expression operand = operands[itemIndex];
+
+    final Object fieldValue = operand != null ? operand.execute(operandRow(doc, itemIndex, context), context) : doc.getProperty(firstField);
+    if (fieldValue == null || fieldValue instanceof Record
+        || (!(fieldValue instanceof Iterable) && !MultiValue.isSequenceArray(fieldValue))) {
+      // Null, Record, scalar or BINARY blob value: there is nothing to flatten, so a single row is forwarded.
+      // Always forward a defensive copy (never the upstream instance) so that downstream mutations
+      // - e.g. a later UNWIND field or a projection step calling setElement(null) - cannot corrupt
+      // the shared input record. The unwound property keeps its original value: a scalar behaves
+      // like a single-element collection.
+      final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
+      copy(doc, unwindedDoc);
+      if (doc.isElement())
+        unwindedDoc.setElement(doc.getElement().get());
+      if (operand != null)
+        // an aliased item writes its single value into the alias, as a bare field already holds it in place
+        unwindedDoc.setProperty(firstField, fieldValue);
+      return unwind(unwindedDoc, nextFields, context);
+    }
+
+    final Iterator<?> iterator;
+    if (MultiValue.isSequenceArray(fieldValue)) {
+      iterator = MultiValue.getMultiValueIterator(fieldValue);
     } else {
-      final String firstField = unwindFields.get(itemIndex);
-      final int nextFields = itemIndex + 1;
-      final Expression operand = operands[itemIndex];
+      iterator = ((Iterable<?>) fieldValue).iterator();
+    }
+    if (!iterator.hasNext()) {
+      final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
+      copy(doc, unwindedDoc);
 
-      final Object fieldValue = operand != null ? operand.execute(operandRow(doc, itemIndex, context), context) : doc.getProperty(firstField);
-      if (fieldValue == null || fieldValue instanceof Record
-          || (!(fieldValue instanceof Iterable) && !MultiValue.isSequenceArray(fieldValue))) {
-        // Null, Record, scalar or BINARY blob value: there is nothing to flatten, so a single row is forwarded.
-        // Always forward a defensive copy (never the upstream instance) so that downstream mutations
-        // - e.g. a later UNWIND field or a projection step calling setElement(null) - cannot corrupt
-        // the shared input record. The unwound property keeps its original value: a scalar behaves
-        // like a single-element collection.
-        final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
-        copy(doc, unwindedDoc);
-        if (doc.isElement())
-          unwindedDoc.setElement(doc.getElement().get());
-        if (operand != null)
-          // an aliased item writes its single value into the alias, as a bare field already holds it in place
-          unwindedDoc.setProperty(firstField, fieldValue);
-        result.addAll(unwind(unwindedDoc, nextFields, context));
-        return result;
-      }
+      unwindedDoc.setProperty(firstField, null);
+      return unwind(unwindedDoc, nextFields, context);
+    }
 
-      final Iterator iterator;
-      if (MultiValue.isSequenceArray(fieldValue)) {
-        iterator = MultiValue.getMultiValueIterator(fieldValue);
-      } else {
-        iterator = ((Iterable) fieldValue).iterator();
-      }
-      if (!iterator.hasNext()) {
-        final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
-        copy(doc, unwindedDoc);
+    return new Iterator<>() {
+      private Iterator<Result> inner = Collections.emptyIterator();
 
-        unwindedDoc.setProperty(firstField, null);
-        result.addAll(unwind(unwindedDoc, nextFields, context));
-      } else {
-        do {
+      @Override
+      public boolean hasNext() {
+        while (!inner.hasNext()) {
+          if (!iterator.hasNext())
+            return false;
           guard.checkPeriodically(++produced);
           final Object o = iterator.next();
           final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
           copy(doc, unwindedDoc);
           unwindedDoc.setProperty(firstField, o);
-          result.addAll(unwind(unwindedDoc, nextFields, context));
-        } while (iterator.hasNext());
+          inner = unwind(unwindedDoc, nextFields, context);
+        }
+        return true;
       }
-    }
 
-    return result;
+      @Override
+      public Result next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        return inner.next();
+      }
+    };
   }
 
   /**
