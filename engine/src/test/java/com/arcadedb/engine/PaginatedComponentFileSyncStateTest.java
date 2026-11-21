@@ -31,7 +31,9 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -204,6 +206,67 @@ class PaginatedComponentFileSyncStateTest {
       assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_DATA);
     } finally {
       executor.shutdownNow();
+    }
+  }
+
+  /**
+   * A file a full sync forced with its metadata is not durable until that sync forces its directory too, after its loop
+   * over the files. A one-file sync arriving in between finds the file clean, and forces the directory itself (#11805).
+   */
+  @Test
+  void aOneFileSyncForcesTheDirectoryAFullSyncStillOwes() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile created = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("created"));
+
+      // What syncFiles() does first for this file, before the directories
+      assertThat(created.directoryForceOwed()).isZero();
+      assertThat(created.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+      assertThat(created.directoryForceOwed()).as("forced with its metadata, the directory still owed").isPositive();
+
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(created.directoryForceOwed()).as("the one-file sync forced the directory").isZero();
+    } finally {
+      fileManager.close();
+    }
+  }
+
+  /**
+   * A directory force that fails (here the directory refuses to be opened, as a transient I/O error on its force would fail
+   * it) leaves the files created in it owing that force, so the next sync, full or of one file, retries it. Best effort still:
+   * neither sync is failed by it.
+   */
+  @Test
+  void aFailedDirectoryForceIsRetriedByTheNextSync() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("directory"));
+      final Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(tempDir);
+      Files.setPosixFilePermissions(tempDir, Set.of(PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+      try {
+        assertThat(fileManager.syncFiles()).as("the directory force is best effort").isTrue();
+        assertThat(file.isModifiedSinceLastSync()).as("the file itself was forced").isFalse();
+        assertThat(file.directoryForceOwed()).as("the directory was not forced").isPositive();
+        assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+        assertThat(file.directoryForceOwed()).as("the directory still refuses").isPositive();
+      } finally {
+        Files.setPosixFilePermissions(tempDir, permissions);
+      }
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(file.directoryForceOwed()).as("the next one-file sync forced the directory").isZero();
+
+      file.markUnsynced();
+      Files.setPosixFilePermissions(tempDir, Set.of(PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+      try {
+        assertThat(fileManager.syncFiles()).isTrue();
+      } finally {
+        Files.setPosixFilePermissions(tempDir, permissions);
+      }
+      assertThat(file.directoryForceOwed()).isPositive();
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(file.directoryForceOwed()).as("the next full sync forced the directory").isZero();
+    } finally {
+      fileManager.close();
     }
   }
 

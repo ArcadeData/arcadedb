@@ -758,11 +758,11 @@ public class FileUtils {
    *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off. Returned
-   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off ({@link
+   * #skipsDirectoryForce} tells the two apart)
    */
   public static boolean forceDirectory(final Path dir) {
-    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
+    if (dir == null || skipsDirectoryForce())
       return false;
 
     // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
@@ -777,6 +777,15 @@ public class FileUtils {
       reportNoDirectorySync(dir);
       return false;
     }
+  }
+
+  /**
+   * Whether {@link #forceDirectory} skips every directory without trying: fsync is off ({@link GlobalConfiguration#FILE_SYNC}),
+   * or the platform has no directory fsync. A caller tracking which directories still owe a force counts a skipped one as
+   * settled, since no later attempt would force it either.
+   */
+  public static boolean skipsDirectoryForce() {
+    return NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean();
   }
 
   /**
