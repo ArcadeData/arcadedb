@@ -230,6 +230,19 @@ public final class TimeBoundRegex {
     return run(pattern, input, deadlineNanos, true, bounded -> pattern.matcher(bounded).replaceAll(replacement));
   }
 
+  /**
+   * Runs any {@code operation} that drives a {@link Matcher} of {@code pattern} over the {@link CharSequence} it receives (a
+   * {@code find()} loop that splits, or a {@code replaceAll} with a replacer function), aborting if it runs past {@code deadlineNanos}.
+   * The operation has to read the input only through the sequence it is given, or the deadline does not apply. Such an operation
+   * searches from every start position, so the pattern is measured as a scan, as {@link #findUntil} and {@link #replaceAllUntil} are.
+   *
+   * @throws TimeoutException if the operation does not complete before {@code deadlineNanos}
+   */
+  public static <T> T applyUntil(final Pattern pattern, final CharSequence input, final long deadlineNanos,
+      final Function<CharSequence, T> operation) {
+    return run(pattern, input, deadlineNanos, true, operation);
+  }
+
   private static <T> T run(final Pattern pattern, final CharSequence input, final long deadlineNanos, final boolean scans,
       final Function<CharSequence, T> operation) {
     if (deadlineNanos != Long.MAX_VALUE) {
