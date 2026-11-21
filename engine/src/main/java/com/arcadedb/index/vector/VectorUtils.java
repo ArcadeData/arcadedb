@@ -578,14 +578,18 @@ public final class VectorUtils {
    * @return a new unit vector in the same direction, or the original vector if magnitude is zero
    */
   public static float[] normalize(final float[] vector) {
-    final float mag = magnitude(vector);
-    if (mag == 0.0f)
+    // The magnitude stays in double, and each component is divided by it (issue #12853): narrowed to a float, a magnitude beyond
+    // Float.MAX_VALUE turned every component into 0, and one below ~2.9e-39 has a float reciprocal of Infinity.
+    double sum = 0.0;
+    for (final float v : vector)
+      sum += (double) v * v;
+    final double mag = Math.sqrt(sum);
+    if (mag == 0.0)
       return vector;
 
     final float[] result = new float[vector.length];
-    final float normFactor = 1.0f / mag;
     for (int i = 0; i < vector.length; i++)
-      result[i] = vector[i] * normFactor;
+      result[i] = (float) (vector[i] / mag);
     return result;
   }
 
