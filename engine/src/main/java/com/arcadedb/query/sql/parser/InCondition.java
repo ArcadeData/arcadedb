@@ -65,6 +65,26 @@ public class InCondition extends BooleanExpression {
   /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
   private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
 
+  /** A list of sub-query rows shorter than this is scanned: a probe costs more to build than the scan it saves. */
+  private static final int ROWS_PROBE_MIN_SIZE = 32;
+
+  /** Lazily assigned key of the per-execution {@link RowsProbe} of a sub-query result. */
+  private volatile String rowsKey;
+
+  /**
+   * What an execution knows about the sub-query rows it was handed: the list instance seen last and, once the same instance has
+   * come back for a second row, the probe built from it ({@code null} when the rows cannot be probed).
+   */
+  private static final class RowsProbe {
+    final Object     source;
+    InListMembership probe;
+    boolean          built;
+
+    RowsProbe(final Object source) {
+      this.source = source;
+    }
+  }
+
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
 
@@ -88,7 +108,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
@@ -128,12 +148,41 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
       return null;
     return not != result;
+  }
+
+  /**
+   * {@code IN} against a right-hand side that is evaluated per row. A sub-query of the statement that does not depend on the row
+   * is hoisted into a LET, so what arrives here is the same list of single-column rows for every outer row, and scanning it costs
+   * outer rows x sub-query rows (1,000 rows over 100,000 outer rows: 4 s). The second time the same list instance is handed in
+   * it is indexed into an {@link InListMembership}, which answers like the scan for the lists it accepts and falls back to the
+   * scan for everything else. A list that changes with the row (a correlated sub-query) is never indexed.
+   */
+  private Boolean evaluateAgainst(final Object leftVal, final Object rightVal, final CommandContext context) {
+    if (rightVal instanceof List<?> rows && rows.size() >= ROWS_PROBE_MIN_SIZE) {
+      String key = rowsKey;
+      if (key == null) {
+        // A benign race: see memoKey
+        key = "$IN$R" + MEMO_KEY_SEQUENCE.incrementAndGet();
+        rowsKey = key;
+      }
+      RowsProbe state = (RowsProbe) context.getCachedValue(key);
+      if (state == null || state.source != rightVal) {
+        state = new RowsProbe(rightVal);
+        context.setCachedValue(key, state);
+      } else if (!state.built) {
+        state.probe = InListMembership.buildFromRows(rows, operandIsSearched(context));
+        state.built = true;
+      }
+      if (state.probe != null)
+        return state.probe.evaluate(leftVal);
+    }
+    return evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
   }
 
   /**
