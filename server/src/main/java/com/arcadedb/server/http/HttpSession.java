@@ -182,16 +182,20 @@ public class HttpSession implements QuerySession {
   }
 
   /**
-   * Rolls back the session's transaction only if no command is currently executing on it. Used by the
-   * idle-timeout sweep ({@link HttpSessionManager#checkSessionsValidity}), which runs on a background timer
-   * thread and must never tear down a transaction while a worker thread is still inside {@link #execute}
-   * mutating it - doing so raced {@code TransactionContext.rollback()} against in-flight page mutations and
-   * could surface as an NPE on a just-nulled transaction field (issue #4857). If a command is in-flight, this
-   * is a no-op; the session is re-evaluated on the sweep's next tick once the command finishes and refreshes
-   * {@link #lastUpdate}.
+   * Ends the session if no command is currently executing on it: unregisters it from the manager and rolls back its
+   * transaction. Used by the idle-timeout sweep ({@link HttpSessionManager#checkSessionsValidity}), which runs on a background
+   * timer thread and must never tear down a transaction while a worker thread is still inside {@link #execute} mutating it -
+   * doing so raced {@code TransactionContext.rollback()} against in-flight page mutations and could surface as an NPE on a
+   * just-nulled transaction field (issue #4857). If a command is in-flight, this is a no-op; the session is re-evaluated on the
+   * sweep's next tick once the command finishes and refreshes {@link #lastUpdate}.
+   * <p>
+   * The unregistration happens under the session lock, before the rollback (issue #12115): a request that resolved the session
+   * before the sweep and takes the lock after it finds the session unregistered in {@link #execute} and runs nothing, the same
+   * guarantee the manager's write lock gave when it covered the whole sweep.
    *
    * @return {@link IdleCancelOutcome#BUSY} if a command is currently in-flight and the sweep must retry
-   * later, {@link IdleCancelOutcome#ROLLED_BACK} if idle and an active transaction was rolled back, or
+   * later, {@link IdleCancelOutcome#ENDED} if another request (commit, rollback, close, terminate) already unregistered the
+   * session and ends it itself, {@link IdleCancelOutcome#ROLLED_BACK} if idle and an active transaction was rolled back, or
    * {@link IdleCancelOutcome#ALREADY_IDLE} if idle but there was no active transaction to roll back
    */
   IdleCancelOutcome cancelIfIdle() {
@@ -199,6 +203,8 @@ public class HttpSession implements QuerySession {
       return IdleCancelOutcome.BUSY;
 
     try {
+      if (!manager.unregister(this))
+        return IdleCancelOutcome.ENDED;
       // ends the session's transaction: what a bounded cancel that gave up asked for is done here (issue #9774)
       rollbackOnRelease = false;
       return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
@@ -207,7 +213,7 @@ public class HttpSession implements QuerySession {
     }
   }
 
-  enum IdleCancelOutcome {BUSY, ROLLED_BACK, ALREADY_IDLE}
+  enum IdleCancelOutcome {BUSY, ENDED, ROLLED_BACK, ALREADY_IDLE}
 
   private void restartTransaction() {
     try {
