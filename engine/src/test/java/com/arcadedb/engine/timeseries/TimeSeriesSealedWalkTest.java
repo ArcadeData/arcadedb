@@ -1068,6 +1068,246 @@ class TimeSeriesSealedWalkTest {
   }
 
   /**
+   * #12887: retention rewrites a block that straddles its cutoff from the samples it keeps, under a fresh identity. A walk that took
+   * its snapshot before the pass and meets that block must neither skip it - its kept rows are still in the store, and an answer
+   * without them would be silently short - nor refuse it: the rows it lost are gone for good, as those of a block retention drops
+   * whole. It follows the rewrite to the block that holds the kept rows, as it follows a merge of small blocks (#9488).
+   */
+  @Nested
+  class WalkAcrossRetentionTrim {
+
+    private static final String BASE_DIR   = "target/databases/Issue12887WalkAcrossRetentionTrimTest";
+    private static final String STORE_PATH = BASE_DIR + "/store";
+
+    /** Drops block A whole and keeps the last two of the four samples of block B. */
+    private static final long CUTOFF_TS = 4_500L;
+
+    private List<ColumnDefinition> columns;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(BASE_DIR));
+      new File(BASE_DIR).mkdirs();
+
+      columns = List.of(
+          new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+          new ColumnDefinition("sensor_id", Type.STRING, ColumnDefinition.ColumnRole.TAG),
+          new ColumnDefinition("temperature", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
+    }
+
+    @AfterEach
+    void tearDown() {
+      FileUtils.deleteRecursively(new File(BASE_DIR));
+    }
+
+    // #12887
+    @Test
+    void aWalkCrossingATrimReadsTheRowsTheTrimKept() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        store.truncateBefore(CUTOFF_TS);
+
+        final AggregationMetrics metrics = new AggregationMetrics();
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(5000L, 6000L, 7000L, 8000L);
+        assertThat(metrics.getVanishedBlocks()).as("block A, which retention dropped whole").isEqualTo(1);
+      }
+    }
+
+    // #12887
+    @Test
+    void aWalkThatIsHalfWayWhenTheTrimLandsEmitsEachKeptRowOnce() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          // block A is already decoded: its rows are handed over even though the trim drops it
+          if (rows.size() == 1)
+            truncate(store);
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    // #12887
+    @Test
+    void aLazyIteratorThatIsHalfWayWhenTheTrimLandsEmitsEachKeptRowOnce() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final Iterator<Object[]> it = store.iterateRange(store.snapshotBlockDirectory(0L, Long.MAX_VALUE), 0L, Long.MAX_VALUE, null,
+            null, null);
+
+        final List<Object[]> rows = new ArrayList<>();
+        rows.add(it.next());
+        store.truncateBefore(CUTOFF_TS);
+        while (it.hasNext())
+          rows.add(it.next());
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /** The trim and a merge that folds the trimmed block with the next one, both while the walk is inside block A. */
+    // #12887
+    @Test
+    void aWalkFollowsATrimAndThenAMergeOfTheTrimmedBlock() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          if (rows.size() == 1) {
+            truncate(store);
+            merge(store);
+            assertThat(store.getBlockCount()).as("the trimmed block and the next one, merged").isEqualTo(1);
+          }
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * The other order, which a maintenance pass runs (merge, then retention): the three blocks are merged while the walk is inside
+     * block B, and the merged block is trimmed. The walk owes only block C's rows of the merged block, and the trim moved every
+     * kept row up by the four it dropped: reading the walk's rows at their old positions would hand over rows of B a second time.
+     */
+    // #12887
+    @Test
+    void aWalkFollowsAMergeAndThenATrimOfTheMergedBlock() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        final List<Object[]> rows = new ArrayList<>();
+        assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> {
+          rows.add(row);
+          if ((long) row[0] == 3000L) {
+            merge(store);
+            truncate(store);
+            assertThat(store.getBlockCount()).isEqualTo(1);
+            assertThat(store.getTotalSampleCount()).isEqualTo(4L);
+          }
+          return true;
+        })).isTrue();
+
+        assertThat(timestamps(rows)).containsExactly(1000L, 2000L, 3000L, 4000L, 5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    /**
+     * A downsample that also crossed the walk means the block the trim replaced may hold coarse rows the walk cannot join to the fine
+     * ones it handed over, so the walk is refused, as for any rewrite it cannot follow: never answered short.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingATrimAndADownsampleIsRefused() throws Exception {
+      try (final TimeSeriesSealedStore store = threeBlockStore(STORE_PATH)) {
+        final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        // coarsens block A alone, then the trim drops the coarse block and rebuilds block B
+        store.downsampleBlocks(2_500L, 10_000L, 0, List.of(1), List.of(2));
+        store.truncateBefore(CUTOFF_TS);
+
+        assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+      }
+    }
+
+    /**
+     * A follower adopts the leader's trimmed image wholesale, with no record of what replaced what: the walk cannot follow the
+     * rewrite, so it is refused rather than answered without the kept rows of the trimmed block.
+     */
+    // #12887
+    @Test
+    void aWalkCrossingAnInstallOfALeaderTrimmedImageIsRefusedNotAnsweredShort() throws Exception {
+      final byte[] leaderV1;
+      final byte[] leaderTrimmed;
+      try (final TimeSeriesSealedStore leader = threeBlockStore(BASE_DIR + "/leader")) {
+        leaderV1 = leader.readWholeSealedFile();
+        leader.truncateBefore(CUTOFF_TS);
+        leaderTrimmed = leader.readWholeSealedFile();
+      }
+
+      try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+        follower.installSealedFileBytes(leaderV1);
+        final BlockDirectorySnapshot snapshot = follower.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+        follower.installSealedFileBytes(leaderTrimmed);
+
+        assertThatThrownBy(() -> follower.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, row -> true))
+            .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+        assertThat(timestamps(readAll(follower))).as("a new read gets the trimmed store").containsExactly(5000L, 6000L, 7000L, 8000L);
+      }
+    }
+
+    // ---- Helpers ----
+
+    /** A [1000, 2000], B [3000 .. 6000] (four samples) and C [7000, 8000], one sensor each. */
+    private TimeSeriesSealedStore threeBlockStore(final String path) throws Exception {
+      final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns);
+      appendBlock(store, new long[] { 1000L, 2000L }, "A");
+      appendBlock(store, new long[] { 3000L, 4000L, 5000L, 6000L }, "B");
+      appendBlock(store, new long[] { 7000L, 8000L }, "C");
+      store.flushHeader();
+      return store;
+    }
+
+    private static void truncate(final TimeSeriesSealedStore store) {
+      try {
+        store.truncateBefore(CUTOFF_TS);
+      } catch (final IOException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    private static void merge(final TimeSeriesSealedStore store) {
+      try {
+        assertThat(store.commitMerge(store.prepareMerge(TimeSeriesShard.SEALED_BLOCK_SIZE, 0L, 1))).isTrue();
+      } catch (final IOException e) {
+        throw new IllegalStateException(e);
+      }
+    }
+
+    private static List<Object[]> readAll(final TimeSeriesSealedStore store) throws Exception {
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(store.forEachRow(store.snapshotBlockDirectory(0L, Long.MAX_VALUE), 0L, Long.MAX_VALUE, null, null, null,
+          rows::add)).isTrue();
+      return rows;
+    }
+
+    private static List<Long> timestamps(final List<Object[]> rows) {
+      final List<Long> out = new ArrayList<>(rows.size());
+      for (final Object[] row : rows)
+        out.add((Long) row[0]);
+      return out;
+    }
+
+    private static void appendBlock(final TimeSeriesSealedStore store, final long[] timestamps, final String tag) throws Exception {
+      final int n = timestamps.length;
+      final String[] tags = new String[n];
+      final double[] values = new double[n];
+      double sum = 0;
+      for (int i = 0; i < n; i++) {
+        tags[i] = tag;
+        values[i] = i + 1;
+        sum += values[i];
+      }
+      store.appendBlock(n, timestamps[0], timestamps[n - 1], new byte[][] {
+              DeltaOfDeltaCodec.encode(timestamps), DictionaryCodec.encode(tags), GorillaXORCodec.encode(values) },
+          new double[] { Double.NaN, Double.NaN, 1.0 }, new double[] { Double.NaN, Double.NaN, n },
+          new double[] { Double.NaN, Double.NaN, sum }, new long[] { 0, 0, n }, new String[][] { null, { tag }, null });
+    }
+  }
+
+  /**
    * #9982: {@link TimeSeriesSealedStore#scanRangeDescending} walked the block directory as if {@code maxTimestamp} were
    * monotonic along it. The directory is ordered by {@code minTimestamp} and its blocks overlap (#8813), so one block
    * ending before the lower bound - or before the oldest row retained - stopped the walk while an earlier block still

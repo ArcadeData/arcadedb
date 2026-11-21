@@ -1318,7 +1318,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
-   * Applies retention policy: removes sealed blocks older than the given timestamp.
+   * Applies retention policy: removes every sealed sample older than the given timestamp, dropping the blocks entirely older
+   * and rewriting a block that straddles it from the samples it keeps (issue #12887).
    * Note: this only truncates sealed stores. To ensure mutable bucket data is also
    * covered, call {@link #compactAll()} before this method.
    * <p>

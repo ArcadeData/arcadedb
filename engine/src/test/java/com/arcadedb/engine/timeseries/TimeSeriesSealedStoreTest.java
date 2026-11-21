@@ -25,6 +25,7 @@ import com.arcadedb.engine.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.codec.DictionaryCodec;
 import com.arcadedb.engine.codec.GorillaXORCodec;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockEntry;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -379,6 +380,45 @@ class TimeSeriesSealedStoreTest {
       final List<Object[]> results = store.scanRange(0L, 10000L, null, null);
       assertThat(results).hasSize(2);
       assertThat((long) results.get(0)[0]).isEqualTo(5000L);
+    }
+  }
+
+  /**
+   * A block that straddles the cutoff is rebuilt from the samples at or after it (issue #12887): its statistics and declared tag
+   * values are those of the rows it kept, and the file holds the rebuilt block once reopened.
+   */
+  // #12887
+  @Test
+  void truncateBeforeRebuildsTheBlockThatStraddlesTheCutoff() throws Exception {
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      store.appendBlock(4, 1000L, 4000L, new byte[][] {
+              DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L, 3000L, 4000L }),
+              DictionaryCodec.encode(new String[] { "A", "A", "B", "B" }),
+              GorillaXORCodec.encode(new double[] { 10.0, 11.0, 20.0, 21.0 })
+          }, new double[] { Double.NaN, Double.NaN, 10.0 }, new double[] { Double.NaN, Double.NaN, 21.0 },
+          new double[] { Double.NaN, Double.NaN, 62.0 }, new long[] { 0, 0, 4 }, new String[][] { null, { "A", "B" }, null });
+
+      store.truncateBefore(2500L);
+
+      assertThat(store.getBlockCount()).isEqualTo(1);
+      assertThat(store.getTotalSampleCount()).isEqualTo(2L);
+      assertThat(store.getGlobalMinTimestamp()).isEqualTo(3000L);
+
+      final BlockEntry kept = store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().getFirst();
+      assertThat(kept.minTimestamp).isEqualTo(3000L);
+      assertThat(kept.maxTimestamp).isEqualTo(4000L);
+      assertThat(kept.columnMins[2]).isEqualTo(20.0);
+      assertThat(kept.columnMaxs[2]).isEqualTo(21.0);
+      assertThat(kept.columnSums[2]).isEqualTo(41.0);
+      assertThat(kept.tagDistinctValues[1]).as("a tag value only the expired rows held is no longer declared").containsExactly("B");
+    }
+
+    try (final TimeSeriesSealedStore reopened = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      final List<Object[]> rows = reopened.scanRange(0L, 10_000L, null, null);
+      assertThat(rows).hasSize(2);
+      assertThat(rows.get(0)).containsExactly(3000L, "B", 20.0);
+      assertThat(rows.get(1)).containsExactly(4000L, "B", 21.0);
+      assertThat(reopened.checkIntegrity(TimeSeriesIntegrity.Options.deepOnly()).problems()).isEmpty();
     }
   }
 
