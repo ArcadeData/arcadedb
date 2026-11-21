@@ -19,13 +19,16 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -159,6 +162,31 @@ public final class InListMembership {
       return new InListMembership(rightValue, null, KIND_NONE, containsNull, convertOperand);
 
     return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats), convertOperand);
+  }
+
+  /**
+   * The probe for the rows of a sub-query hoisted into a LET: every row a single-column result and the column a string or a number
+   * (a null column is a null element). The probe answers like {@link InCondition#evaluateExpressionThreeValued} over the rows
+   * wherever it takes the fast path, and hands every other left value to that evaluator with the rows themselves.
+   *
+   * @return the probe, or {@code null} when the rows hold anything else (records, several columns, lists, mixed kinds), which only the
+   * scan reads exactly
+   */
+  public static InListMembership buildFromRows(final List<?> rows, final boolean convertOperand) {
+    final List<Object> values = new ArrayList<>(rows.size());
+    for (final Object item : rows) {
+      if (!(item instanceof Result row) || row.isElement())
+        return null;
+      final Set<String> names = row.getPropertyNames();
+      if (names.size() != 1)
+        return null;
+      values.add(row.getProperty(names.iterator().next()));
+    }
+
+    final InListMembership built = build(values, convertOperand);
+    if (built.keys == null)
+      return null;
+    return new InListMembership(rows, built.keys, built.kind, built.containsNull, built.narrowedDoubles, built.floats, convertOperand);
   }
 
   /**
