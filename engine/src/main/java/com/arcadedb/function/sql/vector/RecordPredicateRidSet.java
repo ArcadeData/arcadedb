@@ -42,6 +42,7 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.InCondition;
 import com.arcadedb.query.sql.parser.SuffixIdentifier;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
@@ -51,12 +52,16 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.AbstractSet;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
@@ -116,6 +121,8 @@ import java.util.logging.Level;
  */
 public final class RecordPredicateRidSet extends AbstractSet<RID> implements PredicateRidSet {
   private static final Lookup  NO_LOOKUP  = new Lookup(Map.of(), false);
+  // The longest list of values an IN is looked up by: each is an index read, and a longer one is the walk's to answer
+  private static final int     MAX_IN_VALUES = 256;
   private static final Listing NOT_LISTED = new Listing(Integer.MAX_VALUE, null);
 
   private final BasicDatabase                   database;
@@ -134,9 +141,29 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private volatile Lookup                       lookup;
 
   /**
-   * The equalities of the predicate an index may answer, and whether they are the whole predicate.
+   * The equalities of the predicate an index may answer, whether they are the whole predicate, and at most one
+   * {@code property IN <constants>} conjunct (issue #12578), which is looked up once per value and merged.
    */
-  private record Lookup(Map<String, Object> equalities, boolean whole) {
+  private record Lookup(Map<String, Object> equalities, boolean whole, String inProperty, List<Object> inValues) {
+    private Lookup(final Map<String, Object> equalities, final boolean whole) {
+      this(equalities, whole, null, List.of());
+    }
+
+    boolean isEmpty() {
+      return equalities.isEmpty() && inProperty == null;
+    }
+
+    /**
+     * The properties an index has to bind to list for this lookup, each with a value of it: the {@code IN}'s with its first,
+     * which only tells that a key can be stored. {@link #inValues} are each checked when the keys are built.
+     */
+    Map<String, Object> binding() {
+      if (inProperty == null)
+        return equalities;
+      final LinkedHashMap<String, Object> all = new LinkedHashMap<>(equalities);
+      all.put(inProperty, inValues.getFirst());
+      return all;
+    }
   }
 
   /**
@@ -344,7 +371,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
    * listing. Null when none binds every one of its properties.
    */
   private IndexInternal listingIndex(final int bucketId, final Lookup equalitiesToLookUp) {
-    if (equalitiesToLookUp.equalities.isEmpty())
+    if (equalitiesToLookUp.isEmpty())
       return null;
     final DatabaseInternal db = context.getDatabase();
     final DocumentType type = db.getSchema().getTypeByBucketId(bucketId);
@@ -352,7 +379,7 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       return null;
     IndexInternal best = null;
     for (final IndexInternal index : type.getPolymorphicBucketIndexByBucketId(bucketId, null))
-      if (bindsEveryKey(db, type, index, equalitiesToLookUp.equalities) && (best == null
+      if (bindsEveryKey(db, type, index, equalitiesToLookUp.binding()) && (best == null
           || index.getPropertyNames().size() > best.getPropertyNames().size()
           || (index.getPropertyNames().size() == best.getPropertyNames().size() && index.isUnique() && !best.isUnique())))
         best = index;
@@ -376,33 +403,60 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     final DocumentType type = db.getSchema().getTypeByBucketId(bucketId);
     final List<String> properties = best.getPropertyNames();
     final Type[] keyTypes = best.getKeyTypes();
+    // The index's property the IN is on: one lookup per value of it, every other key being the same in all of them
+    final int inIndex = equalitiesToLookUp.inProperty == null ? -1 : properties.indexOf(equalitiesToLookUp.inProperty);
     final Object[] keys = new Object[properties.size()];
-    // A case-insensitive key lists the other spellings too: those candidates are tested
-    boolean exact = equalitiesToLookUp.whole && properties.size() == equalitiesToLookUp.equalities.size();
+    // Exact when the index answers the whole predicate: every equality and the IN, nothing else
+    boolean exact = equalitiesToLookUp.whole
+        && properties.size() == equalitiesToLookUp.equalities.size() + (equalitiesToLookUp.inProperty != null ? 1 : 0);
     for (int i = 0; i < keys.length; i++) {
+      // A case-insensitive key lists the other spellings too: those candidates are tested
+      if (best.getMetadata().isCaseInsensitive(i))
+        exact = false;
+      if (i == inIndex)
+        continue;
       // The value the records the equality accepts hold, and so the key the index holds them by
       keys[i] = storedKey(db, type, properties.get(i), equalitiesToLookUp.equalities.get(properties.get(i)), keyTypes[i]);
       if (keys[i] == null)
         return NOT_LISTED;
-      if (best.getMetadata().isCaseInsensitive(i))
-        exact = false;
+    }
+
+    final List<Object[]> lookups = new ArrayList<>();
+    if (inIndex < 0)
+      lookups.add(keys);
+    else {
+      final Set<Object> seen = new HashSet<>();
+      for (final Object value : equalitiesToLookUp.inValues) {
+        final Object key = storedKey(db, type, properties.get(inIndex), value, keyTypes[inIndex]);
+        if (key == null)
+          return NOT_LISTED;
+        // a value met twice, or two spellings of one key, is read once
+        if (seen.add(key)) {
+          final Object[] copy = keys.clone();
+          copy[inIndex] = key;
+          lookups.add(copy);
+        }
+      }
     }
 
     long[] positions = new long[Math.min(maxCandidates, 64)];
     int count = 0;
     int read = 0;
     try {
-      final IndexCursor cursor = best.get(keys, maxCandidates + 1);
-      while (cursor.hasNext()) {
-        final RID rid = cursor.next().getIdentity();
-        if (++read > maxCandidates)
-          return new Listing(maxCandidates, null);
-        if (rid.getBucketId() != bucketId || (restrictTo != null && !restrictTo.contains(rid)))
-          continue;
-        if (count == positions.length)
-          // count < read <= maxCandidates here, so the array never grows past what the listing may hold
-          positions = Arrays.copyOf(positions, Math.min(maxCandidates, Math.max(1, count * 2)));
-        positions[count++] = rid.getPosition();
+      // the bound is on all the lookups together: a set of tenants that keeps a fair share of the records is the walk's
+      for (final Object[] lookupKeys : lookups) {
+        final IndexCursor cursor = best.get(lookupKeys, maxCandidates + 1);
+        while (cursor.hasNext()) {
+          final RID rid = cursor.next().getIdentity();
+          if (++read > maxCandidates)
+            return new Listing(maxCandidates, null);
+          if (rid.getBucketId() != bucketId || (restrictTo != null && !restrictTo.contains(rid)))
+            continue;
+          if (count == positions.length)
+            // count < read <= maxCandidates here, so the array never grows past what the listing may hold
+            positions = Arrays.copyOf(positions, Math.min(maxCandidates, Math.max(1, count * 2)));
+          positions[count++] = rid.getPosition();
+        }
       }
     } catch (final IndexException e) {
       // dropped or rebuilt under the lookup: the walk answers instead
@@ -484,7 +538,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
 
   /**
    * The equalities of a property to a value the predicate holds whatever the record: the map's, or the {@code property =
-   * value} conjuncts of a condition with no {@code OR}, whose value is a literal or a parameter.
+   * value} conjuncts of a condition with no {@code OR}, whose value is a literal or a parameter. One {@code property IN
+   * <constants>} conjunct is held beside them (issue #12578).
    */
   private Lookup extractLookup() {
     if (equalities != null)
@@ -497,10 +552,23 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
       return NO_LOOKUP;
 
     final LinkedHashMap<String, Object> found = new LinkedHashMap<>();
+    String inProperty = null;
+    List<Object> inValues = List.of();
     boolean whole = true;
     // the values are read in the caller's context, which is not meant to be shared between threads
     synchronized (this) {
       for (final BooleanExpression conjunct : blocks.getFirst().getSubBlocks()) {
+        if (conjunct instanceof InCondition in) {
+          final String property = propertyName(in.getLeft());
+          final List<Object> values = property == null || inProperty != null ? null : constantsOf(in);
+          if (values == null)
+            whole = false;
+          else {
+            inProperty = property;
+            inValues = values;
+          }
+          continue;
+        }
         if (!(conjunct instanceof BinaryCondition binary) || !(binary.getOperator() instanceof EqualsCompareOperator)) {
           whole = false;
           continue;
@@ -518,7 +586,43 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
         found.put(property, valueSide.execute((Result) null, context));
       }
     }
-    return found.isEmpty() ? NO_LOOKUP : new Lookup(found, whole);
+    // an equality and an IN on one property: the index lists by the equality, and the IN is left to the test
+    if (inProperty != null && found.containsKey(inProperty)) {
+      inProperty = null;
+      inValues = List.of();
+      whole = false;
+    }
+    if (found.isEmpty() && inProperty == null)
+      return NO_LOOKUP;
+    return new Lookup(found, whole, inProperty, inValues);
+  }
+
+  /**
+   * The values of {@code prop IN <constants>}: a parameter or a literal list of at most {@link #MAX_IN_VALUES} non-null
+   * values. Null for anything else - {@code NOT IN}, a subquery, a value of the record, an empty or a longer list, a null in
+   * it, and a {@link Set} - which the per-candidate test decides.
+   * <p>
+   * A set is left to the test because the test reads it differently from a list: a record's property is looked up in a set by
+   * a hash probe that converts nothing, while each item of a list is compared the way {@code =} compares (the item converted to
+   * the property's type). An index key is built the second way, so a set of {@code "1"} on an INTEGER property would list the
+   * records the test refuses.
+   */
+  private List<Object> constantsOf(final InCondition in) {
+    if (in.not || in.getRightStatement() != null)
+      return null;
+    // A literal is evaluated at plan time and so is a parameter; anything that needs a record, or a function call, is not (see
+    // Expression#isEarlyCalculated for why that is not the test)
+    final boolean constant = in.getRightParam() != null
+        || (in.getRightMathExpression() != null && in.getRightMathExpression().isLiteral(true));
+    if (!constant)
+      return null;
+    final Object value = in.evaluateRight((Result) null, context);
+    final Collection<?> values = value instanceof Set ? null
+        : value instanceof Collection<?> collection ? collection
+        : value instanceof Object[] array ? Arrays.asList(array) : null;
+    if (values == null || values.isEmpty() || values.size() > MAX_IN_VALUES || values.stream().anyMatch(Objects::isNull))
+      return null;
+    return List.copyOf(values);
   }
 
   /**
