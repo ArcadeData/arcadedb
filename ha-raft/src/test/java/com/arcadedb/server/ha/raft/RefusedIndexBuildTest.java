@@ -126,7 +126,8 @@ class RefusedIndexBuildTest {
     final TypeIndexBuilder builder = replicated.getSchema().buildTypeIndex("Work", new String[] { "id" });
     builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true);
 
-    assertThatThrownBy(builder::create).isInstanceOf(IndexException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class);
+    // a UNIQUE build refused for the stored data leaves as the DuplicatedKeyException it is (issue #12037)
+    assertThatThrownBy(builder::create).isInstanceOf(DuplicatedKeyException.class).hasMessageContaining("Error on creating index");
 
     assertRefusedWithNothingLeftBehind(broker, filesBefore);
   }
@@ -171,7 +172,7 @@ class RefusedIndexBuildTest {
     final TypeIndexBuilder builder = replicated.getSchema().buildTypeIndex("Work", new String[] { "id" });
     builder.withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withReplaceIfIncompatible(true);
 
-    assertThatThrownBy(builder::create).isInstanceOf(IndexException.class).hasRootCauseInstanceOf(DuplicatedKeyException.class);
+    assertThatThrownBy(builder::create).isInstanceOf(DuplicatedKeyException.class).hasMessageContaining("Error on creating index");
 
     assertReplacedIndexRestoredAndPublished(broker, replacedFiles, filesBefore);
   }

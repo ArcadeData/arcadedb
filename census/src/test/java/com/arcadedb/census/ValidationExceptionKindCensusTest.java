@@ -47,6 +47,10 @@ class ValidationExceptionKindCensusTest {
 
   /** The reviewed constructions with no kind, as {@code class#method} relative to {@code com/arcadedb}, each with why. */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
+      Map.entry("database/DocumentIndexer#updateDocument",
+          "a change of the partition key of a partitioned type: the bucket selection fixes it, no constraint declared on the property"),
+      Map.entry("database/ExistingRecordsCheck#requireSamples",
+          "a TIMESERIES column constraint over stored samples: one sentence from TimeSeriesColumnConstraints for every constraint"),
       Map.entry("exception/RecordVetoedException#<init>", "a listener's veto of the whole record, not a declared constraint on a value"),
       Map.entry("engine/timeseries/TimeSeriesStorableRows#refused",
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),

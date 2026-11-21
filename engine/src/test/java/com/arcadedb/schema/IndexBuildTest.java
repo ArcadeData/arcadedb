@@ -1345,7 +1345,8 @@ class IndexBuildTest {
       database.transaction(() -> database.newDocument("Work").set("id", workId(2_500)).save());
 
       assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Work (id) UNIQUE").close())
-          .isInstanceOf(IndexException.class)
+          // the stored data refuses the index: a conflict, not a fault of the build (issue #12037)
+          .isInstanceOf(DuplicatedKeyException.class)
           .hasMessageContaining("Error on creating index on type 'Work', properties [id]")
           .hasMessageContaining("Duplicated key [" + workId(2_500) + "] found on index 'Work[id]' already assigned to record #")
           .hasRootCauseInstanceOf(DuplicatedKeyException.class);
@@ -1369,7 +1370,7 @@ class IndexBuildTest {
       });
 
       assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Pair (a, b) UNIQUE").close())
-          .isInstanceOf(IndexException.class)
+          .isInstanceOf(DuplicatedKeyException.class)
           .hasMessageContaining("Duplicated key [7, 1007] found on index 'Pair[a,b]' already assigned to record #");
     }
 
@@ -1446,7 +1447,7 @@ class IndexBuildTest {
 
     private void assertRefusedNaming(final String typeName, final String statement, final String properties, final String duplicate) {
       assertThatThrownBy(() -> database.command("sql", statement).close())
-          .isInstanceOf(IndexException.class)
+          .isInstanceOf(DuplicatedKeyException.class)
           .hasMessageStartingWith("Error on creating index on type '" + typeName + "', " + properties)
           .hasMessageContaining(duplicate + " already assigned to record #")
           .hasMessageNotContaining("Cannot build sorted index")

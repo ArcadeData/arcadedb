@@ -80,11 +80,11 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw new CommandExecutionException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-              "MANDATORY" :
-              "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
-              + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
-              + ". Fix or delete the non-conforming records first");
+          throw refusal(unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
+                  ValidationException.Kind.NOT_NULL,
+              "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? "MANDATORY" : "NOTNULL") + ": record "
+                  + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName,
+                  unmet) + ". Fix or delete the non-conforming records first", null);
       }
     }
   }
@@ -105,7 +105,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(
+        throw refusal(e.getKind(),
             "Cannot set " + what + ": record " + document.getIdentity() + " violates it, " + e.getMessage()
                 + ". Fix or delete the non-conforming records first", e);
       }
@@ -128,12 +128,13 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw new CommandExecutionException(
-            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
+        throw refusal(unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
+                ValidationException.Kind.NOT_NULL,
+            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)), null);
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
+        throw refusal(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
       }
     }
   }
@@ -197,8 +198,9 @@ public final class ExistingRecordsCheck {
           + "' could not be read to check it", e);
     }
     if (violation[1] != null)
-      // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
-      throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+      // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342). No kind: the reason is the
+      // one sentence TimeSeriesColumnConstraints gives for every constraint (issue #12037)
+      throw new ValidationException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
           + "<value> ...], and insert them again if they are to be kept");
@@ -208,5 +210,17 @@ public final class ExistingRecordsCheck {
       final String reason) {
     return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
         + " violates it, " + reason + ". Fix or delete the non-conforming records first";
+  }
+
+  /**
+   * The refusal of a declaration the stored data violates (issue #12037): a {@link ValidationException}, the type a write the same
+   * constraint refuses already has, so every protocol answers it as the client's request rather than as a server fault. It was a
+   * {@code CommandExecutionException}, answered HTTP 500 unless it happened to carry a {@code ValidationException} cause.
+   */
+  private static ValidationException refusal(final ValidationException.Kind kind, final String message, final Throwable cause) {
+    final ValidationException refusal = new ValidationException(kind, message);
+    if (cause != null)
+      refusal.initCause(cause);
+    return refusal;
   }
 }
