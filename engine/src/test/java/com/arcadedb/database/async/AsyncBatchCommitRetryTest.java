@@ -1505,7 +1505,16 @@ class AsyncBatchCommitRetryTest {
       // transaction stamped with the CURRENT durability flags and leaves it open (commitEvery is nowhere
       // near reached); the flag flip in between is picked up only when the 2nd create is dispatched, at
       // which point that still-open transaction's stamped flags no longer match and must be committed first.
-      database.async().createRecord(database.newDocument(TYPE), null);
+      //
+      // The flip waits for the 1st create to have run: a worker reads the durability flags when it takes a task off
+      // its queue, not when the task is submitted, so a worker that has not yet taken the 1st create when the flip
+      // lands runs it under the NEW flags too, and no boundary ever exists (nothing else commits with commitEvery at
+      // 100, so onOk() would fire only from the waitCompletion() marker, which is sent after the wait below). The
+      // record's own success callback runs inside the task, after the flags were read.
+      final CountDownLatch firstApplied = new CountDownLatch(1);
+      database.async().createRecord(database.newDocument(TYPE), record -> firstApplied.countDown());
+      assertThat(firstApplied.await(30, TimeUnit.SECONDS)).as("the 1st create must have run under the original durability flags")
+          .isTrue();
       database.async().setTransactionSync(WALFile.FlushType.YES_NOMETADATA);
       database.async().createRecord(database.newDocument(TYPE), null);
 
