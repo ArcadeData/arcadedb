@@ -60,16 +60,21 @@ class RepeatedLiteralTextCostBenchmark extends TestHelper {
     // an exact-text hit is one probe; a repeated text with extracted literals reads the remembered text and then the statement
     // under its key, under one lock, and fills a map of its own with the values. Measured: 3.5 for one literal and 4.8 for five.
     // Three locks, a scan of the text for the generated-name prefix and a copy of the map through its entry iterator (the cost
-    // before #9818) measured 5.7 and 10.8. The bounds are tripwires between that cost and this one, not latency budgets
+    // before #9818) measured 5.7 and 10.8. The bounds are tripwires between that cost and this one, not latency budgets.
+    // The ratios move with the hardware: on another machine the same code measured 3.3 to 4.3 and 5.5 to 7.1 after #9818
+    // and 4.9 and 10.1 to 11.1 before it, and a CI runner measured 7.6 for five literals. Each bound sits in the gap
+    // between the highest cost measured after the fix and the lowest measured before it
     assertThat(lookupRatio(ONE_LITERAL)).as("1 literal, lookup of a repeated text, on / off").isLessThan(4.5);
-    assertThat(lookupRatio(FIVE_LITERALS)).as("5 literals, lookup of a repeated text, on / off").isLessThan(7.5);
+    assertThat(lookupRatio(FIVE_LITERALS)).as("5 literals, lookup of a repeated text, on / off").isLessThan(8.5);
   }
 
   @Test
   void aRepeatedTextRunsAboutAsFastAsWithoutParameterization() {
-    // a cheap query with a cached plan is the sensitive one (1.6 microseconds per call). Measured: 1.03. The lookup and the
-    // parameter reads before #9818 measured 1.12, and lexing the text again on every call (before #9714) is far above that
-    assertThat(queryRatio("SELECT FROM V WHERE a = 77")).as("repeated query, on / off").isLessThan(1.07);
+    // a cheap query with a cached plan is the sensitive one (1.6 microseconds per call). Measured: 1.03, and 1.07 to 1.11 on
+    // another machine. The lookup and the parameter reads before #9818 measured 1.12 and 1.17 to 1.20 on those machines: the
+    // gap is narrower than the spread between machines, so the lookup ratios above are the tripwire for #9818. This bound
+    // catches lexing the text again on every call (before #9714), which is far above both
+    assertThat(queryRatio("SELECT FROM V WHERE a = 77")).as("repeated query, on / off").isLessThan(1.15);
   }
 
   /**
