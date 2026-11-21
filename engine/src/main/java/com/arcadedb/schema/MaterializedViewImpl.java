@@ -51,6 +51,13 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   private final long refreshInterval;
   private volatile long lastRefreshTime;
   private volatile MaterializedViewStatus status;
+  /**
+   * The status the schema saves (issue #12252): the last one set with {@link #setStatus}, never the BUILDING of a running pass
+   * ({@link #markPassRunning}). Any schema save made while a pass runs (another DDL, a continuous aggregate's late-sample record)
+   * writes this, and under HA that saved document is what the followers load, so a pass in progress no longer reaches them as the
+   * BUILDING a load turns into STALE. A BUILDING set by {@link #setStatus} (creation, an ALTER upgrade) is saved as before.
+   */
+  private volatile MaterializedViewStatus persistedStatus;
   private volatile MaterializedViewChangeListener changeListener;
   /**
    * The rows carry a {@code _sourceRID} link to the source record they were computed from, indexed UNIQUE (issue #11475). Decided
@@ -105,6 +112,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     this.refreshInterval = refreshInterval;
     this.lastRefreshTime = 0;
     this.status = MaterializedViewStatus.VALID;
+    this.persistedStatus = MaterializedViewStatus.VALID;
   }
 
   @Override
@@ -414,6 +422,15 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
 
   public void setStatus(final MaterializedViewStatus status) {
     this.status = status;
+    this.persistedStatus = status;
+  }
+
+  /**
+   * Reports BUILDING while a refresh pass runs, without changing the status the schema saves (issue #12252): the pass ends by
+   * setting the status it settles in.
+   */
+  void markPassRunning() {
+    this.status = MaterializedViewStatus.BUILDING;
   }
 
   public MaterializedViewChangeListener getChangeListener() {
@@ -570,7 +587,8 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         database, name, query, backingTypeName, sourceTypeNames,
         newMode, simpleQuery, newInterval);
     copy.lastRefreshTime = this.lastRefreshTime;
-    copy.status = this.status;
+    // The settled status, not the BUILDING of a pass of this instance running now: no pass of the copy is (issue #12252)
+    copy.setStatus(this.persistedStatus);
     // The rows keep their link whatever the new mode (issue #11475); the derived query is rebuilt by the copy on first use
     copy.perRecord = this.perRecord;
     // What this view still owes goes with it: a full pass owed after a failed pass, dropped here, let the copy's next delta pass
@@ -605,7 +623,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
     json.put("simpleQuery", simpleQuery);
     json.put("refreshInterval", refreshInterval);
     json.put("lastRefreshTime", lastRefreshTime);
-    json.put("status", status.name());
+    json.put("status", persistedStatus.name());
     json.put("perRecord", perRecord);
     final JSONArray srcTypes = new JSONArray();
     for (final String src : sourceTypeNames)
@@ -634,7 +652,7 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
         json.getBoolean("simpleQuery", false),
         json.getLong("refreshInterval", 0));
     view.lastRefreshTime = json.getLong("lastRefreshTime", 0);
-    view.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
+    view.setStatus(MaterializedViewStatus.valueOf(json.getString("status", "VALID")));
     view.perRecord = json.getBoolean("perRecord", false);
     return view;
   }
