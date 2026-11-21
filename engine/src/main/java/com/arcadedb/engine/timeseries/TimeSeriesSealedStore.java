@@ -398,6 +398,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return z ^ (z >>> 31);
   }
 
+  /**
+   * The bucket grid a downsampling tier cuts the time axis on: the bucket width and the offset of its first bucket from the epoch,
+   * as {@link TimeBucketGrid#normalizeOffset} returns it.
+   */
+  record DownsampleGrid(long granularityMs, long offsetMs) {
+  }
+
+  /** The most grids a block remembers to be irreducible on: more than the tiers of any type that is not being rewritten all day. */
+  static final         int              MAX_VERIFIED_GRIDS = 8;
+  private static final DownsampleGrid[] NO_GRIDS           = new DownsampleGrid[0];
+
   static final class BlockEntry {
     final long     minTimestamp;
     final long     maxTimestamp;
@@ -478,9 +489,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     volatile boolean crcValidated;   // true once the CRC has been checked (volatile: read without lock)
     // Coarsest granularity (ms) this block has already been downsampled to; 0 = raw / never downsampled.
     // In-memory only (not persisted): it makes downsampling idempotent across maintenance cycles within a
-    // running process. After a restart the marker resets to 0, so a single follow-up downsampling cycle may
-    // re-touch an already-coarse block once before re-marking it; that is harmless and self-healing.
+    // running process. After a restart the marker resets to 0, and what keeps the first pass from rewriting an
+    // already-coarse block is that a block is only rewritten when two of its samples share a (tag values, bucket),
+    // which a downsampled block never has: see irreducibleOn and downsampleBlocks (issue #11984). What this does not cover is a
+    // block that two passes both reached the same bucket of and that the merge of small blocks then put together after the
+    // restart, when the tiers are on grids that are not nested: only a persisted marker would (issue #12669).
     long           downsampledGranularityMs;
+    // The grids this block was read against and found IRREDUCIBLE on: no two of its samples share a (tag values, bucket)
+    // there, so a downsampling pass on such a grid has nothing to fold in it and leaves it alone. Several, because every tier
+    // of a type has a grid of its own and a single verdict would be overwritten by each in turn, which reads the block again
+    // on every pass for all of them but one. In-memory only, like the marker above: a restart, or an install of the file,
+    // loses them, and the next pass proves it again by reading the timestamps and tags of the block, which costs a read and
+    // never a rewrite. Replaced as a whole, never changed in place. Written by the one downsampling pass of the store at a time
+    // (the shard's rewrite mutex), under the directory READ lock while it proves blocks and the WRITE lock while it selects them,
+    // and read by whichever rewrite copies the block, hence volatile.
+    volatile DownsampleGrid[] irreducibleOn = NO_GRIDS;
 
     /**
      * {@code blockStartOffset} is a CONSTRUCTOR PARAMETER and not a field a caller may forget (#6360 item 3): every
@@ -524,6 +547,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     void recordWrittenCRC(final int crc) {
       this.storedCRC = crc;
       this.crcValidated = true;
+    }
+
+    /** Whether this block was read against {@code grid} and found to hold no two samples of one (tag values, bucket) there. */
+    boolean isIrreducibleOn(final DownsampleGrid grid) {
+      for (final DownsampleGrid known : irreducibleOn)
+        if (known.equals(grid))
+          return true;
+      return false;
+    }
+
+    /**
+     * Records that this block holds no two samples of one (tag values, bucket) on {@code grid}. Past
+     * {@link #MAX_VERIFIED_GRIDS} the oldest verdict is forgotten, which only costs that grid a read: the tiers of a type
+     * are few, and this bounds what a block carries when they are altered over and over.
+     */
+    void markIrreducibleOn(final DownsampleGrid grid) {
+      final DownsampleGrid[] known = irreducibleOn;
+      final int kept = Math.min(known.length, MAX_VERIFIED_GRIDS - 1);
+      final DownsampleGrid[] grids = new DownsampleGrid[kept + 1];
+      System.arraycopy(known, known.length - kept, grids, 0, kept);
+      grids[kept] = grid;
+      irreducibleOn = grids;
     }
   }
 
@@ -3062,7 +3107,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Downsamples blocks older than cutoffTs to the given granularity.
-   * Blocks already at the target resolution or coarser are left untouched (idempotency).
+   * A block is downsampled when that reduces it, that is when two of its samples share a (tag values, bucket) (issue #11984).
+   * Every other block is left untouched, which is what makes a pass idempotent: a block already downsampled to the target
+   * granularity or coarser (its marker says so, and without the marker, after a restart, it has one sample per group) and a
+   * block whose samples all sit in groups of their own.
    * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs,
@@ -3084,6 +3132,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+    final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
+    final int[] tagCols = new int[tagColIndices.size()];
+    for (int t = 0; t < tagCols.length; t++)
+      tagCols[t] = tagColIndices.get(t);
+
+    // Reading the blocks to see which cannot be reduced is the one cost a restart adds (every verdict is lost with the process), and
+    // it is paid here, a block at a time under the READ lock like a walk does, so queries and compactions go on between two blocks;
+    // under the write lock below it would keep them all waiting for as long as the whole history takes to read
+    proveBlocksIrreducible(cutoffTs, grid, tsColIdx, tagCols);
+
     directoryLock.writeLock().lock();
     try {
       final List<BlockEntry> toDownsample = new ArrayList<>();
@@ -3094,18 +3152,26 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           toKeep.add(entry);
           continue;
         }
-        // Check if block is already at target resolution and must be left untouched (idempotency).
+        // Check if block must be left untouched (idempotency).
         // 1. A single-sample block can never be reduced further.
         // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
         //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
         //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
         //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
-        // 3. Fallback density heuristic for raw blocks: if the average sample spacing already meets the target
-        //    granularity, downsampling would not reduce the block, so skip it. Expressed as a multiplication to
-        //    avoid integer-division truncation at the boundary.
-        if (entry.sampleCount <= 1
-            || entry.downsampledGranularityMs >= granularityMs
-            || (entry.maxTimestamp - entry.minTimestamp) >= granularityMs * (long) (entry.sampleCount - 1)) {
+        // 3. A block already found to hold no two samples of one (tag values, bucket) on this grid.
+        if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs || entry.isIrreducibleOn(grid)) {
+          toKeep.add(entry);
+          continue;
+        }
+        // Otherwise the samples say. What a block is rewritten for is to fold the samples that share a group into one, so a block
+        // is selected when some two of them do, and for no other reason (issue #11984). The average spacing of its samples is not
+        // that reason in either direction: it left a block whose samples share a bucket raw forever as soon as ONE of them was
+        // far from the others, and the marker alone, which a restart resets, would have rewritten every old block once again,
+        // an already coarse one onto a bucket of the next finer tier that is not nested in its own. A block this proves
+        // irreducible is remembered, so a pass reads it once. The blocks proveBlocksIrreducible has just read are not read again
+        // but for the reducible ones, which the rewrite reads anyway, and a block that landed since.
+        if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
+          entry.markIrreducibleOn(grid);
           toKeep.add(entry);
           continue;
         }
@@ -3139,6 +3205,129 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     } finally {
       directoryLock.writeLock().unlock();
     }
+  }
+
+  /**
+   * Reads, a block at a time, every block older than {@code cutoffTs} that {@link #downsampleBlocks} would have to read to decide
+   * about, and remembers on the ones that cannot be reduced on {@code grid} that they cannot. Nothing is rewritten and no block is
+   * kept from the directory for more than its own read: the directory is looked at once to name the candidates, and each of them is
+   * then found again in the live directory, as a walk does, under the read lock it is read with. A block a rewrite replaced since
+   * is skipped (the pass that follows reads whatever is live), and the verdict of one that was only copied travels with the copy
+   * ({@link #writeRetainedBlock}).
+   */
+  private void proveBlocksIrreducible(final long cutoffTs, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols)
+      throws IOException {
+    final List<BlockEntry> candidates = new ArrayList<>();
+    directoryLock.readLock().lock();
+    try {
+      for (final BlockEntry entry : blockDirectory)
+        if (entry.maxTimestamp < cutoffTs && entry.sampleCount > 1 && entry.downsampledGranularityMs < grid.granularityMs()
+            && !entry.isIrreducibleOn(grid))
+          candidates.add(entry);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+
+    for (final BlockEntry candidate : candidates) {
+      directoryLock.readLock().lock();
+      try {
+        final BlockEntry live = resolveLiveBlock(candidate, Integer.MAX_VALUE);
+        if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols))
+          live.markIrreducibleOn(grid);
+      } finally {
+        directoryLock.readLock().unlock();
+      }
+    }
+  }
+
+  /**
+   * Whether two samples of {@code entry} share a (tag values, bucket) on {@code grid}: whether downsampling the block would reduce
+   * it (issue #11984). It reads the timestamps, and the tag columns only when a bucket holds a second sample, and it groups the way
+   * the sweep does ({@link #canonicalStoredValue}), so a block it answers {@code true} for folds into fewer rows than it has samples
+   * and one it answers {@code false} for would come out of the sweep with as many.
+   * <p>
+   * A block is sorted by time, so the samples of one bucket are adjacent and only the ones of the same run can share a group: a
+   * block with at most one sample per bucket, which is what a downsample leaves of a single series, costs one pass over its
+   * timestamps and allocates nothing besides them. A block that is not in order is judged by the slower
+   * {@link #hasSamplesSharingAGroupAnyOrder}.
+   */
+  private boolean hasSamplesSharingAGroup(final BlockEntry entry, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols)
+      throws IOException {
+    // a block is never read before its CRC is checked, whoever reads it
+    validateBlockCRC(entry);
+    // not through the decoded-column cache: a pass over the whole history would push the blocks the queries are using out of it
+    final long[] timestamps = DeltaOfDeltaCodec.decode(readBytes(entry.columnOffsets[tsColIdx], entry.columnSizes[tsColIdx]));
+    if (timestamps.length < 2)
+      return false;
+
+    Object[][] tagData = null;
+    Set<Object> runGroups = null;
+    int runStart = 0;
+    long runBucket = TimeBucketGrid.bucketStart(timestamps[0], grid.granularityMs(), grid.offsetMs());
+    for (int i = 1; i < timestamps.length; i++) {
+      final long bucket = TimeBucketGrid.bucketStart(timestamps[i], grid.granularityMs(), grid.offsetMs());
+      if (bucket != runBucket) {
+        if (bucket < runBucket)
+          return hasSamplesSharingAGroupAnyOrder(entry, timestamps, grid, tagCols);
+        runBucket = bucket;
+        runStart = i;
+        if (runGroups != null)
+          runGroups.clear();
+        continue;
+      }
+
+      // the second sample of a bucket: with no tag it shares the group of the first, with tags it does when their values agree
+      if (tagCols.length == 0)
+        return true;
+      if (tagData == null) {
+        tagData = readTagColumns(entry, tagCols);
+        runGroups = new HashSet<>();
+      }
+      if (runGroups.isEmpty())
+        runGroups.add(groupOf(tagData, tagCols, runStart));
+      if (!runGroups.add(groupOf(tagData, tagCols, i)))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * {@link #hasSamplesSharingAGroup} for a block whose samples are not sorted by bucket (or whose bucket arithmetic wrapped, within
+   * one bucket of {@link Long#MIN_VALUE}, see {@link TimeBucketGrid#bucketStart}), where the samples of a group are not adjacent:
+   * one set of every (bucket, tag values) met. The sweep folds such a block as it does any other, so it has to be asked the same
+   * question, and the answer is what keeps a rewrite from ever leaving as many samples as it found.
+   */
+  private boolean hasSamplesSharingAGroupAnyOrder(final BlockEntry entry, final long[] timestamps, final DownsampleGrid grid,
+      final int[] tagCols) throws IOException {
+    final Object[][] tagData = readTagColumns(entry, tagCols);
+    final Set<List<Object>> groups = new HashSet<>(timestamps.length * 2);
+    for (int i = 0; i < timestamps.length; i++) {
+      final List<Object> group = new ArrayList<>(tagCols.length + 1);
+      group.add(TimeBucketGrid.bucketStart(timestamps[i], grid.granularityMs(), grid.offsetMs()));
+      for (int t = 0; t < tagCols.length; t++)
+        group.add(canonicalStoredValue(columns.get(tagCols[t]), tagData[t][i]));
+      if (!groups.add(group))
+        return true;
+    }
+    return false;
+  }
+
+  /** The tag columns of {@code entry}, each decoded through the codec it was written with, as {@code [tag][sample]}. */
+  private Object[][] readTagColumns(final BlockEntry entry, final int[] tagCols) throws IOException {
+    final Object[][] tagData = new Object[tagCols.length][];
+    for (int t = 0; t < tagCols.length; t++)
+      tagData[t] = decodeColumn(columns.get(tagCols[t]), readBytes(entry.columnOffsets[tagCols[t]], entry.columnSizes[tagCols[t]]));
+    return tagData;
+  }
+
+  /** The tag values of sample {@code row}, canonicalised, as one object that equals the one of another sample of the same group. */
+  private Object groupOf(final Object[][] tagData, final int[] tagCols, final int row) {
+    if (tagCols.length == 1)
+      return canonicalStoredValue(columns.get(tagCols[0]), tagData[0][row]);
+    final Object[] values = new Object[tagCols.length];
+    for (int t = 0; t < tagCols.length; t++)
+      values[t] = canonicalStoredValue(columns.get(tagCols[t]), tagData[t][row]);
+    return Arrays.asList(values);
   }
 
   /**
@@ -3922,8 +4111,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
         oldEntry.maxTimestamp, compressedCols, blockStatsOf(oldEntry, compressedCols), colCount,
         oldEntry.tagDistinctValues, oldEntry.blockId);
-    // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction.
+    // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction. So does the
+    // verdict that the block cannot be reduced: the samples are the same, and losing it would have the next pass read the
+    // whole history again to prove it (issue #11984).
     newEntry.downsampledGranularityMs = oldEntry.downsampledGranularityMs;
+    newEntry.irreducibleOn = oldEntry.irreducibleOn;
     return newEntry;
   }
 
