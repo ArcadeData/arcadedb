@@ -71,6 +71,15 @@ class RuleTest {
     final double mib = 1048576;
     assertThat(cmp(point(4 * mib, new double[] { 4 * mib }, "bytes", "lower"), point(4.9 * mib, new double[] { 4.9 * mib }, "bytes", "lower")))
         .isEqualTo(Verdict.Kind.SAME);
+    assertThat(cmp(point(4 * mib, new double[] { 4 * mib }, "bytes", "lower"), point(6 * mib, new double[] { 6 * mib }, "bytes", "lower")))
+        .isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void bandWidensToTheNewestPointsSpread() {
+    final Point newest = point(130, new double[] { 110, 130, 150 }, "ms", "lower");
+    assertThat(Rule.spread(130, newest.values())).isGreaterThan(0.3);
+    assertThat(cmp(ms(100), newest)).isEqualTo(Verdict.Kind.SAME);
   }
 
   @Test

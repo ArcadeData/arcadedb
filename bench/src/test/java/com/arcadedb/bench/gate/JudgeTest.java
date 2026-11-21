@@ -103,16 +103,18 @@ class JudgeTest {
 
   @Test
   void judgesEachTriggerSeparately() {
+    final Point r0 = release("26.10.2", 0, 300);
     final Point n1 = nightly("a", 1, "ok", 100);
-    final Point n2 = nightly("b", 2, "ok", 100);
-    final Point rel = release("26.11.1", 0, 300);
-    final List<Verdict> v = Judge.judge(lines(TIME, List.of(rel, n1, n2)));
+    final Point n2 = nightly("b", 2, "ok", 105);
+    final Point r1 = release("26.11.1", 0, 300);
+    final List<Verdict> v = Judge.judge(lines(TIME, List.of(r0, n1, n2, r1)));
     assertThat(v).hasSize(2);
     assertThat(v.get(0).trigger()).isEqualTo("nightly");
     assertThat(v.get(0).baseline()).isSameAs(n1);
     assertThat(v.get(0).kind()).isEqualTo(Verdict.Kind.SAME);
     assertThat(v.get(1).trigger()).isEqualTo("release");
-    assertThat(v.get(1).kind()).isEqualTo(Verdict.Kind.NOT_JUDGED);
+    assertThat(v.get(1).baseline()).isSameAs(r0);
+    assertThat(v.get(1).kind()).isEqualTo(Verdict.Kind.SAME);
   }
 
   @Test
