@@ -126,6 +126,15 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   /**
+   * @see Expression#isIndexKeyResolvable(CommandContext) for what an index key is and what it is not.
+   */
+  @Override
+  public boolean isIndexKeyResolvable(final CommandContext context) {
+    // the expression is stored outside childExpressions, so the inherited walker would answer for an empty list
+    return expression != null && expression.isIndexKeyResolvable(context);
+  }
+
+  /**
    * {@code expression} is stored outside {@code childExpressions}, so the inherited walker would answer false for
    * a literal in parentheses. Forward to it.
    *
