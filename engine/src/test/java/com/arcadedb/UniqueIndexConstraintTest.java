@@ -440,9 +440,9 @@ class UniqueIndexConstraintTest {
       database.command("sql", "CREATE PROPERTY Shapes.code STRING");
       database.command("sql", "CREATE INDEX ON Shapes (code) UNIQUE");
 
-      // reversed equality, null key, and a modified/wrapped left side are not a plain full-key lookup
-      final String[] where = { "? = code", "code = ?", "code.toLowerCase() = ?", "code.length() = ?" };
-      final Object[] value = { "c1", null, "c1", 2 };
+      // a null key, and a modified/wrapped left side are not a plain full-key lookup
+      final String[] where = { "code = ?", "code.toLowerCase() = ?", "code.length() = ?" };
+      final Object[] value = { null, "c1", 2 };
       for (int k = 0; k < where.length; k++) {
         final String condition = where[k];
         final Object parameter = value[k];
@@ -453,6 +453,21 @@ class UniqueIndexConstraintTest {
             .hasMessageContaining("UNIQUE index");
       }
       assertThat(database.countType("Shapes", false)).isZero();
+    }
+
+    @Test
+    void upsertOnUniqueFullKeyLookupWrittenValueFirstUpdatesTheExistingRecord() {
+      database.command("sql", "CREATE DOCUMENT TYPE Rev");
+      database.command("sql", "CREATE PROPERTY Rev.code STRING");
+      database.command("sql", "CREATE INDEX ON Rev (code) UNIQUE");
+      database.transaction(() -> database.command("sql", "INSERT INTO Rev SET code = 'c1', name = 'old'"));
+
+      // the value written first is the same equality, and the index answers it (issue #12281)
+      database.transaction(() -> database.command("sql", "UPDATE Rev SET name = 'new' UPSERT WHERE ? = code", "c1"));
+      try (final ResultSet rs = database.query("sql", "SELECT name FROM Rev")) {
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("new");
+        assertThat(rs.hasNext()).isFalse();
+      }
     }
 
     @Test

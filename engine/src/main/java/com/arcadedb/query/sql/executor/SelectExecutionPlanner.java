@@ -84,9 +84,11 @@ import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.NeOperator;
 import com.arcadedb.query.sql.parser.NeqOperator;
 import com.arcadedb.query.sql.parser.Node;
+import com.arcadedb.query.sql.parser.NotBlock;
 import com.arcadedb.query.sql.parser.OrBlock;
 import com.arcadedb.query.sql.parser.OrderBy;
 import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.ParenthesisBlock;
 import com.arcadedb.query.sql.parser.ParenthesisExpression;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.Projection;
@@ -5584,6 +5586,105 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * The condition {@code exp} written the way an index answers it, the indexed property on the left, or null when it is already
+   * written so or has no such form (issue #12281):
+   * <ul>
+   *   <li>{@code 5 = id} is {@code id = 5}: an equality compares the same both ways round;</li>
+   *   <li>{@code :lo < id} is {@code id > :lo}, but only when the value has the property's type. A comparison converts its right
+   *   operand to the type of its left one, so with a value of another type the two spellings compare differently ({@code '10' > id}
+   *   compares text, {@code id < '10'} numbers), and the index would answer the second one;</li>
+   *   <li>{@code NOT (id <> 5)} is {@code id = 5} and {@code NOT (id >= 3)} is {@code id < 3}: a comparison with a null operand is
+   *   unknown and stays unknown under NOT, so both leave out a record whose id is null. A range under NOT needs a value of the
+   *   property's type as well: one the comparison cannot convert makes a range and its complement both false.</li>
+   * </ul>
+   */
+  private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
+    boolean negated = false;
+    BooleanExpression unwrapped = exp;
+    while (true) {
+      if (unwrapped instanceof NotBlock not && not.sub != null) {
+        if (not.negate)
+          negated = !negated;
+        unwrapped = not.sub;
+      } else if (unwrapped instanceof ParenthesisBlock parenthesis && parenthesis.getSubElement() != null)
+        unwrapped = parenthesis.getSubElement();
+      else
+        break;
+    }
+    if (!(unwrapped instanceof BinaryCondition condition))
+      return null;
+
+    final boolean propertyLeft = isPropertyReference(condition.getLeft(), info.getField());
+    final boolean propertyRight = !propertyLeft && isPropertyReference(condition.getRight(), info.getField());
+    if (!propertyLeft && !propertyRight || propertyLeft && !negated)
+      return null;
+
+    BinaryCompareOperator operator = condition.getOperator();
+    if (negated)
+      operator = complementOf(operator);
+    if (operator != null && propertyRight)
+      operator = mirrorOf(operator);
+    if (operator == null)
+      return null;
+
+    final Expression value = propertyLeft ? condition.getRight() : condition.getLeft();
+    if (operator.isRangeOperator() && !valueHasPropertyType(value, info, clazz))
+      return null;
+
+    final BinaryCondition keyForm = new BinaryCondition();
+    keyForm.setLeft((propertyLeft ? condition.getLeft() : condition.getRight()).copy());
+    keyForm.setOperator(operator);
+    keyForm.setRight(value.copy());
+    return keyForm;
+  }
+
+  /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
+  private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
+    return switch (operator) {
+      case EqualsCompareOperator ignored -> new EqualsCompareOperator();
+      case LtOperator ignored -> new GtOperator();
+      case GtOperator ignored -> new LtOperator();
+      case LeOperator ignored -> new GeOperator();
+      case GeOperator ignored -> new LeOperator();
+      default -> null;
+    };
+  }
+
+  /** The operator of {@code NOT (a op b)} written without the NOT, when it is one an index answers, else null. */
+  private static BinaryCompareOperator complementOf(final BinaryCompareOperator operator) {
+    return switch (operator) {
+      case NeOperator ignored -> new EqualsCompareOperator();
+      case NeqOperator ignored -> new EqualsCompareOperator();
+      case LtOperator ignored -> new GeOperator();
+      case GeOperator ignored -> new LtOperator();
+      case GtOperator ignored -> new LeOperator();
+      case LeOperator ignored -> new GtOperator();
+      default -> null;
+    };
+  }
+
+  /**
+   * Whether {@code value}, computed with no record, has the type the property holds (a number for a numeric property, a string for
+   * a STRING one): then a comparison converts nothing either way round. A parameter's value decides it, so the plan holds for that
+   * binding only.
+   */
+  private static boolean valueHasPropertyType(final Expression value, final IndexSearchInfo info, final DocumentType clazz) {
+    if (!value.isEarlyCalculated(info.getContext()))
+      return false;
+    final Property property = clazz.getPolymorphicPropertyIfExists(info.getField());
+    if (property == null || property.getType() == null)
+      return false;
+    final Object v = value.execute((Result) null, info.getContext());
+    if (!value.isLiteral())
+      info.setPlanDependsOnValue();
+    return switch (property.getType()) {
+      case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> v instanceof Number;
+      case STRING -> v instanceof String;
+      default -> false;
+    };
+  }
+
+  /**
    * True when every condition the index search leaves to the filter is on {@code sortKey} itself (a comparison, a BETWEEN, an IS
    * NOT NULL): the conditions an ordered walk of the sort key's index answers with its range, so it filters only on the equality.
    */
@@ -6780,7 +6881,16 @@ public class SelectExecutionPlanner {
       boolean rangeOp = false;
       while (blockIterator.hasNext()) {
         BooleanExpression singleExp = blockIterator.next();
-        if (singleExp.isIndexAware(info) && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
+        // 5 = id, :lo < id, NOT (id <> 5): the index answers the same condition written with the property on the left (issue #12281)
+        boolean indexAware = singleExp.isIndexAware(info);
+        if (!indexAware) {
+          final BooleanExpression keyForm = indexKeyForm(singleExp, info, clazz);
+          if (keyForm != null && keyForm.isIndexAware(info)) {
+            singleExp = keyForm;
+            indexAware = true;
+          }
+        }
+        if (indexAware && !hasLossyDecimalLiteralBound(singleExp, clazz, baseFieldName, context)) {
           indexFieldFound = true;
           final BooleanExpression keyExp = singleExp.copy();
           indexKeyValue.getSubBlocks().add(keyExp);
@@ -6808,7 +6918,10 @@ public class SelectExecutionPlanner {
             // look for the opposite condition, on the same field, for range queries (the other
             // side of the range)
             while (blockIterator.hasNext()) {
-              BooleanExpression next = blockIterator.next();
+              final BooleanExpression written = blockIterator.next();
+              // the other side may be written with the value first too (id > 3 AND 10 > id), issue #12281
+              final BooleanExpression keyForm = written.isIndexAware(info) ? null : indexKeyForm(written, info, clazz);
+              final BooleanExpression next = keyForm != null ? keyForm : written;
               // The other side of a range over field.toLowerCase() is probed lower-cased too, so it must already be.
               // The other side becomes a key the index scan computes with no record, so it must pass the same
               // isIndexAware test as the first side: a bound that reads the record (u <= id, u <= w * 100) is not

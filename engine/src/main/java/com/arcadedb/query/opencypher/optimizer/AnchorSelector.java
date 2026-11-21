@@ -684,6 +684,15 @@ public class AnchorSelector {
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
         extractEqualityPredicatesFromExpression(variable, logical.getLeft(), predicates);
         extractEqualityPredicatesFromExpression(variable, logical.getRight(), predicates);
+      } else if (logical.getOperator() == LogicalExpression.Operator.NOT) {
+        // NOT (n.k <> v) holds exactly where n.k = v does, and is null with it when n.k is null: the same seek, under the
+        // WHERE that stays above the anchor (issue #12281)
+        BooleanExpression negated = logical.getLeft();
+        while (negated instanceof BooleanWrapperExpression wrapper)
+          negated = wrapper.getBooleanExpression();
+        if (negated instanceof ComparisonExpression inequality && inequality.getOperator() == ComparisonExpression.Operator.NOT_EQUALS)
+          extractEqualityPredicatesFromExpression(variable,
+              new ComparisonExpression(inequality.getLeft(), ComparisonExpression.Operator.EQUALS, inequality.getRight()), predicates);
       }
       return;
     }
