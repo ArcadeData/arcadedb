@@ -35,7 +35,11 @@ public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-    if (databaseName.isEmpty())
+    // The name is bound from the path, so a request that names no database arrives with an EMPTY name rather than
+    // with no name at all: the list holds one empty string and the check below would not see it. The name is
+    // therefore tested for what it holds, and a request that names no database is refused like the sibling route
+    // refuses it (issue #12407).
+    if (databaseName.isEmpty() || databaseName.getFirst().isBlank())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is null\"}");
 
     final ArcadeDBServer server = httpServer.getServer();
