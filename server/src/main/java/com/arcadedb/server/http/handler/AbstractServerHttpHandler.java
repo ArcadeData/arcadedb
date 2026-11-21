@@ -195,6 +195,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   // The label of that refusal, the same whether this node refused the retry or relays the leader's refusal of it.
   private static final String     IN_FLIGHT_ERROR_LABEL         =
       "A request with the same " + IdempotencyCache.HEADER_REQUEST_ID + " is still executing";
+  // The label of a write whose outcome could not be learned (issue #11887), the same on the node that handed it to the
+  // replication and on a follower that forwarded it to the leader.
+  private static final String     OUTCOME_UNKNOWN_ERROR_LABEL   =
+      "Transaction outcome unknown: the write may have been applied, check before retrying it";
   private static final HttpString RETRY_AFTER_HEADER            = HttpString.tryFromString("Retry-After");
   // The Retry-After of a retryable 503 (issues #12440, #12441). At once for a refusal that clears by itself - a conflict whose
   // competing commit has already landed, a lock wait that ran out, a read a downsample overtook, a database reopened under the
@@ -1260,6 +1264,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               "Transaction committed cluster-wide - do not retry";
       return new ErrorClassification(409, label, committedRemotely, null, ErrorLogKind.USER);
     }
+
+    // 504 Gateway Timeout, before the TransactionException arm below, which it extends: the write was handed on - to the
+    // replication by the leader, or to the leader by a follower that forwarded it - and its outcome could not be learned. It
+    // may have been applied, or not (issue #11887): a 500 tells a client the server failed, and a 503 that it may retry,
+    // which runs the write twice whenever it did land. The label says so, since 'detail' is concealed in production mode.
+    // 504 is also what a follower answers a forwarded server command whose leader did not answer (LeaderCommandForwarder).
+    final TransactionOutcomeUnknownException outcomeUnknown = firstOf(e, cause, TransactionOutcomeUnknownException.class);
+    if (outcomeUnknown != null)
+      return new ErrorClassification(504, OUTCOME_UNKNOWN_ERROR_LABEL, outcomeUnknown, null, ErrorLogKind.INTERNAL_TRANSACTION);
 
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
     // would be written as, so nothing was submitted (issue #7511). A conflict rather than a 5xx for the same

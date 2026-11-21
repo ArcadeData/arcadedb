@@ -31,4 +31,8 @@ public class TransactionOutcomeUnknownException extends TransactionException {
   public TransactionOutcomeUnknownException(final String message) {
     super(message);
   }
+
+  public TransactionOutcomeUnknownException(final String message, final Throwable cause) {
+    super(message, cause);
+  }
 }

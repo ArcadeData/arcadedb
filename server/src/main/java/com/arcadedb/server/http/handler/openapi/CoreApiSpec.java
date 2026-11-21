@@ -155,6 +155,13 @@ public class CoreApiSpec implements OpenApiContributor {
       1 or more for a server too busy to start the request. It is a floor, not a schedule: a client that retries in a \
       loop still backs off, with jitter, when the same refusal comes back""";
 
+  // The 504 of a write whose outcome could not be learned (issue #11887), on the two operations that commit a write.
+  private static final String OUTCOME_UNKNOWN_504_DESCRIPTION = """
+      Transaction outcome unknown (exception com.arcadedb.exception.TransactionOutcomeUnknownException, or its HA subtype \
+      com.arcadedb.server.ha.raft.ReplicationDispatchedTimeoutException): in an HA cluster the write was handed to the \
+      replication, or forwarded by a follower to a leader that did not answer, and it may or may not have been applied. \
+      Check whether it landed before sending it again""";
+
   // Shared by the POST query and command operations, which both reach the stale-session branch of
   // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:
   // the quoted text is the message AbstractServerHttpHandler actually sends, so a client matching on
@@ -498,6 +505,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(OUTCOME_UNKNOWN_504_DESCRIPTION));
     addNdJsonAlternative(postOp.getResponses());
     addCommitIndexBookmarkHeader(postOp.getResponses());
     addSessionPartialCommitHeader(postOp.getResponses());
@@ -543,6 +551,7 @@ public class CoreApiSpec implements OpenApiContributor {
     final ApiResponse conflict = SpecBuilders.errorResponse(COMMIT_503_DESCRIPTION);
     conflict.addHeaderObject("Retry-After", SpecBuilders.stringHeader(RETRY_AFTER_DESCRIPTION));
     postOp.getResponses().addApiResponse("503", conflict);
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(OUTCOME_UNKNOWN_504_DESCRIPTION));
     pathItem.setPost(postOp);
 
     return pathItem;
