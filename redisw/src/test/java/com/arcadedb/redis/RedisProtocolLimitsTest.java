@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,8 +46,10 @@ public class RedisProtocolLimitsTest extends BaseRedisServerTest {
   @Test
   void deeplyNestedArrayIsRejectedInsteadOfOverflowingTheStack() throws Exception {
     // Well beyond both the configured nesting cap and the depth that used to overflow the default JVM
-    // stack (~11,861 levels / ~47 KB in the original report), so the fix is exercised either way.
-    final int          depth   = 50_000;
+    // stack (~11,861 levels / ~47 KB in the original report), so the fix is exercised either way. And 16 MB,
+    // more than the socket buffers of a loopback connection hold, so the server always rejects the nesting
+    // and closes the connection while the client is still writing (issue #12094).
+    final int          depth   = 4_000_000;
     final StringBuilder payload = new StringBuilder();
     for (int i = 0; i < depth; i++)
       payload.append("*1\r\n");
@@ -54,14 +57,24 @@ public class RedisProtocolLimitsTest extends BaseRedisServerTest {
 
     try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
-      socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
-      socket.getOutputStream().flush();
+      try {
+        socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+      } catch (final SocketException closedByTheServer) {
+        // "Broken pipe" or "Connection reset": the server rejected the nesting after its first levels and closed the
+        // connection before the client had written the rest, which is the rejection this test is about
+      }
 
       // The server must reject the oversized nesting and close the connection instead of dying with an
       // uncaught StackOverflowError: reading from the socket returns a diagnostic error reply (or at
-      // least EOF), never a hang and never a raw crash.
+      // least EOF, or a reset of the connection it closed), never a hang and never a raw crash.
       final byte[] buffer = new byte[512];
-      final int    read   = socket.getInputStream().read(buffer);
+      int read;
+      try {
+        read = socket.getInputStream().read(buffer);
+      } catch (final SocketException resetByTheServer) {
+        read = -1;
+      }
       if (read > 0) {
         final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
         assertThat(reply).startsWith("-ERR");
