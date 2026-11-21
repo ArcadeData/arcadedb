@@ -1822,12 +1822,40 @@ public class PageManagerFlushThread extends Thread {
    * recovered from the WAL on the next open exactly as before; this only stops the running database from reading
    * behind its own commits, and lets {@link #retryFailedFlushes} put the page on disk once the disk accepts it again.
    * <p>
+   * A page of an instance that is closed, or is closing, is never kept (issue #12857): its purge ({@link #removeAllPagesOfDatabase})
+   * runs once, after the instance reports itself closed, so a failure reported after it - the flush thread was inside the write of
+   * the page when the instance was dropped - registered a page nothing would ever remove: the retry skips the pages of a closed
+   * database. {@link PageId} compares its database by PATH, so the next instance created on the same path found it as the flush
+   * image of its own page, and its first commit failed with {@code DatabaseIsClosedException}, asked of the dropped instance by the
+   * commit-time version probe. The check is made again AFTER the registration, as {@link PageManager#putPageInReadCache} does: the
+   * close marks the instance closed (a volatile write) before it purges, so either the purge sees this page or this call sees the
+   * instance closed and takes the page back itself.
+   * <p>
    * Not counted as pending: {@link #waitAllPagesOfDatabaseAreFlushed} keeps the #4928 guarantee of never hanging on a
    * page the disk refuses.
    */
   void registerFailedFlush(final MutablePage page) {
+    final Database database = (Database) page.getPageId().getDatabase();
+    if (!database.isOpen()) {
+      ackWalFileOfAbandonedPage(page);
+      return;
+    }
+
     failedFlushPages.merge(page.getPageId(), page,
         (current, failed) -> failed.getVersion() >= current.getVersion() ? failed : current);
+
+    if (!database.isOpen()) {
+      // By identity, as the purge does: another instance of the path can hold the entry of an equal PageId
+      final boolean[] removed = new boolean[1];
+      failedFlushPages.computeIfPresent(page.getPageId(), (id, kept) -> {
+        if (kept != page)
+          return kept;
+        removed[0] = true;
+        return null;
+      });
+      if (removed[0])
+        ackWalFileOfAbandonedPage(page);
+    }
   }
 
   /**
