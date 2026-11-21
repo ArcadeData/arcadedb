@@ -36,6 +36,8 @@ import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -83,12 +85,6 @@ public class PaginatedComponentFile extends ComponentFile {
    */
   private static final int REOPEN_ATTEMPTS = 5;
 
-  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
-  @FunctionalInterface
-  private interface ChannelOperation {
-    void run() throws IOException;
-  }
-
   /**
    * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
    * constructor, before this class's field initializers, so an object field would still be null when it has to be
@@ -135,6 +131,37 @@ public class PaginatedComponentFile extends ComponentFile {
 
   private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> SYNC_STATE_UPDATER =
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "syncState");
+
+  /**
+   * Held across the claim of {@link #syncState} and the fsync that follows it (issue #11932). A sync claims the pending
+   * state before it forces, so a concurrent caller would otherwise find the file clean and report it durable while the
+   * first fsync is still in flight and may still fail; with this lock it waits for that outcome instead, and after a
+   * failed fsync finds the state given back and forces the file itself. Per file, so a caller that owes the durability
+   * of ONE file ({@link FileManager#syncFile(int)}) waits only for a sync of that file, never for a
+   * {@link FileManager#syncFiles()} pass over every other file the database wrote. A ReentrantLock and not a monitor
+   * because it is held across an fsync: a virtual thread blocked on a monitor pins its carrier thread.
+   */
+  private final ReentrantLock forceLock = new ReentrantLock();
+
+  /**
+   * Metadata forces of this file against the directory forces that covered them, as generations (issue #11932).
+   * {@link FileManager#syncFiles()} forces the directories once, after every file, so a file a pass has forced with its
+   * metadata may still owe its directory entry when another caller finds the file clean: whoever forces the directory
+   * reads the generation first ({@link #directorySyncOwed()}) and acknowledges exactly that one
+   * ({@link #directorySynced(long)}), so a later metadata force - a rename meanwhile - stays owed. Bumped under
+   * {@link #forceLock}, so a caller that acquired it after the force sees the bump.
+   */
+  private volatile long metadataForces;
+  private volatile long directoryForces;
+
+  private static final AtomicLongFieldUpdater<PaginatedComponentFile> DIRECTORY_FORCES_UPDATER =
+      AtomicLongFieldUpdater.newUpdater(PaginatedComponentFile.class, "directoryForces");
+
+  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
+  @FunctionalInterface
+  private interface ChannelOperation {
+    void run() throws IOException;
+  }
 
   /**
    * Stands in for the channel's interruptor: an interrupt landing on a thread doing I/O is absorbed and the channel stays
@@ -300,7 +327,11 @@ public class PaginatedComponentFile extends ComponentFile {
    * Forces the file to disk only when it was written, created or renamed since its last successful fsync (issue
    * #8626). Page writes alone need only the data forced ({@code fdatasync}): the file length they may have extended is
    * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
-   * skips are not needed by anything. A created or renamed file is forced with its metadata.
+   * skips are not needed by anything. A created or renamed file is forced with its metadata, and then owes the force of
+   * its directory entry ({@link #directorySyncOwed()}) until its caller has done it.
+   * <p>
+   * Callers of the same file are serialized across the claim and the fsync ({@link #forceLock}): a call that arrives
+   * while another one's fsync is in flight returns only after it, and forces the file again when it failed.
    *
    * @return what was forced: {@link #SYNC_CLEAN} when no fsync ran - the file owed nothing, or its channel is closed and
    * it keeps what it owed - otherwise {@link #SYNC_DATA} or {@link #SYNC_METADATA}
@@ -308,10 +339,33 @@ public class PaginatedComponentFile extends ComponentFile {
    * @throws IOException when the fsync failed; the file then still owes it, so the next call retries
    */
   public int forceIfModified() throws IOException {
-    final int claimed = SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN);
-    if (claimed == SYNC_CLEAN)
-      return SYNC_CLEAN;
-    return force(claimed, false) ? claimed : SYNC_CLEAN;
+    forceLock.lock();
+    try {
+      final int claimed = SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN);
+      if (claimed == SYNC_CLEAN || !force(claimed, false))
+        return SYNC_CLEAN;
+      if (claimed == SYNC_METADATA)
+        // Only ever written under forceLock, so a plain increment of the volatile is enough
+        metadataForces = metadataForces + 1;
+      return claimed;
+    } finally {
+      forceLock.unlock();
+    }
+  }
+
+  /**
+   * The metadata-force generation a directory force has to cover, or {@code 0} when the directory entry of the file is
+   * already durable (issue #11932). Read after {@link #forceIfModified()} returned, it covers the forces that call waited
+   * for. Read it BEFORE forcing the directory, and pass it to {@link #directorySynced(long)} afterwards.
+   */
+  long directorySyncOwed() {
+    final long forced = metadataForces;
+    return forced > directoryForces ? forced : 0L;
+  }
+
+  /** Records a directory force that covered the metadata forces up to {@code generation}, from {@link #directorySyncOwed()}. */
+  void directorySynced(final long generation) {
+    DIRECTORY_FORCES_UPDATER.accumulateAndGet(this, generation, Math::max);
   }
 
   /** Whether the file was written, created or renamed since its last successful fsync (issue #8626). */
