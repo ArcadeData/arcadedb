@@ -41,6 +41,9 @@ public class BinaryCondition extends BooleanExpression {
   public BinaryCompareOperator operator;
   public Expression            right;
 
+  /** The key of the memo an execution converts the right operand with, assigned at its first use; see {@link #rightConversion}. */
+  private volatile String rightConversionKey;
+
   public BinaryCondition() {
   }
 
@@ -69,12 +72,28 @@ public class BinaryCondition extends BooleanExpression {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
     try {
-      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal,
+          ConstantOperandConversion.isConstantStringToConvert(leftVal, rightVal, right) ? rightConversion(context) : null);
     } catch (final ClassCastException e) {
       if (!operator.isRangeOperator())
         throw e;
       throw noOrder(leftVal, rightVal, operator.toString(), e);
     }
+  }
+
+  /**
+   * The memo the execution {@code context} runs converts the right operand with, when it is the same string on every record
+   * compared with a value of another class: the operator then parses it once, not once per record (issue #12713). Null without a
+   * context.
+   */
+  ConstantOperandConversion rightConversion(final CommandContext context) {
+    String key = rightConversionKey;
+    if (key == null) {
+      // A benign race, as the memo key of InCondition: two threads may give the node two keys, and the loser converts once more
+      key = ConstantOperandConversion.newKey();
+      rightConversionKey = key;
+    }
+    return ConstantOperandConversion.of(context, key);
   }
 
   /**
