@@ -288,15 +288,31 @@ public class DatabaseFactory implements AutoCloseable {
    * case) that {@link #getNormalizedPath} does not. A second factory reaching an open database by a link used to pass the
    * "already in use" check, build an instance over the same files and be refused by the file lock, whose clean-up closed the lock
    * file: on Linux and macOS that releases every lock the process holds on the file, so the winner stayed registered but no other
-   * process was kept out of its database any more. A path that does not exist (yet) has no real path and keeps its normalised one.
+   * process was kept out of its database any more.
+   * <p>
+   * A path that does not exist (yet) has no real path: its deepest existing ancestor is resolved and the missing names are
+   * appended to it, so the key a {@code create} computes before its directory exists is the key every later caller computes once
+   * it does. Keeping the normalised path there gave a create through a link of a PARENT directory (or through {@code /tmp} on
+   * macOS, a link to {@code /private/tmp}) a different monitor than a concurrent open of the directory it was creating.
    */
-  private static Path getRegistryKey(final String path) {
+  // @VisibleForTesting
+  static Path getRegistryKey(final String path) {
     final Path normalized = getNormalizedPath(path);
-    try {
-      return normalized.toRealPath();
-    } catch (final IOException | SecurityException e) {
-      return normalized;
+    Path existing = normalized;
+    Path missing = null;
+    while (existing != null) {
+      try {
+        final Path real = existing.toRealPath();
+        return missing == null ? real : real.resolve(missing);
+      } catch (final IOException | SecurityException e) {
+        final Path name = existing.getFileName();
+        if (name == null)
+          break;
+        missing = missing == null ? name : name.resolve(missing);
+        existing = existing.getParent();
+      }
     }
+    return normalized;
   }
 
   public static Database getActiveDatabaseInstance(final String databasePath) {
@@ -313,7 +329,8 @@ public class DatabaseFactory implements AutoCloseable {
     if (ACTIVE_INSTANCES.get(key) == instance)
       ACTIVE_INSTANCES.computeIfPresent(key, (path, registered) -> registered == instance ? null : registered);
     else
-      // THE REAL PATH THE INSTANCE WAS REGISTERED UNDER IS GONE WITH ITS DIRECTORY (A DELETE FROM OUTSIDE, A DROP): FIND IT BY IDENTITY
+      // NOT UNDER THE KEY THE PATH RESOLVES TO NOW: A REFUSED LOSER (THEN NOTHING MATCHES), OR A DIRECTORY THAT WAS ITSELF A LINK
+      // AND IS GONE (A DROP, A DELETE FROM OUTSIDE), SO ITS REAL PATH CANNOT BE RESOLVED ANY MORE: FIND IT BY IDENTITY
       ACTIVE_INSTANCES.values().removeIf(registered -> registered == instance);
     return ACTIVE_INSTANCES.isEmpty();
   }

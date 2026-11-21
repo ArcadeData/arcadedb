@@ -46,8 +46,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * of the database any more, which is the one protection {@code database.lck} exists for.
  */
 class DatabaseFactorySymlinkAliasTest {
-  private static final String PATH  = "target/databases/DatabaseFactorySymlinkAliasTest";
-  private static final String ALIAS = "target/databases/DatabaseFactorySymlinkAliasTestLink";
+  private static final String PATH         = "target/databases/DatabaseFactorySymlinkAliasTest";
+  private static final String ALIAS        = "target/databases/DatabaseFactorySymlinkAliasTestLink";
+  private static final String PARENT_ALIAS = "target/DatabaseFactorySymlinkAliasTestParentLink";
+  private static final String NEW_DATABASE = "DatabaseFactorySymlinkAliasTestNew";
 
   @BeforeEach
   void setUp() throws IOException {
@@ -72,6 +74,7 @@ class DatabaseFactorySymlinkAliasTest {
     if (leftOpen != null && leftOpen.isOpen())
       leftOpen.close();
     Files.deleteIfExists(Path.of(ALIAS).toAbsolutePath());
+    Files.deleteIfExists(Path.of(PARENT_ALIAS).toAbsolutePath());
     FileUtils.deleteRecursively(new File(PATH));
   }
 
@@ -91,6 +94,41 @@ class DatabaseFactorySymlinkAliasTest {
     }
     assertThat(DatabaseFactory.getActiveDatabaseInstance(ALIAS)).isNull();
     assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+  }
+
+  /**
+   * A {@code create} computes its key before its directory exists. When a PARENT of that directory is reached through a link
+   * (or is {@code /tmp} on macOS, a link to {@code /private/tmp}), the key it took must still be the one an open of the same
+   * directory computes once it exists, or the two take different monitors and the open builds an instance over the files the
+   * create is still writing.
+   */
+  @Test
+  @Timeout(60)
+  void aDatabaseNotCreatedYetHasTheKeyItHasOnceCreatedEvenThroughALinkOfItsParent() throws IOException {
+    final Path parentLink = Path.of(PARENT_ALIAS).toAbsolutePath();
+    final String direct = Path.of(PATH).getParent().resolve(NEW_DATABASE).toString();
+    final String viaLink = Path.of(PARENT_ALIAS).resolve(NEW_DATABASE).toString();
+    FileUtils.deleteRecursively(new File(direct));
+    Files.createSymbolicLink(parentLink, Path.of(PATH).getParent().toAbsolutePath());
+    try {
+      final Path keyBeforeCreate = DatabaseFactory.getRegistryKey(viaLink);
+      assertThat(DatabaseFactory.getRegistryKey(direct)).isEqualTo(keyBeforeCreate);
+
+      try (final Database db = new DatabaseFactory(viaLink).create()) {
+        assertThat(DatabaseFactory.getRegistryKey(direct)).isEqualTo(keyBeforeCreate);
+        assertThat(DatabaseFactory.getRegistryKey(viaLink)).isEqualTo(keyBeforeCreate);
+        assertThat(DatabaseFactory.getActiveDatabaseInstance(direct)).isSameAs(db);
+        assertThatThrownBy(() -> new DatabaseFactory(direct).open()).isInstanceOf(DatabaseOperationException.class)
+            .hasMessageContaining("Found active instance");
+      }
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(direct)).isNull();
+    } finally {
+      final Database leftOpen = DatabaseFactory.getActiveDatabaseInstance(direct);
+      if (leftOpen != null && leftOpen.isOpen())
+        leftOpen.close();
+      Files.deleteIfExists(parentLink);
+      FileUtils.deleteRecursively(new File(direct));
+    }
   }
 
   @Test

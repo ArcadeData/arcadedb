@@ -63,8 +63,9 @@ class DatabaseFactoryPathLockTest {
   }
 
   @AfterEach
-  void tearDown() {
-    executor.shutdownNow();
+  void tearDown() throws InterruptedException {
+    executor.shutdown();
+    executor.awaitTermination(30, TimeUnit.SECONDS);
     for (final String path : new String[] { PATH, OTHER_PATH }) {
       final Database leftOpen = DatabaseFactory.getActiveDatabaseInstance(path);
       if (leftOpen != null && leftOpen.isOpen())
@@ -92,15 +93,18 @@ class DatabaseFactoryPathLockTest {
     // THE FIRST OPEN HAS BUILT ITS INSTANCE BUT NOT REGISTERED IT. A SECOND FACTORY ON THE SAME PATH MUST NOT BUILD A SECOND
     // INSTANCE OVER THE SAME FILES, SO IT WAITS FOR THE FIRST (WITHOUT THE PATH MONITOR IT RAN, AND FAILED ON THE FILE LOCK)
     final Future<Database> secondOpen = executor.submit(() -> new DatabaseFactory(PATH).open());
-    assertThatThrownBy(() -> secondOpen.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
-
-    releaseFirstOpen.countDown();
+    try {
+      assertThatThrownBy(() -> secondOpen.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+    } finally {
+      // ALSO ON A FAILURE: THE HELD OPEN WOULD OTHERWISE REGISTER BEHIND THE TEAR DOWN AND FAIL THE NEXT TEST
+      releaseFirstOpen.countDown();
+    }
     final Database winner = firstOpen.get(30, TimeUnit.SECONDS);
     try {
       assertThatThrownBy(() -> secondOpen.get(30, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
           .hasCauseInstanceOf(DatabaseOperationException.class)
           .hasRootCauseMessage(
-              "Found active instance of database '" + new File(PATH).getAbsoluteFile().toPath().normalize() + "' already in use");
+              "Found active instance of database '" + new File(PATH).toPath().toRealPath() + "' already in use");
       assertThat(winner.isOpen()).isTrue();
       assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isSameAs(winner);
     } finally {
@@ -124,9 +128,11 @@ class DatabaseFactoryPathLockTest {
     assertThat(inFirstOpen.await(30, TimeUnit.SECONDS)).isTrue();
 
     final Future<Database> secondCreate = executor.submit(() -> new DatabaseFactory(PATH).create());
-    assertThatThrownBy(() -> secondCreate.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
-
-    releaseFirstOpen.countDown();
+    try {
+      assertThatThrownBy(() -> secondCreate.get(500, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+    } finally {
+      releaseFirstOpen.countDown();
+    }
     final Database winner = firstOpen.get(30, TimeUnit.SECONDS);
     try {
       assertThatThrownBy(() -> secondCreate.get(30, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
