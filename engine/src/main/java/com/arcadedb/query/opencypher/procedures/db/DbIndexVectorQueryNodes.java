@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.vector.RecordPredicateRidSet;
@@ -129,6 +130,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
+    // a null index name is named, rather than dereferenced into a NullPointerException (issue #12809)
+    if (args[0] == null)
+      throw new InvalidArgumentException(DISPLAY_NAME + "(): indexName cannot be null");
     return search(args[0].toString(), args[1], args[2], args.length > 3 ? args[3] : null, null, context,
         "db.index.vector.queryNodes()").stream();
   }

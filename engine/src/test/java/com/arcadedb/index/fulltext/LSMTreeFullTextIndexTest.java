@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
@@ -118,9 +117,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
         .withPageSize(PAGE_SIZE)
         .withUnique(false)
         .create())
-        .isInstanceOf(IndexException.class)
-        .hasRootCauseInstanceOf(IllegalArgumentException.class)
-        .hasRootCauseMessage("Full text index can only be defined on STRING properties, found: INTEGER");
+        // refused before the build, as the definition mistake it is rather than as a failed build (issue #12809)
+        .isExactlyInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Full text index can only be defined on STRING properties, found: INTEGER");
   }
 
   @Test

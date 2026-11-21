@@ -159,7 +159,7 @@ class ColumnarIndexDdlTest extends TestHelper {
   @Test
   void compositeKeyIsRefused() {
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Asset (brand, author) COLUMNAR"))
-        .isInstanceOf(IndexException.class).hasMessageContaining("one index per property");
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("one index per property");
     assertThat(database.getSchema().existsIndex("Asset[brand,author]_columnar")).isFalse();
   }
 
@@ -168,7 +168,7 @@ class ColumnarIndexDdlTest extends TestHelper {
     final TypeIndexBuilder builder = database.getSchema().buildTypeIndex("Asset", new String[] { "brand" });
     final TypeIndexBuilder columnar = builder.withType(Schema.INDEX_TYPE.COLUMNAR);
     columnar.withUnique(true);
-    assertThatThrownBy(columnar::create).isInstanceOf(IndexException.class).hasMessageContaining("unique");
+    assertThatThrownBy(columnar::create).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("unique");
     assertThat(database.getSchema().existsIndex("Asset[brand]_columnar")).isFalse();
   }
 
@@ -266,13 +266,13 @@ class ColumnarIndexDdlTest extends TestHelper {
   void byKeyIsRefusedByTheBuilderAndTheFactory() {
     database.command("sql", "CREATE PROPERTY Asset.attributes MAP");
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Asset (attributes BY KEY) COLUMNAR"))
-        .isInstanceOf(IndexException.class).hasMessageContaining("BY KEY");
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("BY KEY");
     // the factory refuses it too, for a builder that comes without the type builder's checks
     final String bucket = database.getSchema().getType("Asset").getBuckets(false).getFirst().getName();
     final IndexBuilder<?> builder = database.getSchema().buildBucketIndex("Asset", bucket, new String[] { "attributes" })
         .withType(Schema.INDEX_TYPE.COLUMNAR).withKeyTypes(new Type[] { Type.STRING })
         .withMetadata(new IndexMetadata("Asset", new String[] { "attributes by key" }, -1));
-    assertThatThrownBy(() -> new ColumnarIndexFactoryHandler().create(builder)).isInstanceOf(IndexException.class)
+    assertThatThrownBy(() -> new ColumnarIndexFactoryHandler().create(builder)).isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("BY KEY");
   }
 

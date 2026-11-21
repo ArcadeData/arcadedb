@@ -702,13 +702,14 @@ class PropertyDefinitionRulesTest {
     @Test
     void createPropertyWithUnreadableIntegerBoundIsRefused() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
+      // the setter's refusal, passed on as it is rather than under a wrapper repeating its message (issue #12809)
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.p INTEGER (max 'abc')")).isInstanceOf(
-          CommandExecutionException.class).hasMessageContaining("abc");
+          IllegalArgumentException.class).hasMessageContaining("abc");
       assertThat(database.getSchema().getType("T").existsProperty("p")).isFalse();
 
       // a bound the write path would parse as an int, not just one convert() could round
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.p INTEGER (min '3.5')")).isInstanceOf(
-          CommandExecutionException.class);
+          IllegalArgumentException.class);
       assertThat(database.getSchema().getType("T").existsProperty("p")).isFalse();
 
       database.command("sql", "CREATE PROPERTY T.p INTEGER (max 3)");
@@ -719,7 +720,7 @@ class PropertyDefinitionRulesTest {
     void createPropertyWithUnreadableDateBoundIsRefused() {
       database.command("sql", "CREATE DOCUMENT TYPE T");
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.p DATETIME (min 'yesterday')")).isInstanceOf(
-          CommandExecutionException.class).hasMessageContaining("yesterday");
+          IllegalArgumentException.class).hasMessageContaining("yesterday");
       assertThat(database.getSchema().getType("T").existsProperty("p")).isFalse();
 
       database.command("sql", "CREATE PROPERTY T.p DATETIME (min '2020-01-01 00:00:00')");

@@ -37,6 +37,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.fulltext.LSMTreeFullTextIndex;
+import com.arcadedb.index.geospatial.LSMTreeGeoIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexBulkLoader;
@@ -537,6 +539,13 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         }
       }
     }
+
+    // A definition the statement alone gets wrong is refused here, before anything is built, so it reaches the caller as the client
+    // error it is: refused by the index factory inside the build, it came out as the IndexException of a failed build (issue #12809)
+    if (indexType == Schema.INDEX_TYPE.FULL_TEXT)
+      LSMTreeFullTextIndex.LSMTreeFullTextIndexFactoryHandler.checkDefinition(unique, keyTypes, metadata.propertyNames);
+    else if (indexType == Schema.INDEX_TYPE.GEOSPATIAL)
+      LSMTreeGeoIndex.GeoIndexFactoryHandler.checkDefinition(unique, keyTypes);
 
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];

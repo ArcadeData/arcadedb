@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -98,6 +99,11 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     validateArgs(args);
 
+    // a null argument is named, rather than dereferenced into a NullPointerException (issue #12809)
+    if (args[0] == null)
+      throw new InvalidArgumentException(DISPLAY_NAME + "(): indexName cannot be null");
+    if (args[1] == null)
+      throw new InvalidArgumentException(DISPLAY_NAME + "(): queryString cannot be null");
     final String indexName = args[0].toString();
     final String queryText = args[1].toString();
     final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args, context);

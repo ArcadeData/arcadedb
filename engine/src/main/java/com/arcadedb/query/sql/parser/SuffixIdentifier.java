@@ -25,6 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AggregationContext;
@@ -176,6 +177,12 @@ public class SuffixIdentifier extends SimpleNode {
       return null;
     }
     if (recordAttribute != null) {
+      // An attribute of the current record, read where there is none: the value of a property attribute, a custom attribute, a
+      // database setting, a CONSOLE message. Refused as the statement's mistake rather than dereferenced into a
+      // NullPointerException (issue #12809). @this keeps answering null, which it always did without a record
+      if (currentRecord == null && !THIS_PROPERTY.equalsIgnoreCase(recordAttribute.name))
+        throw new CommandSemanticException(
+            "`" + recordAttribute.name + "` is read from the current record, and there is no record here: the value must be a constant");
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
       else if (THIS_PROPERTY.equalsIgnoreCase(recordAttribute.name))

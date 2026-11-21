@@ -20,7 +20,6 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.OperationType;
@@ -243,8 +242,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
             if (commitStatement.getRetry() != null) {
               int nRetries = commitStatement.getRetry().getValue().intValue();
+              // the script asks for a retry count no loop can run: refused as the statement mistake it is (issue #12809)
               if (nRetries <= 0)
-                throw new CommandExecutionException("Invalid retry number " + nRetries);
+                throw new CommandSQLParsingException("Invalid retry number " + nRetries);
 
               final RetryStep step = new RetryStep(lastRetryBlock, nRetries, commitStatement.getElseStatements(),
                   commitStatement.getElseFail(),
