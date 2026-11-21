@@ -126,7 +126,8 @@ final class MaterializedViewSources {
     return null;
   }
 
-  private static String identifierName(final SQLParser.IdentifierContext ctx) {
+  /** The name an identifier spells, unquoted; shared with {@link SQLTriggerBodyTypes}. */
+  static String identifierName(final SQLParser.IdentifierContext ctx) {
     if (ctx == null)
       return null;
     if (ctx.QUOTED_IDENTIFIER() != null)
