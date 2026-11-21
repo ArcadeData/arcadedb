@@ -4725,14 +4725,15 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts a FunctionCall from an Expression if it's a simple function call.
-   * Returns null if the expression is not a simple function call.
+   * Returns null if the expression is not a simple function call, including a call followed by a
+   * modifier ({@code .method()}, {@code [index]}, {@code .field}): its value is not the call's value (#12799).
    */
   private static FunctionCall extractFunctionCall(final Expression expr) {
     if (expr == null || expr.mathExpression == null)
       return null;
     if (!(expr.mathExpression instanceof BaseExpression base))
       return null;
-    if (base.identifier == null)
+    if (base.identifier == null || base.modifier != null)
       return null;
     if (base.identifier.levelZero != null && base.identifier.levelZero.functionCall != null)
       return base.identifier.levelZero.functionCall;
