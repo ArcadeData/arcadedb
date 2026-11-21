@@ -104,11 +104,19 @@ public class AlgoEigenvectorCentrality extends AbstractAlgoProcedure {
       // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
       // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
       guard.check();
-      // newScores[v] = sum of scores[u] for all neighbors u of v
+      // newScores[v] = scores[v] + the sum of scores[u] for all neighbours u of v, that is power iteration on A + I. A alone does not
+      // converge on a bipartite graph (every tree, star, grid or even cycle): its extreme eigenvalues are +l and -l, the iterate
+      // alternates between two vectors and the answer depends on the parity of maxIterations. Adding the identity shifts every
+      // eigenvalue by one, keeps the eigenvectors, and makes the dominant one the only one of largest magnitude. A vertex without a
+      // neighbour has a zero row in A, so its entry of the eigenvector is zero and it is kept at zero.
       for (int v = 0; v < n; v++) {
         // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
         guard.checkPeriodically(v);
-        double sum = 0.0;
+        if (adj[v].length == 0) {
+          newScores[v] = 0.0;
+          continue;
+        }
+        double sum = scores[v];
         for (final int u : adj[v])
           sum += scores[u];
         newScores[v] = sum;
