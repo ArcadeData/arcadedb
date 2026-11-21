@@ -751,13 +751,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // replaced read the copy the cluster is discarding, and its page deltas are computed against those pages. It is
     // rolled back here rather than left open, the same end a conflict at commit gives it, so the retry the refusal
     // asks for starts from a clean slate.
-    try {
-      refuseClientWhileDirectoryIsReplaced();
-    } catch (final NeedRetryException e) {
-      if (proxied.isTransactionActive())
-        proxied.rollback();
-      throw e;
-    }
+    //
+    // Not for a transaction that wrote nothing: it has no page delta to compute against a discarded copy, and refusing it
+    // answers "retry" for what may already be done. A write a follower forwarded to the leader leaves exactly such a
+    // transaction behind - the HTTP handler's, around the forward - and by the time it commits the leader has applied the
+    // write; the refusal turned that into a 503 the client replays (the retry loop is stopped by #12635, the answer is not).
+    final boolean wroteNothing = activeTransactionWroteNothing();
+    if (!wroteNothing)
+      try {
+        refuseClientWhileDirectoryIsReplaced();
+      } catch (final NeedRetryException e) {
+        if (proxied.isTransactionActive())
+          proxied.rollback();
+        throw e;
+      }
 
     proxied.incrementStatsWriteTx();
 
@@ -779,6 +786,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       commitCountedAtTheRecordingSessionGate(leader);
     else
       commitPastRecordingSessionGate(leader);
+  }
+
+  /**
+   * Whether the transaction this thread would commit holds no write at all: no page, no index entry and no record written or
+   * queued for the commit. What {@code TransactionContext.commit1stPhase} treats as a read-only transaction, so such a commit
+   * replicates nothing, applies nothing and reads nothing of this node's copy.
+   */
+  private boolean activeTransactionWroteNothing() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    final TransactionContext tx = context != null ? context.getLastTransaction() : null;
+    return tx != null && tx.isActive() && !tx.hasChanges() && !tx.hasWrittenRecords();
   }
 
   /**
@@ -925,14 +943,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Issue #9411: a closed local state machine applies nothing, so an entry committed now could neither be published by
     // it nor by this thread without racing the replacement a restart builds (#8785): the commit would block for the
-    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably.
-    try {
-      refuseCommitWhileStateMachineIsClosed();
-    } catch (final NeedRetryException e) {
-      if (proxied.isTransactionActive())
-        proxied.rollback();
-      throw e;
-    }
+    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably. A transaction that
+    // wrote nothing publishes no entry, so it is not refused (see commit()).
+    if (!activeTransactionWroteNothing())
+      try {
+        refuseCommitWhileStateMachineIsClosed();
+      } catch (final NeedRetryException e) {
+        if (proxied.isTransactionActive())
+          proxied.rollback();
+        throw e;
+      }
 
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
     final ReplicationPayload payload = proxied.executeInReadLock(() -> {
@@ -6105,6 +6125,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final DatabaseContext.DatabaseContextTL threadContext = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
         if (threadContext != null)
           threadContext.reportWriteCommittedByAnotherNode();
+        // Kept for the handler: should anything on this node fail from here on, the client is given this answer, not a refusal
+        // it would retry (the database of an HA resync closed under the request, for one)
+        ForwardedRequestIdContext.publishCommittedWriteAnswer(response.body());
       }
 
       if (commitIndexOut != null)

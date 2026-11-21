@@ -232,6 +232,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     RunningQuery runningQuery = null;
     HttpClientDisconnectWatch disconnectWatch = null;
     try {
+      // A write forwarded to the leader leaves its answer here (ForwardedRequestIdContext), for the catch below. Only an HA
+      // request outside a session forwards: a session's statements run on this node
+      if (haDbForRead != null && activeSession == null)
+        ForwardedRequestIdContext.armCommittedWriteAnswer();
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
       if (haDbForRead != null) {
@@ -306,6 +310,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // Emit bookmark header for read-your-writes consistency
       emitCommitIndexBookmark(exchange, haDbForRead);
 
+    } catch (final RuntimeException failure) {
+      // A write this request forwarded to the leader is durable there: a failure of what this node does afterwards (its copy of the
+      // database replaced by an HA resync under the request, a commit gate refusing the empty transaction around the forward) must
+      // not be answered with a refusal the client replays, which would run the write a second time
+      if (!answerWithTheLeadersAnswer(response, failure))
+        throw failure;
     } finally {
       try {
         if (haDbForRead != null) {
@@ -345,6 +355,28 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     return response.get();
+  }
+
+  /**
+   * Settles a request that failed after the leader answered the write it forwarded: the answer of the request becomes the leader's
+   * own, unless the handler had rendered one already. The failure can only be of what this node does with a write the leader has
+   * committed, so it says nothing about the write, and a 503 or a 5xx in its place invites the replay that applies it twice.
+   * <p>
+   * Only when the request forwarded exactly one write ({@link ForwardedRequestIdContext#takeCommittedWriteAnswer()}): with
+   * several, the latest answer covers a part of the request. Package-private for direct unit testing.
+   *
+   * @return true when the request has an answer now, false when the failure has to be raised as it is
+   */
+  static boolean answerWithTheLeadersAnswer(final AtomicReference<ExecutionResponse> response, final RuntimeException failure) {
+    final String leaderAnswer = ForwardedRequestIdContext.takeCommittedWriteAnswer();
+    if (leaderAnswer == null)
+      return false;
+    LogManager.instance().log(DatabaseAbstractHandler.class, Level.WARNING,
+        "Request failed with %s (%s) after the leader committed the write it forwarded: answering with the leader's answer",
+        failure.getClass().getSimpleName(), failure.getMessage());
+    if (response.get() == null)
+      response.set(new ExecutionResponse(200, leaderAnswer));
+    return true;
   }
 
   /**

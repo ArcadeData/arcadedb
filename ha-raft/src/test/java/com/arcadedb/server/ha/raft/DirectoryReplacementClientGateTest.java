@@ -361,4 +361,27 @@ class DirectoryReplacementClientGateTest {
         .as("a client is still refused after the retry failed as well: the copy on disk is still the rejected one")
         .isTrue();
   }
+
+  // Regression for the forwarded write whose commit gate answered retry: a transaction that wrote nothing is not refused at its commit
+  /**
+   * The HTTP handler of a write a follower forwards to the leader holds an empty transaction around the forward. By the time it
+   * commits, the leader has applied the write: refusing that commit answers "retry" for what is already done, and the client's
+   * replay applies it twice. An empty transaction has no page delta to compute against the discarded copy and replicates
+   * nothing, so the gate has nothing to protect there.
+   */
+  @Test
+  void aCommitOfATransactionThatWroteNothingIsNotRefused() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      assertThat(replicated.isTransactionActive()).isTrue();
+
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatNoException().as("the commit of an empty transaction while the directory is replaced").isThrownBy(replicated::commit);
+      assertThat(replicated.isTransactionActive()).isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+  }
 }

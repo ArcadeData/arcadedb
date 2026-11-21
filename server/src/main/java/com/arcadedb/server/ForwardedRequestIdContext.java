@@ -94,6 +94,11 @@ public final class ForwardedRequestIdContext {
     private String  wholeRequestBody;
     // The leader's answer to the forward that posted that body, to be sent to the client as it is.
     private String  wholeRequestAnswer;
+    // The leader's answer to the latest write this request forwarded, and how many it forwarded. Kept only for a request an HTTP
+    // handler armed: any other thread would hold the answer, a body of any size, until it served a request
+    private String  committedWriteAnswer;
+    private int     committedWrites;
+    private boolean committedWriteAnswerArmed;
   }
 
   /**
@@ -131,6 +136,7 @@ public final class ForwardedRequestIdContext {
     state.clientKey = state.requestId != null && isClientKey(clientKey) ? clientKey : null;
     state.commandForwardIsWholeRequest = state.clientKey != null && commandForwardIsWholeRequest;
     clearWholeRequest(state);
+    clearCommittedWrites(state);
   }
 
   /**
@@ -214,6 +220,52 @@ public final class ForwardedRequestIdContext {
     state.wholeRequestAnswer = null;
   }
 
+  private static void clearCommittedWrites(final State state) {
+    state.committedWriteAnswer = null;
+    state.committedWrites = 0;
+    state.committedWriteAnswerArmed = false;
+  }
+
+  /**
+   * Starts keeping, for the request being served on this thread, the answers of the writes it forwards to the leader (see
+   * {@link #publishCommittedWriteAnswer}). Called by the HTTP handler that can answer with one; undone by {@link #clear()}.
+   */
+  public static void armCommittedWriteAnswer() {
+    final State state = STATE.get();
+    clearCommittedWrites(state);
+    state.committedWriteAnswerArmed = true;
+  }
+
+  /**
+   * Records the leader's answer to a write this request forwarded and the leader executed: the write is durable there from
+   * now on, whatever this node does with the answer. Published for every such forward, whether or not it is the client's
+   * whole request, because the question it answers is not about the key.
+   * <p>
+   * Read back by {@link #takeCommittedWriteAnswer()} when something on this node fails AFTER the leader answered (the database
+   * of an HA resync closed under the request, a commit gate refusing the empty transaction around the forward): the client must
+   * be given that answer, because a failure it can retry would run the write a second time.
+   *
+   * @param answer the body of the leader's 200 answer, in the leader's own rendering
+   */
+  public static void publishCommittedWriteAnswer(final String answer) {
+    final State state = STATE.get();
+    if (!state.committedWriteAnswerArmed)
+      return;
+    state.committedWriteAnswer = answer;
+    ++state.committedWrites;
+  }
+
+  /**
+   * The leader's answer to the write this request forwarded, or null when the request forwarded no write, or more than one: with
+   * several, the latest answer is the answer to a part of the request, not to the request. Consumed.
+   */
+  public static String takeCommittedWriteAnswer() {
+    final State state = STATE.get();
+    final String answer = state.committedWrites == 1 ? state.committedWriteAnswer : null;
+    clearCommittedWrites(state);
+    return answer;
+  }
+
   /**
    * The client key a {@link #CLIENT_KEY_HEADER} value names, or null when it is not one a peer could have sent: a
    * lower-case hex SHA-256 digest.
@@ -281,5 +333,6 @@ public final class ForwardedRequestIdContext {
     state.clientKey = null;
     state.commandForwardIsWholeRequest = false;
     clearWholeRequest(state);
+    clearCommittedWrites(state);
   }
 }
