@@ -148,6 +148,12 @@ What the follower checks of the type the leader made is its KIND and its SUPER T
 
 The bookmark that says when the type is applied locally is the `X-ArcadeDB-Commit-Index` header of the leader's answer (its last applied index, at or past the schema entry): the follower waits for its own applied index to reach it, because a schema entry is recorded as a schema change BEFORE the applied index advances past it.
 
+## A write a follower forwarded is durable on the leader: nothing may replay it (#12635)
+
+`engine/CLAUDE.md` calls an INSERT safe to retry because the rollback takes the failed attempt back. A statement a follower forwards (`forwardCommandToLeaderViaRaft`) was committed by the LEADER, and no rollback here reaches it. Every request a follower serves runs inside a retry loop (`DatabaseAbstractHandler.executeInTransaction` -> `Database.transaction(..., arcadedb.txRetries)`), so any retryable failure after the forward - the classic one was the HTTP answer serializing the returned records from this node's copy before it had applied them, a miss that surfaces as a `ConcurrentModificationException` - ran the client's script on the leader again. `RaftHTTPGraphConcurrentIT` saw it as 402 edges for 400 scripts, on every node, and reported it as "missing" edges.
+
+Two things hold it now: a forward that can write (DDL, or not idempotent) reports itself on every transaction stacked on the thread (`DatabaseContextTL.reportWriteCommittedByAnotherNode`; the innermost alone is popped by a nested commit before an enclosing loop looks), which every loop that consults `isPartiallyCommitted` reads as "do not replay"; and the forward returns only once this node has applied the leader's bookmark, whatever its role by then (lenient, like a follower's own commit), so the records are there to serialize. A new retry loop must consult `isPartiallyCommitted`, and a new forward path must report itself the same way. The leader-side request-id deduplication (#8323) covers only a client that sends an id.
+
 ## Adding a field to a Raft log entry: use `writeExtensionSection`, never bare trailing bytes
 
 A Raft log entry has no version field. The type byte is the whole envelope, and the decoder for each type reads exactly the fields it knows about. Anything left over is checked afterwards, and until #7138 that check was flat: for every type except `SCHEMA_ENTRY`, one trailing byte was a fatal `IllegalStateException`.
