@@ -2086,9 +2086,9 @@ public class SelectExecutionPlanner {
         }
 
       } else
-        throw new UnsupportedOperationException();
+        throw new CommandSemanticException("Unsupported target '" + target + "'");
     } else {
-      throw new UnsupportedOperationException();
+      throw new CommandSemanticException("Unsupported target '" + target + "'");
     }
   }
 

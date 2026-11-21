@@ -28,6 +28,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.BucketList;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -55,6 +56,7 @@ import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -1107,6 +1109,11 @@ public class MatchExecutionPlanner {
    * answers no rows. Without a RID the type is the fetch, so its indexes serve the {@code where:}, and the bucket is a filter
    * on it. The checks run on the record rather than at planning time because the RID can be a parameter or an
    * expression, resolved per execution of a cached plan.
+   * <p>
+   * A node with none of the three is every vertex, as an unlabelled openCypher {@code MATCH (n)} is (issue #12743): the fetch
+   * is the buckets of every vertex type. Buckets rather than types, because a polymorphic scan of each type would visit a
+   * vertex whose type has two vertex supertypes twice. The bucket list is read from the schema at planning time, like the
+   * buckets of a {@code type:}, and a schema change invalidates the cached plan.
    */
   private InternalExecutionPlan createRootPlan(final String alias, final CommandContext context) {
     final String typeName = aliasTypes.get(alias);
@@ -1121,6 +1128,19 @@ public class MatchExecutionPlanner {
       fromItem.setIdentifier(new Identifier(typeName));
     else if (bucketName != null)
       fromItem.setBucket(new Bucket(bucketName));
+    else {
+      final BucketList vertexBuckets = new BucketList();
+      for (final DocumentType type : context.getDatabase().getSchema().getTypes())
+        if (type instanceof VertexType)
+          for (final com.arcadedb.engine.Bucket bucket : type.getBuckets(false))
+            vertexBuckets.buckets.add(new Identifier(bucket.getName()));
+      if (vertexBuckets.buckets.isEmpty()) {
+        final SelectExecutionPlan nothing = new SelectExecutionPlan(context, 0);
+        nothing.chain(new EmptyStep(context));
+        return nothing;
+      }
+      fromItem.setBucketList(vertexBuckets);
+    }
     final FromClause from = new FromClause();
     from.setItem(fromItem);
 
