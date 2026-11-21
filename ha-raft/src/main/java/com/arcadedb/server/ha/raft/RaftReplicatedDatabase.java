@@ -776,13 +776,79 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // its entry is accepted (issue #12236, keepLockedUntilCompactionIsPublished).
     final boolean gated = leader && !Boolean.TRUE.equals(isSchemaCommitThread.get());
     if (gated)
-      passRecordingSessionGate();
-    try {
+      commitCountedAtTheRecordingSessionGate(leader);
+    else
       commitPastRecordingSessionGate(leader);
-    } finally {
-      if (gated)
+  }
+
+  /**
+   * {@link #commitPastRecordingSessionGate} of a leader commit counted at the gate (issue #12098), which runs the callbacks its
+   * transaction owes only once it has left the gate and every lock of its commit (issue #12251).
+   * <p>
+   * A callback is work of its own, the refresh of a continuous aggregate or of a materialized view, with a transaction and a commit
+   * of its own, and that commit waits at the gate for any schema session in progress. The session of another client waits for the
+   * commits counted at the gate and then for the database write lock, and the commit running the callback was counted and held the
+   * read lock (a read-only commit concludes under it, a commit that writes takes it again to complete): the session waited for the
+   * very commit that waited for it, until the quorum timeout, and so did every client behind them. Every TIMESERIES insert into a
+   * type with a continuous aggregate ends this way, since its samples commit in a transaction of their own and the statement's
+   * transaction owes the aggregate a refresh.
+   * <p>
+   * The transaction defers its callbacks for the length of the commit, whichever arm concludes it (see
+   * {@link TransactionContext#deferCallbacks()}), and they run here, in the order they would have run where the transaction
+   * concluded. Its context stays on the stack until they have run and is popped once after them, as off HA: a nested commit popped
+   * first leaves the enclosing transaction on top, and the {@code database.transaction()} of a callback joins it (see
+   * {@link #popEndedTransaction}).
+   */
+  private void commitCountedAtTheRecordingSessionGate(final boolean leader) {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    final TransactionContext committing = context != null ? context.getLastTransaction() : null;
+    // none active: the arms below refuse the commit, as they always did
+    final boolean deferring = committing != null && committing.isActive();
+    if (deferring)
+      committing.deferCallbacks();
+    try {
+      passRecordingSessionGate();
+      try {
+        commitPastRecordingSessionGate(leader);
+      } finally {
         leaveRecordingSessionGate();
+      }
+    } catch (final Throwable failure) {
+      // what the transaction owed is owed whatever happened to the commit afterwards, but never at the price of the failure
+      if (deferring)
+        try {
+          runDeferredCallbacks(context, committing);
+        } catch (final Throwable fromCallbacks) {
+          failure.addSuppressed(fromCallbacks);
+        }
+      throw failure;
     }
+    if (deferring)
+      runDeferredCallbacks(context, committing);
+  }
+
+  /**
+   * Runs what the commit of {@code committing} deferred (see {@link TransactionContext#takeDeferredCallbacks()}), and then pops the
+   * context of the transaction if the commit ended it and no arm of the commit popped it already.
+   */
+  private static void runDeferredCallbacks(final DatabaseContext.DatabaseContextTL context, final TransactionContext committing) {
+    // read before the callbacks run: their transactions begin on this very context
+    final boolean ended = !committing.isActive();
+    try {
+      runOwedCallbacks(committing);
+    } finally {
+      if (ended && context.getLastTransaction() == committing)
+        context.popIfNotLastTransaction();
+    }
+  }
+
+  /**
+   * Pops the context of a transaction the commit ended, but leaves it to {@link #runDeferredCallbacks} while the commit defers the
+   * callbacks that transaction owes (issue #12251): they run with it still on top of the stack, as they do off HA.
+   */
+  private static void popEndedTransaction(final DatabaseContext.DatabaseContextTL context, final TransactionContext tx) {
+    if (tx.isActive() || !tx.isDeferringCallbacks())
+      context.popIfNotLastTransaction();
   }
 
   /** The two arms of {@link #commit()} past its recording-session gate: the schema-commit thread's and the replicated one. */
@@ -894,22 +960,24 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
 
         // Read-only transaction: nothing to replicate, but still a commit - its after-commit callbacks fire and it is
-        // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape.
+        // counted, as commit() does off HA (issue #8784). A RAM-only Redis transaction is exactly this shape. On the leader
+        // the callbacks are not run here, under the read lock, but once the commit has left it (issue #12251, see
+        // commitCountedAtTheRecordingSessionGate)
         tx.concludeCommitWithoutPublishing();
         // BEFORE THE POP ON PURPOSE: A FAILED SAVE AFTER IT WOULD POP AGAIN IN THE CATCH BELOW, TAKING THE ENCLOSING
         // TRANSACTION WITH IT. THE SAVE TELLS A NESTED TRANSACTION FROM ITS STACK DEPTH, WHICHEVER SIDE OF THE POP (#8635)
         if (leader)
           getSchema().getEmbedded().saveConfigurationAtTransactionEnd();
-        current.popIfNotLastTransaction();
+        popEndedTransaction(current, tx);
         return null;
       } catch (final ArcadeDBException e) {
         rollbackRefusedCommit(tx, e);
-        current.popIfNotLastTransaction();
+        popEndedTransaction(current, tx);
         throw e;
       } catch (final Exception e) {
         final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
         rollbackRefusedCommit(tx, refusal);
-        current.popIfNotLastTransaction();
+        popEndedTransaction(current, tx);
         throw refusal;
       }
     });
@@ -1233,12 +1301,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * EVERY thread ({@code DatabaseContext.removeAllContexts}), this one's included, while it is waiting for the quorum or
    * for the publication. Requiring the context here then replaced the outcome the caller is owed (committed, or committed
    * cluster-wide but not applied here) with "Transaction context not found on current thread". With no context left
-   * there is nothing to pop: the close has already discarded it.
+   * there is nothing to pop: the close has already discarded it. A commit that defers the callbacks of its transaction pops it after
+   * them (issue #12251, see {@link #popEndedTransaction}).
    */
   private void popCommittingTransaction() {
     final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
-    if (current != null)
-      current.popIfNotLastTransaction();
+    if (current == null)
+      return;
+    // an empty stack has nothing to pop
+    final TransactionContext committing = current.getLastTransaction();
+    if (committing != null)
+      popEndedTransaction(current, committing);
   }
 
   /**
@@ -2499,12 +2572,96 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   @Override
   public void rollback() {
-    proxied.rollback();
+    rollbackDeferringCallbacks(false);
   }
 
   @Override
   public void rollbackAllNested() {
-    proxied.rollbackAllNested();
+    rollbackDeferringCallbacks(true);
+  }
+
+  /**
+   * {@link #rollback()} or {@link #rollbackAllNested()} of the engine, with the callbacks the rolled back transactions owe run once
+   * it has released the database read lock it takes (issue #12251): a rollback owes the after-completion ones (#10687, the refresh
+   * of a continuous aggregate over samples a rolled back transaction wrote beside itself), and the engine runs them under that lock,
+   * which the schema session a refresh commit waits for is waiting to be rid of, as it is for the one of a commit (see
+   * {@link #commitCountedAtTheRecordingSessionGate}). On the leader only, and not for a rollback inside a commit, whose callbacks
+   * that commit runs.
+   */
+  private void rollbackDeferringCallbacks(final boolean allNested) {
+    final List<TransactionContext> deferred = deferCallbacksOfTransactionsToRollBack(allNested);
+    if (deferred.isEmpty()) {
+      rollbackLevels(allNested);
+      return;
+    }
+    try {
+      rollbackLevels(allNested);
+    } catch (final Throwable failure) {
+      try {
+        runOwedCallbacks(deferred);
+      } catch (final Throwable fromCallbacks) {
+        failure.addSuppressed(fromCallbacks);
+      }
+      throw failure;
+    }
+    runOwedCallbacks(deferred);
+  }
+
+  private void rollbackLevels(final boolean allNested) {
+    if (allNested)
+      proxied.rollbackAllNested();
+    else
+      proxied.rollback();
+  }
+
+  /**
+   * Defers the callbacks of the transactions of this thread that a rollback is about to roll back, innermost first: the innermost
+   * one, or every active level for {@code allNested}, which stops at the first level that is not active. A level whose callbacks
+   * something else defers already (a commit that is rolling back what it refused) is left to it, and ends the walk.
+   *
+   * @return the transactions whose callbacks are deferred, empty on a replica or when there is nothing to roll back
+   */
+  private List<TransactionContext> deferCallbacksOfTransactionsToRollBack(final boolean allNested) {
+    if (!isLeader())
+      return Collections.emptyList();
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+    if (context == null)
+      return Collections.emptyList();
+    List<TransactionContext> deferred = null;
+    for (int level = context.transactions.size() - 1; level > -1; --level) {
+      final TransactionContext tx = context.transactions.get(level);
+      if (!tx.isActive() || tx.isDeferringCallbacks())
+        break;
+      tx.deferCallbacks();
+      if (deferred == null)
+        deferred = new ArrayList<>(2);
+      deferred.add(tx);
+      if (!allNested)
+        break;
+    }
+    return deferred != null ? deferred : Collections.emptyList();
+  }
+
+  private static void runOwedCallbacks(final TransactionContext tx) {
+    final Runnable owed = tx.takeDeferredCallbacks();
+    if (owed != null)
+      owed.run();
+  }
+
+  /** The callbacks of every one of the transactions, innermost first: a failure of one does not take the others' from them. */
+  private static void runOwedCallbacks(final List<TransactionContext> transactions) {
+    for (int i = 0; i < transactions.size(); ++i)
+      try {
+        runOwedCallbacks(transactions.get(i));
+      } catch (final Throwable failure) {
+        for (int next = i + 1; next < transactions.size(); ++next)
+          try {
+            runOwedCallbacks(transactions.get(next));
+          } catch (final Throwable fromNext) {
+            failure.addSuppressed(fromNext);
+          }
+        throw failure;
+      }
   }
 
   @Override
