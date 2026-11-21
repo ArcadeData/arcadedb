@@ -259,8 +259,8 @@ public class DocumentValidator {
      */
     public boolean canBeViolatedOn(final Property p) {
       final Type type = p.getType();
-      return checkType && (isScalarType(type) || type == Type.STRING || (type == Type.LIST || type == Type.MAP) && p.getOfType() != null)
-          || min != null || max != null || regexp != null;
+      return checkType && (isScalarType(type) || type == Type.STRING || isShapeCheckedType(type)) || min != null || max != null
+          || regexp != null;
     }
   }
 
@@ -271,8 +271,9 @@ public class DocumentValidator {
    * a legal INTEGER, while {@code 'abc'} or {@code true} is not.
    * <p>
    * Existence (MANDATORY / NOTNULL) is not part of this: it has its own rule, {@link #unmetExistenceConstraint}.
-   * Structural checks of collections and embedded documents are not part of it either - the write path converts those
-   * rather than refusing them, so a stored shape that predates the declaration is not necessarily wrong.
+   * A LIST, MAP or EMBEDDED declaration (with or without {@code OF}) holds the stored value to exactly the check the save path
+   * applies to it, without converting it first: the save of a record that only touches another property hands the stored value
+   * to that check as it is, so a shape it refuses would make every later write of the record fail (issue #12932).
    */
   public static void validateStoredValue(final Document document, final Property p, final StoredValueConstraints constraints) {
     final Object stored = document.get(p.getName());
@@ -321,21 +322,18 @@ public class DocumentValidator {
       value = converted;
     }
 
-    if (constraints.checkType() && (type == Type.LIST || type == Type.MAP) && p.getOfType() != null) {
-      // the elements are read the way the write path reads them (a LIST OF LONG holds the Integer 5 as a Long), then held
-      // to the declared element type
-      final Database database = document.getDatabase();
-      Object coerced;
+    if (isShapeCheckedType(type)) {
+      // THE CHECK THE SAVE PATH RUNS ON THE VALUE AS STORED, SO THE TWO CANNOT DISAGREE ABOUT WHAT A RECORD MAY KEEP (#12932)
       try {
-        coerced = Type.convert(database, stored, type.getJavaImplementation(database), p);
-      } catch (final RuntimeException e) {
-        coerced = null;
+        validateEmbeddedValues(document, p, type, stored);
+      } catch (final ValidationException e) {
+        if (constraints.checkType())
+          throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
+              "is declared as " + type + (p.getOfType() != null ? " OF " + p.getOfType() : "")
+                  + " but a stored value cannot be read as such: " + printableValue(stored));
+        // the bounds of a LIST or a MAP are a number of items, which a value of another shape does not have
+        return;
       }
-      if (coerced == null)
-        throwValidationException(document.getType(), p, ValidationException.Kind.TYPE, "is declared as " + type + " but a stored value cannot be read as such: "
-            + stored);
-      validateEmbeddedValues(document, p, type, coerced);
-      value = coerced;
     }
 
     if (constraints.pattern() != null && !TimeBoundRegex.matchesUntil(constraints.pattern(),
@@ -826,6 +824,15 @@ public class DocumentValidator {
   }
 
   /**
+   * The types whose stored value the save path refuses for its shape alone, whatever the other properties of the record:
+   * {@link #validateEmbeddedValues} refuses a value that is not a list, a map or an embedded document of the declared type. A
+   * LINK, a BINARY or an ARRAY_OF_* is not one of them: a stored value of another shape still saves.
+   */
+  private static boolean isShapeCheckedType(final Type type) {
+    return type == Type.LIST || type == Type.MAP || type == Type.EMBEDDED;
+  }
+
+  /**
    * The properties of a type that carry an existence constraint at all - the only ones
    * {@link #unmetExistenceConstraint} can answer anything but null for - polymorphic properties included.
    * <p>
@@ -1307,6 +1314,10 @@ public class DocumentValidator {
    * (#9111). A document {@code ofType} accepts an embedded document of that type or a link to a record of it, and
    * refuses everything else: a map has already been turned into an embedded document by the write path, so a value that
    * is still a plain scalar or map here is not one (#9111).
+   * <p>
+   * A number of a narrower type that widens to a numeric {@code ofType} without loss is accepted too (#12932): the write path
+   * converts it on a fresh write, but the save of a record that only touches another property hands the stored element over
+   * unconverted, so an exact-type check refused every such save of a list written before the declaration.
    */
   private static void validateCollectionElement(final Document document, final Property p, final String ofType,
       final Type embType, final Object item, final boolean isMap, final Object fieldValue) {
@@ -1314,7 +1325,8 @@ public class DocumentValidator {
       return;
 
     if (embType != null) {
-      if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)))
+      if (Type.getTypeByValue(item) != embType && !(embType.isDateOrDateTime() && Type.isDateValue(item)) && !widensLosslessly(item,
+          embType))
         throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
             "has been declared as " + declaredAs(isMap, ofType) + " but a value of type '" + Type.getTypeByValue(item) + "' is used. Value: "
                 + fieldValue);
@@ -1339,6 +1351,18 @@ public class DocumentValidator {
       throwValidationException(document.getType(), p, ValidationException.Kind.TYPE,
           "has been declared as " + declaredAs(isMap, ofType) + " but a value that is not a document of that type is used (" + item.getClass()
               .getSimpleName() + "). Value: " + fieldValue);
+  }
+
+  /** Whether {@code item} is a number of a narrower type that {@code target} holds exactly, so converting it loses nothing. */
+  private static boolean widensLosslessly(final Object item, final Type target) {
+    return switch (target) {
+      case SHORT -> item instanceof Byte;
+      case INTEGER, FLOAT -> item instanceof Byte || item instanceof Short;
+      case LONG -> item instanceof Byte || item instanceof Short || item instanceof Integer;
+      case DOUBLE -> item instanceof Byte || item instanceof Short || item instanceof Integer || item instanceof Float;
+      case DECIMAL -> item instanceof Byte || item instanceof Short || item instanceof Integer || item instanceof Long;
+      default -> false;
+    };
   }
 
   /**

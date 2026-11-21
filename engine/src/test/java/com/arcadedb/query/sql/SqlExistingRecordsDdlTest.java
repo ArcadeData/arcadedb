@@ -501,6 +501,8 @@ class SqlExistingRecordsDdlTest {
       database.transaction(() -> database.command("sql", "INSERT INTO T SET l = [1, 2, 3]").close());
       database.command("sql", "CREATE PROPERTY T.l LIST OF LONG");
       assertThat(hasProperty("T", "l")).isTrue();
+      // the save of a record that only touches another property hands the stored integers over unconverted (#12932)
+      database.transaction(() -> database.command("sql", "UPDATE T SET z = 1").close());
     }
 
     @Test
