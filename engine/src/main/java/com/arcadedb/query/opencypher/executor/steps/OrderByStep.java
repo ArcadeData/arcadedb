@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.query.sql.executor.WorkGuard;
-import com.arcadedb.schema.Type;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
@@ -623,10 +622,11 @@ public class OrderByStep extends AbstractExecutionStep {
           }
         }
 
-        // Cross-type number comparison. A Float goes through its decimal form so the ordering agrees with what
-        // ComparisonExpression answers for the same pair, rather than ordering on the rounding error (issue #7609).
+        // Cross-type number comparison, by value: an INTEGER past 2^53 against a FLOAT is not the double it rounds to, and a Float
+        // is read through its decimal form, so the ordering agrees with what ComparisonExpression answers for the same pair
+        // (issues #7609, #12673)
         if (v1 instanceof Number number1 && v2 instanceof Number number2)
-          return Double.compare(toComparableDouble(number1), toComparableDouble(number2));
+          return BinaryComparator.compareTo(number1, number2);
 
         // Different types: order by type rank
         final int rank1 = typeRank(v1);
@@ -760,17 +760,6 @@ public class OrderByStep extends AbstractExecutionStep {
   public void close() {
     releaseHeap();
     super.close();
-  }
-
-  /**
-   * Widens a number for ordering, reading a {@link Float} through its decimal form. See {@link Type#widenFloat}.
-   *
-   * @param value the operand (never {@code null})
-   *
-   * @return the operand as a double
-   */
-  private static double toComparableDouble(final Number value) {
-    return value instanceof Float float1 ? Type.widenFloat(float1) : value.doubleValue();
   }
 
   /**

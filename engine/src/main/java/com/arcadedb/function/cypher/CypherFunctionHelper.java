@@ -1061,9 +1061,10 @@ public final class CypherFunctionHelper {
     // by the Cypher class fromCoreJavaType wraps it in, so one rank is one class and the cast holds
     if (isTemporalTypeRank(rankA))
       return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
-    // Same type category - compare within type
-    if (a instanceof Number && b instanceof Number)
-      return BinaryComparator.compareDoubles(((Number) a).doubleValue(), ((Number) b).doubleValue());
+    // Numbers by value: an INTEGER past 2^53 is not the double it rounds to, so reading both as double made 1500000000000000001 and
+    // 1500000000000000003 equal and min() / max() answered the first row (issue #12673)
+    if (a instanceof Number numberA && b instanceof Number numberB)
+      return BinaryComparator.compareTo(numberA, numberB);
     if (a instanceof String && b instanceof String)
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)
