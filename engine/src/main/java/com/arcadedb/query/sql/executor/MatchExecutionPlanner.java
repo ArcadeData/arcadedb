@@ -623,7 +623,22 @@ public class MatchExecutionPlanner {
 
       // 2. Having found a starting vertex, traverse its neighbors depth-first,
       //    adding any non-visited ones with satisfied dependencies to our schedule.
+      final int scheduledBefore = resultingSchedule.size();
+      final Set<PatternNode> visitedBefore = new HashSet<>(visitedNodes);
+      final Map<String, Set<String>> dependenciesBefore = new HashMap<>();
+      for (final Map.Entry<String, Set<String>> entry : remainingDependencies.entrySet())
+        dependenciesBefore.put(entry.getKey(), new HashSet<>(entry.getValue()));
       updateScheduleStartingAt(startingNode, visitedNodes, visitedEdges, remainingDependencies, resultingSchedule, rootCandidates);
+      if (resultingSchedule.size() == scheduledBefore) {
+        // A pass that schedules no edge (every neighbour waits for an alias bound elsewhere through $matched) has not started
+        // anything: nothing binds the node, so it must not count as visited, or an edge that reaches it later is scheduled from it
+        // as if it were bound (issue #12943). It is reached through the edge that binds it, and the dependencies it seemed to
+        // satisfy are not satisfied yet.
+        visitedNodes.clear();
+        visitedNodes.addAll(visitedBefore);
+        remainingDependencies.clear();
+        remainingDependencies.putAll(dependenciesBefore);
+      }
     }
 
     if (resultingSchedule.size() != pattern.numOfEdges) {
