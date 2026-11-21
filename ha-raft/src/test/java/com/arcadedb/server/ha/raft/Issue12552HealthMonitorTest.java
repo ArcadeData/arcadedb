@@ -253,7 +253,19 @@ class Issue12552HealthMonitorTest {
       assertThat(raft.getReplicationFailureReason()).contains("issue12552-StateMachineUpdater").contains("terminated");
 
       setField(raft, "shutdownRequested", true);
-      assertThat(raft.getReplicationFailureReason()).as("a shutdown ends the updater on purpose").isNull();
+      assertThat(raft.getReplicationFailureReason()).as("a stopped Raft layer ends the updater on purpose")
+          .doesNotContain("StateMachineUpdater").contains("has been stopped");
+    }
+
+    // Regression for #12552: a server that stays up after 'disconnect cluster' is out of the cluster, so not ready
+    @Test
+    void aStoppedRaftLayerIsReported() throws Exception {
+      final RaftHAServer raft = detachedServer();
+      assertThat(raft.getReplicationFailureReason()).isNull();
+
+      setField(raft, "shutdownRequested", true);
+
+      assertThat(raft.getReplicationFailureReason()).contains("no longer a member of the cluster");
     }
 
     // Regression for #12552

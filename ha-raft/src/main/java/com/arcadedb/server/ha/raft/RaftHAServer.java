@@ -3091,10 +3091,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Read by {@link TrafficReadiness#isReadyForTraffic(long)} and, through {@code RaftHAPlugin}, by the readiness probe
    * whether or not {@code arcadedb.server.readinessRequiresHA} is on, like a critical halt: the node is not behind, it
    * has stopped.
+   * <p>
+   * A Raft layer that was stopped is reported as such and nothing else is read: the threads above end on purpose then. On
+   * a server shutting down the probe answers with the server status before it gets here; on a server that stays up, the
+   * one {@code disconnect cluster} leaves behind, this is what keeps it out of the Service.
    */
   public String getReplicationFailureReason() {
     if (shutdownRequested)
-      return null;
+      return "the Raft layer of this node has been stopped: it is no longer a member of the cluster";
     final String deadUpdater = getDeadStateMachineUpdater();
     if (deadUpdater != null)
       return "Raft state machine cannot apply entries: " + deadUpdater;
