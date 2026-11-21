@@ -108,6 +108,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   private static final int MAX_OVERFETCH_ROWS = 100_000;
 
+  /** Candidates a filtered search fetches per row it wants on its first pass, to find that many members of the allow-list. */
+  private static final int FILTER_OVERFETCH        = 8;
+
+  /** The factor by which a filtered search widens {@link #FILTER_OVERFETCH} when the allow-list left its answer short. */
+  private static final int FILTER_OVERFETCH_GROWTH = 8;
+
   /**
    * How much a rescored search widens its candidate budget when the answer came up short because candidates were
    * dropped - their record deleted by a commit that landed between the index answer and the record load (issue #9692).
@@ -373,6 +379,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final int oversample = rescoreOversample();
     int keep = oversampled(k, oversample);
     int previousFetchK = -1;
+    // How many candidates a filtered search fetches per row it wants. A filter that leaves the answer short of it while the
+    // index still holds more candidates widens it and asks again (see below)
+    int filterFanout = FILTER_OVERFETCH;
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
       // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
@@ -389,7 +398,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
       // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
       // is public and an embedded caller is not going through it.
-      final int fetchK = filtered ? (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
+      final int fetchK = filtered ? (int) Math.min(widened * filterFanout, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
       // A budget the cap kept where it was would only fetch the same candidates again.
       if (fetchK == previousFetchK)
         break;
@@ -417,6 +426,17 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
             break;
         }
         candidates = out;
+      }
+
+      // A filter ranks no better than the candidates it is applied to: when it left fewer than `keep` of a budget the index
+      // filled completely, the members of the list that are left sit further down the ranking than this fetch reached, and
+      // answering now would be a short (or empty) answer while the index holds them. Widen the fetch and ask again, until
+      // the answer is full, the index runs out of candidates, or the budget reaches MAX_OVERFETCH_ROWS, as the dense search
+      // keeps walking until it holds k members of the list
+      if (filtered && candidates.size() < keep && raw.size() >= fetchK && fetchK < MAX_OVERFETCH_ROWS
+          && attempt + 1 < STALE_TOP_UP_MAX_ATTEMPTS) {
+        filterFanout *= FILTER_OVERFETCH_GROWTH;
+        continue;
       }
 
       if (oversample == 0)
