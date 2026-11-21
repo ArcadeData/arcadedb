@@ -78,7 +78,7 @@ class ForwardedWriteDeadlineTest {
 
   private static Method forwardMethod() throws NoSuchMethodException {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class);
+        String.class, String.class, Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
     return m;
   }
@@ -107,7 +107,7 @@ class ForwardedWriteDeadlineTest {
   private static <T extends ArcadeDBException> T invokeAndUnwrap(final RaftReplicatedDatabase db,
       final ContextConfiguration cfg, final Class<T> expectedType) throws Exception {
     try {
-      forwardMethod().invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+      forwardMethod().invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
       throw new AssertionError("expected the forward to throw");
     } catch (final InvocationTargetException e) {
       assertThat(e.getCause()).isInstanceOf(expectedType);
@@ -307,7 +307,7 @@ class ForwardedWriteDeadlineTest {
   }
 
   private static Object invoke(final RaftReplicatedDatabase db, final ContextConfiguration cfg) throws Exception {
-    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0]);
+    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0], true);
   }
 
   private static Object invokeExpectingFailure(final RaftReplicatedDatabase db, final ContextConfiguration cfg)
@@ -398,13 +398,13 @@ class ForwardedWriteDeadlineTest {
       final RaftReplicatedDatabase db = new RaftReplicatedDatabase(server, local, raft);
 
       final Method forward = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-          String.class, String.class, Map.class, Object[].class);
+          String.class, String.class, Map.class, Object[].class, boolean.class);
       forward.setAccessible(true);
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       final Throwable thrown = leader.callWithin(() -> {
         try {
-          forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+          forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
           return null;
         } catch (final InvocationTargetException e) {
           return e.getCause();

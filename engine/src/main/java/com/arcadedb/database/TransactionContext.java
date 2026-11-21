@@ -682,7 +682,8 @@ public class TransactionContext implements Transaction {
 
   /**
    * Records on THIS context a write of the block that another node committed: a statement a replica forwarded to the leader,
-   * which answered it (issue #12635). Called by the HA layer once the leader's answer is in, and only then.
+   * which answered it (issue #12635). Called once the leader's answer is in, and only then, on every transaction stacked on the
+   * thread: see {@link DatabaseContext.DatabaseContextTL#reportWriteCommittedByAnotherNode()}.
    * <p>
    * The same witness as {@link #reportBatchBoundaryOfNestedTransaction()}, for the same reason: a rollback here takes nothing back
    * on the leader, so a retry loop that replays the block writes it there a second time. The replica's HTTP handler runs every

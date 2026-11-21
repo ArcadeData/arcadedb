@@ -25,6 +25,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.net.URI;
@@ -34,6 +35,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -89,13 +91,14 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
 
   /**
    * The follower answers a forwarded write only once it has applied it, so the records the answer carries are read from a copy
-   * that holds them. The follower's apply thread is held off the database while the write is sent and released a moment later:
-   * without the wait the answer was serialized at once, and the vertex the statement created was not found there.
+   * that holds them. The follower's apply thread is held off the database until the leader holds the write, and the answer must
+   * still be pending then: without the wait it was serialized at once, and the vertex the statement created was not found there.
    */
   @Test
   void aForwardedWriteIsAnsweredWithTheRecordsItCreated() throws Exception {
     final int followerIndex = followerIndex();
     final RaftHAServer followerRaft = getRaftPlugin(followerIndex).getRaftHAServer();
+    final String countOfTheVertex = "SELECT count(*) AS n FROM " + VERTEX_TYPE + " WHERE k = 1";
 
     final CountDownLatch held = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);
@@ -113,29 +116,28 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
     }, "issue12635-follower-gate");
     gateHolder.start();
 
-    final Thread releaser = new Thread(() -> {
-      try {
-        Thread.sleep(1_500);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      }
-      release.countDown();
-    }, "issue12635-follower-release");
-
+    final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
     try {
       assertThat(held.await(30, TimeUnit.SECONDS)).isTrue();
-      releaser.start();
 
-      final HttpResponse<String> write = post(followerIndex, "CREATE VERTEX " + VERTEX_TYPE + " SET k = 1");
-      assertThat(write.statusCode()).as("the forwarded CREATE VERTEX failed: %s", write.body()).isEqualTo(200);
-      assertThat(new JSONObject(write.body()).getJSONObject("result").getJSONArray("vertices").length())
-          .as("the answer must carry the vertex the forwarded statement created: %s", write.body()).isEqualTo(1);
-      assertThat(countOnTheLeader("SELECT count(*) AS n FROM " + VERTEX_TYPE + " WHERE k = 1"))
-          .as("the leader must hold the forwarded write exactly once").isEqualTo(1L);
+      final CompletableFuture<HttpResponse<String>> write = client.sendAsync(
+          commandRequest(followerIndex, "CREATE VERTEX " + VERTEX_TYPE + " SET k = 1"), HttpResponse.BodyHandlers.ofString());
+
+      // The leader commits with the other follower: the write is durable while this follower still cannot apply it
+      Awaitility.await().atMost(HTTP_TIMEOUT).pollInterval(Duration.ofMillis(50))
+          .until(() -> write.isDone() || countOnTheLeader(countOfTheVertex) == 1L);
+      assertThat(write.isDone()).as("the follower answered the forwarded write before applying it").isFalse();
+
+      release.countDown();
+      final HttpResponse<String> response = write.get(HTTP_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+      assertThat(response.statusCode()).as("the forwarded CREATE VERTEX failed: %s", response.body()).isEqualTo(200);
+      assertThat(new JSONObject(response.body()).getJSONObject("result").getJSONArray("vertices").length())
+          .as("the answer must carry the vertex the forwarded statement created: %s", response.body()).isEqualTo(1);
+      assertThat(countOnTheLeader(countOfTheVertex)).as("the leader must hold the forwarded write exactly once").isEqualTo(1L);
     } finally {
       release.countDown();
       gateHolder.join(TimeUnit.SECONDS.toMillis(30));
-      releaser.join(TimeUnit.SECONDS.toMillis(30));
+      client.close();
     }
   }
 
@@ -155,9 +157,9 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
     }
   }
 
-  /** Sends {@code sql} to the follower's {@code /command} endpoint, asking for the graph serializer as Studio does. */
-  private HttpResponse<String> post(final int serverIndex, final String sql) throws Exception {
-    final HttpRequest request = HttpRequest.newBuilder()
+  /** The request sending {@code sql} to the server's {@code /command} endpoint, asking for the graph serializer as Studio does. */
+  private HttpRequest commandRequest(final int serverIndex, final String sql) {
+    return HttpRequest.newBuilder()
         .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/"
             + getDatabaseName()))
         .timeout(HTTP_TIMEOUT)
@@ -167,8 +169,5 @@ class RaftForwardedWriteNotReplayedIT extends BaseRaftHATest {
         .POST(HttpRequest.BodyPublishers.ofString(
             new JSONObject().put("language", "sql").put("command", sql).put("serializer", "graph").toString()))
         .build();
-    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build()) {
-      return client.send(request, HttpResponse.BodyHandlers.ofString());
-    }
   }
 }

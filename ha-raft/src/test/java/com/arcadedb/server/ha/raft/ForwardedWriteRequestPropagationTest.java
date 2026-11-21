@@ -157,9 +157,9 @@ class ForwardedWriteRequestPropagationTest {
 
   static void forward(final RaftReplicatedDatabase db, final String command) throws Exception {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class);
+        String.class, String.class, Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
-    m.invoke(db, "sql", command, null, new Object[0]);
+    m.invoke(db, "sql", command, null, new Object[0], true);
   }
 
   static ContextConfiguration config() {
@@ -574,9 +574,9 @@ class ForwardedWriteRequestPropagationTest {
 
     private static void forward(final RaftReplicatedDatabase db) throws Exception {
       final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-          String.class, String.class, Map.class, Object[].class);
+          String.class, String.class, Map.class, Object[].class, boolean.class);
       m.setAccessible(true);
-      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0]);
+      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0], true);
     }
 
     private static ContextConfiguration serverConfig() {
