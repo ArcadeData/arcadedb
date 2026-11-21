@@ -112,6 +112,7 @@ jjtn000.definitions.add(lastDef);
           break label_1;
         }
       }
+      jj_consume_token(0);
 jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));

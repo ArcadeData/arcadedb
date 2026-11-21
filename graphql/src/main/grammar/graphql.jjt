@@ -254,6 +254,7 @@ Document Document(): {
     (
        lastDef = Definition() { jjtThis.definitions.add(lastDef); }
     )+
+    <EOF>
 
     {return jjtThis;}
 }
