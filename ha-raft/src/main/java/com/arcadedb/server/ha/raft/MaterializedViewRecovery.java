@@ -130,7 +130,7 @@ final class MaterializedViewRecovery {
     final boolean everyView = previous == null || previous != term;
     final int views;
     try {
-      views = schema.recoverPerRecordMaterializedViews(everyView);
+      views = schema.recoverIncrementalMaterializedViews(everyView);
     } catch (final RuntimeException | Error e) {
       // A full recovery that failed is not recorded as made: the next open in this term makes it again, not the partial one
       if (everyView && term >= 0)
@@ -139,7 +139,7 @@ final class MaterializedViewRecovery {
     }
     if (views > 0)
       LogManager.instance().log(sm, Level.INFO,
-          "Leader recovery of database '%s': %d per-record materialized view(s) handed a %s pass", dbName, views,
+          "Leader recovery of database '%s': %d INCREMENTAL materialized view(s) handed a %s pass", dbName, views,
           everyView ? "full" : "recovery");
   }
 

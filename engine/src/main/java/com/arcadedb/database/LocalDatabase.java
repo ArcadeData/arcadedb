@@ -5024,9 +5024,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (security != null)
           security.updateSchema(this);
 
-        // After the WAL replay, so the passes read every committed change of the source types: a per-record materialized view
-        // lost its pending delta with the crashed process (issue #11550). Handed to the scheduler thread, never run here
-        schema.recoverPerRecordMaterializedViewsAfterOpen(recoveryPending);
+        // After the WAL replay, so the passes read every committed change of the source types: a per-record materialized view lost
+        // its pending delta with the crashed process (issue #11550), and a view refreshed as a whole the after-commit refresh not made
+        // yet (issue #12220). Handed to the scheduler thread, never run here
+        schema.recoverIncrementalMaterializedViewsAfterOpen(recoveryPending);
 
         openedOn = lastUsedOn = lastUpdatedOn = System.currentTimeMillis();
 
