@@ -19,12 +19,15 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Fluent builder for {@link GraphAnalyticalView}.
@@ -65,6 +68,8 @@ public class GraphAnalyticalViewBuilder {
   private       int                             propertySampleSize  = -1;
   private       Boolean                         useWhenStale;
   private       boolean                         skipPersistence;
+  // A view restored from its saved definition (database open, type rename) is never refused: see createView()
+  private       boolean                         fromDefinition;
   private final List<String[]>                  contractionHierarchies = new ArrayList<>();
 
   GraphAnalyticalViewBuilder(final Database database) {
@@ -222,6 +227,12 @@ public class GraphAnalyticalViewBuilder {
     return this;
   }
 
+  /** Marks a builder of a saved definition, which is rebuilt as it was defined rather than refused (see createView()). */
+  GraphAnalyticalViewBuilder fromDefinition() {
+    this.fromDefinition = true;
+    return this;
+  }
+
   /**
    * Used by {@link GraphAnalyticalViewPersistence#restoreAll} on database open (see #6583, #6632): when a
    * persisted CSR plausibly applies, marks the view READY immediately and defers the actual disk read to
@@ -244,8 +255,10 @@ public class GraphAnalyticalViewBuilder {
   }
 
   private GraphAnalyticalView createView() {
+    final String[] allEdgeProperties = withHierarchyWeights(edgeProperties);
+    checkEdgePropertiesHaveColumns(allEdgeProperties);
     final GraphAnalyticalView view = new GraphAnalyticalView(database, name, vertexTypes, edgeTypes, properties,
-        withHierarchyWeights(edgeProperties), updateMode);
+        allEdgeProperties, updateMode);
     for (final String[] spec : contractionHierarchies)
       view.addContractionHierarchy(spec[0], Arrays.copyOfRange(spec, 1, spec.length));
     if (compactionThreshold >= 0)
@@ -269,6 +282,39 @@ public class GraphAnalyticalViewBuilder {
     }
     view.registerAsTraversalProvider();
     return view;
+  }
+
+  /**
+   * Refuses an edge property the view would store no column for (issue #12177): one the schema does not declare on the edge
+   * types of the view, or declares only with a type no column holds, or with types that differ across them. The view would
+   * list it among its edge properties while holding no value of it, and every call weighted by it would read the edge records,
+   * as without the view. The type of an undeclared property is not inferred from the values the build meets: a view created
+   * before its edges, or kept up to date as edges with other values arrive, would have no stable type to infer, while a
+   * declaration gives every build and every update the same one.
+   * <p>
+   * A saved definition is rebuilt as it was defined, a refusal there would drop it: the properties without a column are
+   * reported in the log instead.
+   */
+  private void checkEdgePropertiesHaveColumns(final String[] allEdgeProperties) {
+    if (allEdgeProperties == null || allEdgeProperties.length == 0)
+      return;
+    final List<String> withoutColumn = new CSRBuilder(database, null, allEdgeProperties, CSRBuilder.DEFAULT_PROPERTY_SAMPLE_SIZE)
+        .edgePropertiesWithoutColumn(edgeTypes);
+    if (withoutColumn.isEmpty())
+      return;
+
+    final String typeNames = edgeTypes == null || edgeTypes.length == 0 ? "any edge type" : String.join(", ", edgeTypes);
+    final String exampleType = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes[0] : "<EdgeType>";
+    final String names = withoutColumn.stream().map(n -> "'" + n + "'").collect(Collectors.joining(", "));
+    final String message = "Graph Analytical View" + (name != null ? " '" + name + "'" : "") + ": edge propert"
+        + (withoutColumn.size() == 1 ? "y " + names + " is" : "ies " + names + " are")
+        + " not declared on " + typeNames + " with a type a column can hold (INTEGER, SHORT, BYTE, LONG, FLOAT, DOUBLE or STRING,"
+        + " the same on every edge type), so the view would hold no value of it and every call weighted by it would read the edge"
+        + " records. Declare it before creating the view, for example CREATE PROPERTY " + exampleType + "." + withoutColumn.getFirst()
+        + " DOUBLE";
+    if (!fromDefinition)
+      throw new IllegalArgumentException(message);
+    LogManager.instance().log(this, Level.WARNING, message);
   }
 
   /** The edge properties to materialize, with every hierarchy's weight among them. */
