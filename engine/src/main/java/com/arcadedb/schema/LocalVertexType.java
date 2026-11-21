@@ -106,43 +106,50 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
 
       // Any RuntimeException too, SchemaException included: letting one past this catch would leave the edge buckets and
       // the stripe pool already renamed on disk with a schema.json that still names the old files.
-    } catch (IOException | RuntimeException e) {
-      boolean corrupted = false;
-      try {
-        renameDocumentPart(oldName);
-      } catch (final RuntimeException rollbackFailure) {
-        // The original failure is the one reported: the edge buckets below still go back, and the document part left under the
-        // new name is said in the message (issue #12715: an old name taken meanwhile refuses the move back)
-        e.addSuppressed(rollbackFailure);
-        corrupted = true;
-      }
-
-      for (Bucket bucket : removedBuckets) {
-        final String renamedBucketName = bucket.getName();
-        try {
-          final String restoredName = restoredBucketName(renamedBucketName, oldName, newName);
-          if (restoredName == null)
-            corrupted = true;
-          else
-            moveBucketTo(bucket, restoredName);
-        } catch (IOException | RuntimeException ex) {
-          corrupted = true;
-        } finally {
-          rekeyBucket(bucket, renamedBucketName);
-        }
-      }
-
-      if (corrupted)
-        throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
-            + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, e);
-
+    } catch (final AlreadyExistsException e) {
       // A bucket name taken after the check made before anything moved is unwound cleanly, so it is reported as the conflict it
       // is, as the document part reports it (issue #12715)
-      if (e instanceof AlreadyExistsException taken)
-        throw taken;
-
+      rollBackRename(oldName, newName, removedBuckets, e);
+      throw e;
+    } catch (IOException | RuntimeException e) {
+      rollBackRename(oldName, newName, removedBuckets, e);
       throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName + "'", e);
     }
+  }
+
+  /**
+   * Puts the document part and every bucket in {@code removedBuckets} back under the old name after {@code cause} failed the
+   * rename. Throws a {@link SchemaException} naming the buckets when any of them could not go back.
+   */
+  private void rollBackRename(final String oldName, final String newName, final List<Bucket> removedBuckets, final Exception cause) {
+    boolean corrupted = false;
+    try {
+      renameDocumentPart(oldName);
+    } catch (final RuntimeException rollbackFailure) {
+      // The original failure is the one reported: the edge buckets below still go back, and the document part left under the
+      // new name is said in the message (issue #12715: an old name taken meanwhile refuses the move back)
+      cause.addSuppressed(rollbackFailure);
+      corrupted = true;
+    }
+
+    for (Bucket bucket : removedBuckets) {
+      final String renamedBucketName = bucket.getName();
+      try {
+        final String restoredName = restoredBucketName(renamedBucketName, oldName, newName);
+        if (restoredName == null)
+          corrupted = true;
+        else
+          moveBucketTo(bucket, restoredName);
+      } catch (IOException | RuntimeException ex) {
+        corrupted = true;
+      } finally {
+        rekeyBucket(bucket, renamedBucketName);
+      }
+    }
+
+    if (corrupted)
+      throw new SchemaException("Error on renaming type '" + oldName + "' in '" + newName
+          + "'. The database schema is corrupted, check single file names for buckets " + removedBuckets, cause);
   }
 
   /**
