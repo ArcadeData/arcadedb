@@ -18,6 +18,8 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.schema.SourceText;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -82,13 +84,30 @@ final class PostgresArrayLiteral {
   /**
    * Parses the text as an array literal of strings when it is a well-formed one, and answers null otherwise. For a parameter whose
    * type the client left unspecified: a value is a list only when it is an array literal PostgreSQL itself would read as one, so a
-   * JSON document such as {@code {"k": 1}}, which merely starts and ends with a brace, stays the string it was sent as.
+   * JSON document such as {@code {"k": 1}}, which merely starts and ends with a brace, stays the string it was sent as. The list
+   * remembers that text: psycopg sends a Python {@code str} such as {@code "{name}"} exactly as it sends a list, so converted to a
+   * STRING - stored into a STRING property, compared with a string - it is the text the client sent (issue #12711).
    */
-  static ArrayList<Object> tryParse(final String text) {
+  static UntypedList tryParse(final String text) {
     try {
-      return parse(text, s -> s);
+      return new UntypedList(text, parse(text, s -> s));
     } catch (final PostgresProtocolException e) {
       return null;
+    }
+  }
+
+  /** The list an untyped array literal reads as, which is the literal itself wherever the engine converts it to a STRING. */
+  static final class UntypedList extends ArrayList<Object> implements SourceText {
+    private final String sourceText;
+
+    private UntypedList(final String sourceText, final List<Object> elements) {
+      super(elements);
+      this.sourceText = sourceText;
+    }
+
+    @Override
+    public String sourceText() {
+      return sourceText;
     }
   }
 
