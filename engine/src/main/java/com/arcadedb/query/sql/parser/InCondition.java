@@ -71,6 +71,9 @@ public class InCondition extends BooleanExpression {
   /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
   private volatile String searchedKey;
 
+  /** The right-hand expression last found not to be a literal, so a non-constant list is not walked again for every row. */
+  private volatile MathExpression notConstantRight;
+
   public InCondition() {
   }
 
@@ -151,10 +154,26 @@ public class InCondition extends BooleanExpression {
    * row today - into a single draw (see the contract on {@link Expression#isEarlyCalculated}).
    */
   private InListMembership constantRightHandSide(final CommandContext context) {
-    if (rightParam == null && (rightMathExpression == null || !rightMathExpression.isLiteral(true)))
-      return null;
-
+    // The memo of this execution, when an earlier row built it: only a literal right-hand side ever gets one, and walking the list
+    // again to learn that cost rows x listSize before a comparison was made
     String key = memoKey;
+    if (key != null) {
+      final InListMembership known = (InListMembership) context.getCachedValue(key);
+      if (known != null)
+        return known;
+    }
+
+    if (rightParam == null) {
+      final MathExpression expression = rightMathExpression;
+      // A right-hand side already found not to be a literal is not walked again for every row either
+      if (expression == null || expression == notConstantRight)
+        return null;
+      if (!expression.isLiteral(true)) {
+        notConstantRight = expression;
+        return null;
+      }
+    }
+
     if (key == null) {
       // A benign race: two threads may hand this node two keys, and the loser's memo is simply rebuilt once.
       key = "$IN$" + MEMO_KEY_SEQUENCE.incrementAndGet();
