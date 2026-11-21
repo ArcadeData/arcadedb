@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
@@ -48,6 +49,8 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  */
 class Issue10587AlwaysEmptyRewriteRaisesTest {
   private static final String PATH = "./target/test-gremlin-10587-empty-filter-raises";
+  // THE SITE DROPS ITS MESSAGE AFTER 20,000 TO 45,000 RUNS (MEASURED, ABOUT A SECOND): THIS BOUNDS A JVM THAT NEVER DOES
+  private static final int MAX_WARM_UP_RUNS = 200_000;
 
   private ArcadeGraph graph;
 
@@ -179,27 +182,60 @@ class Issue10587AlwaysEmptyRewriteRaisesTest {
   }
 
   /**
+   * The comparison of two outcomes, with no JIT in it (issue #11997): whatever message a raised exception carries, or none, it is
+   * the same answer as the same exception, and only another class, another message when both have one, or rows instead of an
+   * exception tell two outcomes apart. The test below needs the JVM to drop a message and skips when it does not, so this one is
+   * what keeps the comparison pinned on every run.
+   */
+  @Test
+  void aRaisedExceptionIsTheSameAnswerWhateverMessageItCarries() {
+    final Raised withMessage = new Raised(ClassCastException.class, "class java.lang.Integer cannot be cast to class Element");
+    final Raised withoutMessage = new Raised(ClassCastException.class, null);
+
+    // a hot site throws the same exception without its message, and either of the two runs can be the one that does
+    assertThat(withMessage.sameAs(withoutMessage)).isTrue();
+    assertThat(withoutMessage.sameAs(withMessage)).isTrue();
+    assertThat(withoutMessage.sameAs(new Raised(ClassCastException.class, null))).isTrue();
+    assertThat(withMessage.sameAs(new Raised(ClassCastException.class, withMessage.message()))).isTrue();
+    assertSameOutcome(withMessage, withoutMessage, "the same exception, with and without its message");
+
+    // still told apart: another exception, or the same one with another message
+    assertThat(withMessage.sameAs(new Raised(IllegalStateException.class, null))).isFalse();
+    assertThat(withoutMessage.sameAs(new Raised(IllegalStateException.class, "another message"))).isFalse();
+    assertThat(withMessage.sameAs(new Raised(ClassCastException.class, "another message"))).isFalse();
+    assertThatThrownBy(() -> assertSameOutcome(withMessage, new Raised(ClassCastException.class, "another message"), "another message"))
+        .isInstanceOf(AssertionError.class);
+    assertThatThrownBy(() -> assertSameOutcome(withoutMessage, new Raised(IllegalStateException.class, null), "another class"))
+        .isInstanceOf(AssertionError.class);
+
+    // rows are compared as they always were, and an exception is never rows
+    assertSameOutcome(List.of(1L), List.of(1L), "the same rows");
+    assertThatThrownBy(() -> assertSameOutcome(List.of(1L), List.of(2L), "other rows")).isInstanceOf(AssertionError.class);
+    assertThatThrownBy(() -> assertSameOutcome(List.of(), withoutMessage, "no rows, then an exception")).isInstanceOf(AssertionError.class);
+    assertThatThrownBy(() -> assertSameOutcome(withoutMessage, List.of(), "an exception, then no rows")).isInstanceOf(AssertionError.class);
+  }
+
+  /**
    * Once a throwing site is hot enough to be compiled, HotSpot raises a preallocated exception there, without a message
    * (-XX:+OmitStackTraceInFastThrow, on by default), and the run with the strategy and the run without it can fall on either
-   * side of that compilation (issue #11997). The same exception is the same answer whether or not it carries its message.
-   * The site is one no other test here feeds a non-element, so the first run of this test finds it cold.
+   * side of that compilation (issue #11997). This is that pair, produced by the JVM itself: the first run of a site is cold and
+   * carries its message, a later one is hot and does not, and they are the same answer. The site is one no other test here feeds a
+   * non-element. When one already has, or the JVM never drops the message, there is no pair to compare and the test skips: the
+   * comparison itself is pinned without the JVM by {@link #aRaisedExceptionIsTheSameAnswerWhateverMessageItCarries()}.
    */
   @Test
   void anExceptionIsTheSameAnswerWithOrWithoutItsMessage() {
     final Function<GraphTraversalSource, GraphTraversal<?, ?>> query = g -> g.inject(1).elementMap();
     final Object cold = outcome(query, graph.traversal());
-    Object hot = cold;
-    for (int run = 0; run < 1_000_000 && !(hot instanceof Raised raised && raised.message() == null); run++)
-      hot = outcome(query, graph.traversal());
     assumeThat(cold instanceof Raised raised && raised.message() != null).as("the site was already hot before this test").isTrue();
+
+    Object hot = cold;
+    for (int run = 0; run < MAX_WARM_UP_RUNS && !(hot instanceof Raised raised && raised.message() == null); run++)
+      hot = outcome(query, graph.traversal());
     assumeThat(hot instanceof Raised raised && raised.message() == null).as("this JVM never dropped the message of a hot exception")
         .isTrue();
 
     assertSameOutcome(cold, hot, query.apply(graph.traversal()));
-
-    // still told apart: another exception, or the same one with another message
-    assertThat(((Raised) cold).sameAs(new Raised(IllegalStateException.class, null))).isFalse();
-    assertThat(((Raised) cold).sameAs(new Raised(ClassCastException.class, "another message"))).isFalse();
   }
 
   private void assertSameAnswer(final Function<GraphTraversalSource, GraphTraversal<?, ?>> query) {
