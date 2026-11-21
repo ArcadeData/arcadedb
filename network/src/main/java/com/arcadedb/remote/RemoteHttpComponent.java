@@ -102,6 +102,11 @@ public class RemoteHttpComponent extends RWLockContext {
   // HOW MUCH OF AN ERROR BODY THAT IS NOT JSON (A PROXY'S ERROR PAGE) GOES INTO THE EXCEPTION AND THE LOG (ISSUE #11387)
   static final         int    NON_JSON_BODY_EXCERPT_MAX = 256;
   /**
+   * The {@code limit} of a request that asks the server for every row (any value {@code <= 0} means unlimited): the
+   * server's hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} still applies, and refuses rather than truncates.
+   */
+  public static final  int    UNLIMITED_ROWS            = -1;
+  /**
    * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
    * class lives in the server module, which this client does not depend on.
    */
@@ -440,7 +445,29 @@ public class RemoteHttpComponent extends RWLockContext {
       final String errorOperation,
       final boolean replayable) {
     return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
-        callback, errorOperation, replayable, null);
+        callback, errorOperation, replayable, null, null);
+  }
+
+  /**
+   * As {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean, Callback)}, sending
+   * {@code rowLimit} as the {@code limit} of the request instead of {@link #getMaxResultRows()}. For the driver's own
+   * reads whose contract is the whole result rather than a page of it ({@code iterateType()}, {@code iterateBucket()}):
+   * {@link #UNLIMITED_ROWS} asks for every row, and the server refuses (HTTP 413) a result above its hard ceiling instead
+   * of truncating it, so the read never ends short without saying so (issue #12185).
+   */
+  Object httpCommandWithRowLimit(final String method,
+      final String extendedURL,
+      final String operation,
+      final String language,
+      final String payloadCommand,
+      final Map<String, Object> params,
+      final boolean leaderIsPreferable,
+      final boolean autoReconnect,
+      final Callback callback,
+      final int rowLimit) {
+    final String errorOperation = payloadCommand != null ? payloadCommand : operation;
+    return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
+        callback, errorOperation, isReplayable(method, operation), null, rowLimit);
   }
 
   /**
@@ -468,7 +495,7 @@ public class RemoteHttpComponent extends RWLockContext {
     // Leader-preferred like every server command (list databases included): that keeps the same-server retry budget, which
     // a read spread over a stale replica list would lose. isReplayable only looks at the method (GET); the path has a query string.
     return (JSONObject) httpCommand(method, null, path, null, null, null, true, true, (response, json) -> json, operation,
-        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard));
+        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard), null);
   }
 
   private Object httpCommand(final String method,
@@ -482,7 +509,8 @@ public class RemoteHttpComponent extends RWLockContext {
       final Callback callback,
       final String errorOperation,
       final boolean replayable,
-      final ControlPlaneRequest controlPlane) {
+      final ControlPlaneRequest controlPlane,
+      final Integer rowLimit) {
 
     // The route of a control-plane request carries names and ids; messages and logs name the operation instead
     final String messageLabel = controlPlane != null ? errorOperation : operation;
@@ -591,8 +619,9 @@ public class RemoteHttpComponent extends RWLockContext {
           // non-element (projection/aggregate) column, opts in explicitly.
           jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
-          if (maxResultRows != null)
-            jsonRequest.put("limit", maxResultRows);
+          final Integer limit = rowLimit != null ? rowLimit : maxResultRows;
+          if (limit != null)
+            jsonRequest.put("limit", limit);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(encodeParameters(params)));
