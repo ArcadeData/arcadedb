@@ -332,7 +332,7 @@ public final class PropagateChainOp implements CountOp {
       final IntHashSet targetBuckets = validBuckets[h + 1];
       if (targetBuckets != null && targetBuckets.isEmpty())
         return 0; // an undeclared label matches nothing
-      final NeighborView view = provider.getNeighborView(directions[h], edgeTypes[h]);
+      final NeighborView view = hopView(provider, frontier, h);
       long[] reached = new long[Math.max(16, frontier.length * 4)];
       int count = 0;
       for (int i = 0; i < frontier.length; i++) {
@@ -380,8 +380,7 @@ public final class PropagateChainOp implements CountOp {
     if (targetBuckets != null && targetBuckets.isEmpty())
       return 0; // an undeclared label matches nothing
     final VertexPredicate.Evaluation farFilter = filters != null ? filters[hops] : null;
-    final NeighborView lastView = targetBuckets == null && farFilter == null ? null :
-        provider.getNeighborView(directions[lastHop], edgeTypes[lastHop]);
+    final NeighborView lastView = targetBuckets == null && farFilter == null ? null : hopView(provider, frontier, lastHop);
     long total = 0;
     for (int i = 0; i < frontier.length; i++) {
       guard.checkPeriodically(i);
@@ -402,6 +401,22 @@ public final class PropagateChainOp implements CountOp {
       total += paths[i] * relationships;
     }
     return total;
+  }
+
+  /**
+   * The view of hop {@code hop} for a walk that reads the adjacency of the vertices of {@code frontier}, or null to read them one
+   * by one. A view packs the adjacency of the whole graph, and a provider holding an overlay builds one per snapshot, which every
+   * commit replaces: a walk from one vertex asks for it only when the entries it visits pay for the build (issue #10471), as the
+   * fused chain does. The visits are the hop's degrees of the frontier, each distinct vertex read once.
+   */
+  private NeighborView hopView(final GraphTraversalProvider provider, final int[] frontier, final int hop) {
+    final long cost = provider.getNeighborViewBuildCost(directions[hop], edgeTypes[hop]);
+    if (cost == 0L)
+      return provider.getNeighborView(directions[hop], edgeTypes[hop]);
+    long visits = 0;
+    for (int i = 0; i < frontier.length && visits < cost; i++)
+      visits += Math.max(0L, provider.countEdges(frontier[i], directions[hop], edgeTypes[hop]));
+    return provider.getNeighborViewForVisits(visits, directions[hop], edgeTypes[hop]);
   }
 
   /** The far ends of one vertex's relationships over one hop: the first {@code count} entries of {@code ids}. */
