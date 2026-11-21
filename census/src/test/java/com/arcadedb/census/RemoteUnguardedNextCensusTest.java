@@ -69,7 +69,8 @@ class RemoteUnguardedNextCensusTest {
   private static final Map<String, String> AUDITED = new TreeMap<>(Map.of(//
       "remote/RemoteDatabase#countType", "count(*) over a type answers its one row, an empty type included",//
       "remote/RemoteDatabase#countBucket", "count(*) over a bucket answers its one row, an empty bucket included",//
-      "remote/RemoteSchema#createBucket", "CREATE BUCKET answers the bucket it created, and no listener can veto a schema statement"));
+      "remote/RemoteSchema#createBucket", "CREATE BUCKET answers the bucket it created, and no listener can veto a schema statement",//
+      "bench/store/Uploader#earlierRunsOfRelease", "count(*) over the measurements of a run answers its one row, a run with none included"));
 
   @Test
   void everyReadOfTheServersAnswerAsksIfThereIsOneOrIsAudited() throws Exception {
