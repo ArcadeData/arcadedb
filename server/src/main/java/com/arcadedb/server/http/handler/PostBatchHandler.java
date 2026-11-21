@@ -1851,7 +1851,25 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int lineNumber) {
     final RID srcRID = resolveRef(rec.fromRef, vertexRefs, lineNumber);
     final RID dstRID = resolveRef(rec.toRef, vertexRefs, lineNumber);
+    requireExistingVertex(batch, rec.fromRef, srcRID, lineNumber);
+    requireExistingVertex(batch, rec.toRef, dstRID, lineNumber);
     batch.newEdge(srcRID, rec.typeName, dstRID, rec.copyEdgeProperties());
+  }
+
+  /**
+   * An endpoint given as a RID comes from the client and is taken on trust by {@link GraphBatch#newEdge}: one that does not
+   * exist, or is not a vertex, used to surface at the close of the batch as a 404 or a 500 after the edge records were
+   * written, with no vertex leading to them (issue #12895). Refused here, on the line that names it, like a malformed RID.
+   * The endpoints given as temporary ids are vertices of this payload and need no check.
+   */
+  private static void requireExistingVertex(final GraphBatch batch, final String ref, final RID rid, final int lineNumber) {
+    if (ref.charAt(0) != '#')
+      return;
+    try {
+      batch.requireVertex(rid);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("Edge endpoint '" + ref + "' at line " + lineNumber + ": " + e.getMessage(), e);
+    }
   }
 
   private RID resolveRef(final String ref, final VertexRefResolver vertexRefs, final int lineNumber) {

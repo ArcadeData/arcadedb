@@ -4599,6 +4599,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final Map<String, RID> tempIdMap) {
     final RID srcRID = resolveRef(rec.getFromRef(), db, tempIdMap);
     final RID dstRID = resolveRef(rec.getToRef(), db, tempIdMap);
+    // An endpoint given as a RID comes from the client and is taken on trust by GraphBatch.newEdge: one that does not exist or
+    // is not a vertex used to fail at the close of the batch with the edge records written and unreachable (issue #12895)
+    if (rec.getFromRef().charAt(0) == '#')
+      batch.requireVertex(srcRID);
+    if (rec.getToRef().charAt(0) == '#')
+      batch.requireVertex(dstRID);
     if (rec.getPropertiesMap().isEmpty())
       batch.newEdge(srcRID, rec.getTypeName(), dstRID);
     else

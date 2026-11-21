@@ -44,6 +44,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LRUCache;
@@ -912,6 +913,30 @@ public class GraphBatch implements AutoCloseable {
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /**
+   * Refuses a RID that does not name an existing vertex, for a caller that takes the endpoints of its edges from outside
+   * (an HTTP or gRPC payload naming {@code #bucket:position}) and has to answer a bad one as a client error BEFORE the edge
+   * is buffered. {@link #newEdge} takes its endpoints on trust ("must be already persisted"), and a flush or the close of a
+   * batch that was handed one that is not leaves the whole batch behind it unreachable: the edge records exist (the record
+   * count answers for them), no vertex's edge list leads to them, and the failure surfaces as a raw
+   * {@link RecordNotFoundException} or {@link ClassCastException} from deep inside the connect pass (issue #12895).
+   * <p>
+   * Not called by {@link #newEdge} itself: the endpoints of a payload's own temporary ids are vertices this batch created,
+   * and one record lookup per endpoint of every edge of a load of millions would be paid for nothing.
+   *
+   * @throws IllegalArgumentException when the record does not exist or is not a vertex
+   */
+  public void requireVertex(final RID rid) {
+    if (rid == null)
+      throw new IllegalArgumentException("Vertex RID is null");
+    if (!database.existsRecord(rid))
+      throw new IllegalArgumentException("Vertex " + rid + " does not exist");
+    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+    if (!(type instanceof VertexType))
+      throw new IllegalArgumentException(
+          "Record " + rid + " is not a vertex" + (type != null ? ": it belongs to the " + type.getName() + " type" : ""));
   }
 
   /**
