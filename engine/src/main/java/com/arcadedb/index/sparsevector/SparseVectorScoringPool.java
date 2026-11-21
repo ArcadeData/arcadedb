@@ -24,6 +24,14 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DedicatedThreadPool;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -418,6 +426,96 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
   /** Workers currently claimed by in-flight range fan-outs. Test and diagnostics hook. */
   public int getReservedWorkers() {
     return reservedWorkers.get();
+  }
+
+  /**
+   * Runs every task and returns their answers in the same order: the per-bucket searches of a multi-bucket fan-out (#4085)
+   * and the per-bucket document-frequency counts an IDF search needs. A single task runs on the calling thread: there is no
+   * parallelism to gain and no pool dispatch to pay for. So does every task when {@code serial} is set, for a caller whose
+   * transaction a worker could not see, and when the caller already is a worker ({@link #isPoolThread()}), which must not
+   * fan out again.
+   * <p>
+   * Per-bucket indexes are independent: different buckets contain disjoint RID ranges, so the tasks share no mutable state
+   * and need no coordination. Each is submitted to this pool; its CallerRuns rejection policy guarantees the call always
+   * completes - worst case it runs inline on the submitter thread, which is exactly the serial fallback.
+   */
+  public static <T> List<T> runAll(final List<Callable<T>> tasks, final boolean serial) {
+    final List<T> out = new ArrayList<>(tasks.size());
+    if (serial || tasks.size() <= 1 || isPoolThread()) {
+      for (final Callable<T> task : tasks) {
+        try {
+          out.add(task.call());
+        } catch (final RuntimeException e) {
+          throw e;
+        } catch (final Exception e) {
+          throw new RuntimeException("Sparse-vector top-K failed", e);
+        }
+      }
+      return out;
+    }
+
+    final ExecutorService pool = getInstance().getExecutorService();
+    final List<Future<T>> futures = new ArrayList<>(tasks.size());
+    for (final Callable<T> task : tasks)
+      futures.add(pool.submit(task));
+    // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
+    // contending for index I/O after the caller has moved on. Collect the per-future errors,
+    // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
+    // so we do not pay for compute we will never observe.
+    // <p>
+    // Single deadline across the whole fan-out: caps the total wall-clock at
+    // SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS regardless of bucket count. A per-future timeout
+    // would let N wedged buckets accumulate up to N * timeoutSeconds before the caller sees an
+    // error (e.g. 16 buckets * 30s = 8-minute hang for a deadlocked compaction). The deadline
+    // approach keeps the worst case at a single timeoutSeconds. timeoutSeconds <= 0 disables
+    // the deadline entirely (untimed gets); not recommended in production.
+    final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+    final long deadlineNs = timeoutSeconds > 0
+        ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+        : Long.MAX_VALUE;
+    final List<Throwable> errors = new ArrayList<>();
+    for (final Future<T> f : futures) {
+      try {
+        final T partial;
+        if (timeoutSeconds <= 0) {
+          partial = f.get();
+        } else {
+          // Compute the remaining budget for this future from the shared deadline; if zero or
+          // negative the deadline has already passed and we treat this as a timeout without
+          // even attempting to await.
+          final long remainingNs = deadlineNs - System.nanoTime();
+          if (remainingNs <= 0L)
+            throw new TimeoutException("deadline elapsed before draining future");
+          partial = f.get(remainingNs, TimeUnit.NANOSECONDS);
+        }
+        out.add(partial);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw new RuntimeException("Interrupted during sparse-vector top-K fan-out", ie);
+      } catch (final TimeoutException te) {
+        // Cancel every still-pending future so the pool stops working on results we will not
+        // observe. The cancelled-from-the-pool task may still throw an InterruptedException
+        // inside its IO; we don't await those (cancel(true) returns immediately).
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw new RuntimeException("Sparse-vector top-K fan-out timed out after "
+            + timeoutSeconds + "s (configurable via "
+            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+      } catch (final ExecutionException ee) {
+        errors.add(ee.getCause() != null ? ee.getCause() : ee);
+      }
+    }
+    if (!errors.isEmpty()) {
+      final Throwable first = errors.getFirst();
+      final RuntimeException toThrow = first instanceof RuntimeException re ? re
+          : new RuntimeException("Sparse-vector top-K fan-out failed", first);
+      for (int i = 1; i < errors.size(); i++)
+        toThrow.addSuppressed(errors.get(i));
+      throw toThrow;
+    }
+    return out;
   }
 
 }

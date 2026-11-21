@@ -64,6 +64,13 @@ public final class Memtable {
   private final AtomicLong                              tombstoneCount = new AtomicLong();
 
   /**
+   * Bumped after every change to WHICH postings are live: an entry added, or an entry turned into a tombstone or back. Not by an
+   * overwrite of a live weight with another, which leaves every document frequency as it was. Two reads that see the same
+   * version, and nothing else about the memtable swapped, saw the same live set (see {@link #liveSetVersion()}).
+   */
+  private final AtomicLong liveSetVersion = new AtomicLong();
+
+  /**
    * Per-dim postings plus the running max live weight. The max is maintained incrementally on every
    * {@link #put} so the BMW upper bound a cursor reports does not require a fresh full scan of the
    * dim's postings at construction time. Monotonically non-decreasing - a tombstone or an overwrite
@@ -141,6 +148,15 @@ public final class Memtable {
 
   public long tombstoneCount() {
     return tombstoneCount.get();
+  }
+
+  /**
+   * Counts the changes to the set of live postings so far. A value computed from the live set (a document frequency) is
+   * current as long as this is the version it was computed under: the bump follows the change it counts, so a reader that
+   * reads the version and THEN reads the postings never pairs a version with postings older than it.
+   */
+  public long liveSetVersion() {
+    return liveSetVersion.get();
   }
 
   public boolean isEmpty() {
@@ -235,6 +251,7 @@ public final class Memtable {
     postings.clear();
     totalPostings.set(0L);
     tombstoneCount.set(0L);
+    liveSetVersion.incrementAndGet();
   }
 
   // ---------- internals ----------
@@ -245,12 +262,16 @@ public final class Memtable {
       totalPostings.incrementAndGet();
       if (isNewTombstone)
         tombstoneCount.incrementAndGet();
+      liveSetVersion.incrementAndGet();
     } else {
       final boolean wasTombstone = Float.isNaN(previous);
-      if (wasTombstone && !isNewTombstone)
+      if (wasTombstone && !isNewTombstone) {
         tombstoneCount.decrementAndGet();
-      else if (!wasTombstone && isNewTombstone)
+        liveSetVersion.incrementAndGet();
+      } else if (!wasTombstone && isNewTombstone) {
         tombstoneCount.incrementAndGet();
+        liveSetVersion.incrementAndGet();
+      }
     }
   }
 

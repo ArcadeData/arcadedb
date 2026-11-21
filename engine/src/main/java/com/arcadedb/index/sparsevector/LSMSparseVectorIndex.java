@@ -58,6 +58,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -1022,50 +1023,43 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * its record count), so it is the same whichever bucket index resolves it, and a caller searching several bucket indexes
    * resolves it once and passes the result to the {@code *Weighted} searches instead of letting each one count again.
    * <p>
-   * Counts the type's postings on the calling thread, one bucket index after the other. A caller that wants them counted
-   * concurrently runs {@link #countPostings(int[], float[])} on each of {@link #bucketIndexesOfType()} itself, adds the
-   * answers up and calls {@link #effectiveWeights(int[], float[], long[])}.
+   * Every bucket index of the type counts its own postings, concurrently on the {@link SparseVectorScoringPool} as the
+   * per-bucket searches of a fan-out are, so the counting takes about what counting one bucket's postings does. It runs on
+   * the calling thread alone when the caller holds uncommitted changes (a worker could not see a segment its transaction
+   * flushed) or is itself a pool worker.
    */
   public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
     checkQueryArrays(queryIndices, queryValues);
-    if (!usesIdf())
+    final boolean useIDF = sparseMetadata != null
+        && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
+    if (!useIDF)
       return queryValues.clone();
-    final long[] df = new long[queryIndices.length];
-    for (final LSMSparseVectorIndex sibling : bucketIndexesOfType()) {
-      final long[] partial = sibling.countPostings(queryIndices, queryValues);
-      for (int i = 0; i < df.length; i++)
-        df[i] += partial[i];
-    }
-    return effectiveWeights(queryIndices, queryValues, df);
-  }
 
-  /**
-   * {@link #effectiveWeights(int[], float[])} from document frequencies the caller counted: {@code typeDocumentFrequency[i]}
-   * is the sum over every index of {@link #bucketIndexesOfType()} of what {@link #countPostings(int[], float[])} answered at
-   * position {@code i}. Ignored without the IDF modifier.
-   */
-  public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues, final long[] typeDocumentFrequency) {
-    checkQueryArrays(queryIndices, queryValues);
-    if (!usesIdf())
-      return queryValues.clone();
+    final List<LSMSparseVectorIndex> typeIndexes = bucketIndexesOfType();
+    final List<Callable<long[]>> counts = new ArrayList<>(typeIndexes.size());
+    for (final LSMSparseVectorIndex bucketIndex : typeIndexes)
+      counts.add(() -> bucketIndex.countPostings(queryIndices, queryValues));
+    final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(
+        underlyingIndex.getMutableIndex().getDatabase().getDatabasePath());
+
+    final long[] documentFrequency = new long[queryIndices.length];
+    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial))
+      for (int i = 0; i < documentFrequency.length; i++)
+        documentFrequency[i] += partial[i];
+
     final long n = totalDocuments();
     final float[] effectiveWeights = new float[queryValues.length];
     for (int i = 0; i < queryValues.length; i++)
       if (queryValues[i] != 0.0f)
-        effectiveWeights[i] = queryValues[i] * idf(n, typeDocumentFrequency[i]);
+        effectiveWeights[i] = queryValues[i] * idf(n, documentFrequency[i]);
     return effectiveWeights;
-  }
-
-  /** Whether the index was created with {@code modifier = "IDF"}, i.e. scores are weighed by each dim's document frequency. */
-  public boolean usesIdf() {
-    return sparseMetadata != null && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
   }
 
   /**
    * Every bucket index of the type this index belongs to, itself included: the population an IDF document frequency is
    * counted over, as {@code N} counts every record of the type. Just this index when it is not part of a type's indexes.
    */
-  public List<LSMSparseVectorIndex> bucketIndexesOfType() {
+  private List<LSMSparseVectorIndex> bucketIndexesOfType() {
     final IndexInternal[] bucketIndexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : null;
     if (bucketIndexes == null)
       return List.of(this);
@@ -1078,8 +1072,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * frequency one bucket index holds. A dim with a zero weight is not scored and is not counted (0), and a dim repeated in
    * the query is counted once. O(df) per distinct dim.
    */
-  public long[] countPostings(final int[] queryIndices, final float[] queryValues) {
-    checkQueryArrays(queryIndices, queryValues);
+  private long[] countPostings(final int[] queryIndices, final float[] queryValues) {
     final long[] counts = new long[queryIndices.length];
     final HashMap<Integer, Long> dfCache = new HashMap<>();
     for (int i = 0; i < queryIndices.length; i++) {

@@ -125,15 +125,59 @@ class SparseIdfMultiBucketTest extends TestHelper {
     assertThat(countDimCalls()).isEqualTo(afterResolve);
     assertThat(weighted).isEqualTo(direct);
 
-    // Counted bucket by bucket, as the fan-out does, the frequencies give the same weights as counting them in one go.
-    final long[] documentFrequency = new long[QUERY_DIMS.length];
-    for (final LSMSparseVectorIndex bucketIndex : index.bucketIndexesOfType()) {
-      final long[] partial = bucketIndex.countPostings(QUERY_DIMS, QUERY_VALUES);
-      for (int i = 0; i < documentFrequency.length; i++)
-        documentFrequency[i] += partial[i];
-    }
-    assertThat(documentFrequency).containsOnly((long) BUCKETS * 3);
-    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES, documentFrequency)).isEqualTo(weights);
+    // N and df are both the 12 documents of the type, whichever bucket index asks.
+    final float expectedWeight = (float) Math.log(0.5 / (BUCKETS * 3 + 0.5) + 1.0);
+    assertThat(weights).containsOnly(expectedWeight);
+
+    // The grouped direct search counts once per call too.
+    final long beforeGrouped = countDimCalls();
+    index.topKGrouped(QUERY_DIMS, QUERY_VALUES, 3, 2, null, rid -> rid.getPosition());
+    assertThat(countDimCalls() - beforeGrouped).isEqualTo((long) QUERY_DIMS.length * BUCKETS);
+  }
+
+  /**
+   * A document frequency is kept while the index holds the same live postings, so a repeated query counts nothing, and is
+   * counted again after anything that changes them: an insert, a delete, an update that drops a dim, a flush to a segment.
+   */
+  @Test
+  void aCachedDocumentFrequencyIsDroppedWhenTheLivePostingsChange() {
+    createTypeWithBuckets();
+    final LSMSparseVectorIndex index = (LSMSparseVectorIndex) typeIndex().getIndexesOnBuckets()[0];
+    final float[] n12 = index.effectiveWeights(QUERY_DIMS, QUERY_VALUES);
+    assertThat(n12).containsOnly(idfWeight(12, 12));
+
+    final long walks = countDimWalks();
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES)).isEqualTo(n12);
+    assertThat(countDimWalks()).as("the same live postings, so the counts are reused").isEqualTo(walks);
+
+    // an insert holding only dim 5: N = 13, df(5) = 13, df(6) = df(7) = 12
+    database.transaction(() -> database.command("sql", "INSERT INTO bucket:Doc_2 SET tokens = [5], weights = [1.0], grp = 'x'"));
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
+        .containsExactly(idfWeight(13, 13), idfWeight(13, 12), idfWeight(13, 12));
+
+    // an update dropping dims 6 and 7 from a document of the first bucket: df(6) = df(7) = 11
+    database.transaction(() -> database.command("sql",
+        "UPDATE bucket:Doc_0 SET tokens = [5], weights = [1.0] LIMIT 1"));
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
+        .containsExactly(idfWeight(13, 13), idfWeight(13, 11), idfWeight(13, 11));
+
+    // a delete of a document holding all three dims
+    database.transaction(() -> database.command("sql", "DELETE FROM bucket:Doc_3 LIMIT 1"));
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
+        .containsExactly(idfWeight(12, 12), idfWeight(12, 10), idfWeight(12, 10));
+
+    // the same live postings in segments instead of memtables: counted again over the new state, to the same answer
+    final long beforeFlush = countDimWalks();
+    for (final IndexInternal sub : typeIndex().getIndexesOnBuckets())
+      sub.flush();
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
+        .containsExactly(idfWeight(12, 12), idfWeight(12, 10), idfWeight(12, 10));
+    assertThat(countDimWalks()).isGreaterThan(beforeFlush);
+
+    // and a delete after the flush masks a posting of a segment
+    database.transaction(() -> database.command("sql", "DELETE FROM bucket:Doc_1 LIMIT 1"));
+    assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
+        .containsExactly(idfWeight(11, 11), idfWeight(11, 9), idfWeight(11, 9));
   }
 
   private void createTypeWithBuckets() {
@@ -163,6 +207,19 @@ class SparseIdfMultiBucketTest extends TestHelper {
     for (final IndexInternal sub : typeIndex().getIndexesOnBuckets())
       calls += ((LSMSparseVectorIndex) sub).getEngine().countDimCallCount();
     return calls;
+  }
+
+  /** Document-frequency passes that walked postings, i.e. were not answered from the engines' caches. */
+  private long countDimWalks() {
+    long walks = 0L;
+    for (final IndexInternal sub : typeIndex().getIndexesOnBuckets())
+      walks += ((LSMSparseVectorIndex) sub).getEngine().countDimWalkCount();
+    return walks;
+  }
+
+  /** The weight of a unit query weight on a dim held by {@code df} of the {@code n} documents of the type. */
+  private static float idfWeight(final long n, final long df) {
+    return (float) Math.log(((double) (n - df) + 0.5) / ((double) df + 0.5) + 1.0);
   }
 
   private int countRows(final String sql) {
