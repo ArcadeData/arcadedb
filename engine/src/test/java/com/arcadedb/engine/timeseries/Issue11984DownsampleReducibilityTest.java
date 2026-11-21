@@ -308,6 +308,43 @@ class Issue11984DownsampleReducibilityTest {
     }
   }
 
+  /**
+   * The offset of a tier can be altered, and what was downsampled before stays on its grid ("only affects data downsampled
+   * afterwards"): one granularity, two grids, and the rows of the one can sit closer than a bucket to the rows of the other. A daily
+   * block that ends at 18:30 and one that starts at 18:45 the same day do not share a daily bucket, but merged they would share an
+   * hourly one, and after a restart the hourly tier would fold them. The grid is told by the block's own timestamps, so they are not
+   * merged, and the restart changes nothing.
+   */
+  @Test
+  void downsampledBlocksOfDifferentGridsAreNotMergedAndNothingMovesAfterARestart() throws Exception {
+    final long before = 18 * H + 30 * MINUTE;
+    final long after = 18 * H + 45 * MINUTE;
+    final List<Sample> rows;
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      appendBlock(store, List.of(new Sample(before, "a", "x", 1), new Sample(before + 10 * MINUTE, "a", "x", 3),
+          new Sample(before + DAY, "a", "x", 5), new Sample(before + DAY + 10 * MINUTE, "a", "x", 7)));
+      appendBlock(store, List.of(new Sample(after + DAY + 5 * MINUTE, "a", "x", 9), new Sample(after + DAY + 10 * MINUTE, "a", "x", 11),
+          new Sample(after + 2 * DAY, "a", "x", 13), new Sample(after + 2 * DAY + 10 * MINUTE, "a", "x", 15)));
+      // the first block is downsampled on the old grid, then the tier is given a new offset and the second one on that
+      store.downsampleBlocks(before + DAY + 15 * MINUTE, DAY, before, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, after, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      rows = readAll(store);
+      assertThat(rows).containsExactly(new Sample(before, "a", "x", 2.0), new Sample(before + DAY, "a", "x", 6.0),
+          new Sample(after + DAY, "a", "x", 10.0), new Sample(after + 2 * DAY, "a", "x", 14.0));
+      assertThat(store.getBlockCount()).isEqualTo(2);
+
+      assertThat(store.prepareMerge(DeltaOfDeltaCodec.MAX_BLOCK_SIZE, 0L, 1)).as("a merge of two blocks on different grids").isNull();
+    }
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.downsampleBlocks(Long.MAX_VALUE, DAY, after, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+      assertThat(store.getDownsampleRewriteCount()).isZero();
+      assertThat(readAll(store)).containsExactlyElementsOf(rows);
+    }
+  }
+
   /** The control: downsampled blocks whose buckets are apart are still merged, and what they hold survives the merge and a restart. */
   @Test
   void downsampledBlocksOfDisjointBucketsAreStillMerged() throws Exception {

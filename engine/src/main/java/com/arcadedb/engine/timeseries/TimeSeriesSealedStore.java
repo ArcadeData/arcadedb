@@ -3666,11 +3666,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * run still sits inside one bucket: those type options exist so that a block never straddles a boundary, and the
    * merge must not undo that. A run of one block is not a merge and is not reported.
    * <p>
-   * A DOWNSAMPLED block also joins a run only if it starts after the run ends. The rows of such a block sit on bucket starts, and
-   * two blocks that reach the same bucket - a bucket that straddled the boundary between two downsampling passes - hold a row of the
-   * same (tag values, bucket) each: merged, they would put both into one block, which a finer tier is entitled to fold once a
-   * restart has reset the marker, flooring every row of it onto a grid that need not be nested in theirs (issue #11984). A block that
-   * starts after the run ends shares no bucket with it.
+   * A DOWNSAMPLED block also joins a run only if it starts after the run ends AND lies on the same bucket grid. The rows of such a
+   * block sit on bucket starts, and two blocks that reach the same bucket - a bucket that straddled the boundary between two
+   * downsampling passes - hold a row of the same (tag values, bucket) each: merged, they would put both into one block, which a
+   * finer tier is entitled to fold once a restart has reset the marker, flooring every row of it onto a grid that need not be nested
+   * in theirs (issue #11984). On one grid a block that starts after the run ends shares no bucket with it, but the offset of a tier
+   * can be altered, and rows of two grids of one granularity can sit closer than a bucket. The grid is told by the entry alone, and
+   * so survives a restart: the first and the last timestamp of a downsampled block are bucket starts, so they have the same
+   * remainder modulo the granularity as every row, and that remainder is the offset of the grid ({@link #gridRemainder}).
    */
   // The bucket check uses the epoch grid on purpose: that is the grid compaction aligns its blocks to, whatever offset queries use.
   static List<int[]> planMergeGroups(final List<BlockEntry> blocks, final int targetSamples, final long bucketIntervalMs) {
@@ -3680,6 +3683,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     long groupMin = 0;
     long groupMax = 0;
     long granularity = 0;
+    // the grid of the run's blocks when they are downsampled, as gridRemainder tells it
+    long runGrid = 0;
     for (int i = 0, size = blocks.size(); i < size; i++) {
       final BlockEntry b = blocks.get(i);
       final boolean eligible = b.sampleCount < targetSamples
@@ -3692,7 +3697,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       if (start >= 0 && samples + b.sampleCount <= targetSamples && b.downsampledGranularityMs == granularity
-          && (granularity == 0 || b.minTimestamp > groupMax)
+          && (granularity == 0 || (b.minTimestamp > groupMax && runGrid >= 0 && gridRemainder(b) == runGrid))
           && (bucketIntervalMs <= 0 || Math.floorDiv(Math.min(groupMin, b.minTimestamp), bucketIntervalMs) == Math.floorDiv(
           Math.max(groupMax, b.maxTimestamp), bucketIntervalMs))) {
         samples += b.sampleCount;
@@ -3708,10 +3713,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       groupMin = b.minTimestamp;
       groupMax = b.maxTimestamp;
       granularity = b.downsampledGranularityMs;
+      runGrid = granularity > 0 ? gridRemainder(b) : 0;
     }
     if (start >= 0 && blocks.size() - start >= 2)
       groups.add(new int[] { start, blocks.size() });
     return groups;
+  }
+
+  /**
+   * The offset of the bucket grid a downsampled block lies on, as the remainder of its first timestamp modulo its granularity, or
+   * {@code -1} when its first and last timestamps disagree about it - which no block a downsample wrote does, as both are bucket
+   * starts - so that such a block is not taken for one of a grid it cannot be shown to lie on.
+   */
+  private static long gridRemainder(final BlockEntry downsampled) {
+    final long granularityMs = downsampled.downsampledGranularityMs;
+    final long remainder = Math.floorMod(downsampled.minTimestamp, granularityMs);
+    return remainder == Math.floorMod(downsampled.maxTimestamp, granularityMs) ? remainder : -1L;
   }
 
   /**
