@@ -329,15 +329,26 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs,
       final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    checkQueryArrays(queryIndices, queryValues);
     if (k <= 0)
       throw new IndexException("k must be > 0");
+    return topKWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), k, allowedRIDs, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topK(int[], float[], int, Set, SparseTransactionOverlay)} with the weights already scaled by
+   * {@link #effectiveWeights(int[], float[])}. A fan-out caller (one search per bucket index of a type) resolves them ONCE
+   * and hands the same array to every search: with the {@code IDF} modifier each resolution counts the postings under
+   * every query dim in every bucket of the type, so one per search would multiply that cost by the number of buckets.
+   *
+   * @param effectiveWeights what {@link #effectiveWeights(int[], float[])} returned for {@code queryIndices}
+   */
+  public List<RidScore> topKWeighted(final int[] queryIndices, final float[] effectiveWeights, final int k,
+      final Set<RID> allowedRIDs, final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    if (k <= 0)
+      throw new IndexException("k must be > 0");
 
     final List<RidScore> committed = committedTopK(queryIndices, effectiveWeights, k, allowedRIDs,
         overlay != null ? overlay.touchedRIDs() : null, overlay != null ? overlay.touchedCount() : 0);
@@ -664,19 +675,23 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
       final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
-    if (limit <= 0)
-      throw new IndexException("limit must be > 0");
-    if (groupSize <= 0)
-      throw new IndexException("groupSize must be > 0");
-    if (groupKeyResolver == null)
-      throw new IndexException("groupKeyResolver must not be null");
+    checkQueryArrays(queryIndices, queryValues);
+    checkGroupedArguments(limit, groupSize, groupKeyResolver);
+    return topKGroupedWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), limit, groupSize, allowedRIDs,
+        groupKeyResolver, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topKGrouped(int[], float[], int, int, Set, Function, SparseTransactionOverlay)} with the weights already scaled
+   * by {@link #effectiveWeights(int[], float[])}, resolved once by a fan-out caller (see
+   * {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay)}).
+   */
+  public List<RidScore> topKGroupedWeighted(final int[] queryIndices, final float[] effectiveWeights, final int limit,
+      final int groupSize, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    checkGroupedArguments(limit, groupSize, groupKeyResolver);
 
     // Exact rescoring (issue #8576) widens both caps: which groups win and which members fill them are decided on the
     // exact scores, so the quantized pass only has to hand over enough of each.
@@ -791,19 +806,33 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final int groupSize, final float floor, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    checkQueryArrays(queryIndices, queryValues);
     if (groupSize <= 0)
       throw new IndexException("groupSize must be > 0");
     if (groupKeyResolver == null)
       throw new IndexException("groupKeyResolver must not be null");
     if (groupKeys == null || groupKeys.isEmpty())
       return List.of();
+    return topKForGroupsWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), groupKeys, groupSize, floor,
+        allowedRIDs, groupKeyResolver, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topKForGroups(int[], float[], Set, int, float, Set, Function, SparseTransactionOverlay)} with the weights
+   * already scaled by {@link #effectiveWeights(int[], float[])}, resolved once by a fan-out caller (see
+   * {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay)}).
+   */
+  public List<RidScore> topKForGroupsWeighted(final int[] queryIndices, final float[] effectiveWeights,
+      final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
+      final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+    if (groupKeys == null || groupKeys.isEmpty())
+      return List.of();
 
     final List<RidScore> committed = committedForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor,
         allowedRIDs, groupKeyResolver, overlay != null ? overlay.touchedRIDs() : null, rescoreOversample());
@@ -970,55 +999,103 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     planner.addSource(rids, scores, keys, capped);
   }
 
+  private static void checkQueryArrays(final int[] queryIndices, final float[] queryValues) {
+    if (queryIndices == null || queryValues == null)
+      throw new IndexException("Query indices and values must not be null");
+    if (queryIndices.length != queryValues.length)
+      throw new IndexException(
+          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+  }
+
+  private static void checkGroupedArguments(final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver) {
+    if (limit <= 0)
+      throw new IndexException("limit must be > 0");
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+  }
+
   /**
    * The query weights actually scored: the caller's, times each dim's IDF when the index was created with
-   * {@code modifier = "IDF"}.
+   * {@code modifier = "IDF"}. The IDF is a property of the TYPE (its document frequency over every bucket index, against
+   * its record count), so it is the same whichever bucket index resolves it, and a caller searching several bucket indexes
+   * resolves it once and passes the result to the {@code *Weighted} searches instead of letting each one count again.
+   * <p>
+   * Counts the type's postings on the calling thread, one bucket index after the other. A caller that wants them counted
+   * concurrently runs {@link #countPostings(int[], float[])} on each of {@link #bucketIndexesOfType()} itself, adds the
+   * answers up and calls {@link #effectiveWeights(int[], float[], long[])}.
    */
-  private float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
-    final boolean useIDF = sparseMetadata != null
-        && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
-
-    final float[] effectiveWeights = new float[queryValues.length];
-    if (useIDF) {
-      final long n = totalDocuments();
-      // df is the postings under each dim of EVERY bucket of the type, as n counts every record of the type: a bucket's own
-      // postings against the type's records would weigh the same dim differently in each bucket. Cached per dim within this
-      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf mid-query don't multiply
-      // the cost.
-      final HashMap<Integer, Long> dfCache = new HashMap<>();
-      for (int i = 0; i < queryIndices.length; i++) {
-        final int qDim = queryIndices[i];
-        if (qDim < 0)
-          throw new IndexException("Query dimension must be >= 0, found: " + qDim);
-        if (queryValues[i] == 0.0f) {
-          effectiveWeights[i] = 0.0f;
-          continue;
-        }
-        Long df = dfCache.get(qDim);
-        if (df == null) {
-          df = countPostingsInType(qDim);
-          dfCache.put(qDim, df);
-        }
-        effectiveWeights[i] = queryValues[i] * idf(n, df);
-      }
-    } else {
-      System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
+  public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
+    checkQueryArrays(queryIndices, queryValues);
+    if (!usesIdf())
+      return queryValues.clone();
+    final long[] df = new long[queryIndices.length];
+    for (final LSMSparseVectorIndex sibling : bucketIndexesOfType()) {
+      final long[] partial = sibling.countPostings(queryIndices, queryValues);
+      for (int i = 0; i < df.length; i++)
+        df[i] += partial[i];
     }
+    return effectiveWeights(queryIndices, queryValues, df);
+  }
+
+  /**
+   * {@link #effectiveWeights(int[], float[])} from document frequencies the caller counted: {@code typeDocumentFrequency[i]}
+   * is the sum over every index of {@link #bucketIndexesOfType()} of what {@link #countPostings(int[], float[])} answered at
+   * position {@code i}. Ignored without the IDF modifier.
+   */
+  public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues, final long[] typeDocumentFrequency) {
+    checkQueryArrays(queryIndices, queryValues);
+    if (!usesIdf())
+      return queryValues.clone();
+    final long n = totalDocuments();
+    final float[] effectiveWeights = new float[queryValues.length];
+    for (int i = 0; i < queryValues.length; i++)
+      if (queryValues[i] != 0.0f)
+        effectiveWeights[i] = queryValues[i] * idf(n, typeDocumentFrequency[i]);
     return effectiveWeights;
   }
 
-  /** Counts the live postings under one dimension in every bucket index of the type this index belongs to. O(df). */
-  private long countPostingsInType(final int dim) {
+  /** Whether the index was created with {@code modifier = "IDF"}, i.e. scores are weighed by each dim's document frequency. */
+  public boolean usesIdf() {
+    return sparseMetadata != null && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
+  }
+
+  /**
+   * Every bucket index of the type this index belongs to, itself included: the population an IDF document frequency is
+   * counted over, as {@code N} counts every record of the type. Just this index when it is not part of a type's indexes.
+   */
+  public List<LSMSparseVectorIndex> bucketIndexesOfType() {
     final IndexInternal[] bucketIndexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : null;
     if (bucketIndexes == null)
-      return countPostings(dim);
+      return List.of(this);
     final List<LSMSparseVectorIndex> siblings = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMSparseVectorIndex.class, null);
-    if (!siblings.contains(this))
-      return countPostings(dim);
-    long df = 0L;
-    for (final LSMSparseVectorIndex sibling : siblings)
-      df += sibling.countPostings(dim);
-    return df;
+    return siblings.contains(this) ? siblings : List.of(this);
+  }
+
+  /**
+   * The live postings of THIS bucket index under each query dim, aligned with {@code queryIndices}: the part of a document
+   * frequency one bucket index holds. A dim with a zero weight is not scored and is not counted (0), and a dim repeated in
+   * the query is counted once. O(df) per distinct dim.
+   */
+  public long[] countPostings(final int[] queryIndices, final float[] queryValues) {
+    checkQueryArrays(queryIndices, queryValues);
+    final long[] counts = new long[queryIndices.length];
+    final HashMap<Integer, Long> dfCache = new HashMap<>();
+    for (int i = 0; i < queryIndices.length; i++) {
+      final int qDim = queryIndices[i];
+      if (qDim < 0)
+        throw new IndexException("Query dimension must be >= 0, found: " + qDim);
+      if (queryValues[i] == 0.0f)
+        continue;
+      Long df = dfCache.get(qDim);
+      if (df == null) {
+        df = countPostings(qDim);
+        dfCache.put(qDim, df);
+      }
+      counts[i] = df;
+    }
+    return counts;
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */

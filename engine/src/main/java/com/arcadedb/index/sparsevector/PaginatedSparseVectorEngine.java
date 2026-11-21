@@ -263,6 +263,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   private final AtomicLong partitionedQueries = new AtomicLong();
 
+  /**
+   * {@link #countDim} calls, i.e. the document-frequency passes the IDF modifier makes. A search over several bucket
+   * indexes is meant to resolve its weights once, not once per bucket, and only a counter can show that after the fact.
+   */
+  private final AtomicLong countDimCalls = new AtomicLong();
+
   private final DatabaseInternal  database;
   private final String            indexName;
   private final SegmentParameters params;
@@ -914,6 +920,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * segments, after newest-source-wins merging. Used to compute IDF document frequency.
    */
   public long countDim(final int dim) throws IOException {
+    countDimCalls.incrementAndGet();
     final DimCursor c = openMergedCursor(dim, captureMemtables(), segments.get());
     if (c == null)
       return 0L;
@@ -930,6 +937,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       c.close();
     }
     return df;
+  }
+
+  /** Number of {@link #countDim} calls made on this engine. */
+  public long countDimCallCount() {
+    return countDimCalls.get();
   }
 
   // --- maintenance ----------------------------------------------------------
