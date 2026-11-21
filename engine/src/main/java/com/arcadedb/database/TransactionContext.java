@@ -31,6 +31,7 @@ import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.TransactionManager.VertexChange;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -5931,12 +5932,27 @@ public class TransactionContext implements Transaction {
    * refuses it.
    */
   private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
-    if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch)) {
+    final VertexChange change = database.getTransactionManager().vertexChangeSince(rid, vertexDeleteEpoch);
+    if (change != VertexChange.NONE) {
       if (!isCreatedInTransaction(rid))
-        throw new ConcurrentModificationException(
-            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+        throw new ConcurrentModificationException(vertexChangedSinceBeginMessage(rid, change));
     } else if (isLeader)
       vertexDeleteChecked = true;
+  }
+
+  /**
+   * The refusal of {@link #refuseVertexDeletedSinceBegin}, worded for its cause (#12123): a follower whose peers only updated the
+   * vertex is refused because a replicated apply wrote its page, and telling it the vertex "was deleted" points at a delete that
+   * never happened. The exception and its retry are the same for every cause.
+   */
+  static String vertexChangedSinceBeginMessage(final RID rid, final VertexChange change) {
+    return switch (change) {
+      case DELETED -> "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation";
+      case BUCKET_DROPPED -> "The bucket of record " + rid + " was dropped by a concurrent transaction. Please retry the operation";
+      case PAGE_REPLICATED -> "The page of record " + rid
+          + " was written by a replicated transaction after this transaction began. Please retry the operation";
+      case NONE -> throw new IllegalArgumentException("Record " + rid + " did not change since this transaction began");
+    };
   }
 
   /**
