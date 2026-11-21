@@ -20,16 +20,24 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.DeletedEntityException;
+import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.UnknownFunctionException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
@@ -582,5 +590,96 @@ class LeaderExceptionReconstructionTest {
 
     assertThat(rebuilt).isExactlyInstanceOf(ExternalResourceException.class).hasMessage("Error opening CSV file: file:///missing.csv");
     assertThat(ErrorCategory.of(rebuilt)).isEqualTo(ErrorCategory.VALIDATION);
+  }
+
+  // ---- #12931 ----
+  // Issue #12931: a statement of the client's own that the leader refuses as a client error came back through a follower as a plain
+  // TransactionException, answered 500 "Error on transaction commit", for every class that is not an exact key of the table of the
+  // forward path. The leader answered 409 / 400 / 404 with the class it raised.
+
+  private static String clientErrorBody(final String exceptionClass, final String exceptionArgs, final String detail) {
+    final JSONObject body = new JSONObject().put("error", "Cannot execute command").put("exception", exceptionClass).put("detail", detail);
+    if (exceptionArgs != null)
+      body.put("exceptionArgs", exceptionArgs);
+    return body.toString();
+  }
+
+  // Regression for #12931: a name already taken keeps the kind of the object that holds it
+  @Test
+  void aTakenSchemaNameKeepsItsKindAcrossTheForward() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(409,
+        clientErrorBody(AlreadyExistsException.class.getName(), "INDEX", "Index T[id] already exists"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(AlreadyExistsException.class).hasMessage("Index T[id] already exists");
+    assertThat(((AlreadyExistsException) rebuilt).getKind()).isEqualTo(AlreadyExistsException.Kind.INDEX);
+    assertThat(((AlreadyExistsException) rebuilt).getLabel()).isEqualTo("Index already exists");
+  }
+
+  // Regression for #12931: a leader that names no kind is rebuilt with none
+  @Test
+  void aTakenNameWithNoKindIsRebuiltWithNone() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(409,
+        clientErrorBody(AlreadyExistsException.class.getName(), null, "taken"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(AlreadyExistsException.class);
+    assertThat(((AlreadyExistsException) rebuilt).getKind()).isNull();
+  }
+
+  // Regression for #12931: a missing record keeps the RID its message names
+  @Test
+  void aMissingRecordKeepsItsRidAcrossTheForward() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(404,
+        clientErrorBody(RecordNotFoundException.class.getName(), null, "Record #99:98 not found"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(RecordNotFoundException.class).hasMessage("Record #99:98 not found");
+    assertThat(((RecordNotFoundException) rebuilt).getRID()).isEqualTo(new RID(99, 98));
+  }
+
+  // Regression for #12931: a message that names no RID, or one that does not parse, still rebuilds the type
+  @Test
+  void aMissingRecordWithoutARidInItsMessageIsStillRebuilt() {
+    for (final String detail : new String[] { "gone", "Record # not found", "Record #zz:yy not found" })
+      assertThat(RaftReplicatedDatabase.reconstructLeaderException(404,
+          clientErrorBody(RecordNotFoundException.class.getName(), null, detail), null)).as(detail)
+          .isExactlyInstanceOf(RecordNotFoundException.class).hasMessage(detail);
+  }
+
+  // Regression for #12931: a value that does not convert is the JDK type the leader raised, not a server fault
+  @Test
+  void aValueThatDoesNotConvertIsRebuiltAsIllegalArgument() {
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(400,
+        clientErrorBody(IllegalArgumentException.class.getName(), null, "Cannot convert 'abc' to INTEGER"), null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(IllegalArgumentException.class).hasMessage("Cannot convert 'abc' to INTEGER");
+  }
+
+  // Regression for #12931: the other client errors of a statement come back as the class the leader raised
+  @Test
+  void theClientErrorsOfAStatementComeBackAsTheClassTheLeaderRaised() {
+    final Class<?>[] classes = { ArithmeticErrorException.class, InvalidPropertyTypeException.class, UnknownProcedureException.class,
+        EquivalentIndexException.class };
+    for (final Class<?> expected : classes) {
+      final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(400,
+          clientErrorBody(expected.getName(), null, "refused by the leader"), null);
+
+      assertThat(rebuilt).as(expected.getSimpleName()).isExactlyInstanceOf(expected).hasMessage("refused by the leader");
+    }
+  }
+
+  // Regression for #12931: a name no table has stays the generic fallback
+  @Test
+  void aClassNobodyKnowsStaysATransactionException() {
+    final String body = clientErrorBody("com.example.NoSuchRefusal", null, "refused");
+
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(400, body, null)).isExactlyInstanceOf(TransactionException.class);
+  }
+
+  // Regression for #12931: only a 4xx is read from the remote client's table. A retryable type rebuilt from a 503 would be replayed
+  // by this node's own retry loop, which is safe only for the refusals the forward path's own table lists
+  @Test
+  void aRetryableTypeAnswered503IsNotRebuiltFromTheRemoteTable() {
+    final String body = clientErrorBody(DatabaseIsReopeningException.class.getName(), null, "reopening");
+
+    assertThat(RaftReplicatedDatabase.reconstructLeaderException(503, body, null)).isExactlyInstanceOf(TransactionException.class);
   }
 }
