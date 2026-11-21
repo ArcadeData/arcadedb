@@ -5278,11 +5278,20 @@ public class SelectExecutionPlanner {
     if (subBlocks == null || letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
       return false;
 
-    for (final BooleanExpression exp : subBlocks)
-      for (final String name : variableNamesIn(exp.toString()))
+    for (final BooleanExpression exp : subBlocks) {
+      final String rendered = exp.toString();
+      for (final LetItem item : letClause.getItems()) {
+        final String varName = item.getVarName().getStringValue();
+        // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
+        // whole: look for it as written (issue #12287)
+        if (GeneratedAlias.is(varName) && rendered.contains(varName))
+          return true;
+      }
+      for (final String name : variableNamesIn(rendered))
         for (final LetItem item : letClause.getItems())
           if (name.equals(withoutSigil(item.getVarName().getStringValue())))
             return true;
+    }
 
     return false;
   }
