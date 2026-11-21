@@ -65,23 +65,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
         }
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
-          String targetName = target;
-          if (targetName.startsWith("$"))
-            targetName = (String) context.getVariablePath(targetName);
-          else if (targetName.startsWith("`") && targetName.endsWith("`"))
-            targetName = targetName.substring(1, targetName.length() - 1);
-
-          final DocumentType typez = context.getDatabase().getSchema().getType(targetName);
-          if (typez == null) {
-            throw new SchemaException("Type " + targetName + " does not exist in the database schema");
-          }
-
-          // countType() counts records, and a lightweight edge has none: on such a type it would answer 0 for a
-          // scan that returns rows, which is the contradiction issue #7477 was reported as. The check belongs here
-          // rather than in the planner because the target can be a context variable, resolved only now.
-          final long size = EdgeType.holdsLightweightEdges(typez)
-              ? FetchFromLightweightEdgeTypeStep.countEdgesOf(context, targetName)
-              : context.getDatabase().countType(targetName, true);
+          final long size = countOf(context, target);
           executed = true;
           final ResultInternal result = new ResultInternal(context.getDatabase());
           result.setProperty(alias, size);
@@ -99,6 +83,31 @@ public class CountFromTypeStep extends AbstractExecutionStep {
         CountFromTypeStep.this.reset();
       }
     };
+  }
+
+  /**
+   * The records of {@code target} and its subtypes: the type's record count, or the edges of a type that holds lightweight edges.
+   * Shared with {@link MaxMinFromIndexStep}, which answers a {@code count(*)} next to a {@code min()} or {@code max()} (issue #12284).
+   *
+   * @param target a type name, back-quoted or not, or a context variable that holds one
+   */
+  static long countOf(final CommandContext context, final String target) {
+    String targetName = target;
+    if (targetName.startsWith("$"))
+      targetName = (String) context.getVariablePath(targetName);
+    else if (targetName.startsWith("`") && targetName.endsWith("`"))
+      targetName = targetName.substring(1, targetName.length() - 1);
+
+    final DocumentType typez = context.getDatabase().getSchema().getType(targetName);
+    if (typez == null)
+      throw new SchemaException("Type " + targetName + " does not exist in the database schema");
+
+    // countType() counts records, and a lightweight edge has none: on such a type it would answer 0 for a
+    // scan that returns rows, which is the contradiction issue #7477 was reported as. The check belongs here
+    // rather than in the planner because the target can be a context variable, resolved only now.
+    return EdgeType.holdsLightweightEdges(typez)
+        ? FetchFromLightweightEdgeTypeStep.countEdgesOf(context, targetName)
+        : context.getDatabase().countType(targetName, true);
   }
 
   @Override
