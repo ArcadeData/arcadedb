@@ -253,9 +253,10 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
     // 1. The query has to find at least one match.
     assertThat(rank).as("hybrid query must return results").isPositive();
 
-    // 2. The top result is the interest-rates chunk in doc_0.xml: dense alone would tie 0 and 1,
-    //    sparse breaks the tie because doc_0 contains «процентов» (token 11) and doc_1 contains
-    //    «баллов» (token 13).
+    // 2. The top result is the interest-rates chunk in doc_0.xml. The two best chunks, doc_0 and doc_1, are first in one ranker
+    //    and second in the other (dense alone ties them, sparse prefers doc_0 because it contains «процентов» (token 11)
+    //    and doc_1 contains «баллов» (token 13)), so their RRF scores are exactly equal: what puts doc_0 first is the
+    //    tie-break of `vector.fuse` (equal scores by RID ascending), and doc_0 has the lower RID.
     assertThat(topSource).as("top source").isEqualTo("doc_0.xml");
     assertThat(topVariant).as("top variant").isEqualTo("interest_rates");
     assertThat(topScore).as("top score is positive").isPositive();
