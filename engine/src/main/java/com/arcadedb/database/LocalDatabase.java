@@ -440,7 +440,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         final String content = FileUtils.readFileAsString(configurationFile);
         configuration.reset();
-        configuration.fromJSON(content);
+        configuration.fromJSON(content, "configuration of database '" + name + "'");
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e,
             configurationFile);
