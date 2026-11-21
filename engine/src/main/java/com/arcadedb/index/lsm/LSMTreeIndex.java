@@ -135,6 +135,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class LSMTreeIndexFactoryHandler implements IndexFactoryHandler {
     @Override
     public IndexInternal create(final IndexBuilder<?> builder) {
+      // An embedded document has no order, so BinaryComparator cannot compare two of them and the second insert fails with a
+      // ClassCastException (issue #12753). Refused before any file is created, as the HASH and FULL_TEXT handlers do for the key
+      // types they cannot hold. A field of the embedded document is indexed through a nested path (p.x), which has its own key type.
+      final Type[] keyTypes = builder.getKeyTypes();
+      if (keyTypes != null)
+        for (final Type keyType : keyTypes)
+          if (keyType == Type.EMBEDDED)
+            throw new IndexException("Cannot create index '" + builder.getIndexName() + "' of type LSM_TREE because the key type EMBEDDED"
+                + " cannot be used as an LSM_TREE index key: an embedded document has no order. Index a field of it (a nested path such as 'p.x') instead");
+
       return new LSMTreeIndex(builder.getDatabase(), builder.getIndexName(), builder.isUnique(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getKeyTypes(), builder.getLsmTreePageSize(), builder.getNullStrategy());
     }
