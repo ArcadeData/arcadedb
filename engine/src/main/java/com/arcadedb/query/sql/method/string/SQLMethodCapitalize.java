@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.Locale;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -33,16 +34,22 @@ public class SQLMethodCapitalize extends AbstractSQLMethod {
 
   public static final String NAME = "capitalize";
 
+  /**
+   * A word is a run of Unicode letters and digits: without {@code UNICODE_CHARACTER_CLASS} Java's {@code \b} knows only
+   * {@code [a-zA-Z0-9_]}, so {@code "café"} became {@code "CafÉ"}, {@code "über"} {@code "üBer"} and Cyrillic was untouched
+   * (issue #12869). Compiled once: the pattern never changes.
+   */
+  private static final Pattern WORD = Pattern.compile("\\b(.)(.*?)\\b", Pattern.UNICODE_CHARACTER_CLASS);
+
   public SQLMethodCapitalize() {
     super(NAME);
   }
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    return value != null ? Pattern.compile("\\b(.)(.*?)\\b")
-                                     .matcher(value.toString())
-                                     .replaceAll(match -> match.group(1).toUpperCase(Locale.ENGLISH) +
-                                                          match.group(2).toLowerCase(Locale.ENGLISH))
-                            : null;
+    return value != null ? WORD.matcher(value.toString())
+                               .replaceAll(match -> Matcher.quoteReplacement(
+                                   match.group(1).toUpperCase(Locale.ENGLISH) + match.group(2).toLowerCase(Locale.ENGLISH)))
+                         : null;
   }
 }
