@@ -783,9 +783,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       if (user == null) {
         if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
-          exchange.setStatusCode(401);
-          exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
-          sendErrorResponse(exchange, 401, "", null, null);
+          // A request that carries no credentials at all is refused like a request that carries wrong ones: the same
+          // 401 and the same message, so a client has one answer to read and does not have to tell the two apart
+          // (issue #12408). No WWW-Authenticate challenge: a browser answers one with its native login dialog, over
+          // the login form the client of this API shows - the same reason the branch below gives.
+          sendErrorResponse(exchange, 401, "Authentication failed", null, null);
           return;
         }
 
