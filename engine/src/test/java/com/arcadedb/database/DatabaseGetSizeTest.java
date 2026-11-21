@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 
 import java.io.UncheckedIOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -206,9 +208,8 @@ class DatabaseGetSizeTest extends TestHelper {
    * as the cause of the DatabaseOperationException, instead of {@code e.getCause()} which is null (or
    * a different, inner exception) and loses the real stack trace.
    * <p>
-   * An unreadable subdirectory makes {@link java.nio.file.Files#walk} throw an
-   * {@link UncheckedIOException}: the buggy code rewrapped it with {@code e.getCause()} (the inner
-   * AccessDeniedException, or null), while the fix propagates the actual exception {@code e}.
+   * An unreadable subdirectory makes the walk fail with an {@link AccessDeniedException}: unlike a file that vanished
+   * during the walk (issue #12825) that is a real error, so it still fails and is the cause of the exception thrown.
    */
   @Test
   @DisabledOnOs(OS.WINDOWS)
@@ -230,9 +231,7 @@ class DatabaseGetSizeTest extends TestHelper {
 
       assertThatThrownBy(() -> database.getSize())
           .isInstanceOf(DatabaseOperationException.class)
-          // The fix passes the original exception (UncheckedIOException) as the cause; the buggy code
-          // passed e.getCause(), losing the wrapper (and being null for non-IOException failures).
-          .hasCauseInstanceOf(UncheckedIOException.class);
+          .hasCauseInstanceOf(AccessDeniedException.class);
     } catch (Exception e) {
       throw new RuntimeException(e);
     } finally {
@@ -245,6 +244,18 @@ class DatabaseGetSizeTest extends TestHelper {
       } catch (Exception ignore) {
         // best effort
       }
+    }
+  }
+
+  /**
+   * Issue #12825: {@code SELECT FROM schema:database} reports the size through the same walk, which now tolerates files that
+   * background work removes while it runs (see {@code FileUtilsTest.DirectorySize}). It still reports the real size.
+   */
+  @Test
+  void schemaDatabaseReportsThePositiveSize() {
+    try (ResultSet rs = database.query("sql", "SELECT FROM schema:database")) {
+      final long size = rs.next().<Number>getProperty("size").longValue();
+      assertThat(size).isGreaterThan(0L);
     }
   }
 }
