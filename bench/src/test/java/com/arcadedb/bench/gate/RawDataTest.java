@@ -21,7 +21,10 @@ package com.arcadedb.bench.gate;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -154,5 +157,29 @@ class RawDataTest {
     assertThat(p.tag()).isNull();
     assertThat(p.ref()).isEqualTo("1eeb9420ac");
     assertThat(p.median()).isEqualTo(191631.5);
+  }
+
+  @Test
+  void skipsAnUnreadableFileAndKeepsTheOthers() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)));
+    write("bad.json", "{\"runId\":\"r-bad\",\"trigger\":\"nightly\",\"results\":[{\"workl");
+    write("nocommit.json", run("r-nc", "nightly", "", null, null, "2026-11-20T05:00:00Z", metric("m", 1)));
+    final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir, new PrintStream(err, true, StandardCharsets.UTF_8));
+
+    assertThat(lines.values().stream().flatMap(List::stream).map(Point::runId)).containsOnly("r-a");
+    final String warnings = err.toString(StandardCharsets.UTF_8);
+    assertThat(warnings).contains("bad.json").contains("nocommit.json").doesNotContain("a.json:");
+  }
+
+  @Test
+  void skipsAMetricWithNoMedian() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z",
+        metric("good", 1) + ",{\"name\":\"nomedian\",\"unit\":\"ms\"},{\"name\":\"nullmedian\",\"median\":null}"));
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir);
+
+    assertThat(lines.keySet()).extracting(LineKey::metric).containsExactlyInAnyOrder("good", LineKey.STATUS);
   }
 }

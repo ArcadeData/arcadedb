@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -53,6 +54,11 @@ public final class RawData {
   }
 
   public static Map<LineKey, List<Point>> read(final Path dataDir) {
+    return read(dataDir, System.err);
+  }
+
+  /** Reads every run file; a file that cannot be read is skipped with one warning line on {@code warn}, never aborting the rest. */
+  public static Map<LineKey, List<Point>> read(final Path dataDir, final PrintStream warn) {
     final Map<LineKey, List<Point>> lines = new TreeMap<>();
     final List<Path> files;
     try (final Stream<Path> walk = Files.walk(dataDir)) {
@@ -60,27 +66,34 @@ public final class RawData {
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }
-    for (final Path file : files)
-      readFile(file, lines);
+    for (final Path file : files) {
+      final Map<LineKey, List<Point>> fileLines = new TreeMap<>();
+      try {
+        readFile(file, fileLines);
+      } catch (final RuntimeException | IOException e) {
+        warn.println("WARNING: skipping unreadable run file " + file + ": " + e);
+        continue;
+      }
+      for (final Map.Entry<LineKey, List<Point>> e : fileLines.entrySet())
+        lines.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
+    }
     for (final List<Point> points : lines.values())
       points.sort(BY_TIME);
     return lines;
   }
 
-  private static void readFile(final Path file, final Map<LineKey, List<Point>> lines) {
-    final JSONObject run;
-    try {
-      run = new JSONObject(Files.readString(file, StandardCharsets.UTF_8));
-    } catch (final IOException e) {
-      throw new UncheckedIOException(e);
-    }
+  private static void readFile(final Path file, final Map<LineKey, List<Point>> lines) throws IOException {
+    final JSONObject run = new JSONObject(Files.readString(file, StandardCharsets.UTF_8));
     final String trigger = run.getString("trigger", "");
     final JSONObject arcade = objectOrEmpty(run, "arcadedb");
     final String commit = arcade.getString("commit", "");
     final String tag = nullIfEmpty(arcade.getString("tag", null));
     final String ref;
-    if (NIGHTLY.equals(trigger))
+    if (NIGHTLY.equals(trigger)) {
+      if (commit.isEmpty())
+        throw new IllegalArgumentException("nightly run without arcadedb.commit");
       ref = commit;
+    }
     else if (RELEASE.equals(trigger) && tag != null)
       ref = tag;
     else
@@ -110,12 +123,16 @@ public final class RawData {
       final JSONArray metrics = r.getJSONArray("metrics", new JSONArray());
       for (int m = 0; m < metrics.length(); m++) {
         final JSONObject metric = metrics.getJSONObject(m);
+        final Object rawMedian = metric.has("median") ? metric.get("median") : null;
+        final double median = rawMedian instanceof Number n ? n.doubleValue() : Double.NaN;
+        if (Double.isNaN(median) || Double.isInfinite(median))
+          continue;
         final JSONArray vals = metric.getJSONArray("values", new JSONArray());
         final double[] values = new double[vals.length()];
         for (int v = 0; v < values.length; v++)
           values[v] = vals.getDouble(v);
         add(lines, new LineKey(machine, variant, scale, workload, caseName, metric.getString("name", "")),
-            new Point(trigger, ref, commit, tag, t, runAt, runId, benchCommit, status, metric.getDouble("median", Double.NaN), values,
+            new Point(trigger, ref, commit, tag, t, runAt, runId, benchCommit, status, median, values,
                 metric.getString("unit", null), metric.getString("better", null)));
       }
     }
