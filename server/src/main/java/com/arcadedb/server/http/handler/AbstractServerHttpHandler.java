@@ -1490,6 +1490,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return new ErrorClassification(404, "Record not found", notFound, null, ErrorLogKind.USER);
     }
 
+    // 404 Not Found: an entity the statement deleted itself, read or linked later in it (openCypher's DeletedEntityAccess, issue
+    // #11974). The caller's statement, which no retry fixes, as Neo4j answers it (EntityNotFound). Before the generic
+    // CommandExecutionException arm, which it extends and which answers 500
+    final DeletedEntityException deletedEntity = CauseChain.find(e, DeletedEntityException.class);
+    if (deletedEntity != null)
+      return new ErrorClassification(404, "Entity deleted", deletedEntity, null, ErrorLogKind.USER);
+
     final QueryNotIdempotentException notIdempotent = firstOf(e, cause, QueryNotIdempotentException.class);
     if (notIdempotent != null) {
       return new ErrorClassification(400, "Query is not idempotent", notIdempotent, null, ErrorLogKind.USER);

@@ -21,7 +21,11 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DeletedEntityException;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
@@ -537,5 +541,46 @@ class LeaderExceptionReconstructionTest {
 
     assertThat(RaftReplicatedDatabase.reconstructLeaderException(400, body, null)).isInstanceOf(UnknownFunctionException.class)
         .hasMessage("Unknown function name 'foo'");
+  }
+
+  // ---- #11974 ----
+  // Issue #11974: three openCypher user errors are typed on the leader (409 / 404 / 400), so a write a follower forwards and the leader
+  // refuses with one of them must come back as that type, where it was rebuilt as a plain TransactionException, which the follower
+  // answered 500 "Error on transaction commit" (and Bolt on the follower as an unexplained server fault).
+
+  // Regression for #11974: a DELETE of a node that still has relationships, refused by the leader
+  @Test
+  void aDeleteOfAConnectedNodeIsRebuiltAsObjectInUse() {
+    final String body = new JSONObject().put("error", "Cannot execute command").put("exception", ObjectInUseException.class.getName())
+        .put("detail", "DeleteConnectedNode: Cannot delete node #1:0 because it still has relationships").toString();
+
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(409, body, null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(ObjectInUseException.class)
+        .hasMessage("DeleteConnectedNode: Cannot delete node #1:0 because it still has relationships");
+  }
+
+  // Regression for #11974: a use of a node deleted earlier in the statement, refused by the leader
+  @Test
+  void aUseOfAnEntityTheStatementDeletedIsRebuiltAsDeletedEntity() {
+    final String body = new JSONObject().put("error", "Entity deleted").put("exception", DeletedEntityException.class.getName())
+        .put("detail", "DeletedEntityAccess: Cannot access a deleted entity").toString();
+
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(404, body, null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(DeletedEntityException.class).hasMessage("DeletedEntityAccess: Cannot access a deleted entity");
+    assertThat(ErrorCategory.of(rebuilt)).isEqualTo(ErrorCategory.NOT_FOUND);
+  }
+
+  // Regression for #11974: a LOAD CSV URL that cannot be opened, refused by the leader
+  @Test
+  void anUnreadableExternalResourceIsRebuiltAsExternalResource() {
+    final String body = new JSONObject().put("error", "Cannot execute command").put("exception", ExternalResourceException.class.getName())
+        .put("detail", "Error opening CSV file: file:///missing.csv").toString();
+
+    final RuntimeException rebuilt = RaftReplicatedDatabase.reconstructLeaderException(400, body, null);
+
+    assertThat(rebuilt).isExactlyInstanceOf(ExternalResourceException.class).hasMessage("Error opening CSV file: file:///missing.csv");
+    assertThat(ErrorCategory.of(rebuilt)).isEqualTo(ErrorCategory.VALIDATION);
   }
 }

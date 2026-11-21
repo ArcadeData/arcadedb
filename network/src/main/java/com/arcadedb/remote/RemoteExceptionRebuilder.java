@@ -36,8 +36,10 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.DeletedEntityException;
 import com.arcadedb.exception.EncryptionException;
 import com.arcadedb.exception.EquivalentIndexException;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.InvalidArgumentException;
@@ -130,6 +132,9 @@ public final class RemoteExceptionRebuilder {
       // A STATEMENT REFUSED FOR THE TRANSACTION THE CALLER HOLDS: CALL { ... } IN TRANSACTIONS (ISSUE #12161)
       Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
       Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
+      // AN ENTITY THE STATEMENT DELETED ITSELF, AND AN EXTERNAL RESOURCE (A LOAD CSV URL) THAT CANNOT BE READ (ISSUE #11974)
+      Map.entry(DeletedEntityException.class.getName(), DeletedEntityException::new),
+      Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // THE NAME OF THE FUNCTION IS ONLY IN THE MESSAGE ON THE WIRE (ISSUE #11314)
       Map.entry(UnknownFunctionException.class.getName(), message -> new UnknownFunctionException(null, message)),
       // THE SAME FOR THE PROCEDURE OF A CALL (ISSUE #11384)
