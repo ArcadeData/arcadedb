@@ -247,9 +247,21 @@ public class InCondition extends BooleanExpression {
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand) {
+    return equalsEitherWay(left, item, convertOperand, null);
+  }
+
+  /** @param itemConversion the memo the item, a string the same on every record, is converted with, or null (issue #12713) */
+  private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand,
+      final ConstantOperandConversion itemConversion) {
     if (!convertOperand)
-      return QueryOperatorEquals.equals(left, subQueryRowScalar(item));
-    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+      return QueryOperatorEquals.equals(left, subQueryRowScalar(item), itemConversion);
+    return QueryOperatorEquals.equals(left, item, itemConversion)
+        || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  /** The memo of the item at {@code index} of the right side, or null when it has none. */
+  private static ConstantOperandConversion itemConversion(final ConstantOperandConversion[] itemConversions, final int index) {
+    return itemConversions != null && index < itemConversions.length ? itemConversions[index] : null;
   }
 
   /**
@@ -317,6 +329,11 @@ public class InCondition extends BooleanExpression {
     return evaluateExpressionThreeValued(iLeft, iRight, true);
   }
 
+  /** @see #evaluateExpressionThreeValued(Object, Object, boolean, ConstantOperandConversion[]) */
+  protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight, final boolean convertOperand) {
+    return evaluateExpressionThreeValued(iLeft, iRight, convertOperand, null);
+  }
+
   /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
@@ -325,8 +342,12 @@ public class InCondition extends BooleanExpression {
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
    * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
    *                       (a sub-query row is the exception: it converts either way in QueryOperatorEquals)
+   * @param itemConversions the memo each item of the right side that is a string is converted with, by its position in the order
+   *                        the list or the array iterates, at 0 for a scalar right side; null when there is none. An item met at
+   *                        another position than its memo's is converted as it is (issue #12713)
    */
-  protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
+  static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand,
+      final ConstantOperandConversion[] itemConversions) {
     if (iLeft instanceof Result r && !r.isElement()) {
       final Set<String> names = r.getPropertyNames();
       if (names.size() == 1)
@@ -350,13 +371,15 @@ public class InCondition extends BooleanExpression {
 
       boolean sawNull = false;
       boolean empty = true;
+      int index = 0;
       for (final Object o : MultiValue.getMultiValueIterable(iRight, false)) {
+        final ConstantOperandConversion conversion = itemConversion(itemConversions, index++);
         empty = false;
         if (iLeft == null || o == null) {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o, convertOperand))
+        if (equalsEitherWay(iLeft, o, convertOperand, conversion))
           return Boolean.TRUE;
         if (isNullSubQueryRow(o)) {
           sawNull = true;
@@ -381,13 +404,15 @@ public class InCondition extends BooleanExpression {
       // placeholder) failed the cast to Object[] this arm used to make (issue #10721)
       boolean sawNull = false;
       boolean empty = true;
+      int index = 0;
       for (final Object o : MultiValue.getMultiValueIterable(iRight)) {
+        final ConstantOperandConversion conversion = itemConversion(itemConversions, index++);
         empty = false;
         if (iLeft == null || o == null) {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o, convertOperand))
+        if (equalsEitherWay(iLeft, o, convertOperand, conversion))
           return Boolean.TRUE;
         if (isNullSubQueryRow(o))
           sawNull = true;
@@ -422,7 +447,7 @@ public class InCondition extends BooleanExpression {
     // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return equalsEitherWay(iLeft, iRight, convertOperand) ? Boolean.TRUE : Boolean.FALSE;
+    return equalsEitherWay(iLeft, iRight, convertOperand, itemConversion(itemConversions, 0)) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

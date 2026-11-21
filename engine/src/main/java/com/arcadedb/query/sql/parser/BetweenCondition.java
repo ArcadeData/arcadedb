@@ -24,7 +24,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.DateUtils;
 
@@ -37,6 +36,10 @@ public class BetweenCondition extends BooleanExpression {
   public Expression first;
   public Expression second;
   public Expression third;
+
+  /** The keys of the memos an execution converts each bound with, assigned at their first use; see {@link #boundConversion}. */
+  private volatile String lowerConversionKey;
+  private volatile String upperConversionKey;
 
   public BetweenCondition() {
   }
@@ -58,7 +61,7 @@ public class BetweenCondition extends BooleanExpression {
    * and a side that is false still decides the result, so {@code 1 BETWEEN 5 AND NULL} is false while
    * {@code 7 BETWEEN 5 AND NULL} is unknown (issue #8979).
    */
-  private static Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
+  private Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
     if (firstValue == null)
       return null;
 
@@ -77,14 +80,18 @@ public class BetweenCondition extends BooleanExpression {
     Object lowerValue = firstValue;
     if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && secondValue instanceof Number)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
-      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, lowerValue.getClass());
+      secondValue = ConstantOperandConversion.convertOrNull(
+          ConstantOperandConversion.isConstantStringToConvert(firstValue, secondValue, second) ? boundConversion(context, true) : null,
+          context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
     }
     Object upperValue = firstValue;
     if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && thirdValue instanceof Number)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
-      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, upperValue.getClass());
+      thirdValue = ConstantOperandConversion.convertOrNull(
+          ConstantOperandConversion.isConstantStringToConvert(firstValue, thirdValue, third) ? boundConversion(context, false) : null,
+          context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
         return false;
     }
@@ -96,6 +103,25 @@ public class BetweenCondition extends BooleanExpression {
     if (Boolean.FALSE.equals(lower) || Boolean.FALSE.equals(upper))
       return false;
     return lower == null || upper == null ? null : Boolean.TRUE;
+  }
+
+  /**
+   * The memo the execution {@code context} runs converts a bound with, when it is the same string on every record compared with a
+   * value of another class: it is then parsed once, not once per record (issue #12713).
+   *
+   * @param lower true for the lower bound, false for the upper one
+   */
+  ConstantOperandConversion boundConversion(final CommandContext context, final boolean lower) {
+    String key = lower ? lowerConversionKey : upperConversionKey;
+    if (key == null) {
+      // A benign race, as the memo key of InCondition: two threads may give the node two keys, and the loser converts once more
+      key = ConstantOperandConversion.newKey();
+      if (lower)
+        lowerConversionKey = key;
+      else
+        upperConversionKey = key;
+    }
+    return ConstantOperandConversion.of(context, key);
   }
 
   /**
