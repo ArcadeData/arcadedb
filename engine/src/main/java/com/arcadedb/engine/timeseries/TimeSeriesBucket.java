@@ -416,21 +416,31 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * Appends samples to the mutable bucket within the current transaction, reading them straight off a
    * primitive row source so a caller holding primitive data never boxes a value (issue #5474).
    * <p>
+   * Interns the batch's new tag values first, before a single data page is touched: interning commits
+   * its own transaction, nested in the current one, which keeps the dictionary pages out of this
+   * transaction's page set and, with it, out of any MVCC conflict with the rows about to be written.
+   * The shard does not come through here: it interns before it begins its append transaction, so an
+   * append costs one level of nesting whatever its tag values (issue #12807), and then calls
+   * {@link #appendInternedSamples}.
+   */
+  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+    internTagValues(source);
+    appendInternedSamples(source);
+  }
+
+  /**
+   * Appends samples whose tag values {@link #internTagValues} has interned, within the current transaction.
+   * <p>
    * The page bookkeeping is hoisted out of the per-sample loop: the header page is resolved once and
    * its counters are folded in registers until the end of the batch, and the active data page is kept
    * across samples until it fills. Doing it per sample cost three {@code PageId} allocations and three
-   * transaction map lookups for every point written - more garbage than the boxing this method
-   * removes.
+   * transaction map lookups for every point written - more garbage than the boxing the primitive row
+   * source removes.
    */
-  public void appendSamples(final TimeSeriesRowSource source) throws IOException {
+  void appendInternedSamples(final TimeSeriesRowSource source) throws IOException {
     final int sampleCount = source.size();
     if (sampleCount == 0)
       return;
-
-    // Resolve tag ids first, before a single data page is touched. Interning commits its own nested
-    // transaction, so running it up front keeps the dictionary pages out of this transaction's page
-    // set and, with it, out of any MVCC conflict with the rows we are about to write.
-    internTagValues(source, sampleCount);
 
     final TransactionContext tx = database.getTransaction();
     final MutablePage headerPage = tx.getPageToModify(new PageId(database, fileId, 0), pageSize, false);
@@ -475,7 +485,7 @@ public class TimeSeriesBucket extends PaginatedComponent {
         // length-prefixed, which is the only encoding the reader can walk past (issue #5475).
         final int fixedSize = col.getFixedSize();
         if (dictEncoded[colIdx]) {
-          // Every value was interned above, so this lookup always resolves.
+          // Every value was interned before this method ran, and an id is never taken back, so this lookup always resolves.
           dataPage.writeInt(colOffset, tagDictionary.getId(source.getStringValue(i, colIdx)));
           colOffset += DICT_ID_SIZE;
         } else if (fixedSize > 0) {
@@ -513,16 +523,18 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
-   * Assigns a dictionary id to every tag value in the batch that does not already have one.
+   * Assigns a dictionary id to every tag value in the batch that does not already have one, committing the
+   * new ones in the dictionary's own transaction (see {@link TimeSeriesTagDictionary#internAll}).
    * <p>
    * Steady state costs one lookup per distinct run of values and no transaction at all: a tag repeats
    * heavily within a batch, so the per-column {@code lastSeen} reference check absorbs runs before the
    * map is consulted, and after warm-up nothing is ever missing.
    */
-  private void internTagValues(final TimeSeriesRowSource source, final int sampleCount) throws IOException {
+  void internTagValues(final TimeSeriesRowSource source) throws IOException {
     if (dictColumns.length == 0)
       return;
 
+    final int sampleCount = source.size();
     List<String> missing = null;
     for (final int colIdx : dictColumns) {
       String lastSeen = null;

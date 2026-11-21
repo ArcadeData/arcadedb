@@ -393,6 +393,13 @@ public class TimeSeriesShard implements AutoCloseable {
    * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
    * before, since there is no recording-session deadlock.
    * <p>
+   * <b>New tag values are interned before the append transaction begins (issue #12807)</b>, in the dictionary's own transaction
+   * (see {@link TimeSeriesTagDictionary}), so an append costs the caller one level of nesting whatever its tag values. Interning
+   * used to run inside the append transaction and nest one level more, and a script's {@code BEGIN} under the transaction of the
+   * HTTP command handler then went past the limit of 3 on the first sample carrying a value never seen before. It runs outside
+   * {@link #appendLock} and {@link #compactionLock} too: the dictionary serializes itself, and under HA its commit passes the same
+   * recording-session gate as any other, which must not be waited on holding the compaction read lock (see above).
+   * <p>
    * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
    * #10502): after the commit off HA, before it under HA (issue #10673), always under HA (issue #10940). It is never retained, and
    * read on the calling thread only, as {@link TimeSeriesRowSource} promises its implementations.
@@ -410,6 +417,13 @@ public class TimeSeriesShard implements AutoCloseable {
     // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
     // getWrappedDatabaseInstance() returns the same instance.
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
+
+    try {
+      mutableBucket.internTagValues(source);
+    } catch (final RuntimeException e) {
+      // A value past the cardinality cap or the length limit: reported as when interning ran inside the append transaction
+      throw new IOException("Failed to append timeseries samples", e);
+    }
 
     // Under HA the append is in flight from before its check for late samples to the end of its commit, see oldestInFlightAppendTs
     final LateSampleRange inFlight = db.isReplicated() && source.size() > 0 ? timestampRange(source) : null;
@@ -433,7 +447,7 @@ public class TimeSeriesShard implements AutoCloseable {
             // rolling that back discards work this append knows nothing about (issue #7732).
             final OwnTransaction tx = OwnTransaction.begin(db);
             try {
-              mutableBucket.appendSamples(source);
+              mutableBucket.appendInternedSamples(source);
             } catch (final Exception e) {
               tx.rollbackIfMine();
               throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
