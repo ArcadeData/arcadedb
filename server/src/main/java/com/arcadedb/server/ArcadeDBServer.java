@@ -89,6 +89,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -132,6 +133,8 @@ public class ArcadeDBServer {
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
   public static final String                                FILESYSTEM_RECOVERY_DIRECTORY        = "lost+found";
+  /** The most bytes a file name holds on the usual file systems, and so a database name, which is a directory name. */
+  static final int                                          MAX_DATABASE_NAME_BYTES              = 255;
 
   /**
    * Marker file the HA snapshot installer writes into {@code databases/<name>/} before it touches a single file
@@ -2054,16 +2057,24 @@ public class ArcadeDBServer {
    * A database name maps directly to a directory name under the database directory, so it must never contain
    * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
    * inside the configured base directory.
+   * <p>
+   * Also refuses what the directory cannot be created with, so that a caller's mistake is a 400 and not a 500 from a later
+   * stage: a {@code *} (the engine refuses it, issue #12801) and a name past the 255 bytes a file name can hold.
    *
-   * @throws IllegalArgumentException if the name is empty or would escape the database directory
+   * @throws IllegalArgumentException if the name is empty, would escape the database directory or cannot be a directory name
    */
   public void checkDatabaseNameIsValid(final String databaseName) {
     if (databaseName == null || databaseName.trim().isEmpty())
       throw new IllegalArgumentException("Database name is empty");
 
     if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf('\0') > -1
-        || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
+        || databaseName.indexOf('*') > -1 || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
       throw new IllegalArgumentException("Database name '" + databaseName + "' contains invalid characters");
+
+    // a character takes at most 3 bytes of UTF-8 in the BMP, so only a name that can pass the limit is encoded to be measured
+    if (databaseName.length() > MAX_DATABASE_NAME_BYTES / 3
+        && databaseName.getBytes(StandardCharsets.UTF_8).length > MAX_DATABASE_NAME_BYTES)
+      throw new IllegalArgumentException("Database name is longer than " + MAX_DATABASE_NAME_BYTES + " bytes");
 
     // Defence in depth: resolve the final path and verify it does not escape the configured base directory.
     final Path base = Paths.get(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY))
