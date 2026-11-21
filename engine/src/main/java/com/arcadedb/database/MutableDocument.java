@@ -689,6 +689,43 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     assignedAfterSave = true;
   }
 
+  /**
+   * Gives a record an earlier statement of the transaction queued for its commit the content it held before a statement that changed it
+   * was taken back (issue #10346), and keeps the buffer it was read with. That buffer is the image of the record the transaction
+   * started from: it stays frozen until the commit because the write is deferred, and everything that asks "what was this record read
+   * as" compares with it - the delete refusing a record changed by a concurrent commit since its read (#12472), the pre-update image
+   * the indexes are diffed against, the commit's own checks. Installing the snapshot as the buffer, as {@link #restoreContent} does,
+   * made the record look read from a slot that never held that content, and a later delete of it was refused as a conflict with a
+   * transaction that does not exist (issue #12747). The properties are decoded from the snapshot here, the record having no
+   * buffer to decode them from afterwards.
+   *
+   * @param snapshot       the content of the record before the statement
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
+   */
+  void restoreQueuedContent(final Binary snapshot, final boolean dirtyBefore, final boolean assignedBefore) {
+    final Binary read = buffer;
+    if (read == null) {
+      // A record built in this transaction has no image it was read with: the snapshot is the only content it has
+      restoreContent(snapshot, dirtyBefore, assignedBefore);
+      return;
+    }
+    map = null;
+    undecodableContent = null;
+    // The prefix (the heads of a vertex, the endpoints of an edge) and the properties are read from the snapshot, then the buffer
+    // read from the slot is given back
+    buffer = snapshot;
+    try {
+      parseRecordPrefix(snapshot);
+      checkForLazyLoadingProperties();
+    } finally {
+      buffer = read;
+    }
+    dirty = dirtyBefore;
+    propertiesAssigned = assignedBefore;
+    assignedAfterSave = true;
+  }
+
   protected void checkForLazyLoadingProperties() {
     if (this.map == null) {
       if (buffer == null) {
