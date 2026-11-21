@@ -7190,7 +7190,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // The first tsRetentionUnit after RETENTION belongs to RETENTION
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, SQLParser.RETENTION, 86400000L);
-      stmt.retentionMs = retentionValue * multiplier;
+      stmt.retentionMs = Math.multiplyExact(retentionValue, multiplier);
     }
 
     // COMPACTION_INTERVAL or COMPACTION INTERVAL - value with optional time unit
@@ -7214,7 +7214,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, compactionTokenType, 3600000L);
-      stmt.compactionIntervalMs = compactionValue * multiplier;
+      stmt.compactionIntervalMs = Math.multiplyExact(compactionValue, multiplier);
     }
 
     // DOWNSAMPLING POLICY AFTER ... GRANULARITY ... (issue #7689). Same tier clause, and the same ascending sort,
