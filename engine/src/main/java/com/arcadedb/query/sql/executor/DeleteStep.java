@@ -21,12 +21,14 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.utility.RidHashSet;
 
 /**
  * Deletes records coming from upstream steps. Only the rows the engine actually deleted are passed on: a delete a
@@ -43,6 +45,11 @@ public class DeleteStep extends AbstractExecutionStep {
   private final boolean    returnsRecords;
   // DELETE VERTEX (issue #11620): a record that is not a vertex is refused, before anything is deleted for it
   private final boolean    vertexOnly;
+  // THE RECORDS THIS STATEMENT DELETED (issue #12256). A FIELD, NOT A LOCAL OF syncPull: THE STEP IS PULLED ONCE PER BATCH, AND
+  // TWO ROWS NAMING ONE RECORD CAN FALL IN DIFFERENT BATCHES. THE PLAN IS BUILT PER EXECUTION, SO THE STEP LIVES AS LONG AS THE
+  // STATEMENT. ITS COST IS ONE PRIMITIVE ENTRY PER DELETED RECORD, WHICH THE TRANSACTION ALREADY PAYS FOR THE SAME RECORDS IN
+  // TransactionContext.deletedRecordsInTx (ALSO A RidHashSet), NEXT TO THE PAGE IMAGES IT HOLDS FOR THEM
+  private       RidHashSet deleted;
 
   public DeleteStep(final CommandContext context) {
     this(context, null, false, false);
@@ -75,6 +82,8 @@ public class DeleteStep extends AbstractExecutionStep {
         try {
           if (result.isElement()) {
             final Document record = result.getElement().get();
+            if (deletedByAnEarlierRow(record))
+              return null;
             checkIsVertex(record);
             final Result answer = beforeImage(context, result);
             return database.deleteRecordReportingVeto(record) ? answer : null;
@@ -82,10 +91,16 @@ public class DeleteStep extends AbstractExecutionStep {
           // A PROJECTION THAT CARRIES THE @rid OF A RECORD DELETES THAT RECORD, AS UPDATE WRITES TO IT (ConvertToUpdatableResultStep).
           // ANY OTHER ROW (A PROJECTION, A TIMESERIES SAMPLE) HAS NOTHING TO DELETE: IT USED TO BE COUNTED AS DELETED AND KEPT
           // (issue #10336)
-          if (result.getProperty("@rid") instanceof Identifiable identifiable && identifiable.getRecord() instanceof Record record) {
-            checkIsVertex(record);
-            final Result answer = beforeImage(context, result);
-            return database.deleteRecordReportingVeto(record) ? answer : null;
+          if (result.getProperty("@rid") instanceof Identifiable identifiable) {
+            // checked before the load: the record an earlier row deleted no longer loads. A row whose @rid is not a record fails
+            // the statement below at the first row naming that identity, so no later row is ever skipped for it
+            if (deletedByAnEarlierRow(identifiable))
+              return null;
+            if (identifiable.getRecord() instanceof Record record) {
+              checkIsVertex(record);
+              final Result answer = beforeImage(context, result);
+              return database.deleteRecordReportingVeto(record) ? answer : null;
+            }
           }
           throw new CommandExecutionException(ConvertToUpdatableResultStep.NOT_A_RECORD);
         } finally {
@@ -100,6 +115,24 @@ public class DeleteStep extends AbstractExecutionStep {
     if (vertexOnly && !(record instanceof Vertex))
       throw new CommandExecutionException(
           "DELETE VERTEX cannot delete the record " + record.getIdentity() + ": it is not a vertex. Use DELETE FROM to delete it");
+  }
+
+  /**
+   * True when an earlier row of this statement named the same record, recording it otherwise. The statement deletes the SET of
+   * records its rows name, and a subquery can name one in several rows: {@code SELECT expand(out())} over two parallel edges
+   * names their target twice. The second row used to fail the whole statement with a not-found that told the operator to repair
+   * a consistent database (issue #12256). Parallel lightweight edges are left out: they share one RID and are distinct edges.
+   * <p>
+   * The record is noted before its delete runs, so a record a listener vetoed is not retried for a later row naming it: the
+   * veto stands for the whole statement, as the same listener would veto it again, and the skipped row is not counted either.
+   */
+  private boolean deletedByAnEarlierRow(final Identifiable record) {
+    final RID rid = record.getIdentity();
+    if (rid == null || rid.getPosition() < 0)
+      return false;
+    if (deleted == null)
+      deleted = new RidHashSet();
+    return !deleted.add(rid);
   }
 
   /**
