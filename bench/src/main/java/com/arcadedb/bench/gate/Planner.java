@@ -58,6 +58,7 @@ public final class Planner {
     final Map<String, Integer> openByLine = new HashMap<>();
     final Map<String, Integer> openByRun = new HashMap<>();
     final Map<String, Set<String>> accepted = new HashMap<>();
+    final Map<String, Set<String>> reportedByBot = new HashMap<>();
     for (final TrackedIssue issue : sorted) {
       final Marker marker = issue.marker();
       if (issue.open()) {
@@ -70,6 +71,10 @@ public final class Planner {
       } else if (issue.closedByMaintainer())
         for (final String id : marker.lineIds())
           accepted.computeIfAbsent(lineKey(marker.getTrigger(), id), k -> new HashSet<>()).add(marker.line(id).getString("baseRef", ""));
+      else
+        // closed by the bot after recovering: the run it last followed is reported, even if that run is worse than the one before it
+        for (final String id : marker.lineIds())
+          reportedByBot.computeIfAbsent(lineKey(marker.getTrigger(), id), k -> new HashSet<>()).add(marker.line(id).getString("lastRun", ""));
     }
 
     // the refs each issue gets a comment for, with the time of the run so the newest comes last
@@ -104,6 +109,9 @@ public final class Planner {
         continue;
       final Set<String> acceptedBases = accepted.get(tracked);
       if (acceptedBases != null && acceptedBases.contains(v.baseline().ref()))
+        continue;
+      final Set<String> botRuns = reportedByBot.get(tracked);
+      if (botRuns != null && botRuns.contains(v.newest().ref()))
         continue;
       events.computeIfAbsent(runKey(v.trigger(), v.newest().ref()), k -> new ArrayList<>()).add(v);
     }
@@ -143,7 +151,7 @@ public final class Planner {
         final String ref = ordered.get(i).ref();
         final String key = runKey(marker.getTrigger(), ref);
         final List<String> rows = IssueText.runRows(marker, ref);
-        final List<String> improvements = improvements(verdicts, marker, ref);
+        final List<String> improvements = improvements(verdicts, marker.getTrigger(), ref, openByLine.keySet());
         if (close && i == ordered.size() - 1)
           actions.put(new JSONObject().put("op", "close").put("issue", number)
               .put("body", IssueText.runComment(key, rows, improvements, IssueText.closing(marker.getTrigger()))));
@@ -155,12 +163,12 @@ public final class Planner {
     return new JSONObject().put("label", LABEL).put("actions", actions);
   }
 
-  /** Lines of the run that improved on their own baseline and that the issue does not track, in line order. */
-  private static List<String> improvements(final List<Verdict> verdicts, final Marker marker, final String ref) {
+  /** Lines of the run that improved on their own baseline and that no open issue tracks, in line order. */
+  private static List<String> improvements(final List<Verdict> verdicts, final String trigger, final String ref, final Set<String> tracked) {
     final List<String> rows = new ArrayList<>();
     for (final Verdict v : verdicts)
-      if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(marker.getTrigger()) && v.newest().ref().equals(ref)
-          && marker.line(v.key().id()) == null)
+      if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(trigger) && v.newest().ref().equals(ref) && !tracked.contains(
+          lineKey(trigger, v.key().id())))
         rows.add(IssueText.improvementRow(v));
     return Collections.unmodifiableList(rows);
   }

@@ -23,7 +23,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,18 +50,36 @@ class PlannerTest {
   private static final LineKey TIME   = new LineKey("perf-01", "jvm", "M", "vector", "search", "time");
   private static final LineKey TIME2  = new LineKey("perf-01", "jvm", "M", "vector", "build", "time");
   private static final LineKey NATIVE = new LineKey("perf-01", "native", "M", "vector", "search", "time");
+  private static final LineKey STATUS = new LineKey("perf-01", "jvm", "M", "vector", "search", LineKey.STATUS);
 
   private static final BenchChanges NO_BENCH = BenchChanges.read(Path.of("does-not-exist.json"));
 
   private static int seq = 0;
 
   private static Point point(final String trigger, final String ref, final int day, final double median, final String bench) {
+    return point(trigger, ref, day, "ok", median, bench);
+  }
+
+  private static Point point(final String trigger, final String ref, final int day, final String status, final double median,
+      final String bench) {
     final Instant t = Instant.parse("2026-11-01T00:00:00Z").plusSeconds(day * 86400L);
     final boolean nightly = "nightly".equals(trigger);
+    final boolean statusPoint = Double.isNaN(median);
     final int n = seq++;
     return new Point(trigger, ref, nightly ? ref : null, nightly ? null : ref, t, t.plusSeconds(n),
-        String.format("2026-11-%02dT00-00-%02dZ-%d", day, n % 60, n), bench, "ok", median, new double[] { median * 0.99, median, median * 1.01 },
-        "ms", "lower");
+        String.format("2026-11-%02dT00-00-%02dZ-%d", day, n % 60, n), bench, status, median,
+        statusPoint ? new double[0] : new double[] { median * 0.99, median, median * 1.01 }, statusPoint ? null : "ms",
+        statusPoint ? null : "lower");
+  }
+
+  /** A point of the case's status line. */
+  private static Point s(final String ref, final int day, final String status) {
+    return point("nightly", ref, day, status, Double.NaN, "x");
+  }
+
+  /** A metric point of a run whose case failed. */
+  private static Point failed(final String ref, final int day, final double median) {
+    return point("nightly", ref, day, "failed", median, "x");
   }
 
   private static Point n(final String ref, final int day, final double median) {
@@ -84,6 +104,14 @@ class PlannerTest {
     for (int i = 0; i < actions.length(); i++)
       ops.add(actions.getJSONObject(i).getString("op"));
     return ops;
+  }
+
+  private static JSONObject action(final JSONObject plan, final String op, final int issue) {
+    final JSONArray actions = plan.getJSONArray("actions");
+    for (int i = 0; i < actions.length(); i++)
+      if (op.equals(actions.getJSONObject(i).getString("op")) && actions.getJSONObject(i).getInt("issue", -1) == issue)
+        return actions.getJSONObject(i);
+    throw new AssertionError("no " + op + " for #" + issue + " in " + plan);
   }
 
   private static JSONObject action(final JSONObject plan, final String op) {
@@ -260,8 +288,83 @@ class PlannerTest {
     final Marker marker = markerOf(action(plan(lines), "create"));
 
     assertThat(ops(plan(lines, new TrackedIssue(7, false, true, marker)))).isEmpty();
-    // the same issue closed by the bot is not an acceptance: the regression is an event again
-    assertThat(ops(plan(lines, new TrackedIssue(7, false, false, marker)))).containsExactly("create");
+    // without the accepted issue the same data is an event
+    assertThat(ops(plan(lines))).containsExactly("create");
+  }
+
+  @Test
+  void aNewRegressionAfterAnAcceptedOneOpensAnIssue() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    final Marker accepted = markerOf(action(plan(data(TIME, points)), "create"));
+
+    points.add(n(C, 3, 150));
+    points.add(n(D, 4, 200));
+    final JSONObject plan = plan(data(TIME, points), new TrackedIssue(7, false, true, accepted));
+
+    assertThat(ops(plan)).containsExactly("create");
+    assertThat(action(plan, "create").getString("key")).isEqualTo("nightly:" + D);
+    assertThat(markerOf(action(plan, "create")).line(TIME.id()).getString("baseRef")).isEqualTo(C);
+  }
+
+  @Test
+  void rerunAfterABotCloseIsEmpty() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+    points.add(n(C, 3, 95));
+    marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    assertThat(marker.line(TIME.id()).getInt("streak")).isEqualTo(1);
+    points.add(n(D, 4, 108));
+    final JSONObject closing = plan(data(TIME, points), open(7, marker));
+    assertThat(ops(closing)).containsExactly("update", "close");
+    final Marker closed = markerOf(action(closing, "update"));
+
+    // D is +13.7% on C, but it was already reported (as recovered) in the issue the bot closed
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, false, false, closed)))).isEmpty();
+
+    points.add(n(E, 5, 125));
+    final JSONObject next = plan(data(TIME, points), new TrackedIssue(7, false, false, closed));
+    assertThat(ops(next)).containsExactly("create");
+    assertThat(action(next, "create").getString("key")).isEqualTo("nightly:" + E);
+  }
+
+  @Test
+  void failedCaseOpensOneStatusLine() {
+    final JSONObject plan = plan(data(STATUS, List.of(s(A, 1, "ok"), s(B, 2, "failed")), TIME, List.of(n(A, 1, 100), failed(B, 2, 300))));
+
+    assertThat(ops(plan)).containsExactly("create");
+    assertThat(markerOf(action(plan, "create")).lineIds()).containsExactly(STATUS.id());
+    assertThat(action(plan, "create").getString("title")).isEqualTo("Performance regression: 1 lines worse between aaaaaaa..bbbbbbb");
+  }
+
+  @Test
+  void trackedStatusLineRecoversAndCloses() {
+    final List<Point> status = new ArrayList<>(List.of(s(A, 1, "ok"), s(B, 2, "failed")));
+    final JSONObject first = plan(data(STATUS, status));
+
+    status.add(s(C, 3, "ok"));
+    final JSONObject second = plan(data(STATUS, status), open(7, markerOf(action(first, "create"))));
+    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(action(second, "comment").getString("body")).contains("recovered");
+
+    status.add(s(D, 4, "ok"));
+    final JSONObject third = plan(data(STATUS, status), open(7, markerOf(action(second, "update"))));
+    assertThat(ops(third)).containsExactly("update", "close");
+  }
+
+  @Test
+  void trackedMetricOfAFailedRunIsNotJudged() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+    points.add(n(C, 3, 100));
+    marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    assertThat(marker.line(TIME.id()).getInt("streak")).isEqualTo(1);
+
+    points.add(failed(D, 4, 100));
+    final JSONObject plan = plan(data(TIME, points), open(7, marker));
+
+    assertThat(ops(plan)).containsExactly("update", "comment");
+    assertThat(action(plan, "comment").getString("body")).contains("not judged");
+    assertThat(markerOf(action(plan, "update")).line(TIME.id()).getInt("streak")).isEqualTo(0);
   }
 
   @Test
@@ -309,6 +412,27 @@ class PlannerTest {
   }
 
   @Test
+  void aLineTrackedByAnotherIssueIsNotAnImprovement() {
+    final List<Point> time = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    final List<Point> time2 = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 100)));
+    final JSONObject first = plan(data(TIME, time, TIME2, time2));
+
+    time.add(n(C, 3, 150));
+    time2.add(n(C, 3, 150));
+    final JSONObject second = plan(data(TIME, time, TIME2, time2), open(7, markerOf(action(first, "create"))));
+    assertThat(ops(second)).containsExactly("create", "update", "comment");
+    final Marker seven = markerOf(action(second, "update"));
+    final Marker eight = markerOf(action(second, "create"));
+    assertThat(eight.lineIds()).containsExactly(TIME2.id());
+
+    time.add(n(D, 4, 150));
+    time2.add(n(D, 4, 100));
+    final JSONObject third = plan(data(TIME, time, TIME2, time2), open(7, seven), open(8, eight));
+    assertThat(action(third, "comment", 8).getString("body")).contains(TIME2.id()).contains("recovered");
+    assertThat(action(third, "comment", 7).getString("body")).contains("still worse").doesNotContain(TIME2.id()).doesNotContain("Improvements");
+  }
+
+  @Test
   void benchChangeNote() throws IOException {
     final Map<LineKey, List<Point>> lines = data(TIME, List.of(point("nightly", A, 1, 100, "x1"), point("nightly", B, 2, 150, "y1")));
     final Path file = dir.resolve("bench-changes.json");
@@ -323,6 +447,18 @@ class PlannerTest {
 
     assertThat(action(Planner.plan(lines, List.of(), BenchChanges.read(dir.resolve("missing.json"))), "create").getString("body"))
         .contains("bench change unknown");
+  }
+
+  @Test
+  void invalidBenchChangesFileIsAllUnknown() throws IOException {
+    final Path file = dir.resolve("bench-changes.json");
+    Files.writeString(file, "{not json", StandardCharsets.UTF_8);
+    final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+    final BenchChanges bench = BenchChanges.read(file, new PrintStream(bytes, true, StandardCharsets.UTF_8));
+
+    assertThat(bench.changed("x1", "y1")).isNull();
+    assertThat(bytes.toString(StandardCharsets.UTF_8)).contains("bench-changes.json");
   }
 
   @Test

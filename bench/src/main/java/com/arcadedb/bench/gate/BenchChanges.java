@@ -21,6 +21,7 @@ package com.arcadedb.bench.gate;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,6 +45,11 @@ public final class BenchChanges {
 
   /** Reads the answers; a missing file answers nothing (every pair unknown). */
   public static BenchChanges read(final Path file) {
+    return read(file, System.err);
+  }
+
+  /** Reads the answers; a missing file, or one that is not a JSON object (warned on {@code warn}), answers nothing. */
+  public static BenchChanges read(final Path file, final PrintStream warn) {
     final Map<String, Boolean> answers = new HashMap<>();
     if (file == null || !Files.isRegularFile(file))
       return new BenchChanges(answers);
@@ -52,6 +58,9 @@ public final class BenchChanges {
       json = new JSONObject(Files.readString(file, StandardCharsets.UTF_8));
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
+    } catch (final RuntimeException e) {
+      warn.println("WARNING: ignoring unreadable bench changes file " + file + " (every bench change unknown): " + e.getMessage());
+      return new BenchChanges(answers);
     }
     for (final String pair : json.keySet()) {
       final Object answer = json.get(pair, null);
