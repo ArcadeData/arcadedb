@@ -61,6 +61,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
@@ -87,6 +88,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
@@ -145,9 +147,22 @@ public class CypherExecutionPlan {
    * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
    * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
    * at most 13 us. A factor of 100 keeps the seek ahead even at that worst ratio, so only a seek that clearly reads a small part of
-   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more.
+   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more; the
+   * estimate of a NOTUNIQUE key is an average over its keys, so the entries of the key sought are counted, up to this share of the
+   * label (issue #11889).
    */
   private static final int SELECTIVE_ANCHOR_LABEL_SHARE = 100;
+
+  /**
+   * How much smaller than its label the range of an index range seek must be, counted, for a count to be left to the ordinary
+   * plan rather than pushed down (issue #11889). The optimizer estimates any range at a fixed share of the label, so the range
+   * is counted instead, up to this share. Only the optimizer's plan seeks a range. On a graph of 60,000 vertices and 120,000
+   * relationships the range seek plus its expansion was faster than the push-down at every range up to a quarter of the label,
+   * in every shape measured (a star with a filtered arm and without, and a chain in either direction), and the two cost about
+   * the same between a quarter and half of it; past half the star without a filtered arm was faster pushed down (61 ms against
+   * 131 ms over the whole label).
+   */
+  private static final int RANGE_ANCHOR_LABEL_SHARE = 4;
 
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
@@ -2204,27 +2219,28 @@ public class CypherExecutionPlan {
     // is seeded from the anchor its outer row bound, and a chain from the vertex a UNIQUE key pins (issue #11594), so neither
     // has a label to walk: that walk costs the seek and the paths of one vertex, without a row per path.
     if (!correlation.isCorrelated() && !(op instanceof PropagateChainOp chain && chain.isSeeded())
-        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
+        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor(context))
       return null;
 
     return new CSRCountStep(op, alias, context);
   }
 
   /**
-   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, estimated to find a few vertices of
-   * a label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
+   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, that finds a few vertices of a
+   * label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
    * count push-down walks a whole label to reach the same answer.
    * <p>
    * The anchor is the one the ordinary plan actually starts from, so the answer is never "seekable" for a plan that would scan:
    * the optimizer's own anchor when its physical plan runs, which an index-backed node always wins (issue #5306), and otherwise
    * the first node of the first MATCH clause, which is where the pipeline of {@link CypherStepBuilder#buildExecutionSteps} and
    * {@link CypherStepBuilder#buildExecutionStepsWithOrder} starts. Both are judged by {@link AnchorSelector}, the estimate the optimizer plans
-   * with, rather than by a second index matcher.
+   * with, rather than by a second index matcher, and where that estimate cannot tell, by counting what the seek finds, see
+   * {@link #isSelectiveSeek}.
    */
-  private boolean ordinaryPlanSeeksASelectiveAnchor() {
+  private boolean ordinaryPlanSeeksASelectiveAnchor(final CommandContext context) {
     final StatisticsProvider statistics = new StatisticsProvider(database);
     if (canUseOptimizedPhysicalPlan())
-      return isSelectiveSeek(physicalPlan.getAnchor(), statistics);
+      return isSelectiveSeek(physicalPlan.getAnchor(), statistics, context);
 
     final List<MatchClause> matchClauses = statement.getMatchClauses();
     if (matchClauses == null || matchClauses.isEmpty())
@@ -2250,23 +2266,50 @@ public class CypherExecutionPlan {
         null, null, false, false, false));
     statistics.collectStatistics(node.getLabels());
     final LogicalNode firstNode = plan.getPatternNodes().values().iterator().next();
-    return isSelectiveSeek(new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan), statistics);
+    final AnchorSelection anchor = new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan);
+    // the node step seeks an equality, never a range
+    return anchor != null && !anchor.isRangeScan() && isSelectiveSeek(anchor, statistics, context);
   }
 
   /**
-   * Whether an anchor is an index seek estimated to find few vertices: one row of a UNIQUE index whose whole key is bound, or
-   * fewer than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label it seeks. A range scan never is, whatever its
-   * estimate.
+   * Whether an anchor is an index seek that finds few vertices of the label it seeks (issues #11680, #11889).
+   * <ul>
+   * <li>An equality seek is when the optimizer's estimate says so: one row of a UNIQUE index whose whole key is bound, or fewer
+   * than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label. That estimate is an average over the keys of a
+   * NOTUNIQUE index, so otherwise the entries of the key sought are counted, up to that share of the label.</li>
+   * <li>A range seek is when its entries, counted, are fewer than one in {@link #RANGE_ANCHOR_LABEL_SHARE} of the label: the
+   * optimizer estimates any range at a fixed share of the label whatever its bounds.</li>
+   * </ul>
+   * The entries are counted, with the parameters of this execution bound, by the operator the optimizer builds for the anchor,
+   * the very one its plan runs. The count stops at the cap and loads no record: it costs at most that many index entries read,
+   * against a push-down that walks the whole label. It does not catch what the operator refuses with (an index the schema no
+   * longer offers, a timeout): the plan was built from the schema it reads, and the seek would refuse the same way.
    */
-  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics) {
-    if (anchor == null || !anchor.useIndex() || anchor.isRangeScan() || anchor.getNode() == null)
+  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics,
+      final CommandContext context) {
+    if (anchor == null || !anchor.useIndex() || anchor.getNode() == null)
       return false;
-    final long rows = Math.max(1L, anchor.getEstimatedCardinality());
-    final IndexStatistics index = anchor.getIndex();
-    if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
-      return true;
     final LogicalNode node = anchor.getNode();
-    return rows * SELECTIVE_ANCHOR_LABEL_SHARE < statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
+    final long labelVertices = statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
+    if (!anchor.isRangeScan()) {
+      final long rows = Math.max(1L, anchor.getEstimatedCardinality());
+      final IndexStatistics index = anchor.getIndex();
+      if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
+        return true;
+      if (rows * SELECTIVE_ANCHOR_LABEL_SHARE < labelVertices)
+        return true;
+    }
+
+    final PhysicalOperator seek = new IndexSelectionRule(statistics, new CostModel(statistics)).createAnchorOperator(anchor);
+    if (seek instanceof NodeIndexRangeScan range) {
+      final long cap = labelVertices / RANGE_ANCHOR_LABEL_SHARE;
+      return cap > 0 && range.countEntries(context, cap) < cap;
+    }
+    if (seek instanceof NodeIndexSeek equality) {
+      final long cap = labelVertices / SELECTIVE_ANCHOR_LABEL_SHARE;
+      return cap > 0 && equality.countEntries(context, cap) < cap;
+    }
+    return false;
   }
 
   /**
