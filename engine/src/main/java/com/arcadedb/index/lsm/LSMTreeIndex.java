@@ -674,7 +674,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < keyTypes.length; ++i)
-      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(getDatabase(), keys[i], keyTypes[i]))
         return false;
     return true;
   }
@@ -686,7 +686,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final byte[] keyTypes = mutable.binaryKeyTypes;
     for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
-      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], keyTypes[i]))
         return false;
     return true;
   }

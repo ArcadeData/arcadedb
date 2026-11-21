@@ -1601,7 +1601,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     for (int i = 0; i < values.length && i < keyTypes.length; i++)
       // Also a value the conversion leaves as it was or answers null for (a LocalDate for a BOOLEAN key, a List for an INTEGER one):
       // no key either, and a range reads a null bound as "no bound" (issue #10541)
-      if (!Type.canBeIndexLookupKey(database, values[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.canBeIndexLookupKey(database, values[i], keyTypes[i]))
         return false;
     return true;
   }

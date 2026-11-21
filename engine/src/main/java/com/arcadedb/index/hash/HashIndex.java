@@ -950,7 +950,7 @@ public class HashIndex implements IndexInternal {
 
     final byte[] keyTypes = bucket.declaredKeyTypes;
     for (int i = 0; i < keys.length && i < convertedKeys.length && i < keyTypes.length; ++i)
-      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], BinaryTypes.getClassFromType(keyTypes[i])))
+      if (!Type.isReadAsIndexKey(keys[i], convertedKeys[i], keyTypes[i]))
         return false;
     return true;
   }
