@@ -90,7 +90,9 @@ public class SelectParallelIterator<T extends Document> extends SelectIterator<T
       final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();
       final int backPressurePercentage = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_BACK_PRESSURE);
 
-      final int limit = executor.select.limit;
+      // AN ORDER BY IS SORTED OVER THE WHOLE RESULT BEFORE THE LIMIT IS APPLIED (SEE fetchResultInCaseOfOrderBy()), SO THE
+      // PRODUCERS CANNOT STOP AT THE LIMIT: THEY WOULD HAND IT AN ARBITRARY SUBSET OF THE MATCHES (#12692)
+      final int limit = executor.select.orderBy != null ? -1 : executor.select.limit;
       final long stallTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(
           executor.select.timeoutInMs > 0 ? executor.select.timeoutInMs : DEFAULT_STALL_TIMEOUT_MS);
 
