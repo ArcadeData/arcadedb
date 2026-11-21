@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.server.grpc.GrpcArrayCodec;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -402,7 +403,9 @@ public class ProtoUtils {
       var out = new ArrayList<>();
       for (GrpcValue e : v.getListValue().getValuesList())
         out.add(fromGrpcValue(e));
-      return dbgDec("fromGrpcValue", v, out);
+      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it
+      final Object array = GrpcArrayCodec.toArray(out, v.getLogicalType());
+      return dbgDec("fromGrpcValue", v, array != null ? array : out);
     }
     case MAP_VALUE: {
       var out = new LinkedHashMap<String, Object>();
