@@ -229,8 +229,8 @@ class TimeBoundRegexTest {
           .hasMessageContaining("start positions");
       assertThatThrownBy(() -> TimeBoundRegex.replaceAll(pattern, input, "x", 200)).isInstanceOf(TimeoutException.class);
       // the same pattern over a short input, and a full match (one attempt, at the start), are cheap and run
-      assertThat(TimeBoundRegex.findUntil(pattern, "y".repeat(1000), TimeBoundRegex.newDeadline(200))).isFalse();
-      assertThat(TimeBoundRegex.matches(pattern, input, 200)).isFalse();
+      assertThat(TimeBoundRegex.findUntil(pattern, "y".repeat(1000), TimeBoundRegex.newDeadline(10_000))).isFalse();
+      assertThat(TimeBoundRegex.matches(pattern, input, 10_000)).isFalse();
     }
 
     @Test
@@ -242,26 +242,71 @@ class TimeBoundRegexTest {
           .hasMessageContaining("steps in a single attempt");
       stopwatch.assertGaveUpWithin(5000, "the refusal, which looks at the pattern and not at the input");
       // a loop of a few iterations is nothing
-      assertThat(TimeBoundRegex.matches(Pattern.compile("(?:(?:\\A){10}){10}a"), "a", 200)).isTrue();
+      assertThat(TimeBoundRegex.matches(Pattern.compile("(?:(?:\\A){10}){10}a"), "a", 10_000)).isTrue();
     }
 
     @Test
     void aBodyRepeatedNoTimesIsNotCounted() {
       // the body is never entered, so a match that does not go through it must not be refused for what it would cost
       final Pattern pattern = Pattern.compile("(?:\\A|\\A){0}".repeat(20) + "a");
-      assertThat(TimeBoundRegex.matches(pattern, "a", 200)).isTrue();
+      assertThat(TimeBoundRegex.matches(pattern, "a", 10_000)).isTrue();
     }
 
     @Test
-    void aLongPatternIsMeasuredOncePerPatternAndNeverKeptByItsText() {
+    void aLongPatternIsRefusedOrAcceptedOnEveryCall() {
+      // past 1,024 characters the measure is kept per Pattern, not by its text: the answer is the same on each call
       final Pattern refused = Pattern.compile("\\A" + "(?:\\A|\\A)".repeat(150) + "\\z");
       assertThat(refused.pattern().length()).isGreaterThan(1024);
       assertThatThrownBy(() -> TimeBoundRegex.matches(refused, "ab", 200)).isInstanceOf(TimeoutException.class);
       assertThatThrownBy(() -> TimeBoundRegex.matches(refused, "ab", 200)).isInstanceOf(TimeoutException.class);
 
+      // the positive checks test acceptance, not latency: a deadline no pause of the JVM reaches
       final Pattern benign = Pattern.compile("a".repeat(2000));
-      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 200)).isTrue();
-      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 200)).isTrue();
+      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 60_000)).isTrue();
+      assertThat(TimeBoundRegex.matches(benign, "a".repeat(2000), 60_000)).isTrue();
+    }
+
+    @Test
+    void workAfterACharacterIsNotHiddenBehindIt() {
+      // the character in front is read, and the 10^9 empty iterations after it are not: they have no read to be polled from
+      final Pattern pattern = Pattern.compile("a(?:(?:(?:){1000}){1000}){1000}");
+      assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "a", 10_000)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("steps in a single attempt");
+    }
+
+    @Test
+    void aTrailingInlineFlagDoesNotHideTheStateThePatternStartedIn() {
+      // Pattern.flags() answers the state at the END of the pattern, so the trailing (?x) makes it COMMENTS and the '#' in front
+      // of 2,048 ways is a character that has to be read, not the start of a comment that would hide them
+      final Pattern hidden = Pattern.compile("#" + "(?:\\A|\\A)".repeat(11) + "(?x)");
+      assertThat(hidden.flags() & Pattern.COMMENTS).isNotZero();
+      assertThatThrownBy(() -> TimeBoundRegex.matches(hidden, "#", 10_000)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("different ways");
+
+      // and the other way round: COMMENTS passed, switched off at the end, which flags() reports as no COMMENTS at all
+      final Pattern shown = Pattern.compile("# note\n" + "(?:\\A|\\A)".repeat(11) + "(?-x)", Pattern.COMMENTS);
+      assertThat(shown.flags() & Pattern.COMMENTS).isZero();
+      assertThatThrownBy(() -> TimeBoundRegex.matches(shown, "", 10_000)).isInstanceOf(TimeoutException.class)
+          .hasMessageContaining("different ways");
+    }
+
+    @Test
+    void aPatternWithATrailingInlineFlagStillRunsWhenItIsHarmless() {
+      // read as comments from the start the '#b)(?x)' would swallow the group's end: the state it really started in parses
+      final Pattern pattern = Pattern.compile("(a#b)(?x)");
+      assertThat(TimeBoundRegex.matches(pattern, "a#b", 10_000)).isTrue();
+    }
+
+    @Test
+    void anOperationStartedAfterTheDeadlineHasGoneByIsNotGivenAMatch() {
+      // a short input never reaches the clock check of charAt(), and one deadline is shared by every row of a scan
+      final long gone = System.nanoTime() - 1_000_000L;
+      assertThatThrownBy(() -> TimeBoundRegex.matchesUntil(Pattern.compile("\\A\\z"), "", gone)).isInstanceOf(TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.findUntil(Pattern.compile("a"), "a", gone)).isInstanceOf(TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.replaceAllUntil(Pattern.compile("a"), "a", "b", gone)).isInstanceOf(TimeoutException.class);
+      assertThatThrownBy(() -> TimeBoundRegex.fullMatchUntil(Pattern.compile("a"), "a", gone)).isInstanceOf(TimeoutException.class);
+      // a disabled bound has no deadline to have gone by
+      assertThat(TimeBoundRegex.matchesUntil(Pattern.compile("a"), "a", Long.MAX_VALUE)).isTrue();
     }
 
     @Test
@@ -271,7 +316,7 @@ class TimeBoundRegexTest {
       final Pattern literal = Pattern.compile(zeroWidthAlternation, Pattern.LITERAL);
       final Pattern pattern = Pattern.compile(zeroWidthAlternation);
 
-      assertThat(TimeBoundRegex.matches(literal, "ab", 200)).isFalse();
+      assertThat(TimeBoundRegex.matches(literal, "ab", 10_000)).isFalse();
       assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "ab", 200)).isInstanceOf(TimeoutException.class);
     }
 
@@ -283,7 +328,7 @@ class TimeBoundRegexTest {
       final Pattern literal = Pattern.compile(text, Pattern.LITERAL);
 
       assertThatThrownBy(() -> TimeBoundRegex.matches(pattern, "ab", 200)).isInstanceOf(TimeoutException.class);
-      assertThat(TimeBoundRegex.matches(literal, text, 200)).isTrue();
+      assertThat(TimeBoundRegex.matches(literal, text, 10_000)).isTrue();
     }
 
     @Test
@@ -293,11 +338,11 @@ class TimeBoundRegexTest {
       final Pattern plain = Pattern.compile(text);
       final Pattern comments = Pattern.compile(text, Pattern.COMMENTS);
 
-      assertThat(TimeBoundRegex.matches(plain, "ab", 200)).isFalse();
+      assertThat(TimeBoundRegex.matches(plain, "ab", 10_000)).isFalse();
       assertThatThrownBy(() -> TimeBoundRegex.matches(comments, "ab", 200)).isInstanceOf(TimeoutException.class);
       // in the other order too, and from the cache the second time
       assertThatThrownBy(() -> TimeBoundRegex.matches(comments, "ab", 200)).isInstanceOf(TimeoutException.class);
-      assertThat(TimeBoundRegex.matches(plain, "ab", 200)).isFalse();
+      assertThat(TimeBoundRegex.matches(plain, "ab", 10_000)).isFalse();
     }
 
     @Test

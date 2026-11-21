@@ -39,6 +39,11 @@ class RegexReadFreeWorkTest {
     return RegexReadFreeWork.measure(regex, 0).maxWays();
   }
 
+  /** The ways when the pattern starts in exactly the state of no flags, which is the only one a pattern that mentions none has. */
+  private static long waysInState(final String regex) {
+    return RegexReadFreeWork.measureInState(regex, 0).maxWays();
+  }
+
   @Nested
   class WaysOfOneElement {
     @Test
@@ -195,8 +200,10 @@ class RegexReadFreeWorkTest {
       assertThat(work("(?:|)")).isEqualTo(2);
       // 2 visits to the first group, then 2 paths reach the second
       assertThat(work("(?:\\A|\\A)(?:\\A|\\A)")).isEqualTo(6);
-      // at the end of the input 'a' fails there, and nothing after it is visited
-      assertThat(work("a\\Ab")).isEqualTo(1);
+      // what follows a read is work too: the read is a poll of the deadline, not a bound on the visits after it
+      assertThat(work("a\\z")).isEqualTo(2);
+      assertThat(work("a\\Ab")).isEqualTo(3);
+      assertThat(work("a(?:(?:(?:){1000}){1000}){1000}")).isEqualTo(1_000_000_001L);
     }
 
     @Test
@@ -213,7 +220,7 @@ class RegexReadFreeWorkTest {
     @Test
     void aBodyThatReadsIsAttemptedOnceWhateverItIsRepeated() {
       assertThat(work("a{1000000}")).isEqualTo(1);
-      assertThat(work("(?:ab){1000}")).isEqualTo(1);
+      assertThat(work("(?:ab){1000}")).isEqualTo(2);
       assertThat(work("[a-z]*")).isEqualTo(1);
     }
 
@@ -297,15 +304,66 @@ class RegexReadFreeWorkTest {
 
     @Test
     void anInlineCommentsFlagIsScopedToItsGroup() {
+      // The scoping of one starting state, read in exactly the state the pattern is given: measure() also tries the other one
+      // for a pattern that mentions the flag, since Pattern.flags() cannot say which it started in, and answers the worse.
       // (?x) holds to the end of its group, the following option included, and not past it
-      assertThat(ways("(?:(?x) \\A | \\A ) \\A ?")).isEqualTo(2);
-      assertThat(ways("(?:(?x)\\A|\\A)\\A?")).isEqualTo(4);
-      assertThat(ways("(?x: \\A | \\A )\\A?")).isEqualTo(4);
+      assertThat(waysInState("(?:(?x) \\A | \\A ) \\A ?")).isEqualTo(2);
+      assertThat(waysInState("(?:(?x)\\A|\\A)\\A?")).isEqualTo(4);
+      assertThat(waysInState("(?x: \\A | \\A )\\A?")).isEqualTo(4);
       // past the group the spaces are literals again, and a literal has to read
-      assertThat(ways("(?x: \\A | \\A ) \\A?")).isEqualTo(2);
+      assertThat(waysInState("(?x: \\A | \\A ) \\A?")).isEqualTo(2);
       // and (?-x:...) turns it off inside a pattern that has it on
-      assertThat(ways("(?x)(?-x:\\A|\\A) \\A ?")).isEqualTo(4);
-      assertThat(ways("(?x)(?-x: \\A | \\A )")).isEqualTo(1);
+      assertThat(waysInState("(?x)(?-x:\\A|\\A) \\A ?")).isEqualTo(4);
+      assertThat(waysInState("(?x)(?-x: \\A | \\A )")).isEqualTo(1);
+    }
+
+    @Test
+    void aPatternThatMentionsTheFlagIsReadInTheWorseOfItsStartingStates() {
+      // started with comments off the spaces are literals that read; started with them on they are ignored and the run is whole
+      assertThat(waysInState("(?:(?x) \\A | \\A ) \\A ?")).isEqualTo(2);
+      assertThat(RegexReadFreeWork.measureInState("(?:(?x) \\A | \\A ) \\A ?", Pattern.COMMENTS).maxWays()).isEqualTo(4);
+      assertThat(ways("(?:(?x) \\A | \\A ) \\A ?")).isEqualTo(4);
+    }
+
+    @Test
+    void namesAreReadPastWhatCommentsModeIgnores() {
+      // Pattern reads the '<' of \k and the name through the same cursor as everything else: whitespace may be anywhere in them
+      final String backReference = "(?x)(?<a>a*)\\k <a>";
+      final String spaced = "(?x)(?<a b>a*)(?:\\k<ab>|\\k< a b >)";
+      assertThat(Pattern.compile(backReference).matcher("aa").matches()).isTrue();
+      assertThat(Pattern.compile(spaced).matcher("aa").matches()).isTrue();
+
+      assertThat(RegexReadFreeWork.measure(backReference, 0).groups()).isEqualTo(1);
+      // both references find their group (the name is "ab"), and can match nothing as it can: 2 ways in a run with the group's 1
+      assertThat(RegexReadFreeWork.measure(spaced, 0).maxWays()).isEqualTo(2);
+    }
+
+    @Test
+    void anInlineFlagAtTheEndHidesTheStateThePatternStartedIn() {
+      // Pattern.flags() answers the state at the END of the pattern: a trailing (?x) makes it COMMENTS, a trailing (?-x) clears it
+      final Pattern trailingOn = Pattern.compile("(a#b)(?x)");
+      assertThat(trailingOn.flags() & Pattern.COMMENTS).isNotZero();
+      // read as comments from the start the '#b)(?x)' would swallow the end of the group: the other state is the one that parses
+      assertThat(RegexReadFreeWork.measure(trailingOn.pattern(), trailingOn.flags()).groups()).isEqualTo(1);
+
+      // and the '#' that is a character, not a comment, must not hide 2,048 ways behind it
+      final String hidden = "#" + "(?:\\A|\\A)".repeat(11) + "(?x)";
+      assertThat(RegexReadFreeWork.measure(hidden, Pattern.compile(hidden).flags()).maxWays()).isEqualTo(2048);
+
+      // the other way round: COMMENTS passed, switched off at the end
+      final String shown = "# note\n" + "(?:\\A|\\A)".repeat(11) + "(?-x)";
+      final Pattern comments = Pattern.compile(shown, Pattern.COMMENTS);
+      assertThat(comments.flags() & Pattern.COMMENTS).isZero();
+      assertThat(RegexReadFreeWork.measure(shown, comments.flags()).maxWays()).isEqualTo(2048);
+    }
+
+    @Test
+    void aPatternWithoutInlineFlagsIsReadInTheStateItWasCompiledIn() {
+      // with nothing to change the flags the end state is the start state, and no other is considered: in comments mode the
+      // text after '#' is a comment and hides what a plain reading would count
+      final String text = "# " + "(?:\\A|\\A)".repeat(11) + "\n";
+      assertThat(RegexReadFreeWork.measure(text, Pattern.COMMENTS).maxWays()).isEqualTo(1);
+      assertThat(RegexReadFreeWork.measure(text, 0).maxWays()).isEqualTo(2048);
     }
 
     @Test
@@ -356,7 +414,9 @@ class RegexReadFreeWorkTest {
         ++compiled;
         final RegexReadFreeWork.Measure measure;
         try {
-          measure = RegexReadFreeWork.measure(regex.toString(), flags);
+          // the state the pattern was compiled in, which is the one that has to parse (measure() also tries the others)
+          measure = RegexReadFreeWork.measureInState(regex.toString(), flags);
+          RegexReadFreeWork.measure(regex.toString(), flags);
         } catch (final Unparseable e) {
           throw new AssertionError("could not follow '" + regex.toString().replace("\n", "\\n") + "' (flags " + flags + "), which Pattern compiles: " + e.getMessage(), e);
         }

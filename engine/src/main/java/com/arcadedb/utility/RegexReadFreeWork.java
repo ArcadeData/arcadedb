@@ -96,6 +96,11 @@ final class RegexReadFreeWork {
   record Measure(long maxWays, int groups, long work, long scanWork) {
     /** what is not understood is never trusted: as much work as can be counted */
     private static final Measure UNBOUNDED = new Measure(SATURATED, 0, SATURATED, SATURATED);
+
+    /** the worse of two readings of the same pattern */
+    private Measure max(final Measure other) {
+      return new Measure(Math.max(maxWays, other.maxWays), groups, Math.max(work, other.work), Math.max(scanWork, other.scanWork));
+    }
   }
 
   /** What an element can do without reading: the ways it succeeds, and the node visits it makes doing so. */
@@ -127,15 +132,65 @@ final class RegexReadFreeWork {
     }
   }
 
-  /** @throws Unparseable when the syntax is not one this class follows */
+  /**
+   * @param flags the flags {@link Pattern#flags()} answers, which are the ones in force at the END of the pattern: an inline
+   *              {@code (?x)} or {@code (?-x)} has already replaced the ones the caller passed, so a pattern that has one may have
+   *              started in either state, and each reads the same text differently ({@code #} starts a comment in one and is a
+   *              character in the other). Every state it can have started in is measured and the worst one is the answer; one
+   *              that cannot parse the text is not the state the pattern has.
+   *
+   * @throws Unparseable when the syntax is not one this class follows in any of them
+   */
   static Measure measure(final String regex, final int flags) {
     if ((flags & Pattern.LITERAL) != 0)
       return new Measure(1, 0, 0, 0);
     final String unquoted = unquote(regex);
+    final boolean commentsEither = mentionsFlag(unquoted, 'x');
+    final boolean unixLinesEither = mentionsFlag(unquoted, 'd');
+
+    Measure worst = null;
+    Unparseable failure = null;
+    // the state the flags say comes first, then the ones an inline flag could have changed it from
+    for (int flipComments = 0; flipComments < (commentsEither ? 2 : 1); ++flipComments)
+      for (int flipUnixLines = 0; flipUnixLines < (unixLinesEither ? 2 : 1); ++flipUnixLines) {
+        final int start = flags ^ (flipComments == 1 ? Pattern.COMMENTS : 0) ^ (flipUnixLines == 1 ? Pattern.UNIX_LINES : 0);
+        try {
+          final Measure measure = measureStartingWith(unquoted, start);
+          worst = worst == null ? measure : worst.max(measure);
+        } catch (final Unparseable e) {
+          failure = e;
+        }
+      }
+    if (worst == null)
+      throw failure;
+    return worst;
+  }
+
+  /** What {@code regex} can do without reading when it starts in exactly the state {@code flags} give, no other considered. */
+  static Measure measureInState(final String regex, final int flags) {
+    if ((flags & Pattern.LITERAL) != 0)
+      return new Measure(1, 0, 0, 0);
+    return measureStartingWith(unquote(regex), flags);
+  }
+
+  private static Measure measureStartingWith(final String unquoted, final int flags) {
     final RegexReadFreeWork end = new RegexReadFreeWork(unquoted, flags, false);
     final Cost endCost = end.parse();
     final Cost middleCost = new RegexReadFreeWork(unquoted, flags, true).parse();
     return new Measure(end.maxWays, end.groups, endCost.work(), middleCost.work());
+  }
+
+  /** Whether an inline flag group of the text may set or clear {@code letter}: some "(?" is followed by it before a ')' or a ':'. */
+  private static boolean mentionsFlag(final String text, final char letter) {
+    for (int i = text.indexOf("(?"); i >= 0; i = text.indexOf("(?", i + 2))
+      for (int j = i + 2; j < text.length(); ++j) {
+        final char c = text.charAt(j);
+        if (c == letter)
+          return true;
+        if (c == ')' || c == ':')
+          break;
+      }
+    return false;
   }
 
   private Cost parse() {
@@ -214,8 +269,10 @@ final class RegexReadFreeWork {
     long run = 1;
     // the product of all of them, 0 as soon as one has to read
     long whole = 1;
-    // how many paths reach the next element: the product of the ways before it, 0 once one has to read (at the end of the input
-    // it fails there, in the middle of it that is a read the deadline hears of), and so what each element's work is multiplied by
+    // how many paths reach the next element: the product of the ways of the run it is in, and so what its work is multiplied by.
+    // A read starts a new run. In the middle of the input what follows it is work the deadline gets a look before (the read polls
+    // it), so a scan does not count it; at the end of the input the work after a read is real, whatever it costs there, and a
+    // suffix that matches nothing a billion times must not be hidden behind the character in front of it
     long arriving = 1;
     long work = 0;
     boolean any = false;
@@ -226,7 +283,7 @@ final class RegexReadFreeWork {
       any = true;
       final Cost element = quantified(c);
       work = add(work, multiply(arriving, element.work()));
-      arriving = multiply(arriving, element.ways());
+      arriving = element.ways() == 0 ? (middle ? 0 : 1) : multiply(arriving, element.ways());
       if (element.ways() == 0) {
         run = 1;
         whole = 0;
@@ -410,14 +467,11 @@ final class RegexReadFreeWork {
           ++position;
           negativeLook = true;
         } else {
-          final int close = source.indexOf('>', position);
-          if (close < 0)
-            throw new Unparseable("unclosed group name at " + position);
+          final String name = readName();
           capturing = ++groups;
           if (names == null)
             names = new HashMap<>();
-          names.put(source.substring(position, close), capturing);
-          position = close + 1;
+          names.put(name, capturing);
         }
       }
       default -> {
@@ -493,13 +547,11 @@ final class RegexReadFreeWork {
         skipPast('}');
       return boundary();
     case 'k': {
-      if (position >= source.length() || source.charAt(position) != '<')
+      // the '<' and the name are read as Pattern reads them, past whatever comments mode ignores
+      if (current() != '<')
         throw new Unparseable("a named back reference without a name at " + position);
-      final int close = source.indexOf('>', position);
-      if (close < 0)
-        throw new Unparseable("an unclosed back reference name at " + position);
-      final Integer group = names == null ? null : names.get(source.substring(position + 1, close));
-      position = close + 1;
+      ++position;
+      final Integer group = names == null ? null : names.get(readName());
       return backReference(group == null ? 0 : group);
     }
     case '1', '2', '3', '4', '5', '6', '7', '8', '9': {
@@ -526,6 +578,22 @@ final class RegexReadFreeWork {
       // classes (\d \w \s \h \v), \R, \X, the escapes of one character and the escaped punctuation: each reads
       return reading();
     }
+  }
+
+  /**
+   * A group name at the cursor and the '>' that ends it, read through the comments-aware cursor as Pattern reads them, so
+   * that comments mode may put whitespace in the middle of one.
+   */
+  private String readName() {
+    final StringBuilder name = new StringBuilder();
+    for (int c = current(); c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'; c = current()) {
+      name.append((char) c);
+      ++position;
+    }
+    if (current() != '>')
+      throw new Unparseable("a group name that does not end in '>' at " + position);
+    ++position;
+    return name.toString();
   }
 
   private Cost backReference(final int group) {
