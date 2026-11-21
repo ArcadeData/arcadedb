@@ -75,6 +75,7 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     // Refused before anything moves: a stripe name already taken would otherwise be found only after the type and its edge
     // buckets were renamed, and all of it rolled back
     checkStripePoolRenameTargets(oldName, newName);
+    checkBucketRenameTargets(oldName, newName, additionalBuckets);
 
     renameDocumentPart(newName);
 

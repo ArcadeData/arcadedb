@@ -773,6 +773,26 @@ public class LocalDocumentType implements DocumentType {
         .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
   }
 
+  /**
+   * Refused before a file moves (issue #12715): a bucket renamed onto the name of one that exists - a free bucket, one a dropped type
+   * left behind, one of another type - would share its name with it, the file manager and the schema could no longer tell the two
+   * apart, and the next open of the database fails with "Component 'X' was built on file id N but the file registered under that
+   * name has id M". {@code moved} are the buckets the rename gives a name derived from the type name; a bucket attached under a name
+   * of its own is not renamed and so cannot collide.
+   */
+  protected final void checkBucketRenameTargets(final String oldName, final String newName, final Collection<Bucket> moved) {
+    for (final Bucket bucket : moved) {
+      final String target = LocalSchema.rebaseComponentName(bucket.getName(), oldName, newName, schema.getEncoding());
+      if (target == null)
+        continue;
+      final Bucket holder = schema.getBucketByNameIfExists(target);
+      if (holder != null && holder != bucket)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its bucket '" + bucket.getName() + "' would be named '" + target
+                + "', which is the name of an existing bucket");
+    }
+  }
+
   private void checkInsideRename() {
     if (!renameLock.isHeldByCurrentThread())
       throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
@@ -924,6 +944,9 @@ public class LocalDocumentType implements DocumentType {
             "Cannot rename type '" + oldName + "' to '" + newName + "': its index '" + idx.getName() + "' would be named '" + indexName
                 + "', which is the name of an index of type '" + holder.getTypeName() + "'");
     }
+
+    if (!targetIsOwnReservation)
+      checkBucketRenameTargets(oldName, newName, buckets);
 
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
