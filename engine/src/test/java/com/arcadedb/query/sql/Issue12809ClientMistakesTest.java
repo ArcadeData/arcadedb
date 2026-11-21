@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -157,6 +158,11 @@ class Issue12809ClientMistakesTest extends TestHelper {
     assertRefused("sql", "ALTER PROPERTY Q.m mandatory true", ObjectInUseException.class, "Cannot set MANDATORY: record #");
     assertRefused("sql", "ALTER PROPERTY Q.s max 0", ObjectInUseException.class, "Cannot set MAX 0: record #");
     assertThat(database.getSchema().getType("Q").getProperty("s").isNotNull()).isFalse();
+    // the openCypher spelling of the same refusal: a type constraint that a stored value of an undeclared property does not satisfy
+    database.transaction(() -> database.command("sql", "UPDATE Q SET loose = 'x' WHERE k = 1"));
+    assertRefused("opencypher", "CREATE CONSTRAINT q_loose_int FOR (n:Q) REQUIRE n.loose IS :: INTEGER", ObjectInUseException.class,
+        "Cannot require Q.loose IS :: INTEGER: record #");
+    assertThat(database.getSchema().getType("Q").existsProperty("loose")).isFalse();
   }
 
   @Test

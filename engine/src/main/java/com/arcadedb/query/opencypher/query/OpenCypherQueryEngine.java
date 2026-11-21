@@ -36,6 +36,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -1288,8 +1289,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         if (value == null || IsTypedExpression.conforms(value, cypherType))
           continue;
 
-        // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place
-        final CommandExecutionException refusal = new CommandExecutionException(
+        // the refusal is what the caller has to see: an undo step that fails is attached to it, never thrown in its place. A stored
+        // record that violates the constraint is a conflict with the data, as for CREATE PROPERTY and ALTER PROPERTY (#12809)
+        final ObjectInUseException refusal = new ObjectInUseException(
             "Cannot require " + typeName + "." + propertyName + " IS :: " + cypherType + ": record " + document.getIdentity()
                 + " holds " + describeStoredValue(value));
         final DocumentType type = schema.getType(typeName);
