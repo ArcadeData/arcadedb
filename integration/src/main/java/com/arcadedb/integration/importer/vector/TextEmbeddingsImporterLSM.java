@@ -36,6 +36,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -266,6 +267,15 @@ public class TextEmbeddingsImporterLSM {
       if (skipEntries > 0)
         parser = parser.skip(skipEntries);
 
+      // A BLANK LINE, THE EMPTY LAST LINE OF A TEXT FILE FIRST OF ALL, IS NO EMBEDDING: IT IS SKIPPED, AND COUNTED AS SKIPPED SO THE
+      // REPORT STILL ADDS UP (issue #12772)
+      parser = parser.filter(line -> {
+        if (!line.isBlank())
+          return true;
+        context.skippedRecords.incrementAndGet();
+        return false;
+      });
+
       final AtomicInteger vectorSize = new AtomicInteger(301);
 
       final List<TextFloatsEmbedding> texts = parser.map(line -> {
@@ -274,8 +284,15 @@ public class TextEmbeddingsImporterLSM {
         String word = tokens.getFirst();
 
         float[] vector = new float[tokens.size() - 1];
-        for (int i = 1; i < tokens.size(); i++)
-          vector[i - 1] = Float.parseFloat(tokens.get(i));
+        int dimensions = 0;
+        for (int i = 1; i < tokens.size(); i++) {
+          final String token = tokens.get(i);
+          // TWO SEPARATORS IN A ROW LEAVE AN EMPTY TOKEN BETWEEN THEM, WHICH IS NO COMPONENT (issue #12772)
+          if (!token.isEmpty())
+            vector[dimensions++] = Float.parseFloat(token);
+        }
+        if (dimensions < vector.length)
+          vector = Arrays.copyOf(vector, dimensions);
 
         vectorSize.set(vector.length);
 
