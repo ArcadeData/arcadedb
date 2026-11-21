@@ -152,10 +152,8 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     final DatabaseChecker checker = createChecker(context);
     checker.setVerboseLevel(0);
-    checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
-    checker.setTypes(types.stream().map(x -> x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'") ?
-        x.getStringValue().substring(1, x.getStringValue().length() - 1) :
-        x.getStringValue()).collect(Collectors.toSet()));
+    checker.setBuckets(resolveBuckets(context));
+    checker.setTypes(resolveTypes(context));
     // Nulls are passed THROUGH rather than filtered here: toRecordId answers null for a RID form that evaluates to
     // nothing, and setRecords owns both the filtering and the refusal of a scope that resolves to nothing - it is
     // the last place that can tell "named records, none usable" from "named no records" (#5680).
@@ -208,6 +206,38 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
               + ": it repairs the database whatever the user's per-type grants, so it requires the '"
               + DATABASE_ACCESS.UPDATE_SCHEMA.name + "' database permission. CHECK DATABASE without FIX and COMPRESS only reports");
     }
+  }
+
+  /**
+   * The names of the types the check is limited to. A type that does not exist is refused ({@code SchemaException}, as
+   * {@code TRUNCATE TYPE} does): the checker matches by name, so a typo scoped the check to nothing and reported a clean
+   * database (issue #12845).
+   */
+  private Set<String> resolveTypes(final CommandContext context) {
+    final Set<String> names = new HashSet<>();
+    for (final Identifier type : types) {
+      final String text = type.getStringValue();
+      final String name = text.startsWith("\"") || text.startsWith("'") ? text.substring(1, text.length() - 1) : text;
+      names.add(context.getDatabase().getSchema().getType(name).getName());
+    }
+    return names;
+  }
+
+  /**
+   * The names of the buckets the check is limited to, which is what the checker matches: the {@link PInteger} it used to be
+   * handed for a bucket id never equalled a name, so the bucket it named was skipped, and a name that is no bucket reported a clean
+   * database (issue #12845).
+   */
+  private Set<Object> resolveBuckets(final CommandContext context) {
+    final Set<Object> names = new HashSet<>();
+    for (final BucketIdentifier bucket : buckets) {
+      final Object value = bucket.getValue();
+      if (value instanceof PInteger id)
+        names.add(context.getDatabase().getSchema().getBucketById(id.getValue().intValue()).getName());
+      else
+        names.add(context.getDatabase().getSchema().getBucketByName(value.toString()).getName());
+    }
+    return names;
   }
 
   /** Package-private seam for tests: lets a test inject a checker whose {@code check()} fails mid-run. */
