@@ -455,6 +455,30 @@ docker run --rm -p 2480:2480 -p 5432:5432 \
   Docker appends them after the `ENTRYPOINT` array, and the binary parses them exactly like JVM
   system properties.
 
+## Memory and garbage collection
+
+The binary uses GraalVM's Serial collector. Heap and collector options are runtime flags on the
+binary's own command line, passed like the `-D` flags above (trailing arguments to `docker run`):
+
+| Flag | Meaning |
+|---|---|
+| `-Xmx<size>` (or `-XX:MaxHeapSize=<size>`) | Maximum heap. Default: 80% of the memory the process sees, so the container limit when there is one. |
+| `-Xms<size>` | Initial heap. The default is small, so a bulk load starts with many young collections (measured in #12591). |
+| `-Xmn<size>` | Fixed size of the young generation. |
+| `-XX:+PrintGC -XX:+VerboseGC` | One log line per collection, on standard output. |
+| `-XX:ReservedAddressSpaceSize=<size>` | Virtual address range reserved at start for the whole heap. Default: the larger of the maximum heap and 32 GiB. It costs no RAM. |
+
+The reserved address range is shared by the heap, the image heap (about 0.8 GB in this image) and the
+metaspace, and the heap cannot grow past it whatever `-Xmx` says. When it runs out, the server dies
+with `OutOfMemoryError: Could not allocate an aligned heap chunk because the heap address space is
+exhausted` even though the heap is not full (#12639).
+
+The old generation is collected in place (`-H:+CompactingOldGen` in `native/pom.xml`), so a full
+collection needs no second copy of the live set. A binary built with `-H:-CompactingOldGen` (the
+default of GraalVM CE 25.0.x) copies the old generation and needs up to twice the live set inside
+the reserved range: with such a build, set `-XX:ReservedAddressSpaceSize` to at least twice the
+expected live set plus the image heap.
+
 ## Known limitations and caveats
 
 ### JS scripting is included, but with a security caveat

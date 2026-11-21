@@ -421,6 +421,20 @@
                         <buildArg>-march=${native.march}</buildArg>
                         <!-- Optimization level; see the native.opt property and #11070. -->
                         <buildArg>${native.opt}</buildArg>
+                        <!--
+                            Old generation collected in place (#12639). The Serial GC of GraalVM CE 25.0.x collects the old
+                            generation by COPYING: a full collection moves every live object into a second space, so it needs
+                            the live set twice, inside one reserved address range. That range defaults to
+                            max(maximum heap, 32 GiB) (AddressRangeCommittedMemoryProvider.initialize) and also holds the
+                            image heap (about 0.8 GB here) and the metaspace. A server whose live set passes about half of
+                            the range therefore dies with "Could not allocate an aligned heap chunk because the heap address
+                            space is exhausted" while the heap is not full: the 10M x 96-d LSM_VECTOR build held 17 GiB
+                            live under a 24 GiB maximum heap and a 32 GiB range. Compaction needs no second space (it also
+                            lowers the peak RSS of a full collection). GraalVM made it the default in 25.1 (substratevm/
+                            CHANGELOG.md), so this builder only asks for what newer builders do unasked. Drop this line when
+                            native.graalvm.version moves to a 25.1 or newer builder.
+                        -->
+                        <buildArg>-H:+CompactingOldGen</buildArg>
                         <buildArg>-H:+ReportExceptionStackTraces</buildArg>
                         <buildArg>--enable-url-protocols=http,https</buildArg>
                         <buildArg>--add-modules=jdk.incubator.vector</buildArg>
