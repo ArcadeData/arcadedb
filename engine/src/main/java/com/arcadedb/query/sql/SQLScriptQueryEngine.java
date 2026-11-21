@@ -191,7 +191,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           if (blockDepth > 0)
             blockDepth--;
           retryBlock |= commit.getRetry() != null;
-        } else if (blockDepth == 0 && !statement.isIdempotent())
+        } else if (statement instanceof RollbackStatement && blockDepth > 0)
+          blockDepth--;
+        else if (blockDepth == 0 && !statement.isIdempotent())
           return false;
       }
       return retryBlock;
@@ -264,12 +266,26 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           }
         } else
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
+      } else if (stm instanceof RollbackStatement && nestedTxLevel > 0) {
+        // ISSUE #12797: A ROLLBACK ends the transaction its BEGIN started as a COMMIT does, so the block is planned as it stands.
+        // Left open, the count never returned to 0 and every statement from the BEGIN on was dropped without a word
+        nestedTxLevel--;
+        if (nestedTxLevel == 0) {
+          for (final Statement statement : lastRetryBlock) {
+            final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+            plan.chain(sub);
+          }
+          lastRetryBlock = new ArrayList<>();
+        }
       }
 
       if (stm instanceof LetStatement letStatement) {
         scriptContext.declareScriptVariable(letStatement.getVariableName().getStringValue());
       }
     }
+
+    if (nestedTxLevel > 0)
+      throw new CommandSQLParsingException("Found BEGIN statement without a COMMIT or ROLLBACK");
 
     return new LocalResultSet(plan);
   }
