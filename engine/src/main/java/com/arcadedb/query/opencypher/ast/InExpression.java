@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -39,6 +40,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -65,6 +67,26 @@ public class InExpression implements BooleanExpression {
   /** The contexts a {@link ListMemo} remembers at most, beyond which it forgets them and they build their lookup again. */
   private static final int MAX_MEMO_OWNERS = 64;
 
+  /**
+   * The expression types a right side evaluated once per execution may be built from (see {@link #isConstantPerExecution}): they
+   * compute their value from their operands and read nothing else. Matched by exact class, so a subclass is not one of them.
+   */
+  private static final Set<Class<?>> PURE_EXPRESSIONS = Set.of(LiteralExpression.class, ParameterExpression.class,
+      VariableExpression.class, ListExpression.class, MapExpression.class, ArithmeticExpression.class,
+      ListComprehensionExpression.class, ListIndexExpression.class, ListSliceExpression.class, FunctionCallExpression.class,
+      BooleanWrapperExpression.class, ComparisonExpressionWrapper.class);
+
+  /** The predicate types such a right side may hold, in the filter of a comprehension. */
+  private static final Set<Class<?>> PURE_PREDICATES = Set.of(ComparisonExpression.class, LogicalExpression.class,
+      IsNullExpression.class);
+
+  /**
+   * The functions such a right side may call: they answer from their arguments alone, the same on every call, and read no record
+   * (which {@code keys()} or {@code labels()} of a parameter would, and a statement may change it between two rows).
+   */
+  private static final Set<String> PURE_FUNCTIONS = Set.of("range", "tostring", "tointeger", "tofloat", "toboolean", "tolower",
+      "toupper", "trim", "ltrim", "rtrim", "replace", "substring", "left", "right", "split", "reverse", "abs", "coalesce");
+
   private final Expression expression;
   private final List<Expression> list;
 
@@ -74,6 +96,21 @@ public class InExpression implements BooleanExpression {
    * ever recognize. Null for any other right side.
    */
   private final List<Object> literalList;
+
+  /**
+   * Whether the right side is the same on every row of one execution without being a list of literals (see
+   * {@link #isConstantPerExecution}): it is then evaluated once per execution, and answered from the lookup built for that value
+   * (issue #12725). The literals of a cached statement are extracted into parameters, so {@code x IN ['a', 'b', ...]} reaches this
+   * node as {@code x IN [$p0, $p1, ...]}: it is not a list of literals any more, and evaluating it built a new list on every row,
+   * which was walked, never hashed.
+   */
+  private final boolean constantPerExecution;
+
+  /**
+   * The right side as the executions reading it evaluated it, and its lookup; see {@link #constantFor}. Immutable, in a volatile
+   * field, for the same reason as {@link #listMemo}.
+   */
+  private volatile ConstantMemo constantMemo;
 
   /**
    * The list the last row was asked about, and its lookup once built; see {@link #lookupFor}. One immutable holder in a
@@ -110,6 +147,7 @@ public class InExpression implements BooleanExpression {
     this.expression = expression;
     this.list = list;
     this.literalList = literalList(list);
+    this.constantPerExecution = literalList == null && isConstantPerExecution(list);
   }
 
   @Override
@@ -120,12 +158,7 @@ public class InExpression implements BooleanExpression {
 
   @Override
   public Object evaluateTernary(final Result result, final CommandContext context) {
-    final Object value;
-
-    if (expression instanceof FunctionCallExpression)
-      value = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(expression, result, context);
-    else
-      value = expression.evaluate(result, context);
+    final Object value = evaluateOperand(expression, result, context);
 
     // Iterable of values to compare against. For lists/Object[]/collections this is a zero-copy view;
     // primitive arrays (long[], double[], ...) are auto-boxed by getMultiValueAsList in a single pass.
@@ -134,22 +167,24 @@ public class InExpression implements BooleanExpression {
     if (list.size() == 1) {
       // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3]). Evaluate and unwrap.
       final Expression listItem = list.get(0);
+      final ConstantMemo constant = constantPerExecution && context != null ? constantFor(listItem, result, context) : null;
       final Object listValue;
       if (literalList != null)
         listValue = literalList;
-      else if (listItem instanceof FunctionCallExpression)
-        listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
+      else if (constant != null)
+        listValue = constant.value();
       else
-        listValue = listItem.evaluate(result, context);
+        listValue = evaluateOperand(listItem, result, context);
 
       if (listValue == null)
         return null; // x IN null -> null
 
       // A list that is the same on every row (a parameter, a literal, a value bound before the MATCH) is answered from a
       // hash built once, instead of walked once per row: an index seek on c.key IN $ids re-checks every id it found against
-      // the whole list, which made the statement quadratic in the list (issue #11682)
+      // the whole list, which made the statement quadratic in the list (issue #11682). A right side evaluated once per
+      // execution carries the lookup built for it then (issue #12725)
       if (value != null) {
-        final ListLookup lookup = lookupFor(listValue, context);
+        final ListLookup lookup = constant != null ? constant.lookup() : lookupFor(listValue, context);
         if (lookup != null) {
           final Boolean known = lookup.contains(value);
           if (known != null)
@@ -160,14 +195,8 @@ public class InExpression implements BooleanExpression {
     } else {
       // Multiple expressions (parsed list literal items)
       final List<Object> evaluated = new ArrayList<>(list.size());
-      for (final Expression listItem : list) {
-        final Object listValue;
-        if (listItem instanceof FunctionCallExpression)
-          listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
-        else
-          listValue = listItem.evaluate(result, context);
-        evaluated.add(listValue);
-      }
+      for (final Expression listItem : list)
+        evaluated.add(evaluateOperand(listItem, result, context));
       valuesToCheck = evaluated;
     }
 
@@ -372,6 +401,52 @@ public class InExpression implements BooleanExpression {
     return built;
   }
 
+  /**
+   * The right side and its lookup as this context evaluated it, for a right side that is the same on every row of an execution
+   * (see {@link #constantPerExecution}): evaluated on the first row a context asks about, then reused for every later row of it.
+   * <p>
+   * Keyed on the context, as {@link #lookupFor} is: a context is one execution, or one worker of it, and the parameters of a cached
+   * plan differ between executions, so one execution never answers from another's values. A context that evaluates the value the
+   * memo holds joins it, so the workers of a parallel scan, and executions with the same parameters, share one lookup instead of
+   * evicting each other's.
+   */
+  private ConstantMemo constantFor(final Expression rightSide, final Result result, final CommandContext context) {
+    final ConstantMemo memo = constantMemo;
+    if (memo != null && memo.isOwnedBy(context))
+      return memo;
+
+    // A benign race: two threads may both evaluate it, and a context an update loses only evaluates it again
+    final Object value = evaluateOperand(rightSide, result, context);
+    final ConstantMemo built;
+    if (memo != null && sameValue(memo.value(), value))
+      built = new ConstantMemo(memo.value(), memo.lookup(), memo.withOwner(context));
+    else {
+      // A short list is walked, as lookupFor leaves it; a range is answered from its bounds; a value that is no list is refused
+      final ListLookup lookup = value instanceof LongRangeList || sizeOf(value) <= LOOKUP_MIN_SIZE ? null : ListLookup.of(listOperand(value));
+      built = new ConstantMemo(value, lookup, new CommandContext[] { context });
+    }
+    constantMemo = built;
+    return built;
+  }
+
+  /**
+   * Whether two evaluations of a right side are the same value, so one answers for the other. A range is compared by its bounds,
+   * not element by element: {@code range(1, $n)} is a lazy list of any size.
+   */
+  private static boolean sameValue(final Object a, final Object b) {
+    if (a instanceof LongRangeList range)
+      return b instanceof LongRangeList other && range.getStart() == other.getStart() && range.getStep() == other.getStep()
+          && range.size() == other.size();
+    return !(b instanceof LongRangeList) && Objects.equals(a, b);
+  }
+
+  /** An operand evaluated as the expression evaluator has it for a function call, so its aggregation overrides apply. */
+  private static Object evaluateOperand(final Expression operand, final Result result, final CommandContext context) {
+    if (operand instanceof FunctionCallExpression)
+      return OpenCypherQueryEngine.getExpressionEvaluator().evaluate(operand, result, context);
+    return operand.evaluate(result, context);
+  }
+
   /** The number of elements of a right side that is a list, or 0 for any other value, which {@link #listOperand} refuses. */
   private static int sizeOf(final Object listValue) {
     if (listValue instanceof Collection<?> collection)
@@ -390,6 +465,63 @@ public class InExpression implements BooleanExpression {
       values.add(constant.getValue());
     }
     return Collections.unmodifiableList(values);
+  }
+
+  /**
+   * Whether the right side gives the same value on every row of an execution, see {@link #constantPerExecution}: a list literal of
+   * literals and parameters, or a value that reads no variable of the row and is built only from literals, parameters,
+   * the {@link #PURE_EXPRESSIONS} and the {@link #PURE_FUNCTIONS}, such as {@code [x IN range(1, 100) | 'n' + toString(x)]}. A bare
+   * parameter is not one: it is one object already, which {@link #lookupFor} recognizes on its own.
+   */
+  private static boolean isConstantPerExecution(final List<Expression> list) {
+    if (list.size() != 1)
+      return false;
+    final Expression rightSide = list.get(0);
+    if (rightSide instanceof ListExpression literal && onlyLiteralsAndParameters(literal))
+      return true;
+    if (!(rightSide instanceof ListExpression) && !(rightSide instanceof ListComprehensionExpression)
+        && !(rightSide instanceof FunctionCallExpression) && !(rightSide instanceof ArithmeticExpression))
+      return false;
+
+    // The names a comprehension binds for itself are no variable of the row
+    final CypherReferencedVariables free = CypherReferencedVariables.freeOf(rightSide);
+    if (!free.isComplete() || !free.getNames().isEmpty())
+      return false;
+
+    final boolean[] pure = { true };
+    CypherExpressionWalker.walk(rightSide, new CypherExpressionWalker.Visitor() {
+      @Override
+      public void visit(final Expression node) {
+        if (!PURE_EXPRESSIONS.contains(node.getClass())
+            || node instanceof FunctionCallExpression call && (call.isDistinct() || !PURE_FUNCTIONS.contains(call.getFunctionName())))
+          pure[0] = false;
+      }
+
+      @Override
+      public void visitPattern(final PathPattern pattern) {
+        pure[0] = false;
+      }
+
+      @Override
+      public void visitPredicate(final BooleanExpression predicate) {
+        if (!PURE_PREDICATES.contains(predicate.getClass()))
+          pure[0] = false;
+      }
+
+      @Override
+      public CypherExpressionWalker.Visitor forNestedStatement(final CypherStatement statement) {
+        pure[0] = false;
+        return null;
+      }
+    });
+    return pure[0];
+  }
+
+  private static boolean onlyLiteralsAndParameters(final ListExpression literal) {
+    for (final Expression element : literal.getElements())
+      if (!(element instanceof LiteralExpression) && !(element instanceof ParameterExpression))
+        return false;
+    return true;
   }
 
   /**
@@ -414,32 +546,15 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
-   * with the content the lookup was built from.
+   * A memo of this node and the contexts it answers for: those that built it, or found it equal to what they built. The contexts
+   * are held weakly: the node lives as long as the cached plan, and the memo must not keep the database, variables and parameters
+   * of a finished execution reachable after the query ends.
    */
-  private static final class ListMemo {
-    // The list and the contexts are held weakly: the node lives as long as the cached plan, and the memo must not keep the
-    // list, nor the database, variables and parameters of a finished execution, reachable after the query ends
-    private final WeakReference<Object>           listRef;
-    private final ListLookup                      lookup;
+  private abstract static class ContextMemo {
     private final WeakReference<CommandContext>[] owners;
 
-    private ListMemo(final Object list, final ListLookup lookup, final WeakReference<CommandContext>[] owners) {
-      this.listRef = new WeakReference<>(list);
-      this.lookup = lookup;
-      this.owners = owners;
-    }
-
-    ListMemo(final Object list, final ListLookup lookup, final CommandContext[] contexts) {
-      this(list, lookup, weak(contexts));
-    }
-
-    Object list() {
-      return listRef.get();
-    }
-
-    ListLookup lookup() {
-      return lookup;
+    ContextMemo(final CommandContext[] contexts) {
+      this.owners = weak(contexts);
     }
 
     @SuppressWarnings("unchecked")
@@ -483,6 +598,54 @@ public class InExpression implements BooleanExpression {
           alive[n++] = existing;
       }
       return Arrays.copyOf(alive, n);
+    }
+  }
+
+  /**
+   * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
+   * with the content the lookup was built from.
+   */
+  private static final class ListMemo extends ContextMemo {
+    // The list is held weakly too: it is the caller's, and the memo must not keep it reachable after the query ends
+    private final WeakReference<Object> listRef;
+    private final ListLookup            lookup;
+
+    ListMemo(final Object list, final ListLookup lookup, final CommandContext[] contexts) {
+      super(contexts);
+      this.listRef = new WeakReference<>(list);
+      this.lookup = lookup;
+    }
+
+    Object list() {
+      return listRef.get();
+    }
+
+    ListLookup lookup() {
+      return lookup;
+    }
+  }
+
+  /**
+   * A right side as {@link #constantFor} evaluated it, its lookup (null when it is walked: a short list, a range, a value that is
+   * no list), and the contexts that evaluated it to this value.
+   */
+  private static final class ConstantMemo extends ContextMemo {
+    // Held strongly: nothing else holds the value between two rows. Its lookup holds its elements anyway, as a ListMemo's does
+    private final Object     value;
+    private final ListLookup lookup;
+
+    ConstantMemo(final Object value, final ListLookup lookup, final CommandContext[] contexts) {
+      super(contexts);
+      this.value = value;
+      this.lookup = lookup;
+    }
+
+    Object value() {
+      return value;
+    }
+
+    ListLookup lookup() {
+      return lookup;
     }
   }
 
