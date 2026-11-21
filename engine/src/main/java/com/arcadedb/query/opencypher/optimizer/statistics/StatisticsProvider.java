@@ -96,8 +96,9 @@ public class StatisticsProvider {
       if (type == null)
         continue;
 
-      // Collect type cardinality using cached O(1) count
-      final long recordCount = database.countType(typeName, false);
+      // Polymorphic, as MATCH (n:Label) is: a supertype whose records all live in its subtypes is not an empty label, and a free
+      // scan of it used to be chosen as the outer side of a join (issue #12280)
+      final long recordCount = database.countType(typeName, true);
       final boolean isVertexType = type instanceof VertexType;
 
       final TypeStatistics typeStats = new TypeStatistics(typeName, recordCount, isVertexType);
@@ -312,7 +313,7 @@ public class StatisticsProvider {
 
     final double avgDegree;
     if (isEdgeType && graphStatisticsCache != null) {
-      final long currentEdgeCount = database.countType(relationshipType, false);
+      final long currentEdgeCount = database.countType(relationshipType, true);
       final long currentSourceCount = currentVertexTypeCount(sourceVertexLabel);
       final long currentTargetCount = currentVertexTypeCount(targetVertexLabel);
       final Double cached = graphStatisticsCache.getAverageDegree(cacheKey, currentEdgeCount, currentSourceCount, currentTargetCount);
@@ -344,7 +345,7 @@ public class StatisticsProvider {
     if (!(schema.getTypeOrNull(relationshipType) instanceof EdgeType))
       return 10.0; // Fallback: no edge type found
 
-    final long edgeCount = database.countType(relationshipType, false);
+    final long edgeCount = database.countType(relationshipType, true);
     if (edgeCount == 0) {
       return 0.0; // No edges exist
     }
@@ -427,7 +428,7 @@ public class StatisticsProvider {
 
     final double mean;
     if (isEdgeType && graphStatisticsCache != null) {
-      final long currentEdgeCount = database.countType(edgeType, false);
+      final long currentEdgeCount = database.countType(edgeType, true);
       final Double cached = graphStatisticsCache.getMeanEdgesPerConnectedPair(edgeType, currentEdgeCount);
       if (cached != null) {
         mean = cached;
@@ -456,7 +457,7 @@ public class StatisticsProvider {
     final Schema schema = database.getSchema();
     if (!(schema.getTypeOrNull(vertexLabel) instanceof VertexType))
       return 0;
-    return database.countType(vertexLabel, false);
+    return database.countType(vertexLabel, true);
   }
 
   /**
