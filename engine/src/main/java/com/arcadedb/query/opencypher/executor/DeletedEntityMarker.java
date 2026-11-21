@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DeletedEntityException;
 
 /**
  * Marker object placed in results to indicate a deleted entity.
@@ -46,7 +46,7 @@ public final class DeletedEntityMarker {
 
   public static void checkNotDeleted(final Object obj) {
     if (obj instanceof DeletedEntityMarker)
-      throw new CommandExecutionException("DeletedEntityAccess: Cannot access a deleted entity");
+      throw new DeletedEntityException("DeletedEntityAccess: Cannot access a deleted entity");
   }
 
   @Override

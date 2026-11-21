@@ -19,14 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdatabase.com)
@@ -128,13 +128,8 @@ class ConsoleStatementExecutionTest extends TestHelper {
 
   @Test
   void invalidLevel() {
-    try {
-      database.command("sqlscript", "console.bla 'foo bar'");
-      fail("");
-    } catch (CommandExecutionException x) {
-      // EXPECTED
-    } catch (Exception x2) {
-      fail("");
-    }
+    // refused at parse time, as the client error it is (issue #11893)
+    assertThatThrownBy(() -> database.command("sqlscript", "console.bla 'foo bar'"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("Unsupported CONSOLE level 'bla'");
   }
 }

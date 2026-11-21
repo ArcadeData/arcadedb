@@ -56,7 +56,15 @@ jobs:
       - name: Run Benchmark Unit Tests with Coverage
         # pom.xml now excludes @Tag("benchmark") by default (issue #5697); clear excludedGroups here
         # so -Dgroups=benchmark still selects the benchmark-tagged tests this lane exists to run.
-        run: ./mvnw verify --batch-mode --errors --fail-never --show-version -Dgroups=benchmark -DexcludedGroups= -Dsurefire.includes=**/*Benchmark.java
+        #
+        # -Dmaven.test.failure.ignore=true is NOT redundant with --fail-never (see the unit-tests lane in
+        # mvn-test.yml): --fail-never keeps the reactor going, but the failed module still halts at `test`
+        # and never packages its jar. One failing engine benchmark then left no engine jar in the reactor, and
+        # arcadedb-package added a second, unrelated-looking BUILD FAILURE on top of the real one: "Error adding
+        # file 'arcadedb-engine:jar' to archive: engine/target/classes isn't a file" (runs 41860688140,
+        # 42429450532, 43657847111), which reads as a broken build rather than as a failing benchmark. The
+        # Tests Reporter below reads the surefire XML and still fails the job on exactly the same failures.
+        run: ./mvnw verify --batch-mode --errors --fail-never --show-version -Dmaven.test.failure.ignore=true -Dgroups=benchmark -DexcludedGroups= -Dsurefire.includes=**/*Benchmark.java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * What is real here: the Ratis cluster, the configuration change, the {@code ArcadeStateMachine} on every
  * peer, its {@code notifyConfigurationChanged} callback and its Raft-division role read. What is substituted
- * is the last step, the submit of the three documents, which {@code Issue7521SecuritySeedRetryTest} and
+ * is the last step, the submit of the three documents, which {@code SecuritySeedRetryTest} and
  * {@code RaftUserSeedOnPeerAdd3NodesIT} cover against real {@code ServerSecurity} and real replication.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)

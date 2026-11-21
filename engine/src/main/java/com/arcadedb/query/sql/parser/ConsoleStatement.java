@@ -21,18 +21,22 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
 
 public class ConsoleStatement extends SimpleExecStatement {
+  /** The levels {@code CONSOLE.<level>} accepts. */
+  public static final List<String> LEVELS = List.of("log", "output", "error", "warn", "debug");
+
   public Identifier logLevel;
   public Expression message;
 
@@ -59,7 +63,7 @@ public class ConsoleStatement extends SimpleExecStatement {
     } else if ("debug".equals(logLevelAsString)) {
       LogManager.instance().log(this, Level.FINE, "%s", msg);
     } else {
-      throw new CommandExecutionException("Unsupported log level: " + logLevel);
+      throw unsupportedLevel(logLevel);
     }
 
     item.setProperty("operation", "console");
@@ -67,6 +71,20 @@ public class ConsoleStatement extends SimpleExecStatement {
     item.setProperty("message", msg);
     result.add(item);
     return result;
+  }
+
+  /**
+   * Refuses a level {@code CONSOLE.<level>} does not know, at parse time, so a script with a misspelt level runs none of its
+   * statements and is answered as the client error it is (issue #11893).
+   */
+  public static void validateLevel(final Identifier level) {
+    if (!LEVELS.contains(level.getStringValue().toLowerCase(Locale.ENGLISH)))
+      throw unsupportedLevel(level);
+  }
+
+  private static CommandSQLParsingException unsupportedLevel(final Identifier level) {
+    return new CommandSQLParsingException(
+        "Unsupported CONSOLE level '" + level.getStringValue() + "': use one of " + String.join(", ", LEVELS));
   }
 
   @Override

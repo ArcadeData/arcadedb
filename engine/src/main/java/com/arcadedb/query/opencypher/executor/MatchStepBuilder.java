@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
+import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
@@ -166,29 +167,31 @@ final class MatchStepBuilder {
 
         // Optimization: when the variable is already bound from a previous clause AND
         // the new node pattern carries no additional constraints (no labels, no inline
-        // properties), skip the redundant MatchNodeStep - the carried binding already
-        // satisfies the empty constraint. We can only skip safely if the carried
-        // value is guaranteed to be a vertex (i.e. it came from a non-OPTIONAL MATCH).
-        // When the pattern adds labels or inline properties, MatchNodeStep must run
-        // so the constraints are checked against the bound vertex (and a null binding
-        // from an OPTIONAL MATCH correctly filters the row out - issue #4102).
+        // properties), no MatchNodeStep is needed - the carried binding already satisfies
+        // the empty constraint, as long as it is a node. A binding an earlier OPTIONAL MATCH
+        // left null cannot match, so a BoundNodeCheckStep drops such a row instead of letting
+        // it through as if the pattern had matched (issue #11761). When the pattern adds
+        // labels or inline properties, MatchNodeStep runs so the constraints are checked
+        // against the bound vertex (and a null binding is filtered out the same way - issue #4102).
         if (boundVariables.contains(variable)
             && !nodePattern.hasLabels()
             && !nodePattern.hasProperties()) {
-          // Variable already bound and no new constraints - skip creating a new MatchNodeStep
-          // But still handle zero-length named paths
+          final BoundNodeCheckStep checkStep = new BoundNodeCheckStep(variable, context);
+          if (currentStep != null && !(isOptional && matchChainStart == null))
+            checkStep.setPrevious(currentStep);
+          currentStep = checkStep;
+          // The first step of an OPTIONAL chain is registered as its start: OptionalMatchStep feeds every input row
+          // into matchChainStart, and the next pattern part re-seats matchChainStart on its own head, so a chain start
+          // left null here would orphan this step (issue #6544).
+          if (isOptional && matchChainStart == null)
+            matchChainStart = checkStep;
+          // Handle zero-length named paths: p = (n)
           final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
           if (singlePathVar != null) {
             matchVariables.add(singlePathVar);
             final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
             zeroPathStep.setPrevious(currentStep);
             currentStep = zeroPathStep;
-            // With no MatchNodeStep created above, this is the first step of the OPTIONAL chain and has to be
-            // registered as such: OptionalMatchStep feeds every input row into matchChainStart, and the next
-            // pattern part re-seats matchChainStart on its own head, so a chain start left null here would
-            // orphan this step and leave the path variable permanently unbound (issue #6544).
-            if (isOptional && matchChainStart == null)
-              matchChainStart = zeroPathStep;
           }
           continue;
         }
@@ -832,6 +835,41 @@ final class MatchStepBuilder {
    */
   boolean isUniquelyKeyed(final NodePattern node) {
     return uniqueKeyIndexOf(node) != null;
+  }
+
+  /**
+   * {@link #isUniquelyKeyed(NodePattern)}, with one column of the index allowed to be keyed by an IN-list of the
+   * {@code WHERE} instead ({@link HopEdgeTrackingAnalyzer#whereInListKeys}): a seek of the node then finds one vertex per key
+   * (issue #11715).
+   */
+  boolean isUniquelyKeyed(final NodePattern node, final Map<String, Set<String>> inListKeys) {
+    final Set<String> listed = node.getVariable() != null ? inListKeys.getOrDefault(node.getVariable(), Set.of()) : Set.of();
+    if (listed.isEmpty())
+      return isUniquelyKeyed(node);
+    if (node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return false;
+    final Set<String> inline = node.hasProperties() ? node.getProperties().keySet() : Set.of();
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys == null)
+        continue;
+      int listedOnly = 0;
+      boolean covered = true;
+      for (final String key : keys) {
+        if (inline.contains(key))
+          continue;
+        if (listed.contains(key))
+          ++listedOnly;
+        else
+          covered = false;
+      }
+      if (covered && listedOnly <= 1)
+        return true;
+    }
+    return false;
   }
 
   /**

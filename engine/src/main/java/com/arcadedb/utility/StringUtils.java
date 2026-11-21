@@ -153,13 +153,20 @@ public class StringUtils {
    * @throws IllegalArgumentException if the pattern is null, malformed, mismatched or asks for an excessive width
    */
   public static String format(final String caller, final String format, final Object... args) {
+    return format(caller, Locale.ROOT, format, args);
+  }
+
+  /**
+   * As {@link #format(String, String, Object...)}, with the locale that decides the decimal and grouping separators.
+   */
+  public static String format(final String caller, final Locale locale, final String format, final Object... args) {
     if (format == null)
       throw new IllegalArgumentException(caller + "() requires a non-null format");
 
     checkFormatWidth(caller, format);
 
     try {
-      return String.format(Locale.ROOT, format, args);
+      return String.format(locale, format, args);
     } catch (final IllegalFormatException e) {
       throw new IllegalArgumentException(
           caller + "() cannot apply the format '" + format + "': " + e.getClass().getSimpleName() + " - " + e.getMessage(), e);

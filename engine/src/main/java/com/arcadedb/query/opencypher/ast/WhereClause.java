@@ -63,6 +63,13 @@ public class WhereClause {
     return vars;
   }
 
+  /** {@link #collectVariables(BooleanExpression)} for an expression, such as a value of an inline property map. */
+  public static Set<String> collectExpressionVariables(final Expression expr) {
+    final Set<String> vars = new HashSet<>();
+    collectExpressionVariables(expr, vars);
+    return vars;
+  }
+
   /**
    * Extracts the sub-expression from a BooleanExpression that only references
    * the given set of available variables. For AND expressions, individual conjuncts
@@ -210,12 +217,12 @@ public class WhereClause {
   }
 
   /**
-   * The names the complete {@link CypherExpressionWalker} reaches in a predicate or expression no arm above models. It names the
-   * iteration variable of a nested comprehension too, which only ever costs the caller its optimization, never a binding; a shape
-   * the walk gives up on falls back to the text.
+   * The names the complete {@link CypherExpressionWalker} reaches in a predicate or expression no arm above models, less the names a
+   * comprehension, quantifier or {@code reduce()} inside it binds where it binds them (issue #11818: a CASE holding a reduce() named
+   * its accumulator, so a WITH dropped the inline map that read it); a shape the walk gives up on falls back to the text.
    */
   private static void collectWithWalker(final BooleanExpression expr, final Set<String> vars) {
-    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    final CypherReferencedVariables referenced = CypherReferencedVariables.freeOf(expr);
     if (referenced.isComplete())
       vars.addAll(referenced.getNames());
     else
@@ -223,7 +230,7 @@ public class WhereClause {
   }
 
   private static void collectWithWalker(final Expression expr, final Set<String> vars) {
-    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expr);
+    final CypherReferencedVariables referenced = CypherReferencedVariables.freeOf(expr);
     if (referenced.isComplete())
       vars.addAll(referenced.getNames());
     else
@@ -280,8 +287,17 @@ public class WhereClause {
         innerVars.remove(listPred.getVariable());
         vars.addAll(innerVars);
       }
+    } else if (expr instanceof ReduceExpression reduce) {
+      collectExpressionVariables(reduce.getInitialValue(), vars);
+      collectExpressionVariables(reduce.getListExpression(), vars);
+      final Set<String> innerVars = new HashSet<>();
+      collectExpressionVariables(reduce.getReduceExpression(), innerVars);
+      // the accumulator and the iterator are names the reduce binds, not variables of the row (issue #11818)
+      innerVars.remove(reduce.getAccumulatorVariable());
+      innerVars.remove(reduce.getIteratorVariable());
+      vars.addAll(innerVars);
     } else if (expr != null && !(expr instanceof LiteralExpression) && !(expr instanceof ParameterExpression))
-      // Every expression type the arms above do not model (CASE, an index or slice, a map, reduce(), a subquery...) is read by the
+      // Every expression type the arms above do not model (CASE, an index or slice, a map, a subquery...) is read by the
       // walk, or its variable would be missed and the vertex it names never bound (issue #10434)
       collectWithWalker(expr, vars);
   }

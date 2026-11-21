@@ -935,7 +935,7 @@ class VectorBuildMemoryTest {
           assertThat(ErrorCategory.of(refusedBySql)).isEqualTo(ErrorCategory.RETRY);
           // The HTTP handler answers 503 for a QueryHeapBudgetExceededException found on the exception itself or one generic
           // wrapper (CommandExecutionException, TransactionException) down, and no deeper: the SQL path delivers it unwrapped,
-          // so the one level the server's auto-commit wrapper may add still reaches it (Issue6201ErrorStatusParityTest)
+          // so the one level the server's auto-commit wrapper may add still reaches it (HttpErrorStatusMappingTest.ErrorStatusParity)
           assertThat(refusedBySql).as("the refusal must reach the HTTP status mapping").isInstanceOf(VectorGraphBuildRefusedException.class);
 
           // The heap has room again: the query is its own retry, and gets the whole corpus, not a part of it

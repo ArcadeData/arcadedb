@@ -113,6 +113,24 @@ public final class ServerUnderTest implements AutoCloseable {
     return colon > name.lastIndexOf('/') && name.substring(colon + 1).contains("native");
   }
 
+  /** Read timeout of the server under test: the default case timeout, so no statement of a case outlives its connection. */
+  static final int SOCKET_TIMEOUT_MS = 30 * 60 * 1000;
+
+  /**
+   * The settings of the server under test, the given ones winning. The socket timeout is raised from its 30 s default because
+   * the remote client talks HTTP/2 and the server closes an HTTP/2 connection one socket timeout into a statement (issue
+   * #12606): an index build longer than that fails with "EOF reached while reading" although the server completes it.
+   */
+  static Map<String, String> settings(final Map<String, String> settings) {
+    final Map<String, String> all = new LinkedHashMap<>();
+    all.put("arcadedb.server.rootPassword", PASSWORD);
+    all.put("arcadedb.backup.enabled", "false");
+    all.put("arcadedb.server.plugins", "PrometheusMetricsPlugin");
+    all.put("arcadedb.network.socketTimeout", String.valueOf(SOCKET_TIMEOUT_MS));
+    all.putAll(settings);
+    return all;
+  }
+
   /**
    * Starts the server and waits for {@code /api/v1/ready}. Settings are environment variables named after the setting, as
    * {@code ContainersTestTemplate.configureServer} does: the heap goes to {@code ARCADEDB_OPTS_MEMORY} for the JVM image and to
@@ -120,11 +138,7 @@ public final class ServerUnderTest implements AutoCloseable {
    */
   public static ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
       final Map<String, String> settings) {
-    final Map<String, String> all = new LinkedHashMap<>();
-    all.put("arcadedb.server.rootPassword", PASSWORD);
-    all.put("arcadedb.backup.enabled", "false");
-    all.put("arcadedb.server.plugins", "PrometheusMetricsPlugin");
-    all.putAll(settings);
+    final Map<String, String> all = settings(settings);
 
     final String memoryOpts = "-Xms" + heap + " -Xmx" + heap;
     final long memory = memLimitGb * GIB;
