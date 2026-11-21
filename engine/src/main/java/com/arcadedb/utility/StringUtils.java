@@ -164,8 +164,7 @@ public class StringUtils {
     if (format == null)
       throw new IllegalArgumentException(caller + "() requires a non-null format");
 
-    if (checkFormatWidth(caller, format))
-      checkDecimalArguments(caller, format, args);
+    checkFormat(caller, format, args);
 
     try {
       return String.format(locale, format, args);
@@ -183,9 +182,17 @@ public class StringUtils {
    * precision size an allocation, so the largest number the specifier names is what is measured. Checking only the
    * last one read let {@code %2000000.1s} through - the argument is truncated to one character and then padded back
    * out to a two-million-character field.
+   * <p>
+   * The pattern is not the only thing that sizes the output: a fixed-point ({@code %f}) conversion spells a
+   * {@link BigDecimal} out in plain digits, so the argument each one consumes is measured too (issue #12837). The scan
+   * follows the argument the way {@link java.util.Formatter} does - the next one in order, the one an explicit
+   * {@code n$} names, or with the {@code <} flag the one the previous specifier used, while {@code %n} and {@code %%}
+   * consume none - so a huge decimal printed by {@code %s} or {@code %e} beside an unrelated {@code %f} is not refused.
    */
-  private static boolean checkFormatWidth(final String caller, final String format) {
-    boolean fixedPoint = false;
+  private static void checkFormat(final String caller, final String format, final Object[] args) {
+    // The argument index of the last specifier without an explicit index, and of the last specifier of any kind.
+    long ordinary = -1;
+    long last = -1;
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
         continue;
@@ -197,6 +204,8 @@ public class StringUtils {
       long number = 0;
       int digits = 0;
       long widest = 0;
+      long explicit = 0;
+      boolean previous = false;
       while (j < format.length()) {
         final char c = format.charAt(j);
         if (c >= '0' && c <= '9') {
@@ -205,7 +214,9 @@ public class StringUtils {
           else
             number = Long.MAX_VALUE;
         } else if (c == '$') {
-          // The digits just read were an argument index, which allocates nothing: discard them.
+          // The digits just read were an argument index, which allocates nothing: keep it as the index and discard
+          // them as a size.
+          explicit = number;
           number = 0;
           digits = 0;
         } else if (c == '.') {
@@ -214,6 +225,8 @@ public class StringUtils {
           widest = Math.max(widest, number);
           number = 0;
           digits = 0;
+        } else if (c == '<') {
+          previous = true;
         } else if (!isFormatFlag(c)) {
           // Not a flag either: the conversion character, so the specifier ends here.
           break;
@@ -227,29 +240,36 @@ public class StringUtils {
             caller + "() format '" + format + "' asks for a field of " + widest + " characters, over the " + MAX_FORMAT_WIDTH
                 + " limit");
 
-      if (j < format.length() && (format.charAt(j) == 'f' || format.charAt(j) == 'F'))
-        fixedPoint = true;
+      if (j < format.length()) {
+        final char conversion = format.charAt(j);
+        if (conversion != '%' && conversion != 'n') {
+          // The '<' flag wins over an explicit index, and leaves both counters where they were.
+          if (!previous)
+            last = explicit > 0 ? explicit - 1 : ++ordinary;
+          if (conversion == 'f' && args != null && last >= 0 && last < args.length
+              && args[(int) last] instanceof BigDecimal decimal)
+            checkPlainDigits(caller, format, decimal);
+        }
+      }
 
       i = j;
     }
-    return fixedPoint;
   }
 
   /**
-   * Rejects a {@link BigDecimal} argument whose plain spelling is longer than {@link #MAX_FORMAT_WIDTH}, for a pattern with a
-   * fixed-point ({@code %f}) conversion. The width check above measures what the pattern writes, not what the argument expands
-   * to: {@code 1E+999999999} is a few bytes that {@code %f} turns into a billion digits ({@code OutOfMemoryError}), and
-   * {@code 1E-999999999} makes the formatter round at a scale of 999999999. {@code %s}, {@code %e} and {@code %g} print the
-   * scientific text and stay valid (issue #12837).
+   * Rejects a {@link BigDecimal} that a fixed-point ({@code %f}) conversion would spell out in more than
+   * {@link #MAX_FORMAT_WIDTH} digits. {@code 1E+999999999} is a few bytes that {@code %f} turns into a billion digits
+   * ({@code OutOfMemoryError}), {@code 1E-999999999} makes the formatter round at a scale of 999999999, and a zero is no
+   * exception: {@code 0E+999999999} is padded with as many zeros. {@code |precision - scale|} counts the integer digits of
+   * the first and the leading zeros of the second, in a long because the scale alone spans the whole int range.
+   * {@code %s}, {@code %e} and {@code %g} print the scientific text and stay valid (issue #12837).
    */
-  private static void checkDecimalArguments(final String caller, final String format, final Object[] args) {
-    if (args == null)
-      return;
-    for (final Object arg : args)
-      if (arg instanceof BigDecimal decimal && Math.abs((long) decimal.precision() - decimal.scale()) > MAX_FORMAT_WIDTH)
-        throw new IllegalArgumentException(
-            caller + "() format '" + format + "' would spell the decimal " + decimal + " out in more than " + MAX_FORMAT_WIDTH
-                + " characters, over the limit");
+  private static void checkPlainDigits(final String caller, final String format, final BigDecimal decimal) {
+    if (Math.abs((long) decimal.precision() - decimal.scale()) > MAX_FORMAT_WIDTH)
+      throw new IllegalArgumentException(
+          caller + "() format '" + format + "' would spell a decimal with the exponent " + (
+              (long) decimal.precision() - decimal.scale() - 1) + " out in more than " + MAX_FORMAT_WIDTH
+              + " characters, over the limit");
   }
 
   /**
