@@ -1196,13 +1196,18 @@ public class TransactionIndexContext {
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
-  private void checkUniqueIndexKeys(final Index index, final IndexKey key, final Set<RID> deleted) {
+  private void checkUniqueIndexKeys(final Index index, final TypeIndex typeIndex, final IndexKey key, final Set<RID> deleted) {
     // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS.
     // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
     // polymorphic lookup below has nothing to widen it to. Resolving getTypeName() as a type name threw a
     // NullPointerException here, which is where a unique manual index failed to commit its first entry.
+    // THE TYPE INDEX THE ENTRY BELONGS TO IS THE SEARCH SPACE (#12724): a sub type holds a bucket index for the index it declares and one
+    // for each it inherits, and (type name, properties) resolves to one of them - the sub type's own - for all, so the entries of an
+    // inherited UNIQUE index were checked against an index that does not cover the bucket of the type declaring it
     final Index idx;
-    if (index.getTypeName() == null)
+    if (typeIndex != null)
+      idx = typeIndex;
+    else if (index.getTypeName() == null)
       idx = index;
     else
       idx = database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
@@ -1271,9 +1276,12 @@ public class TransactionIndexContext {
   private List<LSMTreeIndex> indexesWithLegacyKeys(final IndexInternal index) {
     if (!(index instanceof LSMTreeIndex))
       return null;
-    final TypeIndex typeIndex = index.getTypeName() == null ?
-        null :
-        database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
+    // the type index the entry belongs to, not the one (type name, properties) resolves to: see checkUniqueIndexKeys (#12724)
+    final TypeIndex typeIndex = index.getTypeIndex() != null ?
+        index.getTypeIndex() :
+        index.getTypeName() == null ?
+            null :
+            database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
     final IndexInternal[] indexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { index };
     List<LSMTreeIndex> withLegacyKeys = null;
     for (final IndexInternal bucketIndex : indexes)
@@ -1341,7 +1349,7 @@ public class TransactionIndexContext {
                 continue;
               final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
-              checkUniqueIndexKeys(index, entry, deleted);
+              checkUniqueIndexKeys(index, typeIndex, entry, deleted);
               if (withLegacyKeys != null)
                 checkUniqueLegacyKeys((LSMTreeIndex) index, entry, withLegacyKeys);
             }
