@@ -1449,7 +1449,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public Type[] getKeyTypes() {
-    return underlyingIndex.getKeyTypes();
+    // The types of the two INDEXED PROPERTIES, as LSMVectorIndex answers, not those of the registration shell underneath: the
+    // schema hands this answer back to the factory when it gives the index a new bucket (ALTER TYPE ... BUCKET +) or a sub type
+    // (CREATE TYPE ... EXTENDS), and the factory refuses anything but (ARRAY_OF_INTEGERS, ARRAY_OF_FLOATS)
+    return new Type[] { Type.ARRAY_OF_INTEGERS, Type.ARRAY_OF_FLOATS };
   }
 
   @Override
