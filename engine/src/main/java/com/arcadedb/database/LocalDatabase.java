@@ -1547,10 +1547,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         schema.checkBackingTypeWrite(target.getFileId(), "insert into");
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
-        // record by the bucket's owner; this is the same rule for the API.
-        if (record instanceof Document doc) {
+        // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
+        // all: the record would skip its type's indexes (a UNIQUE key taken twice), stay out of every walk of the type and
+        // refuse every later update (issue #12959)
+        if (record instanceof Document doc && doc.getTypeName() != null) {
           final DocumentType owner = schema.getTypeByBucketId(target.getFileId());
-          if (owner != null && !owner.getName().equals(doc.getTypeName()))
+          if (owner == null)
+            throw new IllegalArgumentException(
+                "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName
+                    + "', which belongs to no type: attach it first with ALTER TYPE `" + doc.getTypeName() + "` BUCKET +`" + bucketName
+                    + "`");
+          if (!owner.getName().equals(doc.getTypeName()))
             throw new IllegalArgumentException(
                 "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName + "', which belongs to type '"
                     + owner.getName() + "'");
