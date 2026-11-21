@@ -7856,8 +7856,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ConsoleStatement stmt = new ConsoleStatement();
     final SQLParser.ConsoleStatementContext consoleCtx = ctx.consoleStatement();
 
-    // LOG LEVEL: log, output, error, warn, debug
+    // LOG LEVEL: log, output, error, warn, debug. Any other is refused here, before a statement of the script runs (issue #11893)
     stmt.logLevel = (Identifier) visit(consoleCtx.identifier());
+    ConsoleStatement.validateLevel(stmt.logLevel);
 
     // MESSAGE: expression to log
     stmt.message = (Expression) visit(consoleCtx.expression());

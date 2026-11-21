@@ -154,10 +154,11 @@ final class SubqueryExpressionParser {
       builder.addMatch(CypherASTBuilder.newMatchClause(astBuilder.visitPatternList(patternCtx), false,
           whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
       return builder.build();
-    } catch (final FeatureNotImplementedException e) {
+    } catch (final FeatureNotImplementedException | NonBooleanPatternExpressionException e) {
       // A construct the engine refuses by name is refused in a body too. Falling back to the text deferred it to the first
       // row, where the body is rewritten before it is parsed again, and the refusal came out as an unrelated syntax error
-      // (issue #9940)
+      // (issue #9940). A pattern expression used outside a boolean position (issue #11888) would come out at the first row
+      // too, or never when the boolean simplifier drops the subquery (true OR EXISTS { ... }).
       throw e;
     } catch (final CommandParsingException e) {
       // The builder refusing a body it does not support is the case this fallback is for, and it is not news.

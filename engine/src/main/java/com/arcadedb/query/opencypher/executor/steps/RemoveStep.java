@@ -18,8 +18,11 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
@@ -34,6 +37,7 @@ import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -57,16 +61,24 @@ import java.util.NoSuchElementException;
  * The REMOVE step modifies documents in place and passes them through to the next step.
  */
 public class RemoveStep extends AbstractExecutionStep {
-  private final RemoveClause removeClause;
+  private final RemoveClause        removeClause;
   private final ExpressionEvaluator evaluator;
+  // The predicates that selected the records the clause writes, evaluated again on a target reloaded with changed content (#11818)
+  private final SelectionPredicates selection;
   // Lines up the records the row's lists and maps hold with what the statement wrote (issue #11754): the statement's own,
   // shared by every clause, resolved at the start of each row
   private HeldCollectionRefresher heldCollections;
 
   public RemoveStep(final RemoveClause removeClause, final CommandContext context, final CypherFunctionFactory functionFactory) {
+    this(removeClause, context, functionFactory, SelectionPredicates.NONE);
+  }
+
+  public RemoveStep(final RemoveClause removeClause, final CommandContext context, final CypherFunctionFactory functionFactory,
+      final SelectionPredicates selection) {
     super(context);
     this.removeClause = removeClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
+    this.selection = selection;
   }
 
   @Override
@@ -274,8 +286,23 @@ public class RemoveStep extends AbstractExecutionStep {
 
     // Make document mutable. REMOVE writes no value computed from what the MATCH read, so a commit landing in between
     // leaves nothing to lose: the stale-read refusal (#8610) does not apply
+    final Binary readImage = doc instanceof BaseRecord record ? record.getBuffer() : null;
     final MutableDocument mutableDoc = doc.modify();
     mutableDoc.clearBasedOnStaleRead();
+
+    // Update the result with the modified document
+    if (variable != null)
+      ((ResultInternal) result).setProperty(variable, mutableDoc);
+    // ...and with it every other alias of the same node, so all of them observe the removal - one binding per node
+    // per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
+    RowAliases.propagateUpdate(result, doc, mutableDoc);
+
+    // #11818: what the predicates that selected the record read may have changed, though: "WHERE r.owner = $me REMOVE r.owner"
+    // would release a lease another transaction took over since the read. Checked on the reloaded record, before the removal
+    final RID rid = doc.getIdentity();
+    if (mutableDoc != doc && rid != null && context.getDatabase().getTransaction().getRecordFromCache(rid) != mutableDoc
+        && SetClauseApplier.holdsOtherContent(doc, readImage))
+      selection.requireStillSelected(rid, result, context);
 
     // Removing a property that isn't there is a no-op for Neo4j-compatible statistics: only count it when the property
     // existed before the removal. Asked of the copy being written, not of the record the row read: a target captured twice
@@ -292,13 +319,6 @@ public class RemoveStep extends AbstractExecutionStep {
     if (propertyExisted)
       context.getStatistics().addPropertiesSet(1);
     heldCollections.written(mutableDoc);
-
-    // Update the result with the modified document
-    if (variable != null)
-      ((ResultInternal) result).setProperty(variable, mutableDoc);
-    // ...and with it every other alias of the same node, so all of them observe the removal - one binding per node
-    // per row is what Cypher promises, and it is what SET has always delivered (issue #6328).
-    RowAliases.propagateUpdate(result, doc, mutableDoc);
   }
 
   /** The phase-1 label list, cast back from the {@code Object[]} the snapshot is held in. */

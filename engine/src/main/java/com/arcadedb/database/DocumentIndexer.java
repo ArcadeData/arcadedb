@@ -763,6 +763,37 @@ public class DocumentIndexer {
     return new DetachedDocument(modifiedRecord, values);
   }
 
+  /**
+   * Queues on {@code tx} the index changes that bring the indexes to the values {@code document} holds now, which is what an update
+   * of a record does when it is saved in a transaction. They are diffed against the state an earlier update of the record in the same
+   * transaction left (its indexed snapshot, issue #4935) and against the committed buffer when there is none: the buffer stays
+   * frozen until the commit, because the serialization is deferred, so diffing against it would leak an entry for every intermediate
+   * value. The refreshed snapshot is recorded only when an index changed: otherwise the diff source it had still describes the indexed
+   * state, and an update that touches no indexed property costs no snapshot.
+   *
+   * @param indexes the indexes {@link #getInvolvedIndexes} answered for {@code document}, not empty
+   */
+  public void updateDocumentInTransaction(final TransactionContext tx, final Document document, final List<IndexInternal> indexes) {
+    final RID rid = document.getIdentity();
+    final Document previous = tx.getLastIndexedSnapshot(rid);
+    final Document refreshedSnapshot = updateDocument(previous != null ? previous : database.getOriginalDocument(document), document,
+        indexes);
+    if (refreshedSnapshot != null)
+      tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
+  }
+
+  /**
+   * Indexes what was assigned to a record after the last {@code save()} that queued it for the commit (issue #11751). That save brought
+   * the indexes to the values the record held then, and the commit writes the record as it is when it runs, so a later assignment
+   * reaches the record and would never reach the indexes. Queues the difference, which is empty when the assignment put back what the
+   * save had left. Only while the transaction is {@code BEGUN}, the one state an index queues an entry instead of writing it.
+   */
+  public void updateDocumentAssignedAfterSave(final TransactionContext tx, final Document document) {
+    final List<IndexInternal> indexes = getInvolvedIndexes(document);
+    if (indexes != null && !indexes.isEmpty())
+      updateDocumentInTransaction(tx, document, indexes);
+  }
+
   public void deleteDocument(final Document record) {
     if (record.getIdentity() == null)
       // RECORD IS NOT PERSISTENT

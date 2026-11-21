@@ -1076,9 +1076,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
-    // Read by the leader's log appenders, which Ratis builds itself (issue #11458)
+    // Read by the leader's log appenders, which Ratis builds itself (issue #11458). The budget is resolved over THIS
+    // node's heap: it is what this node applies as a leader and what it advertises as a follower, and a follower is held
+    // to the smaller of the two (issue #11508)
     applyBackPressure = new ApplyBackPressure(ApplyBackPressure.resolveBudgetBytes(configuration, Runtime.getRuntime().maxMemory()),
-        peerCapabilities::freshAppliedIndexOf);
+        peerCapabilities::freshAppliedIndexOf, peerCapabilities::freshApplyBacklogBudgetOf);
     ApplyBackPressure.register(localPeerId.toString(), applyBackPressure);
 
     final File storageDir = storageFiles.getRaftStorageDir();
@@ -3523,11 +3525,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .setRaftGroup(group)
         .setProperties(properties)
         .setParameters(parameters != null ? parameters : new Parameters())
-        .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
+        .setRetryPolicy(DATA_CLIENT_RETRY_POLICY);
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
     return builder.build();
   }
+
+  /**
+   * The per-call retry policy of the shared {@link #raftClient}, the one every group-committed entry goes through:
+   * {@code RetryLimited(60, 1s)}, a data write waiting out an election, wrapped so the committer learns which entries an
+   * earlier attempt of may have reached a log. The refusal of a leader stepping down for a leadership transfer is a
+   * definite outcome only for an entry with no such attempt (issue #11951, see {@code RaftGroupCommitter.refusedBeforeAppend}).
+   * Stateless, so one instance serves every client this node builds.
+   */
+  static final RetryPolicy DATA_CLIENT_RETRY_POLICY = RaftGroupCommitter.recordingResends(
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
 
   /**
    * The per-call retry policy of the membership-change client (issues #7539, #7561).
@@ -3828,6 +3840,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public void waitForAppliedIndexForRead(final String databaseName, final long targetIndex,
       final Database.READ_CONSISTENCY consistency) {
     appliedWaits.awaitAppliedIndex(databaseName, targetIndex, consistency == Database.READ_CONSISTENCY.LINEARIZABLE, consistency);
+  }
+
+  /**
+   * The byte budget this node resolved for its own Raft apply backlog ({@code arcadedb.ha.applyBacklogMax} over its own
+   * heap), which it advertises on the capability poll so its leader does not size the backlog from the leader's heap
+   * (issue #11508). {@code -1} when Raft is not started or the budget is disabled here.
+   */
+  public long getApplyBacklogBudgetBytes() {
+    final ApplyBackPressure backPressure = applyBackPressure;
+    if (backPressure == null)
+      return -1L;
+    final long budget = backPressure.getBudgetBytes();
+    return budget > 0 ? budget : -1L;
   }
 
   @Override

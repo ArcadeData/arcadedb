@@ -1844,7 +1844,7 @@
         {
           "name": "node.relationship.types",
           "syntax": "node.relationship.types(...)",
-          "description": "Get all relationship types connected to a node",
+          "description": "Get the relationship types connected to a node, optionally filtered by an APOC relationship pattern and a direction",
           "since": "cypher"
         },
         {

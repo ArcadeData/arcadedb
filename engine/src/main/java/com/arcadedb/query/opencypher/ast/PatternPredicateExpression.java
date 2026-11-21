@@ -57,6 +57,8 @@ public class PatternPredicateExpression implements BooleanExpression {
   private final String patternText;
   // THE PATTERN NEVER CHANGES, SO WHETHER IT IS A PARENTHESIZED VARIABLE IS DECIDED ONCE
   private final boolean parenthesizedVariable;
+  // A one-hop pattern the edge list of the bound vertex answers without loading an edge (issue #11891)
+  private final OneHopPattern oneHop;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
     this(pathPattern, isNegated, null);
@@ -67,6 +69,7 @@ public class PatternPredicateExpression implements BooleanExpression {
     this.isNegated = isNegated;
     this.patternText = patternText;
     this.parenthesizedVariable = computeParenthesizedVariable(pathPattern);
+    this.oneHop = OneHopPattern.of(pathPattern);
   }
 
   @Override
@@ -124,6 +127,11 @@ public class PatternPredicateExpression implements BooleanExpression {
       // No relationships in pattern - this shouldn't happen
       return false;
     }
+
+    // The edge walk below loads the relationship records, so the user's permission to read them is still asked
+    final long found = oneHop.count(result, context, OneHopPattern.Question.PREDICATE);
+    if (found != OneHopPattern.NOT_ANSWERED)
+      return found > 0;
 
     // Multi-hop patterns or patterns whose start node does not bind to a row
     // variable are not handled by the in-memory single-edge fast path. Delegate

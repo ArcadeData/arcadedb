@@ -113,6 +113,68 @@ class BenchMainTest {
   }
 
   @Test
+  void commitDateFlagLandsInArcadedbObjectAsAUtcInstant() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit-date",
+        "2026-10-28T14:05:09+02:00", "--out", tmp.toString());
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().arcadedb().getString("commitDate")).isEqualTo("2026-10-28T12:05:09Z");
+    }
+  }
+
+  @Test
+  void withoutCommitDateTheArcadedbObjectHasNone() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out", tmp.toString())).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().arcadedb().has("commitDate")).isFalse();
+    }
+  }
+
+  @Test
+  void badCommitDateExits2BeforeAnythingRuns() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit-date", "yesterday",
+        "--out", tmp.toString())).isEqualTo(2);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      assertThat(files.filter(p -> p.toString().endsWith(".json")).toList()).isEmpty();
+    }
+  }
+
+  @Test
+  void commitDateFlagLandsInArcadedbObjectOfLdbcConvert() throws Exception {
+    final Path summary = tmp.resolve("mode1-summary.json");
+    try (final InputStream in = BenchMainTest.class.getResourceAsStream("/mode1-summary.json")) {
+      Files.write(summary, in.readAllBytes());
+    }
+    final Path out = tmp.resolve("out");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "ldbc-convert", "--summary", summary.toString(), "--dataset", "d", "--commit", "abc", "--commit-date",
+        "2026-10-28T12:05:09Z", "--out", out.toString())).isZero();
+    try (final Stream<Path> files = Files.list(out)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().arcadedb().getString("commitDate")).isEqualTo("2026-10-28T12:05:09Z");
+    }
+  }
+
+  @Test
+  void badCommitDateOfLdbcConvertExits2() throws Exception {
+    final Path summary = tmp.resolve("mode1-summary.json");
+    try (final InputStream in = BenchMainTest.class.getResourceAsStream("/mode1-summary.json")) {
+      Files.write(summary, in.readAllBytes());
+    }
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "ldbc-convert", "--summary", summary.toString(), "--dataset", "d", "--commit", "abc", "--commit-date",
+        "2026-13-01", "--out", tmp.resolve("out").toString())).isEqualTo(2);
+  }
+
+  @Test
   void ldbcConvertWritesOneLdbcFile() throws Exception {
     final Path summary = tmp.resolve("mode1-summary.json");
     try (final InputStream in = BenchMainTest.class.getResourceAsStream("/mode1-summary.json")) {
@@ -284,12 +346,13 @@ class BenchMainTest {
     // the flags scripts/run-all.sh and the workflows of arcadedb-perf-infra pass to the jar
     final String[] run = { "run", "--workload", "w", "--scale", "M", "--image", "i", "--variant", "jvm", "--trigger", "nightly",
         "--machine-id", "perf-01", "--commit", "c", "--server-cpus", "auto", "--skip-idle-check", "--out", "o", "--version", "v",
-        "--tag", "t", "--bench-commit", "b" };
-    assertThat(BenchMain.parse(run, false, BenchMain.RUN_OPTIONS)).containsKeys("workload", "bench-commit", "skip-idle-check");
+        "--tag", "t", "--bench-commit", "b", "--commit-date", "2026-01-01T00:00:00Z" };
+    assertThat(BenchMain.parse(run, false, BenchMain.RUN_OPTIONS)).containsKeys("workload", "bench-commit", "skip-idle-check",
+        "commit-date");
     final String[] convert = { "ldbc-convert", "--summary", "s", "--dataset", "d", "--commit", "c", "--machine-id", "m",
         "--trigger", "t", "--out", "o", "--started-at", "2026-01-01T00:00:00Z", "--version", "v", "--tag", "t", "--bench-commit",
-        "b" };
-    assertThat(BenchMain.parse(convert, false, BenchMain.LDBC_CONVERT_OPTIONS)).containsKeys("summary", "started-at");
+        "b", "--commit-date", "2026-01-01T00:00:00Z" };
+    assertThat(BenchMain.parse(convert, false, BenchMain.LDBC_CONVERT_OPTIONS)).containsKeys("summary", "started-at", "commit-date");
     final String[] upload = { "upload", "dir", "--url", "u", "--user", "perf-writer", "--password-env", "P" };
     assertThat(BenchMain.parse(upload, true, BenchMain.UPLOAD_OPTIONS)).containsKeys("", "url");
     final String[] export = { "export", "--url", "u", "--user", "perf-reader", "--password-env", "P", "--out", "o" };

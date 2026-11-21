@@ -23,17 +23,15 @@ import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.geo.CypherPointFunction;
+import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
-import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
-import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.CollectionUtils;
@@ -178,8 +176,9 @@ public class BoltStructureMapper {
    */
   public static BoltRelationship toRelationship(final Edge edge) {
     final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    // A lightweight edge's RID is shared by every lightweight edge of its type: the element id names the edge (issue #12132)
+    final String elementId = ElementIdFunction.of(rid);
+    final long id = relationshipId(rid, elementId);
 
     final RID outRid = edge.getOut();
     final RID inRid = edge.getIn();
@@ -200,13 +199,32 @@ public class BoltStructureMapper {
    */
   public static BoltUnboundRelationship toUnboundRelationship(final Edge edge) {
     final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final String elementId = ElementIdFunction.of(rid);
+    final long id = relationshipId(rid, elementId);
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
 
     return new BoltUnboundRelationship(id, type, properties, elementId);
+  }
+
+  /**
+   * The numeric id of a relationship. A lightweight edge has no record position to encode (its id() is null, and encoding its
+   * {@code #bucket:-1} marker throws): it gets a negative id hashed (FNV-1a, 63 bits) from the element id that names it, which
+   * no record id, never negative, can equal (issue #12132).
+   * <p>
+   * The numeric id is a best effort, as a hash is: two lightweight edges whose element ids collide (about 2^-63 for a pair)
+   * would share it. The element id is the identity of the relationship, and the one a client must send back to name it.
+   */
+  private static long relationshipId(final RID rid, final String elementId) {
+    if (rid.getPosition() >= 0)
+      return ridToId(rid);
+    long hash = 0xcbf29ce484222325L;
+    for (int i = 0; i < elementId.length(); i++) {
+      hash ^= elementId.charAt(i);
+      hash *= 0x100000001b3L;
+    }
+    return -1L - (hash & Long.MAX_VALUE);
   }
 
   /**
@@ -228,7 +246,9 @@ public class BoltStructureMapper {
     final List<BoltNode> nodes = new ArrayList<>();
     final Map<RID, Integer> nodeIndex = new HashMap<>();
     final List<BoltUnboundRelationship> rels = new ArrayList<>();
-    final Map<RID, Integer> relIndex = new HashMap<>();
+    // Keyed by what tells one relationship from another: the RID of a record-backed edge, and for a lightweight edge its
+    // distinct key, so that two parallel twins of one path stay two relationships (issue #12132)
+    final Map<Object, Integer> relIndex = new HashMap<>();
     final List<Long> indices = new ArrayList<>(edges.size() * 2);
 
     addPathNode(vertices.get(0), nodes, nodeIndex);
@@ -240,12 +260,12 @@ public class BoltStructureMapper {
       final Vertex from = vertices.get(i);
       final Vertex to = vertices.get(i + 1);
 
-      final RID relRid = edge.getIdentity();
-      Integer ri = relIndex.get(relRid);
+      final Object relKey = DistinctNumericKey.canonicalize(edge);
+      Integer ri = relIndex.get(relKey);
       if (ri == null) {
         rels.add(toUnboundRelationship(edge));
         ri = rels.size(); // 1-based
-        relIndex.put(relRid, ri);
+        relIndex.put(relKey, ri);
       }
       final boolean forward = edge.getOut().equals(from.getIdentity());
       indices.add((long) (forward ? ri : -ri));
@@ -472,7 +492,8 @@ public class BoltStructureMapper {
    * (Date, Time, LocalTime, LocalDateTime, Duration) are version-invariant and stay on {@link BoltTemporalStructure}.
    */
   static PackStreamStructure toTemporalStructure(final Object rawValue) {
-    final Object value = unwrapCypherTemporal(rawValue);
+    // a CypherDuration stays as it is and is emitted as a SIG_DURATION struct below
+    final Object value = CypherTemporalValue.toJavaTime(rawValue);
 
     if (value instanceof LocalDate d)
       return new BoltTemporalStructure(SIG_DATE, d.toEpochDay());
@@ -516,23 +537,6 @@ public class BoltStructureMapper {
     // localEpoch: wall clock treated as UTC (legacy basis). utcEpoch: the true instant (5.0+ basis).
     return BoltDateTimeStructure.offset(local.toEpochSecond(ZoneOffset.UTC), local.toEpochSecond(offset),
         local.getNano(), offset.getTotalSeconds());
-  }
-
-  private static Object unwrapCypherTemporal(final Object value) {
-    if (value instanceof CypherDate d)
-      return d.getValue();
-    if (value instanceof CypherLocalTime t)
-      return t.getValue();
-    if (value instanceof CypherTime t)
-      return t.getValue();
-    if (value instanceof CypherLocalDateTime ldt)
-      return ldt.getValue();
-    if (value instanceof CypherDateTime dt)
-      return dt.getValue();
-    // NOTE: CypherDuration is intentionally not unwrapped to a java.time value - Bolt has a native Duration
-    // struct but there is no single java.time type for it (months + days + seconds together). It is matched
-    // directly as CypherDuration in toTemporalStructure below and emitted as a SIG_DURATION struct.
-    return value;
   }
 
   /**
