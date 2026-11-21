@@ -1,0 +1,185 @@
+name: Performance regression alerting
+
+# Judges the benchmark runs published in ArcadeData/arcadedb-perf and opens, updates,
+# comments on and closes "performance-regression" issues by applying the plan that
+# `bench gate` produces.
+#
+# Go-live switch: the scheduled run only APPLIES the plan (touches issues) when the
+# repository variable PERF_REGRESSION_LIVE is 'true'. Until then every run is a dry run
+# that lists the issues, runs the gate and prints the plan in the job summary.
+# workflow_dispatch has a dry_run input that defaults to true, so a manual run is a dry
+# run unless dry_run is unticked.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: print the plan, do not touch issues"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+# One judge at a time: two overlapping runs could both plan the same create.
+concurrency:
+  group: perf-regression
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LIVE: ${{ (github.event_name == 'schedule' && vars.PERF_REGRESSION_LIVE == 'true') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check out the published benchmark runs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ArcadeData/arcadedb-perf
+          path: perf
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: maven
+
+      - name: Build the bench CLI
+        run: ./mvnw -B -pl bench -am package -DskipTests
+
+      - name: List regression issues
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+            const listed = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'performance-regression', state: 'all', per_page: 100,
+            });
+            const issues = [];
+            for (const item of listed) {
+              if (item.pull_request) continue;
+              let closedBy = null;
+              if (item.state === 'closed') {
+                // The planner trusts every closed issue it is given, so only recent ones are passed.
+                if (!item.closed_at || Date.parse(item.closed_at) < cutoff) continue;
+                const full = await github.rest.issues.get({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: item.number,
+                });
+                closedBy = full.data.closed_by?.login ?? null;
+              }
+              issues.push({number: item.number, state: item.state, closedBy, body: item.body ?? ''});
+            }
+            fs.writeFileSync('issues.json', JSON.stringify(issues));
+            core.info(`${issues.length} regression issues read`);
+
+      - name: Answer the bench-changed questions
+        run: |
+          set -euo pipefail
+          jars=(bench/target/arcadedb-bench-*-cli.jar)
+          jar="${jars[0]}"
+          java -jar "${jar}" gate-pairs --data perf/data --issues issues.json > pairs.txt
+          : > bench-changes.ndjson
+          while read -r a b; do
+            [ -n "${a}" ] && [ -n "${b}" ] || continue
+            git cat-file -e "${a}^{commit}" 2>/dev/null || continue
+            git cat-file -e "${b}^{commit}" 2>/dev/null || continue
+            rc=0
+            git diff --quiet "${a}" "${b}" -- bench/ || rc=$?
+            case "${rc}" in
+              0) jq -n -c --arg k "${a}..${b}" '{($k): false}' >> bench-changes.ndjson ;;
+              1) jq -n -c --arg k "${a}..${b}" '{($k): true}' >> bench-changes.ndjson ;;
+              *) ;;
+            esac
+          done < pairs.txt
+          jq -s 'add // {}' bench-changes.ndjson > bench-changes.json
+          cat bench-changes.json
+
+      - name: Judge the runs
+        run: |
+          set -euo pipefail
+          jars=(bench/target/arcadedb-bench-*-cli.jar)
+          jar="${jars[0]}"
+          java -jar "${jar}" gate --data perf/data --issues issues.json --bench-changes bench-changes.json --out plan.json
+          {
+            echo "### Regression plan (live: ${LIVE})"
+            echo "<details><summary>plan.json</summary>"
+            echo
+            echo '```json'
+            cat plan.json
+            echo
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the plan
+        if: env.LIVE == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const plan = JSON.parse(fs.readFileSync('plan.json', 'utf8'));
+
+            try {
+              await github.rest.issues.getLabel({owner, repo, name: plan.label});
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({
+                owner, repo, name: plan.label, color: 'd93f0b',
+                description: 'Automated: a nightly or release benchmark got worse',
+              });
+            }
+
+            // The planner renders a comment whole for its run; edit the one that carries the run key.
+            const upsertComment = async (issue, runKey, body) => {
+              const prefix = `<!-- perf-regression-run ${runKey} -->`;
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: issue, per_page: 100,
+              });
+              const hit = comments.find(c => (c.body ?? '').startsWith(prefix));
+              if (hit) await github.rest.issues.updateComment({owner, repo, comment_id: hit.id, body});
+              else await github.rest.issues.createComment({owner, repo, issue_number: issue, body});
+            };
+
+            const created = {};
+            for (const action of plan.actions) {
+              if (action.op === 'create') {
+                const res = await github.rest.issues.create({
+                  owner, repo, title: action.title, body: action.body, labels: [plan.label],
+                });
+                created[action.key] = res.data.number;
+                core.info(`created #${res.data.number} for ${action.key}`);
+              } else if (action.op === 'update') {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: action.issue, title: action.title, body: action.body,
+                });
+                core.info(`updated #${action.issue}`);
+              } else if (action.op === 'comment') {
+                await upsertComment(action.issue, action.runKey, action.body);
+                core.info(`commented on #${action.issue}`);
+              } else if (action.op === 'close') {
+                // A close carries no runKey: its body starts with the run marker.
+                const m = /^<!-- perf-regression-run (.+?) -->/.exec(action.body);
+                if (!m) throw new Error(`close of #${action.issue} has no run marker`);
+                await upsertComment(action.issue, m[1], action.body);
+                await github.rest.issues.update({
+                  owner, repo, issue_number: action.issue, state: 'closed', state_reason: 'completed',
+                });
+                core.info(`closed #${action.issue}`);
+              } else {
+                throw new Error(`unknown action op ${action.op}`);
+              }
+            }
+            core.info(`${plan.actions.length} actions applied, ${Object.keys(created).length} issues created`);
