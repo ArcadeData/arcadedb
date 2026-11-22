@@ -234,7 +234,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Executors.newSingleThreadExecutor, which hides its ThreadPoolExecutor behind a non-tunable wrapper)
       // so callers can inspect it, e.g. getQueue().size() in tests.
       this.executor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), r -> {
-        Thread t = new Thread(r, "arcadedb-tx-" + txId);
+        // The thread ends with the transaction: its contexts go with it, not with the dead-thread sweep that runs every 1000
+        // init() calls, which left hundreds of them (page lists, undo journals) on the heap of a busy server
+        Thread t = new Thread(() -> {
+          try {
+            r.run();
+          } finally {
+            DatabaseContext.INSTANCE.releaseCurrentThreadContextsIfIdle();
+          }
+        }, "arcadedb-tx-" + txId);
         t.setDaemon(true);
         return t;
       });
