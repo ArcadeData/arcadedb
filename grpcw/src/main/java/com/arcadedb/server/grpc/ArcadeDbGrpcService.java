@@ -6428,12 +6428,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (result.isElement()) {
       final Document document = result.toElement();
 
-      if (!builder.getPropertiesMap().containsKey(Property.RID_PROPERTY) && document.getIdentity() != null
+      if (!builder.containsProperties(Property.RID_PROPERTY) && document.getIdentity() != null
           && !isExcluded(excluded, Property.RID_PROPERTY)) {
         builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
       }
 
-      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
+      if (!builder.containsProperties(Property.TYPE_PROPERTY) && document instanceof Document doc
           && doc.getType() != null && !isExcluded(excluded, Property.TYPE_PROPERTY)) {
         builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
       }
@@ -6441,16 +6441,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // @cat identifies the record's Java shape (document/vertex/edge), matching what JsonSerializer sends over
       // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
       // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
-      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY) && !isExcluded(excluded, Property.CAT_PROPERTY))
+      if (!builder.containsProperties(Property.CAT_PROPERTY) && !isExcluded(excluded, Property.CAT_PROPERTY))
         builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(document instanceof Vertex ? "v" : document instanceof Edge ? "e" : "d"));
     }
 
     // If this is an Edge and @out/@in are not already in properties, add them
     if (result.isElement() && result.getElement().get() instanceof Edge edge) {
-      if (!builder.getPropertiesMap().containsKey(Property.OUT_PROPERTY) && !isExcluded(excluded, Property.OUT_PROPERTY)) {
+      if (!builder.containsProperties(Property.OUT_PROPERTY) && !isExcluded(excluded, Property.OUT_PROPERTY)) {
         builder.putProperties(Property.OUT_PROPERTY, toGrpcValue(edge.getOut().getIdentity()));
       }
-      if (!builder.getPropertiesMap().containsKey(Property.IN_PROPERTY) && !isExcluded(excluded, Property.IN_PROPERTY)) {
+      if (!builder.containsProperties(Property.IN_PROPERTY) && !isExcluded(excluded, Property.IN_PROPERTY)) {
         builder.putProperties(Property.IN_PROPERTY, toGrpcValue(edge.getIn().getIdentity()));
       }
     }
@@ -6540,11 +6540,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // If this is an Edge, include @out / @in for convenience (string rid or link)
       if (dbRecord instanceof Edge edge) {
 
-        if (!builder.getPropertiesMap().containsKey("@out")) {
+        if (!builder.containsProperties("@out")) {
           builder.putProperties("@out", toGrpcValue(edge.getOut().getIdentity()));
         }
 
-        if (!builder.getPropertiesMap().containsKey("@in")) {
+        if (!builder.containsProperties("@in")) {
           builder.putProperties("@in", toGrpcValue(edge.getIn().getIdentity()));
         }
       }
@@ -6552,7 +6552,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // @cat identifies the record's Java shape (document/vertex/edge), matching what JsonSerializer sends over
       // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
       // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
-      if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY))
+      if (!builder.containsProperties(Property.CAT_PROPERTY))
         builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(dbRecord instanceof Vertex ? "v" : dbRecord instanceof Edge ? "e" : "d"));
     }
 
