@@ -64,6 +64,8 @@ class Issue12808DropKeepsThePathUntilItsFilesAreGoneTest {
   @AfterEach
   void tearDown() {
     LocalDatabase.TEST_AFTER_DROP_CLOSE_HOOK = null;
+    LocalDatabase.TEST_CLOSE_HOOK = null;
+    LocalDatabase.TEST_AFTER_MARKED_CLOSED_HOOK = null;
     executor.shutdownNow();
     final Database leftOpen = DatabaseFactory.getActiveDatabaseInstance(PATH);
     if (leftOpen != null && leftOpen.isOpen())
@@ -157,7 +159,7 @@ class Issue12808DropKeepsThePathUntilItsFilesAreGoneTest {
     stale.close();
     final Database live = new DatabaseFactory(PATH).open();
 
-    // A LocalDatabase EQUALS EVERY OTHER ONE OF ITS PATH: THE STALE HANDLE'S REFUSED DROP MUST NOT TAKE THE LIVE ONE OUT OF THE REGISTRY
+    // THE STALE HANDLE'S REFUSED DROP MUST NOT TOUCH THE REGISTRATION OF THE INSTANCE OPENED SINCE ON THE SAME PATH
     assertThatThrownBy(stale::drop).isInstanceOf(DatabaseIsClosedException.class);
 
     assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isSameAs(live);
@@ -165,5 +167,96 @@ class Issue12808DropKeepsThePathUntilItsFilesAreGoneTest {
         .hasMessageContaining("Found active instance");
     assertThat(live.isOpen()).isTrue();
     live.close();
+  }
+
+  @Test
+  @Timeout(60)
+  void aDropRefusedWhileAConcurrentCloseTearsTheInstanceDownLeavesNothingRegistered() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(PATH).open();
+    final Database embedded = db.getEmbedded();
+    final Future<?>[] refusedDrop = new Future<?>[1];
+    // INSIDE THE CLOSE, WITH THE INSTANCE ALREADY MARKED CLOSED: A DROP ON ANOTHER THREAD IS REFUSED, AND ITS INTENT TO KEEP THE
+    // REGISTRATION MUST NOT REACH THE CLOSE, OR THE CLOSE LEAVES ITS UNREGISTRATION TO A DROP THAT NEVER GETS TO DO IT
+    LocalDatabase.TEST_AFTER_MARKED_CLOSED_HOOK = () -> {
+      if (refusedDrop[0] != null)
+        return;
+      refusedDrop[0] = executor.submit(() -> {
+        db.drop();
+        return null;
+      });
+      try {
+        refusedDrop[0].get(30, TimeUnit.SECONDS);
+      } catch (final Exception ignored) {
+        // ASSERTED BELOW
+      }
+    };
+
+    db.close();
+
+    assertThat(refusedDrop[0]).isNotNull();
+    assertThatThrownBy(() -> refusedDrop[0].get()).hasCauseInstanceOf(DatabaseIsClosedException.class);
+    assertThat(embedded.isOpen()).isFalse();
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+    assertThat(new File(PATH, "schema.json")).exists();
+
+    try (final Database reopened = new DatabaseFactory(PATH).open()) {
+      assertThat(reopened.countType("T", false)).isEqualTo(10);
+    }
+  }
+
+  @Test
+  @Timeout(60)
+  void aDropThatLosesTheCloseToAConcurrentCloseLeavesNothingRegistered() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(PATH).open();
+    final CountDownLatch insideClose = new CountDownLatch(1);
+    final CountDownLatch releaseClose = new CountDownLatch(1);
+    LocalDatabase.TEST_CLOSE_HOOK = () -> {
+      insideClose.countDown();
+      try {
+        releaseClose.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    final Thread closer = new Thread(db::close, "issue12808-closer");
+    closer.start();
+    final Thread dropper;
+    try {
+      assertThat(insideClose.await(30, TimeUnit.SECONDS)).isTrue();
+      // THE CLOSE HOLDS THE CLOSING CAS BUT HAS TORN NOTHING DOWN YET: THE DROP PASSES ITS CHECKS AND WAITS FOR THE CLOSE
+      dropper = new Thread(db::drop, "issue12808-dropper");
+      dropper.start();
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (dropper.getState() != Thread.State.WAITING && dropper.isAlive() && System.nanoTime() < deadline)
+        Thread.onSpinWait();
+    } finally {
+      releaseClose.countDown();
+    }
+    closer.join(30_000);
+    dropper.join(30_000);
+    assertThat(closer.isAlive()).isFalse();
+    assertThat(dropper.isAlive()).isFalse();
+
+    assertThat(db.isOpen()).isFalse();
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+    assertThat(new File(PATH)).doesNotExist();
+  }
+
+  @Test
+  @Timeout(60)
+  void aDropWhoseTeardownFailsAfterMarkingTheInstanceClosedReleasesThePath() {
+    final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory(PATH).open();
+    LocalDatabase.TEST_AFTER_MARKED_CLOSED_HOOK = () -> {
+      throw new IllegalStateException("issue #12808: teardown failure after the instance is marked closed");
+    };
+
+    // THE DROP PROPAGATES THE FAILURE AND DELETES NOTHING, AND THE CLOSED INSTANCE IS NOT LEFT IN THE REGISTRY (#8316)
+    assertThatThrownBy(db::drop).hasStackTraceContaining("teardown failure after the instance is marked closed");
+    LocalDatabase.TEST_AFTER_MARKED_CLOSED_HOOK = null;
+
+    assertThat(db.isOpen()).isFalse();
+    assertThat(DatabaseFactory.getActiveDatabaseInstance(PATH)).isNull();
+    assertThat(new File(PATH, "schema.json")).exists();
   }
 }
