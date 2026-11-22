@@ -192,11 +192,12 @@ class MergedEdgeRegistryTest {
   }
 
   /**
-   * Issue #11782: the table of committed keys is bounded and starts over once full. A transaction that began before it last started
-   * over cannot tell a key from its stripe any more, and is refused by a moved stripe as before; one that began after is not.
+   * Issue #11782: the table of committed keys is bounded and starts over once full, and the table before it is kept. A transaction
+   * that began before the last restart is still answered by the key, not by its stripe; one that began before the restart before
+   * that cannot tell a key from its stripe any more, and is refused by a moved stripe.
    */
   @Test
-  void aTransactionOlderThanTheTableOfCommittedKeysFallsBackToTheStripe() {
+  void aTransactionOlderThanTheTablesOfCommittedKeysFallsBackToTheStripe() {
     final MergedEdgeRegistry registry = new MergedEdgeRegistry();
     final long first = MergedEdgeRegistry.keyOf(A, B, "R", null);
     final long sharingItsStripe = MergedEdgeRegistry.keyOf(A, ridSharingTheStripe(), "R", null);
@@ -204,20 +205,36 @@ class MergedEdgeRegistryTest {
 
     assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheRestart)).isTrue();
     registry.committed(new long[] { first }, 1);
-    // Enough other keys to fill the table, in commits of 1,000
-    final long[] filler = new long[1_000];
-    for (int commit = 0; commit <= MergedEdgeRegistry.EXACT_KEYS / filler.length; commit++) {
-      for (int i = 0; i < filler.length; i++)
-        filler[i] = MergedEdgeRegistry.keyOf(new RID(7, (long) commit * filler.length + i), A, "S", null);
-      assertThat(registry.reserve(filler, filler.length, filler, filler.length, registry.getSequence())).isTrue();
-      registry.committed(filler, filler.length);
-    }
-    final long afterTheRestart = registry.getSequence();
-    registry.reserve(new long[] { first }, 1, new long[] { first }, 1, afterTheRestart);
+    // Enough other keys to fill the table once, in commits of 1,000
+    fillTheTable(registry, 0);
+    final long afterTheFirstRestart = registry.getSequence();
+    // A transaction that began before the first restart is answered by the table before it: its key was not committed
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, beforeTheRestart)).isTrue();
+    registry.release(new long[] { sharingItsStripe }, 1);
+    // and the key the table before it holds is found
+    assertThat(registry.reserve(new long[] { first }, 1, new long[] { first }, 1, beforeTheRestart)).isFalse();
+
+    // Enough to fill it again: the first table is gone
+    fillTheTable(registry, 1);
+    final long afterTheSecondRestart = registry.getSequence();
+    registry.reserve(new long[] { first }, 1, new long[] { first }, 1, afterTheSecondRestart);
     registry.committed(new long[] { first }, 1);
 
     assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, beforeTheRestart)).isFalse();
-    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheRestart)).isTrue();
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheFirstRestart)).isTrue();
+    registry.release(new long[] { sharingItsStripe }, 1);
+    assertThat(registry.reserve(new long[] { sharingItsStripe }, 1, new long[] { sharingItsStripe }, 1, afterTheSecondRestart)).isTrue();
+  }
+
+  /** Commits enough keys, in commits of 1,000, to start the table of committed keys over once. */
+  private static void fillTheTable(final MergedEdgeRegistry registry, final int round) {
+    final long[] filler = new long[1_000];
+    for (int commit = 0; commit <= MergedEdgeRegistry.EXACT_KEYS / filler.length; commit++) {
+      for (int i = 0; i < filler.length; i++)
+        filler[i] = MergedEdgeRegistry.keyOf(new RID(7 + round, (long) commit * filler.length + i), A, "S", null);
+      assertThat(registry.reserve(filler, filler.length, filler, filler.length, registry.getSequence())).isTrue();
+      registry.committed(filler, filler.length);
+    }
   }
 
   @Test

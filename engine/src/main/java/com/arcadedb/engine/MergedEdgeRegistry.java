@@ -90,6 +90,11 @@ public final class MergedEdgeRegistry {
   // Every key committed after exactSince, with the sequence of its last commit
   private       LongLongHashMap committedKeys;
   private       long            exactSince;
+  // The table before the last start over, null when there is none: with the table above it, every key committed after
+  // previousExactSince. A transaction that began after that decides on the two together, so a start over refuses only the
+  // transactions that began before the one before it
+  private       LongLongHashMap previousKeys;
+  private       long            previousExactSince;
   // The marked keys of each commit in flight, sorted
   private final List<Reservation> reservations = new ArrayList<>();
 
@@ -149,6 +154,12 @@ public final class MergedEdgeRegistry {
       // Started over: the table holds every key committed from this commit on, and a transaction that began before it decides a
       // moved stripe alone. A commit with more keys than the table holds is not kept in it either, so the table stays within
       // EXACT_KEYS: it starts after that commit, which a transaction that began before it decides by the moved stripe alone too
+      if (kept) {
+        previousKeys = committedKeys;
+        previousExactSince = exactSince;
+      } else
+        // the keys of this commit are in neither table: nobody that began before it can be answered by the tables
+        previousKeys = null;
       committedKeys = new LongLongHashMap();
       exactSince = kept ? committedAt - 1 : committedAt;
     }
@@ -170,10 +181,15 @@ public final class MergedEdgeRegistry {
 
   /**
    * Whether {@code key}, whose stripe moved after {@code since}, was itself committed after it. A transaction that began before the
-   * table of committed keys started over cannot tell, and is refused.
+   * table of committed keys started over is answered by the table before it, and one that began before that cannot tell: it is
+   * refused.
    */
   private boolean committedSince(final long key, final long since) {
-    return since < exactSince || committedKeys.get(storable(key), 0L) > since;
+    if (since >= exactSince)
+      return committedKeys.get(storable(key), 0L) > since;
+    // Began before the table started over: the table before it still holds the keys committed after previousExactSince
+    return previousKeys == null || since < previousExactSince || committedKeys.get(storable(key), 0L) > since
+        || previousKeys.get(storable(key), 0L) > since;
   }
 
   private boolean beingCommitted(final long key) {
