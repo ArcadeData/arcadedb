@@ -461,6 +461,18 @@ public class ServerControlPlane {
       return "Replication state machine has halted after a critical error on this node " + criticalHalt
           + ". It applies no further entries and does not recover in place: restart this node.";
 
+    // Issue #12552: the same kind of stop, which the HA layer may still clear by itself (a restart that succeeds, a stuck
+    // close that ends). Outside the readinessRequiresHA gate for the reason the halt is: the node is not behind.
+    final String replicationFailure = haReplicationFailure();
+    if (replicationFailure != null)
+      return "Replication has stopped on this node and is not being recovered: " + replicationFailure;
+
+    // Issue #12552: a client listener thread that died (an OutOfMemoryError is enough) leaves its port closed or
+    // accepting connections nobody answers, while the rest of the server stays up.
+    final String listenerFailure = listenerFailure();
+    if (listenerFailure != null)
+      return listenerFailure;
+
     // Checked here for the same reason and on the same terms as the log failure above (issue #7519): the
     // readinessRequiresHA gate below is about a node that is BEHIND the cluster, and this node is not behind -
     // its database directory is being replaced under it from the cluster's bootstrap baseline, or it is
@@ -798,6 +810,59 @@ public class ServerControlPlane {
       return ha.getCriticalHaltReason();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Cannot read the HA critical-halt signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's description of a replication that stopped and is not being recovered, or {@code null} (issue #12552).
+   * Reads {@link HAServerPlugin#getReplicationFailureReason()}, with the defensiveness of {@link #haCriticalHalt()}.
+   */
+  private String haReplicationFailure() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getReplicationFailureReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the HA replication-failure signal for the readiness probe",
+          e);
+      return null;
+    }
+  }
+
+  /**
+   * The first client listener thread found dead, the HTTP server's or a plugin's, or {@code null} (issue #12552). A
+   * plugin that throws is skipped: a signal that cannot be read is treated as absent, as for the HA signals above.
+   */
+  private String listenerFailure() {
+    final HttpServer http = server.getHttpServer();
+    if (http != null) {
+      final String failure = listenerFailureOf(http);
+      if (failure != null)
+        return failure;
+    }
+    final Collection<ServerPlugin> plugins;
+    try {
+      plugins = server.getPlugins();
+    } catch (final RuntimeException e) {
+      // No plugin manager (a server that was never started): no plugin listener to report
+      return null;
+    }
+    for (final ServerPlugin plugin : plugins) {
+      final String failure = listenerFailureOf(plugin);
+      if (failure != null)
+        return failure;
+    }
+    return null;
+  }
+
+  private String listenerFailureOf(final ServerPlugin plugin) {
+    try {
+      return plugin.getListenerFailure();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the listener state of '%s' for the readiness probe", e,
+          plugin.getName());
       return null;
     }
   }

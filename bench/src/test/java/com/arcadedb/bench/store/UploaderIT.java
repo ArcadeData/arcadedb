@@ -20,22 +20,27 @@ package com.arcadedb.bench.store;
 
 import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.Metric;
+import com.arcadedb.bench.model.RunInfo;
 import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.server.ServerUnderTest;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -267,5 +272,113 @@ class UploaderIT {
         assertThat((Map<String, Object>) r.getProperty("config")).containsEntry("heap", "8g").containsKeys("settings", "jvm");
       }
     }
+  }
+
+  /** The sample run as one run of a release: its own runId, trigger, tag, variant, source and scale for every case. */
+  private static RunResult run(final String runId, final String trigger, final String tag, final String variant, final String source,
+      final String scale) {
+    final RunResult base = ExporterIT.sample();
+    final JSONObject arcadedb = new JSONObject(base.info().arcadedb().toString()).put("variant", variant);
+    if (tag != null)
+      arcadedb.put("tag", tag);
+    final Instant startedAt = Instant.parse("2026-11-20T19:18:00Z");
+    final RunInfo info = new RunInfo(runId, startedAt, startedAt.plus(Duration.ofMinutes(40)), trigger, source, arcadedb,
+        base.info().machine(), base.info().config());
+    final List<CaseResult> cases = new ArrayList<>();
+    for (final CaseResult c : base.results())
+      cases.add(new CaseResult(c.workload(), c.caseName(), scale, c.params(), c.reps(), c.warmup(), c.metrics(), c.status(), c.error()));
+    return new RunResult(info, cases);
+  }
+
+  private static RunResult release(final String runId, final String variant, final String scale) {
+    return run(runId, "release", "26.11.1", variant, "bench", scale);
+  }
+
+  private static List<String> runIds() {
+    try (final RemoteDatabase db = open("root", ServerUnderTest.PASSWORD)) {
+      try (final ResultSet rs = db.query("sql", "SELECT runId FROM Run ORDER BY runId")) {
+        final List<String> ids = new ArrayList<>();
+        while (rs.hasNext())
+          ids.add(rs.next().getProperty("runId"));
+        return ids;
+      }
+    }
+  }
+
+  private static List<String> measurementRunIds() {
+    try (final RemoteDatabase db = open("root", ServerUnderTest.PASSWORD)) {
+      try (final ResultSet rs = db.query("sql", "SELECT DISTINCT(runId) AS runId FROM Measurement")) {
+        final List<String> ids = new ArrayList<>();
+        while (rs.hasNext())
+          ids.add(rs.next().getProperty("runId"));
+        return ids;
+      }
+    }
+  }
+
+  @Test
+  void aReplacingUploadRemovesTheEarlierRunOfTheSameReleaseScaleAndVariant() {
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-m-jvm", "jvm", "M"));
+
+    final List<String> replaced = Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("new-m-jvm", "jvm", "M"), true);
+
+    assertThat(replaced).containsExactly("old-m-jvm");
+    assertThat(runIds()).containsExactly("new-m-jvm");
+    assertThat(measurementRunIds()).containsExactly("new-m-jvm");
+  }
+
+  @Test
+  void aReplacingUploadKeepsOtherScalesVariantsSourcesTagsAndTriggers() {
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-l-jvm", "jvm", "L"));
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-m-native", "native", "M"));
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run("old-ldbc", "release", "26.11.1", "jvm", "ldbc", "M"));
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run("old-other-tag", "release", "26.10.2", "jvm", "bench", "M"));
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run("old-nightly", "nightly", "26.11.1", "jvm", "bench", "M"));
+
+    final List<String> replaced = Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("new-m-jvm", "jvm", "M"), true);
+
+    assertThat(replaced).isEmpty();
+    assertThat(runIds()).containsExactly("new-m-jvm", "old-l-jvm", "old-ldbc", "old-m-native", "old-nightly", "old-other-tag");
+  }
+
+  @Test
+  void anUploadThatDoesNotReplaceKeepsBothRunsOfTheRelease() {
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-m-jvm", "jvm", "M"));
+
+    assertThat(Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("new-m-jvm", "jvm", "M"), false)).isEmpty();
+
+    assertThat(runIds()).containsExactly("new-m-jvm", "old-m-jvm");
+  }
+
+  @Test
+  void onlyAReleaseRunWithATagCanReplace() {
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-m-jvm", "jvm", "M"));
+
+    assertThatIllegalArgumentException().isThrownBy(
+            () -> Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run("n", "nightly", "26.11.1", "jvm", "bench", "M"), true))
+        .withMessageContaining("release");
+    assertThatIllegalArgumentException().isThrownBy(
+            () -> Uploader.upload(url, "perf-writer", WRITER_PASSWORD, run("u", "release", null, "jvm", "bench", "M"), true))
+        .withMessageContaining("tag");
+
+    assertThat(runIds()).containsExactly("old-m-jvm");
+  }
+
+  @Test
+  void aFailedReplacingUploadKeepsTheEarlierRun() {
+    Uploader.upload(url, "perf-writer", WRITER_PASSWORD, release("old-m-jvm", "jvm", "M"));
+
+    // the last case has no workload name: its insert fails after the replaced run was deleted in the same transaction
+    final RunResult fresh = release("new-m-jvm", "jvm", "M");
+    final List<CaseResult> cases = new ArrayList<>(fresh.results());
+    final CaseResult last = cases.getLast();
+    cases.set(cases.size() - 1, new CaseResult(null, last.caseName(), last.scale(), last.params(), last.reps(), last.warmup(),
+        last.metrics(), last.status(), last.error()));
+
+    assertThatThrownBy(() -> Uploader.upload(url, "perf-writer", WRITER_PASSWORD, new RunResult(fresh.info(), cases), true))
+        .isInstanceOf(RuntimeException.class).hasMessageContaining("workload");
+
+    assertThat(runIds()).containsExactly("old-m-jvm");
+    assertThat(measurementRunIds()).containsExactly("old-m-jvm");
   }
 }

@@ -74,6 +74,38 @@ A call written for the old signature keeps its answer: a second argument that is
 `(n, 'OUT')` is the pattern naming that type, as in APOC, and answers `['OUT']` or `[]`. Write `(n, null, 'OUT')` for the
 direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an unknown direction and now answers.
 
+### Security: a group's `resultSetLimit` caps the rows a query answers, not the records it reads (#12888)
+
+The `resultSetLimit` of a security group was applied to every bucket scan, so a member under a quota of N read the first N
+records of each bucket only, without any error: a `WHERE` missed the records past them, and `sum`, `max`, `count` over rows
+and `ORDER BY` ran over those records (in openCypher over the first N of the whole type). The quota now caps the rows a query
+answers and nothing else:
+
+- SQL applies it as the statement's `LIMIT` where it is tighter than the statement's own, as it already did on top of the
+  scan cap. A script statement now does the same: a `LIMIT` below the quota stays in force, where the quota used to replace it;
+- openCypher caps the rows of the whole statement, a `UNION` included (each branch used to get an allowance of its own), and
+  a `LIMIT` below the quota stays in force. The subqueries a statement reads its answer from (`COUNT { }`, `COLLECT { }`,
+  `EXISTS { }`) are not capped, nor is a query a procedure or a user-defined function runs for the statement, in openCypher
+  or SQL. The quota does not limit writes: a `SET`, `DELETE` or `MERGE` applies to every row it matches, and only the rows it
+  answers are capped;
+- the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
+
+**Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
+answers from every record the member may read. Gremlin, the MongoDB wire protocol and embedded code that reads through
+`iterateType()` were capped only by the scan truncation, and now read every record: they never applied the quota as a row cap.
+
+**Quota bypass to be aware of.** This is a breaking security change for a deployment that grants those entry points
+to a group under a quota. Until a row cap exists on those entry points (#13087), `resultSetLimit` no longer bounds how much a
+member of the group can read through Gremlin, the MongoDB wire protocol or the record API: before it bounded only the first N
+records of each bucket scan, now nothing. If the quota is what an administrator relies on to limit what a group can extract,
+do not grant that group access to those protocols until a row cap is added there. The quota still bounds the rows a SQL
+or openCypher statement answers. The maintainers accepted this interim gap for 26.12.1 rather than keep a cap that gave
+wrong answers on every entry point.
+
+**Resource use.** A member under a quota who runs a `WHERE`, an aggregate or an `ORDER BY` now makes the engine read every
+record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
+`resultSetLimit` and no `readTimeout` has no protection against a long scan, so set both.
+
 ## Fixes
 
 - **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a

@@ -24,6 +24,7 @@ import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,7 +35,9 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -241,6 +244,43 @@ class BenchMainTest {
     assertThat(probe.has("cpu")).isTrue();
   }
 
+  // #12839: the step, prepare and case limits are separate, and the run records all three
+  @Test
+  void timeoutFlagsLandInConfigOfRun() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--timeout-min", "20",
+        "--prepare-timeout-min", "45", "--case-timeout-min", "0", "--out", tmp.toString());
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().config().getInt("timeoutMin")).isEqualTo(20);
+      assertThat(result.info().config().getInt("prepareTimeoutMin")).isEqualTo(45);
+      assertThat(result.info().config().getInt("caseTimeoutMin")).isZero();
+    }
+  }
+
+  @Test
+  void prepareTimeoutDefaultsToTheStepTimeoutAndTheCaseCapTo120Minutes() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--timeout-min", "25", "--out",
+        tmp.toString());
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().config().getInt("prepareTimeoutMin")).isEqualTo(25);
+      assertThat(result.info().config().getInt("caseTimeoutMin")).isEqualTo(120);
+    }
+  }
+
+  @Test
+  void aNegativeCaseTimeoutExits2() {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm", "--skip-idle-check",
+        "--case-timeout-min", "-1", "--out", tmp.toString())).isEqualTo(2);
+  }
+
   @Test
   void badParamsExits2() {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -290,6 +330,13 @@ class BenchMainTest {
   void uploadWithoutPathExits2() {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     assertThat(run(buf, "upload", "--url", "http://localhost:1", "--user", "perf-writer", "--password-env", "PATH")).isEqualTo(2);
+  }
+
+  @Test
+  void replaceReleaseIsAFlagThatTakesNoValue() {
+    // the flag before the path: were it to take a value it would swallow the path, and the upload would miss its target
+    final String[] args = { "upload", "--url", "u", "--user", "perf-writer", "--password-env", "P", "--replace-release", "dir" };
+    assertThat(BenchMain.parse(args, true, BenchMain.UPLOAD_OPTIONS)).containsEntry("replace-release", "true").containsEntry("", "dir");
   }
 
   @Test
@@ -346,20 +393,186 @@ class BenchMainTest {
     // the flags scripts/run-all.sh and the workflows of arcadedb-perf-infra pass to the jar
     final String[] run = { "run", "--workload", "w", "--scale", "M", "--image", "i", "--variant", "jvm", "--trigger", "nightly",
         "--machine-id", "perf-01", "--commit", "c", "--server-cpus", "auto", "--skip-idle-check", "--out", "o", "--version", "v",
-        "--tag", "t", "--bench-commit", "b", "--commit-date", "2026-01-01T00:00:00Z" };
+        "--tag", "t", "--bench-commit", "b", "--commit-date", "2026-01-01T00:00:00Z", "--reps", "3", "--warmup", "1" };
     assertThat(BenchMain.parse(run, false, BenchMain.RUN_OPTIONS)).containsKeys("workload", "bench-commit", "skip-idle-check",
-        "commit-date");
+        "commit-date", "reps", "warmup");
     final String[] convert = { "ldbc-convert", "--summary", "s", "--dataset", "d", "--commit", "c", "--machine-id", "m",
         "--trigger", "t", "--out", "o", "--started-at", "2026-01-01T00:00:00Z", "--version", "v", "--tag", "t", "--bench-commit",
         "b", "--commit-date", "2026-01-01T00:00:00Z" };
     assertThat(BenchMain.parse(convert, false, BenchMain.LDBC_CONVERT_OPTIONS)).containsKeys("summary", "started-at", "commit-date");
-    final String[] upload = { "upload", "dir", "--url", "u", "--user", "perf-writer", "--password-env", "P" };
-    assertThat(BenchMain.parse(upload, true, BenchMain.UPLOAD_OPTIONS)).containsKeys("", "url");
+    final String[] upload = { "upload", "dir", "--url", "u", "--user", "perf-writer", "--password-env", "P", "--replace-release" };
+    assertThat(BenchMain.parse(upload, true, BenchMain.UPLOAD_OPTIONS)).containsKeys("", "url").containsEntry("replace-release", "true");
     final String[] export = { "export", "--url", "u", "--user", "perf-reader", "--password-env", "P", "--out", "o" };
     assertThat(BenchMain.parse(export, false, BenchMain.EXPORT_OPTIONS)).containsKeys("out");
     final String[] init = { "init-store", "--url", "u", "--root-user", "root", "--root-password-env", "R", "--writer-password-env",
         "W", "--reader-password-env", "E" };
     assertThat(BenchMain.parse(init, false, BenchMain.INIT_STORE_OPTIONS)).containsKeys("root-password-env");
+    final String[] gate = { "gate", "--data", "d", "--issues", "i.json", "--bench-changes", "b.json", "--out", "plan.json" };
+    assertThat(BenchMain.parse(gate, false, BenchMain.GATE_OPTIONS)).containsKeys("data", "issues", "bench-changes", "out");
+    final String[] gatePairs = { "gate-pairs", "--data", "d", "--issues", "i.json" };
+    assertThat(BenchMain.parse(gatePairs, false, BenchMain.GATE_PAIRS_OPTIONS)).containsKeys("data", "issues");
+  }
+
+  @Test
+  void gateOptionsAreKnown() {
+    // every option the gate commands declare parses, so the set is the authority and a new option cannot be left unparseable
+    for (final Set<String> known : List.of(BenchMain.GATE_OPTIONS, BenchMain.GATE_PAIRS_OPTIONS)) {
+      final List<String> args = new ArrayList<>();
+      args.add("gate");
+      for (final String option : known) {
+        args.add("--" + option);
+        args.add("v");
+      }
+      assertThat(BenchMain.parse(args.toArray(new String[0]), false, known)).containsOnlyKeys(known);
+    }
+    // the scan still reaches the options the gate workflow passes
+    assertThat(BenchMain.GATE_OPTIONS).as("BenchMain.GATE_OPTIONS still reaches every option the gate workflow passes")
+        .contains("data", "issues", "bench-changes", "out");
+    assertThat(BenchMain.GATE_PAIRS_OPTIONS).as("BenchMain.GATE_PAIRS_OPTIONS still reaches every option the gate workflow passes")
+        .contains("data", "issues");
+  }
+
+  /** A nightly run file of one case with one "ms" metric, lower is better. */
+  private static String nightlyRun(final String runId, final String commit, final String startedAt, final double median) {
+    return "{\"runId\":\"" + runId + "\",\"trigger\":\"nightly\",\"startedAt\":\"" + startedAt + "\",\"arcadedb\":{\"commit\":\""
+        + commit + "\",\"variant\":\"jvm\"},\"machine\":{\"id\":\"perf-01\"},\"config\":{\"benchCommit\":\"bench-" + commit
+        + "\"},\"results\":[{\"workload\":\"w\",\"case\":\"c\",\"scale\":\"M\",\"status\":\"ok\",\"metrics\":[{\"name\":\"time\","
+        + "\"unit\":\"ms\",\"better\":\"lower\",\"median\":" + median + ",\"values\":[" + median + "," + median + "]}]}]}";
+  }
+
+  private Path nightlyPairWorse() throws Exception {
+    final Path data = Files.createDirectories(tmp.resolve("data"));
+    Files.writeString(data.resolve("2026-11-20T03-00-00Z-aaaaaaaaaa-jvm.json"),
+        nightlyRun("2026-11-20T03-00-00Z-aaaaaaaaaa-jvm", "aaaaaaaaaa", "2026-11-20T03:00:00Z", 100));
+    Files.writeString(data.resolve("2026-11-21T03-00-00Z-bbbbbbbbbb-jvm.json"),
+        nightlyRun("2026-11-21T03-00-00Z-bbbbbbbbbb-jvm", "bbbbbbbbbb", "2026-11-21T03:00:00Z", 200));
+    return data;
+  }
+
+  @Test
+  void gateWritesAPlan() throws Exception {
+    final Path data = nightlyPairWorse();
+    final Path issues = Files.writeString(tmp.resolve("issues.json"), "[]");
+    final Path out = tmp.resolve("plan.json");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+
+    assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--out", out.toString())).isZero();
+
+    final JSONObject plan = new JSONObject(Files.readString(out));
+    assertThat(plan.getString("label")).isEqualTo("performance-regression");
+    final JSONArray actions = plan.getJSONArray("actions");
+    assertThat(actions.length()).isEqualTo(1);
+    assertThat(actions.getJSONObject(0).getString("op")).isEqualTo("create");
+    assertThat(actions.getJSONObject(0).getString("title")).contains("aaaaaaa..bbbbbbb");
+    assertThat(buf.toString(StandardCharsets.UTF_8)).isEqualTo("plan: 1 create, 0 update, 0 comment, 0 close" + System.lineSeparator());
+  }
+
+  @Test
+  void gateReadsTheBenchChangesFile() throws Exception {
+    final Path data = nightlyPairWorse();
+    final Path issues = Files.writeString(tmp.resolve("issues.json"), "[]");
+    final Path bench = Files.writeString(tmp.resolve("bench-changes.json"), "{\"bench-aaaaaaaaaa..bench-bbbbbbbbbb\": false}");
+    final Path withAnswer = tmp.resolve("with.json");
+    final Path without = tmp.resolve("without.json");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+
+    assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--bench-changes", bench.toString(), "--out",
+        withAnswer.toString())).isZero();
+    assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--out", without.toString())).isZero();
+
+    assertThat(Files.readString(withAnswer)).isNotEqualTo(Files.readString(without));
+  }
+
+  @Test
+  void gateWithoutARequiredOptionExits2() throws Exception {
+    final Path data = nightlyPairWorse();
+    final Path issues = Files.writeString(tmp.resolve("issues.json"), "[]");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final ByteArrayOutputStream err = new ByteArrayOutputStream();
+    final PrintStream previous = System.err;
+    System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+    try {
+      assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString())).isEqualTo(2);
+      assertThat(run(buf, "gate", "--data", data.toString(), "--out", tmp.resolve("p.json").toString())).isEqualTo(2);
+      assertThat(run(buf, "gate", "--issues", issues.toString(), "--out", tmp.resolve("p.json").toString())).isEqualTo(2);
+      assertThat(run(buf, "gate-pairs")).isEqualTo(2);
+      assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--out", "p.json", "--typo", "x"))
+          .isEqualTo(2);
+    } finally {
+      System.setErr(previous);
+    }
+    assertThat(err.toString(StandardCharsets.UTF_8)).contains("--out").contains("--issues").contains("--data").contains("--typo");
+    assertThat(Files.exists(tmp.resolve("p.json"))).isFalse();
+  }
+
+  @Test
+  void gateWithAnIssuesFileThatIsNotAnArrayExits2() throws Exception {
+    final Path data = nightlyPairWorse();
+    final Path issues = Files.writeString(tmp.resolve("issues.json"), "{}");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final PrintStream previous = System.err;
+    System.setErr(new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+    try {
+      assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--out", tmp.resolve("p.json").toString()))
+          .isEqualTo(2);
+    } finally {
+      System.setErr(previous);
+    }
+  }
+
+  @Test
+  void gateWarnsOnStderrAndStillExits0() throws Exception {
+    final Path data = nightlyPairWorse();
+    Files.writeString(data.resolve("broken.json"), "{ not json");
+    final Path issues = Files.writeString(tmp.resolve("issues.json"), "[{\"number\": 7, \"state\": \"open\", \"body\": \"no marker\"}]");
+    final Path out = tmp.resolve("plan.json");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final ByteArrayOutputStream err = new ByteArrayOutputStream();
+    final PrintStream previous = System.err;
+    System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+    try {
+      assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issues.toString(), "--out", out.toString())).isZero();
+    } finally {
+      System.setErr(previous);
+    }
+    assertThat(err.toString(StandardCharsets.UTF_8)).contains("broken.json").contains("#7");
+    assertThat(buf.toString(StandardCharsets.UTF_8)).doesNotContain("broken.json").doesNotContain("#7");
+    assertThat(new JSONObject(Files.readString(out)).getJSONArray("actions").length()).isEqualTo(1);
+  }
+
+  @Test
+  void gatePairsPrintsEachNeededPair() throws Exception {
+    final Path data = nightlyPairWorse();
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+
+    assertThat(run(buf, "gate-pairs", "--data", data.toString())).isZero();
+
+    assertThat(buf.toString(StandardCharsets.UTF_8)).isEqualTo("bench-aaaaaaaaaa bench-bbbbbbbbbb" + System.lineSeparator());
+  }
+
+  @Test
+  void gatePairsCoversTheLinesOfOpenIssues() throws Exception {
+    // the issue follows the line from a baseline whose bench commit no verdict of the data has
+    final Path data = nightlyPairWorse();
+    final Path issuesFile = tmp.resolve("issues.json");
+    final Path out = tmp.resolve("plan.json");
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    Files.writeString(issuesFile, "[]");
+    assertThat(run(buf, "gate", "--data", data.toString(), "--issues", issuesFile.toString(), "--out", out.toString())).isZero();
+    final String body = new JSONObject(Files.readString(out)).getJSONArray("actions").getJSONObject(0).getString("body")
+        .replace("bench-aaaaaaaaaa", "bench-0000000000");
+    Files.writeString(issuesFile, new JSONArray().put(new JSONObject().put("number", 1).put("state", "open").put("body", body)).toString());
+    Files.writeString(data.resolve("2026-11-22T03-00-00Z-cccccccccc-jvm.json"),
+        nightlyRun("2026-11-22T03-00-00Z-cccccccccc-jvm", "cccccccccc", "2026-11-22T03:00:00Z", 200));
+
+    final ByteArrayOutputStream pairs = new ByteArrayOutputStream();
+    assertThat(run(pairs, "gate-pairs", "--data", data.toString(), "--issues", issuesFile.toString())).isZero();
+    // the body row shows the recorded baseline against the run the line was reported worse in
+    assertThat(pairs.toString(StandardCharsets.UTF_8)).contains("bench-0000000000 bench-bbbbbbbbbb");
+
+    final ByteArrayOutputStream noIssues = new ByteArrayOutputStream();
+    assertThat(run(noIssues, "gate-pairs", "--data", data.toString())).isZero();
+    assertThat(noIssues.toString(StandardCharsets.UTF_8)).doesNotContain("bench-0000000000");
   }
 
   @Test
