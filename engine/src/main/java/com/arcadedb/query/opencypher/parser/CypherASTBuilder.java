@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
+import com.arcadedb.query.opencypher.ast.ChainedPropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.ConditionalStatement;
 import com.arcadedb.query.opencypher.ast.CreateClause;
@@ -43,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PathMode;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -521,32 +523,29 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           throw new CommandParsingException("UnexpectedSyntax: Pattern expressions are not allowed in SET values");
         final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
         final Expression valueExpr = expressionBuilder.parseExpression(propCtx.expression());
-        // Build the property name from all property accessors (supports chained access like a.b.c)
-        final StringBuilder propertyName = new StringBuilder();
-        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property())
-          if (propertyName.length() > 0)
-            propertyName.append('.').append(stripBackticks(prop.propertyKeyName().getText()));
-          else
-            propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
+        // The last accessor is the property written. Any accessor before it reads the record to write from the base:
+        // SET m.n.q = v writes q on the node m.n, as SET (m.n).q = v does (issue #13048)
+        final List<Cypher25Parser.PropertyContext> accessors = propExprCtx.property();
+        final String propertyName = stripBackticks(accessors.getLast().propertyKeyName().getText());
         // Check if the base expression is a simple variable or a complex expression (e.g., CASE)
         final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
-        if (baseExpr1.variable() != null) {
+        if (accessors.size() > 1) {
+          items.add(new SetClause.SetItem(chainedSetTarget(baseExpr1, accessors), propertyName, valueExpr));
+        } else if (baseExpr1.variable() != null) {
           // Simple variable: SET n.prop = value
-          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName.toString(), valueExpr));
+          items.add(new SetClause.SetItem(baseExpr1.variable().getText(), propertyName, valueExpr));
         } else if (baseExpr1.parenthesizedExpression() != null) {
-          // Check if the parenthesized expression contains just a variable
-          final String innerText = baseExpr1.parenthesizedExpression().expression().getText().trim();
           // Try to parse as a complex expression (e.g., CASE WHEN ... THEN t END)
           final Expression targetExpr = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
           if (targetExpr instanceof VariableExpression) {
-            items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName.toString(), valueExpr));
+            items.add(new SetClause.SetItem(((VariableExpression) targetExpr).getVariableName(), propertyName, valueExpr));
           } else {
-            items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
+            items.add(new SetClause.SetItem(targetExpr, propertyName, valueExpr));
           }
         } else {
           // Other expression types as base - parse as expression
           final Expression targetExpr = expressionBuilder.parseExpressionFromText(baseExpr1);
-          items.add(new SetClause.SetItem(targetExpr, propertyName.toString(), valueExpr));
+          items.add(new SetClause.SetItem(targetExpr, propertyName, valueExpr));
         }
       } else if (itemCtx instanceof Cypher25Parser.SetDynamicPropContext dynCtx) {
         // SET n[keyExpr] = value — dynamic property assignment (issue #5141)
@@ -588,6 +587,28 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new SetClause(items);
+  }
+
+  /**
+   * The record a chained SET target names: the base, read through every accessor but the last ({@code m.n} for
+   * {@code SET m.n.q = v}), built as the expression parser builds the same read (issue #13048).
+   */
+  private Expression chainedSetTarget(final Cypher25Parser.Expression1Context baseExpr1,
+      final List<Cypher25Parser.PropertyContext> accessors) {
+    Expression target;
+    if (baseExpr1.variable() != null)
+      target = new VariableExpression(stripBackticks(baseExpr1.variable().getText()));
+    else if (baseExpr1.parenthesizedExpression() != null)
+      target = expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+    else
+      target = expressionBuilder.parseExpressionFromText(baseExpr1);
+    for (int i = 0; i < accessors.size() - 1; i++) {
+      final String name = stripBackticks(accessors.get(i).propertyKeyName().getText());
+      target = i == 0 && target instanceof VariableExpression variable ?
+          new PropertyAccessExpression(variable.getVariableName(), name) :
+          new ChainedPropertyAccessExpression(target, name);
+    }
+    return target;
   }
 
   @Override
