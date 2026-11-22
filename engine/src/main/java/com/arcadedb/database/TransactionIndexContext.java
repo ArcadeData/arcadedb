@@ -262,9 +262,11 @@ public class TransactionIndexContext {
 
     @Override
     public int hashCode() {
+      // THE VALUES OF Objects.hash(tuple) AND Objects.hash(rid, tuple), WITHOUT THEIR VARARGS Object[] AND BOXED INT: THE ITERATION ORDER OF THE PER-KEY
+      // MAP, WHICH A COMMIT REPLAYS IN, DEPENDS ON THEM
       if (unique && !LSMTreeIndexAbstract.isKeyNull(keyValues))
-        return Objects.hash(IndexKeyEquality.hashTuple(keyValues));
-      return Objects.hash(rid, IndexKeyEquality.hashTuple(keyValues));
+        return 31 + IndexKeyEquality.hashTuple(keyValues);
+      return 31 * (31 + Objects.hashCode(rid)) + IndexKeyEquality.hashTuple(keyValues);
     }
 
     @Override
@@ -345,6 +347,9 @@ public class TransactionIndexContext {
           return -1;
         } else if (v2 == null) {
           return 1;
+        } else if (v1 instanceof Long long1 && v2 instanceof Long long2) {
+          // THE COMMON KEY, AHEAD OF THE LONG CHAIN OF TYPE TESTS OF BinaryComparator.compareTo
+          cmp = Long.compare(long1, long2);
         } else if (v1 instanceof List<?> list && v2 instanceof List<?> list1) {
 
           return CollectionUtils.compare(list, list1);
@@ -823,10 +828,11 @@ public class TransactionIndexContext {
       values = newKeyEntries();
       keys.put(k, values);
     } else {
-      values = keys.get(k);
+      // ONE TRAVERSAL OF THE TREE FOR A KEY NOT SEEN YET (get() + put() WALKED IT TWICE, A COMPARISON PER LEVEL EACH)
+      final Map<IndexKey, IndexKey> fresh = newKeyEntries();
+      values = keys.putIfAbsent(k, fresh);
       if (values == null) {
-        values = newKeyEntries();
-        keys.put(k, values);
+        values = fresh;
       } else {
         if (v.operation == IndexKey.IndexKeyOperation.ADD) {
           if (index.isUnique() && !LSMTreeIndexAbstract.isKeyNull(keysValues)) {
