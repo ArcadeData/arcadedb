@@ -1817,10 +1817,16 @@ public class PageManager extends LockContext {
 
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists)
       throws IOException {
+    return getMutablePage(pageId, pageSize, isNew, createIfNotExists, null);
+  }
+
+  /** As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}). */
+  public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
+      final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
     if (page != null)
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-      return page.useAsMutable();
+      return page.useAsMutable(recycled);
     return null;
   }
 

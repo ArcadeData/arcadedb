@@ -500,6 +500,12 @@ public class TransactionContext implements Transaction {
   // #10346: the savepoint of the statement the caller is running in this transaction, null while none is: what the statement changes is
   // journaled into it, to be taken back if the statement fails. One object per context, reused by every statement
   private       StatementSavepoint                   statement;
+  /**
+   * The array of a page image of this transaction that the commit-time rebase has just replaced, for the copy of the committed page that
+   * replaces it: nothing reads the stale image any more, and a rebase otherwise allocates a page for every one it drops. Set only for
+   * the span of a rebase and taken by the first page copy in it; null otherwise.
+   */
+  private       byte[]                               spareBuffer;
   private       StatementSavepoint                   pooledStatement;
   private       int                                  statementJournalLimit;
   /**
@@ -2429,10 +2435,12 @@ public class TransactionContext implements Transaction {
       if (page == null) {
         // IF AVAILABLE REMOVE THE PAGE FROM IMMUTABLE PAGES TO KEEP ONLY ONE PAGE IN RAM
         final ImmutablePage loadedPage = immutablePages.remove(pageId);
-        if (loadedPage == null)
+        if (loadedPage == null) {
           // NOT FOUND, DELEGATES TO THE DATABASE
-          page = database.getPageManager().getMutablePage(pageId, pageSize, isNew, true);
-        else
+          final byte[] spare = spareBuffer;
+          spareBuffer = null;
+          page = database.getPageManager().getMutablePage(pageId, pageSize, isNew, true, spare);
+        } else
           page = loadedPage.modify();
 
         if (isNew)
@@ -2852,11 +2860,25 @@ public class TransactionContext implements Transaction {
    *                                         rebase is no longer possible): the caller falls back to a normal
    *                                         full-transaction retry.
    */
-  private MutablePage rebaseEdgeAppends(final PageId pageId) throws IOException {
-    // Drop the stale copies so the reload observes the current committed version of the page.
+  private MutablePage rebaseEdgeAppends(final MutablePage stale) throws IOException {
+    final PageId pageId = stale.getPageId();
+    // Drop the stale copies so the reload observes the current committed version of the page (the commit loop already took the page this
+    // transaction wrote out of modifiedPages, and hands it here as the stale one)
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
+    // The array of the dropped page is read by nothing from here on: the first page copy of the rebase is written into it. A statement
+    // still open could hold the dropped page (to take the statement back), so then its array is not spare
+    spareBuffer = statement == null ? stale.getContent().array() : null;
+    try {
+      return rebaseEdgeAppendsOnReloadedPage(pageId);
+    } finally {
+      spareBuffer = null;
+    }
+  }
+
+  /** The rebase itself, on the page the caller dropped and the next copy of it reloads at its current committed version. */
+  private MutablePage rebaseEdgeAppendsOnReloadedPage(final PageId pageId) throws IOException {
     final long pageKey = packPageKey(pageId.getFileId(), pageId.getPageNumber());
 
     // Re-apply every tracked segment that lives on this page (usually one: the hot vertex's head chunk).
@@ -4024,32 +4046,42 @@ public class TransactionContext implements Transaction {
 
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(pageId.getFileId());
 
-    // Drop the stale copies so the reload observes the current committed version of the page. The page this transaction
-    // wrote ({@code ownPage}, already out of modifiedPages) is where the images of the inserted slots are read back
-    // from (#10661).
+    // The images of the slots this transaction inserted are read from the page it wrote (#10661) BEFORE that page is dropped: the array
+    // of the dropped page then becomes the copy of the committed page (spareBuffer), and no byte of it is read after that
+    final byte[][] ownImages = new byte[buffer.state.length][];
+    for (int slot = 0; slot < buffer.state.length; slot++) {
+      if (!buffer.isTracked(slot) || !buffer.isFinalImageOnPage(slot))
+        continue;
+      // #11788: an insert that outgrew the page left a chunk head in its slot
+      ownImages[slot] = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
+          bucket.readHeadChunkImage(ownPage, slot) :
+          bucket.readPlainRecordBody(ownPage, slot);
+      if (ownImages[slot] == null)
+        // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
+        // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
+        throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
+            + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
+    }
+
+    // Drop the stale copies so the reload observes the current committed version of the page.
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
-    final MutablePage committed = getPageToModify(pageId, bucket.getPageSize(), false);
+    final MutablePage committed;
+    // A statement still open could hold the dropped page (to take the statement back), so then its array is not spare
+    spareBuffer = statement == null ? ownPage.getContent().array() : null;
+    try {
+      committed = getPageToModify(pageId, bucket.getPageSize(), false);
+    } finally {
+      spareBuffer = null;
+    }
 
     // ascending slot order; entries past the last slot written are simply untracked (state 0)
     for (int slot = 0; slot < buffer.state.length; slot++) {
       if (!buffer.isTracked(slot))
         continue;
       final boolean insertedHere = buffer.isInserted(slot);
-      final byte[] finalBody;
-      if (buffer.isFinalImageOnPage(slot)) {
-        // #11788: an insert that outgrew the page left a chunk head in its slot
-        finalBody = buffer.kindOf(slot) == SLOT_KIND_FIRST_CHUNK ?
-            bucket.readHeadChunkImage(ownPage, slot) :
-            bucket.readPlainRecordBody(ownPage, slot);
-        if (finalBody == null)
-          // Cannot happen while every later write to the slot either tracks an image of its own or poisons the page.
-          // Refusing the merge is the safe answer if it ever does: the retry re-runs the whole transaction.
-          throw new ConcurrentModificationException("Slot rebase not possible on page " + pageId + " slot " + slot
-              + " (the inserted record is no longer a plain record on the transaction's page). Please retry the operation");
-      } else
-        finalBody = buffer.finalBodyOf(slot);
+      final byte[] finalBody = buffer.isFinalImageOnPage(slot) ? ownImages[slot] : buffer.finalBodyOf(slot);
 
       if (finalBody == null) {
         // DELETE (#5569). A slot this transaction both CREATED and deleted never existed on the committed page: its
@@ -4688,7 +4720,7 @@ public class TransactionContext implements Transaction {
           bucket.compressPageAtCommit(page);
       }
 
-      List<PageId> pagesToRebase = null;
+      List<MutablePage> pagesToRebase = null;
       // the page itself, not only its id: it leaves modifiedPages here, and the replay reads the inserted slots back from it (#10661)
       List<MutablePage> slotPagesToRebase = null;
       for (final Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
@@ -4718,7 +4750,7 @@ public class TransactionContext implements Transaction {
           if (isLeader && isRebasableEdgeAppendPage(p)) {
             if (pagesToRebase == null)
               pagesToRebase = new ArrayList<>();
-            pagesToRebase.add(p.getPageId());
+            pagesToRebase.add(p);
             it.remove();
           } else if (isLeader && isRebasableSlotPage(p)) {
             // Disjoint-slot merge (#5381): the conflict is only because a concurrent commit touched OTHER slots
@@ -4740,8 +4772,8 @@ public class TransactionContext implements Transaction {
       // because that re-run is what makes compressPage's COVERAGE_ALL_MERGES declaration true. Do not lift it back up
       // here: see the note on those two methods.
       if (pagesToRebase != null)
-        for (final PageId pageId : pagesToRebase) {
-          final MutablePage rebased = rebaseEdgeAppends(pageId);
+        for (final MutablePage ownPage : pagesToRebase) {
+          final MutablePage rebased = rebaseEdgeAppends(ownPage);
           pageManager.checkPageVersion(rebased, false);
           pages.add(rebased);
         }

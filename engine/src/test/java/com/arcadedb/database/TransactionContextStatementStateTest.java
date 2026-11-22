@@ -135,6 +135,9 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("requester", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("statement", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("pooledStatement", NOT_STATEMENT_STATE);
+    // The array of the page image a commit-time rebase just dropped, set and cleared inside that rebase: it exists only while the commit
+    // runs, when no statement is open (a rebase with one open leaves it null), so a statement taken back never meets it
+    CLASSIFICATION.put("spareBuffer", NOT_STATEMENT_STATE);
     // Issue #10768: a final callback of the context the page manager calls when the commit starts publishing, holding no state
     CLASSIFICATION.put("markPublicationStarted", NOT_STATEMENT_STATE);
     // Issue #10588. bucketFirstWriteSequences: when the transaction first wrote to a bucket, to know which indexes bound since owe
