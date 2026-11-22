@@ -104,7 +104,7 @@ class RaftAddBucketIndexIT extends BaseRaftHATest {
   /** The statement posted to the {@code /command} endpoint of the server {@code serverIndex}, as the root user. */
   private HttpResponse<String> send(final HttpClient client, final int serverIndex, final String command) throws Exception {
     return client.send(HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl(serverIndex, "/api/v1/command/" + getDatabaseName())))
         .timeout(HTTP_TIMEOUT)
         .header("Authorization", "Basic " + Base64.getEncoder()
             .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)))
