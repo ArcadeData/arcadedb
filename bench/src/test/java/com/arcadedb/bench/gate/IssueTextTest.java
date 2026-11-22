@@ -215,4 +215,13 @@ class IssueTextTest {
 
     assertThat(rowOf(IssueText.body(marker, NO_BENCH), "peak_heap")).contains("100.0 MiB").contains("150.0 MiB").doesNotContain("bytes");
   }
+
+  @Test
+  void numbersRoundTheDecimalTheyWerePrintedAs() {
+    // 1.0005 is stored as 1.000499999...: rounding the shortest decimal, not the binary expansion, keeps the half-up tie
+    assertThat(IssueText.number(1.0005)).isEqualTo("1.001");
+    assertThat(IssueText.number(0.12345)).isEqualTo("0.1235");
+    assertThat(IssueText.number(123.456)).isEqualTo("123.5");
+    assertThat(IssueText.number(150)).isEqualTo("150");
+  }
 }

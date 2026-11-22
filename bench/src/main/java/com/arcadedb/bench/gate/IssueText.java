@@ -314,6 +314,6 @@ public final class IssueText {
       return String.valueOf(v);
     if (v == Math.rint(v) && Math.abs(v) < 1e15)
       return Long.toString((long) v);
-    return new BigDecimal(v).round(new MathContext(4)).stripTrailingZeros().toPlainString();
+    return BigDecimal.valueOf(v).round(new MathContext(4)).stripTrailingZeros().toPlainString();
   }
 }
