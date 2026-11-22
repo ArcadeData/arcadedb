@@ -1836,8 +1836,15 @@ public class PostgresNetworkExecutor extends Thread {
    * to that accessor's element/content precedence, and narrowing it for issue #5613 silently dropped every
    * flattened column here. Element names come first so the column order matches what this surface has
    * always emitted.
+   *
+   * @param rowProperties the row's properties as {@link ResultInternal#propertiesOf(Result)} read them
    */
-  private Set<String> columnNamesOf(final Result row) {
+  static Set<String> columnNamesOf(final Result row, final Map<String, Object> rowProperties) {
+    // A plain row over a record: the row's properties, already read for the values, are those names (issue #13012), so listing them
+    // again would walk the record header twice more for every row of the result
+    if (ResultInternal.isPlainRecordRow(row))
+      return rowProperties.keySet();
+
     final Set<String> names = new LinkedHashSet<>();
     if (row.isElement()) {
       final Set<String> excludes = projectionExcludes(row);
@@ -1997,7 +2004,7 @@ public class PostgresNetworkExecutor extends Thread {
       // The columns are typed from every row (issue #9009), so the walk was paid once per row per column (#12558).
       final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
 
-      for (final String p : columnNamesOf(row)) {
+      for (final String p : columnNamesOf(row, rowProperties)) {
         // Determine the PostgreSQL type based on the actual value.
         // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
         // temporal) are advertised with their native OID so Postgres clients (psycopg, JDBC, ...)
@@ -3373,7 +3380,7 @@ public class PostgresNetworkExecutor extends Thread {
    * <p>
    * A query whose projection already names its columns cannot trip this - its rows carry exactly those - so the
    * check costs a map lookup per property on the paths where it can never fire. Both the element's properties and
-   * the result's own are walked, deliberately: that is exactly what {@link #columnNamesOf(Result)} feeds the map
+   * the result's own are walked, deliberately: that is exactly what {@link #columnNamesOf(Result, Map)} feeds the map
    * this checks against, so the two can never disagree about what a row carries. They are walked rather than
    * unioned through that method because this runs per row on the bulk path and the union allocates a set.
    */

@@ -136,4 +136,48 @@ class PostgresOnePassRowReadTest extends TestHelper {
       assertThat(PostgresNetworkExecutor.columnValue(row, "@cat", Map.of())).isEqualTo("d");
     });
   }
+  // Regression: #13012
+  @Test
+  void theColumnNamesOfARecordRowAreTheKeysOfItsPropertiesNotAnotherWalkOverTheRecord() {
+    database.transaction(() -> {
+      final CountingImmutableDocument document =
+          new CountingImmutableDocument(database, database.getSchema().getType("Wide"), rid);
+      final ResultInternal row = new ResultInternal(document);
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
+      document.resetCounters();
+
+      final Set<String> names = PostgresNetworkExecutor.columnNamesOf(row, properties);
+
+      assertThat(document.headerWalks()).as("the names are the keys of the properties already read").isZero();
+      assertThat(names).containsExactlyElementsOf(document.getPropertyNames());
+    });
+  }
+
+  // Regression: #13012
+  @Test
+  void theColumnNamesOfEveryOtherShapeOfRowStillListTheRecordAndTheRow() {
+    database.transaction(() -> {
+      // a row that holds values of its own over the record: the record's names first, then the row's
+      final Map<String, Object> content = new LinkedHashMap<>();
+      content.put("extra", 1);
+      final ResultInternal projection = new ResultInternal(content).setElement(database.lookupByRID(rid, true).asDocument());
+      assertThat(PostgresNetworkExecutor.columnNamesOf(projection, ResultInternal.propertiesOf(projection))).contains("p0", "extra");
+
+      // a property removed from the row is still announced, as it always was
+      final ResultInternal removed = new ResultInternal(database.lookupByRID(rid, true).asDocument());
+      removed.removeProperty("p1");
+      assertThat(ResultInternal.propertiesOf(removed)).doesNotContainKey("p1");
+      assertThat(PostgresNetworkExecutor.columnNamesOf(removed, ResultInternal.propertiesOf(removed))).contains("p1", "p0");
+
+      // an excluded property is left out of both
+      final ResultInternal excluded = new ResultInternal(database.lookupByRID(rid, true).asDocument());
+      excluded.setProjectionExcludes(Set.of("p2"));
+      assertThat(PostgresNetworkExecutor.columnNamesOf(excluded, ResultInternal.propertiesOf(excluded))).contains("p0")
+          .doesNotContain("p2");
+
+      // a row with no record at all
+      final ResultInternal plain = new ResultInternal(Map.of("k", 1));
+      assertThat(PostgresNetworkExecutor.columnNamesOf(plain, ResultInternal.propertiesOf(plain))).containsExactly("k");
+    });
+  }
 }
