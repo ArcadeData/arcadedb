@@ -1145,8 +1145,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       var type = schema.getType(typeName);
       var iter = new MultiIterator<Record>();
 
-      // SET THE PROFILED LIMITS IF ANY
-      iter.setLimit(getResultSetLimit());
+      // THE resultSetLimit IS A ROW CAP OF THE QUERY ENGINES, NOT A SCAN CAP (ISSUE #12888): ONLY THE readTimeout APPLIES HERE
       iter.setTimeout(getReadTimeout(), true);
 
       for (final Bucket b : type.getBuckets(polymorphic))
@@ -1163,7 +1162,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       checkDatabaseIsOpen();
       try {
         final Bucket bucket = schema.getBucketByName(bucketName);
-        return bucket.iterator();
+        // THE readTimeout BOUNDS A BUCKET SCAN AS IT BOUNDS A TYPE SCAN: THE resultSetLimit IS NOT A SCAN CAP (ISSUE #12888)
+        final long readTimeout = getReadTimeout();
+        if (readTimeout < 0)
+          return bucket.iterator();
+        final MultiIterator<Record> iter = new MultiIterator<>();
+        iter.setTimeout(readTimeout, true);
+        iter.addIterator(bucket.iterator());
+        return iter;
       } catch (final Exception e) {
         throw new DatabaseOperationException("Error on executing scan of bucket '" + bucketName + "'", e);
       }
