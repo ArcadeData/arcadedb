@@ -1218,6 +1218,70 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     boolean onPage(BasePage page, Binary pageBuffer, int count);
   }
 
+  /**
+   * The sink of the compacted part of {@link LSMTreeIndexMutable#holdsNoEntryFor}: it only asks whether some entry of a page, live or a deletion marker,
+   * has the key, and builds no result for it. The walk stops at the first page that has one.
+   */
+  protected final class KeyPresenceSink implements KeyLookupSink {
+    private final Object[] convertedKeys;
+    private       boolean  present;
+
+    protected KeyPresenceSink(final Object[] convertedKeys) {
+      this.convertedKeys = convertedKeys;
+    }
+
+    @Override
+    public boolean onPage(final BasePage page, final Binary pageBuffer, final int count) {
+      if (!pageHoldsKey(page.getPageId().getPageNumber(), count, pageBuffer, convertedKeys))
+        return true;
+      present = true;
+      return false;
+    }
+
+    protected boolean isPresent() {
+      return present;
+    }
+  }
+
+  /**
+   * Whether an entry of the page has {@code convertedKeys} as its whole key. The same search as {@link #lookupInPage} with purpose 0
+   * (the bounds of the page first, then a binary search) and the same comparison, without a {@link LookupResult} per page.
+   */
+  protected boolean pageHoldsKey(final int pageNum, final int count, final Binary pageBuffer, final Object[] convertedKeys) {
+    if (count < 1)
+      return false;
+
+    final int startIndexArray = getHeaderSize(pageNum);
+
+    int result = compareKey(pageBuffer, startIndexArray, convertedKeys, 0, count);
+    if (result < 0)
+      // LOWER THAN THE FIRST ENTRY
+      return false;
+    if (result == 0)
+      return true;
+
+    result = compareKey(pageBuffer, startIndexArray, convertedKeys, count - 1, count);
+    if (result > 0)
+      // HIGHER THAN THE LAST ENTRY
+      return false;
+    if (result == 0)
+      return true;
+
+    int low = 1;
+    int high = count - 2;
+    while (low <= high) {
+      final int mid = (low + high) >>> 1;
+      result = compareKey(pageBuffer, startIndexArray, convertedKeys, mid, count);
+      if (result > 0)
+        low = mid + 1;
+      else if (result < 0)
+        high = mid - 1;
+      else
+        return true;
+    }
+    return false;
+  }
+
   /** The sink of a {@code get()}: the live entries of the key, as {@link IndexCursorEntry} objects. */
   protected KeyLookupSink resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
       final Set<IndexCursorEntry> set) {

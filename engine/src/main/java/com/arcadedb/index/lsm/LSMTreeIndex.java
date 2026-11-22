@@ -739,6 +739,60 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   /**
+   * A probe of the pages of this index for the uniqueness check of ONE commit, or null when the caller must ask {@link #get} instead:
+   * while this transaction may hold pending changes of the keys (a lookup merges them), and for an index that may hold entries under
+   * the old spelling of a key ({@link #mayHoldLegacyKeys()}). See {@link KeyProbe}.
+   */
+  public KeyProbe newKeyProbe() {
+    checkIsValid();
+    if (mayHoldLegacyKeys || getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN)
+      return null;
+    return lock.executeInReadLock(() -> {
+      final LSMTreeIndexMutable snapshotOf = mutable;
+      return new KeyProbe(snapshotOf, snapshotOf.newPageSnapshot());
+    });
+  }
+
+  /**
+   * Answers, for the keys of a commit one after the other, whether this index has no entry for the key, from a snapshot of its mutable
+   * pages taken once: true is a promise that {@link #get} answers the key with nothing, false is "do not know, ask {@link #get}". It
+   * is meant for the uniqueness check of a commit, where the files of every bucket index of the type are locked until the commit ends:
+   * no other transaction adds an entry to a page of the snapshot, so a key the pages lack stays absent for the whole check. A
+   * compaction that swaps the index in the middle ends the promises (every answer after it is false).
+   * <p>
+   * Nearly every key of a commit is new, so the answer costs no cursor, no result set, and no page fetch, view or result per page
+   * and key: the probes of the next key in each page start where the last one ended, which makes a sorted batch a merge instead of
+   * a binary search per key.
+   */
+  public final class KeyProbe {
+    private final LSMTreeIndexMutable                      snapshotOf;
+    private final LSMTreeIndexMutable.MutablePagesSnapshot pages;
+
+    private KeyProbe(final LSMTreeIndexMutable snapshotOf, final LSMTreeIndexMutable.MutablePagesSnapshot pages) {
+      this.snapshotOf = snapshotOf;
+      this.pages = pages;
+    }
+
+    /**
+     * @param keys the keys as {@link #get} takes them
+     */
+    public boolean holdsNoEntryFor(final Object[] keys) {
+      checkIsValid();
+      final Object[] convertedKeys;
+      try {
+        convertedKeys = convertKeys(keys);
+      } catch (final IllegalArgumentException e) {
+        // as get(): a key the declared type cannot read equals no indexed key
+        return true;
+      }
+      if (!areReadAsKeys(keys, convertedKeys))
+        return true;
+
+      return lock.executeInReadLock(() -> mutable == snapshotOf && snapshotOf.holdsNoEntryFor(pages, convertedKeys));
+    }
+  }
+
+  /**
    * Whether this index may hold entries an older build wrote under the old spelling of a key (issues #12160 and #12233, see
    * {@link LSMTreeIndexAbstract#legacyKeys}): true for an index whose schema entry an older build wrote, false for one this build
    * created or rebuilt. Only such an index pays for the second read of a seek, of a removal and of the uniqueness check

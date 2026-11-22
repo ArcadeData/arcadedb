@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
@@ -651,8 +652,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   protected void searchInCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
+    // ONE LOOKUP OF THE TRANSACTION OF THE THREAD, NOT ONE PER PAGE
+    final TransactionContext transaction = database.getTransaction();
+
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = transaction.getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -712,7 +716,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
 
     for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
-      final BasePage lastPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNumber), pageSize);
+      final BasePage lastPage = transaction.getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
 
@@ -737,7 +741,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       }
 
       final PageId pageId = new PageId(database, file.getFileId(), pageNumber);
-      final BasePage rootPage = database.getTransaction().getPageForAbsoluteReads(pageId, pageSize);
+      final BasePage rootPage = transaction.getPageForAbsoluteReads(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
@@ -783,7 +787,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             if (pageNum < 1)
               continue;
 
-            final BasePage currentPage = database.getTransaction()
+            final BasePage currentPage = transaction
                 .getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
             final Binary currentPageBuffer = new Binary(currentPage.slice());
             final int count = getCount(currentPage);
@@ -793,7 +797,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           }
         } else {
           final int pageNum = rootPage.getPageId().getPageNumber() + 1 + pageInSeries;
-          final BasePage currentPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
+          final BasePage currentPage = transaction.getPageForAbsoluteReads(new PageId(database, file.getFileId(), pageNum), pageSize);
           final Binary currentPageBuffer = new Binary(currentPage.slice());
           final int count = getCount(currentPage);
 
@@ -806,7 +810,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         // is reachable only through the immediately preceding leaf. The result set removes any overlap.
         if (firstMatchingRootEntry > 0) {
           final int precedingPageNum = rootPage.getPageId().getPageNumber() + firstMatchingRootEntry;
-          final BasePage precedingPage = database.getTransaction()
+          final BasePage precedingPage = transaction
               .getPageForAbsoluteReads(new PageId(database, file.getFileId(), precedingPageNum), pageSize);
           final Binary precedingPageBuffer = new Binary(precedingPage.slice());
           final int precedingCount = getCount(precedingPage);
