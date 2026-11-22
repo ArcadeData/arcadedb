@@ -246,6 +246,30 @@ class Issue12888ResultSetLimitCapsRowsTest {
     }
   }
 
+  /** A capped result set closed before its last row leaves no scope behind: the next statement of the thread is capped. */
+  @Test
+  void aResultSetClosedEarlyLeavesTheThreadCapped() {
+    bindUser(quota(QUOTA));
+    try (final ResultSet rs = database.query("opencypher", "MATCH (i:Item) RETURN i.k AS k")) {
+      rs.next();
+    }
+    assertThat(ProfiledLimitScope.isActive()).isFalse();
+    assertThat(count("opencypher", "MATCH (i:Item) RETURN i")).isEqualTo(QUOTA);
+    assertThat(count("sql", "SELECT FROM Item")).isEqualTo(QUOTA);
+  }
+
+  /** A statement that fails, while it executes or while its rows are read, leaves no scope behind either. */
+  @Test
+  void aStatementThatFailsLeavesTheThreadCapped() {
+    bindUser(quota(RECORDS));
+    assertThatThrownBy(() -> count("opencypher", "MATCH (i:Item) RETURN i.k / (i.k - 20) AS k")).isInstanceOf(Exception.class);
+    assertThat(ProfiledLimitScope.isActive()).isFalse();
+
+    bindUser(quota(QUOTA));
+    assertThat(count("opencypher", "MATCH (i:Item) RETURN i")).isEqualTo(QUOTA);
+    assertThat(count("sql", "SELECT FROM Item")).isEqualTo(QUOTA);
+  }
+
   /** {@code LIMIT :n} and {@code LIMIT ?} of a script statement are compared with the quota by the value they bind. */
   @Test
   void aScriptStatementKeepsAParameterLimitBelowTheQuota() {

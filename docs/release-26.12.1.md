@@ -86,7 +86,8 @@ answers and nothing else:
 - openCypher caps the rows of the whole statement, a `UNION` included (each branch used to get an allowance of its own), and
   a `LIMIT` below the quota stays in force. The subqueries a statement reads its answer from (`COUNT { }`, `COLLECT { }`,
   `EXISTS { }`) are not capped, nor is a query a procedure or a user-defined function runs for the statement, in openCypher
-  or SQL. A write applies every row before the rows it answers are capped;
+  or SQL. The quota does not limit writes: a `SET`, `DELETE` or `MERGE` applies to every row it matches, and only the rows it
+  answers are capped;
 - the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
 
 **Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
