@@ -78,8 +78,12 @@ class SlotRebasePageBufferTest extends TestHelper {
     final List<List<RID>> pages = new ArrayList<>(byPage.values());
     assertThat(pages.size()).as("pages the records fill").isGreaterThanOrEqualTo(FEW_PAGES + MANY_PAGES);
 
+    final long recycledBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled;
     final long few = commitAllocation(pages.subList(0, FEW_PAGES));
     final long many = commitAllocation(pages.subList(FEW_PAGES, FEW_PAGES + MANY_PAGES));
+
+    assertThat(((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled - recycledBefore)
+        .as("page copies written into a dropped page's array").isGreaterThanOrEqualTo(FEW_PAGES + MANY_PAGES);
 
     final long perFurtherPage = (many - few) / (MANY_PAGES - FEW_PAGES);
     assertThat(perFurtherPage).as("bytes each further rebased page cost the commit (%s pages: %s bytes, %s pages: %s bytes)", FEW_PAGES, few,

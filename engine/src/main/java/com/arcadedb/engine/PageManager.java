@@ -117,6 +117,7 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalConcurrentModificationExceptions = new AtomicLong();
   private final    AtomicLong                        totalEdgeAppendMerges                 = new AtomicLong();
   private final    AtomicLong                        totalTxPageSlotMerges                 = new AtomicLong();
+  private final    AtomicLong                        totalTxPageBuffersRecycled            = new AtomicLong();
   private final    AtomicLong                        totalEdgeListHeadMerges               = new AtomicLong();
   private final    AtomicLong                        totalMergesDeclinedByCoverage         = new AtomicLong();
   private final    AtomicLong                        totalChunkChainReadRevalidations      = new AtomicLong();
@@ -370,6 +371,8 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
+    /** See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped page image. */
+    public long txPageBuffersRecycled;
     /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
     public long edgeListHeadMerges;
     /** See {@link PageManager#incrementMergesDeclinedByCoverage()}: commit ATTEMPTS failed on a coverage decline, not pages. */
@@ -1824,9 +1827,13 @@ public class PageManager extends LockContext {
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
       final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);
-    if (page != null)
+    if (page != null) {
       // RETURN ALWAYS A VIEW OF THE PAGE. THIS PREVENT CONCURRENCY ON THE BUFFER POSITION
-      return page.useAsMutable(recycled);
+      final MutablePage mutable = page.useAsMutable(recycled);
+      if (recycled != null && mutable.getContent().array() == recycled)
+        totalTxPageBuffersRecycled.incrementAndGet();
+      return mutable;
+    }
     return null;
   }
 
@@ -2233,6 +2240,7 @@ public class PageManager extends LockContext {
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
     stats.edgeAppendMerges = totalEdgeAppendMerges.get();
     stats.txPageSlotMerges = totalTxPageSlotMerges.get();
+    stats.txPageBuffersRecycled = totalTxPageBuffersRecycled.get();
     stats.edgeListHeadMerges = totalEdgeListHeadMerges.get();
     stats.mergesDeclinedByCoverage = totalMergesDeclinedByCoverage.get();
     stats.chunkChainReadRevalidations = totalChunkChainReadRevalidations.get();
