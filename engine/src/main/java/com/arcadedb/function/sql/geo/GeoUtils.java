@@ -242,8 +242,9 @@ public class GeoUtils {
   public static double haversineRadians(final double lon1, final double lat1, final double lon2, final double lat2) {
     final double deltaLat = Math.toRadians(lat2 - lat1);
     final double deltaLon = Math.toRadians(lon2 - lon1);
-    final double h = Math.pow(Math.sin(deltaLat / 2), 2)
-        + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.pow(Math.sin(deltaLon / 2), 2);
+    // near the antipodes the sum rounds a few ULPs above 1, where sqrt(1 - h) is NaN (issue #12972)
+    final double h = Math.min(1.0, Math.pow(Math.sin(deltaLat / 2), 2)
+        + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.pow(Math.sin(deltaLon / 2), 2));
     return 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
   }
 
