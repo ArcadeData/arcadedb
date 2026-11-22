@@ -32,7 +32,10 @@ import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,6 +53,7 @@ class DatabaseFactorySymlinkAliasTest {
   private static final String ALIAS        = "target/databases/DatabaseFactorySymlinkAliasTestLink";
   private static final String PARENT_ALIAS = "target/DatabaseFactorySymlinkAliasTestParentLink";
   private static final String NEW_DATABASE = "DatabaseFactorySymlinkAliasTestNew";
+  private static final String OTHER        = "target/databases/DatabaseFactorySymlinkAliasTestOther";
 
   @BeforeEach
   void setUp() throws IOException {
@@ -76,6 +80,69 @@ class DatabaseFactorySymlinkAliasTest {
     Files.deleteIfExists(Path.of(ALIAS).toAbsolutePath());
     Files.deleteIfExists(Path.of(PARENT_ALIAS).toAbsolutePath());
     FileUtils.deleteRecursively(new File(PATH));
+    FileUtils.deleteRecursively(new File(OTHER));
+  }
+
+  /**
+   * A caller waits on the monitor of the key its path resolved to when it started. If the directory behind the path changes while
+   * it waits (here the link is pointed at another database; a failed create taking back the directory it made is the other way),
+   * it must take the monitor of the key the path resolves to NOW, the one every later caller of that directory takes.
+   */
+  @Test
+  @Timeout(60)
+  void aCallerWhosePathResolvesElsewhereOnceItGetsTheMonitorTakesTheMonitorOfTheNewKey() throws Exception {
+    try (final Database other = new DatabaseFactory(OTHER).create()) {
+      other.command("sql", "CREATE DOCUMENT TYPE O");
+    }
+
+    final CountDownLatch inFirstOpen = new CountDownLatch(1);
+    final CountDownLatch releaseFirstOpen = new CountDownLatch(1);
+    final DatabaseFactory first = new DatabaseFactory(PATH);
+    first.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_AFTER_OPEN, () -> {
+      inFirstOpen.countDown();
+      releaseFirstOpen.await();
+      return null;
+    });
+    final AtomicReference<Database> firstOpened = new AtomicReference<>();
+    final Thread firstThread = new Thread(() -> firstOpened.set(first.open()), "first-open");
+
+    final AtomicBoolean heldTheMonitorOfTheNewKey = new AtomicBoolean();
+    final DatabaseFactory second = new DatabaseFactory(ALIAS);
+    second.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_AFTER_OPEN, () -> {
+      heldTheMonitorOfTheNewKey.set(DatabaseFactory.isPathLockInUse(OTHER));
+      return null;
+    });
+    final AtomicReference<Database> secondOpened = new AtomicReference<>();
+    final Thread secondThread = new Thread(() -> secondOpened.set(second.open()), "second-open");
+
+    firstThread.start();
+    try {
+      assertThat(inFirstOpen.await(30, TimeUnit.SECONDS)).isTrue();
+      // THE LINK STILL LEADS TO PATH: THE SECOND OPEN WAITS ON THE MONITOR OF PATH, HELD BY THE FIRST
+      secondThread.start();
+      while (secondThread.getState() != Thread.State.BLOCKED && secondThread.getState() != Thread.State.TERMINATED)
+        Thread.onSpinWait();
+      assertThat(secondThread.getState()).isEqualTo(Thread.State.BLOCKED);
+
+      Files.delete(Path.of(ALIAS).toAbsolutePath());
+      Files.createSymbolicLink(Path.of(ALIAS).toAbsolutePath(), Path.of(OTHER).toAbsolutePath());
+    } finally {
+      releaseFirstOpen.countDown();
+      firstThread.join(30_000);
+      secondThread.join(30_000);
+    }
+
+    try {
+      assertThat(firstOpened.get()).isNotNull();
+      assertThat(secondOpened.get()).as("the link now leads to another database, which nobody has open").isNotNull();
+      assertThat(secondOpened.get().getSchema().existsType("O")).isTrue();
+      assertThat(heldTheMonitorOfTheNewKey.get()).as("opened under the monitor of the directory the link leads to now").isTrue();
+    } finally {
+      if (firstOpened.get() != null)
+        firstOpened.get().close();
+      if (secondOpened.get() != null)
+        secondOpened.get().close();
+    }
   }
 
   @Test

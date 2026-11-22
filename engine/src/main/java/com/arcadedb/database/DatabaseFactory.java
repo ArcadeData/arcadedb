@@ -145,14 +145,20 @@ public class DatabaseFactory implements AutoCloseable {
    * case-insensitive volume).
    */
   private Database underPathLock(final Supplier<Database> body) {
-    final Path path = getRegistryKey(databasePath);
-    final PathLock lock = acquirePathLock(path);
-    try {
-      synchronized (lock) {
-        return body.get();
+    while (true) {
+      final Path path = getRegistryKey(databasePath);
+      final PathLock lock = acquirePathLock(path);
+      try {
+        synchronized (lock) {
+          // The directory can have changed while this caller waited: a failed create took back the one it made (and on a
+          // case-insensitive volume the next create makes it again in its own spelling), or a link was pointed elsewhere. Then
+          // the key every later caller computes is not the one waited on: take that one instead
+          if (path.equals(getRegistryKey(databasePath)))
+            return body.get();
+        }
+      } finally {
+        releasePathLock(path);
       }
-    } finally {
-      releasePathLock(path);
     }
   }
 
