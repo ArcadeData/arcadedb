@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
   @Test
@@ -125,6 +126,42 @@ class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
     final TypeIndex index = database.getSchema().getType("TornBuild").getIndexByProperties("lookupKey");
     assertThat(index).isNotNull();
     assertThat(count(index.iterator(true))).isEqualTo(100);
+  }
+
+  /** The torn-manifest rule is for a manifest that cannot be read. One that parses and names another version is not ours to remove or to guess about. */
+  @Test
+  void aReadableManifestOfAnUnsupportedVersionStillFailsTheOpenAndIsKept() throws Exception {
+    database.getSchema().createDocumentType("FutureBuild");
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+    database = null;
+    final Path marker = databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "6f1c1d0e-0000-4000-8000-000000000002.json");
+    Files.writeString(marker, "{\"version\":2}");
+
+    assertThatThrownBy(() -> factory.open()).hasStackTraceContaining("Unsupported sorted index build cleanup manifest version");
+    assertThat(marker).exists();
+
+    Files.delete(marker);
+    database = factory.open();
+    assertThat(database.getSchema().existsType("FutureBuild")).isTrue();
+  }
+
+  /** Manifests are recovered in name order: a torn one must not end the recovery before the complete manifest after it. */
+  @Test
+  void aTornManifestDoesNotStopTheRecoveryOfTheManifestAfterIt() throws Exception {
+    database.getSchema().createDocumentType("TwoMarkers").createProperty("lookupKey", Type.INTEGER);
+    SortedIndexBuildRecoveryMarker.create((DatabaseInternal) database, "TwoMarkers", List.of("lookupKey"), null);
+    final Path databasePath = Path.of(database.getDatabasePath());
+    assertThat(recoveryMarkers()).hasSize(1);
+    database.close();
+    database = null;
+    // the smallest name a random UUID manifest can have, so it is met first
+    Files.writeString(databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "00000000-0000-4000-8000-000000000000.json"), "");
+
+    database = factory.open();
+
+    assertThat(recoveryMarkers()).as("the torn and the complete manifest are both gone").isEmpty();
+    assertThat(database.getSchema().existsType("TwoMarkers")).isTrue();
   }
 
   private List<Path> recoveryMarkers() throws Exception {
