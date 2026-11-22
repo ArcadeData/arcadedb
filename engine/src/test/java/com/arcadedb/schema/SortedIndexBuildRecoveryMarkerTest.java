@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -92,6 +94,37 @@ class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
     assertThat(index).isNotNull();
     assertThat(count(index.iterator(false))).isEqualTo(500);
     assertThat(recoveryMarkers()).isEmpty();
+  }
+
+  /**
+   * A process killed inside {@code create()} after the marker file exists and before its content is written leaves an EMPTY marker
+   * (what a power loss leaves too, when the file reached the directory and its data did not). The build had not started: the
+   * marker is forced to disk before the first index file or spill workspace is created. The open must remove it, not fail on it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "", "{", "{\"version\":1,\"typeName\":\"TornBuild\",\"propertyNames\":[\"look" })
+  void aMarkerTornInsideCreateIsRemovedAndTheDatabaseOpens(final String tornContent) throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("TornBuild");
+    type.createProperty("lookupKey", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("TornBuild").set("lookupKey", i).save();
+    });
+    database.getSchema().buildTypeIndex("TornBuild", new String[] { "lookupKey" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+        .create();
+
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+    database = null;
+    Files.writeString(databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "6f1c1d0e-0000-4000-8000-000000000001.json"), tornContent);
+
+    database = factory.open();
+
+    assertThat(recoveryMarkers()).as("the torn marker is gone").isEmpty();
+    assertThat(database.countType("TornBuild", false)).isEqualTo(100);
+    final TypeIndex index = database.getSchema().getType("TornBuild").getIndexByProperties("lookupKey");
+    assertThat(index).isNotNull();
+    assertThat(count(index.iterator(true))).isEqualTo(100);
   }
 
   private List<Path> recoveryMarkers() throws Exception {
