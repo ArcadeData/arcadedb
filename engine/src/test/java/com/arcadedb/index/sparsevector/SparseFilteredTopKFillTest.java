@@ -97,13 +97,61 @@ class SparseFilteredTopKFillTest extends TestHelper {
   }
 
   @Test
-  void indexApiAllowedRidsOfTheLowestRankedDocumentsIsAnsweredInFull() {
-    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+  void indexApiAllowedRidsOfTheLowestRankedDocumentsIsAnsweredInFull() {    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(INDEX);
     final Set<RID> favoured = new HashSet<>(rids.subList(0, FAVOURED));
     final List<RID> got = new ArrayList<>();
     for (final var sub : typeIndex.getIndexesOnBuckets())
       for (final RidScore score : ((LSMSparseVectorIndex) sub).topK(new int[] { 5 }, new float[] { 1f }, FAVOURED, favoured))
         got.add(score.rid());
     assertThat(got).containsExactlyInAnyOrderElementsOf(favoured);
+  }
+
+  /**
+   * The widening is for members the fetch did not reach. A listed allow-list whose members the first fetch already holds has
+   * none left to find, and must not walk the rest of the index looking for them: the answer is complete at the first pass.
+   */
+  @Test
+  void listedAllowListFoundInFullByTheFirstFetchIsNotWidened() {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+    // the best ranked documents: the first fetch holds them all, and the answer wants more rows (keep) than the list has
+    final CountingRidSet best = new CountingRidSet(rids.subList(DOCS - FAVOURED, DOCS));
+    final List<RID> got = new ArrayList<>();
+    for (final var sub : typeIndex.getIndexesOnBuckets())
+      for (final RidScore score : ((LSMSparseVectorIndex) sub).topK(new int[] { 5 }, new float[] { 1f }, 10, best))
+        got.add(score.rid());
+    final int lookups = best.lookups;
+
+    assertThat(got).containsExactlyInAnyOrderElementsOf(best);
+    // one pass over the first budget, not the whole index: widening x8 per step walks every one of the DOCS candidates
+    assertThat(lookups).isLessThan(DOCS);
+  }
+
+  /** The transaction's own rows of the list are merged with the committed ones the widened fetch found. */
+  @Test
+  void filteredSearchInsideATransactionReturnsPendingAndLowestRankedCommittedMembers() {
+    final List<RID> expected = new ArrayList<>(rids.subList(0, FAVOURED));
+    database.begin();
+    try {
+      expected.add(database.newDocument(TYPE).set("tokens", new int[] { 5 }).set("weights", new float[] { 0.5f }).set("tag", 1)
+          .save().getIdentity());
+      assertThat(neighbors(10, Map.of("where", Map.of("tag", 1)))).containsExactlyInAnyOrderElementsOf(expected);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /** A listed allow-list that counts the membership tests a search asks of it. */
+  private static final class CountingRidSet extends HashSet<RID> {
+    private int lookups;
+
+    private CountingRidSet(final List<RID> members) {
+      super(members);
+    }
+
+    @Override
+    public boolean contains(final Object o) {
+      ++lookups;
+      return super.contains(o);
+    }
   }
 }

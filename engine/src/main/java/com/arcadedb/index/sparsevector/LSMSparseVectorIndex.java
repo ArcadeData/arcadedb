@@ -40,6 +40,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
+import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -382,11 +383,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // How many candidates a filtered search fetches per row it wants. A filter that leaves the answer short of it while the
     // index still holds more candidates widens it and asks again (see below)
     int filterFanout = FILTER_OVERFETCH;
+    // How many members of the allow-list this index can return at most, counted the first time a widening is considered
+    // (-1 until then): a fetch that already holds them all has nothing left to widen for
+    int filterMembers = -1;
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
       // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
-      // because the top-scored RIDs were filtered out. The fixed cap keeps worst-case work bounded even when the
-      // filter is very selective.
+      // because the top-scored RIDs were filtered out: filterFanout candidates per row wanted, widened below while the
+      // filter leaves the answer short. MAX_OVERFETCH_ROWS keeps worst-case work bounded even when the filter is very
+      // selective.
       //
       // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
       // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
@@ -432,11 +437,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // filled completely, the members of the list that are left sit further down the ranking than this fetch reached, and
       // answering now would be a short (or empty) answer while the index holds them. Widen the fetch and ask again, until
       // the answer is full, the index runs out of candidates, or the budget reaches MAX_OVERFETCH_ROWS, as the dense search
-      // keeps walking until it holds k members of the list
+      // keeps walking until it holds k members of the list. A listed allow-list smaller than `keep` would otherwise always
+      // widen to the cap, for members the first fetch already found: it stops once the fetch holds every member it lists here
       if (filtered && candidates.size() < keep && raw.size() >= fetchK && fetchK < MAX_OVERFETCH_ROWS
           && attempt + 1 < STALE_TOP_UP_MAX_ATTEMPTS) {
-        filterFanout *= FILTER_OVERFETCH_GROWTH;
-        continue;
+        if (filterMembers < 0)
+          filterMembers = allowListMembersInBucket(allowedRIDs);
+        if (candidates.size() < filterMembers) {
+          filterFanout *= FILTER_OVERFETCH_GROWTH;
+          continue;
+        }
       }
 
       if (oversample == 0)
@@ -460,6 +470,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       keep = wider;
     }
     return committed;
+  }
+
+  /**
+   * An upper bound of the members of {@code allowedRIDs} this index can return: those of a listed allow-list that live in its
+   * bucket. The size of a {@link PredicateRidSet} is no count of what it accepts (a {@code where} decides one candidate at a
+   * time, and testing a listed member would load its record), so it is taken as it is.
+   */
+  private int allowListMembersInBucket(final Set<RID> allowedRIDs) {
+    if (allowedRIDs instanceof PredicateRidSet)
+      return allowedRIDs.size();
+    final int bucketId = getAssociatedBucketId();
+    if (bucketId < 0)
+      return allowedRIDs.size();
+    int members = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId)
+        ++members;
+    return members;
   }
 
   /** The exact-rescoring oversampling this index applies; see {@link LSMSparseVectorIndexMetadata#rescoreOversample}. */
