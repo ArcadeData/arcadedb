@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
@@ -76,7 +77,7 @@ class Issue12797ScriptUnclosedBeginTest extends TestHelper {
   }
 
   @Test
-  void commitedBlockThenRolledBackBlockThenReturn() {
+  void committedBlockThenRolledBackBlockThenReturn() {
     assertThat(lastValue("BEGIN;\nINSERT INTO T SET v = 1;\nCOMMIT;\nBEGIN;\nINSERT INTO T SET v = 2;\nROLLBACK;\nRETURN 'done';"))
         .isEqualTo("done");
     assertThat(values()).containsExactly(1);
@@ -106,5 +107,45 @@ class Issue12797ScriptUnclosedBeginTest extends TestHelper {
     assertThat(lastValue("BEGIN;\nINSERT INTO T SET v = 1;\nCOMMIT;\nRETURN 5;")).isEqualTo(5);
     assertThat(lastValue("BEGIN;\nINSERT INTO T SET v = 2;\nCOMMIT RETRY 2;\nRETURN 6;")).isEqualTo(6);
     assertThat(values()).containsExactly(1, 2);
+  }
+
+  @Test
+  void aStatementAfterARollbackInsideABlockRunsOutsideAnyBlock() {
+    // The ROLLBACK ends the transaction, so the COMMIT that follows has no BEGIN left to close and the script is refused whole
+    assertThatThrownBy(() -> database.command("sqlscript",
+        "BEGIN;\nINSERT INTO T SET v = 1;\nROLLBACK;\nINSERT INTO T SET v = 2;\nCOMMIT;"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("COMMIT statement without a BEGIN");
+    assertThat(values()).isEmpty();
+  }
+
+  @Test
+  void aRollbackClosesOnlyTheInnermostOfNestedBlocks() {
+    // The ROLLBACK closes the inner BEGIN, so the COMMIT closes the outer one and the whole script is planned
+    lastValue("BEGIN;\nBEGIN;\nINSERT INTO T SET v = 1;\nROLLBACK;\nCOMMIT;");
+    assertThat(values()).isEmpty();
+    // Closed by the ROLLBACK and the COMMIT, the nested block is not an unclosed BEGIN: only the missing outer closer is refused
+    assertThatThrownBy(() -> database.command("sqlscript", "BEGIN;\nBEGIN;\nINSERT INTO T SET v = 1;\nROLLBACK;"))
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("BEGIN statement without a COMMIT or ROLLBACK");
+    assertThat(values()).isEmpty();
+  }
+
+  @Test
+  void aSecondRollbackAfterTheBlockIsClosedRunsDirectly() {
+    // The second ROLLBACK is at depth 0: it is planned as a plain statement, as a ROLLBACK outside any block always was
+    lastValue("BEGIN;\nINSERT INTO T SET v = 1;\nROLLBACK;\nROLLBACK;");
+    assertThat(values()).isEmpty();
+  }
+
+  @Test
+  void aRollbackClosedBlockIsNotAScriptHandlingItsOwnFailures() {
+    final QueryEngine script = database.getQueryEngine("sqlscript");
+    // The INSERT between the rolled back block and the retry block is outside any block
+    assertThat(script.handlesItsOwnFailures(
+        "BEGIN; INSERT INTO T SET v = 1; ROLLBACK; INSERT INTO T SET v = 2; BEGIN; INSERT INTO T SET v = 3; COMMIT RETRY 2;")).isFalse();
+    // Every write is inside a block, the first closed by a ROLLBACK and the second a retry block
+    assertThat(script.handlesItsOwnFailures(
+        "BEGIN; INSERT INTO T SET v = 1; ROLLBACK; BEGIN; INSERT INTO T SET v = 3; COMMIT RETRY 2;")).isTrue();
+    // A write after a ROLLBACK is outside any block even when no retry block follows
+    assertThat(script.handlesItsOwnFailures("BEGIN; INSERT INTO T SET v = 1; ROLLBACK; INSERT INTO T SET v = 2;")).isFalse();
   }
 }
