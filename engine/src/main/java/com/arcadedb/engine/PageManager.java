@@ -34,6 +34,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.FileUtils;
@@ -2944,12 +2945,14 @@ public class PageManager extends LockContext {
   }
 
   private void checkForPageDisposal() {
-    final long now = System.currentTimeMillis();
-    if (now - lastCheckForRAM < 100)
-      return;
-
+    // THIS RUNS ON EVERY PAGE ACCESS: ASK THE CHEAP QUESTION FIRST. BELOW THE CAP THERE IS NOTHING TO FREE, AND THE CLOCK IS NOT READ AT
+    // ALL (System.currentTimeMillis() is a clock call per invocation, #8523). ABOVE IT THE THROTTLE USES THE COARSE CLOCK, FOR WHICH
+    // 10 ms OF LAG IS NOTHING NEXT TO A 100 ms WINDOW
     final long totalRAM = totalReadCacheRAM.get();
     if (totalRAM < maxRAM)
+      return;
+
+    if (CoarseClock.currentTimeMillis() - lastCheckForRAM < 100)
       return;
 
     final long ramToFree = totalRAM * freePageRAM / 100;
@@ -3024,7 +3027,7 @@ public class PageManager extends LockContext {
       LogManager.instance().log(this, Level.WARNING, "Cannot free pages in RAM (current=%s > max=%s threadId=%d)", null,
           FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().threadId());
 
-    lastCheckForRAM = System.currentTimeMillis();
+    lastCheckForRAM = CoarseClock.currentTimeMillis();
   }
 
   // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
