@@ -1924,6 +1924,25 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Tells the ordered after-commit callbacks that this transaction's pages are published, while it still holds its locks (issue
+   * #12720, see {@link OrderedAfterCommitCallback#onPublished()}). Only once the commit point was reached: the callbacks of a
+   * transaction that never took a place have nothing to hand over before they run.
+   */
+  private void reachPublication() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    if (callbacks == null || !commitPointReached)
+      return;
+    for (final Runnable callback : callbacks)
+      if (callback instanceof OrderedAfterCommitCallback ordered)
+        try {
+          ordered.onPublished();
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error telling a post-commit callback its transaction is published: %s", e, e.getMessage());
+        }
+  }
+
+  /**
    * Waits for the WAL flush a group commit owes this transaction. A failed flush leaves a transaction that other
    * transactions may already read but that is not durable, so the database is fenced: it must be closed and reopened, and
    * recovery replays what reached the disk.
@@ -5016,6 +5035,10 @@ public class TransactionContext implements Transaction {
       final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
       if (corpusDeltas != null)
         corpusDeltas.applyCommitted();
+
+      // #12720: EVERYTHING THE COMMIT PUBLISHES IS VISIBLE, AND WHILE ITS LOCKS ARE HELD NO OTHER TRANSACTION CAN HAVE COMMITTED ON TOP
+      // OF IT: WHAT AN ORDERED CALLBACK HANDS OVER HERE IS STILL THE NEWEST STATE OF THE RECORDS THIS TRANSACTION WROTE
+      reachPublication();
     } catch (final IOException | InterruptedException e) {
       // AN InterruptedException IS CARRIED AS THE CAUSE, ITS FLAG RESTORED BY WHOEVER CONCLUDES THE FAILED PHASE, ONCE THE
       // FILES IT TOUCHES ARE DONE WITH: commit2ndPhase, SEE restoreInterruptIfCause (#10416)

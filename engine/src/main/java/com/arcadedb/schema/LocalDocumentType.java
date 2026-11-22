@@ -1553,6 +1553,12 @@ public class LocalDocumentType implements DocumentType {
         throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
             "Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
 
+      // The OF type is refused BEFORE the property is built, for the same reason the construction below stays after the checks: the
+      // constructor registers the name in the dictionary, a commit of its own that a refusal after it leaves behind. On a Raft leader
+      // that commit is a page version no other node has, and the refused statement was quarantining the leader (issue #12958)
+      if (ofType != null)
+        LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType);
+
       // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
       // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
       // transaction of its own, so the write lock is held across that commit and the schema save it triggers.
@@ -2984,6 +2990,13 @@ public class LocalDocumentType implements DocumentType {
       // uncommitted writes into it through a type and the scan has nothing to miss; joining would only cost the build
       // its chunked commit.
       //
+      // OWN, not joined, whatever transaction the statement runs in: an `ALTER TYPE x BUCKET +y` is a statement of a client,
+      // which runs inside one. The header page of the sub-index written into it is published by the commit of that transaction,
+      // which a rollback takes back, and which an HA leader ships AFTER the schema entry that creates the file: a follower
+      // then loads an index file with no header page, and the bucket's index is unavailable there (a UNIQUE one makes it
+      // re-install the whole database from the leader). In its own transaction the page is committed here, and the leader's
+      // schema session ships it inside the entry that creates the file.
+      //
       // A bucket that is not new can hold records, and so a key a UNIQUE index of this type already holds: the attach is
       // then refused and handed back whole, exactly as addSuperType hands back a link (issue #11302). Every component an
       // attempt created is dropped when it fails, before the retry: they outlive the rollback, and a retry that created
@@ -2995,12 +3008,13 @@ public class LocalDocumentType implements DocumentType {
           created.clear();
           for (final TypeIndex idx : existentIndexes)
             created.add(createBucketIndexFor(idx, bucket));
-        }, true, txRetries(database), null, failure -> dropFailedAttempt(created));
+        }, false, txRetries(database), null, failure -> dropFailedAttempt(created));
       } catch (final RuntimeException e) {
         // The refusal is what the caller has to see: a step of the clean-up that fails too travels with it rather than in its
         // place, and does not skip the steps after it (the detach drops the bucket's sub-indexes on its own too)
         final RuntimeException refusal = asDuplicatedKeyIfOne(e);
-        // A joined transaction hands a retryable failure straight back without calling the callback
+        // The failure callback of the transaction already dropped what each attempt created and emptied the list: nothing is left
+        // to drop here but what a failure raised outside an attempt left behind
         runCleanupStep(refusal, () -> dropFailedAttempt(created));
         runCleanupStep(refusal, () -> removeBucketInternal(bucket));
         if (!needsRepartitionBefore)

@@ -689,6 +689,46 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     assignedAfterSave = true;
   }
 
+  /**
+   * Gives a record an earlier statement of the transaction queued for its commit the content it held before a statement that changed it
+   * was taken back (issue #10346), and keeps the buffer it was read with. That buffer is the image of the record the transaction
+   * started from: it stays frozen until the commit because the write is deferred, and everything that asks "what was this record read
+   * as" compares with it - the delete refusing a record changed by a concurrent commit since its read (#12472), the pre-update image
+   * the indexes are diffed against, the commit's own checks. Installing the snapshot as the buffer, as {@link #restoreContent} does,
+   * made the record look read from a slot that never held that content, and a later delete of it was refused as a conflict with a
+   * transaction that does not exist (issue #12747). The properties are decoded from the snapshot here, the record having no
+   * buffer to decode them from afterwards.
+   * <p>
+   * The buffer given back is the one the record held when the snapshot was taken, not the one it holds now: the failed statement may
+   * have replaced it (a reload against a slot a concurrent commit has changed since), and that newer image would silently become
+   * "what the record was read as". The prefix of the snapshot has the length of the one of the read image (a vertex prefix has a fixed
+   * length, the endpoints of an edge never change), so the offset of the properties parsed from it describes both.
+   *
+   * @param snapshot       the content of the record before the statement
+   * @param readBuffer     the buffer the record held when the snapshot was taken, null if it held none
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
+   */
+  void restoreQueuedContent(final Binary snapshot, final Binary readBuffer, final boolean dirtyBefore, final boolean assignedBefore) {
+    // The prefix (the heads of a vertex, the endpoints of an edge) and the properties are read from the snapshot
+    restoreContent(snapshot, dirtyBefore, assignedBefore);
+    if (readBuffer == null)
+      // A record with no image it was read with: the snapshot is the only content it has
+      return;
+
+    try {
+      checkForLazyLoadingProperties();
+    } catch (final RuntimeException e) {
+      // The snapshot stays the buffer: the record keeps the content of the earlier statements, at worst a later delete of it is refused
+      // as a conflict. Giving the read image back with no decoded properties would make the next read decode the image from before
+      // the transaction and silently drop those changes
+      map = null;
+      return;
+    }
+    if (map != null && undecodableContent == null)
+      buffer = readBuffer;
+  }
+
   protected void checkForLazyLoadingProperties() {
     if (this.map == null) {
       if (buffer == null) {

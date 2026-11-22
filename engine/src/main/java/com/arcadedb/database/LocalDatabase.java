@@ -1547,12 +1547,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Bucket target = schema.getBucketByNameIfExists(bucketName);
       if (target != null) {
         schema.checkBackingTypeWrite(target.getFileId(), "insert into");
+        // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure
+        // for the serializer, not user data containers; allowing user DML to write here would corrupt the schema's
+        // accounting of which records are real records vs. payload blobs. Checked before the owner, because no type owns
+        // an internal bucket and "attach it to the type" is not a remedy for one
+        if (target instanceof LocalBucket local && local.getPurpose() != LocalBucket.Purpose.PRIMARY)
+          throw new IllegalArgumentException(
+              "Bucket '" + bucketName + "' is internal (purpose=" + local.getPurpose() + ") and cannot be written to directly");
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
-        // record by the bucket's owner; this is the same rule for the API.
-        if (record instanceof Document doc) {
+        // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
+        // all: the record would skip its type's indexes (a UNIQUE key taken twice), stay out of every walk of the type and
+        // refuse every later update (issue #12959). Records that are not typed documents (edge-list chunks and other
+        // engine-internal records) belong to no type by design and are exempt
+        if (record instanceof Document doc && doc.getTypeName() != null) {
           final DocumentType owner = schema.getTypeByBucketId(target.getFileId());
-          if (owner != null && !owner.getName().equals(doc.getTypeName()))
+          if (owner == null)
+            throw new IllegalArgumentException(
+                "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName
+                    + "', which belongs to no type: attach it first with ALTER TYPE `" + doc.getTypeName() + "` BUCKET +`" + bucketName
+                    + "`");
+          if (!owner.getName().equals(doc.getTypeName()))
             throw new IllegalArgumentException(
                 "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName + "', which belongs to type '"
                     + owner.getName() + "'");
@@ -1586,15 +1601,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (bucketName == null && record instanceof Document doc)
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc,
             DatabaseContext.INSTANCE.getContext(databasePath).perThreadBucketSelection);
-      else {
+      else
+        // an internal bucket was refused above, where the bucket was looked up the first time
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
-        // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure
-        // for the serializer, not user data containers; allowing user DML to write here would corrupt the schema's
-        // accounting of which records are real records vs. payload blobs.
-        if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
-          throw new IllegalArgumentException(
-              "Bucket '" + bucketName + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be written to directly");
-      }
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
 
