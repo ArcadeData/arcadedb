@@ -193,12 +193,9 @@ public class DeleteExecutionPlanner {
           throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
         }
       }
+      // The rid condition is applied by the step itself, to the entries it removes: its rows carry no "rid", so a filter after it
+      // would drop every one of them and the statement would answer a count of 0 for entries it removed
       result.chain(new DeleteFromIndexStep(index, keyCondition, null, ridCondition, context));
-      if (ridCondition != null) {
-        final WhereClause where = new WhereClause();
-        where.setBaseExpression(ridCondition);
-        result.chain(new FilterStep(where, context));
-      }
       return true;
     case VALUES:
       result.chain(new FetchFromIndexValuesStep(index, true, context));
