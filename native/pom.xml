@@ -424,10 +424,10 @@
                         <!--
                             Maximum young generation as 16 percent of the maximum heap (#12639). GraalVM CE 25.0.x has no
                             NewRatio option: the Serial GC caps the young generation at one third of the maximum heap, which
-                            leaves the old generation two thirds, 16384 MiB of a 24 GiB heap. A server whose live old generation
-                            sits at that limit runs full collections back to back: the 10M x 96-d LSM_VECTOR build held about
-                            16.5 GiB, ran 1,214 full collections in 8,590 s and never got to persist its graph. The same build
-                            with the young generation capped at 4096 MiB (old generation 20480 MiB) finished.
+                            leaves the old generation two thirds, 16384 MiB of a 24 GiB heap. The 10M x 96-d LSM_VECTOR build
+                            keeps 16 to 18 GiB live in the old generation: with the default sizing the server died with
+                            "heap address space is exhausted" after 1 h 46 min, and with this default the same cell finished
+                            (one run each; why the smaller young generation avoids the error is not established).
                             A share of the heap scales down with the heap, a fixed -R:MaxNewSize does not (4g on a 2 GiB heap
                             makes the binary refuse to start), so this sets the build-time default of
                             MaximumYoungGenerationSizePercent. 16 percent of 24 GiB is 3932 MiB and leaves the old generation

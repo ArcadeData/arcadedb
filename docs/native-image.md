@@ -469,8 +469,8 @@ binary's own command line, passed like the `-D` flags above (trailing arguments 
 
 GraalVM CE 25.0.x caps the young generation at one third of the maximum heap by default, which
 leaves the old generation two thirds. A server whose live data in the old generation reaches that
-limit spends its time in back-to-back full collections (#12639: the 10M x 96-d `LSM_VECTOR` build,
-about 16.5 GiB live under a 24 GiB maximum heap). The image therefore sets the young generation to
+limit can die with `heap address space is exhausted` (#12639: the 10M x 96-d `LSM_VECTOR` build,
+16 to 18 GiB live under a 24 GiB maximum heap). The image therefore sets the young generation to
 16 percent of the maximum heap, which leaves the old generation 84 percent: about 20.2 GiB of 24 GiB.
 The share scales with `-Xmx`. A larger percentage gives the young collections more room, a smaller
 one gives the old generation more.
