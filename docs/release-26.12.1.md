@@ -100,7 +100,8 @@ scan truncation. They now cap the rows they answer, as SQL and openCypher do:
   drivers, a script or a bytecode request to the Gremlin Server, the fluent Java API. The cap is on the root traversal, so a
   `union()` answers the quota as a whole and a child traversal (`map()`, `where()`, `project().by()`) reads every row it
   matches. `withoutStrategies()` cannot remove it. A traversal that writes (`property()`, `addV()`, `drop()`...) is applied
-  to every record it reaches, and only the rows it answers are capped;
+  to every record it reaches, and only the rows it answers are capped. A traversal a script runs to build another one
+  (`g.V(g.V().has('name', 'a').id().next())`) is a traversal of its own and is capped as one;
 - a MongoDB `find` (and the legacy query, and the `mongo` query language) answers at most the quota of documents, after its
   filter, sort and skip, and a `limit` below the quota stays in force. An `aggregate` runs its pipeline over every document
   and answers at most the quota. A `count` counts every document that matches, and an `update` or a `delete` of many

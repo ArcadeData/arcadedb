@@ -24,9 +24,11 @@ import com.arcadedb.query.ProfiledLimitScope;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.step.LambdaHolder;
 import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.ProfileSideEffectStep;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.finalization.ProfileStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -45,6 +47,12 @@ import java.util.Set;
  * Only a root traversal is capped, and only one that is not run as a part of a statement the quota already caps
  * ({@link ProfiledLimitScope}): a child traversal ({@code union()}, {@code map()}, {@code where()}...) and a nested statement
  * read every row they match, and the root caps what it answers.
+ * <p>
+ * A traversal a script runs to its end to build another one, a terminated traversal passed as an argument
+ * ({@code g.V(g.V().has('name', 'a').id().next())}), is a root traversal of its own, run before the outer one exists, and is
+ * capped as one. Nothing tells it from the eager terminal step a script ends with ({@code g.V().toList()}), which has to be
+ * capped: on the Gremlin Server the script is evaluated by TinkerPop, and each element of the list it answers is a row of the
+ * reply.
  * <p>
  * A finalization strategy: it runs once the optimizations have settled the steps, so none of them reads the cap as the end of
  * the traversal it rewrites. Before {@code ProfileStrategy}, so a profiled traversal times the cap as one of its steps, and the
@@ -88,7 +96,9 @@ public final class ArcadeResultSetLimitStrategy extends AbstractTraversalStrateg
       }
     }
 
-    final boolean writes = GremlinStatementAnalyzer.collectWrites(traversal, EnumSet.noneOf(OperationType.class));
+    // A LAMBDA IS CODE: ONLY RUNNING IT TELLS WHAT IT DOES, SO A TRAVERSAL THAT HOLDS ONE, IN A CHILD TOO, MAY WRITE THROUGH IT
+    final boolean writes = GremlinStatementAnalyzer.collectWrites(traversal, EnumSet.noneOf(OperationType.class))
+        || TraversalHelper.hasStepOfAssignableClassRecursively(LambdaHolder.class, traversal);
     traversal.addStep(position, new ArcadeResultSetLimitStep<>(traversal, limit, writes));
   }
 

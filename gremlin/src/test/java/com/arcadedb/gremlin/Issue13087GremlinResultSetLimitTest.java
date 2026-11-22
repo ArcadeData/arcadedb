@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -148,6 +149,30 @@ class Issue13087GremlinResultSetLimitTest {
     bindUser(null);
     assertThat(values("g.V().hasLabel('Item').has('touched', true).count()")).containsExactly((long) RECORDS);
     assertThat(values("g.V().hasLabel('Item').has('iterated', true).count()")).containsExactly((long) RECORDS);
+  }
+
+  /** A lambda may write, and only running it tells: a traversal that holds one, in a child too, runs to its end. */
+  @Test
+  void aTraversalWithALambdaRunsToItsEnd() {
+    bindUser(quota(QUOTA));
+    final AtomicInteger seen = new AtomicInteger();
+    assertThat(graph.traversal().V().hasLabel("Item").sideEffect(traverser -> seen.incrementAndGet()).toList()).hasSize(QUOTA);
+    assertThat(seen).hasValue(RECORDS);
+
+    seen.set(0);
+    assertThat(graph.traversal().V().hasLabel("Item").where(__.sideEffect(traverser -> seen.incrementAndGet())).toList())
+        .hasSize(QUOTA);
+    assertThat(seen).hasValue(RECORDS);
+  }
+
+  /**
+   * A terminated traversal passed as an argument runs to its end while the script is built: it is a traversal of its own, and is
+   * capped as the eager terminal step a script ends with is. On the Gremlin Server nothing tells the two apart.
+   */
+  @Test
+  void aTerminatedTraversalPassedAsAnArgumentIsCappedAsATraversalOfItsOwn() {
+    bindUser(quota(QUOTA));
+    assertThat(values("g.inject(g.V().hasLabel('Item').values('k').toList()).unfold().count()")).containsExactly((long) QUOTA);
   }
 
   /** An eager terminal step runs the traversal while the script is evaluated: its value holds the quota of rows. */

@@ -37,7 +37,8 @@ import java.util.NoSuchElementException;
  * let through for the rows that are left.
  * <p>
  * A traversal is lazy, so its writes happen while its rows are pulled. One that writes is therefore run to its end once the quota
- * is reached, and only the rows past it are dropped: the quota does not limit a write. One that only reads stops there.
+ * is reached, and only the rows past it are dropped: the quota does not limit a write. So is one that holds a lambda, which may
+ * write: only running it tells. One that only reads stops there.
  * <p>
  * Whatever runs while a row is pulled - a SQL statement of a step, a traversal started by another one - is a part of this
  * traversal and not an answer to the user: {@link ProfiledLimitScope} tells every query engine not to cap it on its own.
@@ -51,7 +52,7 @@ final class ArcadeResultSetLimitStep<S> extends AbstractStep<S, S> {
 
   /**
    * @param limit  the rows the traversal may answer
-   * @param writes whether the traversal writes, so it has to run to its end past the quota
+   * @param writes whether the traversal writes, or may, so it has to run to its end past the quota
    */
   ArcadeResultSetLimitStep(final Traversal.Admin<?, ?> traversal, final long limit, final boolean writes) {
     super(traversal);
