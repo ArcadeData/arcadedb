@@ -159,7 +159,10 @@ final class ExpressionPatternParser {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null) {
       BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
-      whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+      final Expression inlineCondition = expressions.parseExpression(ctx.expression());
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanCoercionExpression.refuseListLiteral(inlineCondition);
+      whereExpression = new BooleanCoercionExpression(inlineCondition);
     }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
@@ -236,7 +239,10 @@ final class ExpressionPatternParser {
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null) {
       BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
-      whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+      final Expression inlineCondition = expressions.parseExpression(ctx.expression());
+      // A list literal cannot be coerced to a boolean (issue #12975)
+      BooleanCoercionExpression.refuseListLiteral(inlineCondition);
+      whereExpression = new BooleanCoercionExpression(inlineCondition);
     }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
