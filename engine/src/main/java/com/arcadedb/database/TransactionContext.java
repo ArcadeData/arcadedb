@@ -6000,6 +6000,9 @@ public class TransactionContext implements Transaction {
    * <p>
    * Costs nothing to a transaction that created no relationship of such a type: one flag. Otherwise one pass over the records it
    * created, a hash per index per relationship, and the registry's monitor at the commit to publish them.
+   * <p>
+   * Not marked: the relationships {@code GraphBatch} writes through its bulk path, which bypasses the registration of new records. Such
+   * a load reads nothing, so a MERGE it races is serializable before it, as with a plain CREATE that commits after the MERGE.
    */
   private void markRelationshipsOfIndexedTypes() {
     // An index registered on a type since this transaction began makes a relationship it created before then one a MERGE finds
@@ -6080,6 +6083,7 @@ public class TransactionContext implements Transaction {
     return updatedRecords != null && updatedRecords.get(rid) == edge;
   }
 
+  /** Whether a value of {@code key}, which {@link #indexKeyOf} builds with no null in it, is a list, a map or an array. */
   private static boolean holdsContainer(final Map<String, Object> key) {
     for (final Object value : key.values())
       if (value instanceof Collection || value instanceof Map || value.getClass().isArray())

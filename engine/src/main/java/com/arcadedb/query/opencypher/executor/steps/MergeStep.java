@@ -130,8 +130,10 @@ public class MergeStep extends AbstractExecutionStep {
   // The index that answered the existence check of the path the last findAllMatchingPaths looked for, null when a walk did. Set by
   // every call, read by mergePathAll right after it (issue #12483)
   private       TypeIndex           existenceIndex;
-  // The type tryFindRelationshipByIndex last asked whether the user may read it and its subtypes, and the answer (issue #12483)
+  // The type tryFindRelationshipByIndex last asked whether the user may read every record an index of it can load, the schema version
+  // of then, and the answer (issue #12483)
   private       DocumentType        readCheckedType;
+  private       long                readCheckedSchemaVersion;
   private       boolean             readCheckedAnswer;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
@@ -669,10 +671,12 @@ public class MergeStep extends AbstractExecutionStep {
     final Schema schema = context.getDatabase().getSchema();
     if (!schema.existsType(relType) || !(schema.getType(relType) instanceof EdgeType type))
       return null;
-    // asked once per type and step, not per row: the user of a statement does not change while it runs
-    if (type != readCheckedType) {
+    // asked again only when the type or the schema changed: the user of a statement does not change while it runs, a hierarchy can
+    final long schemaVersion = schema.getEmbedded().getVersion();
+    if (type != readCheckedType || schemaVersion != readCheckedSchemaVersion) {
       readCheckedType = type;
-      readCheckedAnswer = canReadTypeAndSubTypes(type);
+      readCheckedSchemaVersion = schemaVersion;
+      readCheckedAnswer = canReadEveryRecordAnIndexOfCanAnswer(type);
     }
     if (!readCheckedAnswer)
       return null;
@@ -724,9 +728,21 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Whether the user may read every record an index lookup of {@code type} can answer: those of the type and of its subtypes. Per
-   * type, so the answer does not depend on the value looked up.
+   * Whether the user may read every record an index lookup for {@code type} can load: those of the type and of its subtypes, and,
+   * through an index a super type declares, those of that super type and of every type under it, siblings included, which the lookup
+   * loads before it filters them by label. So the whole hierarchy under each root super type. Per type, so the answer does not
+   * depend on the value looked up.
    */
+  private boolean canReadEveryRecordAnIndexOfCanAnswer(final DocumentType type) {
+    final List<DocumentType> superTypes = type.getSuperTypes();
+    if (superTypes.isEmpty())
+      return canReadTypeAndSubTypes(type);
+    for (final DocumentType superType : superTypes)
+      if (!canReadEveryRecordAnIndexOfCanAnswer(superType))
+        return false;
+    return true;
+  }
+
   private boolean canReadTypeAndSubTypes(final DocumentType type) {
     if (!SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD))
       return false;

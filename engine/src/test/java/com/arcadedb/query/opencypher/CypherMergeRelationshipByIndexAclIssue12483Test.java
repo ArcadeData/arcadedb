@@ -88,6 +88,29 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
     assertThat(missing).isEqualTo(existing);
   }
 
+  /**
+   * An index a super type declares holds the records of every type under it: a lookup for a readable type loads those of an unreadable
+   * sibling before it filters them by label, and would refuse only when the sibling holds the value. The walk answers instead.
+   */
+  @Test
+  void aSiblingTheUserMayNotReadUnderAnIndexedSuperTypeDoesNotTellWhetherItHoldsTheKey() {
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("Parent", 1).createProperty("uuid", Type.STRING);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Parent", "uuid");
+      database.getSchema().createEdgeType("Child", 1).addSuperType("Parent");
+      database.getSchema().createEdgeType("Sibling", 1).addSuperType("Parent");
+      database.command("opencypher", "MATCH (a:V {id: 1}), (b:V {id: 2}) CREATE (a)-[:Sibling {uuid: 'hidden'}]->(b)").close();
+    });
+
+    bindUserDenyingReadsOf("Sibling");
+    final String existing = outcomeOf("Child", "hidden");
+    final String missing = outcomeOf("Child", "absent");
+    unbind();
+
+    assertThat(existing).isEqualTo("ok");
+    assertThat(missing).isEqualTo(existing);
+  }
+
   /** A user who may read the type is answered by the index: the existing relationship is matched, the missing one created. */
   @Test
   void aUserWhoMayReadTheTypeMergesThroughTheIndex() {
@@ -103,9 +126,13 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
   }
 
   private String outcomeOf(final String uuid) {
+    return outcomeOf("E", uuid);
+  }
+
+  private String outcomeOf(final String type, final String uuid) {
     try {
       database.transaction(() -> database.command("opencypher",
-          "MATCH (a:V {id: 1}), (b:V {id: 2}) MERGE (a)-[e:E {uuid: '" + uuid + "'}]->(b)").close());
+          "MATCH (a:V {id: 1}), (b:V {id: 2}) MERGE (a)-[e:" + type + " {uuid: '" + uuid + "'}]->(b)").close());
       return "ok";
     } catch (final RuntimeException e) {
       if (database.isTransactionActive())
