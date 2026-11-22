@@ -39,6 +39,7 @@ import java.io.UnsupportedEncodingException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.math.BigDecimal;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -67,6 +68,8 @@ public class FileUtils {
   public static final int    GIGABYTE = 1073741824;
   public static final long   TERABYTE = 1099511627776L;
   public static final String UTF8_BOM = "\uFEFF";
+  private static final BigDecimal LONG_MAX = BigDecimal.valueOf(Long.MAX_VALUE);
+  private static final BigDecimal LONG_MIN = BigDecimal.valueOf(Long.MIN_VALUE);
 
   /** One warning per JVM when the file store cannot replace files atomically (see {@link #publishAtomically}). */
   private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED   = new AtomicBoolean();
@@ -194,31 +197,44 @@ public class FileUtils {
       size = size.toUpperCase(Locale.ENGLISH);
       int pos = size.indexOf("KB");
       if (pos > -1)
-        return (long) (string2number(size.substring(0, pos)).floatValue() * KILOBYTE);
+        return scaled(size.substring(0, pos), KILOBYTE);
 
       pos = size.indexOf("MB");
       if (pos > -1)
-        return (long) (string2number(size.substring(0, pos)).floatValue() * MEGABYTE);
+        return scaled(size.substring(0, pos), MEGABYTE);
 
       pos = size.indexOf("GB");
       if (pos > -1)
-        return (long) (string2number(size.substring(0, pos)).floatValue() * GIGABYTE);
+        return scaled(size.substring(0, pos), GIGABYTE);
 
       pos = size.indexOf("TB");
       if (pos > -1)
-        return (long) (string2number(size.substring(0, pos)).floatValue() * TERABYTE);
+        return scaled(size.substring(0, pos), TERABYTE);
 
       pos = size.indexOf('B');
       if (pos > -1)
-        return (long) string2number(size.substring(0, pos)).floatValue();
+        return scaled(size.substring(0, pos), 1);
 
       pos = size.indexOf('%');
       if (pos > -1)
-        return (long) (-1 * string2number(size.substring(0, pos)).floatValue());
+        return scaled(size.substring(0, pos), -1);
 
       // RE-THROW THE EXCEPTION
       throw new IllegalArgumentException("Size " + size + " has a unrecognizable format");
     }
+  }
+
+  /**
+   * {@code mantissa * unit} as a long, truncated toward zero and saturated at the long range. The product is computed exactly: a
+   * float mantissa rounds every size past 16 MiB to a multiple of a power of two ({@code 123456789B} read as 123456792, issue
+   * #12991).
+   */
+  private static long scaled(final String mantissa, final long unit) {
+    final Number number = string2number(mantissa);
+    if (number instanceof Double value && !Double.isFinite(value))
+      return (long) (value * unit);
+    final BigDecimal exact = number instanceof Double value ? BigDecimal.valueOf(value) : BigDecimal.valueOf(number.longValue());
+    return exact.multiply(BigDecimal.valueOf(unit)).min(LONG_MAX).max(LONG_MIN).longValue();
   }
 
   public static Number string2number(final String iText) {

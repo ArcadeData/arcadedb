@@ -252,6 +252,44 @@ class FileUtilsTest {
     assertThat(FileUtils.getSizeAsNumber("1tb")).isEqualTo(FileUtils.TERABYTE);
   }
 
+  /** Issue #12991: the mantissa went through a float, which rounded every size past 16 MiB. */
+  @Test
+  void getSizeAsNumberIsExactPastTheFloatPrecision() {
+    assertThat(FileUtils.getSizeAsNumber("123456789B")).isEqualTo(123456789L);
+    assertThat(FileUtils.getSizeAsNumber("3000000001B")).isEqualTo(3000000001L);
+    assertThat(FileUtils.getSizeAsNumber("1234567890123B")).isEqualTo(1234567890123L);
+    // the same number without a suffix always was exact
+    assertThat(FileUtils.getSizeAsNumber("1234567890123")).isEqualTo(1234567890123L);
+    assertThat(FileUtils.getSizeAsNumber("16777217KB")).isEqualTo(16777217L * FileUtils.KILOBYTE);
+    assertThat(FileUtils.getSizeAsNumber("16777217MB")).isEqualTo(16777217L * FileUtils.MEGABYTE);
+    assertThat(FileUtils.getSizeAsNumber("16777217GB")).isEqualTo(16777217L * FileUtils.GIGABYTE);
+    assertThat(FileUtils.getSizeAsNumber("1048577tb")).isEqualTo(1048577L * FileUtils.TERABYTE);
+  }
+
+  @Test
+  void getSizeAsNumberKeepsTheFractionOfADecimalMantissaAndTruncatesTowardZero() {
+    // 1.1 * 2^30 = 1181116006.4, 0.1 * 2^30 = 107374182.4, 1023.9 * 2^10 = 1048473.6
+    assertThat(FileUtils.getSizeAsNumber("1.1GB")).isEqualTo(1181116006L);
+    assertThat(FileUtils.getSizeAsNumber("0.1GB")).isEqualTo(107374182L);
+    assertThat(FileUtils.getSizeAsNumber("1023.9KB")).isEqualTo(1048473L);
+    assertThat(FileUtils.getSizeAsNumber("2.5MB")).isEqualTo(2621440L);
+    assertThat(FileUtils.getSizeAsNumber("-1.5KB")).isEqualTo(-1536L);
+    assertThat(FileUtils.getSizeAsNumber("0.5B")).isZero();
+  }
+
+  /** A percentage is a negative number: "50%" is -50. */
+  @Test
+  void getSizeAsNumberReadsAPercentageAsANegativeNumber() {
+    assertThat(FileUtils.getSizeAsNumber("50%")).isEqualTo(-50L);
+    assertThat(FileUtils.getSizeAsNumber("12.5%")).isEqualTo(-12L);
+  }
+
+  @Test
+  void getSizeAsNumberSaturatesAtTheLongRange() {
+    assertThat(FileUtils.getSizeAsNumber("9999999999TB")).isEqualTo(Long.MAX_VALUE);
+    assertThat(FileUtils.getSizeAsNumber("-9999999999TB")).isEqualTo(Long.MIN_VALUE);
+  }
+
   @Test
   void getSizeAsStringForBytes() {
     assertThat(FileUtils.getSizeAsString(500L)).isEqualTo("500b");
