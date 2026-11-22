@@ -102,7 +102,7 @@ public class AlgoAdamicAdar extends AbstractAlgoProcedure {
     // score = the sum of 1 / log(degree(w)) over the common neighbours w of the source and v, in the direction asked; a
     // neighbour of degree 1 has log(1) = 0 and adds nothing
     final NodeScores aaScores = scoresThroughNeighbours(graph, srcIdx, dir, w -> {
-      final int degree = graph.distinctNeighbors(w, dir).length;
+      final int degree = graph.distinctDegree(w, dir);
       return degree > 1 ? 1.0 / Math.log(degree) : 0.0;
     }, guard);
 

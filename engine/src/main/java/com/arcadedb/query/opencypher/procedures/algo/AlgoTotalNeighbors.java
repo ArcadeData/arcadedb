@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -99,13 +98,19 @@ public class AlgoTotalNeighbors extends AbstractAlgoProcedure {
     // neighbour (issue #12934)
     final int[] adj1 = graph.distinctNeighbors(idx1, dir);
     final int[] adj2 = graph.distinctNeighbors(idx2, dir);
-    final int[] n1Set = adj1.clone();
-    Arrays.sort(n1Set);
 
+    // Both sorted: one merge pass counts the intersection
     int common = 0;
-    for (final int j : adj2)
-      if (Arrays.binarySearch(n1Set, j) >= 0)
+    for (int i = 0, j = 0; i < adj1.length && j < adj2.length; )
+      if (adj1[i] < adj2[j])
+        i++;
+      else if (adj1[i] > adj2[j])
+        j++;
+      else {
         common++;
+        i++;
+        j++;
+      }
     final long total = (long) adj1.length + adj2.length - common;
 
     final ResultInternal r = new ResultInternal();

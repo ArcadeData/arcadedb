@@ -1417,9 +1417,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // THE ROWS READ FROM THE VIEW, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
     @SuppressWarnings("unchecked")
     private final Map<Integer, int[]>[]  viewRows = new Map[3];
-    // THE ROWS WITHOUT REPETITIONS, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
-    @SuppressWarnings("unchecked")
-    private final Map<Integer, int[]>[]  distinctRows = new Map[3];
+    // THE NUMBER OF DISTINCT NEIGHBOURS OF THE NODES ASKED, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
+    private final IntIntHashMap[]        distinctDegrees = new IntIntHashMap[3];
 
     private Neighbourhood(final GraphTraversalProvider provider, final LocalAdjacency local, final String[] relTypes,
         final MemoryBudget memory) {
@@ -1472,39 +1471,57 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
-     * The distinct neighbours of {@code node} in {@code direction}: {@link #neighbors} without the repetitions a parallel or a
-     * reciprocal relationship makes, the neighbour set a similarity or a link-prediction score is defined on (issue #12934). A
-     * self-loop is the node itself, once. The array is shared, in no particular order: do not modify it.
+     * The distinct neighbours of {@code node} in {@code direction}, sorted: {@link #neighbors} without the repetitions a parallel or
+     * a reciprocal relationship makes, the neighbour set a similarity or a link-prediction score is defined on (issue #12934). A
+     * self-loop is the node itself, once. The array belongs to the caller, and is reserved against the call's budget before it is
+     * allocated.
      */
     public int[] distinctNeighbors(final int node, final Vertex.DIRECTION direction) {
-      Map<Integer, int[]> rows = distinctRows[direction.ordinal()];
-      if (rows == null) {
-        rows = new HashMap<>();
-        distinctRows[direction.ordinal()] = rows;
-      }
-      int[] distinct = rows.get(node);
-      if (distinct == null) {
-        final int[] row = neighbors(node, direction);
-        distinct = withoutRepetitions(row);
-        if (distinct != row)
-          memory.reserve(saturatingSum(ROW_BYTES, saturatingProduct(distinct.length, INT_BYTES)), "the neighbourhood rows",
-              "1 row of " + distinct.length + " distinct entries");
-        rows.put(node, distinct);
-      }
-      return distinct;
+      final int[] row = neighbors(node, direction);
+      memory.reserve(saturatingSum(ROW_BYTES, saturatingProduct(row.length, INT_BYTES)), "the neighbourhood rows",
+          "1 sorted copy of a row of " + row.length + " entries");
+      final int[] sorted = row.clone();
+      final int size = sortDistinct(sorted);
+      return size == sorted.length ? sorted : Arrays.copyOf(sorted, size);
     }
 
-    /** {@code row} itself when it holds no node twice, otherwise a sorted copy that does. */
-    private static int[] withoutRepetitions(final int[] row) {
+    /**
+     * How many distinct neighbours {@code node} has in {@code direction}: the size of {@link #distinctNeighbors}, kept per node as one
+     * int, so a degree asked again (a common neighbour of many candidates, the row of a candidate) costs neither a row nor a sort.
+     */
+    public int distinctDegree(final int node, final Vertex.DIRECTION direction) {
+      IntIntHashMap degrees = distinctDegrees[direction.ordinal()];
+      if (degrees == null) {
+        degrees = new IntIntHashMap();
+        distinctDegrees[direction.ordinal()] = degrees;
+      }
+      int degree = degrees.get(node, -1);
+      if (degree < 0) {
+        final int[] row = neighbors(node, direction);
+        if (row.length < 2)
+          degree = row.length;
+        else {
+          // The sorted copy lives only while it is counted: room for it is checked, and only the count is kept
+          memory.checkRoom(saturatingProduct(row.length, INT_BYTES), "the neighbourhood rows",
+              "1 sorted copy of a row of " + row.length + " entries");
+          degree = sortDistinct(row.clone());
+        }
+        memory.reserve(2 * INT_BYTES, "the neighbourhood degrees", "1 node");
+        degrees.put(node, degree);
+      }
+      return degree;
+    }
+
+    /** Sorts {@code row} and moves its distinct entries to its front, returning how many there are. */
+    private static int sortDistinct(final int[] row) {
       if (row.length < 2)
-        return row;
-      final int[] sorted = row.clone();
-      Arrays.sort(sorted);
+        return row.length;
+      Arrays.sort(row);
       int size = 1;
-      for (int i = 1; i < sorted.length; i++)
-        if (sorted[i] != sorted[size - 1])
-          sorted[size++] = sorted[i];
-      return size == sorted.length ? row : Arrays.copyOf(sorted, size);
+      for (int i = 1; i < row.length; i++)
+        if (row[i] != row[size - 1])
+          row[size++] = row[i];
+      return size;
     }
 
     /**
@@ -1544,22 +1561,27 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * call's budget.
    */
   protected static final class NodeScores {
-    // A SLOT: ITS NODE, COUNT AND SCORE, AND ITS ENTRY IN THE NODE -> SLOT MAP
-    private static final long SLOT_BYTES = INT_BYTES + INT_BYTES + DOUBLE_BYTES + 2 * INT_BYTES;
+    // A SLOT: ITS NODE, COUNT, SCORE AND LAST CONTRIBUTOR, AND ITS ENTRY IN THE NODE -> SLOT MAP
+    private static final long SLOT_BYTES = INT_BYTES + INT_BYTES + DOUBLE_BYTES + INT_BYTES + 2 * INT_BYTES;
 
-    private final IntIntHashMap slotOf = new IntIntHashMap();
+    private final IntIntHashMap slotOf       = new IntIntHashMap();
     private final MemoryBudget  memory;
-    private       int[]         nodes  = new int[16];
-    private       int[]         counts = new int[16];
-    private       double[]      scores = new double[16];
+    private       int[]         nodes        = new int[16];
+    private       int[]         counts       = new int[16];
+    private       double[]      scores       = new double[16];
+    private       int[]         contributors = new int[16];
     private       int           size;
 
     public NodeScores(final MemoryBudget memory) {
       this.memory = memory;
     }
 
-    /** Adds {@code count} and {@code score} to the accumulators of {@code node}. */
-    public void add(final int node, final int count, final double score) {
+    /**
+     * Adds {@code count} and {@code score} to the accumulators of {@code node}, once per {@code contributor}: a contributor met again
+     * for the same node right after (a parallel or a reciprocal relationship naming the node twice in the contributor's row) adds
+     * nothing more. The contributors must come one after the other, each with all of its additions together.
+     */
+    public void add(final int node, final int contributor, final int count, final double score) {
       int slot = slotOf.get(node, -1);
       if (slot < 0) {
         if (size == nodes.length) {
@@ -1567,11 +1589,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           nodes = Arrays.copyOf(nodes, size * 2);
           counts = Arrays.copyOf(counts, size * 2);
           scores = Arrays.copyOf(scores, size * 2);
+          contributors = Arrays.copyOf(contributors, size * 2);
         }
         slot = size++;
         slotOf.put(node, slot);
         nodes[slot] = node;
-      }
+      } else if (contributors[slot] == contributor)
+        return;
+      contributors[slot] = contributor;
       counts[slot] += count;
       scores[slot] += score;
     }
@@ -1619,10 +1644,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     int step = 0;
     for (final int w : neighbourhood.distinctNeighbors(source, direction)) {
       final double weight = weightOf.applyAsDouble(w);
-      for (final int v : neighbourhood.distinctNeighbors(w, back)) {
+      // The raw row, in one pass: a v the row names twice is credited once for w by the scores themselves, with no copy and no sort
+      for (final int v : neighbourhood.neighbors(w, back)) {
         guard.checkPeriodically(step++);
         if (v != source)
-          scores.add(v, 1, weight);
+          scores.add(v, w, 1, weight);
       }
     }
     return scores;
