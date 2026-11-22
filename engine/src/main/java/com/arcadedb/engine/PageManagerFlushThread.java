@@ -1793,7 +1793,7 @@ public class PageManagerFlushThread extends Thread {
       version = page.getVersion();
     if (!failedFlushPages.isEmpty()) {
       final MutablePage failed = failedFlushPages.get(pageId);
-      if (failed != null)
+      if (failed != null && isOfOpenInstance(failed))
         version = Math.max(version, failed.getVersion());
     }
     return version;
@@ -1803,7 +1803,9 @@ public class PageManagerFlushThread extends Thread {
     MutablePage page = pageIndex.get(pageId);
     if (!failedFlushPages.isEmpty()) {
       final MutablePage failed = failedFlushPages.get(pageId);
-      if (failed != null && (page == null || failed.getVersion() > page.getVersion()))
+      // A copy of a closed instance of the path is never served to the instance asking (#12857): its own database is gone, so the
+      // commit-time version probe of the page would ask it for its file manager and fail with DatabaseIsClosedException
+      if (failed != null && (page == null || failed.getVersion() > page.getVersion()) && isOfOpenInstance(failed))
         page = failed;
     }
     if (page != null)
@@ -1831,6 +1833,12 @@ public class PageManagerFlushThread extends Thread {
    * close marks the instance closed (a volatile write) before it purges, so either the purge sees this page or this call sees the
    * instance closed and takes the page back itself.
    * <p>
+   * The page taken back releases its WAL ack, unlike the purge of a plain close, which withholds it so the preserved WAL replays
+   * the page. Both are right: a failure is reported BEFORE the page leaves {@link #pageIndex}, and a close's
+   * {@link #waitAllPagesOfDatabaseAreFlushed} returns true only once every page has left it, so a failure reported after the
+   * instance closed belongs to a drop (whose WAL is deleted, and whose close would otherwise wait on the ack) or to a close whose
+   * wait gave up, which preserves the WAL whatever the acks say.
+   * <p>
    * Not counted as pending: {@link #waitAllPagesOfDatabaseAreFlushed} keeps the #4928 guarantee of never hanging on a
    * page the disk refuses.
    */
@@ -1841,8 +1849,7 @@ public class PageManagerFlushThread extends Thread {
       return;
     }
 
-    failedFlushPages.merge(page.getPageId(), page,
-        (current, failed) -> failed.getVersion() >= current.getVersion() ? failed : current);
+    failedFlushPages.merge(page.getPageId(), page, PageManagerFlushThread::newerFailedCopy);
 
     if (!database.isOpen()) {
       // By identity, as the purge does: another instance of the path can hold the entry of an equal PageId
@@ -1856,6 +1863,26 @@ public class PageManagerFlushThread extends Thread {
       if (removed[0])
         ackWalFileOfAbandonedPage(page);
     }
+  }
+
+  /**
+   * The copy {@link #registerFailedFlush} keeps when the page already has one. Same instance: the newer version. Two instances of the
+   * same path (equal {@link PageId}s): the copy of the instance that is still open, whatever the versions say. Without that, a failure
+   * of a closing instance that passed the first open check could replace the copy of the next instance on the path, and the second
+   * check would then take it out by identity, leaving the next instance with no copy and the stale file image. Open state rather than
+   * database identity: a {@link PageId} can carry the embedded database or a wrapper of the same instance.
+   */
+  private static MutablePage newerFailedCopy(final MutablePage current, final MutablePage failed) {
+    if (!isOfOpenInstance(current))
+      return failed;
+    if (!isOfOpenInstance(failed))
+      return current;
+    return failed.getVersion() >= current.getVersion() ? failed : current;
+  }
+
+  /** Whether the instance the page belongs to is still open: a failed copy of a closed one is never served or kept (#12857). */
+  private static boolean isOfOpenInstance(final MutablePage page) {
+    return ((Database) page.getPageId().getDatabase()).isOpen();
   }
 
   /**
@@ -1966,8 +1993,9 @@ public class PageManagerFlushThread extends Thread {
     pageIndex.removeAllOfDatabase(database);
 
     // Failed copies go with the instance, by reference identity for the same reason as above. Their WAL acks stay
-    // withheld: on a close they are what the next open replays (#4928).
-    failedFlushPages.values().removeIf(page -> page.getPageId().getDatabase() == database);
+    // withheld: on a close they are what the next open replays (#4928). A copy of any other instance that is closed goes too
+    // (#12857): nothing retries or serves it, and a copy whose PageId carries a wrapper of the instance is not matched by identity.
+    failedFlushPages.values().removeIf(page -> page.getPageId().getDatabase() == database || !isOfOpenInstance(page));
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.

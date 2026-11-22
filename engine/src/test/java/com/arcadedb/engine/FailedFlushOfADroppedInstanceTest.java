@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -41,8 +42,22 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class FailedFlushOfADroppedInstanceTest extends TestHelper {
 
+  @FunctionalInterface
+  private interface Reproduction {
+    void run(Database other) throws Exception;
+  }
+
   @Test
   void aFlushFailureReportedAfterTheDropIsNotKeptForTheNextInstanceOnThePath() throws Exception {
+    withAnotherOpenDatabase(this::reproduceDrop);
+  }
+
+  @Test
+  void aFlushFailureReportedAfterAGivenUpCloseIsRecoveredFromTheWalNotServedToTheNextInstance() throws Exception {
+    withAnotherOpenDatabase(this::reproducePlainClose);
+  }
+
+  private void withAnotherOpenDatabase(final Reproduction reproduction) throws Exception {
     // Another database stays open for the whole test, as on a server: with none open the page manager shuts down and drops the flush
     // thread with everything it holds, which would hide the stale page
     final DatabaseFactory otherFactory = new DatabaseFactory(getDatabasePath() + "-other");
@@ -50,7 +65,7 @@ class FailedFlushOfADroppedInstanceTest extends TestHelper {
       otherFactory.open().drop();
     final Database other = otherFactory.create();
     try {
-      reproduce(other);
+      reproduction.run(other);
     } finally {
       PageManager.setPageWriteFaultInjector(null);
       other.drop();
@@ -58,7 +73,62 @@ class FailedFlushOfADroppedInstanceTest extends TestHelper {
     }
   }
 
-  private void reproduce(final Database other) throws Exception {
+  /**
+   * The same failure reported after a PLAIN close, one whose bounded flush wait gave up because the flush thread was stuck in the
+   * write: the close preserves the WAL, so the next open recovers the page from it, and the failed copy of the closed instance must
+   * not be served to that next open in place of its own page.
+   */
+  private void reproducePlainClose(final Database other) throws Exception {
+    final DatabaseInternal first = (DatabaseInternal) database;
+    final PageManager pageManager = first.getPageManager();
+
+    final CountDownLatch inWrite = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    PageManager.setPageWriteFaultInjector(pageId -> {
+      if (pageId.getDatabase() != first)
+        return;
+      inWrite.countDown();
+      try {
+        release.await(60, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      throw new IOException("injected: the write of a page of a closed instance fails");
+    });
+
+    first.transaction(() -> {
+      first.getSchema().createDocumentType("Doc");
+      first.newDocument("Doc").set("value", "closed").save();
+    });
+    assertThat(inWrite.await(60, TimeUnit.SECONDS)).as("the flush thread must be writing a page of the first instance").isTrue();
+
+    // The close waits for the stuck write only briefly, then gives up and keeps the WAL for the next open
+    first.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 200L);
+    first.close();
+    assertThat(first.isOpen()).isFalse();
+
+    release.countDown();
+
+    other.transaction(() -> {
+      other.getSchema().createDocumentType("Marker");
+      other.newDocument("Marker").set("value", 1).save();
+    });
+    pageManager.waitAllPagesOfDatabaseAreFlushed((DatabaseInternal) other);
+    PageManager.setPageWriteFaultInjector(null);
+
+    assertThat(pageManager.getStats().pagesFailedToFlush)
+        .as("a page of a closed instance must not be kept as a failed flush: the preserved WAL is its durable copy")
+        .isZero();
+
+    // The next open replays the WAL: the committed record is there, and the next commit on the same page succeeds
+    database = factory.open();
+    assertThat(database.countType("Doc", false)).isEqualTo(1);
+    database.transaction(() -> database.newDocument("Doc").set("value", "reopened").save());
+    assertThat(database.countType("Doc", false)).isEqualTo(2);
+    assertThat(database.query("sql", "select from Doc where value = 'closed'").hasNext()).isTrue();
+  }
+
+  private void reproduceDrop(final Database other) throws Exception {
     final DatabaseInternal first = (DatabaseInternal) database;
     final PageManager pageManager = first.getPageManager();
 
