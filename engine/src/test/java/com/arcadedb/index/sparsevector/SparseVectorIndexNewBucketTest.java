@@ -19,11 +19,12 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.Result;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -39,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * "Sparse vector index requires 2 properties".
  */
 class SparseVectorIndexNewBucketTest extends TestHelper {
-  private static final String TYPE_NAME = "NewBucketSparseDoc";
+  private static final String TYPE_NAME    = "NewBucketSparseDoc";
+  private static final String EXTRA_BUCKET = TYPE_NAME + "_extra";
 
   private void createTypeAndIndex() {
     database.transaction(() -> {
@@ -68,7 +70,7 @@ class SparseVectorIndexNewBucketTest extends TestHelper {
     createTypeAndIndex();
     database.transaction(() -> database.newDocument(TYPE_NAME).set("id", 1L).set("tokens", new int[] { 3 }).set("weights", new float[] { 1f }).save());
 
-    database.getSchema().getType(TYPE_NAME).addBucket(database.getSchema().createBucket("NewBucketSparseDoc_extra"));
+    database.getSchema().getType(TYPE_NAME).addBucket(database.getSchema().createBucket(EXTRA_BUCKET));
 
     final DocumentType type = database.getSchema().getType(TYPE_NAME);
     assertThat(type.getBuckets(false)).hasSize(3);
@@ -77,7 +79,7 @@ class SparseVectorIndexNewBucketTest extends TestHelper {
 
     // a record of the new bucket is indexed and found
     database.transaction(() -> database.newDocument(TYPE_NAME).set("id", 2L).set("tokens", new int[] { 3 }).set("weights", new float[] { 2f })
-        .save("NewBucketSparseDoc_extra"));
+        .save(EXTRA_BUCKET));
     assertThat(neighbours(3)).containsExactlyInAnyOrder(1L, 2L);
 
     reopenDatabase();
@@ -93,5 +95,21 @@ class SparseVectorIndexNewBucketTest extends TestHelper {
     assertThat(database.getSchema().existsType("NewBucketSparseSub")).isTrue();
     database.transaction(() -> database.newDocument("NewBucketSparseSub").set("id", 5L).set("tokens", new int[] { 7 }).set("weights", new float[] { 1f }).save());
     assertThat(neighbours(7)).containsExactly(5L);
+  }
+
+  @Test
+  void indexReportsTheTypesOfItsProperties() {
+    createTypeAndIndex();
+
+    final TypeIndex index = database.getSchema().getType(TYPE_NAME).getAllIndexes(false).iterator().next();
+    assertThat(index.getKeyTypes()).containsExactly(Type.ARRAY_OF_INTEGERS, Type.ARRAY_OF_FLOATS);
+    for (final IndexInternal bucketIndex : index.getIndexesOnBuckets())
+      assertThat(bucketIndex.getKeyTypes()).containsExactly(Type.ARRAY_OF_INTEGERS, Type.ARRAY_OF_FLOATS);
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:indexes WHERE name = ?", index.getName())) {
+      assertThat(rs.hasNext()).isTrue();
+      final List<String> keyTypes = rs.next().getProperty("keyTypes");
+      assertThat(keyTypes).containsExactly(Type.ARRAY_OF_INTEGERS.name(), Type.ARRAY_OF_FLOATS.name());
+    }
   }
 }
