@@ -440,7 +440,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         final String content = FileUtils.readFileAsString(configurationFile);
         configuration.reset();
-        configuration.fromJSON(content);
+        configuration.fromJSON(content, "configuration of database '" + name + "'");
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e,
             configurationFile);
@@ -851,7 +851,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public TransactionContext getTransactionIfExists() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    return transactionOf(DatabaseContext.INSTANCE.getContextIfExists(databasePath));
+  }
+
+  /**
+   * {@link #getTransactionIfExists()} for a caller that holds this thread's context of the database already: the record read
+   * resolves it once for both the open check and the transaction (it was two thread-local look-ups per record read).
+   */
+  private TransactionContext transactionOf(final DatabaseContext.DatabaseContextTL dbContext) {
     if (dbContext != null) {
       final TransactionContext tx = dbContext.getLastTransaction();
       if (tx != null) {
@@ -898,7 +905,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       TransactionContext tx = current.getLastTransaction();
       // NOT ONE WHOSE TRANSACTION IS STILL CONCLUDING EITHER (#10687): ITS COMMIT COUNT IS ABOUT TO BE READ BY THE CALLER OF THE
       // COMMIT THAT ENDED IT, SEE TransactionContext.isRunningAfterCompletionCallbacks()
-      if (tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
+      // NULL WHEN DatabaseContext.init() ROLLED BACK THE TRANSACTIONS OF A CONTEXT THIS THREAD ALREADY HAD AND COULD NOT BUILD THE
+      // ONE THAT REPLACES THEM (#12817): THE CONTEXT STAYS, IT CARRIES THE CURRENT USER, AND GETS ITS TRANSACTION HERE
+      if (tx == null || tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
         // CREATE A NESTED TX
         tx = new TransactionContext(getWrappedDatabaseInstance());
         current.pushTransaction(tx);
@@ -1157,8 +1166,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       var type = schema.getType(typeName);
       var iter = new MultiIterator<Record>();
 
-      // SET THE PROFILED LIMITS IF ANY
-      iter.setLimit(getResultSetLimit());
+      // THE resultSetLimit IS A ROW CAP OF THE QUERY ENGINES, NOT A SCAN CAP (ISSUE #12888): ONLY THE readTimeout APPLIES HERE
       iter.setTimeout(getReadTimeout(), true);
 
       for (final Bucket b : type.getBuckets(polymorphic))
@@ -1175,7 +1183,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       checkDatabaseIsOpen();
       try {
         final Bucket bucket = schema.getBucketByName(bucketName);
-        return bucket.iterator();
+        // THE readTimeout BOUNDS A BUCKET SCAN AS IT BOUNDS A TYPE SCAN: THE resultSetLimit IS NOT A SCAN CAP (ISSUE #12888)
+        final long readTimeout = getReadTimeout();
+        if (readTimeout < 0)
+          return bucket.iterator();
+        final MultiIterator<Record> iter = new MultiIterator<>();
+        iter.setTimeout(readTimeout, true);
+        iter.addIterator(bucket.iterator());
+        return iter;
       } catch (final Exception e) {
         throw new DatabaseOperationException("Error on executing scan of bucket '" + bucketName + "'", e);
       }
@@ -1316,10 +1331,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Record id is null");
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
-      checkDatabaseIsOpen();
-
-      // CHECK IN TX CACHE FIRST
-      final TransactionContext tx = getTransaction();
+      // CHECK IN TX CACHE FIRST. THE THREAD'S CONTEXT IS RESOLVED ONCE FOR THE OPEN CHECK AND THE TRANSACTION: A GRAPH WALK READS
+      // A RECORD PER ADJACENCY ENTRY, AND THE SECOND THREAD-LOCAL LOOK-UP WAS A VISIBLE SHARE OF IT
+      final TransactionContext tx = transactionOf(checkDatabaseIsOpenAndGetContext(false, null));
+      if (tx == null)
+        throw new TransactionException("Transaction not started on current thread");
       Record record = tx.getRecordFromCache(rid);
       if (record != null)
         return record;
@@ -1566,12 +1582,27 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Bucket target = schema.getBucketByNameIfExists(bucketName);
       if (target != null) {
         schema.checkBackingTypeWrite(target.getFileId(), "insert into");
+        // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure
+        // for the serializer, not user data containers; allowing user DML to write here would corrupt the schema's
+        // accounting of which records are real records vs. payload blobs. Checked before the owner, because no type owns
+        // an internal bucket and "attach it to the type" is not a remedy for one
+        if (target instanceof LocalBucket local && local.getPurpose() != LocalBucket.Purpose.PRIMARY)
+          throw new IllegalArgumentException(
+              "Bucket '" + bucketName + "' is internal (purpose=" + local.getPurpose() + ") and cannot be written to directly");
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
-        // record by the bucket's owner; this is the same rule for the API.
-        if (record instanceof Document doc) {
+        // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
+        // all: the record would skip its type's indexes (a UNIQUE key taken twice), stay out of every walk of the type and
+        // refuse every later update (issue #12959). Records that are not typed documents (edge-list chunks and other
+        // engine-internal records) belong to no type by design and are exempt
+        if (record instanceof Document doc && doc.getTypeName() != null) {
           final DocumentType owner = schema.getTypeByBucketId(target.getFileId());
-          if (owner != null && !owner.getName().equals(doc.getTypeName()))
+          if (owner == null)
+            throw new IllegalArgumentException(
+                "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName
+                    + "', which belongs to no type: attach it first with ALTER TYPE `" + doc.getTypeName() + "` BUCKET +`" + bucketName
+                    + "`");
+          if (!owner.getName().equals(doc.getTypeName()))
             throw new IllegalArgumentException(
                 "Cannot create a record of type '" + doc.getTypeName() + "' in bucket '" + bucketName + "', which belongs to type '"
                     + owner.getName() + "'");
@@ -1605,15 +1636,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (bucketName == null && record instanceof Document doc)
         bucket = (LocalBucket) doc.getType().getBucketIdByRecord(doc,
             DatabaseContext.INSTANCE.getContext(databasePath).perThreadBucketSelection);
-      else {
+      else
+        // an internal bucket was refused above, where the bucket was looked up the first time
         bucket = (LocalBucket) schema.getBucketByName(bucketName);
-        // Reject direct writes to internal buckets (e.g. paired external-property buckets). They are infrastructure
-        // for the serializer, not user data containers; allowing user DML to write here would corrupt the schema's
-        // accounting of which records are real records vs. payload blobs.
-        if (bucket.getPurpose() != LocalBucket.Purpose.PRIMARY)
-          throw new IllegalArgumentException(
-              "Bucket '" + bucketName + "' is internal (purpose=" + bucket.getPurpose() + ") and cannot be written to directly");
-      }
 
       ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
 
@@ -2755,8 +2780,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
-                  + "boundary): NOT retrying, because replaying it would apply the already durable half a second "
-                  + "time. Propagating %s to the caller",
+                  + "boundary, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
+                  + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
           throw e;
         }
@@ -5364,6 +5389,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
+    checkDatabaseIsOpenAndGetContext(updateIntent, databaseReadOnlyErrorMessage);
+  }
+
+  /** {@link #checkDatabaseIsOpen(boolean, String)}, answering this thread's context of the database it found or created. */
+  private DatabaseContext.DatabaseContextTL checkDatabaseIsOpenAndGetContext(final boolean updateIntent,
+      final String databaseReadOnlyErrorMessage) {
     if (!open)
       throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
     if (fenceReason != null)
@@ -5374,8 +5405,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseOperationException(
           "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
               + fenceReason + ")");
-    if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
-      DatabaseContext.INSTANCE.init(this);
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(this);
 
     // #8523: THIS RUNS ON EVERY SCHEMA LOOKUP AND RECORD READ OF EVERY THREAD, SO IT READS THE COARSE CLOCK (A VOLATILE)
     // RATHER THAN THE SYSTEM ONE, AND WRITES THE STAMPS ONLY WHEN THE TICK CHANGED. AN UNCONDITIONAL STORE MADE EACH CORE TAKE
@@ -5392,6 +5424,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     if (lastUsedOn != now)
       lastUsedOn = now;
+    return context;
   }
 
   private void setDefaultValues(final Record record) {

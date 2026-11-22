@@ -97,6 +97,7 @@ import io.undertow.server.handlers.PathHandler;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 import org.xnio.Options;
+import org.xnio.XnioWorker;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -149,6 +150,9 @@ public class HttpServer implements ServerPlugin {
   // Built per startService() by setupRoutes(), like every other route handler, so there is one per start.
   private volatile PostBatchHandler         postBatchHandler;
   private          Undertow               undertow;
+  // The XNIO threads the started Undertow accepts and serves connections on (issue #12552): an OutOfMemoryError can end
+  // one and leave the port accepting connections nobody answers. Empty while not started.
+  private volatile List<Thread>           listenerThreads = List.of();
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
   private          int                    httpsPortListening = -1;
@@ -224,6 +228,8 @@ public class HttpServer implements ServerPlugin {
       idempotencyCleanupExecutor = null;
     }
 
+    // Before the stop, which ends these threads on purpose
+    listenerThreads = List.of();
     if (undertow != null)
       CodeUtils.executeIgnoringExceptions(undertow::stop);
 
@@ -290,6 +296,7 @@ public class HttpServer implements ServerPlugin {
         if (hook != null)
           hook.run();
         undertow.start();
+        listenerThreads = xnioListenerThreads(undertow.getWorker());
 
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)",
             listenHosts.size() > 1 ? host + " " + listenHosts : host, httpPortListening,
@@ -322,6 +329,39 @@ public class HttpServer implements ServerPlugin {
     }
 
     handleServerStartFailure(httpPortRange);
+  }
+
+  /**
+   * The first XNIO thread of the HTTP listener found terminated, or {@code null} while all are alive and while the server
+   * is not started (issue #12552). Read by the readiness probe; the HTTP probe itself cannot answer once its accept thread
+   * is gone, but the gRPC one, which asks the same question, can.
+   */
+  @Override
+  public String getListenerFailure() {
+    for (final Thread thread : listenerThreads)
+      if (!thread.isAlive())
+        return "HTTP listener thread '" + thread.getName() + "' has terminated: this node no longer serves HTTP requests";
+    return null;
+  }
+
+  /**
+   * The I/O threads of {@code worker} and its accept thread. The I/O threads come from the worker's public API; the accept
+   * thread has none, and is found once, at start, by the name XNIO gives it ({@code "<worker name> Accept"}), unique per
+   * worker in the JVM. An XNIO version that names it otherwise only loses that one thread from the check.
+   */
+  static List<Thread> xnioListenerThreads(final XnioWorker worker) {
+    if (worker == null)
+      return List.of();
+    final List<Thread> threads = new ArrayList<>(worker.getIoThreadCount() + 1);
+    for (int i = 0; i < worker.getIoThreadCount(); i++)
+      threads.add(worker.getIoThread(i));
+    final String acceptThreadName = worker.getName() + " Accept";
+    for (final Thread thread : Thread.getAllStackTraces().keySet())
+      if (acceptThreadName.equals(thread.getName())) {
+        threads.add(thread);
+        break;
+      }
+    return List.copyOf(threads);
   }
 
   /** Builds the {@code /api/v1/batch} handler and keeps it, so {@link #stopService()} can release its HTTP client. */

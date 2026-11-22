@@ -225,7 +225,9 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
     for (final Statement stm : statements) {
       stm.setOriginalStatement(stm);
-      stm.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+      // THE USER'S QUOTA WHERE IT IS TIGHTER THAN THE STATEMENT'S OWN LIMIT, AS FOR THE SAME STATEMENT RUN ON ITS OWN: IT USED TO
+      // REPLACE A LIMIT BELOW IT (ISSUE #12888). THE STATEMENTS ARE PARSED FOR THIS EXECUTION, SO NO OTHER USER SEES THE CHANGE
+      stm.applyTighterProfiledLimit(database, scriptContext.getInputParameters());
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;

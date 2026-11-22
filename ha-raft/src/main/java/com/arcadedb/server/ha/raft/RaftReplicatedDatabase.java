@@ -1859,7 +1859,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // machine apply and produces inconsistent IDs across the cluster.
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
         if (!runsInTheClientTransaction(queryEngine, analyzed))
-          return forwardCommandToLeaderViaRaft(language, query, null, args);
+          return forwardCommandToLeaderViaRaft(language, query, null, args, analyzed.isDDL() || !analyzed.isIdempotent());
         ForwardedRequestIdContext.markExecutedLocally();
         return proxied.command(language, query, configuration, args);
       }
@@ -1985,7 +1985,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     final AtomicLong leaderApplied = new AtomicLong(-1L);
     final boolean createdByThisRequest;
-    try (final ResultSet answer = forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, leaderApplied)) {
+    try (final ResultSet answer = forwardCommandToLeaderViaRaft("sql", createStatement, null, null, false, true, leaderApplied)) {
       // The row CREATE ... TYPE answers with says whether this very command made the type (created=false: it was there already)
       final Result row = answer.hasNext() ? answer.next() : null;
       createdByThisRequest = row != null && Boolean.TRUE.equals(row.<Boolean>getProperty("created"));
@@ -2115,7 +2115,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         return runInspectionOfThisNode(language, query, configuration, args);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent()) {
         if (!runsInTheClientTransaction(queryEngine, analyzed))
-          return forwardCommandToLeaderViaRaft(language, query, args, null);
+          return forwardCommandToLeaderViaRaft(language, query, args, null, analyzed.isDDL() || !analyzed.isIdempotent());
         ForwardedRequestIdContext.markExecutedLocally();
         return proxied.command(language, query, configuration, args);
       }
@@ -5718,12 +5718,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * <p>
    * The bookmark the leader answers with is kept for the request (issue #11740), so the one this node answers the client with
    * covers the write: see {@link #getCommitIndexBookmark()}.
+   * <p>
+   * The result is returned once this node has applied the write too, as a commit made on this node waits for its own entry
+   * (issue #12635). Its records are only references: the caller reads them from this node's copy, an HTTP answer serializes
+   * them from it, and with a majority quorum the leader can answer before this node holds them. A record missing there was
+   * answered as a conflict, which the request's retry loop took as a reason to run the forwarded statement again. Lenient, like
+   * that commit: on timeout the result is returned anyway.
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
-      final Map<String, Object> mapArgs, final Object[] positionalArgs) {
+      final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean mayWrite) {
     final AtomicLong leaderBookmark = new AtomicLong(-1L);
     try {
-      return forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, leaderBookmark);
+      final ResultSet result = forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, mayWrite, leaderBookmark);
+      // Whatever this node's role is now: one elected since the forward has not necessarily applied the old leader's entry yet
+      final long bookmark = leaderBookmark.get();
+      if (bookmark >= 0)
+        requireRaftServer().waitForAppliedIndex(getName(), bookmark);
+      return result;
     } finally {
       // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
       recordRequestWrite(leaderBookmark.get());
@@ -5736,11 +5747,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    *                      client's statement (the creation of a type that statement needs, issue #10067). The second kind
    *                      relays nothing of the client's request - not its idempotency key, not its termination - and keeps
    *                      the statement's admission slot, since the statement carries on here afterwards.
+   * @param mayWrite      whether the command can write on the leader (DDL, or not idempotent): only then does the leader's answer
+   *                      mark the transactions on this thread as holding a write nothing may replay (issue #12635)
    * @param commitIndexOut when not {@code null}, receives the read-your-writes bookmark the leader answered with: the last index
    *                      it had applied, which is at or past the entry of the command it just ran
    */
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
-      final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean clientRequest,
+      final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean clientRequest, final boolean mayWrite,
       final AtomicLong commitIndexOut) {
     final RaftHAServer raft = requireRaftServer();
 
@@ -6082,6 +6095,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (runningQuery != null)
           runningQuery.checkNotTerminated("the command forwarded to the leader");
         throw refusal;
+      }
+
+      // The leader executed the client's statement and answered it: it is durable there whatever happens on this node from here
+      // on, so the block running it must not be replayed (issue #12635). Before parsing the answer, which can still fail
+      // A script the leader runs only because scripts always go there, and that writes nothing, has nothing to replay: its block keeps
+      // its retries. Every transaction on the thread, not only the innermost, which a nested commit pops before the loop can see it
+      if (clientRequest && mayWrite) {
+        final DatabaseContext.DatabaseContextTL threadContext = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
+        if (threadContext != null)
+          threadContext.reportWriteCommittedByAnotherNode();
       }
 
       if (commitIndexOut != null)
