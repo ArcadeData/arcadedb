@@ -213,6 +213,17 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
     // The precision truncates before the case is changed
     assertThat(StringUtils.format("format", "%1$.5S".repeat(100_000), text)).hasSize(1_000_000);
 
+    // So what is counted is the part the precision keeps, whatever the case does to the rest: in Lithuanian the upper
+    // case drops the dot of each 'i' + U+0307, as many characters as the 'ß' in front of them add
+    final Locale lithuanian = Locale.forLanguageTag("lt");
+    final String shrinkingTail = "ß".repeat(1_024) + "i\u0307".repeat(1_024);
+    assertThat(shrinkingTail.toUpperCase(lithuanian)).hasSameSizeAs(shrinkingTail);
+    assertThatThrownBy(
+        () -> StringUtils.format("format", lithuanian, "%1$.1024S".repeat(StringUtils.MAX_FORMAT_OUTPUT / 1_024 + 1), shrinkingTail)).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("more than " + StringUtils.MAX_FORMAT_OUTPUT);
+    final String growingTail = "a".repeat(1_024) + "ß".repeat(4_096);
+    assertThat(StringUtils.format("format", "%1$.1024S".repeat(10_000), growingTail)).hasSize(10_240_000);
+
     // Text that is no longer in upper case is counted as it was
     final String plain = "a".repeat(WIDTH);
     assertThat(StringUtils.format("format", "%1$S".repeat(FIELDS + 1), plain)).hasSize((FIELDS + 1) * WIDTH);

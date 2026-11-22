@@ -228,9 +228,11 @@ public class StringUtils {
     // The last argument whose text had to be built to be measured, so that '%1$s%1$s%1$s' builds it once.
     long measured = -1;
     long measuredSize = 0;
-    // The last argument upper-cased to be measured, its length and what the upper case adds to it
+    // The last argument upper-cased to be measured, its length, how much of it the precision kept and what the upper
+    // case adds to that much
     long upperCased = -1;
     long upperCasedFrom = 0;
+    long upperCasedKept = -1;
     long upperCasedGrowth = 0;
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
@@ -323,12 +325,15 @@ public class StringUtils {
             // What the upper case adds to the text: 'ß' is printed as 'SS' by %S, on the first print as on any other
             long growth = 0;
             if (conversion == 'S' && isUpperCasedText(arg)) {
-              // Only the upper-cased text says how long it is, so it is measured, once
-              if (upperCased != last) {
+              // Only the upper-cased text says how long it is, so it is measured, once: what the precision keeps of it,
+              // because the formatter truncates first and the case of the rest changes nothing
+              if (upperCased != last || upperCasedKept != precision) {
                 final String text = String.valueOf(arg);
                 upperCasedFrom = text.length();
-                upperCasedGrowth = upperCaseGrowth(text, locale != null ? locale : Locale.getDefault(Locale.Category.FORMAT));
+                upperCasedGrowth = upperCaseGrowth(text, precise ? (int) Math.min(precision, upperCasedFrom) : text.length(),
+                    locale != null ? locale : Locale.getDefault(Locale.Category.FORMAT));
                 upperCased = last;
+                upperCasedKept = precision;
               }
               size = upperCasedFrom;
               growth = upperCasedGrowth;
@@ -351,8 +356,6 @@ public class StringUtils {
               // The precision truncates
               if (precise)
                 size = Math.min(size, precision);
-              // The case changes after the truncation, and a character becomes three at most
-              growth = Math.min(growth, 2 * size);
             } else if (kind != 'c' && kind != 't') {
               // One separator every three integer digits, which for %g are as many as the precision
               if (grouping)
@@ -395,12 +398,12 @@ public class StringUtils {
   }
 
   /**
-   * The characters the upper case adds to a text. Taken a piece at a time: {@code String.toUpperCase} extends its buffer
-   * by a character for each one that becomes two, copying it whole, which a long run of them makes quadratic. A piece
-   * that ends inside a sequence the locale would shorten only measures a character more.
+   * The characters the upper case adds to the first {@code length} of a text. Taken a piece at a time:
+   * {@code String.toUpperCase} extends its buffer by a character for each one that becomes two, copying it whole, which
+   * a long run of them makes quadratic. A piece that ends inside a sequence the locale would shorten only measures a
+   * character more.
    */
-  private static long upperCaseGrowth(final String text, final Locale locale) {
-    final int length = text.length();
+  private static long upperCaseGrowth(final String text, final int length, final Locale locale) {
     long growth = 0;
     for (int from = 0; from < length; from += UPPER_CASE_PIECE) {
       final int to = Math.min(from + UPPER_CASE_PIECE, length);
