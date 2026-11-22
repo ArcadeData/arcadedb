@@ -18,14 +18,46 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.HAReplicatedDatabase;
+import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.UnstartedHttpServers;
+import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.security.ServerSecurityUser;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
+import io.undertow.util.HttpString;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * A request that forwarded one write to the leader and then failed on this node is answered with the leader's answer: the write
@@ -82,5 +114,160 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
 
     assertThat(DatabaseAbstractHandler.answerWithTheLeadersAnswer(response, new NeedRetryException("refused"))).isFalse();
     assertThat(response.get()).isNull();
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------------------
+  // Through DatabaseAbstractHandler.execute(): the catch, the arming and the clearing of the request's state
+  // ---------------------------------------------------------------------------------------------------------------------------
+
+  /** One more kind of failure at a time: what the handler's own execute throws after the forward published its answer. */
+  @Nested
+  class ThroughExecute {
+    private static final String DATABASE_PATH = "./target/databases/DatabaseAbstractHandlerLeaderAnswerTest";
+    private static final String LEADERS_BODY  = "{\"result\":[{\"k\":7}]}";
+
+    @RegisterExtension
+    static final UnstartedHttpServers HTTP_SERVERS = new UnstartedHttpServers();
+
+    private DatabaseInternal  database;
+    private FakeArcadeDBServer server;
+    private HttpServer        httpServer;
+    private ServerSecurityUser user;
+    private int               publishes;
+    private RuntimeException  failure;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH);
+      if (factory.exists())
+        factory.open().drop();
+      database = (DatabaseInternal) factory.create();
+      server = FakeArcadeDBServer.create().online();
+      // An HA database as the handler sees one: the real database behind a proxy that is also a HAReplicatedDatabase
+      final DatabaseInternal haDatabase = (DatabaseInternal) Proxy.newProxyInstance(getClass().getClassLoader(),
+          new Class<?>[] { DatabaseInternal.class, HAReplicatedDatabase.class }, (proxy, method, args) -> {
+            if (method.getDeclaringClass() == HAReplicatedDatabase.class)
+              return switch (method.getName()) {
+                case "isLeader" -> false;
+                case "getCommitIndexBookmark", "getLastAppliedIndex" -> -1L;
+                default -> method.isDefault() ? InvocationHandler.invokeDefault(proxy, method, args) : null;
+              };
+            try {
+              return method.invoke(database, args);
+            } catch (final InvocationTargetException e) {
+              throw e.getCause();
+            }
+          });
+      server.database("ha", new ServerDatabase(server, haDatabase));
+      server.database("plain", new ServerDatabase(server, database));
+      httpServer = HTTP_SERVERS.of(server);
+      // Bound to no server, so it answers no database user: the request runs as the engine does when no user is bound
+      user = mock(ServerSecurityUser.class);
+      when(user.canAccessToDatabase(anyString())).thenReturn(true);
+      publishes = 1;
+      failure = null;
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    private ExecutionResponse run(final String databaseName, final String sessionId) throws Exception {
+      final DatabaseAbstractHandler handler = new DatabaseAbstractHandler(httpServer) {
+        @Override
+        protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database db,
+            final JSONObject payload) {
+          // What the forward does on the way: the leader answered, the write is durable there
+          for (int i = 0; i < publishes; i++) {
+            ForwardedRequestIdContext.publishCommittedWriteAnswer(LEADERS_BODY);
+            // As the forward does (issue #12635): the auto-commit loop around this block must not replay a write the leader committed
+            DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath()).reportWriteCommittedByAnotherNode();
+          }
+          if (failure != null)
+            throw failure;
+          return new ExecutionResponse(200, "{\"result\":\"rendered\"}");
+        }
+      };
+      final HttpServerExchange exchange = mock(HttpServerExchange.class);
+      final Deque<String> name = new ArrayDeque<>();
+      name.add(databaseName);
+      final Map<String, Deque<String>> parameters = new HashMap<>();
+      parameters.put("database", name);
+      when(exchange.getQueryParameters()).thenReturn(parameters);
+      final HeaderMap requestHeaders = new HeaderMap();
+      if (sessionId != null)
+        requestHeaders.put(new HttpString(ARCADEDB_SESSION_ID), sessionId);
+      when(exchange.getRequestHeaders()).thenReturn(requestHeaders);
+      when(exchange.getResponseHeaders()).thenReturn(new HeaderMap());
+      return handler.execute(exchange, user, null);
+    }
+
+    @Test
+    void aRetryableRefusalAfterOneCommittedForwardIsAnsweredWithTheLeadersAnswer() throws Exception {
+      failure = new NeedRetryException("Database 'ha' is being replaced from the leader");
+      final ExecutionResponse response = run("ha", null);
+
+      assertThat(response.getCode()).isEqualTo(200);
+      assertThat(response.getResponse()).isEqualTo(LEADERS_BODY);
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("the pooled thread is left clean").isNull();
+      assertThat(database.isTransactionActive()).as("the failed request left no transaction open").isFalse();
+    }
+
+    @Test
+    void aDatabaseReopenedUnderTheRequestAfterOneCommittedForwardIsAnsweredWithTheLeadersAnswer() throws Exception {
+      failure = new DatabaseIsReopeningException("Database 'ha' is being reopened");
+      assertThat(run("ha", null).getResponse()).isEqualTo(LEADERS_BODY);
+    }
+
+    /** Not every failure after a forward says the write is done and only its answer got lost: only the retryable refusals do. */
+    @Test
+    void aFailureThatIsNotARetryableRefusalIsRaisedEvenAfterAForward() {
+      for (final RuntimeException other : new RuntimeException[] { new SecurityException("not allowed"),
+          new IllegalStateException("rendering failed"), new DatabaseIsClosedException("ha") }) {
+        failure = other;
+        assertThatThrownBy(() -> run("ha", null)).as("%s", other.getClass().getSimpleName()).isSameAs(other);
+        assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("the pooled thread is left clean").isNull();
+      }
+    }
+
+    @Test
+    void aRefusalAfterSeveralForwardsOrNoneIsRaised() {
+      failure = new NeedRetryException("refused");
+      publishes = 2;
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      publishes = 0;
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+    }
+
+    /** The answer of one request is not the answer of the next on the same pooled thread: arming starts from nothing. */
+    @Test
+    void theAnswerOfOneRequestIsNotTheAnswerOfTheNextOnTheSameThread() throws Exception {
+      failure = new NeedRetryException("refused");
+      assertThat(run("ha", null).getResponse()).isEqualTo(LEADERS_BODY);
+
+      publishes = 0;
+      assertThatThrownBy(() -> run("ha", null)).as("the second request forwarded nothing").isSameAs(failure);
+    }
+
+    @Test
+    void aRequestThatSucceedsLeavesNothingBehind() throws Exception {
+      assertThat(run("ha", null).getResponse()).isEqualTo("{\"result\":\"rendered\"}");
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+    }
+
+    @Test
+    void aDatabaseThatIsNotReplicatedNeverArms() {
+      failure = new NeedRetryException("refused");
+      assertThatThrownBy(() -> run("plain", null)).isSameAs(failure);
+    }
+
+    @Test
+    void aRequestInsideASessionNeverArms() {
+      final HttpSession session = httpServer.getSessionManager().createSession(user, null);
+      failure = new NeedRetryException("refused");
+      assertThatThrownBy(() -> run("ha", session.id)).isSameAs(failure);
+    }
   }
 }

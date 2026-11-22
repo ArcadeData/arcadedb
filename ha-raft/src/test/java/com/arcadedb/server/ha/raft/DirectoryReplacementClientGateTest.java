@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -382,6 +383,47 @@ class DirectoryReplacementClientGateTest {
       assertThat(replicated.isTransactionActive()).isFalse();
     } finally {
       ProtocolContext.clear();
+    }
+  }
+
+  /**
+   * Issue #9411 and the forwarded write: with the Raft state machine closed, the commit of a transaction that wrote nothing
+   * publishes no entry, so it neither waits for the quorum timeout nor is refused. What the HTTP handler holds around a forward to
+   * the leader is exactly such a transaction.
+   */
+  @Test
+  void aCommitOfATransactionThatWroteNothingIsNotRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    assertThat(replicated.isTransactionActive()).isTrue();
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThatNoException().as("the commit of an empty transaction on a closed state machine").isThrownBy(replicated::commit);
+    watch.assertGaveUpWithin(5_000, "a commit that publishes nothing from one that waits out the quorum timeout (#9411)");
+
+    assertThat(replicated.isTransactionActive()).isFalse();
+  }
+
+  /** The other side of the line: a transaction that wrote is still refused retryably, and rolled back, as #9411 requires. */
+  @Test
+  void aCommitOfATransactionThatWroteIsStillRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    replicated.newDocument("Seed").set("k", 2).save();
+
+    assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("state machine is closed");
+    assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /** A closed machine is not what refuses an empty commit once it is open again: the same transaction shape, both states. */
+  @Test
+  void anEmptyCommitIsTheSameWhetherTheStateMachineIsClosedOrNot() {
+    for (final boolean closed : new boolean[] { false, true, false }) {
+      stateMachine.closed(closed);
+      replicated.begin();
+      assertThatNoException().as("closed=%s", closed).isThrownBy(replicated::commit);
+      assertThat(replicated.isTransactionActive()).isFalse();
     }
   }
 }

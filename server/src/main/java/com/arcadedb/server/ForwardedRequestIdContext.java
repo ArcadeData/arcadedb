@@ -236,6 +236,11 @@ public final class ForwardedRequestIdContext {
     state.committedWriteAnswerArmed = true;
   }
 
+  /** Drops what {@link #armCommittedWriteAnswer()} started keeping, whether or not an answer was taken. */
+  public static void disarmCommittedWriteAnswer() {
+    clearCommittedWrites(STATE.get());
+  }
+
   /**
    * Records the leader's answer to a write this request forwarded and the leader executed: the write is durable there from
    * now on, whatever this node does with the answer. Published for every such forward, whether or not it is the client's
