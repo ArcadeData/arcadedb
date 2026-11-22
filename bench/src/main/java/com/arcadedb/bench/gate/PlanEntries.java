@@ -88,6 +88,12 @@ final class PlanEntries {
     return !marker.lineIds().isEmpty();
   }
 
+  /** Starts every line's recovery streak over, for an issue a maintainer reopened after it closed. */
+  static void restartStreaks(final Marker marker) {
+    for (final String id : marker.lineIds())
+      marker.line(id).put("streak", 0);
+  }
+
   /**
    * The start of the event's range: the baseline ref most of its lines share, ties broken by the newest baseline point. A line whose own
    * baseline differs shows it in its row.

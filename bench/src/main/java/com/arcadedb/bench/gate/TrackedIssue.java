@@ -30,12 +30,20 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/** A regression issue as the workflow lists it: its open or closed state, who closed it, and the state kept in its marker. */
-public record TrackedIssue(int number, boolean open, boolean closedByMaintainer, Marker marker) {
+/**
+ * A regression issue as the workflow lists it: its open or closed state, who closed it, whether a maintainer reopened it (GitHub's
+ * {@code state_reason} is {@code reopened} while it stays open) and the state kept in its marker.
+ */
+public record TrackedIssue(int number, boolean open, boolean closedByMaintainer, Marker marker, boolean reopened) {
   private static final String BOT = "github-actions[bot]";
 
+  /** An issue that was never reopened. */
+  public TrackedIssue(final int number, final boolean open, final boolean closedByMaintainer, final Marker marker) {
+    this(number, open, closedByMaintainer, marker, false);
+  }
+
   /**
-   * Reads the workflow's issue list {@code [{number, state, closedBy, body}]}. An issue whose marker is missing or invalid is skipped with
+   * Reads the workflow's issue list {@code [{number, state, stateReason, closedBy, body}]}. An issue whose marker is missing or invalid is skipped with
    * one warning line on {@code warn}; a file that is not a JSON array is an error, as it is the workflow's own output.
    */
   public static List<TrackedIssue> readAll(final Path issuesFile, final PrintStream warn) {
@@ -66,7 +74,8 @@ public record TrackedIssue(int number, boolean open, boolean closedByMaintainer,
       }
       final boolean open = !"closed".equals(item.getString("state", "open"));
       final String closedBy = item.getString("closedBy", null);
-      result.add(new TrackedIssue(number, open, !open && closedBy != null && !BOT.equals(closedBy), marker));
+      result.add(new TrackedIssue(number, open, !open && closedBy != null && !BOT.equals(closedBy), marker,
+          open && "reopened".equals(item.getString("stateReason", null))));
     }
     return result;
   }

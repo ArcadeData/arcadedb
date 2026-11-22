@@ -588,6 +588,33 @@ class PlannerTest {
   }
 
   @Test
+  void aReopenedRecoveredIssueIsNotClosedAgainWithoutNewRecoveredRuns() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+    points.add(n(C, 3, 101));
+    marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    points.add(n(D, 4, 100));
+    final Marker closed = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    assertThat(PlanEntries.allRecovered(closed)).isTrue();
+
+    // the bot closed it, a maintainer reopened it: tracked again from its marker, with the recovery streaks started over
+    final JSONObject reopened = plan(data(TIME, points), new TrackedIssue(7, true, false, closed, true));
+
+    assertThat(ops(reopened)).containsExactly("update");
+    final Marker restarted = markerOf(action(reopened, "update"));
+    assertThat(restarted.line(TIME.id()).getInt("streak")).isEqualTo(0);
+    assertThat(restarted.line(TIME.id()).getString("lastRun")).isEqualTo(D);
+    // GitHub keeps "reopened" while the issue is open: the next run plans nothing more
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, true, false, restarted, true)))).isEmpty();
+
+    points.add(n(E, 5, 100));
+    final Marker once = markerOf(action(plan(data(TIME, points), new TrackedIssue(7, true, false, restarted, true)), "update"));
+    assertThat(once.line(TIME.id()).getInt("streak")).isEqualTo(1);
+    points.add(point("nightly", "ffffffffff", 6, 100, "x"));
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, true, false, once, true)))).startsWith("close");
+  }
+
+  @Test
   void aReleaseRegressionAcceptedLongAgoStaysAccepted() {
     // the planner sees no age: a maintainer close is honoured for as long as the newest release is the one it accepted
     final Map<LineKey, List<Point>> lines = data(TIME, List.of(r("26.10.2", 1, 100), r("26.11.1", 2, 150)), TIME2,

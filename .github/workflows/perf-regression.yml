@@ -86,7 +86,8 @@ jobs:
                 });
                 closedBy = full.data.closed_by?.login ?? null;
               }
-              issues.push({number: item.number, state: item.state, closedBy, body: item.body ?? ''});
+              // state_reason 'reopened' tells the gate a maintainer reopened the issue: its recovery streaks start over.
+              issues.push({number: item.number, state: item.state, stateReason: item.state_reason ?? null, closedBy, body: item.body ?? ''});
             }
             fs.writeFileSync('issues.json', JSON.stringify(issues));
             core.info(`${issues.length} regression issues read`);

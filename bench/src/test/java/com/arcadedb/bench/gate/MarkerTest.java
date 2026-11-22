@@ -207,6 +207,22 @@ class MarkerTest {
   }
 
   @Test
+  void aReopenedIssueIsReadFromItsStateReason() throws IOException {
+    final String body = sample().render();
+    final JSONArray issues = new JSONArray();
+    issues.put(new JSONObject().put("number", 1).put("state", "open").put("stateReason", "reopened").put("body", body));
+    issues.put(new JSONObject().put("number", 2).put("state", "open").put("stateReason", JSONObject.NULL).put("body", body));
+    issues.put(new JSONObject().put("number", 3).put("state", "closed").put("stateReason", "completed").put("closedBy", "github-actions[bot]")
+        .put("body", body));
+    issues.put(new JSONObject().put("number", 4).put("state", "open").put("body", body));
+
+    final List<TrackedIssue> read = TrackedIssue.readAll(issuesFile(issues.toString()), new PrintStream(new ByteArrayOutputStream(), true,
+        StandardCharsets.UTF_8));
+
+    assertThat(read).extracting(TrackedIssue::reopened).containsExactly(true, false, false, false);
+  }
+
+  @Test
   void botCloseIsNotAcceptance() throws IOException {
     final String body = sample().render();
     final JSONArray issues = new JSONArray();

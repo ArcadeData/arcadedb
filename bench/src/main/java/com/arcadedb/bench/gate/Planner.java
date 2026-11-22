@@ -36,7 +36,8 @@ import java.util.TreeMap;
  * {@code comment} (one per issue and run, keyed by the run so the workflow upserts it) and {@code close} (carrying its last comment).
  * The plan is a pure function of its inputs, and the state it needs next time is in the markers it writes, so a rerun over the same
  * data plans nothing. For each issue the comments and the close come before the update that moves its marker, so an effect that failed is
- * planned again; an open issue whose lines have all recovered already is closed even without new data.
+ * planned again; an open issue whose lines have all recovered already is closed even without new data, unless a maintainer reopened it:
+ * then its streaks start over.
  */
 public final class Planner {
   static final String LABEL = "performance-regression";
@@ -71,6 +72,10 @@ public final class Planner {
         final Marker copy = Marker.parse(marker.render());
         markers.put(issue.number(), copy);
         rendered.put(issue.number(), copy.render());
+        // a maintainer reopened an issue whose lines had all recovered: it needs new recovered runs before it closes again. An open issue
+        // that was not reopened keeps its streaks, so a close that failed is planned again
+        if (issue.reopened() && PlanEntries.allRecovered(copy))
+          PlanEntries.restartStreaks(copy);
         openByRun.putIfAbsent(runKey(copy.getTrigger(), copy.getRef()), issue.number());
         for (final String id : copy.lineIds())
           openByLine.putIfAbsent(lineKey(copy.getTrigger(), id), issue.number());
