@@ -2770,9 +2770,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       }
     }
 
-    if (error != null)
-      error.call(lastException);
-
+    // the error callback was told about each failed attempt in the retry arm above, the last one included: telling it again here
+    // reported the last failure twice
     throw lastException;
   }
 
