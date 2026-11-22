@@ -1836,6 +1836,12 @@ public class PostgresNetworkExecutor extends Thread {
    * to that accessor's element/content precedence, and narrowing it for issue #5613 silently dropped every
    * flattened column here. Element names come first so the column order matches what this surface has
    * always emitted.
+   * <p>
+   * Fast path: for a plain record row ({@link ResultInternal#isPlainRecordRow(Result)}) the names are the keys of
+   * {@code rowProperties} itself, returned as that map's live {@code keySet()} with no copy and no walk over the record, in the
+   * order the record lists them (issue #13012). It is only valid for such a row; every other shape (a row with values of its own,
+   * a removed property, a subclass, a row without a record) takes the union above. The caller must not change
+   * {@code rowProperties} while it iterates the result.
    *
    * @param rowProperties the row's properties as {@link ResultInternal#propertiesOf(Result)} read them
    */

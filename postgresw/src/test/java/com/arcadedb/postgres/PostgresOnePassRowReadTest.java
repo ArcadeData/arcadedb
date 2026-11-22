@@ -27,8 +27,11 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -136,6 +139,7 @@ class PostgresOnePassRowReadTest extends TestHelper {
       assertThat(PostgresNetworkExecutor.columnValue(row, "@cat", Map.of())).isEqualTo("d");
     });
   }
+
   // Regression: #13012
   @Test
   void theColumnNamesOfARecordRowAreTheKeysOfItsPropertiesNotAnotherWalkOverTheRecord() {
@@ -149,35 +153,118 @@ class PostgresOnePassRowReadTest extends TestHelper {
       final Set<String> names = PostgresNetworkExecutor.columnNamesOf(row, properties);
 
       assertThat(document.headerWalks()).as("the names are the keys of the properties already read").isZero();
-      assertThat(names).containsExactlyElementsOf(document.getPropertyNames());
+      assertThat(names).containsExactlyElementsOf(document.getPropertyNames()).containsExactlyElementsOf(legacyColumnNamesOf(row));
     });
   }
 
   // Regression: #13012
   @Test
-  void theColumnNamesOfEveryOtherShapeOfRowStillListTheRecordAndTheRow() {
+  void aDamagedRecordRowStillAnnouncesTheNameOfTheValueItCannotDecode() {
     database.transaction(() -> {
-      // a row that holds values of its own over the record: the record's names first, then the row's
+      // the single read of the record skips a value it cannot decode: propertiesOf keeps its name, with a null value
+      final CountingImmutableDocument document = new CountingImmutableDocument(database, database.getSchema().getType("Wide"), rid) {
+        @Override
+        public Map<String, Object> toMap(final boolean includeMetadata) {
+          final Map<String, Object> read = super.toMap(includeMetadata);
+          read.remove("p3");
+          return read;
+        }
+      };
+      final ResultInternal row = new ResultInternal(document);
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
+
+      final Set<String> names = PostgresNetworkExecutor.columnNamesOf(row, properties);
+
+      assertThat(properties).containsEntry("p3", null);
+      assertThat(names).containsExactlyElementsOf(recordNames()).containsExactlyElementsOf(legacyColumnNamesOf(row));
+    });
+  }
+
+  // Regression: #13012
+  @Test
+  void aRowThatHoldsValuesOfItsOwnListsTheRecordNamesAndThenItsOwn() {
+    database.transaction(() -> {
       final Map<String, Object> content = new LinkedHashMap<>();
       content.put("extra", 1);
-      final ResultInternal projection = new ResultInternal(content).setElement(database.lookupByRID(rid, true).asDocument());
-      assertThat(PostgresNetworkExecutor.columnNamesOf(projection, ResultInternal.propertiesOf(projection))).contains("p0", "extra");
+      final ResultInternal row = new ResultInternal(content).setElement(database.lookupByRID(rid, true).asDocument());
 
-      // a property removed from the row is still announced, as it always was
-      final ResultInternal removed = new ResultInternal(database.lookupByRID(rid, true).asDocument());
-      removed.removeProperty("p1");
-      assertThat(ResultInternal.propertiesOf(removed)).doesNotContainKey("p1");
-      assertThat(PostgresNetworkExecutor.columnNamesOf(removed, ResultInternal.propertiesOf(removed))).contains("p1", "p0");
-
-      // an excluded property is left out of both
-      final ResultInternal excluded = new ResultInternal(database.lookupByRID(rid, true).asDocument());
-      excluded.setProjectionExcludes(Set.of("p2"));
-      assertThat(PostgresNetworkExecutor.columnNamesOf(excluded, ResultInternal.propertiesOf(excluded))).contains("p0")
-          .doesNotContain("p2");
-
-      // a row with no record at all
-      final ResultInternal plain = new ResultInternal(Map.of("k", 1));
-      assertThat(PostgresNetworkExecutor.columnNamesOf(plain, ResultInternal.propertiesOf(plain))).containsExactly("k");
+      final List<String> expected = new ArrayList<>(recordNames());
+      expected.add("extra");
+      assertThat(columnNamesOfRow(row)).containsExactlyElementsOf(expected).containsExactlyElementsOf(legacyColumnNamesOf(row));
     });
+  }
+
+  // Regression: #13012
+  @Test
+  void aRemovedPropertyIsStillAnnouncedAsItAlwaysWas() {
+    database.transaction(() -> {
+      final ResultInternal row = new ResultInternal(database.lookupByRID(rid, true).asDocument());
+      row.removeProperty("p1");
+
+      assertThat(ResultInternal.propertiesOf(row)).doesNotContainKey("p1");
+      assertThat(columnNamesOfRow(row)).containsExactlyElementsOf(recordNames()).containsExactlyElementsOf(legacyColumnNamesOf(row));
+    });
+  }
+
+  // Regression: #13012
+  @Test
+  void anExcludedPropertyIsLeftOutOfTheColumnNames() {
+    database.transaction(() -> {
+      final ResultInternal row = new ResultInternal(database.lookupByRID(rid, true).asDocument());
+      row.setProjectionExcludes(Set.of("p2"));
+
+      final List<String> expected = new ArrayList<>(recordNames());
+      expected.remove("p2");
+      assertThat(columnNamesOfRow(row)).containsExactlyElementsOf(expected).containsExactlyElementsOf(legacyColumnNamesOf(row));
+    });
+  }
+
+  // Regression: #13012
+  @Test
+  void aRowSubclassStillListsTheRecordNamesAndThenTheRow() {
+    database.transaction(() -> {
+      final ResultInternal row = new ResultInternal(database.lookupByRID(rid, true).asDocument()) {
+        @Override
+        public Set<String> getPropertyNames() {
+          return Set.of("answered by the subclass");
+        }
+      };
+
+      final List<String> expected = new ArrayList<>(recordNames());
+      expected.add("answered by the subclass");
+      assertThat(columnNamesOfRow(row)).containsExactlyElementsOf(expected).containsExactlyElementsOf(legacyColumnNamesOf(row));
+    });
+  }
+
+  // Regression: #13012
+  @Test
+  void aRowWithNoRecordListsItsOwnNames() {
+    final Map<String, Object> content = new LinkedHashMap<>();
+    content.put("k", 1);
+    content.put("a", 2);
+    final ResultInternal row = new ResultInternal(content);
+
+    assertThat(columnNamesOfRow(row)).containsExactly("k", "a").containsExactlyElementsOf(legacyColumnNamesOf(row));
+  }
+
+  private List<String> recordNames() {
+    return new ArrayList<>(database.lookupByRID(rid, true).asDocument().getPropertyNames());
+  }
+
+  private static Set<String> columnNamesOfRow(final Result row) {
+    return PostgresNetworkExecutor.columnNamesOf(row, ResultInternal.propertiesOf(row));
+  }
+
+  /** What {@code columnNamesOf} listed for every row before #13012: the record's names minus the projection's exclusions, then the row's. */
+  private static Set<String> legacyColumnNamesOf(final Result row) {
+    final Set<String> names = new LinkedHashSet<>();
+    if (row.isElement()) {
+      final Set<String> excludes = row instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
+      for (final String name : row.getElement().get().getPropertyNames())
+        if (excludes == null || !excludes.contains(name))
+          names.add(name);
+    }
+    names.addAll(row.getPropertyNames());
+    return names;
   }
 }
