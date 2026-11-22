@@ -20,11 +20,13 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.Transaction;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
@@ -136,14 +138,22 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getOutEdgesHeadChunk() {
-    edgeListHeadsRead |= OUT_HEAD_READ;
+    if (!isReadCovered())
+      edgeListHeadsRead |= OUT_HEAD_READ;
     return outEdges;
   }
 
   /** The head of the incoming list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getInEdgesHeadChunk() {
-    edgeListHeadsRead |= IN_HEAD_READ;
+    if (!isReadCovered())
+      edgeListHeadsRead |= IN_HEAD_READ;
     return inEdges;
+  }
+
+  /** Whether a read now is covered by a predicate the commit checks (TransactionContext#beginCoveredRead). */
+  private boolean isReadCovered() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    return tx != null && tx.isReadCovered();
   }
 
   @Override

@@ -489,6 +489,36 @@ public class MergeStep extends AbstractExecutionStep {
    * MERGE).
    */
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
+    // A single typed relationship between two bound vertices: the relationship created when the walk finds none carries a
+    // MergedEdgeRegistry key, which is what the commit checks against a concurrent MERGE of the same relationship. The edge-list
+    // reads of the walk are covered by it, so they are not reads a concurrent append to either list must refuse the commit for
+    final TransactionContext tx = isCoveredByMergedEdgeKey(pathPattern, baseResult) ? ((DatabaseInternal) context.getDatabase()).getTransactionIfExists() : null;
+    if (tx == null)
+      return findAllMatchingPathsUncovered(pathPattern, baseResult);
+    tx.beginCoveredRead();
+    try {
+      return findAllMatchingPathsUncovered(pathPattern, baseResult);
+    } finally {
+      tx.endCoveredRead();
+    }
+  }
+
+  /**
+   * Whether the relationship {@code pathPattern} creates when no match is found is registered under a MergedEdgeRegistry key: one
+   * typed relationship whose two ends are both bound to vertices, as {@link #createPatternEdge} registers it.
+   */
+  private static boolean isCoveredByMergedEdgeKey(final PathPattern pathPattern, final ResultInternal baseResult) {
+    if (pathPattern.getRelationshipCount() != 1 || !pathPattern.getRelationship(0).hasTypes())
+      return false;
+    for (int i = 0; i < 2; i++) {
+      final String variable = pathPattern.getNode(i).getVariable();
+      if (variable == null || !(baseResult.getProperty(variable) instanceof Vertex))
+        return false;
+    }
+    return true;
+  }
+
+  private List<Result> findAllMatchingPathsUncovered(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
 
     final int anchorIdx = findBoundAnchorIndex(pathPattern, baseResult);

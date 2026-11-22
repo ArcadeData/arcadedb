@@ -242,6 +242,8 @@ public class TransactionContext implements Transaction {
   // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
   // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
   private       int                                  edgeAppendDepth;
+  // Depth of the windows of reads a predicate the commit checks covers, see beginCoveredRead()
+  private       int                                  coveredReadDepth;
   private       MutablePage[]                        deferredReadPages;
   private       int[]                                deferredReadSlots;
   private       int                                  deferredReads;
@@ -3659,7 +3661,7 @@ public class TransactionContext implements Transaction {
    * holds modified is recorded, while it runs: nothing is allocated for any other read.
    */
   public void trackReadFromPage(final BasePage page, final int slot) {
-    if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage()) {
+    if (page instanceof MutablePage mutable && coveredReadDepth == 0 && isTrackingReadsFromOwnImage()) {
       ++ownImageReads;
       if (edgeAppendDepth > 0)
         deferRead(mutable, slot);
@@ -3687,7 +3689,7 @@ public class TransactionContext implements Transaction {
    * where no read is served from the transaction's own image, or by an edge append.
    */
   public void trackEdgeListHeadReadFromOwnImage(final RID vertex, final boolean out) {
-    if (vertex == null || edgeAppendDepth > 0 || !isTrackingReadsFromOwnImage())
+    if (vertex == null || edgeAppendDepth > 0 || coveredReadDepth > 0 || !isTrackingReadsFromOwnImage())
       return;
     if (out) {
       if (outHeadsReadFromOwnImage == null)
@@ -3741,6 +3743,30 @@ public class TransactionContext implements Transaction {
    */
   public MutablePage getOwnImageForTracking(final PageId pageId) {
     return modifiedPages != null && isTrackingReadsFromOwnImage() ? modifiedPages.get(pageId) : null;
+  }
+
+  /**
+   * Opens a window of reads that a predicate the commit checks covers, closed by {@link #endCoveredRead()} in a {@code finally}; nested
+   * windows count. The existence check of a Cypher {@code MERGE} of a relationship between two vertices that are both bound reads the
+   * edge lists of the pair, and what it decides on (the relationship is not there) is protected by the {@link MergedEdgeRegistry} key
+   * {@link #addMergedEdge} puts on the relationship it then creates: a concurrent commit of the same relationship is refused there. The
+   * edge-list reads themselves must then not be recorded as reads of the application: a concurrent append to either list, of any
+   * other relationship, does not change what the check found, and refusing the commit for it made every pair of concurrent batches of
+   * MERGEs that shared a vertex conflict.
+   */
+  public void beginCoveredRead() {
+    ++coveredReadDepth;
+  }
+
+  /** Closes the window {@link #beginCoveredRead()} opened. */
+  public void endCoveredRead() {
+    if (coveredReadDepth > 0)
+      --coveredReadDepth;
+  }
+
+  /** Whether a read now is covered by a predicate the commit checks, see {@link #beginCoveredRead()}. */
+  public boolean isReadCovered() {
+    return coveredReadDepth > 0;
   }
 
   /**
@@ -3803,6 +3829,7 @@ public class TransactionContext implements Transaction {
 
   private void resetEdgeAppendReads() {
     edgeAppendDepth = 0;
+    coveredReadDepth = 0;
     deferredReadPages = null;
     deferredReadSlots = null;
     deferredReads = 0;
@@ -3863,7 +3890,7 @@ public class TransactionContext implements Transaction {
    * edge-append window like the window's page reads.
    */
   private void trackReadOfWrittenChunk(final RID rid) {
-    if (!isTrackingReadsFromOwnImage())
+    if (coveredReadDepth > 0 || !isTrackingReadsFromOwnImage())
       return;
     if (edgeAppendDepth == 0) {
       markChunkRead(rid);
