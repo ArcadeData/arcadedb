@@ -20,8 +20,15 @@ package com.arcadedb.query.select;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.MultiIndexCursor;
+import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.IntHashSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -29,8 +36,11 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12701: a native select answered from an index declared on a supertype read the sub-indexes of the whole hierarchy, so
@@ -342,5 +352,107 @@ class SelectSubtypeIndexScopeTest extends TestHelper {
         database.select().fromType(type).polymorphic(polymorphic).where().property("a").eq().value(1);
     final Select select = where.skip(skip);
     return limit > -1 ? select.limit(limit) : select;
+  }
+
+  // ---- the deadline while out-of-scope entries are skipped, and the release of the source cursor ----
+
+  /** Virtual milliseconds: never compared against a real clock, {@link ExpiredAfterArming} decides when they are exceeded. */
+  private static final long BUDGET_MS = 1_000;
+
+  /**
+   * Reports "no time has passed" when the select arms its deadline, then a time past it on every later reading. The outcome is
+   * a function of the call count alone, the same on a fast, a slow or a stalling machine.
+   */
+  private static final class ExpiredAfterArming implements LongSupplier {
+    private int readings;
+
+    @Override
+    public long getAsLong() {
+      return ++readings <= 1 ? 0 : BUDGET_MS + 1;
+    }
+  }
+
+  /**
+   * {@code W} has no record with {@code a = 2}, so every entry the inherited index answers for that key belongs to another type
+   * and is discarded by the scope filter. The consumers check the deadline only when the filter hands them a record, which it
+   * never does here: without a check inside the filter's skip loop, an expired deadline let it skip the whole sibling population
+   * and answer "no match" instead of the timeout the select asked for.
+   */
+  @Test
+  void everyConsumerHonoursTheDeadlineWhileOutOfScopeEntriesAreSkipped() {
+    database.getSchema().getType("T").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+    for (final String consumer : new String[] { "exists", "count", "iterator" }) {
+      final Select select = database.select().fromType("W").timeout(BUDGET_MS, TimeUnit.MILLISECONDS, true);
+      select.where().property("a").eq().value(2);
+      select.compile();
+      final SelectExecutor executor = new SelectExecutor(select);
+      executor.clock = new ExpiredAfterArming();
+      assertThatThrownBy(() -> {
+        switch (consumer) {
+        case "exists" -> executor.executeExists();
+        case "count" -> executor.executeCount();
+        default -> {
+          try (final SelectIterator<Document> iterator = executor.execute()) {
+            iterator.hasNext();
+          }
+        }
+        }
+      }).as(consumer).isInstanceOf(TimeoutException.class);
+    }
+  }
+
+  @Test
+  void aSelectThatAskedNotToBeThrownAtStopsSkippingOnceTheDeadlineExpired() {
+    database.getSchema().getType("T").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+    final Select select = database.select().fromType("W").timeout(BUDGET_MS, TimeUnit.MILLISECONDS, false);
+    select.where().property("a").eq().value(2);
+    select.compile();
+    final SelectExecutor executor = new SelectExecutor(select);
+    final ExpiredAfterArming clock = new ExpiredAfterArming();
+    executor.clock = clock;
+
+    assertThat(executor.executeExists()).isFalse();
+    // ONE READING ARMS THE DEADLINE, THE NEXT ONE (THE FIRST DISCARDED ENTRY) FINDS IT EXPIRED AND ENDS THE SKIP LOOP: THE REST OF
+    // THE SIBLING ENTRIES ARE NEVER WALKED
+    assertThat(clock.readings).isEqualTo(2);
+  }
+
+  /** A source cursor that remembers whether it was released. */
+  private static final class ClosingCursor extends TempIndexCursor {
+    private boolean closed;
+
+    private ClosingCursor(final List<IndexCursorEntry> entries) {
+      super(entries);
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+    }
+  }
+
+  @Test
+  void closingTheScopedCursorEarlyReleasesItsSource() {
+    final List<IndexCursorEntry> entries = new ArrayList<>();
+    for (int i = 0; i < 4; i++)
+      entries.add(new IndexCursorEntry(new Object[] { i }, new RID(i % 2 == 0 ? 7 : 8, i), 1));
+    final ClosingCursor child = new ClosingCursor(entries);
+    final List<IndexCursor> children = new ArrayList<>();
+    children.add(child);
+
+    final IntHashSet scope = new IntHashSet();
+    scope.add(8);
+    final Select select = database.select().fromType("T");
+    select.compile();
+    final SelectExecutor executor = new SelectExecutor(select);
+    final BucketScopedCursor cursor = new BucketScopedCursor(new MultiIndexCursor(children, -1, true, false), scope, executor);
+
+    // ONLY THE ENTRIES OF BUCKET 8 COME OUT, AND THE CONSUMER STOPS AFTER THE FIRST ONE, LIKE A limit(1) OR AN exists()
+    assertThat(cursor.hasNext()).isTrue();
+    assertThat(cursor.next().getIdentity()).isEqualTo(new RID(8, 1));
+    assertThat(child.closed).isFalse();
+
+    cursor.close();
+    assertThat(child.closed).isTrue();
   }
 }

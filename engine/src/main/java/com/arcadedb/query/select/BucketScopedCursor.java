@@ -30,15 +30,22 @@ import java.util.NoSuchElementException;
  * supertype holds a sub-index per bucket of the whole hierarchy, so the cursor of a select on a subtype (or a non-polymorphic one)
  * also delivers the records of the sibling types and of the subtypes. They are dropped here, by the bucket of their RID and
  * before the record is loaded, so that skip, limit, order by, count and exists of the select all see the scope's records only.
+ * <p>
+ * The run of entries discarded by one {@link #hasNext()} has no bound of its own: a range over a small subtype under a large
+ * supertype index skips every sibling entry in between, and the consumers check the select's deadline only once this cursor
+ * hands them a record. So the deadline is checked here for every discarded entry: an expired one ends the stream (a select
+ * that asked not to be thrown at keeps what it has) or throws, as {@link SelectExecutor#checkForTimeout()} decides.
  */
 final class BucketScopedCursor implements Iterator<Identifiable>, AutoCloseable {
   private final MultiIndexCursor source;
   private final IntHashSet       bucketIds;
+  private final SelectExecutor   executor;
   private       Identifiable     pending;
 
-  BucketScopedCursor(final MultiIndexCursor source, final IntHashSet bucketIds) {
+  BucketScopedCursor(final MultiIndexCursor source, final IntHashSet bucketIds, final SelectExecutor executor) {
     this.source = source;
     this.bucketIds = bucketIds;
+    this.executor = executor;
   }
 
   @Override
@@ -49,6 +56,8 @@ final class BucketScopedCursor implements Iterator<Identifiable>, AutoCloseable 
       final Identifiable candidate = source.next();
       if (candidate != null && bucketIds.contains(candidate.getIdentity().getBucketId()))
         pending = candidate;
+      else if (executor.checkForTimeout())
+        return false;
     }
     return true;
   }

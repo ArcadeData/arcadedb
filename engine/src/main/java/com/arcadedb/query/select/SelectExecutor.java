@@ -433,7 +433,7 @@ public class SelectExecutor {
     final Iterator<? extends Identifiable> iterator;
 
     if (iteratorFromIndexes != null)
-      iterator = bucketScopeFilter != null ? new BucketScopedCursor(iteratorFromIndexes, bucketScopeFilter) : iteratorFromIndexes;
+      iterator = bucketScopeFilter != null ? new BucketScopedCursor(iteratorFromIndexes, bucketScopeFilter, this) : iteratorFromIndexes;
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
