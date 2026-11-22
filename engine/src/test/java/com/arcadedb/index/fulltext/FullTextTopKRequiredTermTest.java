@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * documents, in the same order, with the same scores.
  */
 class FullTextTopKRequiredTermTest extends TestHelper {
+  private int topKQueries;
   private static final int VOCABULARY = 300;
 
   @Test
@@ -57,6 +58,8 @@ class FullTextTopKRequiredTermTest extends TestHelper {
             assertSame(index, query, limit);
       }
     }
+    // most of the queries have several distinct keywords: they must have taken the top-k path, or this test compares nothing
+    assertThat(topKQueries).isGreaterThan(700);
   }
 
   @Test
@@ -93,8 +96,15 @@ class FullTextTopKRequiredTermTest extends TestHelper {
     }
     final List<Map.Entry<RID, Float>> expected = ranked(general, limit);
     assertThat(ranked(top, limit)).as("best %d of %s", limit, query).isEqualTo(expected);
-    // a query of one keyword is a conjunction of terms: the general path answers it, with each bucket's best matches
-    assertThat(top.size()).as("kept for %s", query).isGreaterThanOrEqualTo(expected.size());
+    // The top-k path keeps one best `limit` across buckets. A query with one distinct keyword is a conjunction of terms, which
+    // the general path answers (each bucket's best matches), so there only the ranking is compared.
+    final boolean topK = new FullTextQueryExecutor(FullTextSearch.getBucketIndexes(index).getFirst(),
+        WorkGuard.forCommandDeadline(null), null, null).termShape(query) != null;
+    if (topK)
+      assertThat(top.size()).as("kept for %s", query).isEqualTo(expected.size());
+    else
+      assertThat(top.size()).as("kept for %s", query).isGreaterThanOrEqualTo(expected.size());
+    topKQueries += topK ? 1 : 0;
   }
 
   private static List<Map.Entry<RID, Float>> ranked(final Map<RID, Float> scores, final int limit) {
