@@ -787,6 +787,17 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Whether this transaction has changed nothing so far: no record created, written at once, queued for the commit or
+   * deleted, no page touched and no index entry queued. A read made in such a transaction under READ_COMMITTED answers
+   * what the same read answers outside any transaction, so a read-only statement may keep what it read for its own
+   * duration. A handful of size reads, meant to be asked once per batch of rows and not once per row.
+   */
+  public boolean hasChangedNothing() {
+    return !hasWrittenRecords() && deletedRecordsInTx.isEmpty() && (immediateWrites == null || immediateWrites.isEmpty())
+        && !hasChanges();
+  }
+
+  /**
    * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
    * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
    * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred

@@ -830,7 +830,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public TransactionContext getTransactionIfExists() {
-    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    return transactionOf(DatabaseContext.INSTANCE.getContextIfExists(databasePath));
+  }
+
+  /**
+   * {@link #getTransactionIfExists()} for a caller that holds this thread's context of the database already: the record read
+   * resolves it once for both the open check and the transaction (it was two thread-local look-ups per record read).
+   */
+  private TransactionContext transactionOf(final DatabaseContext.DatabaseContextTL dbContext) {
     if (dbContext != null) {
       final TransactionContext tx = dbContext.getLastTransaction();
       if (tx != null) {
@@ -1295,10 +1302,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Record id is null");
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
-      checkDatabaseIsOpen();
-
-      // CHECK IN TX CACHE FIRST
-      final TransactionContext tx = getTransaction();
+      // CHECK IN TX CACHE FIRST. THE THREAD'S CONTEXT IS RESOLVED ONCE FOR THE OPEN CHECK AND THE TRANSACTION: A GRAPH WALK READS
+      // A RECORD PER ADJACENCY ENTRY, AND THE SECOND THREAD-LOCAL LOOK-UP WAS A VISIBLE SHARE OF IT
+      final TransactionContext tx = transactionOf(checkDatabaseIsOpenAndGetContext(false, null));
+      if (tx == null)
+        throw new TransactionException("Transaction not started on current thread");
       Record record = tx.getRecordFromCache(rid);
       if (record != null)
         return record;
@@ -5323,6 +5331,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
+    checkDatabaseIsOpenAndGetContext(updateIntent, databaseReadOnlyErrorMessage);
+  }
+
+  /** {@link #checkDatabaseIsOpen(boolean, String)}, answering this thread's context of the database it found or created. */
+  private DatabaseContext.DatabaseContextTL checkDatabaseIsOpenAndGetContext(final boolean updateIntent,
+      final String databaseReadOnlyErrorMessage) {
     if (!open)
       throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
     if (fenceReason != null)
@@ -5333,8 +5347,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new DatabaseOperationException(
           "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
               + fenceReason + ")");
-    if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
-      DatabaseContext.INSTANCE.init(this);
+    DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
+    if (context == null)
+      context = DatabaseContext.INSTANCE.init(this);
 
     // #8523: THIS RUNS ON EVERY SCHEMA LOOKUP AND RECORD READ OF EVERY THREAD, SO IT READS THE COARSE CLOCK (A VOLATILE)
     // RATHER THAN THE SYSTEM ONE, AND WRITES THE STAMPS ONLY WHEN THE TICK CHANGED. AN UNCONDITIONAL STORE MADE EACH CORE TAKE
@@ -5351,6 +5366,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     if (lastUsedOn != now)
       lastUsedOn = now;
+    return context;
   }
 
   private void setDefaultValues(final Record record) {
