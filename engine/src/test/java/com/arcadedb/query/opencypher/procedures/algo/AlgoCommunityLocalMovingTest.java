@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -156,12 +157,33 @@ class AlgoCommunityLocalMovingTest {
 
   @Test
   void leidenResolutionSetsTheGranularity() {
-    cliques(2, 4, new int[][] { { 3, 4 } });
-
-    // resolution 0: joining a neighbour always gains, so a connected graph is one community
-    assertThat(groups(communities("algo.leiden('E', 10, 0.0)", "nodeId", "community"))).containsExactly(range(0, 8));
+    // a star: centre 0, leaves 1..5. At resolution 0 the gain of a community is the weight towards it, so a lone leaf always
+    // gains by joining the centre's community and the centre never leaves the community that holds its leaves, whatever
+    // order the nodes are visited in: one community
+    database.transaction(() -> {
+      final MutableVertex centre = database.newVertex("N").set("id", 0).save();
+      for (int i = 1; i <= 5; i++)
+        centre.newEdge("E", database.newVertex("N").set("id", i).save()).save();
+    });
+    assertThat(groups(communities("algo.leiden('E', 10, 0.0)", "nodeId", "community"))).containsExactly(range(0, 6));
     // a huge resolution makes every join lose: singletons
-    assertThat(groups(communities("algo.leiden('E', 10, 1000000.0)", "nodeId", "community"))).hasSize(8);
+    assertThat(groups(communities("algo.leiden('E', 10, 1000000.0)", "nodeId", "community"))).hasSize(6);
+  }
+
+  /**
+   * The tolerance check measures the objective the moves optimise. A triangle 1-2-3 with a pendant 0 on 1, at resolution 0.25:
+   * the first pass leaves {0} and {1, 2, 3}, which a second pass joins. That first pass changes the resolution-0.25 modularity
+   * by more than 0.05 but the standard modularity (resolution 1) by less, so a check at resolution 1 stopped the passes there.
+   */
+  @Test
+  void theToleranceIsMeasuredAtTheResolutionTheMovesOptimise() {
+    final int[][] neighbors = { { 1 }, { 0, 2, 3 }, { 1, 3 }, { 1, 2 } };
+    final double[][] weights = { { 1.0 }, { 1.0, 1.0, 1.0 }, { 1.0, 1.0 }, { 1.0, 1.0 } };
+    final WorkGuard guard = WorkGuard.forDeadline("the test", Long.MAX_VALUE);
+
+    // tolerance 0: the passes run until nothing moves
+    assertThat(AlgoLouvain.detect(neighbors, weights, 100, 0.0, 0.25, guard).community()).containsExactly(0, 0, 0, 0);
+    assertThat(AlgoLouvain.detect(neighbors, weights, 100, 0.05, 0.25, guard).community()).containsExactly(0, 0, 0, 0);
   }
 
   @Test

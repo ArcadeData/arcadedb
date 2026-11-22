@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -27,6 +28,7 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -37,8 +39,10 @@ import java.util.stream.Stream;
  * passes of {@link AlgoLouvain#detect} (a node moves to the neighbouring community that gains most, staying included, until a
  * pass moves nothing or {@code maxIterations} passes ran), followed by a refinement that splits each community into its
  * connected components, which is the guarantee that sets Leiden apart from Louvain (a community that is not connected cannot
- * be well connected). The resolution parameter γ controls community granularity: 0 joins every connected component into one
- * community, a large value leaves every vertex alone.
+ * be well connected). The resolution parameter γ controls community granularity: a lower value favours fewer, larger
+ * communities and a large one leaves every vertex alone. A low value does not promise one community per connected
+ * component: a node moves one at a time and never leaves a community it has more edges into, so two dense groups joined by
+ * an edge can stay apart even at 0.
  * </p>
  * <p>
  * Example:
@@ -110,11 +114,15 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
     final int[] refined = splitIntoConnectedComponents(neighbors, community, guard);
 
     return IntStream.range(0, n).mapToObj(i -> {
+      // a node id a view keeps for a deleted vertex is no vertex: it is isolated, and it has no row (as in algo.louvain)
+      final RID rid = graph.getRID(i);
+      if (rid == null)
+        return null;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", graph.getRID(i));
+      r.setProperty("nodeId", rid);
       r.setProperty("community", refined[i]);
       return (Result) r;
-    });
+    }).filter(Objects::nonNull);
   }
 
   /**
