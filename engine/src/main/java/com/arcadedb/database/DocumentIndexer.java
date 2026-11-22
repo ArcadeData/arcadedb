@@ -18,9 +18,9 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -644,6 +644,25 @@ public class DocumentIndexer {
   }
 
   /**
+   * A record of a type with partitioned bucket selection lives in the bucket its partition key hashes to, so changing the
+   * key would require moving it to another bucket under a new RID: refused. Any other property, indexed or not, may change
+   * (issue #12961: every changed index key used to be refused, because the check compared the wrong lists).
+   */
+  private static void checkPartitionKeyUnchanged(final Document originalRecord, final Document modifiedRecord) {
+    if (!(modifiedRecord.getType().getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy strategy))
+      return;
+
+    final List<String> partitionProperties = strategy.getProperties();
+    for (int i = 0; i < partitionProperties.size(); ++i) {
+      final String name = partitionProperties.get(i);
+      if (!sameKeyValue(getPropertyValue(modifiedRecord, name), getPropertyValue(originalRecord, name)))
+        throw new ValidationException(
+            "Cannot modify the partition key " + partitionProperties + " of a record of type '" + modifiedRecord.getTypeName()
+                + "': its bucket selection is partitioned on it, so the record cannot move to another bucket. Delete it and insert it again");
+    }
+  }
+
+  /**
    * @return a refreshed indexed-state snapshot of {@code modifiedRecord} when at least one index entry was
    *     actually removed/added, or {@code null} when every involved index saw identical key values. The caller
    *     stores the snapshot as the diff source for the NEXT update of the same record inside the same
@@ -672,6 +691,8 @@ public class DocumentIndexer {
     if (rid == null)
       // RECORD IS NOT PERSISTENT
       return null;
+
+    checkPartitionKeyUnchanged(originalRecord, modifiedRecord);
 
     final int totalIndexes = indexes.size();
     // Retained per index for the snapshot build below, so the values extracted for the diff are reused.
@@ -714,13 +735,6 @@ public class DocumentIndexer {
         if (!keyValuesAreModified)
           // SAME VALUES, SKIP INDEX UPDATE
           continue;
-
-        final BucketSelectionStrategy bucketSelectionStrategy = modifiedRecord.getType().getBucketSelectionStrategy();
-        if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy strategy) {
-          if (!List.of(strategy.getProperties())
-              .equals(index.getPropertyNames()))
-            throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
-        }
 
         // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
         index.remove(oldKeyValues, rid);
