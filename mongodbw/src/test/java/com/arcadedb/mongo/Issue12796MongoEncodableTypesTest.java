@@ -22,10 +22,19 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.BsonJavaScript;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.BsonTimestamp;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
+import de.bwaldvogel.mongo.bson.LegacyUUID;
+import de.bwaldvogel.mongo.bson.MaxKey;
+import de.bwaldvogel.mongo.bson.MinKey;
+import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.wire.bson.BsonEncoder;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -34,7 +43,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalTime;
+import java.util.Calendar;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.TimeZone;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -134,6 +153,72 @@ class Issue12796MongoEncodableTypesTest {
     final Document converted = convertedRowWith("bin");
     assertThat(converted.get("bin")).isInstanceOf(BinData.class);
     assertThat(((BinData) converted.get("bin")).getData()).containsExactly(1, 2, 3);
+  }
+
+  @Test
+  void aValueNoPropertyTypeHoldsStillConvertsToWhatTheBsonEncoderTakes() {
+    final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+    calendar.setTimeInMillis(1_700_000_000_000L);
+    final Map<String, Object> row = new LinkedHashMap<>();
+    row.put("big", new BigInteger("12345678901234567890"));
+    row.put("cal", calendar);
+    row.put("objects", new Object[] { 1.5f, (short) 2, "a", new float[] { 0.1f } });
+    row.put("flags", new boolean[] { true, false });
+    row.put("nested", new ResultInternal(Map.<String, Object>of("f", 2.5f)));
+    row.put("rows", List.of(new ResultInternal(Map.<String, Object>of("b", (byte) 4))));
+    row.put("set", new LinkedHashSet<>(List.of((short) 1, (short) 2)));
+    row.put("time", LocalTime.of(10, 30));
+
+    final Document converted = MongoDBToSqlTranslator.convertDocumentToMongoDB(new ResultInternal(row));
+    encode(converted);
+
+    assertThat(converted.get("big")).as("a number stays a number").isEqualTo(new Decimal128(new BigDecimal("12345678901234567890")));
+    assertThat(converted.get("cal")).isEqualTo(Instant.ofEpochMilli(1_700_000_000_000L));
+    assertThat(converted.get("objects")).isEqualTo(List.of(1.5d, 2, "a", List.of(0.1d)));
+    assertThat(converted.get("flags")).isEqualTo(List.of(true, false));
+    assertThat(converted.get("nested")).isEqualTo(new Document("f", 2.5d));
+    assertThat(converted.get("rows")).isEqualTo(List.of(new Document("b", 4)));
+    assertThat(converted.get("set")).isEqualTo(List.of(1, 2));
+    assertThat(converted.get("time")).as("a class with no BSON type reads as its text").isEqualTo("10:30");
+  }
+
+  @Test
+  void aValueTheBsonEncoderTakesIsReturnedAsItIs() {
+    final Map<String, Object> row = new LinkedHashMap<>();
+    row.put("instant", Instant.ofEpochMilli(1_700_000_000_000L));
+    row.put("regex", new BsonRegularExpression("^a", "i"));
+    row.put("timestamp", new BsonTimestamp(42L));
+    row.put("min", MinKey.getInstance());
+    row.put("max", MaxKey.getInstance());
+    row.put("script", new BsonJavaScript("return 1"));
+    row.put("oid", new ObjectId());
+    row.put("bin", new BinData(new byte[] { 1 }));
+    row.put("uuid", UUID.fromString("00000000-0000-0000-0000-000000000001"));
+    row.put("legacy", new LegacyUUID(UUID.fromString("00000000-0000-0000-0000-000000000002")));
+    row.put("decimal", new Decimal128(new BigDecimal("1.5")));
+    row.put("text", "plain");
+    row.put("int", 1);
+    row.put("long", 2L);
+    row.put("double", 3.5d);
+    row.put("bool", true);
+    row.put("nil", null);
+
+    final Document converted = MongoDBToSqlTranslator.convertDocumentToMongoDB(new ResultInternal(row));
+    encode(converted);
+
+    for (final Map.Entry<String, Object> entry : row.entrySet())
+      assertThat(converted.get(entry.getKey())).as(entry.getKey()).isSameAs(entry.getValue());
+    assertThat(converted).hasSize(row.size());
+  }
+
+  private static void encode(final Document converted) {
+    final ByteBuf buffer = Unpooled.buffer();
+    try {
+      // throws IllegalArgumentException("Unknown type: ...") for a class the encoder does not know
+      BsonEncoder.encodeDocument(converted, buffer);
+    } finally {
+      buffer.release();
+    }
   }
 
   private Document convertedRowWith(final String property) {
