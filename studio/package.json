@@ -39,7 +39,7 @@
     "datatables.net-select": "^4.1.1",
     "datatables.net-select-bs5": "^4.1.1",
     "echarts": "^6.1.0",
-    "jquery": "^4.0.0",
+    "jquery": "^4.1.0",
     "swagger-ui-dist": "^5.35.0",
     "sweetalert2": "^11.26.25"
   },
