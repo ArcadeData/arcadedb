@@ -9,6 +9,14 @@ name: Performance regression alerting
 # that lists the issues, runs the gate and prints the plan in the job summary.
 # workflow_dispatch has a dry_run input that defaults to true, so a manual run is a dry
 # run unless dry_run is unticked.
+#
+# Every closed regression issue is passed to the gate, whatever its age: a maintainer close
+# accepts a regression for as long as its baseline is the newest one, which for a release can
+# be months, and a bot close stops the gate from reporting the run it followed again.
+#
+# Each action of the plan is applied on its own: a failure is logged, the issue's later
+# actions are skipped (the plan puts its comment and close before the update that moves its
+# marker, so the next run plans them again) and the job fails at the end.
 
 on:
   schedule:
@@ -39,6 +47,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check out the published benchmark runs
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,7 +71,6 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
             const listed = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner, repo: context.repo.repo,
               labels: 'performance-regression', state: 'all', per_page: 100,
@@ -72,8 +80,7 @@ jobs:
               if (item.pull_request) continue;
               let closedBy = null;
               if (item.state === 'closed') {
-                // The planner trusts every closed issue it is given, so only recent ones are passed.
-                if (!item.closed_at || Date.parse(item.closed_at) < cutoff) continue;
+                // Every closed issue, of any age: who closed it tells an accepted regression from a recovered one.
                 const full = await github.rest.issues.get({
                   owner: context.repo.owner, repo: context.repo.repo, issue_number: item.number,
                 });
@@ -91,8 +98,10 @@ jobs:
           jar="${jars[0]}"
           java -jar "${jar}" gate-pairs --data perf/data --issues issues.json > pairs.txt
           : > bench-changes.ndjson
+          sha='^[0-9a-f]{7,40}$'
           while read -r a b; do
-            [ -n "${a}" ] && [ -n "${b}" ] || continue
+            # The commits come from the published run files: anything but a hex commit id is skipped.
+            [[ "${a}" =~ ${sha} && "${b}" =~ ${sha} ]] || { echo "skipping pair '${a}' '${b}'"; continue; }
             git cat-file -e "${a}^{commit}" 2>/dev/null || continue
             git cat-file -e "${b}^{commit}" 2>/dev/null || continue
             rc=0
@@ -142,24 +151,22 @@ jobs:
               });
             }
 
-            // The planner renders a comment whole for its run; edit the one that carries the run key.
+            // The planner renders a comment whole for its run; edit the bot's comment that carries the run key.
             const upsertComment = async (issue, runKey, body) => {
               const prefix = `<!-- perf-regression-run ${runKey} -->`;
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: issue, per_page: 100,
               });
-              const hit = comments.find(c => (c.body ?? '').startsWith(prefix));
+              const hit = comments.find(c => c.user?.login === 'github-actions[bot]' && (c.body ?? '').startsWith(prefix));
               if (hit) await github.rest.issues.updateComment({owner, repo, comment_id: hit.id, body});
               else await github.rest.issues.createComment({owner, repo, issue_number: issue, body});
             };
 
-            const created = {};
-            for (const action of plan.actions) {
+            const apply = async (action) => {
               if (action.op === 'create') {
                 const res = await github.rest.issues.create({
                   owner, repo, title: action.title, body: action.body, labels: [plan.label],
                 });
-                created[action.key] = res.data.number;
                 core.info(`created #${res.data.number} for ${action.key}`);
               } else if (action.op === 'update') {
                 await github.rest.issues.update({
@@ -181,5 +188,25 @@ jobs:
               } else {
                 throw new Error(`unknown action op ${action.op}`);
               }
+            };
+
+            // One failure must not silence the other alerts. An issue whose comment or close failed keeps
+            // its old marker (its update is skipped), so the next run plans the same effect again.
+            const failedIssues = new Set();
+            let failures = 0;
+            for (const action of plan.actions) {
+              const what = action.op === 'create' ? `create ${action.key}` : `${action.op} #${action.issue}`;
+              if (action.issue !== undefined && failedIssues.has(action.issue)) {
+                core.warning(`skipped ${what}: an earlier action on the issue failed`);
+                continue;
+              }
+              try {
+                await apply(action);
+              } catch (e) {
+                failures++;
+                if (action.issue !== undefined) failedIssues.add(action.issue);
+                core.error(`${what} failed: ${e.message}`);
+              }
             }
-            core.info(`${plan.actions.length} actions applied, ${Object.keys(created).length} issues created`);
+            if (failures > 0) core.setFailed(`${failures} of ${plan.actions.length} actions failed`);
+            else core.info(`${plan.actions.length} actions applied`);
