@@ -110,6 +110,6 @@ public class SQLFunctionGeoBuffer extends SQLFunctionAbstract {
   public String getSyntax() {
     return """
         geo.buffer(<geometry>, <distance>\
-         [, { quadrantSegments: <int>, endCapStyle: 'ROUND|FLAT|SQUARE', joinStyle: 'ROUND|MITRE|BEVEL' }])""";
+         [, { quadrantSegments: <int 1..10000>, endCapStyle: 'ROUND|FLAT|SQUARE', joinStyle: 'ROUND|MITRE|BEVEL' }])""";
   }
 }
