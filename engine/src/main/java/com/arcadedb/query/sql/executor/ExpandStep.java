@@ -192,4 +192,14 @@ public class ExpandStep extends AbstractExecutionStep {
 
     return result;
   }
+
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new ExpandStep(context, alias);
+  }
 }

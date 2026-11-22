@@ -121,4 +121,14 @@ public class LimitExecutionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
+
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new LimitExecutionStep(limit.copy(), context);
+  }
 }

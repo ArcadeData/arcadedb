@@ -225,6 +225,16 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
+  @Override
+  public boolean canBeCached() {
+    return true;
+  }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new DistinctExecutionStep(context);
+  }
+
   /**
    * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
    * This dramatically reduces memory usage compared to storing full Result objects.
