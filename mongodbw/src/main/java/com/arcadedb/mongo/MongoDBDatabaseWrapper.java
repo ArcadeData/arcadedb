@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -40,6 +41,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -51,6 +53,7 @@ import de.bwaldvogel.mongo.backend.CollectionOptions;
 import de.bwaldvogel.mongo.backend.Cursor;
 import de.bwaldvogel.mongo.backend.CursorRegistry;
 import de.bwaldvogel.mongo.backend.DatabaseResolver;
+import de.bwaldvogel.mongo.backend.QueryParameters;
 import de.bwaldvogel.mongo.backend.QueryResult;
 import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
@@ -69,9 +72,11 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.math.BigDecimal;
+import java.security.SecureRandom;
 import java.time.temporal.Temporal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
@@ -141,6 +146,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   protected final Map<String, MongoCollection<Long>> collections    = new ConcurrentHashMap();
   protected final Map<Channel, List<Document>>       lastResults    = new ConcurrentHashMap();
   protected final CursorRegistry                     cursorRegistry = new CursorRegistry();
+  /** The cursors of the {@code find} commands that left rows for a {@code getMore}, by id. */
+  private final Map<Long, MongoFindCursor>           findCursors    = new ConcurrentHashMap<>();
 
   public MongoDBDatabaseWrapper(final Database database, final MongoDBProtocolPlugin plugin, final MongoBackend backend) {
     this.database = database;
@@ -171,6 +178,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       database = live;
       // CLEARED AFTER: A COLLECTION WRAPPER CACHED MEANWHILE WAS BUILT AROUND ONE OF THE TWO, AND GOES EITHER WAY
       collections.clear();
+      // THE CURSORS READ THE INSTANCE JUST REPLACED, WHICH IS CLOSED OR ABOUT TO BE
+      closeAllCursors();
     }
   }
 
@@ -202,6 +211,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // NEED IT. ONLY THE CLOSING CHANNEL'S STATE MUST BE REMOVED: THE COLLECTION CACHE AND OTHER CONNECTIONS' RESULTS ARE
     // SHARED ACROSS ALL CLIENTS (THIS WRAPPER IS CACHED PER-DATABASE IN THE BACKEND).
     lastResults.remove(channel);
+    // a cursor the connection last read from is released with it: nothing would close it before the idle timeout
+    closeCursorsLastReadOn(channel);
   }
 
   @Override
@@ -212,7 +223,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // (ISSUE #10390)
     try {
       if ("find".equalsIgnoreCase(command))
-        return find(document);
+        return find(channel, document);
       else if ("create".equalsIgnoreCase(command))
         return createCollection(document);
       else if ("count".equalsIgnoreCase(command))
@@ -513,11 +524,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   @Override
   public void drop(final Oplog opLog) {
     MongoDBCollectionWrapper.forgetIdIndexes(database);
+    closeAllCursors();
     database.drop();
   }
 
   @Override
   public void dropCollection(final String collectionName, final Oplog opLog) {
+    closeCursorsOf(collectionName);
     database.getSchema().dropType(collectionName);
     MongoDBCollectionWrapper.forgetIdIndex(database, collectionName);
   }
@@ -696,7 +709,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE ? (Number) (int) value : (Number) value;
   }
 
-  private Document find(final Document document) throws MongoServerException {
+  private Document find(final Channel channel, final Document document) throws MongoServerException {
     // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
     MongoCommandFields.check("find", document);
     final Document filter = documentField(document, "filter");
@@ -705,6 +718,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final int limit = this.getOptionalNumber(document, "limit", 0);
     final int skip = this.getOptionalNumber(document, "skip", 0);
     final String collectionName = (String) document.get("find");
+    final long batchSize = cursorBatchSize("find", document);
+    // a negative limit is the legacy way to ask for one batch and no cursor
+    final boolean singleBatch = limit < 0 || Utils.isTrue(document.get("singleBatch"));
 
     // MongoDBCollectionWrapper#handleQuery(QueryParameters) only ever reads an order-by out of the legacy
     // "$orderBy" wire modifier embedded in the query document itself; the modern find command's own "sort" field
@@ -721,17 +737,189 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final Document projectionFields = documentField(document, "projection");
     final MongoProjection projection = projectionFields != null && !projectionFields.isEmpty() ? new MongoProjection(projectionFields) : null;
 
-    final MongoQuery mongoQuery = new MongoQuery(null, null, getFullCollectionNamespace(collectionName), skip, limit, queryPayload, null);
+    final MongoFindCursor cursor = getCollection(collectionName) instanceof MongoDBCollectionWrapper collection ?
+        collection.openCursor(new QueryParameters(queryPayload, skip, limit), projection) :
+        MongoFindCursor.empty();
 
-    final QueryResult result = handleQuery(mongoQuery);
-
-    final List<Document> documents = new ArrayList<>();
-    for (Iterator<Document> it = result.iterator(); it.hasNext(); ) {
-      final Document next = it.next();
-      documents.add(projection != null ? projection.apply(next) : next);
+    // what mongod answers first: the batch size when the command names one, else one batch holding the limit when it asks for a
+    // single batch, else 101 documents. The rest of the rows is read by the getMore commands, if the client asks for them
+    final long firstBatch = batchSize >= 0L ? batchSize : singleBatch && limit != 0 ? Math.abs((long) limit) : MongoFindCursor.DEFAULT_FIRST_BATCH;
+    final List<Document> documents;
+    final long cursorId;
+    try {
+      documents = cursor.takeBatch((int) Math.min(firstBatch, Integer.MAX_VALUE), MongoFindCursor.MAX_BATCH_BYTES);
+      // the cursor stays open for the rows the first batch did not take, unless it is exhausted or the client wants no more
+      cursorId = !singleBatch && !cursor.isDrained() ?
+          registerCursor(cursor, channel, collectionName, Utils.isTrue(document.get("noCursorTimeout"))) :
+          0L;
+    } catch (final RuntimeException | Error e) {
+      cursor.close();
+      throw e;
     }
+    if (cursorId == 0L)
+      cursor.close();
 
-    return firstBatchCursorResponse(collectionName, "firstBatch", documents, 0);
+    return firstBatchCursorResponse(collectionName, "firstBatch", documents, cursorId);
+  }
+
+  /**
+   * The batch size of a {@code find} or {@code getMore}, {@code -1} when the command names none: a negative one is refused as
+   * mongod refuses it.
+   */
+  private static long cursorBatchSize(final String command, final Document document) {
+    final Object value = document.get("batchSize");
+    if (value == null)
+      return -1L;
+    if (!(value instanceof Number number))
+      throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch",
+          "BSON field '" + command + ".batchSize' is the wrong type '" + typeName(value) + "', expected type 'number'");
+    final long size = number.longValue();
+    if (size < 0L)
+      throw new MongoServerError(ErrorCode.BadValue.getValue(), ErrorCode.BadValue.name(),
+          "BSON field '" + command + ".batchSize' value must be >= 0, actual value '" + size + "'");
+    return size;
+  }
+
+  // ---- the cursors a find leaves open between its batches
+
+  /** How long a cursor nobody reads from is kept: what mongod keeps an idle one. */
+  static final long CURSOR_IDLE_NANOS = TimeUnit.MINUTES.toNanos(10);
+  /** How many cursors a database keeps open: the one idle for the longest is closed to make room, so a client cannot hoard them. */
+  static final int  MAX_OPEN_CURSORS  = 1024;
+
+  private static final SecureRandom CURSOR_IDS = new SecureRandom();
+
+  private long registerCursor(final MongoFindCursor cursor, final Channel channel, final String collectionName,
+      final boolean noTimeout) {
+    final long now = System.nanoTime();
+    purgeIdleCursors(now);
+    while (findCursors.size() >= MAX_OPEN_CURSORS && closeLeastRecentlyUsedCursor()) {
+    }
+    // a random id: the next one cannot be guessed from the last, and cannot be one of the sequential ids the library hands out
+    long id;
+    do {
+      id = CURSOR_IDS.nextLong() & Long.MAX_VALUE;
+    } while (id == 0L || findCursors.putIfAbsent(id, cursor) != null);
+    cursor.register(id, currentUserName(), collectionName, noTimeout, channel, now);
+    return id;
+  }
+
+  /** The name of the user the request in progress runs as, {@code null} when there is none (an embedded call). */
+  private String currentUserName() {
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final SecurityDatabaseUser user = context != null ? context.getCurrentUser() : null;
+    return user != null ? user.getName() : null;
+  }
+
+  /** The cursor of the user in progress with this id, or {@code null} when this database holds no such cursor for that user. */
+  private MongoFindCursor ownCursor(final long id) {
+    final MongoFindCursor cursor = findCursors.get(id);
+    return cursor != null && Objects.equals(cursor.getOwner(), currentUserName()) ? cursor : null;
+  }
+
+  /**
+   * Serves a {@code getMore} for a cursor of a {@code find}: the next batch, and the cursor id while rows are left.
+   *
+   * @return the reply, or {@code null} when the id is not the cursor of a {@code find} of this database (the library serves it)
+   */
+  Document getMore(final Channel channel, final Document command) {
+    final Object idValue = command.get("getMore");
+    if (!(idValue instanceof Number number))
+      return null;
+    final long id = number.longValue();
+    final MongoFindCursor cursor = ownCursor(id);
+    if (cursor == null)
+      return null;
+    final String collectionName = String.valueOf(command.get("collection"));
+    if (!collectionName.equals(cursor.getCollection()))
+      throw new MongoServerError(13, "Unauthorized", "Requested getMore on namespace '" + getFullCollectionNamespace(collectionName)
+          + "', but cursor " + id + " belongs to namespace '" + getFullCollectionNamespace(cursor.getCollection()) + "'");
+    final long batchSize = cursorBatchSize("getMore", command);
+
+    // a getMore asks for a positive batch size, or none: none (and 0, which the library reads as none) is a batch as big as a reply may be
+    final int maxDocuments = batchSize > 0L ? (int) Math.min(batchSize, Integer.MAX_VALUE) : Integer.MAX_VALUE;
+    final List<Document> documents;
+    final boolean exhausted;
+    synchronized (cursor) {
+      if (cursor.isClosed() || findCursors.get(id) != cursor)
+        // killed (or reaped) between the lookup and here
+        return null;
+      try {
+        documents = cursor.takeBatch(maxDocuments, MongoFindCursor.MAX_BATCH_BYTES);
+        exhausted = cursor.isDrained();
+      } catch (final RuntimeException | Error e) {
+        findCursors.remove(id, cursor);
+        cursor.close();
+        throw e;
+      }
+      cursor.touch(channel, System.nanoTime());
+    }
+    if (exhausted)
+      findCursors.remove(id, cursor);
+    return firstBatchCursorResponse(collectionName, "nextBatch", documents, exhausted ? 0L : id);
+  }
+
+  /**
+   * Closes the cursors of {@code find} this database holds for the user in progress among {@code ids}.
+   *
+   * @return the ids it closed, in {@code killed}, and the ones it holds no cursor of for that user, in {@code notFound}
+   */
+  void killCursors(final List<?> ids, final List<Object> killed, final List<Object> notFound) {
+    for (final Object idValue : ids) {
+      final MongoFindCursor cursor = idValue instanceof Number number ? ownCursor(number.longValue()) : null;
+      if (cursor != null && findCursors.remove(((Number) idValue).longValue(), cursor)) {
+        cursor.close();
+        killed.add(idValue);
+      } else
+        notFound.add(idValue);
+    }
+  }
+
+  /** Closes the cursors that have not been read from for {@link #CURSOR_IDLE_NANOS} as of {@code nowNanos}. */
+  void purgeIdleCursors(final long nowNanos) {
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
+      if (!entry.getValue().isNoTimeout() && nowNanos - entry.getValue().getLastUsedNanos() > CURSOR_IDLE_NANOS
+          && findCursors.remove(entry.getKey(), entry.getValue()))
+        entry.getValue().close();
+  }
+
+  private boolean closeLeastRecentlyUsedCursor() {
+    Map.Entry<Long, MongoFindCursor> oldest = null;
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
+      if (oldest == null || entry.getValue().getLastUsedNanos() - oldest.getValue().getLastUsedNanos() < 0L)
+        oldest = entry;
+    if (oldest == null)
+      return false;
+    if (findCursors.remove(oldest.getKey(), oldest.getValue()))
+      oldest.getValue().close();
+    return true;
+  }
+
+  /** Closes every cursor of this database, for the instance they read is replaced. */
+  private void closeAllCursors() {
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
+      if (findCursors.remove(entry.getKey(), entry.getValue()))
+        entry.getValue().close();
+  }
+
+  private void closeCursorsOf(final String collectionName) {
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
+      if (collectionName.equals(entry.getValue().getCollection()) && findCursors.remove(entry.getKey(), entry.getValue()))
+        entry.getValue().close();
+  }
+
+  private void closeCursorsLastReadOn(final Channel channel) {
+    // an embedded call has no channel, and no connection to close
+    if (channel == null)
+      return;
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
+      if (entry.getValue().getChannel() == channel && findCursors.remove(entry.getKey(), entry.getValue()))
+        entry.getValue().close();
+  }
+
+  /** How many cursors of {@code find} are open. */
+  int openCursors() {
+    return findCursors.size();
   }
 
   /**

@@ -45,6 +45,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -135,6 +136,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
   @Override
   protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
     return new MongoDBDatabaseWrapper(databaseForClient(databaseName), plugin, this);
+  }
+
+  /** The wrapper that serves a database, whichever connection it was opened for. */
+  MongoDBDatabaseWrapper wrapperOf(final String databaseName) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper ? wrapper : null;
   }
 
   /**
@@ -237,8 +243,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
       // A cursor continuation is not admitted: it only serves the rows its find already read, and refusing it would break a
       // cursor the client cannot resume
       final boolean admit = !"getmore".equals(normalizedCommand) && !"killcursors".equals(normalizedCommand);
-      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> super.handleCommand(channel,
-          databaseName, command, query));
+      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> handleCommandOrCursor(channel,
+          databaseName, command, normalizedCommand, query));
     }
 
     // The virtual admin database: the handshake commands stay public, anything else (listDatabases, renameCollection,
@@ -249,6 +255,43 @@ public class MongoDBBackend extends AbstractMongoBackend {
       if (("dropdatabase".equals(normalizedCommand) || "getmore".equals(normalizedCommand)) && !user.canAccessToDatabase(
           databaseName))
         throw notAuthorizedOn(user, databaseName);
+    }
+    return super.handleCommand(channel, databaseName, command, query);
+  }
+
+  /**
+   * A {@code getMore} or {@code killCursors} on a cursor of a {@code find} is served by the database that holds it, for the user that
+   * opened it; anything else (a change stream's cursor, an unknown id) is the library's.
+   */
+  private Document handleCommandOrCursor(final Channel channel, final String databaseName, final String command,
+      final String normalizedCommand, final Document query) {
+    if ("getmore".equals(normalizedCommand)) {
+      if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+        final Document reply = wrapper.getMore(channel, query);
+        if (reply != null)
+          return reply;
+      }
+    } else if ("killcursors".equals(normalizedCommand) && query.get("cursors") instanceof List<?> ids
+        && resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+      final List<Object> killed = new ArrayList<>();
+      final List<Object> notFound = new ArrayList<>();
+      wrapper.killCursors(ids, killed, notFound);
+      if (!notFound.isEmpty()) {
+        // what is not a cursor of a find: the library closes its own kinds, and tells the ones it does not know
+        final Document rest = new Document();
+        rest.putAll(query);
+        rest.put("cursors", notFound);
+        final Document reply = super.handleCommand(channel, databaseName, command, rest);
+        if (reply.get("cursorsKilled") instanceof List<?> libraryKilled)
+          killed.addAll(libraryKilled);
+        reply.put("cursorsKilled", killed);
+        return reply;
+      }
+      final Document reply = new Document();
+      reply.put("cursorsKilled", killed);
+      reply.put("cursorsNotFound", notFound);
+      Utils.markOkay(reply);
+      return reply;
     }
     return super.handleCommand(channel, databaseName, command, query);
   }
