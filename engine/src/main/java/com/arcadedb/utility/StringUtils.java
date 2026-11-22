@@ -32,6 +32,27 @@ import java.util.Locale;
 public class StringUtils {
 
   /**
+   * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
+   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
+   * turn eight characters of query text into a 100MB string (issue #6389).
+   */
+  public static final int MAX_FORMAT_WIDTH = 1_000_000;
+
+  /**
+   * Most characters the specifiers of one user-supplied format may add together, on top of the text the caller already
+   * holds: the pattern itself and one copy of each argument that is text. {@link #MAX_FORMAT_WIDTH} bounds one specifier,
+   * and a pattern is free to repeat it: a thousand {@code %1000000s} are 9KB of query asking for a gigabyte, and
+   * {@code %1$s%1$s...} writes a long argument once per five characters of pattern (issue #12880). Sixteen full-width
+   * fields, so that no pattern with a single wide field, or a handful of them, is refused.
+   */
+  public static final int MAX_FORMAT_OUTPUT = 16 * MAX_FORMAT_WIDTH;
+
+  // What a conversion of a number, a boolean or a character writes at most, sign, exponent and separators included
+  private static final int SCALAR_TEXT_SIZE = 32;
+  // The longest date/time conversion (%tc) with a long zone name
+  private static final int TEMPORAL_TEXT_SIZE = 48;
+
+  /**
    * Strict boolean parse for configuration text: {@code Boolean.parseBoolean()} reads "yes", "1", "on" and every typo as
    * false without a word, which for a switch whose safe side is true (TLS) silently turns the protection off. Only
    * {@code true} and {@code false} are accepted, trimmed and case-insensitively (issue #8935).
@@ -84,27 +105,6 @@ public class StringUtils {
     }
     return previous[b.length()];
   }
-
-  /**
-   * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
-   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
-   * turn eight characters of query text into a 100MB string (issue #6389).
-   */
-  public static final int MAX_FORMAT_WIDTH = 1_000_000;
-
-  /**
-   * Most characters the specifiers of one user-supplied format may add together, on top of the text the caller already
-   * holds: the pattern itself and one copy of each argument that is text. {@link #MAX_FORMAT_WIDTH} bounds one specifier,
-   * and a pattern is free to repeat it: a thousand {@code %1000000s} are 9KB of query asking for a gigabyte, and
-   * {@code %1$s%1$s...} writes a long argument once per five characters of pattern (issue #12880). Sixteen full-width
-   * fields, so that no pattern with a single wide field, or a handful of them, is refused.
-   */
-  public static final int MAX_FORMAT_OUTPUT = 16 * MAX_FORMAT_WIDTH;
-
-  // What a conversion of a number, a boolean or a character writes at most, sign, exponent and separators included
-  private static final int SCALAR_TEXT_SIZE = 32;
-  // The longest date/time conversion (%tc) with a long zone name
-  private static final int TEMPORAL_TEXT_SIZE = 48;
 
   protected StringUtils() {
   }
