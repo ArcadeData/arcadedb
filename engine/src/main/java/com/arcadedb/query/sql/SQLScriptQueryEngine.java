@@ -191,7 +191,10 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           if (blockDepth > 0)
             blockDepth--;
           retryBlock |= commit.getRetry() != null;
-        } else if (blockDepth == 0 && !statement.isIdempotent())
+        } else if (statement instanceof RollbackStatement && blockDepth > 0)
+          // ISSUE #12797: A ROLLBACK closes its BEGIN block as executeInternal plans it, so what follows is outside that block
+          blockDepth--;
+        else if (blockDepth == 0 && !statement.isIdempotent())
           return false;
       }
       return retryBlock;
@@ -213,6 +216,17 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
   public boolean isExecutedByTheLeader() {
     // REPLICATE THE SCRIPT TO THE LEADER
     return true;
+  }
+
+  /**
+   * Plans the statements of a closed {@code BEGIN ...} block one after the other and answers the empty list the next block collects
+   * into. Issue #8633: the block is planned, so it must not be planned again by the next one.
+   */
+  private static List<Statement> planBlock(final ScriptExecutionPlan plan, final List<Statement> block,
+      final CommandContext scriptContext) {
+    for (final Statement statement : block)
+      plan.chain(statement.createExecutionPlan(scriptContext));
+    return new ArrayList<>();
   }
 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
@@ -256,22 +270,26 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
               plan.chain(retryPlan);
               lastRetryBlock = new ArrayList<>();
             } else {
-              for (final Statement statement : lastRetryBlock) {
-                final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-                plan.chain(sub);
-              }
-              // ISSUE #8633: THE BLOCK IS PLANNED, SO IT MUST NOT BE PLANNED AGAIN BY THE NEXT ONE
-              lastRetryBlock = new ArrayList<>();
+              lastRetryBlock = planBlock(plan, lastRetryBlock, scriptContext);
             }
           }
         } else
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
+      } else if (stm instanceof RollbackStatement && nestedTxLevel > 0) {
+        // ISSUE #12797: A ROLLBACK ends the transaction its BEGIN started as a COMMIT does, so the block is planned as it stands.
+        // Left open, the count never returned to 0 and every statement from the BEGIN on was dropped without a word
+        nestedTxLevel--;
+        if (nestedTxLevel == 0)
+          lastRetryBlock = planBlock(plan, lastRetryBlock, scriptContext);
       }
 
       if (stm instanceof LetStatement letStatement) {
         scriptContext.declareScriptVariable(letStatement.getVariableName().getStringValue());
       }
     }
+
+    if (nestedTxLevel > 0)
+      throw new CommandSQLParsingException("Found BEGIN statement without a COMMIT or ROLLBACK");
 
     return new LocalResultSet(plan);
   }
