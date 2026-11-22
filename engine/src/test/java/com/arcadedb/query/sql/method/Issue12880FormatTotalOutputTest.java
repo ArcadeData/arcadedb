@@ -150,6 +150,49 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
         String.format(Locale.ROOT, "%1$d %1$s %1$x %1$,d", small));
   }
 
+  @Test
+  void anUpperCasedArgumentCountsForWhatItGrowsTo() {
+    // 'ß' is printed as 'SS' by %S: two million characters each time, of which the argument holds one million once
+    final String text = "ß".repeat(WIDTH);
+    assertThatThrownBy(() -> StringUtils.format("format", "%1$S".repeat(FIELDS / 2 + 1), text)).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("more than " + StringUtils.MAX_FORMAT_OUTPUT);
+    assertThatThrownBy(() -> StringUtils.format("format", "%1$s" + "%1$S".repeat(FIELDS / 2 + 1), text)).isInstanceOf(
+        IllegalArgumentException.class);
+    assertThatThrownBy(() -> StringUtils.format("format", "%1$S".repeat(FIELDS / 2 + 1), List.of(text))).isInstanceOf(
+        IllegalArgumentException.class);
+    // A short one is printed: the formatter itself takes minutes to upper-case a million of them
+    final String brief = "ß".repeat(1_000);
+    assertThat(StringUtils.format("format", "%1$S%1$S|%1$s", brief)).isEqualTo("SS".repeat(2_000) + "|" + brief);
+
+    // The precision truncates before the case is changed
+    assertThat(StringUtils.format("format", "%1$.5S".repeat(100_000), text)).hasSize(1_000_000);
+
+    // Text that is no longer in upper case is counted as it was
+    final String plain = "a".repeat(WIDTH);
+    assertThat(StringUtils.format("format", "%1$S".repeat(FIELDS + 1), plain)).hasSize((FIELDS + 1) * WIDTH);
+    assertThatThrownBy(() -> StringUtils.format("format", "%1$S".repeat(FIELDS + 2), plain)).isInstanceOf(
+        IllegalArgumentException.class);
+  }
+
+  @Test
+  void aNullArgumentArrayIsCountedAsNullArguments() {
+    // The formatter prints 'null' for every specifier of a null array, padded to the width
+    assertThatThrownBy(() -> StringUtils.format("format", ("%" + WIDTH + "s").repeat(FIELDS + 1), (Object[]) null)).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("more than " + StringUtils.MAX_FORMAT_OUTPUT);
+    assertThat(StringUtils.format("format", "%6s|%s|%b", (Object[]) null)).isEqualTo(
+        String.format(Locale.ROOT, "%6s|%s|%b", (Object[]) null));
+  }
+
+  @Test
+  void theGroupingOfAGeneralScientificFieldCountsItsPrecision() {
+    // %g prints as many integer digits as its precision, and one separator every three of them
+    assertThatThrownBy(
+        () -> StringUtils.format("format", ("%1$,." + WIDTH + "g").repeat(FIELDS - 1), new BigDecimal("1E+999999"))).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("more than " + StringUtils.MAX_FORMAT_OUTPUT);
+    assertThat(StringUtils.format("format", "%1$,.10g %1$,g", 1234567.5d)).isEqualTo(
+        String.format(Locale.ROOT, "%1$,.10g %1$,g", 1234567.5d));
+  }
+
   // Formats strings of 17MB and 34MB for real
   @Test
   @Tag("slow")
@@ -194,9 +237,9 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
     final BigInteger integer = BigInteger.TEN.pow(60).negate();
     final String text = "some text";
     final Object[] args = { decimal, integer, text, 1e308d, -Float.MAX_VALUE, Long.MIN_VALUE, true, 'c', new Date(0),
-        List.of("a", "b"), null, Double.NaN };
-    final String[] specifiers = { "%1$f", "%1$,.20f", "%1$s", "%1$e", "%1$g", "%1$,.3f", "%2$d", "%2$,d", "%2$o", "%2$x", "%2$s",
-        "%2$(,d", "%3$s", "%3$S", "%3$20s", "%3$.3s", "%3$b", "%3$h", "%4$f", "%4$,f", "%4$.0f", "%4$e", "%4$a", "%4$g", "%4$s",
+        List.of("a", "b"), null, Double.NaN, "straße ﬃ" };
+    final String[] specifiers = { "%1$f", "%1$,.20f", "%1$s", "%1$e", "%1$g", "%1$,.40g", "%1$,.3f", "%2$d", "%2$,d", "%2$o", "%2$x", "%2$s",
+        "%2$(,d", "%3$s", "%3$S", "%13$S", "%13$.2S", "%3$20s", "%3$.3s", "%3$b", "%3$h", "%4$f", "%4$,f", "%4$.0f", "%4$e", "%4$a", "%4$g", "%4$s",
         "%5$f", "%5$,.10f", "%6$d", "%6$,d", "%6$o", "%6$x", "%6$s", "%6$+,20d", "%7$b", "%7$s", "%8$c", "%8$s", "%9$tc", "%9$tF",
         "%9$tA %9$tB", "%9$s", "%10$s", "%10$30s", "%11$s", "%11$b", "%11$d", "%11$f", "%12$f", "%12$e", "%12$s", "%-5%" };
 
@@ -245,6 +288,9 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
     final String wide = ("%1$" + WIDTH + "s").repeat(FIELDS + 1);
     assertThatThrownBy(() -> validate.execute(new Object[] { true, wide, List.of("x") }, null)).isInstanceOf(
         IllegalArgumentException.class).hasMessage(wide + " [x]");
+    // That one is turned away by util.validate's own width check: a pattern with no width reaches the shared ceiling
+    assertThatThrownBy(() -> validate.execute(new Object[] { true, pattern, List.of("x".repeat(WIDTH)) }, null)).isInstanceOf(
+        IllegalArgumentException.class).hasMessageStartingWith(pattern + " [xxx");
   }
 
   @Test

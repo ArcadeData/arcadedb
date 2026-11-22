@@ -51,6 +51,8 @@ public class StringUtils {
   private static final int SCALAR_TEXT_SIZE = 32;
   // The longest date/time conversion (%tc) with a long zone name
   private static final int TEMPORAL_TEXT_SIZE = 48;
+  // The characters upper-cased at a time to measure what %S writes
+  private static final int UPPER_CASE_PIECE = 1024;
 
   /**
    * Strict boolean parse for configuration text: {@code Boolean.parseBoolean()} reads "yes", "1", "on" and every typo as
@@ -180,7 +182,7 @@ public class StringUtils {
     if (format == null)
       throw new IllegalArgumentException(caller + "() requires a non-null format");
 
-    checkFormat(caller, format, args);
+    checkFormat(caller, locale, format, args);
 
     try {
       return String.format(locale, format, args);
@@ -213,7 +215,7 @@ public class StringUtils {
    * {@code %s} over a string of any length formats as it always did, and the output stays under the pattern, plus one
    * copy of such arguments, plus the ceiling.
    */
-  private static void checkFormat(final String caller, final String format, final Object[] args) {
+  private static void checkFormat(final String caller, final Locale locale, final String format, final Object[] args) {
     // The argument index of the last specifier without an explicit index, and of the last specifier of any kind.
     long ordinary = -1;
     long last = -1;
@@ -226,6 +228,10 @@ public class StringUtils {
     // The last argument whose text had to be built to be measured, so that '%1$s%1$s%1$s' builds it once.
     long measured = -1;
     long measuredSize = 0;
+    // The last argument upper-cased to be measured, its length and what the upper case adds to it
+    long upperCased = -1;
+    long upperCasedFrom = 0;
+    long upperCasedGrowth = 0;
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
         continue;
@@ -293,8 +299,9 @@ public class StringUtils {
           // The '<' flag wins over an explicit index, and leaves both counters where they were.
           if (!previous)
             last = explicit > 0 ? explicit - 1 : ++ordinary;
-          if (args != null && last >= 0 && last < args.length) {
-            final Object arg = args[(int) last];
+          // A null array is not a missing argument for the formatter: every specifier prints null
+          if (last >= 0 && (args == null || last < args.length)) {
+            final Object arg = args == null ? null : args[(int) last];
             if (conversion == 'f' && arg instanceof BigDecimal decimal)
               checkPlainDigits(caller, format, decimal);
 
@@ -313,7 +320,19 @@ public class StringUtils {
             }
 
             long size;
-            if (isTextBuiltToBeMeasured(kind, arg)) {
+            // What the upper case adds to the text: 'ß' is printed as 'SS' by %S, on the first print as on any other
+            long growth = 0;
+            if (conversion == 'S' && isUpperCasedText(arg)) {
+              // Only the upper-cased text says how long it is, so it is measured, once
+              if (upperCased != last) {
+                final String text = String.valueOf(arg);
+                upperCasedFrom = text.length();
+                upperCasedGrowth = upperCaseGrowth(text, locale != null ? locale : Locale.getDefault(Locale.Category.FORMAT));
+                upperCased = last;
+              }
+              size = upperCasedFrom;
+              growth = upperCasedGrowth;
+            } else if (isTextBuiltToBeMeasured(kind, arg)) {
               // Only its text says how long it is. The first print is not counted, so it is not built for it, and the
               // padding is then counted in full.
               if (firstPrint)
@@ -332,16 +351,19 @@ public class StringUtils {
               // The precision truncates
               if (precise)
                 size = Math.min(size, precision);
+              // The case changes after the truncation, and a character becomes three at most
+              growth = Math.min(growth, 2 * size);
             } else if (kind != 'c' && kind != 't') {
+              // One separator every three integer digits, which for %g are as many as the precision
               if (grouping)
-                size += size / 3;
+                size += kind == 'g' ? (precise ? precision : 6) / 3 : size / 3;
               // For a floating-point conversion the precision is the number of fraction digits, six when the pattern
               // names none
               if (kind != 'd' && kind != 'o' && kind != 'x')
                 size += precise ? precision : 6;
             }
 
-            final long written = Math.max(width, size);
+            final long written = Math.max(width, size + growth);
             total += firstPrint ? written - size : written;
           }
         }
@@ -365,6 +387,26 @@ public class StringUtils {
     if (kind == 's')
       return arg != null && !isScalar(arg);
     return arg instanceof BigInteger && (kind == 'd' || kind == 'o' || kind == 'x');
+  }
+
+  /** Whether {@code %S} changes the case of text that may not be ASCII: a number, a boolean and null print as they are long. */
+  private static boolean isUpperCasedText(final Object arg) {
+    return arg != null && !(arg instanceof Number) && !(arg instanceof Boolean);
+  }
+
+  /**
+   * The characters the upper case adds to a text. Taken a piece at a time: {@code String.toUpperCase} extends its buffer
+   * by a character for each one that becomes two, copying it whole, which a long run of them makes quadratic. A piece
+   * that ends inside a sequence the locale would shorten only measures a character more.
+   */
+  private static long upperCaseGrowth(final String text, final Locale locale) {
+    final int length = text.length();
+    long growth = 0;
+    for (int from = 0; from < length; from += UPPER_CASE_PIECE) {
+      final int to = Math.min(from + UPPER_CASE_PIECE, length);
+      growth += text.substring(from, to).toUpperCase(locale).length() - (to - from);
+    }
+    return Math.max(growth, 0);
   }
 
   /** Whether the size of what {@code %s} prints is known only by building it: anything but text and numbers. */
