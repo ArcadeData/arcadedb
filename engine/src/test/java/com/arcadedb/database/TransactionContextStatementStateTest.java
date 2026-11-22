@@ -105,6 +105,9 @@ class TransactionContextStatementStateTest {
     // which run in the worker's transaction and in no statement. A note a taken-back statement left could only exempt from the delete
     // refusal a record whose slot the page restore put back as it was
     CLASSIFICATION.put("immediateWrites", NOT_STATEMENT_STATE);
+    // Issue #12483: the type of the last new relationship asked whether it has an exact-key index, a cache of that answer. The commit
+    // reads the relationships it marks from newRecords, which a statement taken back truncates
+    CLASSIFICATION.put("lastNewEdgeType", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction
@@ -113,6 +116,9 @@ class TransactionContextStatementStateTest {
     // Issue #11937: work that reads what the commit writes, whatever statements were taken back: a callback a statement registered
     // and then lost is run all the same, and reads the state the commit writes
     CLASSIFICATION.put("beforeCommitCallbacks", NOT_STATEMENT_STATE);
+    // Issue #12251: the callbacks a concluded transaction owes while its commit defers them, set when the transaction concludes and
+    // taken by the commit's driver, never by a statement
+    CLASSIFICATION.put("deferredCallbacks", NOT_STATEMENT_STATE);
 
     // What a statement reads or the commit writes, and the services of the context
     CLASSIFICATION.put("database", NOT_STATEMENT_STATE);
