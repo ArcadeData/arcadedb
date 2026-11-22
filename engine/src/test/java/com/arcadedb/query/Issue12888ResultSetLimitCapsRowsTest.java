@@ -22,9 +22,13 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.SQLQueryEngine;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -295,6 +299,66 @@ class Issue12888ResultSetLimitCapsRowsTest {
     for (final Iterator<Record> all = database.iterateType("Item", true); all.hasNext(); all.next())
       ++count;
     assertThat(count).isEqualTo(RECORDS);
+  }
+
+  /**
+   * A WHERE of a user under a quota reads past the quota now, so the readTimeout of the group is what bounds it: the scan that
+   * goes on after the pause is refused, where the scan cap used to end it without a word.
+   */
+  @Test
+  void theReadTimeoutInterruptsTheSqlScanOfACappedUser() {
+    bindUser(quota(QUOTA, 1L));
+    // the two rows the quota lets through are the last two of the scan: every record is read to find them
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT k FROM Item WHERE k >= " + (RECORDS - 1))) {
+        // THE DEADLINE IS PINNED BY THE FIRST PULL, AND THE PAUSE OUTLASTS IT WHEREVER THE SCAN HAS GOT TO BY THEN
+        if (rs.hasNext())
+          rs.next();
+        Thread.sleep(50);
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(TimeoutException.class);
+  }
+
+  /**
+   * An aggregate of a user under a quota reads every record as well, in one pull that answers one row: with a filter that outlasts
+   * the readTimeout the statement fails, and answers no sum over the part of the type it had read.
+   */
+  @Test
+  void theReadTimeoutInterruptsTheSqlAggregateOfACappedUser() {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("pause12888") {
+      @Override
+      public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+          final CommandContext context) {
+        try {
+          // LONGER THAN THE 1 MS QUOTA, ON EVERY RECORD: THE SCAN CANNOT END BEFORE ITS DEADLINE
+          Thread.sleep(5);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+        return true;
+      }
+
+      @Override
+      public String getSyntax() {
+        return "pause12888()";
+      }
+    });
+
+    bindUser(quota(QUOTA, 1L));
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT sum(k) AS s FROM Item WHERE pause12888() = true")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(TimeoutException.class);
+
+    // without the timeout the same statement answers the sum of every record, under the same quota
+    bindUser(quota(QUOTA));
+    try (final ResultSet rs = database.query("sql", "SELECT sum(k) AS s FROM Item WHERE pause12888() = true")) {
+      assertThat(rs.next().<Number>getProperty("s").intValue()).isEqualTo(SUM);
+    }
   }
 
   @Test
