@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.database.RID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -37,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * middle) and over the keys at the edges of the integer range, replayed on both and compared after every read and in full at the
  * end. {@link RidIntHashMap}, {@link RidLongHashMap} and {@link LongLongHashMap} had no test of their own.
  */
+@Tag("slow")
 class PrimitiveHashCollectionsModelTest {
   private static final int[]  SPECIAL_INTS  = { 0, -1, 1, Integer.MAX_VALUE, Integer.MIN_VALUE + 2 };
   private static final long[] SPECIAL_LONGS = { 0, -1, 1, Long.MAX_VALUE, Long.MIN_VALUE + 3, 1L << 32, -(1L << 32), 0xFFFFFFFFL };

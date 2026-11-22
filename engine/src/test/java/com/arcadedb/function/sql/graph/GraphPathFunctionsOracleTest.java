@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.within;
  * negative cycle for Bellman-Ford): a path has to exist exactly when the reference finds one, to walk existing edges and to cost
  * what the reference's cheapest path costs (or have as many hops as the fewest).
  */
+@Tag("slow")
 class GraphPathFunctionsOracleTest extends TestHelper {
   private static final double INFINITY = Double.POSITIVE_INFINITY;
 
@@ -172,9 +174,9 @@ class GraphPathFunctionsOracleTest extends TestHelper {
     final List<RID> path = new ArrayList<>();
     try (final ResultSet resultSet = database.query("sql", "SELECT " + function + " AS p")) {
       final Object value = resultSet.next().getProperty("p");
-      if (value instanceof Collection<?> collection)
-        for (final Object element : collection)
-          path.add(((Identifiable) element).getIdentity());
+      assertThat(value).as("%s answers a list of vertices (empty when unreachable)", function).isInstanceOf(Collection.class);
+      for (final Object element : (Collection<?>) value)
+        path.add(((Identifiable) element).getIdentity());
     }
     return path;
   }

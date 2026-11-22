@@ -278,7 +278,7 @@ class MostUsedCacheTest {
     assertThat(countAfterEviction < countBeforeEviction).as("Access count should be reduced after eviction to prevent overflow").isTrue();
   }
 
-  /** It is a {@link java.util.Map}: put and remove answer what they replaced or removed, and null when there was nothing. */
+  /** It is a {@code Map}: put and remove answer what they replaced or removed, and null when there was nothing. */
   @Test
   void putAndRemoveAnswerThePreviousValueLikeAMap() {
     final MostUsedCache<String, Integer> cache = new MostUsedCache<>(10);
