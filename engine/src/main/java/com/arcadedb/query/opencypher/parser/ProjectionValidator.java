@@ -181,10 +181,11 @@ final class ProjectionValidator {
       if (val instanceof Number) {
         if (val instanceof Float || val instanceof Double) {
           final double d = ((Number) val).doubleValue();
-          if (d != Math.floor(d) || Double.isInfinite(d))
+          if (d != Math.floor(d) || Double.isInfinite(d) || Double.isNaN(d))
             throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
-        }
-        if (((Number) val).intValue() < 0)
+          if (d < 0)
+            throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
+        } else if (((Number) val).longValue() < 0)
           throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
       }
     }
