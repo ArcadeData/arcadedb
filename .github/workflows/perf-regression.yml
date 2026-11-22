@@ -79,6 +79,11 @@ jobs:
             const issues = [];
             for (const item of listed) {
               if (item.pull_request) continue;
+              // Anyone who can label an issue could plant a marker: only the bot's own issues carry the gate's state.
+              if (item.user?.login !== 'github-actions[bot]') {
+                core.warning(`ignoring #${item.number}: labelled but opened by ${item.user?.login ?? 'unknown'}, not the bot`);
+                continue;
+              }
               let closedBy = null;
               if (item.state === 'closed') {
                 // Every closed issue, of any age: who closed it tells an accepted regression from a recovered one.
