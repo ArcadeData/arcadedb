@@ -70,10 +70,50 @@ class CypherOptionalLabelCountStarIssue12726Test extends TestHelper {
     assertCountMatchesRows("MATCH (n0:C) OPTIONAL MATCH (n0:B)-[:R]->(n1)", 2);
   }
 
+  /**
+   * The degree product scores an OPTIONAL arm as max(1, degree) per central vertex, which only stands for the rows when
+   * a mandatory clause bound the central node BEFORE the OPTIONAL clause. A leading OPTIONAL clause binds it itself, and
+   * the mandatory clause after it keeps only the rows it reached, wherever the label is written.
+   */
+  @Test
+  void aLeadingOptionalClauseIsNotAnOptionalArm() {
+    database.getSchema().createEdgeType("S");
+    database.getSchema().createEdgeType("T");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:A)-[:S]->(b1:B), (b2:B), (b1)-[:T]->(:C), (b2)-[:T]->(:C)"));
+
+    assertCountMatchesRows("OPTIONAL MATCH (x:A)-[:S]->(y:B) MATCH (y)-[:T]->(z)", "x, y, z", 1);
+    assertCountMatchesRows("OPTIONAL MATCH (x:A)-[:S]->(y) MATCH (y:B)-[:T]->(z)", "x, y, z", 1);
+    assertCountMatchesRows("OPTIONAL MATCH (x)-[:S]->(y:B) MATCH (y:B)-[:T]->(z)", "x, y, z", 1);
+    // no S edge leaves a C node: the leading OPTIONAL clause yields one row with y null, which the MATCH then drops
+    assertCountMatchesRows("OPTIONAL MATCH (x:C)-[:S]->(y:B) MATCH (y:B)-[:T]->(z)", "x, y, z", 0);
+  }
+
+  @Test
+  void aLeadingOptionalLabelMissingFromTheSchemaCountsNothing() {
+    database.getSchema().createEdgeType("S");
+    database.transaction(() -> database.command("opencypher", "CREATE (:A)-[:S]->(:B)"));
+
+    assertCountMatchesRows("OPTIONAL MATCH (x:Nope) MATCH (x)-[:S]->(b:B)", "x, b", 0);
+  }
+
+  /** An inline WHERE on the central node of an OPTIONAL clause decides whether that arm matched, never whether the row exists. */
+  @Test
+  void anInlineWhereOnTheOptionalCentralNodeIsAConditionOfTheArm() {
+    database.transaction(() -> database.command("opencypher", "MATCH (b:B), (c:C) CREATE (b)-[:R]->(c)"));
+
+    assertCountMatchesRows("MATCH (n0:B) OPTIONAL MATCH (n0:B WHERE n0.id = 99)-[:R]->(n1)", 1);
+    assertCountMatchesRows("MATCH (n0:B) OPTIONAL MATCH (n0:B WHERE n0.id = 2)-[:R]->(n1)", 2);
+  }
+
   private void assertCountMatchesRows(final String pattern, final long expected) {
+    assertCountMatchesRows(pattern, "n0, n1", expected);
+  }
+
+  private void assertCountMatchesRows(final String pattern, final String projection, final long expected) {
     assertThat(single(pattern + " RETURN count(*) AS c")).as(pattern).isEqualTo(expected);
     long rows = 0;
-    try (final ResultSet rs = database.query("opencypher", pattern + " RETURN n0, n1")) {
+    try (final ResultSet rs = database.query("opencypher", pattern + " RETURN " + projection)) {
       while (rs.hasNext()) {
         rs.next();
         rows++;
