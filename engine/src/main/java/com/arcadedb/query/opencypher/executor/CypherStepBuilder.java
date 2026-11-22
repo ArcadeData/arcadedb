@@ -224,7 +224,7 @@ final class CypherStepBuilder {
           // clause before it read for another row after that read of every row (issue #11005): it gets the barrier, so the
           // MERGE step must not absorb it
           final boolean barrierFirst = !setClause.isEmpty()
-              && (eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause));
+              && (eagerness.needsBarrierAfterMerge(setClause, mergeClauseOf(currentStep)) || eagerness.needsBarrierForPropertyWrites(setClause, mergeClauseOf(currentStep)));
           if (!setClause.isEmpty() && (barrierFirst || !EagerBarriers.absorbsSet(currentStep, setClause))) {
             if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
@@ -766,7 +766,7 @@ final class CypherStepBuilder {
           // barrier, so the MERGE step must not absorb it.
           // A SET of a key a clause before it read for another row runs after that read of every row (issue #11005): the same
           // barrier, so the step before it must not absorb it either.
-          final boolean barrierFirst = eagerness.needsBarrierAfterMerge(setClause) || eagerness.needsBarrierForPropertyWrites(setClause);
+          final boolean barrierFirst = eagerness.needsBarrierAfterMerge(setClause, mergeClauseOf(currentStep)) || eagerness.needsBarrierForPropertyWrites(setClause, mergeClauseOf(currentStep));
           if (barrierFirst || !EagerBarriers.absorbsSet(currentStep, setClause)) {
             if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
@@ -1904,5 +1904,10 @@ final class CypherStepBuilder {
     }
 
     return withLastWriteStreaming(currentStep);
+  }
+
+  /** The clause of {@code step} when it is a MERGE, which the SET planned right after it can be weighed against. */
+  private static MergeClause mergeClauseOf(final AbstractExecutionStep step) {
+    return step instanceof MergeStep mergeStep ? mergeStep.getMergeClause() : null;
   }
 }

@@ -1600,6 +1600,11 @@ public class MergeStep extends AbstractExecutionStep {
         && NewNodeSetFolding.isFoldable(mergeClause.getOnCreateSet(), variable::equals, List.of(variable));
   }
 
+  /** The MERGE this step runs. */
+  public MergeClause getMergeClause() {
+    return mergeClause;
+  }
+
   /**
    * Takes over the {@code SET} clause that directly follows this MERGE, when it can be written together with a
    * created node (issue #8735): a created node gets it in its first save, and a matched one gets it applied here,

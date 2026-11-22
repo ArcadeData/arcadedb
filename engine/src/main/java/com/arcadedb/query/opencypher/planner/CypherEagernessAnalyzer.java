@@ -125,6 +125,8 @@ public final class CypherEagernessAnalyzer {
   private final Set<String> mergeReadLabels        = new HashSet<>();
   private       boolean     mergeReadsAnyKey       = false;
   private       boolean     mergeReadsAnyLabel     = false;
+  // The one MERGE the footprint above comes from, or null when it holds what more than one read, see observeMergeRead()
+  private       MergeClause soleMergeRead;
   // The property reads of the clauses planned since the last barrier that evaluate an expression per row (a WITH, an UNWIND,
   // the right-hand side of a SET, ...): a later write of one of those keys runs for one row before the read of the next row
   // (issue #11005). A MATCH's own pattern and WHERE are not among them, see observeClause()
@@ -342,6 +344,7 @@ public final class CypherEagernessAnalyzer {
     mergeReadLabels.clear();
     mergeReadsAnyKey = false;
     mergeReadsAnyLabel = false;
+    soleMergeRead = null;
     pendingPropertyReads.clear();
     pendingMatchReads.clear();
   }
@@ -355,6 +358,7 @@ public final class CypherEagernessAnalyzer {
   public void observeMergeRead(final MergeClause mergeClause) {
     if (mergeClause == null || mergeClause.getPathPattern() == null)
       return;
+    soleMergeRead = mergeReadsAnything() ? null : mergeClause;
     final PathPattern pathPattern = mergeClause.getPathPattern();
     for (final NodePattern node : pathPattern.getNodes()) {
       observeMergeReadKeys(node.getProperties(), node.getPropertiesParameterName());
@@ -372,6 +376,72 @@ public final class CypherEagernessAnalyzer {
       mergeReadsAnyKey = true;
     else if (properties != null)
       mergeReadKeys.addAll(properties.keySet());
+  }
+
+  /**
+   * {@link #needsBarrierAfterMerge(SetClause)} for the SET right after {@code precedingMerge}: not needed when the SET only rewrites
+   * the keys that MERGE matched by with the value it matched them by, see {@link #matchedKeysOfKeyPreservingSet}.
+   */
+  public boolean needsBarrierAfterMerge(final SetClause setClause, final MergeClause precedingMerge) {
+    return needsBarrierAfterMerge(setClause) && matchedKeysOfKeyPreservingSet(setClause, precedingMerge) == null;
+  }
+
+  /**
+   * Whether {@code setClause}, the clause right after {@code precedingMerge}, can change nothing the MERGE reads: every item is
+   * {@code SET x = row} or {@code SET x += row} with {@code x} the one node or relationship of the pattern that carries
+   * properties, and each of those properties is matched by {@code row.key}. The map writes that key with the value the MERGE
+   * matched it by, so the MERGE of the next row finds what it would have found without the SET of this one (the other keys the
+   * map writes are not read by the MERGE, and a map write leaves the labels alone). This is the shape of Graphiti's
+   * {@code MERGE (n:Entity {uuid: node.uuid}) SET n = node}, which needs no barrier between its two clauses.
+   */
+  private Set<String> matchedKeysOfKeyPreservingSet(final SetClause setClause, final MergeClause precedingMerge) {
+    if (setClause == null || setClause.isEmpty() || precedingMerge == null || precedingMerge != soleMergeRead
+        || mergeReadsAnyKey || mergeReadsAnyLabel)
+      return null;
+    final Set<String> matchedKeys = new HashSet<>();
+    final PathPattern pathPattern = precedingMerge.getPathPattern();
+    for (final SetClause.SetItem item : setClause.getItems()) {
+      if ((item.getType() != SetClause.SetType.REPLACE_MAP && item.getType() != SetClause.SetType.MERGE_MAP)
+          || item.getVariable() == null || item.getKeyExpression() != null || item.getTargetExpression() != null
+          || !(item.getValueExpression() instanceof VariableExpression row))
+        return null;
+      boolean found = false;
+      for (final NodePattern node : pathPattern.getNodes()) {
+        if (item.getVariable().equals(node.getVariable())) {
+          if (!matchesEveryKeyByRowKey(node.getProperties(), node.getPropertiesParameterName(), row.getVariableName()))
+            return null;
+          matchedKeys.addAll(node.getProperties().keySet());
+          found = true;
+        } else if (hasProperties(node.getProperties(), node.getPropertiesParameterName()))
+          return null;
+      }
+      for (final RelationshipPattern relationship : pathPattern.getRelationships()) {
+        if (item.getVariable().equals(relationship.getVariable())) {
+          if (!matchesEveryKeyByRowKey(relationship.getProperties(), relationship.getPropertiesParameterName(), row.getVariableName()))
+            return null;
+          matchedKeys.addAll(relationship.getProperties().keySet());
+          found = true;
+        } else if (hasProperties(relationship.getProperties(), relationship.getPropertiesParameterName()))
+          return null;
+      }
+      if (!found)
+        return null;
+    }
+    return matchedKeys;
+  }
+
+  private static boolean hasProperties(final Map<String, Object> properties, final String parameterName) {
+    return parameterName != null || (properties != null && !properties.isEmpty());
+  }
+
+  private static boolean matchesEveryKeyByRowKey(final Map<String, Object> properties, final String parameterName, final String row) {
+    if (parameterName != null || properties == null || properties.isEmpty())
+      return false;
+    for (final Map.Entry<String, Object> entry : properties.entrySet())
+      if (!(entry.getValue() instanceof PropertyAccessExpression access) || !row.equals(access.getVariableName())
+          || !entry.getKey().equals(access.getPropertyName()))
+        return false;
+    return true;
   }
 
   /**
@@ -839,6 +909,26 @@ public final class CypherEagernessAnalyzer {
       // SET, REMOVE, DELETE and FOREACH hand on the rows they receive
     }
     }
+  }
+
+  /**
+   * {@link #needsBarrierForPropertyWrites(SetClause)} for the SET right after {@code precedingMerge}: not needed when the SET only
+   * rewrites the keys that MERGE matched by with the value it matched them by (see {@link #matchedKeysOfKeyPreservingSet}) and the
+   * only property reads pending are of those keys, as the MERGE's own pattern makes them.
+   */
+  public boolean needsBarrierForPropertyWrites(final SetClause setClause, final MergeClause precedingMerge) {
+    if (!needsBarrierForPropertyWrites(setClause))
+      return false;
+    final Set<String> matchedKeys = matchedKeysOfKeyPreservingSet(setClause, precedingMerge);
+    if (matchedKeys == null)
+      return true;
+    for (final PropertyReadSite read : pendingPropertyReads)
+      if (read.key() == null || !matchedKeys.contains(read.key()))
+        return true;
+    for (final PropertyReadSite read : pendingMatchReads)
+      if (read.key() == null || !matchedKeys.contains(read.key()))
+        return true;
+    return false;
   }
 
   /** True when a SET writes a key a clause ahead of it read for another row, see {@link #observeClause}. */
