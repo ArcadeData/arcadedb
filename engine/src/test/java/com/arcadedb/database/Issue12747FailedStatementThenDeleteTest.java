@@ -145,6 +145,80 @@ class Issue12747FailedStatementThenDeleteTest extends TestHelper {
     assertGone("DD", 2);
   }
 
+  /**
+   * The read image given back is the one the record held when the statement started, not the one it holds when the statement fails: a
+   * statement that reloaded the record against a slot a concurrent commit has changed since must not make that newer image "what the
+   * record was read as": the delete compares that image with the slot the transaction holds, and refused the delete as a conflict
+   * with a transaction that is not involved in it. The real concurrent change is still caught, by the commit.
+   */
+  @Test
+  void theReadImageIsTheOneFromBeforeTheStatementEvenIfTheStatementReloadedTheRecord() throws Exception {
+    createRecords(false, false);
+    final RID rid;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM DD WHERE id = 2")) {
+      rid = rs.next().getIdentity().get();
+    }
+
+    database.begin();
+    try {
+      database.command("sql", "UPDATE DD SET x = 1 WHERE id = 2").close();
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+      final MutableDocument queued = (MutableDocument) tx.getWrittenRecord(rid);
+      assertThat(queued).isNotNull();
+      final Binary readImage = queued.getBuffer();
+      assertThat(readImage).isNotNull();
+
+      final FutureTask<Void> concurrent = new FutureTask<>(() -> {
+        database.transaction(() -> rid.asDocument().modify().set("y", 9).save());
+        return null;
+      });
+      new Thread(concurrent).start();
+      concurrent.get();
+
+      final StatementSavepoint savepoint = tx.beginStatement();
+      assertThat(savepoint).isNotNull();
+      try {
+        // the statement reads the queued record (snapshot taken), then replaces its buffer with the newer committed image
+        assertThat(tx.getWrittenRecord(rid)).isSameAs(queued);
+        queued.reload();
+        assertThat(queued.getBuffer()).isNotSameAs(readImage);
+        assertThat(tx.rollbackStatement(savepoint)).isTrue();
+      } finally {
+        tx.endStatement(savepoint);
+      }
+
+      assertThat(queued.getBuffer()).isSameAs(readImage);
+      assertThat(queued.getInteger("x")).isEqualTo(1);
+      assertThat(queued.has("y")).isFalse();
+      // the delete of the record as it was read goes through, and the commit meets the concurrent change on the slot
+      queued.delete();
+      assertThatThrownBy(database::commit).isInstanceOf(ConcurrentModificationException.class);
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+    database.transaction(() -> {
+      final Document stored = rid.asDocument();
+      assertThat(stored.getInteger("y")).isEqualTo(9);
+      assertThat(stored.has("x")).isFalse();
+    });
+  }
+
+  /** The pending change of an indexed key survives the failed statement and the commit diffs the index against the read image. */
+  @Test
+  void aChangedUniqueKeyIsCommittedAfterAFailedStatement() {
+    createRecords(false, true);
+    database.begin();
+    database.command("sql", "UPDATE DD SET id = 3 WHERE id = 2").close();
+    assertThatThrownBy(() -> database.command("sql", String.format(FAILING_SUBQUERY, "DD")).close()).isInstanceOf(Exception.class);
+    database.commit();
+    assertThat(count("DD", 2)).isZero();
+    assertThat(count("DD", 3)).isEqualTo(1);
+    // the old key is free again
+    database.transaction(() -> database.command("sql", "INSERT INTO DD SET id = 2").close());
+    assertThat(count("DD", 2)).isEqualTo(1);
+  }
+
   private void createRecords(final boolean vertex, final boolean uniqueIndex) {
     final String type = vertex ? "VA" : "DD";
     database.command("sql", (vertex ? "CREATE VERTEX TYPE " : "CREATE DOCUMENT TYPE ") + type).close();

@@ -128,6 +128,9 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
   private       RidHashSet   snapshotted;
   private final List<Record> pendingRecords   = new ArrayList<>();
   private final List<Binary> pendingSnapshots = new ArrayList<>();
+  // The buffer each document held when its snapshot was taken (null for a segment): the image it was read with, given back as is
+  // (issue #12747) even if the statement replaced it
+  private final List<Binary> pendingBuffers   = new ArrayList<>();
   private       boolean[]    pendingDirty     = new boolean[8];
   private       boolean[]    pendingAssigned  = new boolean[8];
 
@@ -346,9 +349,11 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       }
       if (segment) {
         pendingSnapshots.add(((MutableEdgeSegment) record).snapshotContent());
+        pendingBuffers.add(null);
       } else {
         final MutableDocument document = (MutableDocument) record;
         pendingSnapshots.add(database.getSerializer().serializeForRead(database, document).getNotReusable());
+        pendingBuffers.add(document.getBuffer());
         pendingDirty[index] = document.isDirty();
         pendingAssigned[index] = document.arePropertiesAssigned();
       }
@@ -546,7 +551,8 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
       if (record instanceof MutableEdgeSegment segment)
         segment.restoreContent(pendingSnapshots.get(i));
       else
-        ((MutableDocument) record).restoreQueuedContent(pendingSnapshots.get(i), pendingDirty[i], pendingAssigned[i]);
+        ((MutableDocument) record).restoreQueuedContent(pendingSnapshots.get(i), pendingBuffers.get(i), pendingDirty[i],
+            pendingAssigned[i]);
     }
 
     // A record the statement changed in place, or read clean and left dirty, holds content that never reached a page
@@ -609,5 +615,6 @@ public final class StatementSavepoint implements PageUndoLog.GrainBudget {
     obtained.clear();
     pendingRecords.clear();
     pendingSnapshots.clear();
+    pendingBuffers.clear();
   }
 }
