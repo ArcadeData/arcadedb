@@ -23,7 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -600,11 +600,33 @@ public class SubqueryStep extends AbstractExecutionStep {
     if (batchSizeExpr == null)
       return subqueryClause.getDefaultBatchSize();
 
-    final Object value = expressionEvaluator.evaluate(batchSizeExpr, new ResultInternal(), context);
-    if (value instanceof Number number)
-      return number.intValue();
+    return positiveBatchSize(expressionEvaluator.evaluate(batchSizeExpr, new ResultInternal(), context));
+  }
 
-    throw new CommandExecutionException("IN TRANSACTIONS batch size must be a number, got: " + value);
+  /**
+   * The batch size a value denotes: an integral number of at least 1, clamped to {@code Integer.MAX_VALUE} (a batch of every
+   * row) rather than wrapped. A size of 0 or less collects an empty first batch, which reads as the end of the input and drops
+   * every outer row without running the body, and {@code intValue()} did the same for 2^32 (issue #12983). Anything else is
+   * refused, as SKIP and LIMIT refuse a value that is not an integer.
+   */
+  private static int positiveBatchSize(final Object value) {
+    if (value instanceof Number number) {
+      final long size;
+      if (number instanceof Double || number instanceof Float) {
+        final double d = number.doubleValue();
+        if (d != Math.rint(d) || Double.isInfinite(d))
+          throw invalidBatchSize(value);
+        size = (long) d;
+      } else
+        size = number.longValue();
+      if (size >= 1)
+        return (int) Math.min(size, Integer.MAX_VALUE);
+    }
+    throw invalidBatchSize(value);
+  }
+
+  private static CommandParsingException invalidBatchSize(final Object value) {
+    return new CommandParsingException("InvalidArgumentValue: IN TRANSACTIONS batch size must be a positive integer, got: " + value);
   }
 
   /**
