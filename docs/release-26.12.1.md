@@ -85,7 +85,8 @@ answers and nothing else:
   scan cap. A script statement now does the same: a `LIMIT` below the quota stays in force, where the quota used to replace it;
 - openCypher caps the rows of the whole statement, a `UNION` included (each branch used to get an allowance of its own), and
   a `LIMIT` below the quota stays in force. The subqueries a statement reads its answer from (`COUNT { }`, `COLLECT { }`,
-  `EXISTS { }`) are not capped, and a write applies every row before the rows it answers are capped;
+  `EXISTS { }`) are not capped, nor is a query a procedure or a user-defined function runs for the statement, in openCypher
+  or SQL. A write applies every row before the rows it answers are capped;
 - the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
 
 **Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
@@ -97,7 +98,8 @@ to a group under a quota. Until a row cap exists on those entry points (#13087),
 member of the group can read through Gremlin, the MongoDB wire protocol or the record API: before it bounded only the first N
 records of each bucket scan, now nothing. If the quota is what an administrator relies on to limit what a group can extract,
 do not grant that group access to those protocols until a row cap is added there. The quota still bounds the rows a SQL
-or openCypher statement answers.
+or openCypher statement answers. The maintainers accepted this interim gap for 26.12.1 rather than keep a cap that gave
+wrong answers on every entry point.
 
 **Resource use.** A member under a quota who runs a `WHERE`, an aggregate or an `ORDER BY` now makes the engine read every
 record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a

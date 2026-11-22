@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.query;
 
+import com.arcadedb.query.ProfiledLimitScope;
 import com.arcadedb.query.facet.FacetResults;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -37,14 +38,11 @@ import java.util.function.Supplier;
  * <p>
  * A statement the capped one runs while it executes or while its rows are read - a {@code COUNT}, {@code COLLECT} or
  * {@code EXISTS} subquery, a procedure or a user-defined function that runs a query - reads on the thread that reads the rows,
- * and is a part of the capped statement rather than an answer to the user: {@link #isRunning()} tells the engine not to cap it.
+ * and is a part of the capped statement rather than an answer to the user: {@link ProfiledLimitScope} tells every query engine,
+ * the SQL one included, not to cap it.
  * A subquery is never evaluated in the workers of a parallel scan, which keep to predicates that read the row alone.
  */
 final class ProfiledLimitResultSet implements ResultSet {
-  // HOW MANY CAPPED STATEMENTS THIS THREAD IS RUNNING OR READING A ROW OF; A COUNTER, NOT A FLAG, SO A STATEMENT THAT READS THE
-  // ROWS OF ANOTHER ONE IT HOLDS DOES NOT CLEAR IT FOR THE OUTER ONE
-  private static final ThreadLocal<int[]> RUNNING = ThreadLocal.withInitial(() -> new int[1]);
-
   private final ResultSet delegate;
   private final long      limit;
   private       long      returned;
@@ -56,7 +54,7 @@ final class ProfiledLimitResultSet implements ResultSet {
 
   /** Whether this thread is running a capped statement, or reading one of its rows: a statement run now is a part of it. */
   static boolean isRunning() {
-    return RUNNING.get()[0] > 0;
+    return ProfiledLimitScope.isActive();
   }
 
   /**
@@ -64,12 +62,11 @@ final class ProfiledLimitResultSet implements ResultSet {
    * cap reaches none of what it writes.
    */
   static ResultSet run(final long limit, final Supplier<ResultSet> execution) {
-    final int[] running = RUNNING.get();
-    ++running[0];
+    ProfiledLimitScope.enter();
     try {
       return new ProfiledLimitResultSet(execution.get(), limit);
     } finally {
-      --running[0];
+      ProfiledLimitScope.exit();
     }
   }
 
@@ -77,12 +74,11 @@ final class ProfiledLimitResultSet implements ResultSet {
   public boolean hasNext() {
     if (returned >= limit)
       return false;
-    final int[] running = RUNNING.get();
-    ++running[0];
+    ProfiledLimitScope.enter();
     try {
       return delegate.hasNext();
     } finally {
-      --running[0];
+      ProfiledLimitScope.exit();
     }
   }
 
@@ -90,14 +86,13 @@ final class ProfiledLimitResultSet implements ResultSet {
   public Result next() {
     if (returned >= limit)
       throw new NoSuchElementException();
-    final int[] running = RUNNING.get();
-    ++running[0];
+    ProfiledLimitScope.enter();
     try {
       final Result row = delegate.next();
       ++returned;
       return row;
     } finally {
-      --running[0];
+      ProfiledLimitScope.exit();
     }
   }
 

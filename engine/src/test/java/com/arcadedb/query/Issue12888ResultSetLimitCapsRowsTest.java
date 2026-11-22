@@ -201,6 +201,23 @@ class Issue12888ResultSetLimitCapsRowsTest {
   }
 
   /**
+   * A user-defined function written in SQL runs its body through the SQL engine, which applies the quota to a top-level statement
+   * as its LIMIT. Run by a capped openCypher statement, the body is a part of that statement and reads every record: the quota caps
+   * the rows the statement answers, not what its function computes from.
+   */
+  @Test
+  void aUserDefinedSqlFunctionRunByACappedStatementReadsEveryRecord() {
+    database.command("sql", "DEFINE FUNCTION cap.sqlkeys \"SELECT k FROM Item\" LANGUAGE sql");
+    bindUser(quota(QUOTA));
+    try (final ResultSet rs = database.command("opencypher", "MATCH (i:Item) WHERE i.k = 1 RETURN size(cap.sqlkeys()) AS n")) {
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(RECORDS);
+      assertThat(rs.hasNext()).isFalse();
+    }
+    assertThat(count("sql", "SELECT FROM Item")).as("the next top-level SQL statement is capped").isEqualTo(QUOTA);
+    assertThat(count("sqlscript", "SELECT FROM Item;")).as("and so is a top-level script statement").isEqualTo(QUOTA);
+  }
+
+  /**
    * A callback that runs while a capped statement does - the function above - reads for the statement, which answers the quota of
    * rows whatever the callback read. And nothing it leaves behind lets the next top-level statement of the thread through uncapped.
    */
@@ -266,7 +283,12 @@ class Issue12888ResultSetLimitCapsRowsTest {
     assertThat(ks(database.command("sqlscript", "SELECT k FROM Item WHERE k = 40;"))).containsExactly(40);
   }
 
-  /** The record API is not a query: it answers every record, as it does to the engine paths that read through it. */
+  /**
+   * The record API is not a query: it answers every record, as it does to the engine paths that read through it. Gremlin and the
+   * MongoDB wire protocol read through it too, so until they apply the quota as a row cap of their own (issue #13087) nothing but
+   * the readTimeout bounds what they answer a capped user. This test pins that gap: when #13087 lands, those protocols get a row
+   * cap and this API still answers every record.
+   */
   @Test
   void theRecordIteratorsReadEveryRecord() {
     bindUser(quota(QUOTA));
@@ -299,6 +321,29 @@ class Issue12888ResultSetLimitCapsRowsTest {
     for (final Iterator<Record> all = database.iterateType("Item", true); all.hasNext(); all.next())
       ++count;
     assertThat(count).isEqualTo(RECORDS);
+  }
+
+  /** A scan of one bucket is bounded by the readTimeout as a scan of the type is: the quota no longer cuts it short. */
+  @Test
+  void theReadTimeoutStillInterruptsTheBucketIterator() throws InterruptedException {
+    final String bucketName = database.getSchema().getType("Item").getBuckets(false).getFirst().getName();
+    bindUser(quota(QUOTA, 1L));
+    final Iterator<Record> it = database.iterateBucket(bucketName);
+    Thread.sleep(50);
+    assertThatThrownBy(() -> {
+      while (it.hasNext())
+        it.next();
+    }).isInstanceOf(TimeoutException.class);
+
+    bindUser(null);
+    final long inBucket = database.countBucket(bucketName);
+    assertThat(inBucket).as("the bucket holds more than the quota").isGreaterThan(QUOTA);
+
+    bindUser(quota(QUOTA, 600_000L));
+    int count = 0;
+    for (final Iterator<Record> all = database.iterateBucket(bucketName); all.hasNext(); all.next())
+      ++count;
+    assertThat(count).isEqualTo(inBucket);
   }
 
   /**

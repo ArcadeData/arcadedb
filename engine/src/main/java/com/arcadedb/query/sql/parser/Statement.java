@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SqlAstInspector;
 
 import com.arcadedb.query.OperationType;
+import com.arcadedb.query.ProfiledLimitScope;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.NumberUtils;
@@ -700,6 +701,10 @@ public class Statement extends SimpleNode {
    * @param params the parameters bound to this execution, keyed as {@link InputParameter#getValue(Map)} reads them; may be null
    */
   protected long tighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    // A STATEMENT RUN AS A PART OF ONE ALREADY CAPPED - THE BODY OF A FUNCTION AN openCypher STATEMENT CALLS - READS EVERY ROW
+    // IT MATCHES: THE OUTER STATEMENT CAPS WHAT IT ANSWERS (ISSUE #12888)
+    if (ProfiledLimitScope.isActive())
+      return -1L;
     final long profiled = database.getResultSetLimit();
     if (profiled < 0)
       return -1L;
