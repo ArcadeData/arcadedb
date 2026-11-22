@@ -114,6 +114,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
+   * Whether the properties were decoded into this instance. Reading a property and changing one both decode them first, so an
+   * instance that has not has them exactly as its buffer holds them: a write of it that moved only an edge-list head changes nothing
+   * a validation, an index or the serialization of the properties has to look at, and the vertex update leaves them alone.
+   */
+  public boolean arePropertiesLoaded() {
+    return map != null;
+  }
+
+  /**
    * Whether a property was assigned or removed since the last {@code save()} that queued this record for its transaction's commit, or
    * since the record was loaded when there was none (issue #11751). Such a change is written by the commit but was not seen by the
    * indexes, which follow the {@code save()}: the commit indexes it.

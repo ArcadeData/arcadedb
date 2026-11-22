@@ -296,7 +296,11 @@ public class BinarySerializer {
     final DatabaseContext.DatabaseContextTL context = database.getContext();
 
     final boolean serializeProperties;
-    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty())) {
+    // A vertex whose properties were never decoded has them as its buffer holds them (reading or changing one decodes them first),
+    // so what made it dirty is an edge-list head: the serialization copies the buffer and writes the two heads below, instead of
+    // decoding the properties of the record (a 1,024-float embedding among them) to encode them again, unchanged
+    if (header == null || (vertex instanceof MutableVertex mutableVertex && mutableVertex.isDirty()
+        && mutableVertex.arePropertiesLoaded())) {
       header = context.getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
