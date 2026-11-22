@@ -146,4 +146,21 @@ class JudgeTest {
     assertThat(v.get(0).key()).isEqualTo(RECALL);
     assertThat(v.get(1).key()).isEqualTo(TIME);
   }
+
+  @Test
+  void runsAfterTheLastFollowedRunAreEveryRunOfTheTriggerOncePerRef() {
+    final Point a = nightly("a", 1, "ok", 100);
+    final Point b = nightly("b", 2, "ok", 150);
+    final Point r = release("26.11.1", 2, 100);
+    final Point c = nightly("c", 3, "ok", 120);
+    final Point cAgain = nightly("c", 3, "ok", 101);
+    final Point d = nightly("d", 4, "ok", 100);
+    final List<Point> points = List.of(a, b, r, c, cAgain, d);
+
+    assertThat(Judge.runsAfter(points, "nightly", "b")).containsExactly(cAgain, d);
+    assertThat(Judge.runsAfter(points, "nightly", "d")).isEmpty();
+    assertThat(Judge.runsAfter(points, "release", "26.11.1")).isEmpty();
+    // a last run no longer in the data: the newest run only, as before
+    assertThat(Judge.runsAfter(points, "nightly", "gone")).containsExactly(d);
+  }
 }

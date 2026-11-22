@@ -96,12 +96,14 @@ public final class Planner {
         final LineKey key = keysById.get(id);
         if (key == null)
           continue;
-        final Point newest = Judge.newest(lines.get(key), marker.getTrigger());
         final JSONObject entry = marker.line(id);
-        if (newest == null || newest.ref().equals(entry.getString("lastRun", null)))
+        final List<Point> runs = Judge.runsAfter(lines.get(key), marker.getTrigger(), entry.getString("lastRun", null));
+        if (runs.isEmpty())
           continue;
-        PlanEntries.follow(entry, newest, LineKey.STATUS.equals(key.metric()));
-        addRun(runsByIssue, number, newest);
+        // every run since the last one followed moves the streak; the comment shows the newest
+        for (final Point run : runs)
+          PlanEntries.follow(entry, run, LineKey.STATUS.equals(key.metric()));
+        addRun(runsByIssue, number, runs.getLast());
       }
     }
 

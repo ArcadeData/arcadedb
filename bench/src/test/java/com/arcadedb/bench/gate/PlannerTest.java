@@ -269,6 +269,39 @@ class PlannerTest {
   }
 
   @Test
+  void aWorseRunBetweenTwoInvocationsResetsTheStreak() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+    points.add(n(C, 3, 101));
+    marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    assertThat(marker.line(TIME.id()).getInt("streak")).isEqualTo(1);
+
+    // the gate did not run while D (worse) and E (recovered) were published: E alone is 1 recovered run, not the 2nd in a row
+    points.add(n(D, 4, 150));
+    points.add(n(E, 5, 100));
+    final JSONObject plan = plan(data(TIME, points), open(7, marker));
+
+    assertThat(ops(plan)).containsExactly("comment", "update");
+    assertThat(action(plan, "comment").getString("runKey")).isEqualTo("nightly:" + E);
+    final JSONObject entry = markerOf(action(plan, "update")).line(TIME.id());
+    assertThat(entry.getString("lastRun")).isEqualTo(E);
+    assertThat(entry.getInt("streak")).isEqualTo(1);
+  }
+
+  @Test
+  void twoRecoveredRunsBetweenTwoInvocationsCloseANightlyIssue() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    final Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+
+    points.add(n(D, 4, 100));
+    points.add(n(E, 5, 101));
+    final JSONObject plan = plan(data(TIME, points), open(7, marker));
+
+    assertThat(ops(plan)).containsExactly("close", "update");
+    assertThat(action(plan, "close").getString("body")).startsWith("<!-- perf-regression-run nightly:" + E + " -->").contains("recovered (2 of 2)");
+  }
+
+  @Test
   void oneRecoveredReleaseClosesAReleaseIssue() {
     final List<Point> points = new ArrayList<>(List.of(r("26.10.2", 1, 100), r("26.11.1", 2, 150)));
     final JSONObject first = plan(data(TIME, points));

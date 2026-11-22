@@ -19,6 +19,7 @@
 package com.arcadedb.bench.gate;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
@@ -58,6 +59,33 @@ final class Judge {
       if (trigger.equals(points.get(i).trigger()))
         return points.get(i);
     return null;
+  }
+
+  /**
+   * The runs of the trigger measured after {@code lastRun}, oldest first in the judge's order, one point per ref (its last measurement):
+   * every run a tracked line has to be followed through, so a worse run between two invocations still resets its streak. Empty when the
+   * newest run is {@code lastRun}; only the newest run when {@code lastRun} is not among the points.
+   */
+  static List<Point> runsAfter(final List<Point> points, final String trigger, final String lastRun) {
+    int from = -1;
+    for (int i = points.size() - 1; i >= 0; i--)
+      if (trigger.equals(points.get(i).trigger()) && points.get(i).ref().equals(lastRun)) {
+        from = i;
+        break;
+      }
+    if (from < 0) {
+      final Point newest = newest(points, trigger);
+      return newest == null ? List.of() : List.of(newest);
+    }
+    final LinkedHashMap<String, Point> byRef = new LinkedHashMap<>();
+    for (int i = from + 1; i < points.size(); i++) {
+      final Point p = points.get(i);
+      if (!trigger.equals(p.trigger()) || p.ref().equals(lastRun))
+        continue;
+      byRef.remove(p.ref());
+      byRef.put(p.ref(), p);
+    }
+    return new ArrayList<>(byRef.values());
   }
 
   /**
