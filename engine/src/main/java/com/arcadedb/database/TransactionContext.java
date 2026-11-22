@@ -455,6 +455,10 @@ public class TransactionContext implements Transaction {
   // writes into one bucket, the common case; it is reset wherever the map is (begin() and reset(), which a rollback reaches)
   private       LongLongHashMap                      bucketFirstWriteSequences;
   private       int                                  lastNotedBucket = -1;
+  // The per-file maps above hold one entry per bucket or index file a transaction touched, a handful for almost every one. The
+  // default capacity of LongLongHashMap (1024, sized for its aggregation use) is two 8 KB arrays, filled, for each map: 32 KB
+  // allocated and cleared by every autocommit write, more than the write itself (issue #13005). They grow on demand.
+  private static final int                           SMALL_PER_FILE_MAP    = 16;
   // #8610: identifies the transaction a vertex was read in. Drawn from one JVM-wide sequence, not counted per context,
   // so that a nested transaction (a context of its own) can never share a value with the one it is nested in.
   private static final AtomicLong                    BEGIN_SEQUENCE        = new AtomicLong();
@@ -2252,7 +2256,7 @@ public class TransactionContext implements Transaction {
     if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
       return committedNow;
     if (snapshotBucketCounts == null)
-      snapshotBucketCounts = new LongLongHashMap();
+      snapshotBucketCounts = new LongLongHashMap(SMALL_PER_FILE_MAP);
     // Long.MIN_VALUE, NOT -1, FOR "NOT PINNED": A DRIFTED COUNTER CAN BE NEGATIVE, AND IT MUST BE PINNED LIKE ANY OTHER VALUE
     final long pinned = snapshotBucketCounts.get(bucketId, Long.MIN_VALUE);
     if (pinned != Long.MIN_VALUE)
@@ -4131,7 +4135,7 @@ public class TransactionContext implements Transaction {
   /** Counts a change of {@code fileId} that is not a write into a page the transaction already holds (issue #11472). */
   private void stampFile(final int fileId) {
     if (fileStamps == null)
-      fileStamps = new LongLongHashMap();
+      fileStamps = new LongLongHashMap(SMALL_PER_FILE_MAP);
     fileStamps.increment(fileId);
   }
 
@@ -6485,7 +6489,7 @@ public class TransactionContext implements Transaction {
       return;
     lastNotedBucket = bucketId;
     if (bucketFirstWriteSequences == null)
-      bucketFirstWriteSequences = new LongLongHashMap();
+      bucketFirstWriteSequences = new LongLongHashMap(SMALL_PER_FILE_MAP);
     if (bucketFirstWriteSequences.get(bucketId, -1L) < 0L)
       bucketFirstWriteSequences.put(bucketId, database.getTransactionManager().getIndexRegistrationSequence());
   }
