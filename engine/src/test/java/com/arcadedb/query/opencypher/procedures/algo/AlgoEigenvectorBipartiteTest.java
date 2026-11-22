@@ -107,6 +107,51 @@ class AlgoEigenvectorBipartiteTest {
     assertThat(scores.get(2)).isEqualTo(0.0);
   }
 
+  @Test
+  void directedAcyclicGraphScoresZeroWhateverTheIterationCount() {
+    // 0 -> 1 -> 2, plus 3 -> 1: no directed cycle, so A is nilpotent and its only eigenvalue is 0. A + I has eigenvalue 1 with
+    // a Jordan block: without pinning the vertices that reach no cycle, 1 keeps a constant raw score while 0 and 3 grow linearly
+    // and the answer is 1/(k+1), a function of maxIterations that never meets the tolerance.
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("N").set("id", 0).save();
+      final MutableVertex b = database.newVertex("N").set("id", 1).save();
+      final MutableVertex c = database.newVertex("N").set("id", 2).save();
+      final MutableVertex d = database.newVertex("N").set("id", 3).save();
+      a.newEdge("E", b).save();
+      b.newEdge("E", c).save();
+      d.newEdge("E", b).save();
+    });
+
+    for (final String dir : new String[] { "OUT", "IN" })
+      for (final int iterations : new int[] { 1, 20, 1000 }) {
+        final String call = "algo.eigenvector(null, '" + dir + "', " + iterations + ", 1e-12)";
+        final Map<Integer, Double> scores = scores(call);
+        for (int i = 0; i <= 3; i++)
+          assertThat(scores.get(i)).as(call + " vertex " + i).isEqualTo(0.0);
+      }
+  }
+
+  @Test
+  void directedCycleWithATailConvergesWhateverTheParityOfTheIterationCount() {
+    // 0 <-> 1 is a directed 2-cycle, 2 -> 0 a tail. Followed inwards, 0 collects from 1 and 2 and 1 from 0: on A the iterate
+    // alternates between (1, 0.5) and (0.5, 1). The tail 2 has no in-neighbour, so it reaches no cycle and scores 0.
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("N").set("id", 0).save();
+      final MutableVertex b = database.newVertex("N").set("id", 1).save();
+      final MutableVertex t = database.newVertex("N").set("id", 2).save();
+      a.newEdge("E", b).save();
+      b.newEdge("E", a).save();
+      t.newEdge("E", a).save();
+    });
+
+    for (final String call : new String[] { "algo.eigenvector(null, 'IN', 100, 1e-12)", "algo.eigenvector(null, 'IN', 101, 1e-12)" }) {
+      final Map<Integer, Double> scores = scores(call);
+      assertThat(scores.get(0)).as(call).isCloseTo(1.0, within(1e-6));
+      assertThat(scores.get(1)).as(call).isCloseTo(1.0, within(1e-6));
+      assertThat(scores.get(2)).as(call).isEqualTo(0.0);
+    }
+  }
+
   private Map<Integer, Double> scores(final String call) {
     final Map<Integer, Double> scores = new HashMap<>();
     try (final ResultSet rs = database.query("opencypher", "CALL " + call + " YIELD node, score RETURN node.id AS id, score")) {
