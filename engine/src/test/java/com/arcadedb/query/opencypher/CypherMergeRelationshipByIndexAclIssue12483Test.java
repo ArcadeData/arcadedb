@@ -21,6 +21,8 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -111,6 +113,32 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
     assertThat(missing).isEqualTo(existing);
   }
 
+  /**
+   * A user granted some buckets of a type and not others: the lookup loads a record from whichever bucket holds it, so one unreadable
+   * bucket is enough for the walk to answer.
+   */
+  @Test
+  void anUnreadableBucketOfAPartlyReadableTypeDoesNotTellWhetherItHoldsTheKey() {
+    final RID[] hidden = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("Parent", 1).createProperty("uuid", Type.STRING);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Parent", "uuid");
+      database.getSchema().createEdgeType("Child", 1).addSuperType("Parent");
+      database.getSchema().createEdgeType("Sibling", 2).addSuperType("Parent");
+      hidden[0] = database.command("opencypher", "MATCH (a:V {id: 1}), (b:V {id: 2}) CREATE (a)-[e:Sibling {uuid: 'hidden'}]->(b) RETURN e")
+          .next().<Identifiable>getProperty("e").getIdentity();
+    });
+
+    // only the bucket of Sibling that holds the relationship is denied: the other one, and so the type, reads as accessible
+    bindUserDenyingBuckets(Set.of(hidden[0].getBucketId()));
+    final String existing = outcomeOf("Child", "hidden");
+    final String missing = outcomeOf("Child", "absent");
+    unbind();
+
+    assertThat(existing).isEqualTo("ok");
+    assertThat(missing).isEqualTo(existing);
+  }
+
   /** A user who may read the type is answered by the index: the existing relationship is matched, the missing one created. */
   @Test
   void aUserWhoMayReadTheTypeMergesThroughTheIndex() {
@@ -150,6 +178,15 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
     final Set<Integer> deniedBucketIds = new HashSet<>();
     if (database.getSchema().existsType(deniedType))
       deniedBucketIds.addAll(database.getSchema().getType(deniedType).getBucketIds(false));
+    bindUser(deniedBucketIds, deniedType);
+  }
+
+  /** Binds a user who may do anything but read the records of {@code deniedBucketIds}, every type readable as a whole. */
+  private void bindUserDenyingBuckets(final Set<Integer> deniedBucketIds) {
+    bindUser(deniedBucketIds, null);
+  }
+
+  private void bindUser(final Set<Integer> deniedBucketIds, final String deniedType) {
 
     final SecurityDatabaseUser user = new SecurityDatabaseUser() {
       @Override
@@ -169,7 +206,7 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
 
       @Override
       public boolean requestAccessOnType(final String typeName, final ACCESS access) {
-        return access != ACCESS.READ_RECORD || !deniedType.equals(typeName);
+        return access != ACCESS.READ_RECORD || deniedType == null || !deniedType.equals(typeName);
       }
 
       @Override

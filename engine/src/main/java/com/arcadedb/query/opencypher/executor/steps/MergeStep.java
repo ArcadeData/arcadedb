@@ -744,8 +744,17 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   private boolean canReadTypeAndSubTypes(final DocumentType type) {
-    if (!SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-      return false;
+    // every bucket, not one of them (SecurityHelper.canAccessType): a user may be granted some buckets of a type and not others, and
+    // the lookup loads a record from whichever bucket holds it
+    final List<Integer> bucketIds = type.getBucketIds(false);
+    if (bucketIds.isEmpty()) {
+      if (!SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    } else
+      for (int i = 0; i < bucketIds.size(); i++)
+        if (!SecurityHelper.canAccessFile((DatabaseInternal) context.getDatabase(), bucketIds.get(i),
+            SecurityDatabaseUser.ACCESS.READ_RECORD))
+          return false;
     for (final DocumentType subType : type.getSubTypes())
       if (!canReadTypeAndSubTypes(subType))
         return false;
