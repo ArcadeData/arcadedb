@@ -485,12 +485,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public void drop() {
-    closeForDrop();
+    // THE PATH STAYS TAKEN, IN THE FACTORY'S REGISTRY, UNTIL THE FILES ARE GONE (ISSUE #12808): THE CLOSE BELOW USED TO RELEASE IT,
+    // AND A create() OR open() OF THE SAME PATH IN THE WINDOW BEFORE THE DELETE FINISHED BUILT ITS INSTANCE OVER THE FILES BEING
+    // DELETED, WHICH THE DELETE THEN TOOK FROM UNDER IT AND LEFT A TORN DIRECTORY THAT COULD BE NEITHER OPENED NOR CREATED. A CALLER
+    // IN THE WINDOW IS REFUSED AS "ACTIVE INSTANCE" INSTEAD, WHICH IS WHAT IT WOULD BE TOLD BY A DATABASE STILL CLOSING.
+    // THE DEFERRAL IS DECIDED BY THE CALL THAT WINS THE CLOSING CAS AND HANDED BACK AS ITS RESULT, NEVER THROUGH A FIELD: A
+    // close() RACING THIS DROP ON ANOTHER THREAD MUST NOT SEE THIS DROP'S INTENT, OR IT LEFT ITS UNREGISTRATION TO A DROP THAT
+    // WAS REFUSED, AND THE CLOSED INSTANCE STAYED IN THE REGISTRY FOR THE REST OF THE JVM (THE #8316 SYMPTOM)
+    final boolean registrationKept = closeForDrop(true);
+    try {
+      final Consumer<LocalDatabase> afterDropCloseHook = TEST_AFTER_DROP_CLOSE_HOOK;
+      if (afterDropCloseHook != null)
+        afterDropCloseHook.accept(this);
 
-    executeInWriteLock(() -> {
-      FileUtils.deleteRecursively(new File(databasePath));
-      return null;
-    });
+      executeInWriteLock(() -> {
+        FileUtils.deleteRecursively(new File(databasePath));
+        return null;
+      });
+    } finally {
+      // WHATEVER BECAME OF THE DELETE: NOTHING IS LEFT TO KEEP THE PATH FOR. A DROP THAT LOST THE CLOSING CAS TO A CONCURRENT
+      // close() HAS NOTHING TO UNREGISTER, THAT CLOSE DID IT
+      if (registrationKept)
+        unregisterClosedInstance();
+    }
   }
 
   /**
@@ -501,17 +518,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    */
   @Override
   public void closeForDrop() {
+    closeForDrop(false);
+  }
+
+  /**
+   * @param keepRegistration true to leave this instance in the factory's registry once closed, for the caller to unregister
+   *
+   * @return true when this call closed the instance and left its registration to the caller (only with keepRegistration)
+   */
+  private boolean closeForDrop(final boolean keepRegistration) {
     checkDatabaseIsOpen(true, "Cannot drop database");
 
     if (isTransactionActive())
       throw new DatabaseOperationException("Cannot drop the database in transaction");
 
-    closeInternal(true);
+    return closeInternal(true, keepRegistration);
   }
 
   @Override
   public void close() {
-    closeInternal(false);
+    closeInternal(false, false);
   }
 
   /**
@@ -523,7 +549,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Override
   public void closeForReopen() {
     closedForReopen = true;
-    closeInternal(false);
+    closeInternal(false, false);
   }
 
   /**
@@ -4397,12 +4423,26 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   static volatile Runnable TEST_AFTER_MARKED_CLOSED_HOOK = null;
 
   /**
+   * Test-only hook (issue #12808): when set, invoked by {@link #drop()} on the dropping thread once the instance is closed and
+   * before its files are deleted, so a test can act in the window in which the path used to be free while the files were still
+   * there.
+   */
+  static volatile Consumer<LocalDatabase> TEST_AFTER_DROP_CLOSE_HOOK = null;
+
+  /**
    * Test-only hook (issue #8626): when set, invoked by {@link #performRecovery()} after every file is marked unsynced and
    * before the WAL is replayed, so a test can break a data file's fsync on the instance being recovered.
    */
   static volatile Consumer<LocalDatabase> TEST_BEFORE_RECOVERY_REPLAY_HOOK = null;
 
-  private void closeInternal(final boolean drop) {
+  /**
+   * @param keepRegistration true to leave the closed instance in the factory's registry for the caller to unregister (issue
+   *                         #12808). Passed down the call, never kept in a field: only the thread that wins the closing CAS runs
+   *                         the teardown, so the decision belongs to that one call and a concurrent close() cannot observe it
+   *
+   * @return true when this call ran the teardown, marked the instance closed, and left its registration to the caller as asked
+   */
+  private boolean closeInternal(final boolean drop, final boolean keepRegistration) {
     if (!closing.compareAndSet(false, true)) {
       // ANOTHER THREAD IS ALREADY CLOSING (OR HAS ALREADY CLOSED) THIS INSTANCE: WAIT FOR IT TO FINISH RATHER
       // THAN RUNNING closeSteps() A SECOND TIME CONCURRENTLY, THEN RETURN - THIS CALL IS A NO-OP.
@@ -4411,7 +4451,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
-      return;
+      return false;
     }
 
     final Runnable testHook = TEST_CLOSE_HOOK;
@@ -4425,14 +4465,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // set inside the try so that a wait that threw could not leak it either.
     try {
       PageManager.INSTANCE.beginDatabaseClose(this);
-      closeSteps(drop);
+      return closeSteps(drop, keepRegistration);
     } finally {
       PageManager.INSTANCE.endDatabaseClose(this);
       closedSignal.countDown();
     }
   }
 
-  private void closeSteps(final boolean drop) {
+  private boolean closeSteps(final boolean drop, final boolean keepRegistration) {
     // Graceful async drain FIRST, with the caller's interrupt flag INTACT so an interrupted caller bails
     // this wait fast; the warning distinguishes an interrupt from a real timeout.
     if (async != null) {
@@ -4470,14 +4510,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // flag CLEARED (unconditionally, so async == null is covered too) and restore it for the caller after.
     final boolean callerWasInterrupted = Thread.interrupted();
     try {
-      closeDurableParts(drop);
+      return closeDurableParts(drop, keepRegistration);
     } finally {
       if (callerWasInterrupted)
         Thread.currentThread().interrupt();
     }
   }
 
-  private void closeDurableParts(final boolean drop) {
+  private boolean closeDurableParts(final boolean drop, final boolean keepRegistration) {
     if (async != null) {
       try {
         async.close();
@@ -4551,8 +4591,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       GraphTraversalProviderRegistry.clearAll(this);
     }
 
+    boolean tornDown = false;
     try {
       closeUnderWriteLock(drop);
+      tornDown = true;
     } finally {
       // In a finally, and on the flag rather than on how the teardown ended (issue #8316): a close that marked this
       // instance closed and then threw used to skip everything below, leaving a CLOSED instance in the factory's
@@ -4560,9 +4602,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // lookup reused the dead instance instead of opening the files. An instance that is still open - the teardown
       // failed before marking it closed - keeps its registration and its PageManager reference, which is what it
       // still holds.
-      if (!open)
+      // A caller that asked to keep the registration (drop(), issue #12808) is handed it only when the teardown completed:
+      // one that threw propagates to that caller, which then deletes nothing, so the path is released here as before.
+      if (!open && !(keepRegistration && tornDown))
         unregisterClosedInstance();
     }
+    return keepRegistration && !open;
   }
 
   private void closeUnderWriteLock(final boolean drop) {
