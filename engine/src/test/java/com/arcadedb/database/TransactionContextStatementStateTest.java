@@ -113,6 +113,10 @@ class TransactionContextStatementStateTest {
     // Issue #11937: work that reads what the commit writes, whatever statements were taken back: a callback a statement registered
     // and then lost is run all the same, and reads the state the commit writes
     CLASSIFICATION.put("beforeCommitCallbacks", NOT_STATEMENT_STATE);
+    // Issue #12251: the callbacks a concluded transaction owes while its driver defers them (deferCallbacks()), filled by
+    // fireOrDefer() only when the whole transaction commits or rolls back, after every statement of it is over, and emptied by
+    // takeDeferredCallbacks(). No statement writes it, so a statement taken back has nothing of it to put back
+    CLASSIFICATION.put("deferredCallbacks", NOT_STATEMENT_STATE);
 
     // What a statement reads or the commit writes, and the services of the context
     CLASSIFICATION.put("database", NOT_STATEMENT_STATE);

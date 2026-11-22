@@ -81,10 +81,10 @@ class Issue11951ForwardWhileLeadershipMovesTest {
     final RaftReplicatedDatabase db = new RaftReplicatedDatabase(server, local, raft);
 
     final Method forward = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft", String.class,
-        String.class, Map.class, Object[].class);
+        String.class, Map.class, Object[].class, boolean.class);
     forward.setAccessible(true);
     try {
-      forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+      forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
       throw new AssertionError("expected the forward to be refused");
     } catch (final InvocationTargetException e) {
       assertThat(e.getCause()).isInstanceOf(ServerIsNotTheLeaderException.class);
