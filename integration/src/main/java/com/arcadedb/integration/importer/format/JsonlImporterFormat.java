@@ -1481,7 +1481,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         final MutableDocument mutable = document.modify();
         // The references are rewritten from this very record's reloaded content: no stale-read refusal (#8610)
         mutable.clearBasedOnStaleRead();
-        boolean changed = false;
+        // The properties whose links are rewritten, null while there is none
+        Set<String> rewritten = null;
 
         // HIGHEST LIST POSITION FIRST: AN ELEMENT REMOVED FROM A TYPED LIST SHIFTS ONLY THE ONES AFTER IT
         final List<PendingLink> links = new ArrayList<>(entry.getValue());
@@ -1503,7 +1504,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             continue;
 
           mutable.set(link.property(), updated);
-          changed = true;
+          if (rewritten == null)
+            rewritten = new HashSet<>();
+          rewritten.add(link.property());
           if (newRid == null) {
             context.danglingLinks.incrementAndGet();
             LogManager.instance().log(this, Level.FINE, "Record %s: the link %s in property '%s' points to a record that is not in the "
@@ -1515,9 +1518,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         // A save validates the whole record; a record none of whose links was found to replace is validated as it stands. That is one
         // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore.
         // The rewrite of the links is the second half of creating the record, so a READONLY link property is not refused as altered
-        // here (issue #12722): only for the one save, and every other constraint is checked as always
-        if (changed) {
-          try (final ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks()) {
+        // here (issue #12722): only for the one save, of this record, and for the properties rewritten above. Every other constraint
+        // is checked as always, and so is READONLY on anything a listener of this save writes
+        if (rewritten != null) {
+          try (final ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks(mutable, rewritten)) {
             mutable.save();
           }
         } else
