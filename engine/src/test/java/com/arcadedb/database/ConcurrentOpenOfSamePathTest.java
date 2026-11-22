@@ -83,14 +83,16 @@ class ConcurrentOpenOfSamePathTest {
     final Callable<Void> loop = () -> {
       int mine = 0;
       while (mine < OPENS) {
+        if (Thread.currentThread().isInterrupted())
+          throw new InterruptedException("stopped after " + mine + " of " + OPENS + " opens");
         if (System.nanoTime() - deadline > 0)
           throw new AssertionError("only " + mine + " of " + OPENS + " opens in the time given");
         final Database db;
         try {
           db = new DatabaseFactory(PATH).open();
         } catch (final DatabaseOperationException e) {
-          // refused: another thread holds the database, or won the race to open it (refused by the file lock before #12791).
-          // Anything else is a failure of its own and ends the test
+          // refused: another thread holds the database, or won the race to open it. Anything else ends the test, the refusal by
+          // the file lock included: that is a loser that built an instance over the winner's files, which is the defect (#12791)
           if (!isRefusalOfAConcurrentOpen(e))
             throw e;
           continue;
@@ -160,8 +162,7 @@ class ConcurrentOpenOfSamePathTest {
 
   private static boolean isRefusalOfAConcurrentOpen(final DatabaseOperationException e) {
     final String message = e.getMessage();
-    return message != null && (message.startsWith("Found active instance of database") || message.startsWith(
-        "Error on creating new database instance"));
+    return message != null && message.startsWith("Found active instance of database");
   }
 
   private static long count(final Database db, final String sql) {
