@@ -405,6 +405,74 @@ public class FullTextQueryExecutor {
     return new LinkedHashMap<>(scoringTokens);
   }
 
+  /**
+   * The tokens a query that {@link FullTextTopKSearch} can answer scores, with the ones every match must hold: the query is a
+   * disjunction of terms (see {@link #termDisjunction}), or terms ANDed with one such disjunction, as {@code (group_id:"a") AND
+   * (x y z)}, the shape that scopes a keyword search to a tenant. A document then matches when it holds every required token and one
+   * of the others, and scores the tokens it holds, as in the general path. Null for any other query.
+   */
+  TermShape termShape(final String queryText) {
+    resetState();
+    final Query query = parseQuery(queryText);
+    if (isTermDisjunction(query)) {
+      collectTokensOnly(query);
+      if (scoringTokens.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS)
+        return null;
+      return new TermShape(new LinkedHashMap<>(scoringTokens), Set.of());
+    }
+    if (!(query instanceof final BooleanQuery bq) || bq.getMinimumNumberShouldMatch() > 0 || bq.clauses().size() < 2)
+      return null;
+    final List<Query> requiredTerms = new ArrayList<>();
+    Query disjunction = null;
+    for (final BooleanClause clause : bq.clauses()) {
+      if (clause.occur() != BooleanClause.Occur.MUST)
+        return null;
+      final Query inner = unwrapSingleClause(clause.query());
+      if (isSingleTerm(inner))
+        requiredTerms.add(inner);
+      else if (disjunction == null && isTermDisjunction(inner))
+        disjunction = inner;
+      else
+        return null;
+    }
+    if (disjunction == null || requiredTerms.isEmpty())
+      return null;
+
+    final Set<String> required = new HashSet<>();
+    for (final Query term : requiredTerms) {
+      resetState();
+      collectTokensOnly(term);
+      required.addAll(scoringTokens.keySet());
+    }
+    resetState();
+    collectTokensOnly(disjunction);
+    // a token both required and optional would be walked and probed at once: the general path answers it
+    for (final String token : scoringTokens.keySet())
+      if (required.contains(token))
+        return null;
+    resetState();
+    collectTokensOnly(query);
+    if (required.isEmpty() || scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS || scoringTokens.size() <= required.size())
+      return null;
+    return new TermShape(new LinkedHashMap<>(scoringTokens), required);
+  }
+
+  /** The scoring tokens of a query with their boosts, and those of them every match must hold. */
+  record TermShape(LinkedHashMap<String, Float> tokens, Set<String> required) {
+  }
+
+  /** A group of one clause that is no negation is its clause: {@code (a)} parses to a group around {@code a}. */
+  private static Query unwrapSingleClause(Query query) {
+    while (query instanceof final BooleanQuery bq && bq.clauses().size() == 1 && bq.getMinimumNumberShouldMatch() == 0
+        && bq.clauses().getFirst().occur() != BooleanClause.Occur.MUST_NOT)
+      query = bq.clauses().getFirst().query();
+    return query;
+  }
+
+  private static boolean isSingleTerm(final Query query) {
+    return query instanceof TermQuery || query instanceof final BoostQuery bq && bq.getQuery() instanceof TermQuery;
+  }
+
   private static boolean isTermDisjunction(final Query query) {
     if (query instanceof TermQuery)
       return true;
