@@ -81,4 +81,59 @@ class RedisBinaryCodecTest {
     roundTrip(new byte[] { 'a', (byte) 0xf0, (byte) 0x9f, (byte) 0x98 }); // truncated 4-byte sequence
     roundTrip(new byte[] { (byte) 0xc0, (byte) 0x80 }); // overlong NUL
   }
+
+  @Test
+  void aTextHoldingAnEscapeEncodesEveryOtherCharacterAsPlainUtf8() {
+    // the escape-aware encoder is a second UTF-8 encoder, used only once a text holds an escaped byte: each length class of
+    // UTF-8 (1, 2, 3, 4 bytes) must agree with String.getBytes at its boundaries
+    final String escape = "\uDC80"; // the byte 0x80
+    final String[] characters = { "\u007f", "\u0080", "\u07ff", "\u0800", "\ud7ff", "\ue000", "\uffff", "\ud83d\ude00", "\ud800\udc00",
+        "\udbff\udfff" };
+    for (final String character : characters) {
+      final byte[] utf8 = character.getBytes(StandardCharsets.UTF_8);
+      final byte[] expected = new byte[utf8.length * 2 + 1];
+      System.arraycopy(utf8, 0, expected, 0, utf8.length);
+      expected[utf8.length] = (byte) 0x80;
+      System.arraycopy(utf8, 0, expected, utf8.length + 1, utf8.length);
+
+      final String text = character + escape + character;
+      assertThat(RedisBinaryCodec.encode(text)).as("encode of %s", character).isEqualTo(expected);
+      assertThat(RedisBinaryCodec.encodedLength(text)).as("length of %s", character).isEqualTo(expected.length);
+    }
+  }
+
+  @Test
+  void anUnpairedSurrogateThatIsNotAnEscapeEncodesAsAQuestionMarkLikeGetBytes() {
+    // a lone high surrogate, and a lone low surrogate below the escape range, next to an escaped byte
+    final String text = "\ud800a\uDC80\udc00";
+    final byte[] expected = { '?', 'a', (byte) 0x80, '?' };
+    assertThat(RedisBinaryCodec.encode(text)).isEqualTo(expected);
+    assertThat(RedisBinaryCodec.encodedLength(text)).isEqualTo(expected.length);
+    assertThat("\ud800a\udc00".getBytes(StandardCharsets.UTF_8)).isEqualTo(new byte[] { '?', 'a', '?' });
+  }
+
+  @Test
+  void encodeAsciiWritesAtTheOffsetAndRefusesAnythingElse() {
+    final byte[] out = new byte[6];
+    assertThat(RedisBinaryCodec.encodeAscii("abc", out, 2)).isEqualTo(3);
+    assertThat(out).isEqualTo(new byte[] { 0, 0, 'a', 'b', 'c', 0 });
+    assertThat(RedisBinaryCodec.encodeAscii("", out, 0)).isZero();
+    assertThat(RedisBinaryCodec.encodeAscii("\u007f", out, 0)).isEqualTo(1);
+    // 0x80 is the first byte that is not ASCII, and an escaped byte is above ASCII too
+    assertThat(RedisBinaryCodec.encodeAscii("a\u0080", out, 0)).isEqualTo(-1);
+    assertThat(RedisBinaryCodec.encodeAscii("a\uDC80", out, 0)).isEqualTo(-1);
+    assertThat(RedisBinaryCodec.encodeAscii("\u00e9", out, 0)).isEqualTo(-1);
+  }
+
+  @Test
+  void decodeOfAPrefixOfTheArrayIgnoresTheRest() {
+    // the length argument bounds the read: the bytes after it are not part of the value, ASCII or not
+    final byte[] bytes = { 'a', 'b', (byte) 0xc3, (byte) 0xa9, 'z' };
+    assertThat(RedisBinaryCodec.decode(bytes, 2)).isEqualTo("ab");
+    assertThat(RedisBinaryCodec.decode(bytes, 4)).isEqualTo("abé");
+    assertThat(RedisBinaryCodec.decode(bytes, 0)).isEmpty();
+    // the first non-ASCII byte is exactly 0x80
+    assertThat(RedisBinaryCodec.decode(new byte[] { 'a', (byte) 0x80 }, 2)).isEqualTo("a\uDC80");
+    assertThat(RedisBinaryCodec.decode(new byte[] { 'a', 0x7f }, 2)).isEqualTo("a\u007f");
+  }
 }
