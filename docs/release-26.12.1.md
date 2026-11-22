@@ -92,7 +92,8 @@ answers and nothing else:
 answers from every record the member may read. Gremlin, the MongoDB wire protocol and embedded code that reads through
 `iterateType()` were capped only by the scan truncation, and now read every record: they never applied the quota as a row cap.
 
-**Quota bypass to be aware of.** Until a row cap exists on those entry points (#13087), `resultSetLimit` no longer bounds how much a
+**Quota bypass to be aware of.** This is a breaking security change for a deployment that grants those entry points
+to a group under a quota. Until a row cap exists on those entry points (#13087), `resultSetLimit` no longer bounds how much a
 member of the group can read through Gremlin, the MongoDB wire protocol or the record API: before it bounded only the first N
 records of each bucket scan, now nothing. If the quota is what an administrator relies on to limit what a group can extract,
 do not grant that group access to those protocols until a row cap is added there. The quota still bounds the rows a SQL

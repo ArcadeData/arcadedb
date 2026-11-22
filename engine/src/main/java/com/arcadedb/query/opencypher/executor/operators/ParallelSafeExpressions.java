@@ -52,6 +52,13 @@ import java.util.Set;
  * The workers share the one predicate instance, where a SQL scan gives each its own copy of the AST. A node joins the list
  * only if evaluating it is thread-safe: no mutable state, or state published through volatile immutable snapshots as
  * {@code ComparisonExpression}'s temporal memos are. Keep that in mind before adding a node or a cache to one of them.
+ * <p>
+ * <b>Never a node that runs a statement.</b> A {@code COUNT}, {@code COLLECT} or {@code EXISTS} subquery, a user-defined
+ * function or a procedure runs a statement of its own, and the row cap of a user's {@code resultSetLimit} tells such a
+ * statement from a top-level one by the thread that runs it: the thread that executes the capped statement or pulls its rows
+ * ({@code ProfiledLimitResultSet.isRunning()}, issue #12888). Evaluated by a worker it would be capped as a statement of its
+ * own, and {@code COUNT { }} would answer the quota instead of the count. A path that evaluates one on another thread has to
+ * carry that state to it first. {@code ParallelSafeExpressionsStateTest.subqueriesAreNotAdmitted} pins it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
