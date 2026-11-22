@@ -130,6 +130,9 @@ public class MergeStep extends AbstractExecutionStep {
   // The index that answered the existence check of the path the last findAllMatchingPaths looked for, null when a walk did. Set by
   // every call, read by mergePathAll right after it (issue #12483)
   private       TypeIndex           existenceIndex;
+  // The type tryFindRelationshipByIndex last asked whether the user may read it and its subtypes, and the answer (issue #12483)
+  private       DocumentType        readCheckedType;
+  private       boolean             readCheckedAnswer;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -664,7 +667,14 @@ public class MergeStep extends AbstractExecutionStep {
 
     final String relType = relPattern.getFirstType();
     final Schema schema = context.getDatabase().getSchema();
-    if (!schema.existsType(relType) || !(schema.getType(relType) instanceof EdgeType type) || !canReadTypeAndSubTypes(type))
+    if (!schema.existsType(relType) || !(schema.getType(relType) instanceof EdgeType type))
+      return null;
+    // asked once per type and step, not per row: the user of a statement does not change while it runs
+    if (type != readCheckedType) {
+      readCheckedType = type;
+      readCheckedAnswer = canReadTypeAndSubTypes(type);
+    }
+    if (!readCheckedAnswer)
       return null;
 
     final Map<String, Object> relProps = evaluateMatchProperties(relPattern.getProperties(), baseResult);
