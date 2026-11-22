@@ -133,7 +133,8 @@ class Issue12483ConcurrentMergeEdgeInsertBenchmark {
       final double seconds = (System.nanoTime() - start) / 1_000_000_000D;
 
       assertThat(failure.get()).as("a writer failed with something other than a retryable refusal").isNull();
-      final long stored = database.countType("R", false);
+      // a scan of the records, not the cached counter countType answers from: what was stored, outside the timed interval
+      final long stored = database.query("sql", "SELECT count(@rid) AS c FROM R").next().<Number>getProperty("c").longValue();
       assertThat(committed.get()).isEqualTo((long) BATCHES * BATCH);
       assertThat(stored).isEqualTo(committed.get());
       System.out.printf(Locale.ENGLISH, "%s writers=%d relationships/s=%.0f refused=%d (%.2f per commit) stored=%d/%d %s%n",

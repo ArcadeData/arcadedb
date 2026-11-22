@@ -27,6 +27,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,6 +70,30 @@ class MergedEdgeRegistryRelationshipMarksIssue12483Test extends TestHelper {
     assertThat(database.query("sql", "SELECT uuid FROM E").next().<String>getProperty("uuid")).isEqualTo("x");
     assertThat(registry().isCommittedSince(keyOf("E", "x"), since)).isTrue();
     assertThat(registry().isCommittedSince(keyOf("E", "other"), since)).isFalse();
+  }
+
+  /** A list key changed in place after the save assigns nothing and is not written: the key marked is the one the save wrote. */
+  @SuppressWarnings("unchecked")
+  @Test
+  void aListKeyChangedInPlaceAfterTheSaveIsMarkedWithTheValueTheCommitWrites() {
+    database.transaction(() -> {
+      database.getSchema().createEdgeType("L", 1).createProperty("tags", Type.LIST, "STRING");
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "L", "tags");
+    });
+
+    final long since = registry().getSequence();
+    database.transaction(() -> {
+      final MutableEdge edge = ((Vertex) database.lookupByRID(a, true)).newEdge("L", b, "tags", new ArrayList<>(List.of("a")));
+      ((List<String>) edge.get("tags")).add("b");
+    });
+
+    assertThat(database.query("sql", "SELECT tags FROM L").next().<List<String>>getProperty("tags")).containsExactly("a");
+    assertThat(registry().isCommittedSince(MergedEdgeRegistry.keyOf(a, b, "L", Map.of("tags", List.of("a"))), since)).isTrue();
+    assertThat(registry().isCommittedSince(MergedEdgeRegistry.keyOf(a, b, "L", Map.of("tags", List.of("a", "b"))), since)).isFalse();
+
+    // The index entry is taken from the object at the commit, so it holds the change the record does not: a disagreement of the index
+    // with the record that this test does not cover, put right here so the integrity check of the teardown judges the rest
+    database.command("sql", "CHECK DATABASE FIX").close();
   }
 
   /** The key a SET after the creation gives, saved, is the one the commit writes and marks. */

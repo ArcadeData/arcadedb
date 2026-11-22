@@ -6029,7 +6029,7 @@ public class TransactionContext implements Transaction {
       if (lastIndexes.length == 0)
         continue;
 
-      final Edge edge = currentEdge(i, rid, type);
+      Edge edge = currentEdge(i, rid, type);
       if (edge == null)
         continue;
       final RID from = edge.getOut();
@@ -6037,7 +6037,15 @@ public class TransactionContext implements Transaction {
       if (from == null || to == null)
         continue;
       for (final TypeIndex index : lastIndexes) {
-        final Map<String, Object> key = indexKeyOf(index, edge);
+        Map<String, Object> key = indexKeyOf(index, edge);
+        if (key != null && edge instanceof MutableDocument && !isQueued(rid, edge) && holdsContainer(key)) {
+          // a list or a map of the object can have been changed in place after the save, which assigns nothing and is not written:
+          // the key is the one the save wrote to the page
+          edge = writtenEdge(rid, type);
+          if (edge == null)
+            break;
+          key = indexKeyOf(index, edge);
+        }
         // a relationship with a null in the key is one no MERGE finds through this index: a MERGE cannot match a null
         if (key != null) {
           final long mergedEdgeKey = mergedEdgeKeyOf(from, to, index, key);
@@ -6065,6 +6073,22 @@ public class TransactionContext implements Transaction {
       return edge;
 
     // read-your-writes off and nobody holds it, or changed after its save: what the transaction wrote to its page
+    return writtenEdge(rid, type);
+  }
+
+  private boolean isQueued(final RID rid, final Edge edge) {
+    return updatedRecords != null && updatedRecords.get(rid) == edge;
+  }
+
+  private static boolean holdsContainer(final Map<String, Object> key) {
+    for (final Object value : key.values())
+      if (value instanceof Collection || value instanceof Map || value.getClass().isArray())
+        return true;
+    return false;
+  }
+
+  /** The relationship at {@code rid} as the transaction wrote it to its page, or null when it is not there. */
+  private Edge writtenEdge(final RID rid, final DocumentType type) {
     try {
       final Binary written = ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
       return written != null && database.getRecordFactory().newImmutableRecord(database, type, rid, written, null) instanceof Edge edge ?
