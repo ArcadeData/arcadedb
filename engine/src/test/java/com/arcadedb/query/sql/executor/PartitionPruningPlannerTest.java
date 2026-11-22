@@ -351,6 +351,9 @@ class PartitionPruningPlannerTest extends TestHelper {
       assertThat(filter.getClusters())
           .as("OR with an unprunable branch must fall back to full fan-out")
           .hasSize(BUCKETS);
+    assertThat(plan.prettyPrint(0, 2)).as("the type is scanned, not read through an index search").contains("FETCH FROM TYPE");
+    for (int bucket = 0; bucket < BUCKETS; bucket++)
+      assertThat(plan.prettyPrint(0, 2)).as("bucket %d is scanned", bucket).contains(TYPE_NAME + "_" + bucket);
 
     final Set<String> tenants = new HashSet<>();
     while (rs.hasNext())

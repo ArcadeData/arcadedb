@@ -6071,7 +6071,8 @@ public class SelectExecutionPlanner {
       }
     } else {
       // Defensive, and not reachable through a SELECT today: handleTypeAsTargetWithIndexedFunction() runs first at
-      // both call sites and claims every multi-block WHERE, so an OR reaches its own per-branch planning - which
+      // both call sites and claims every multi-block WHERE whose branches all have an index or call an indexed function (an OR with a
+      // branch no index answers reaches the scan below), so an OR reaches its own per-branch planning - which
       // chains the LET into each sub-plan correctly, because that sub-plan is not empty by then. Kept because this
       // branch chains residual filters of its own, and one reading a per-record LET would be evaluated with the
       // variable unset, which is a wrong answer rather than a lost optimisation.

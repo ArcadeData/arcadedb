@@ -108,6 +108,15 @@ class OrBranchScanCountTest extends TestHelper {
     }
   }
 
+  @Test
+  void anOrderByOnAnIndexedPropertyKeepsItsOrderOverTheScanOfAnOrWithAnUnindexedBranch() {
+    final List<Integer> expected = matching(i -> i == 5 || i % 7 == 3);
+    assertThat(values("SELECT FROM Mixed WHERE id = 5 OR b = 3 ORDER BY id", "id")).containsExactlyElementsOf(expected);
+    assertThat(values("SELECT FROM Mixed WHERE id = 5 OR b = 3 ORDER BY id DESC", "id")).containsExactlyElementsOf(expected.reversed());
+    // the same statement run again: the plan is the same, the rows are too
+    assertThat(values("SELECT FROM Mixed WHERE id = 5 OR b = 3 ORDER BY id", "id")).containsExactlyElementsOf(expected);
+  }
+
   private static List<Integer> matching(final IntPredicate predicate) {
     final List<Integer> matches = new ArrayList<>();
     for (int i = 0; i < RECORDS; i++)
