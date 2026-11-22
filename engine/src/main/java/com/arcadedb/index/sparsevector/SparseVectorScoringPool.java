@@ -448,7 +448,7 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
         } catch (final RuntimeException e) {
           throw e;
         } catch (final Exception e) {
-          throw new RuntimeException("Sparse-vector top-K failed", e);
+          throw new RuntimeException("Sparse-vector fan-out task failed", e);
         }
       }
       return out;
@@ -493,14 +493,14 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
         Thread.currentThread().interrupt();
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new RuntimeException("Interrupted during sparse-vector top-K fan-out", ie);
+        throw new RuntimeException("Interrupted during sparse-vector fan-out", ie);
       } catch (final TimeoutException te) {
         // Cancel every still-pending future so the pool stops working on results we will not
         // observe. The cancelled-from-the-pool task may still throw an InterruptedException
         // inside its IO; we don't await those (cancel(true) returns immediately).
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new RuntimeException("Sparse-vector top-K fan-out timed out after "
+        throw new RuntimeException("Sparse-vector fan-out timed out after "
             + timeoutSeconds + "s (configurable via "
             + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
       } catch (final ExecutionException ee) {
@@ -510,7 +510,7 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
     if (!errors.isEmpty()) {
       final Throwable first = errors.getFirst();
       final RuntimeException toThrow = first instanceof RuntimeException re ? re
-          : new RuntimeException("Sparse-vector top-K fan-out failed", first);
+          : new RuntimeException("Sparse-vector fan-out failed", first);
       for (int i = 1; i < errors.size(); i++)
         toThrow.addSuppressed(errors.get(i));
       throw toThrow;

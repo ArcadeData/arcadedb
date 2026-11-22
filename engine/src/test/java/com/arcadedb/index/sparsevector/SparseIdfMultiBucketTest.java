@@ -27,6 +27,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -39,8 +42,11 @@ import static org.assertj.core.api.Assertions.within;
  * different number of documents with that dimension, and the merged top-K ranked them by that accident.
  */
 class SparseIdfMultiBucketTest extends TestHelper {
-  private static final int BIG_BUCKET_DOCS   = 200;
-  private static final int SMALL_BUCKET_DOCS = 2;
+  private static final int     BIG_BUCKET_DOCS   = 200;
+  private static final int     SMALL_BUCKET_DOCS = 2;
+  private static final int     BUCKETS           = 4;
+  private static final int[]   QUERY_DIMS        = { 5, 6, 7 };
+  private static final float[] QUERY_VALUES      = { 1.0f, 1.0f, 1.0f };
 
   @Test
   void identicalVectorsScoreTheSameInEveryBucket() {
@@ -72,10 +78,6 @@ class SparseIdfMultiBucketTest extends TestHelper {
     assertThat(scores).hasSize(total);
     assertThat(scores).allSatisfy(score -> assertThat(score).isCloseTo(expected, within(1e-6)));
   }
-
-  private static final int     BUCKETS       = 4;
-  private static final int[]   QUERY_DIMS    = { 5, 6, 7 };
-  private static final float[] QUERY_VALUES = { 1.0f, 1.0f, 1.0f };
 
   /**
    * The document frequency is counted over every bucket of the type, so counting it per bucket search would make a query cost
@@ -178,6 +180,80 @@ class SparseIdfMultiBucketTest extends TestHelper {
     database.transaction(() -> database.command("sql", "DELETE FROM bucket:Doc_1 LIMIT 1"));
     assertThat(index.effectiveWeights(QUERY_DIMS, QUERY_VALUES))
         .containsExactly(idfWeight(11, 11), idfWeight(11, 9), idfWeight(11, 9));
+  }
+
+  /**
+   * A pool worker that resolves IDF weights (a per-bucket search of a fan-out calling {@code topK}) must not fan the
+   * per-bucket counts out again on the pool it occupies: they run inline on the worker, and the weights are the same as
+   * the ones the caller resolves.
+   */
+  @Test
+  void aPoolWorkerCountsTheDocumentFrequencyInline() throws Exception {
+    createTypeWithBuckets();
+    final LSMSparseVectorIndex index = (LSMSparseVectorIndex) typeIndex().getIndexesOnBuckets()[0];
+    final float[] fromCaller = index.effectiveWeights(QUERY_DIMS, QUERY_VALUES);
+
+    final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
+    final float[] fromWorker = pool.submit(() -> index.effectiveWeights(QUERY_DIMS, QUERY_VALUES)).get(30, TimeUnit.SECONDS);
+    assertThat(fromWorker).containsExactly(fromCaller);
+
+    final List<Thread> ranOn = pool.submit(() -> {
+      final List<Callable<Thread>> tasks = new ArrayList<>();
+      for (int i = 0; i < BUCKETS; i++)
+        tasks.add(Thread::currentThread);
+      final List<Thread> threads = new ArrayList<>(SparseVectorScoringPool.runAll(tasks, false));
+      threads.add(Thread.currentThread());
+      return threads;
+    }).get(30, TimeUnit.SECONDS);
+    assertThat(ranOn).as("every task of a fan-out asked from a pool worker runs on that worker").containsOnly(ranOn.getLast());
+  }
+
+  /**
+   * The document-frequency cache keeps at most {@link PaginatedSparseVectorEngine#DF_CACHE_MAX_DIMS} dims per state of the
+   * index. A query over more dims still gets the right counts: the dims past the cap are counted again on every call.
+   */
+  @Test
+  void dimsPastTheCacheCapAreCountedEveryTimeAndStayCorrect() {
+    final int extraDims = 10;
+    final int dims = PaginatedSparseVectorEngine.DF_CACHE_MAX_DIMS + extraDims;
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.tokens ARRAY_OF_INTEGERS");
+      database.command("sql", "CREATE PROPERTY Doc.weights ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON Doc (tokens, weights) LSM_SPARSE_VECTOR "
+          + "METADATA {\"dimensions\": " + dims + ", \"modifier\": \"IDF\", \"weightQuantization\": \"FP32\"}");
+    });
+    final int[] queryDims = new int[dims];
+    final float[] queryValues = new float[dims];
+    for (int i = 0; i < dims; i++) {
+      queryDims[i] = i;
+      queryValues[i] = 1.0f;
+    }
+    // two documents holding every dim, one holding only the dims past the cap: df = 2 under the cap, 3 past it
+    final int[] pastCapDims = new int[extraDims];
+    final float[] pastCapValues = new float[extraDims];
+    for (int i = 0; i < extraDims; i++) {
+      pastCapDims[i] = PaginatedSparseVectorEngine.DF_CACHE_MAX_DIMS + i;
+      pastCapValues[i] = 1.0f;
+    }
+    database.transaction(() -> {
+      for (int i = 0; i < 2; i++)
+        database.newDocument("Doc").set("tokens", queryDims).set("weights", queryValues).save();
+      database.newDocument("Doc").set("tokens", pastCapDims).set("weights", pastCapValues).save();
+    });
+
+    final LSMSparseVectorIndex index = (LSMSparseVectorIndex) typeIndex().getIndexesOnBuckets()[0];
+    final float[] expected = new float[dims];
+    for (int i = 0; i < dims; i++)
+      expected[i] = i < PaginatedSparseVectorEngine.DF_CACHE_MAX_DIMS ? idfWeight(3, 2) : idfWeight(3, 3);
+
+    final long walksBefore = countDimWalks();
+    assertThat(index.effectiveWeights(queryDims, queryValues)).containsExactly(expected);
+    assertThat(countDimWalks() - walksBefore).isEqualTo(dims);
+
+    final long walksAgain = countDimWalks();
+    assertThat(index.effectiveWeights(queryDims, queryValues)).containsExactly(expected);
+    assertThat(countDimWalks() - walksAgain).as("only the dims past the cap are counted again").isEqualTo(extraDims);
   }
 
   private void createTypeWithBuckets() {

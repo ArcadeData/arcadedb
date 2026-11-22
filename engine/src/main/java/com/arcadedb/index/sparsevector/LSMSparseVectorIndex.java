@@ -1029,6 +1029,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * flushed) or is itself a pool worker.
    */
   public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
+    checkIsValid();
     checkQueryArrays(queryIndices, queryValues);
     final boolean useIDF = sparseMetadata != null
         && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);

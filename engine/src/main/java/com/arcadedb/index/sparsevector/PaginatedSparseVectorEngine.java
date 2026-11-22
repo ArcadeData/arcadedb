@@ -274,7 +274,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final AtomicLong countDimWalks = new AtomicLong();
 
   /** Dims whose document frequency {@link #countDim} keeps for one state of the index; past it, further dims are counted every time. */
-  private static final int DF_CACHE_MAX_DIMS = 8192;
+  static final int DF_CACHE_MAX_DIMS = 8192;
 
   private volatile DfCache dfCache;
 
@@ -1006,12 +1006,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /** Number of {@link #countDim} calls made on this engine, cached or not. */
-  public long countDimCallCount() {
+  long countDimCallCount() {
     return countDimCalls.get();
   }
 
   /** Number of {@link #countDim} calls that walked the postings of the dim, i.e. were not answered from the cache. */
-  public long countDimWalkCount() {
+  long countDimWalkCount() {
     return countDimWalks.get();
   }
 
