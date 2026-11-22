@@ -42,6 +42,8 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -439,7 +441,27 @@ public final class SetClauseApplier {
   private static boolean writesProperty(final Document doc, final String propertyName, final Object value) {
     if (value == null)
       return doc.has(propertyName);
-    return !CypherValues.equalValues(doc.get(propertyName), value);
+    return !CypherValues.equalValues(doc.get(propertyName), asStored(doc, propertyName, value));
+  }
+
+  /**
+   * A number written to a property declared with a type is stored as that type ({@code SET n.price = 1} over a DOUBLE
+   * column stores 1.0), so it is compared in the form the write will give it: the INTEGER 1 is no new value for a stored
+   * 1.0 of a DOUBLE column, while it is for an undeclared property, whose kind the write keeps (issue #12981).
+   */
+  private static Object asStored(final Document doc, final String propertyName, final Object value) {
+    if (!(value instanceof Number))
+      return value;
+    final DocumentType type = doc.getType();
+    final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
+    if (property == null)
+      return value;
+    try {
+      return Type.convert(doc.getDatabase(), value, property.getType().getJavaImplementation(doc.getDatabase()), property);
+    } catch (final RuntimeException e) {
+      // a value the declared type cannot take: the write reports why
+      return value;
+    }
   }
 
   private void applyPropertySet(final SetClause.SetItem item, final Result result,
