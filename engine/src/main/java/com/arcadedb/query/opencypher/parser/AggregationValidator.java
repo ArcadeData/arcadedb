@@ -183,9 +183,30 @@ final class AggregationValidator {
         if (element.isKeyExpression())
           checkNestedAggregation(element.getExpression(), insideAggregation);
     } else if (expr instanceof ReduceExpression reduce) {
+      // the initial value and the list of a reduce are evaluated once per group, so an aggregate there is legal; the body runs once
+      // per element of the list, inside one outer row: an aggregate there has no group to fold, as in a list comprehension
+      // (issue #13019)
       checkNestedAggregation(reduce.getInitialValue(), insideAggregation);
       checkNestedAggregation(reduce.getListExpression(), insideAggregation);
-      checkNestedAggregation(reduce.getReduceExpression(), insideAggregation);
+      checkAggregationInReduce(reduce.getReduceExpression());
+    } else if (expr instanceof AllReduceExpression allReduce) {
+      // the initial value and the list of an allReduce are evaluated once per group, so an aggregate there is legal; the body runs
+      // once per element of the list, inside one outer row, as in a reduce (issue #13019)
+      checkNestedAggregation(allReduce.getInitialValue(), insideAggregation);
+      checkNestedAggregation(allReduce.getListExpression(), insideAggregation);
+      checkAggregationInReduce(allReduce.getReduceExpression());
+    } else if (expr instanceof ChainedPropertyAccessExpression access) {
+      // the base of a property access can be an expression: the '.a' of '{a: count(n.x)}.a' hides the aggregate from the walk
+      // (issue #13019)
+      checkNestedAggregation(access.getBaseExpression(), insideAggregation);
+    } else if (expr instanceof ListIndexExpression index) {
+      // the list and the index of an index access can hold an aggregate: '[1, 2][count(n.x) - 1]' (issue #13019)
+      checkNestedAggregation(index.getListExpression(), insideAggregation);
+      checkNestedAggregation(index.getIndexExpression(), insideAggregation);
+    } else if (expr instanceof ListSliceExpression slice) {
+      checkNestedAggregation(slice.getListExpression(), insideAggregation);
+      checkNestedAggregation(slice.getFromExpression(), insideAggregation);
+      checkNestedAggregation(slice.getToExpression(), insideAggregation);
     } else if (expr instanceof CaseExpression) {
       final CaseExpression caseExpr = (CaseExpression) expr;
       if (caseExpr.getCaseExpression() != null)
@@ -223,6 +244,15 @@ final class AggregationValidator {
   private static void checkAggregationInListComprehension(final Expression expr) {
     if (expr != null && expr.containsAggregation())
       throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
+  }
+
+  /**
+   * The body of a reduce() runs once per element of its list, inside one outer row: an aggregate there has no group to fold, as
+   * in a list comprehension (issue #13019).
+   */
+  private static void checkAggregationInReduce(final Expression expr) {
+    if (expr != null && expr.containsAggregation())
+      throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in reduce expressions");
   }
 
   private static void checkAggregationInWhere(final WhereClause whereClause) {
