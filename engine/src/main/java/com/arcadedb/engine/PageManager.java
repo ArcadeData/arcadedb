@@ -150,6 +150,8 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalSnapshotBarriersFailedSuspend    = new AtomicLong();
   private final    AtomicLong                        totalSnapshotBarriersFailedFlush      = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
+  // One eviction pass per window while the read cache is over its RAM cap
+  private static final long                          EVICTION_THROTTLE_MS                  = 100;
   // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
   // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
@@ -2945,19 +2947,31 @@ public class PageManager extends LockContext {
   }
 
   private void checkForPageDisposal() {
-    // THIS RUNS ON EVERY PAGE ACCESS: ASK THE CHEAP QUESTION FIRST. BELOW THE CAP THERE IS NOTHING TO FREE, AND THE CLOCK IS NOT READ AT
-    // ALL (System.currentTimeMillis() is a clock call per invocation, #8523). ABOVE IT THE THROTTLE USES THE COARSE CLOCK, FOR WHICH
-    // 10 ms OF LAG IS NOTHING NEXT TO A 100 ms WINDOW
+    // This runs on every page access: ask the cheap question first. Below the cap there is nothing to free and the clock is not read
+    // at all (System.currentTimeMillis() is a clock call per invocation, and it stops scaling across threads, #12971). Above it the
+    // throttle reads the coarse clock, for which 10 ms of lag is nothing next to the 100 ms window
+    if (totalReadCacheRAM.get() < maxRAM)
+      return;
+
+    if (CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
+      return;
+
+    evictIfStillDue();
+  }
+
+  /**
+   * Runs the throttled eviction pass, unless one that ran while this thread waited for the monitor already did the job. Every
+   * thread that passes the throttle while a pass is running queues here, and the pass re-arms the throttle only when it ends:
+   * without this second look each of them ran a full sort of the cache of its own right after, one per thread and per window,
+   * freeing that many times what a window is meant to (measured with 8 reader threads over a 16 MB cap: 36-48 passes in the 5
+   * windows of the run).
+   */
+  private synchronized void evictIfStillDue() {
     final long totalRAM = totalReadCacheRAM.get();
-    if (totalRAM < maxRAM)
+    if (totalRAM < maxRAM || CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
       return;
 
-    if (CoarseClock.currentTimeMillis() - lastCheckForRAM < 100)
-      return;
-
-    final long ramToFree = totalRAM * freePageRAM / 100;
-
-    evictOldestPages(ramToFree, totalRAM);
+    evictOldestPages(totalRAM * freePageRAM / 100, totalRAM);
   }
 
   /** A cached page with the eviction keys it had when an eviction run read them. */

@@ -30,8 +30,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.time.Duration;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Pins the contract of the page-cache disposal check that runs on every page access: below the RAM cap it never
@@ -97,6 +100,45 @@ class PageManagerDisposalThrottleTest {
       scan();
 
     assertThat(evictionRuns() - before).as("a cache far below its RAM cap has nothing to free").isZero();
+  }
+
+  /**
+   * Readers that pass the throttle while an eviction pass is running queue behind it. Each of them used to run a pass of its
+   * own once the monitor was free (a full sort of the cache, over-evicting by that many times the intended amount, once per
+   * thread and per window), when the pass the first of them ran had already brought the cache under the cap and re-armed the
+   * throttle. Holding the monitor from the test stands for that running pass.
+   */
+  @Test
+  void readersQueuedBehindARunningPassDoNotEachRunAPassOfTheirOwn() throws InterruptedException {
+    open(4);
+    insert(1000);
+    // let the window of the passes the load above ran lapse: from here the throttle lets the next page access through
+    Thread.sleep(250);
+
+    final PageManager pageManager = ((DatabaseInternal) db).getPageManager();
+    final int readers = 6;
+    final long before = evictionRuns();
+    final Thread[] threads = new Thread[readers];
+    try {
+      synchronized (pageManager) {
+        for (int i = 0; i < readers; i++) {
+          threads[i] = new Thread(this::scan, "disposal-reader-" + i);
+          threads[i].start();
+        }
+        // the data is far bigger than the cap, so every reader reaches an access over it with the throttle open, and waits
+        // for the monitor there: evictOldestPages is the only method of the class that takes it
+        await().atMost(Duration.ofSeconds(60)).untilAsserted(() -> assertThat(
+            Arrays.stream(threads).filter(t -> t.getState() == Thread.State.BLOCKED).count()).isEqualTo(readers));
+      }
+    } finally {
+      for (final Thread t : threads)
+        if (t != null)
+          t.join(60_000);
+    }
+
+    assertThat(evictionRuns() - before)
+        .as("one pass freed the cache and re-armed the throttle: the readers queued behind it have nothing left to do")
+        .isLessThan(readers);
   }
 
   @Test

@@ -40,8 +40,8 @@ public final class CoarseClock {
         try {
           Thread.sleep(RESOLUTION_MS);
         } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          return;
+          // NOT FATAL: nothing owns this thread, and a clock that stops ticking freezes every reader of it for the rest of the JVM
+          // (the page cache's eviction throttle would never open again, #12971). The interrupt is consumed here and the loop goes on
         }
         now = System.currentTimeMillis();
       }
