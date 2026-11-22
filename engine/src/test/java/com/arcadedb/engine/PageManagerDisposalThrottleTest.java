@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,11 +40,13 @@ import static org.awaitility.Awaitility.await;
 /**
  * Pins the contract of the page-cache disposal check that runs on every page access: below the RAM cap it never
  * evicts, and above it the check is throttled to one eviction pass per window but still fires again once the
- * window has passed (the throttle reads the coarse clock, not a clock call per page access, #8523).
+ * window has passed (the throttle reads the coarse clock, not a clock call per page access, #12971).
  */
 class PageManagerDisposalThrottleTest {
   private static final String DB_PATH    = "./target/databases/PageManagerDisposalThrottleTest";
   private static final int    PAYLOAD_KB = 10;
+  /** The throttle window of the page disposal check, in ms. */
+  private static final long   THROTTLE_WINDOW_MS = 100;
 
   private Database db;
 
@@ -90,6 +93,20 @@ class PageManagerDisposalThrottleTest {
     return ((DatabaseInternal) db).getPageManager().getStats().evictionRuns;
   }
 
+  /**
+   * Waits on the clock the throttle reads, not on the wall clock: the last pass ended before this call, so once the coarse clock
+   * has moved by more than the window, the window of that pass has lapsed.
+   */
+  private static void letTheThrottleWindowLapse() {
+    final long since = CoarseClock.currentTimeMillis();
+    await().atMost(Duration.ofSeconds(30)).until(() -> CoarseClock.currentTimeMillis() - since > THROTTLE_WINDOW_MS + 50);
+  }
+
+  private static boolean isQueuedOnTheEvictionMonitor(final Thread thread) {
+    return thread.getState() == Thread.State.BLOCKED && Arrays.stream(thread.getStackTrace())
+        .anyMatch(frame -> PageManager.class.getName().equals(frame.getClassName()) && frame.getMethodName().startsWith("evict"));
+  }
+
   @Test
   void belowTheCapNothingIsEvicted() {
     open(256);
@@ -112,8 +129,8 @@ class PageManagerDisposalThrottleTest {
   void readersQueuedBehindARunningPassDoNotEachRunAPassOfTheirOwn() throws InterruptedException {
     open(4);
     insert(1000);
-    // let the window of the passes the load above ran lapse: from here the throttle lets the next page access through
-    Thread.sleep(250);
+    // from here the throttle lets the next page access through
+    letTheThrottleWindowLapse();
 
     final PageManager pageManager = ((DatabaseInternal) db).getPageManager();
     final int readers = 6;
@@ -126,9 +143,10 @@ class PageManagerDisposalThrottleTest {
           threads[i].start();
         }
         // the data is far bigger than the cap, so every reader reaches an access over it with the throttle open, and waits
-        // for the monitor there: evictOldestPages is the only method of the class that takes it
-        await().atMost(Duration.ofSeconds(60)).untilAsserted(() -> assertThat(
-            Arrays.stream(threads).filter(t -> t.getState() == Thread.State.BLOCKED).count()).isEqualTo(readers));
+        // for the monitor there. Blocked is not enough (the class has other monitors): the thread must be waiting in an evict* method
+        await().atMost(Duration.ofSeconds(60)).untilAsserted(
+            () -> assertThat(Arrays.stream(threads).filter(PageManagerDisposalThrottleTest::isQueuedOnTheEvictionMonitor).count()).isEqualTo(
+                readers));
       }
     } finally {
       for (final Thread t : threads)
@@ -142,7 +160,7 @@ class PageManagerDisposalThrottleTest {
   }
 
   @Test
-  void aboveTheCapEvictionFiresAgainOnceTheThrottleWindowPassed() throws InterruptedException {
+  void aboveTheCapEvictionFiresAgainOnceTheThrottleWindowPassed() {
     open(4);
     final long before = evictionRuns();
     insert(1000);
@@ -151,7 +169,7 @@ class PageManagerDisposalThrottleTest {
     assertThat(afterFirstPressure - before).as("the cache is over its cap: eviction must have run").isGreaterThan(0);
 
     // let the 100 ms throttle window pass, then keep the cache over the cap: the check must run a pass again
-    Thread.sleep(250);
+    letTheThrottleWindowLapse();
     insert(1000);
     scan();
 

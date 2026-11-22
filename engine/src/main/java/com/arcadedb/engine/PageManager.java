@@ -150,8 +150,6 @@ public class PageManager extends LockContext {
   private final    AtomicLong                        totalSnapshotBarriersFailedSuspend    = new AtomicLong();
   private final    AtomicLong                        totalSnapshotBarriersFailedFlush      = new AtomicLong();
   private volatile long                              lastCheckForRAM                       = 0;
-  // One eviction pass per window while the read cache is over its RAM cap
-  private static final long                          EVICTION_THROTTLE_MS                  = 100;
   // LIFECYCLE INVARIANT (#5070): flushThread and readCache are written only under LIFECYCLE_LOCK
   // during the 0->1 startup / 1->0 shutdown transitions, and read lock-free on the hot paths. That is safe
   // ONLY because a reader implies refcount > 0 (its database holds a reference), so no transition can run
@@ -254,6 +252,9 @@ public class PageManager extends LockContext {
    * genuinely wrong rather than merely busy.
    */
   private static final long SNAPSHOT_BARRIER_MAX_MILLIS = 5_000;
+
+  /** One eviction pass per window while the read cache is over its RAM cap. Read from the coarse clock, see {@link #checkForPageDisposal()}. */
+  private static final long EVICTION_THROTTLE_MS = 100;
 
   /**
    * Fraction of the space still usable on the spill volume that the automatically sized shadow cap may claim
@@ -2947,9 +2948,7 @@ public class PageManager extends LockContext {
   }
 
   private void checkForPageDisposal() {
-    // This runs on every page access: ask the cheap question first. Below the cap there is nothing to free and the clock is not read
-    // at all (System.currentTimeMillis() is a clock call per invocation, and it stops scaling across threads, #12971). Above it the
-    // throttle reads the coarse clock, for which 10 ms of lag is nothing next to the 100 ms window
+    // Runs on every page access, so no clock is read below the cap (#12971). Above it the coarse clock is enough for the 100 ms window
     if (totalReadCacheRAM.get() < maxRAM)
       return;
 

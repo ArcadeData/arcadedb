@@ -25,7 +25,10 @@ package com.arcadedb.utility;
  * once (issue #8523: the database's "last used" stamp, taken on every schema lookup and record read, made a parallel
  * scan on 12 threads no faster than on one). One daemon thread per JVM keeps it current, started on first use.
  * <p>
- * Never use it to measure a duration or to enforce a deadline: it can lag the real clock by one resolution step.
+ * Never use it to measure a duration or to enforce a deadline: it can lag the real clock by one resolution step. The one place a
+ * window is read from it on purpose is the page cache's eviction throttle (#12971), where 10 ms of lag is irrelevant against a
+ * 100 ms window. Nothing owns the ticker thread, so an interrupt of it is consumed and it keeps ticking: a clock that stopped
+ * would freeze every reader of it for the rest of the JVM.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
