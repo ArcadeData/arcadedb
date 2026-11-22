@@ -476,6 +476,62 @@ class PlannerTest {
     final Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
     points.add(point("nightly", C, 3, 150, "z1"));
 
-    assertThat(BenchChanges.pairsNeeded(data(TIME, points), List.of(open(7, marker)))).containsExactly("x1..z1", "y1..z1");
+    // the body shows the recorded regression (x1..y1), the verdict of the newest run is y1..z1
+    assertThat(BenchChanges.pairsNeeded(data(TIME, points), List.of(open(7, marker)))).containsExactly("x1..y1", "y1..z1");
+  }
+
+  /** A point shaped like a real published one: 40-character commits, a full run id and a bench commit. */
+  private static Point real(final String ref, final int day, final String variant, final double median) {
+    final Instant t = Instant.parse("2026-11-01T03:00:00Z").plusSeconds(day * 86400L);
+    return new Point("nightly", ref, ref, null, t, t, String.format("2026-11-%02dT03-00-00.123Z-%s-%s", day, ref.substring(0, 10), variant),
+        ("bench" + ref).substring(0, 40), "ok", median, new double[] { median * 0.97, median, median * 1.03 }, "ms", "lower");
+  }
+
+  @Test
+  void threeHundredWorseLinesFitInABodyAndAComment() {
+    final String a = "1a2b3c4d5e".repeat(4);
+    final String b = "2b3c4d5e6f".repeat(4);
+    final String c = "3c4d5e6f7a".repeat(4);
+    final Map<LineKey, List<Point>> lines = new TreeMap<>();
+    for (int i = 0; i < 300; i++) {
+      final String variant = i % 2 == 0 ? "jvm" : "native";
+      final LineKey key = new LineKey("perf-01", variant, "L", "workload-" + (i % 10), "case-number-" + i, "latency_p95_ms");
+      final double base = 100.123456 + i * 0.987654;
+      lines.put(key, new ArrayList<>(List.of(real(a, 1, variant, base), real(b, 2, variant, base * 1.5 + i * 0.001234))));
+    }
+
+    final JSONObject create = action(plan(lines), "create");
+    final String body = create.getString("body");
+    assertThat(body.length()).isLessThanOrEqualTo(65536);
+    assertThat(body).contains("and 260 more lines: see the dashboard");
+    final Marker marker = markerOf(create);
+    assertThat(marker.lineIds()).hasSize(300);
+    assertThat(Marker.parse(marker.render()).render()).isEqualTo(marker.render());
+
+    for (final Map.Entry<LineKey, List<Point>> e : lines.entrySet())
+      e.getValue().add(real(c, 3, e.getKey().variant(), e.getValue().get(1).median() * 1.01));
+    final JSONObject followed = plan(lines, open(7, marker));
+    final String comment = action(followed, "comment", 7).getString("body");
+    assertThat(comment.length()).isLessThanOrEqualTo(65536);
+    assertThat(comment).contains("and 260 more lines: see the dashboard");
+    final String update = action(followed, "update", 7).getString("body");
+    assertThat(update.length()).isLessThanOrEqualTo(65536);
+    assertThat(markerOf(action(followed, "update", 7)).lineIds()).hasSize(300);
+  }
+
+  @Test
+  void bodyKeepsTheRegressedNumbersAfterAFollow() {
+    final Point regressed = n(B, 2, 150);
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), regressed));
+    final JSONObject first = plan(data(TIME, points));
+
+    points.add(n(C, 3, 101));
+    final String body = action(plan(data(TIME, points), open(7, markerOf(action(first, "create")))), "update").getString("body");
+
+    String row = null;
+    for (final String line : body.split("\n"))
+      if (line.startsWith("| ["))
+        row = line;
+    assertThat(row).contains("150 ms").contains("50.0% worse").contains("/" + regressed.runId() + ".json").doesNotContain("101 ms");
   }
 }

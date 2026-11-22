@@ -38,14 +38,19 @@ class MarkerTest {
   @TempDir
   Path dir;
 
+  static final String BENCH = "0123456789abcdef0123456789abcdef01234567";
+
   private static Marker sample() {
     final Marker marker = Marker.create("nightly", "abc1234", "def5678");
-    final JSONObject entry = new JSONObject().put("baseRef", "def5678").put("baseMedian", 12.5)
-        .put("baseValues", new JSONArray().put(12.0).put(12.5).put(13.0)).put("baseStatus", "ok").put("unit", "ms").put("better", "lower")
-        .put("lastRun", "nightly:abc1234").put("streak", 1).put("recovered", false);
+    final JSONObject entry = new JSONObject().put("baseRef", "def5678").put("baseRunId", "2026-11-20T03-00-00Z-def5678-jvm")
+        .put("baseBench", BENCH).put("baseMedian", 12.5).put("baseSpread", 0.08).put("baseStatus", "ok").put("unit", "ms")
+        .put("better", "lower").put("worseRunId", "2026-11-21T03-00-00Z-abc1234-jvm").put("worseBench", BENCH).put("worseStatus", "ok")
+        .put("worseMedian", 20.0).put("worseChange", 0.6).put("worseBand", 0.1).put("lastRun", "abc1234").put("lastStatus", "ok")
+        .put("lastMedian", 20.0).put("lastChange", 0.6).put("lastBand", 0.1).put("streak", 1).put("recovered", false);
     marker.putLine("perf-01/jvm/M/ingestion/bulk-import/time", entry);
-    marker.putLine("perf-01/jvm/M/ingestion/bulk-import/_status", new JSONObject().put("baseRef", "def5678").put("baseValues", new JSONArray())
-        .put("baseStatus", "ok").put("lastRun", "nightly:abc1234").put("streak", 0).put("recovered", false));
+    marker.putLine("perf-01/jvm/M/ingestion/bulk-import/_status", new JSONObject().put("baseRef", "def5678").put("baseStatus", "ok")
+        .put("baseRunId", "2026-11-20T03-00-00Z-def5678-jvm").put("worseRunId", "2026-11-21T03-00-00Z-abc1234-jvm")
+        .put("worseStatus", "failed").put("lastRun", "abc1234").put("lastStatus", "failed").put("streak", 0).put("recovered", false));
     return marker;
   }
 
@@ -62,14 +67,41 @@ class MarkerTest {
     assertThat(parsed.getBaseRef()).isEqualTo("def5678");
     assertThat(parsed.lineIds()).containsExactlyInAnyOrder("perf-01/jvm/M/ingestion/bulk-import/time",
         "perf-01/jvm/M/ingestion/bulk-import/_status");
-    assertThat(parsed.line("perf-01/jvm/M/ingestion/bulk-import/time").getDouble("baseMedian")).isEqualTo(12.5);
+    final JSONObject time = parsed.line("perf-01/jvm/M/ingestion/bulk-import/time");
+    assertThat(time.getDouble("baseMedian")).isEqualTo(12.5);
+    assertThat(time.getDouble("baseSpread")).isEqualTo(0.08);
+    assertThat(time.getString("lastRun")).isEqualTo("abc1234");
+    assertThat(time.getString("worseBench")).isEqualTo(BENCH);
+    assertThat(time.getInt("streak")).isEqualTo(1);
+    final JSONObject status = parsed.line("perf-01/jvm/M/ingestion/bulk-import/_status");
+    assertThat(status.getString("baseStatus")).isEqualTo("ok");
+    assertThat(status.getString("worseStatus")).isEqualTo("failed");
+    assertThat(status.getInt("streak", -1)).isEqualTo(0);
+    assertThat(status.getBoolean("recovered", true)).isFalse();
     assertThat(parsed.render()).isEqualTo(marker.render());
+  }
+
+  @Test
+  void renderKeepsEachLongValueOnce() {
+    final String rendered = sample().render();
+
+    assertThat(rendered.split(BENCH, -1)).hasSize(2);
+    assertThat(rendered.split("2026-11-21T03-00-00Z-abc1234-jvm", -1)).hasSize(2);
+    assertThat(rendered).doesNotContain("baseValues").doesNotContain("lastRunId").doesNotContain("lastBench");
+  }
+
+  @Test
+  void renderRefusesAFieldItDoesNotKnow() {
+    final Marker marker = sample();
+    marker.line("perf-01/jvm/M/ingestion/bulk-import/time").put("baseValues", new JSONArray().put(12.0));
+
+    assertThatThrownBy(marker::render).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("baseValues");
   }
 
   @Test
   void renderIsDeterministicAndNeverEmitsACommentTerminator() {
     final Marker marker = sample();
-    marker.putLine("a/b/c/d/e/f", new JSONObject().put("baseRef", "def5678").put("baseMedian", 1.0).put("baseValues", new JSONArray())
+    marker.putLine("a/b/c/d/e/f", new JSONObject().put("baseRef", "def5678").put("baseMedian", 1.0).put("baseSpread", 0.0)
         .put("baseStatus", "x --> y > z").put("lastRun", "abc1234").put("streak", 0));
 
     final String rendered = marker.render();
@@ -105,9 +137,23 @@ class MarkerTest {
     statusWithMedian.line("perf-01/jvm/M/ingestion/bulk-import/_status").put("baseMedian", 1.0);
     assertThat(Marker.parse(statusWithMedian.render())).isNull();
 
-    final Marker textValues = sample();
-    textValues.line("perf-01/jvm/M/ingestion/bulk-import/time").put("baseValues", new JSONArray().put("12"));
-    assertThat(Marker.parse(textValues.render())).isNull();
+    final Marker textSpread = sample();
+    textSpread.line("perf-01/jvm/M/ingestion/bulk-import/time").put("baseSpread", "0.08");
+    assertThat(Marker.parse(textSpread.render())).isNull();
+
+    final Marker noSpread = sample();
+    noSpread.line("perf-01/jvm/M/ingestion/bulk-import/time").remove("baseSpread");
+    assertThat(Marker.parse(noSpread.render())).isNull();
+
+    final Marker statusWithSpread = sample();
+    statusWithSpread.line("perf-01/jvm/M/ingestion/bulk-import/_status").put("baseSpread", 0.0);
+    assertThat(Marker.parse(statusWithSpread.render())).isNull();
+
+    final String rendered0 = sample().render();
+    assertThat(Marker.parse(rendered0.replace("\"lines\":{\"", "\"lines\":{\"x/y/z\":{\"zz\":1},\""))).isNull();
+    final String badIndex = rendered0.replaceFirst("(\"[a-z]{2}\"):0([,}])", "$1:99$2");
+    assertThat(badIndex).isNotEqualTo(rendered0);
+    assertThat(Marker.parse(badIndex)).isNull();
 
     final Marker noLastRun = sample();
     noLastRun.line("perf-01/jvm/M/ingestion/bulk-import/time").remove("lastRun");

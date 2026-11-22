@@ -89,24 +89,17 @@ public final class BenchChanges {
   }
 
   /**
-   * The pairs a plan over these lines and issues needs answered: those of the verdicts plus, for each line of an open issue, its
-   * recorded baseline's bench commit against the newest point of the issue's trigger (the pair its body row shows).
+   * The pairs a plan over these lines and issues needs answered: those of the verdicts plus, for each line of an open issue, the bench
+   * commits of its recorded baseline and of the run it was reported worse in (the pair its body row shows).
    */
   public static Set<String> pairsNeeded(final Map<LineKey, List<Point>> lines, final List<TrackedIssue> issues) {
     final Set<String> pairs = pairsNeeded(Judge.judge(lines));
-    final Map<String, LineKey> keysById = new HashMap<>();
-    for (final LineKey key : lines.keySet())
-      keysById.put(key.id(), key);
     for (final TrackedIssue issue : issues) {
       if (!issue.open())
         continue;
       for (final String id : issue.marker().lineIds()) {
-        final LineKey key = keysById.get(id);
-        if (key == null)
-          continue;
-        final Point newest = Judge.newest(lines.get(key), issue.marker().getTrigger());
-        if (newest != null)
-          addPair(pairs, issue.marker().line(id).getString("baseBench", null), newest.benchCommit());
+        final JSONObject entry = issue.marker().line(id);
+        addPair(pairs, entry.getString("baseBench", null), entry.getString("worseBench", null));
       }
     }
     return pairs;

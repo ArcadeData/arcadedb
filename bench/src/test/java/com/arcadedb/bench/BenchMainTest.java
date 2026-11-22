@@ -530,7 +530,8 @@ class BenchMainTest {
 
     final ByteArrayOutputStream pairs = new ByteArrayOutputStream();
     assertThat(run(pairs, "gate-pairs", "--data", data.toString(), "--issues", issuesFile.toString())).isZero();
-    assertThat(pairs.toString(StandardCharsets.UTF_8)).contains("bench-0000000000 bench-cccccccccc");
+    // the body row shows the recorded baseline against the run the line was reported worse in
+    assertThat(pairs.toString(StandardCharsets.UTF_8)).contains("bench-0000000000 bench-bbbbbbbbbb");
 
     final ByteArrayOutputStream noIssues = new ByteArrayOutputStream();
     assertThat(run(noIssues, "gate-pairs", "--data", data.toString())).isZero();

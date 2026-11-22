@@ -24,8 +24,11 @@ import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The texts of a regression issue: its title, its body and the comment of each run. Each is a pure function of the marker (and of the
@@ -38,6 +41,11 @@ public final class IssueText {
   private static final String DASHBOARD         = "https://perf.arcadedb.com/workload.html?w=";
   private static final String RAW               = "https://github.com/ArcadeData/arcadedb-perf/blob/main/data/";
   private static final String COMPARE           = "https://github.com/ArcadeData/arcadedb/compare/";
+
+  /** Rows of a body or comment table; the rest are counted, with a dashboard link per workload. */
+  static final int MAX_ROWS = 40;
+  /** GitHub refuses an issue body or comment longer than this. */
+  static final int MAX_TEXT = 65536;
 
   static final String BENCH_CHANGED = "the bench changed between these runs: check it first";
   static final String BENCH_UNKNOWN = "bench change unknown";
@@ -58,7 +66,20 @@ public final class IssueText {
     return "Performance regression: " + n + " lines worse in release " + m.getRef() + " vs " + m.getBaseRef();
   }
 
+  /**
+   * The body: the regression's own numbers ({@code worse*}, never the newest run's) for at most {@link #MAX_ROWS} lines, most severe
+   * first, then the marker. Fewer rows are shown if the marker of a very large event would otherwise push the body over GitHub's limit.
+   */
   public static String body(final Marker m, final BenchChanges bench) {
+    final List<String> ids = bySeverity(m, "worse");
+    int rows = Math.min(MAX_ROWS, ids.size());
+    String body = body(m, bench, ids, rows);
+    while (body.length() > MAX_TEXT && rows > 0)
+      body = body(m, bench, ids, --rows);
+    return body;
+  }
+
+  private static String body(final Marker m, final BenchChanges bench, final List<String> ids, final int rows) {
     final boolean nightly = NIGHTLY.equals(m.getTrigger());
     final String base = m.getBaseRef();
     final String ref = m.getRef();
@@ -73,9 +94,8 @@ public final class IssueText {
 
     sb.append("| workload | case | scale | variant | metric | before | after | change | band |\n");
     sb.append("|---|---|---|---|---|---|---|---|---|\n");
-    boolean anyChanged = false;
-    boolean anyUnknown = false;
-    for (final String id : sortedIds(m)) {
+    for (int i = 0; i < rows; i++) {
+      final String id = ids.get(i);
       final JSONObject e = m.line(id);
       final String[] parts = parts(id);
       sb.append("| [").append(cell(parts[3])).append("](").append(DASHBOARD).append(parts[3]).append(") | ").append(cell(parts[4]))
@@ -84,10 +104,18 @@ public final class IssueText {
       final String lineBase = e.getString("baseRef", null);
       if (lineBase != null && !lineBase.equals(base))
         sb.append(" at `").append(shortRef(m.getTrigger(), lineBase)).append('`');
-      sb.append(rawLink(e.getString("baseRunId", null))).append(" | ").append(value(e, "last"))
-          .append(rawLink(e.getString("lastRunId", null))).append(" | ").append(change(e)).append(" | ").append(band(e)).append(" |\n");
+      sb.append(rawLink(e.getString("baseRunId", null))).append(" | ").append(value(e, "worse"))
+          .append(rawLink(e.getString("worseRunId", null))).append(" | ").append(change(e, "worse")).append(" | ").append(band(e, "worse"))
+          .append(" |\n");
+    }
+    if (rows < ids.size())
+      sb.append('\n').append(more(ids.subList(rows, ids.size()))).append('\n');
 
-      final Boolean changed = bench.changed(e.getString("baseBench", null), e.getString("lastBench", null));
+    boolean anyChanged = false;
+    boolean anyUnknown = false;
+    for (final String id : ids) {
+      final JSONObject e = m.line(id);
+      final Boolean changed = bench.changed(e.getString("baseBench", null), e.getString("worseBench", null));
       if (changed == null)
         anyUnknown = true;
       else if (changed)
@@ -104,6 +132,33 @@ public final class IssueText {
     sb.append("If the change is expected, close this issue to accept the regression: its lines are not reported again against the same baseline.\n\n");
     sb.append(m.render()).append('\n');
     return sb.toString();
+  }
+
+  /** "and N more lines: see the dashboard: " and a dashboard link per workload of the lines left out. */
+  private static String more(final List<String> omitted) {
+    final Set<String> workloads = new TreeSet<>();
+    for (final String id : omitted)
+      workloads.add(parts(id)[3]);
+    final StringBuilder sb = new StringBuilder("and ").append(omitted.size()).append(omitted.size() == 1 ? " more line" : " more lines")
+        .append(": see the dashboard: ");
+    boolean first = true;
+    for (final String workload : workloads) {
+      if (!first)
+        sb.append(", ");
+      first = false;
+      sb.append('[').append(cell(workload)).append("](").append(DASHBOARD).append(workload).append(')');
+    }
+    return sb.toString();
+  }
+
+  /** The line ids, most severe first: status lines, then by |change| (of the {@code worse} or {@code last} fields) descending, then id. */
+  private static List<String> bySeverity(final Marker m, final String prefix) {
+    final List<String> ids = sortedIds(m);
+    final String changeField = prefix + "Change";
+    ids.sort(Comparator.comparingInt((String id) -> m.line(id).has(changeField) ? 1 : 0)
+        .thenComparing(Comparator.comparingDouble((String id) -> Math.abs(m.line(id).getDouble(changeField, 0))).reversed())
+        .thenComparing(Comparator.naturalOrder()));
+    return ids;
   }
 
   public static String runComment(final String runKey, final List<String> rows) {
@@ -142,8 +197,9 @@ public final class IssueText {
    */
   static List<String> runRows(final Marker m, final String ref) {
     final List<String> rows = new ArrayList<>();
+    final List<String> shown = new ArrayList<>();
     final boolean ownRun = ref.equals(m.getRef());
-    for (final String id : sortedIds(m)) {
+    for (final String id : bySeverity(m, "last")) {
       final JSONObject e = m.line(id);
       if (!ref.equals(e.getString("lastRun", null)))
         continue;
@@ -158,8 +214,12 @@ public final class IssueText {
         state = "not judged, status `" + e.getString("lastStatus", "") + "`";
       else
         state = "still worse";
-      rows.add("- `" + id + "`: " + state + ": " + value(e, "base") + " -> " + value(e, "last") + changeSuffix(e));
+      shown.add(id);
+      if (rows.size() < MAX_ROWS)
+        rows.add("- `" + id + "`: " + state + ": " + value(e, "base") + " -> " + value(e, "last") + changeSuffix(e));
     }
+    if (shown.size() > MAX_ROWS)
+      rows.add("\n" + more(shown.subList(MAX_ROWS, shown.size())));
     return rows;
   }
 
@@ -205,19 +265,19 @@ public final class IssueText {
     return "`" + e.getString(prefix + "Status", "?") + "`";
   }
 
-  private static String change(final JSONObject e) {
-    if (!e.has("lastChange"))
+  private static String change(final JSONObject e, final String prefix) {
+    if (!e.has(prefix + "Change"))
       return "status";
-    final double c = e.getDouble("lastChange");
+    final double c = e.getDouble(prefix + "Change");
     return c > 0 ? percent(c) + " worse" : c < 0 ? percent(-c) + " better" : "0.0%";
   }
 
-  private static String band(final JSONObject e) {
-    return e.has("lastBand") ? percent(e.getDouble("lastBand")) : "";
+  private static String band(final JSONObject e, final String prefix) {
+    return e.has(prefix + "Band") ? percent(e.getDouble(prefix + "Band")) : "";
   }
 
   private static String changeSuffix(final JSONObject e) {
-    return e.has("lastChange") ? " (" + change(e) + ", band " + band(e) + ")" : "";
+    return e.has("lastChange") ? " (" + change(e, "last") + ", band " + band(e, "last") + ")" : "";
   }
 
   private static String rawLink(final String runId) {

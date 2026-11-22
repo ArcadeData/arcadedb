@@ -18,7 +18,6 @@
  */
 package com.arcadedb.bench.gate;
 
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.Instant;
@@ -28,10 +27,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The marker entry of one line: the baseline it was reported against ({@code base*}), and its newest measured run ({@code last*},
- * {@code streak}, {@code recovered}). The entry holds everything the issue texts show, so they render from the marker alone.
+ * The marker entry of one line: the baseline it was reported against ({@code base*}), the run it was reported worse in ({@code worse*},
+ * written once and never followed, so the issue body keeps the regression's own numbers), and its newest measured run ({@code last*},
+ * {@code streak}, {@code recovered}) that the run comments show. Change, band and spread are kept to 6 decimals: the texts show at most
+ * 2 decimals of a percentage, and a marker of a few hundred lines has to fit in an issue body.
  */
 final class PlanEntries {
+
+  private static final double DECIMALS = 1e6;
 
   private PlanEntries() {
   }
@@ -39,27 +42,34 @@ final class PlanEntries {
   /** The entry of a line reported worse by its verdict; {@code added} when it joins an issue already open for its run. */
   static JSONObject reported(final Verdict v, final boolean added) {
     final Point base = v.baseline();
+    final Point worse = v.newest();
+    final boolean metric = !Double.isNaN(worse.median());
     final JSONObject entry = new JSONObject();
     entry.put("baseRef", base.ref());
     putOrRemove(entry, "baseRunId", base.runId());
     putOrRemove(entry, "baseBench", base.benchCommit());
     entry.put("baseStatus", base.status());
-    final JSONArray values = new JSONArray();
     if (!Double.isNaN(base.median())) {
       entry.put("baseMedian", base.median());
-      for (final double value : base.values())
-        values.put(value);
+      entry.put("baseSpread", round(Rule.spread(base.median(), base.values())));
     }
-    entry.put("baseValues", values);
-    putOrRemove(entry, "unit", v.newest().unit());
-    putOrRemove(entry, "better", v.newest().better());
+    putOrRemove(entry, "unit", worse.unit());
+    putOrRemove(entry, "better", worse.better());
     if (added)
       entry.put("added", true);
-    setLast(entry, v.newest(), Double.isNaN(v.newest().median()) ? Double.NaN : v.change(), v.band(), false, 0);
+    putOrRemove(entry, "worseRunId", worse.runId());
+    putOrRemove(entry, "worseBench", worse.benchCommit());
+    entry.put("worseStatus", worse.status());
+    if (metric) {
+      entry.put("worseMedian", worse.median());
+      entry.put("worseChange", round(v.change()));
+      entry.put("worseBand", round(v.band()));
+    }
+    setLast(entry, worse, metric ? v.change() : Double.NaN, v.band(), false, 0);
     return entry;
   }
 
-  /** Follows a tracked line to its newest run: recovered when that run is not worse than the recorded baseline. */
+  /** Follows a tracked line to its newest run: recovered when that run is not worse than the recorded baseline. Never touches worse*. */
   static void follow(final JSONObject entry, final Point newest, final boolean statusLine) {
     final Point recorded = recordedBaseline(entry, newest.trigger());
     final boolean judged = statusLine || newest.valid();
@@ -105,23 +115,29 @@ final class PlanEntries {
     return best;
   }
 
-  /** The baseline recorded in the entry, rebuilt as a point: a status point when it has no median. */
+  /**
+   * The baseline recorded in the entry, rebuilt as a point: a status point when it has no median. The marker keeps the baseline's spread,
+   * not its repetitions, so the point gets two values whose spread is the recorded one ({@link Rule#band} reads nothing else of them).
+   */
   static Point recordedBaseline(final JSONObject entry, final String trigger) {
     final boolean metric = entry.has("baseMedian");
-    final JSONArray array = entry.getJSONArray("baseValues", new JSONArray());
-    final double[] values = new double[metric ? array.length() : 0];
-    for (int i = 0; i < values.length; i++)
-      values[i] = array.getDouble(i);
+    final double median = metric ? entry.getDouble("baseMedian") : Double.NaN;
+    final double spread = metric ? entry.getDouble("baseSpread", 0) : 0;
+    final double[] values;
+    if (!metric)
+      values = new double[0];
+    else if (spread > 0)
+      values = new double[] { median, median + spread * Math.abs(median) };
+    else
+      values = new double[] { median };
     return new Point(trigger, entry.getString("baseRef", ""), null, null, Instant.EPOCH, Instant.EPOCH, entry.getString("baseRunId", null),
-        entry.getString("baseBench", null), entry.getString("baseStatus", ""), metric ? entry.getDouble("baseMedian") : Double.NaN, values,
-        entry.getString("unit", null), entry.getString("better", null));
+        entry.getString("baseBench", null), entry.getString("baseStatus", ""), median, values, entry.getString("unit", null),
+        entry.getString("better", null));
   }
 
   private static void setLast(final JSONObject entry, final Point newest, final double change, final double band, final boolean recovered,
       final int streak) {
     entry.put("lastRun", newest.ref());
-    putOrRemove(entry, "lastRunId", newest.runId());
-    putOrRemove(entry, "lastBench", newest.benchCommit());
     entry.put("lastStatus", newest.status());
     if (Double.isNaN(newest.median()))
       entry.remove("lastMedian");
@@ -131,11 +147,15 @@ final class PlanEntries {
       entry.remove("lastChange");
       entry.remove("lastBand");
     } else {
-      entry.put("lastChange", change);
-      entry.put("lastBand", band);
+      entry.put("lastChange", round(change));
+      entry.put("lastBand", round(band));
     }
     entry.put("streak", streak);
     entry.put("recovered", recovered);
+  }
+
+  private static double round(final double value) {
+    return Math.round(value * DECIMALS) / DECIMALS;
   }
 
   private static void putOrRemove(final JSONObject entry, final String name, final String value) {
