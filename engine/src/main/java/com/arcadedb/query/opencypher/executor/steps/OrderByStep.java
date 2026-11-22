@@ -676,7 +676,6 @@ public class OrderByStep extends AbstractExecutionStep {
   private record Keyed(Result row, Object[] keys, long keyBytes, long arrival) {
   }
 
-  /** The first {@code k} rows of {@code kept} in the order of {@code comparator}. */
   /**
    * The capacity the top-K heap starts with: one more than the limit it keeps, capped at 1000 entries, which the heap grows
    * past as it needs. The addition is done in long: a limit above the largest int (every row, issue #12982) wrapped it to a
@@ -695,6 +694,7 @@ public class OrderByStep extends AbstractExecutionStep {
     return k > Integer.MAX_VALUE / 10 ? 1000 : Math.max(1000, k * 10);
   }
 
+  /** The first {@code k} rows of {@code kept} in the order of {@code comparator}. */
   private static List<Result> sortedRows(final List<Keyed> kept, final int k, final Comparator<Keyed> comparator) {
     kept.sort(comparator);
     final int size = Math.min(k, kept.size());

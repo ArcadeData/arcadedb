@@ -71,6 +71,33 @@ class CypherLimitAboveIntegerMaxIssue12982Test extends TestHelper {
     assertRefused("MATCH (n:Node) RETURN n.id AS id LIMIT $p", Map.of("p", -3000000000L));
   }
 
+  /** The top-K sort keeps SKIP + LIMIT rows: that sum must not wrap to a negative number when the limit is above the largest int. */
+  @Test
+  void aSmallSkipWithALimitAboveTheLargestIntSkipsOnlyTheSkippedRows() {
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id SKIP 1 LIMIT 3000000000")).containsExactly(2L, 3L);
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id SKIP $s LIMIT $l", Map.of("s", 1L, "l", 3000000000L)))
+        .containsExactly(2L, 3L);
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id SKIP 2147483647 LIMIT 2147483647")).isEmpty();
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id DESC SKIP 2 LIMIT 3000000000")).containsExactly(1L);
+  }
+
+  @Test
+  void aSkipAndALimitBothAboveTheLargestIntAnswerNothing() {
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id SKIP 3000000000 LIMIT 3000000000")).isEmpty();
+    assertThat(ids("MATCH (n:Node) RETURN n.id AS id ORDER BY id SKIP $s LIMIT $l", Map.of("s", 3000000000L, "l", 3000000000L)))
+        .isEmpty();
+  }
+
+  /** The same paging, behind a WITH and over a statement without a MATCH: they are planned by other blocks of the step builder. */
+  @Test
+  void theSameHoldsBehindAWithAndOverAnUnwind() {
+    assertThat(ids("MATCH (n:Node) WITH n.id AS id ORDER BY id SKIP 1 LIMIT 3000000000 RETURN id")).containsExactly(2L, 3L);
+    assertThat(ids("MATCH (n:Node) WITH n.id AS id ORDER BY id SKIP 3000000000 LIMIT 3000000000 RETURN id")).isEmpty();
+    assertThat(ids("MATCH (n:Node) WITH n.id AS id ORDER BY id LIMIT 3000000000 RETURN id")).containsExactly(1L, 2L, 3L);
+    assertThat(ids("UNWIND [3, 1, 2] AS id RETURN id ORDER BY id SKIP 1 LIMIT 3000000000")).containsExactly(2L, 3L);
+    assertThat(ids("UNWIND [3, 1, 2] AS id RETURN id ORDER BY id SKIP 3000000000 LIMIT 3000000000")).isEmpty();
+  }
+
   private void assertRefused(final String query, final Map<String, Object> params) {
     assertThatThrownBy(() -> rows(query, params)).as(query)
         .isInstanceOf(CommandParsingException.class)
@@ -90,10 +117,6 @@ class CypherLimitAboveIntegerMaxIssue12982Test extends TestHelper {
     for (final Result row : rows(query, params))
       out.add(row.<Number>getProperty("id").longValue());
     return out;
-  }
-
-  private List<Result> rows(final String query) {
-    return rows(query, null);
   }
 
   private List<Result> rows(final String query, final Map<String, Object> params) {
