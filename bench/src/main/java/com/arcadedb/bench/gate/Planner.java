@@ -33,9 +33,10 @@ import java.util.TreeMap;
 
 /**
  * Turns the judged lines and the tracked issues into a plan of GitHub actions: {@code create}, {@code update} (title and body),
- * {@code comment} (one per issue and run, keyed by the run so the workflow upserts it) and {@code close} (carrying its last comment).
- * The plan is a pure function of its inputs, and the state it needs next time is in the markers it writes, so a rerun over the same
- * data plans nothing. For each issue the comments and the close come before the update that moves its marker, so an effect that failed is
+ * {@code comment} (one per issue and run, keyed by the run so the workflow upserts it) and {@code close} (carrying its last comment and,
+ * when the marker moved, the {@code title} and {@code issueBody} written in the same update that closes the issue, in place of an
+ * {@code update}). The plan is a pure function of its inputs, and the state it needs next time is in the markers it writes, so a rerun
+ * over the same data plans nothing. For each issue the comments come before the update or close that moves its marker, so an effect that failed is
  * planned again; an open issue whose lines have all recovered already is closed even without new data, unless a maintainer reopened it:
  * then its streaks start over.
  */
@@ -148,12 +149,14 @@ public final class Planner {
           .put("body", IssueText.body(marker, bench)));
     }
 
-    // per issue the comments and the close come before the update: the update moves the marker, so an effect that failed is planned again
-    // next time. A comment is upserted by its run key and a close by its comment's, so planning one twice never doubles it.
+    // per issue the comments come before the update or close: either moves the marker, so an effect that failed is planned again next
+    // time. A comment is upserted by its run key and a close by its comment's, so planning one twice never doubles it.
     for (final Map.Entry<Integer, Marker> e : markers.entrySet()) {
       final int number = e.getKey();
       final Marker marker = e.getValue();
       final boolean close = PlanEntries.allRecovered(marker);
+      final boolean moved = !marker.render().equals(rendered.get(number));
+      JSONObject closing = null;
       final Map<String, Point> runs = runsByIssue.get(number);
       if (runs != null) {
         final List<Point> ordered = new ArrayList<>(runs.values());
@@ -162,7 +165,7 @@ public final class Planner {
           final String ref = ordered.get(i).ref();
           final List<String> rows = IssueText.runRows(marker, ref);
           if (close && i == ordered.size() - 1)
-            actions.put(close(number, marker, ref, verdicts, openByLine.keySet()));
+            closing = close(number, marker, ref, verdicts, openByLine.keySet());
           else if (!rows.isEmpty())
             actions.put(new JSONObject().put("op", "comment").put("issue", number).put("runKey", runKey(marker.getTrigger(), ref))
                 .put("body", IssueText.runComment(runKey(marker.getTrigger(), ref), rows, improvements(verdicts, marker, ref, openByLine.keySet()),
@@ -170,8 +173,13 @@ public final class Planner {
         }
       } else if (close)
         // every line had recovered already: the close planned with the run that completed the streaks did not happen
-        actions.put(close(number, marker, closingRef(marker, lines, keysById), verdicts, openByLine.keySet()));
-      if (!marker.render().equals(rendered.get(number)))
+        closing = close(number, marker, closingRef(marker, lines, keysById), verdicts, openByLine.keySet());
+      if (closing != null) {
+        // the close writes the marker in the same update that closes the issue: a closed issue never keeps a stale marker
+        if (moved)
+          closing.put("title", IssueText.title(marker)).put("issueBody", IssueText.body(marker, bench));
+        actions.put(closing);
+      } else if (moved)
         actions.put(new JSONObject().put("op", "update").put("issue", number).put("title", IssueText.title(marker))
             .put("body", IssueText.body(marker, bench)));
     }

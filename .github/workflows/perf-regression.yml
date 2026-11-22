@@ -15,8 +15,9 @@ name: Performance regression alerting
 # be months, and a bot close stops the gate from reporting the run it followed again.
 #
 # Each action of the plan is applied on its own: a failure is logged, the issue's later
-# actions are skipped (the plan puts its comment and close before the update that moves its
-# marker, so the next run plans them again) and the job fails at the end.
+# actions are skipped (the plan puts its comments before the update or close that moves its
+# marker, so the next run plans them again) and the job fails at the end. A close carries the
+# issue's new title and body and writes them in the update that closes it.
 
 on:
   schedule:
@@ -182,17 +183,22 @@ jobs:
                 const m = /^<!-- perf-regression-run (.+?) -->/.exec(action.body);
                 if (!m) throw new Error(`close of #${action.issue} has no run marker`);
                 await upsertComment(action.issue, m[1], action.body);
-                await github.rest.issues.update({
-                  owner, repo, issue_number: action.issue, state: 'closed', state_reason: 'completed',
-                });
+                // The marker that completes the streaks goes in the same update that closes the issue, so a
+                // closed issue never keeps a stale marker. A close without issueBody finds its marker written.
+                const update = {owner, repo, issue_number: action.issue, state: 'closed', state_reason: 'completed'};
+                if (action.issueBody !== undefined) {
+                  update.title = action.title;
+                  update.body = action.issueBody;
+                }
+                await github.rest.issues.update(update);
                 core.info(`closed #${action.issue}`);
               } else {
                 throw new Error(`unknown action op ${action.op}`);
               }
             };
 
-            // One failure must not silence the other alerts. An issue whose comment or close failed keeps
-            // its old marker (its update is skipped), so the next run plans the same effect again.
+            // One failure must not silence the other alerts. An issue whose comment failed keeps its old
+            // marker (its update or close is skipped), so the next run plans the same effect again.
             const failedIssues = new Set();
             let failures = 0;
             for (const action of plan.actions) {

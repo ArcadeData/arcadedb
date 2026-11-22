@@ -129,6 +129,13 @@ class PlannerTest {
     return m;
   }
 
+  /** The marker a close wrote into the issue body, in the same update that closed it. */
+  private static Marker closedMarkerOf(final JSONObject plan) {
+    final Marker m = Marker.parse(action(plan, "close").getString("issueBody"));
+    assertThat(m).isNotNull();
+    return m;
+  }
+
   private static TrackedIssue open(final int number, final Marker marker) {
     return new TrackedIssue(number, true, false, marker);
   }
@@ -244,10 +251,15 @@ class PlannerTest {
 
     points.add(n(D, 4, 100));
     final JSONObject third = plan(data(TIME, points), open(7, markerOf(action(second, "update"))));
-    assertThat(ops(third)).containsExactly("close", "update");
+    assertThat(ops(third)).containsExactly("close");
     final JSONObject close = action(third, "close");
     assertThat(close.getInt("issue")).isEqualTo(7);
     assertThat(close.getString("body")).startsWith("<!-- perf-regression-run nightly:" + D + " -->").contains("recovered");
+    // the marker that completes the streaks is written by the close itself: never a closed issue with a stale marker
+    final Marker closed = closedMarkerOf(third);
+    assertThat(closed.line(TIME.id()).getInt("streak")).isEqualTo(2);
+    assertThat(close.getString("issueBody")).isEqualTo(IssueText.body(closed, NO_BENCH));
+    assertThat(close.getString("title")).isEqualTo(IssueText.title(closed));
   }
 
   @Test
@@ -297,7 +309,7 @@ class PlannerTest {
     points.add(n(E, 5, 101));
     final JSONObject plan = plan(data(TIME, points), open(7, marker));
 
-    assertThat(ops(plan)).containsExactly("close", "update");
+    assertThat(ops(plan)).containsExactly("close");
     assertThat(action(plan, "close").getString("body")).startsWith("<!-- perf-regression-run nightly:" + E + " -->").contains("recovered (2 of 2)");
   }
 
@@ -311,7 +323,7 @@ class PlannerTest {
 
     points.add(r("26.12.1", 3, 100));
     final JSONObject second = plan(data(TIME, points), open(7, markerOf(create)));
-    assertThat(ops(second)).containsExactly("close", "update");
+    assertThat(ops(second)).containsExactly("close");
     assertThat(action(second, "close").getString("body")).startsWith("<!-- perf-regression-run release:26.12.1 -->");
   }
 
@@ -348,8 +360,8 @@ class PlannerTest {
     assertThat(marker.line(TIME.id()).getInt("streak")).isEqualTo(1);
     points.add(n(D, 4, 108));
     final JSONObject closing = plan(data(TIME, points), open(7, marker));
-    assertThat(ops(closing)).containsExactly("close", "update");
-    final Marker closed = markerOf(action(closing, "update"));
+    assertThat(ops(closing)).containsExactly("close");
+    final Marker closed = closedMarkerOf(closing);
 
     // D is +13.7% on C, but it was already reported (as recovered) in the issue the bot closed
     assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, false, false, closed)))).isEmpty();
@@ -381,7 +393,7 @@ class PlannerTest {
 
     status.add(s(D, 4, "ok"));
     final JSONObject third = plan(data(STATUS, status), open(7, markerOf(action(second, "update"))));
-    assertThat(ops(third)).containsExactly("close", "update");
+    assertThat(ops(third)).containsExactly("close");
   }
 
   @Test
@@ -576,15 +588,17 @@ class PlannerTest {
     marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
     points.add(n(D, 4, 100));
     final JSONObject closing = plan(data(TIME, points), open(7, marker));
-    assertThat(ops(closing)).containsExactly("close", "update");
+    assertThat(ops(closing)).containsExactly("close");
 
-    // the update was applied, the close failed: the issue is still open with every line recovered
-    final JSONObject retry = plan(data(TIME, points), open(7, markerOf(action(closing, "update"))));
+    // the issue is still open with every line recovered in its marker (the close did not happen after the marker was written): the
+    // close is planned again, with no body to write as the marker is already there
+    final JSONObject retry = plan(data(TIME, points), open(7, closedMarkerOf(closing)));
 
     assertThat(ops(retry)).containsExactly("close");
     assertThat(action(retry, "close").getString("body")).isEqualTo(action(closing, "close").getString("body"));
+    assertThat(action(retry, "close").has("issueBody")).isFalse();
     // once closed by the bot, nothing more
-    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, false, false, markerOf(action(closing, "update")))))).isEmpty();
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, false, false, closedMarkerOf(closing))))).isEmpty();
   }
 
   @Test
@@ -594,7 +608,7 @@ class PlannerTest {
     points.add(n(C, 3, 101));
     marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
     points.add(n(D, 4, 100));
-    final Marker closed = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    final Marker closed = closedMarkerOf(plan(data(TIME, points), open(7, marker)));
     assertThat(PlanEntries.allRecovered(closed)).isTrue();
 
     // the bot closed it, a maintainer reopened it: tracked again from its marker, with the recovery streaks started over
@@ -611,7 +625,7 @@ class PlannerTest {
     final Marker once = markerOf(action(plan(data(TIME, points), new TrackedIssue(7, true, false, restarted, true)), "update"));
     assertThat(once.line(TIME.id()).getInt("streak")).isEqualTo(1);
     points.add(point("nightly", "ffffffffff", 6, 100, "x"));
-    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, true, false, once, true)))).startsWith("close");
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, true, false, once, true)))).containsExactly("close");
   }
 
   @Test
