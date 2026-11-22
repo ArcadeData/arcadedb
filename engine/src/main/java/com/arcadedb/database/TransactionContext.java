@@ -2986,7 +2986,7 @@ public class TransactionContext implements Transaction {
     final Binary ownerContent = committedRecord(owner);
     if (ownerContent == null || ownerContent.size() < VERTEX_HEADS_END || ownerContent.getByte(0) != Vertex.RECORD_TYPE)
       return false;
-    final RID head = edgeListHeadAt(ownerContent.toByteArray(), out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
+    final RID head = edgeListHeadAt(ownerContent, out ? VERTEX_OUT_HEAD_OFFSET : VERTEX_IN_HEAD_OFFSET);
     if (head == null)
       return false;
     if (head.equals(segmentRID))
@@ -6690,7 +6690,11 @@ public class TransactionContext implements Transaction {
 
   /** The head the vertex image holds at {@code offset}, read as {@code MutableVertex} parses it. */
   private static RID edgeListHeadAt(final byte[] image, final int offset) {
-    final Binary content = new Binary(image);
+    return edgeListHeadAt(new Binary(image), offset);
+  }
+
+  /** The head at {@code offset} of the record in {@code content}, read in place: the record is not copied for 12 bytes of it. */
+  private static RID edgeListHeadAt(final Binary content, final int offset) {
     final int bucketId = content.getInt(offset);
     return bucketId == -1 ? null : new RID(bucketId, content.getLong(offset + Binary.INT_SERIALIZED_SIZE));
   }
