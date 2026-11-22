@@ -198,8 +198,7 @@ class DatabaseFactoryPathLockTest {
   }
 
   /**
-   * {@code create()} makes the directory before it computes the key of its monitor, so a failure before anything was written
-   * must take the directory back, as it did when {@link LocalDatabase#create()} made it.
+   * A create that fails before writing anything (an invalid name) leaves no directory and no monitor behind.
    */
   @Test
   @Timeout(60)
@@ -213,8 +212,8 @@ class DatabaseFactoryPathLockTest {
 
   /**
    * On a case-insensitive volume two spellings of one directory are one database: the second is refused as active before it
-   * builds anything, whether it opens or creates. The key of the monitor and of the registry is the real path, which the open
-   * and the create both compute only once the directory exists (the create makes it first).
+   * builds anything, whether it opens or creates: the registry is keyed by the real path, the monitor by the same folded to lower
+   * case.
    */
   @Test
   @Timeout(60)
@@ -234,5 +233,26 @@ class DatabaseFactoryPathLockTest {
     } finally {
       FileUtils.deleteRecursively(new File(spelled));
     }
+  }
+
+  /**
+   * A directory that does not exist yet has no real path, so its key keeps the caller's spelling. On a case-insensitive volume a
+   * create spelled one way and an open or a create spelled another way are the same directory, and must take turns on one
+   * monitor, or the second builds an instance over the files the first is writing. The monitor key is folded to lower case.
+   */
+  @Test
+  @Timeout(60)
+  void everySpellingOfADirectoryNotCreatedYetTakesOneMonitor() {
+    final String spelled = "target/databases/DatabaseFactoryPathLockTestNotYet";
+    FileUtils.deleteRecursively(new File(spelled));
+    assertThat(new File(spelled)).doesNotExist();
+
+    assertThat(DatabaseFactory.getMonitorKey("target/databases/databasefactorypathlocktestnotyet")).isEqualTo(
+        DatabaseFactory.getMonitorKey(spelled));
+    assertThat(DatabaseFactory.getMonitorKey("target/databases/DATABASEFACTORYPATHLOCKTESTNOTYET")).isEqualTo(
+        DatabaseFactory.getMonitorKey(spelled));
+    // A DIRECTORY THAT EXISTS TAKES THE SAME MONITOR IN EVERY SPELLING TOO
+    assertThat(DatabaseFactory.getMonitorKey(PATH.toUpperCase(Locale.ROOT).replace("TARGET/DATABASES", "target/databases")))
+        .isEqualTo(DatabaseFactory.getMonitorKey(PATH));
   }
 }

@@ -120,8 +120,10 @@ class DatabaseFactorySymlinkAliasTest {
       assertThat(inFirstOpen.await(30, TimeUnit.SECONDS)).isTrue();
       // THE LINK STILL LEADS TO PATH: THE SECOND OPEN WAITS ON THE MONITOR OF PATH, HELD BY THE FIRST
       secondThread.start();
-      while (secondThread.getState() != Thread.State.BLOCKED && secondThread.getState() != Thread.State.TERMINATED)
-        Thread.onSpinWait();
+      final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+      while (secondThread.getState() != Thread.State.BLOCKED && secondThread.getState() != Thread.State.TERMINATED
+          && System.nanoTime() - deadline < 0)
+        Thread.sleep(1);
       assertThat(secondThread.getState()).isEqualTo(Thread.State.BLOCKED);
 
       Files.delete(Path.of(ALIAS).toAbsolutePath());
