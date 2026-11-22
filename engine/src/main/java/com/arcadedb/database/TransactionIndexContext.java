@@ -137,7 +137,9 @@ public class TransactionIndexContext {
    * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
    * that is about to have to undo.
    */
-  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  private final ArrayList<RecordUndoEntry>                                     recordUndo       = new ArrayList<>();
+  /** The holders of {@link #recordUndo} kept when a statement or a transaction ends: what the entries of one record need. */
+  private static final int                                                     RECORD_UNDO_RETAINED = 256;
   /** How many entries {@link #recordUndo} holds right now; -1 when nothing is journalled. */
   private       int                                                          recordUndoSize   = -1;
   /** Where the entries of the record being indexed right now begin: the ones before it belong to the statement (issue #10346). */
@@ -987,6 +989,25 @@ public class TransactionIndexContext {
       for (int i = 0; i < recordUndoSize; i++)
         recordUndo.get(i).clear();
     recordUndoSize = -1;
+    trimRecordUndo();
+  }
+
+  /**
+   * Gives back the holders a bulk statement grew the journal by. The journal is reused across the records of a statement, but a
+   * statement of a few hundred records journals tens of thousands of entries, and the holders were kept for as long as the thread
+   * lived: with a thread per transaction in a pool that is millions of empty holders on the heap, scanned by every collection, for a
+   * depth only the largest statement ever reached. What a record needs stays, so a small statement still allocates nothing.
+   */
+  /** How many holders the reusable journal keeps right now, for the test that holds {@link #trimRecordUndo()} to its bound. */
+  int recordUndoHolders() {
+    return recordUndo.size();
+  }
+
+  private void trimRecordUndo() {
+    if (recordUndo.size() > RECORD_UNDO_RETAINED) {
+      recordUndo.subList(RECORD_UNDO_RETAINED, recordUndo.size()).clear();
+      recordUndo.trimToSize();
+    }
   }
 
   private void undoJournalDownTo(final int mark) {
@@ -1073,6 +1094,7 @@ public class TransactionIndexContext {
     for (int i = 0; i < recordUndo.size(); i++)
       recordUndo.get(i).clear();
     recordUndoSize = -1;
+    trimRecordUndo();
     statementJournal = false;
     statementJournalBroken = false;
   }
