@@ -2222,8 +2222,8 @@ public class TransactionContext implements Transaction {
    */
   public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
     // ONLY INSIDE A TRANSACTION: THE CONTEXT OUTLIVES ITS TRANSACTION AND KEEPS ITS LEVEL, AND A COUNT BETWEEN TWO
-    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
+    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM (#12789: THE SAME PREDICATE AS THE PAGE PINS)
+    if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();
