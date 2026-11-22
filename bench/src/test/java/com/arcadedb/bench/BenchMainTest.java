@@ -244,6 +244,43 @@ class BenchMainTest {
     assertThat(probe.has("cpu")).isTrue();
   }
 
+  // #12839: the step, prepare and case limits are separate, and the run records all three
+  @Test
+  void timeoutFlagsLandInConfigOfRun() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--timeout-min", "20",
+        "--prepare-timeout-min", "45", "--case-timeout-min", "0", "--out", tmp.toString());
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().config().getInt("timeoutMin")).isEqualTo(20);
+      assertThat(result.info().config().getInt("prepareTimeoutMin")).isEqualTo(45);
+      assertThat(result.info().config().getInt("caseTimeoutMin")).isZero();
+    }
+  }
+
+  @Test
+  void prepareTimeoutDefaultsToTheStepTimeoutAndTheCaseCapTo120Minutes() throws Exception {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--timeout-min", "25", "--out",
+        tmp.toString());
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst());
+      assertThat(result.info().config().getInt("prepareTimeoutMin")).isEqualTo(25);
+      assertThat(result.info().config().getInt("caseTimeoutMin")).isEqualTo(120);
+    }
+  }
+
+  @Test
+  void aNegativeCaseTimeoutExits2() {
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    assertThat(run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm", "--skip-idle-check",
+        "--case-timeout-min", "-1", "--out", tmp.toString())).isEqualTo(2);
+  }
+
   @Test
   void badParamsExits2() {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
