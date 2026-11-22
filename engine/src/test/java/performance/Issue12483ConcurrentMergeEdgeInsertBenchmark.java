@@ -33,6 +33,9 @@ import java.util.Random;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #12483: the in-process equivalent of the reporter's load. Each writer MERGEs a batch of relationships with a unique
@@ -75,6 +78,7 @@ class Issue12483ConcurrentMergeEdgeInsertBenchmark {
             Math.min(start + 4999, VERTICES - 1));
 
       final AtomicInteger next = new AtomicInteger();
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
       final AtomicLong committed = new AtomicLong();
       final AtomicLong refused = new AtomicLong();
       final Map<String, Integer> refusals = new TreeMap<>();
@@ -85,7 +89,7 @@ class Issue12483ConcurrentMergeEdgeInsertBenchmark {
         threads.add(new Thread(() -> {
           final Random rnd = new Random(seed);
           int batch;
-          while ((batch = next.getAndIncrement()) < BATCHES) {
+          while (failure.get() == null && (batch = next.getAndIncrement()) < BATCHES) {
             final List<List<Object>> rows = new ArrayList<>(BATCH);
             for (int i = 0; i < BATCH; i++)
               rows.add(List.of(rnd.nextInt(VERTICES), rnd.nextInt(VERTICES), batch * BATCH + i));
@@ -106,6 +110,10 @@ class Issue12483ConcurrentMergeEdgeInsertBenchmark {
                 synchronized (refusals) {
                   refusals.merge(key.substring(0, Math.min(70, key.length())), 1, Integer::sum);
                 }
+              } catch (final Throwable e) {
+                // not a refusal: the measurement is void, reported once every writer has stopped
+                failure.compareAndSet(null, e);
+                return;
               }
             }
           }
@@ -124,7 +132,10 @@ class Issue12483ConcurrentMergeEdgeInsertBenchmark {
         }
       final double seconds = (System.nanoTime() - start) / 1_000_000_000D;
 
+      assertThat(failure.get()).as("a writer failed with something other than a retryable refusal").isNull();
       final long stored = database.countType("R", false);
+      assertThat(committed.get()).isEqualTo((long) BATCHES * BATCH);
+      assertThat(stored).isEqualTo(committed.get());
       System.out.printf(Locale.ENGLISH, "%s writers=%d relationships/s=%.0f refused=%d (%.2f per commit) stored=%d/%d %s%n",
           indexed ? "indexed  " : "unindexed", writers, committed.get() / seconds, refused.get(),
           refused.get() / (double) BATCHES, stored, committed.get(), refusals);

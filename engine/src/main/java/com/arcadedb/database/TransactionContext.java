@@ -444,6 +444,8 @@ public class TransactionContext implements Transaction {
   // (markRelationshipsOfIndexedTypes), and the last type registerNewRecord asked about, so a load of one type asks once
   private       boolean                              createdEdgeOfIndexedType;
   private       DocumentType                         lastNewEdgeType;
+  // #12483: whether this transaction created any relationship, for an index registered on its type after the begin
+  private       boolean                              createdEdge;
   // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
   // one this transaction read alive, and its RID may hold a vertex created since
   private       long                                 vertexDeleteEpoch;
@@ -910,6 +912,7 @@ public class TransactionContext implements Transaction {
       newRecordRIDs.add(record.getIdentity());
     // #12483: a relationship a MERGE answered by an index of its type would have found; one compare for a load of one type
     if (!createdEdgeOfIndexedType && record instanceof Edge edge) {
+      createdEdge = true;
       final DocumentType type = edge.getType();
       if (type != lastNewEdgeType) {
         lastNewEdgeType = type;
@@ -5999,7 +6002,10 @@ public class TransactionContext implements Transaction {
    * created, a hash per index per relationship, and the registry's monitor at the commit to publish them.
    */
   private void markRelationshipsOfIndexedTypes() {
-    if (!createdEdgeOfIndexedType)
+    // An index registered on a type since this transaction began makes a relationship it created before then one a MERGE finds
+    // through that index (the reconciliation of #10588 indexes it at this commit): the types are asked again, at the commit
+    if (!createdEdgeOfIndexedType && !(createdEdge
+        && database.getTransactionManager().getIndexRegistrationSequence() != indexRegistrationSequenceAtBegin))
       return;
     final LocalSchema schema = database.getSchema().getEmbedded();
     DocumentType lastType = null;
@@ -6023,7 +6029,7 @@ public class TransactionContext implements Transaction {
       if (lastIndexes.length == 0)
         continue;
 
-      final Edge edge = currentEdge(i, rid);
+      final Edge edge = currentEdge(i, rid, type);
       if (edge == null)
         continue;
       final RID from = edge.getOut();
@@ -6042,22 +6048,31 @@ public class TransactionContext implements Transaction {
     }
   }
 
-  /** The relationship created at {@code index} of the new records as the commit writes it: the queued update, or the record created. */
-  private Edge currentEdge(final int index, final RID rid) {
-    Record record = updatedRecords != null ? updatedRecords.get(rid) : null;
-    if (record == null)
-      record = modifiedRecordsCache.get(rid);
+  /**
+   * The relationship created at {@code index} of the new records as the commit writes it: the queued update, whose values assigned
+   * after its save the commit writes and indexes ({@link #indexPropertiesAssignedAfterTheirSave}), or else the record as its last save
+   * wrote it to the transaction's page. An object of a created record changed after its save and never saved again is not what the
+   * commit writes, so its key is not the one to mark.
+   */
+  private Edge currentEdge(final int index, final RID rid, final DocumentType type) {
+    if (updatedRecords != null && updatedRecords.get(rid) instanceof Edge queued)
+      return queued;
+
+    Record record = modifiedRecordsCache.get(rid);
     if (record == null)
       record = newRecords.get(index);
-    if (record == null) {
-      // read-your-writes off and nobody holds it: what the transaction wrote to its page
-      try {
-        record = database.lookupByRID(rid, true);
-      } catch (final RecordNotFoundException e) {
-        return null;
-      }
+    if (record instanceof Edge edge && !(record instanceof MutableDocument document && document.isAssignedAfterSave()))
+      return edge;
+
+    // read-your-writes off and nobody holds it, or changed after its save: what the transaction wrote to its page
+    try {
+      final Binary written = ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
+      return written != null && database.getRecordFactory().newImmutableRecord(database, type, rid, written, null) instanceof Edge edge ?
+          edge :
+          null;
+    } catch (final RecordNotFoundException e) {
+      return null;
     }
-    return record instanceof Edge edge ? edge : null;
   }
 
   /**
@@ -6608,6 +6623,7 @@ public class TransactionContext implements Transaction {
     }
     mergedEdgesPastCommitPoint = false;
     createdEdgeOfIndexedType = false;
+    createdEdge = false;
     lastNewEdgeType = null;
     mergedEdgeChecked = null;
     mergedEdgeCheckedCount = 0;

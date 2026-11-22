@@ -224,6 +224,11 @@ public final class MergedEdgeRegistry {
     return committedKeys != null ? committedKeys.size() : 0;
   }
 
+  /** Whether {@code key} was committed after {@code since}, as a commit that began at {@code since} is told, for the tests. */
+  synchronized boolean isCommittedSince(final long key, final long since) {
+    return lastCommit != null && lastCommit[stripeOf(key)] > since && committedSince(key, since);
+  }
+
   /** How many commits are writing {@code key} now, for the tests. */
   synchronized int inFlight(final long key) {
     int writing = 0;

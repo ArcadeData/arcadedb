@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -183,6 +184,49 @@ class CypherMergeRelationshipByIndexIssue12483Test extends TestHelper {
 
     database.transaction(() -> database.command("opencypher", merge).close());
     assertThat(count("MATCH (a:V {id: 1})-[e:D]->(b:V {id: 2}) RETURN count(e) AS c")).isEqualTo(1L);
+  }
+
+  /**
+   * An index registered on the type after a transaction created a relationship of it: the reconciliation indexes the relationship at
+   * its commit, so a MERGE answered by the new index meanwhile has to be refused by its key as well.
+   */
+  @Test
+  void aRelationshipCreatedBeforeItsTypeWasIndexedRefusesAMergeAnsweredByTheNewIndex() throws Exception {
+    database.transaction(() -> database.getSchema().createEdgeType("F", 1).createProperty("k", Type.STRING));
+
+    final CountDownLatch created = new CountDownLatch(1);
+    final CountDownLatch commit = new CountDownLatch(1);
+    final AtomicReference<Throwable> error = new AtomicReference<>();
+    final Thread creator = new Thread(() -> {
+      try {
+        database.transaction(() -> {
+          database.command("opencypher", "MATCH (a:V {id: 1}), (b:V {id: 2}) CREATE (a)-[:F {k: 'x'}]->(b)").close();
+          created.countDown();
+          try {
+            commit.await(30, TimeUnit.SECONDS);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        });
+      } catch (final Throwable e) {
+        error.set(e);
+      }
+    });
+    creator.start();
+    assertThat(created.await(30, TimeUnit.SECONDS)).isTrue();
+
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "F", "k");
+
+    final String merge = "MATCH (a:V {id: 1}), (b:V {id: 2}) MERGE (a)-[e:F {k: 'x'}]->(b)";
+    database.begin();
+    database.command("opencypher", merge).close();
+    commit.countDown();
+    creator.join();
+    assertThat(error.get()).isNull();
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+
+    database.transaction(() -> database.command("opencypher", merge).close());
+    assertThat(count("MATCH (a:V {id: 1})-[e:F]->(b:V {id: 2}) RETURN count(e) AS c")).isEqualTo(1L);
   }
 
   @Test

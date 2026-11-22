@@ -83,7 +83,9 @@ class CypherMergeRelationshipByIndexAclIssue12483Test {
     final String missing = outcomeOf("guess");
     unbind();
 
-    assertThat(existing).isEqualTo(missing);
+    // the walk loads the relationship already on the list, which the user may not read, whatever the value looked for
+    assertThat(existing).isEqualTo(SecurityException.class.getName());
+    assertThat(missing).isEqualTo(existing);
   }
 
   /** A user who may read the type is answered by the index: the existing relationship is matched, the missing one created. */
