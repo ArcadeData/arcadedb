@@ -378,16 +378,11 @@ public class DateUtils {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = localDateTime.toInstant(ZoneOffset.UTC).getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp =
-            TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(
-                ChronoField.MILLI_OF_SECOND);
+        timestamp = saturatedUnits(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), 1_000L);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp =
-            TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano()
-                / 1000);
+        timestamp = saturatedUnits(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), 1_000_000L);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = addNanosClampingOverflow(TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS),
-            localDateTime.getNano());
+        timestamp = saturatedUnits(localDateTime.toEpochSecond(ZoneOffset.UTC), localDateTime.getNano(), 1_000_000_000L);
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -411,13 +406,11 @@ public class DateUtils {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = zonedDateTime.toInstant().getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp = zonedDateTime.toInstant().toEpochMilli();
+        timestamp = saturatedUnits(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), 1_000L);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp =
-            TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
+        timestamp = saturatedUnits(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), 1_000_000L);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = addNanosClampingOverflow(TimeUnit.NANOSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS),
-            zonedDateTime.getNano());
+        timestamp = saturatedUnits(zonedDateTime.toEpochSecond(), zonedDateTime.getNano(), 1_000_000_000L);
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -425,13 +418,11 @@ public class DateUtils {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = offsetDateTime.toInstant().getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp = offsetDateTime.toInstant().toEpochMilli();
+        timestamp = saturatedUnits(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), 1_000L);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp =
-            TimeUnit.MICROSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + (offsetDateTime.getNano() / 1000);
+        timestamp = saturatedUnits(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), 1_000_000L);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = addNanosClampingOverflow(TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS),
-            offsetDateTime.getNano());
+        timestamp = saturatedUnits(offsetDateTime.toEpochSecond(), offsetDateTime.getNano(), 1_000_000_000L);
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -439,11 +430,11 @@ public class DateUtils {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = instant.getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
-        timestamp = instant.toEpochMilli();
+        timestamp = saturatedUnits(instant.getEpochSecond(), instant.getNano(), 1_000L);
       else if (precisionToUse.equals(ChronoUnit.MICROS))
-        timestamp = TimeUnit.MICROSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + (instant.getNano() / 1000);
+        timestamp = saturatedUnits(instant.getEpochSecond(), instant.getNano(), 1_000_000L);
       else if (precisionToUse.equals(ChronoUnit.NANOS))
-        timestamp = addNanosClampingOverflow(TimeUnit.NANOSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS), instant.getNano());
+        timestamp = saturatedUnits(instant.getEpochSecond(), instant.getNano(), 1_000_000_000L);
       else
         // NOT SUPPORTED
         timestamp = 0;
@@ -530,9 +521,29 @@ public class DateUtils {
     };
   }
 
-  /** Epoch seconds plus a nanosecond fraction as a count of the unit {@code unitsPerSecond} names, refusing an overflow. */
+  /**
+   * Epoch seconds plus a nanosecond fraction as a count of the unit {@code unitsPerSecond} names, refusing an overflow. The
+   * fraction is never negative, so for a second before the epoch the count is {@code (second + 1) * units + (fraction - units)}:
+   * multiplying the second itself overflowed for the one second that straddles {@code Long.MIN_VALUE}, whose later part still fits.
+   */
   private static long secondsToUnit(final long epochSecond, final int nanoOfSecond, final long unitsPerSecond) {
-    return Math.addExact(Math.multiplyExact(epochSecond, unitsPerSecond), nanoOfSecond / (1_000_000_000L / unitsPerSecond));
+    final long fraction = nanoOfSecond / (1_000_000_000L / unitsPerSecond);
+    if (epochSecond < 0)
+      return Math.addExact(Math.multiplyExact(epochSecond + 1, unitsPerSecond), fraction - unitsPerSecond);
+    return Math.addExact(Math.multiplyExact(epochSecond, unitsPerSecond), fraction);
+  }
+
+  /**
+   * {@link #secondsToUnit} for a comparison: a count that does not fit a {@code long} saturates to {@link Long#MAX_VALUE} or
+   * {@link Long#MIN_VALUE}, so two instants both past the range still order correctly against everything inside it, a far-future
+   * sentinel date included (issue #5625). Adding the fraction to an already saturated count wrapped it past the other end.
+   */
+  private static long saturatedUnits(final long epochSecond, final int nanoOfSecond, final long unitsPerSecond) {
+    try {
+      return secondsToUnit(epochSecond, nanoOfSecond, unitsPerSecond);
+    } catch (final ArithmeticException e) {
+      return epochSecond < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+    }
   }
 
   /** Epoch millis as a count of the unit {@code unitsPerSecond} names: seconds truncated toward zero, finer units exactly. */
@@ -638,30 +649,6 @@ public class DateUtils {
       digits++;
     }
     return digits;
-  }
-
-  /**
-   * Adds a non-negative sub-second nanosecond fraction (0..999,999,999, as returned by {@code getNano()}) to an
-   * already-computed NANOS-precision epoch value without silently wrapping past {@link Long#MAX_VALUE}.
-   * <p>
-   * {@code epochSecondsAsNanos} is normally {@code TimeUnit.NANOSECONDS.convert(epochSeconds, SECONDS)}, which
-   * itself saturates to {@link Long#MAX_VALUE} for any date far enough in the future that its NANOS-precision
-   * epoch timestamp does not fit a signed 64-bit long (roughly beyond the year 2262). Without this guard, adding
-   * the nanosecond fraction on top of that already-saturated value overflows a second time and wraps around to a
-   * large NEGATIVE number, silently inverting chronological order for such dates - e.g. the far-future sentinel
-   * date pattern (`9999-12-31`, `2499-12-31 23:59:59.999`, ...) commonly used to mean "no expiration" then
-   * compares as LESS than an ordinary near-present date. This broke every {@code P.lt/lte/gt/gte} Gremlin
-   * predicate and {@code order()} step touching such a value, because {@code Compare}'s biPredicates route
-   * through {@code org.apache.tinkerpop.gremlin.util.GremlinValueComparator}, which always normalises date/time
-   * operands to {@link ChronoUnit#NANOS} regardless of their actual precision (issue #5625).
-   * <p>
-   * There is no matching underflow risk: the nanosecond fraction is always non-negative, so adding it to an
-   * already Long.MIN_VALUE-saturated {@code epochSecondsAsNanos} (from a very ancient date) only moves the
-   * result toward zero.
-   */
-  private static long addNanosClampingOverflow(final long epochSecondsAsNanos, final int nanoFraction) {
-    return epochSecondsAsNanos >= 0 && Long.MAX_VALUE - epochSecondsAsNanos < nanoFraction ?
-        Long.MAX_VALUE : epochSecondsAsNanos + nanoFraction;
   }
 
   /**
