@@ -470,10 +470,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
-          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
+      HttpResponse<String> response = sendBegin(payload);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
@@ -504,6 +501,35 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } finally {
       if (getSessionId() == null)
         setStickyTransactionServer(null);
+    }
+  }
+
+  /**
+   * Sends the begin request, moving to another server while it provably never reached one (issue #12615). No transaction exists
+   * yet, so unlike a request inside one this may go to any live server. Only {@code httpCommand()} failed over before, so with the
+   * server the client was connected to stopped, every {@code begin()} failed and nothing moved {@code currentServer} to a live node.
+   * The FIXED strategy keeps to its server, as it does for every other request.
+   */
+  private HttpResponse<String> sendBegin(final String payload) throws IOException, InterruptedException {
+    final int maxAttempts = getConnectionStrategy() == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+
+    for (int attempt = 1; ; attempt++) {
+      final HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
+          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
+      try {
+        return sendWithWatchdog(request);
+      } catch (final IOException e) {
+        if (attempt >= maxAttempts || !provablyNeverSent(e))
+          throw e;
+
+        LogManager.instance()
+            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching server to begin the transaction...",
+                currentServer, currentPort);
+
+        reloadClusterConfiguration();
+        if (getConnectionStrategy() == CONNECTION_STRATEGY.STICKY)
+          setStickyTransactionServer(resolveStickyTargetServer());
+      }
     }
   }
 

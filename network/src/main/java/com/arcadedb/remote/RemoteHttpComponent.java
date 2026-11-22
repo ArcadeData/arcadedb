@@ -379,6 +379,14 @@ public class RemoteHttpComponent extends RWLockContext {
     return leaderServer;
   }
 
+  /**
+   * How many servers a request that may go to any of them is tried against before giving up: the configured HA error retries,
+   * or every known server once when none is configured.
+   */
+  int maxFailoverAttempts() {
+    return Math.max(1, haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries);
+  }
+
   List<Pair<String, Integer>> getReplicaServerList() {
     return replicaServerList;
   }
@@ -495,7 +503,7 @@ public class RemoteHttpComponent extends RWLockContext {
     int maxRetry =
         leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned ?
             sameServerErrorRetries :
-            haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries;
+            maxFailoverAttempts();
     if (maxRetry < 1)
       maxRetry = 1;
 
