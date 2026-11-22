@@ -59,6 +59,7 @@ public interface OrderedAfterCommitCallback extends Runnable {
    * (past both points of no return, the database is then fenced), and {@link #onAbandoned()} follows instead of {@link #run()}.
    */
   default void onPublished() {
+    // NOTHING TO HAND OVER BY DEFAULT
   }
 
   /**
