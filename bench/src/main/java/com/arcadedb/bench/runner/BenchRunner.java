@@ -31,20 +31,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 /**
  * Runs the cases of a workload: prepare, warm-ups (discarded), then the measured repetitions. A failing or timed-out case is
  * recorded and the run goes on with the next case.
+ * <p>
+ * Each step has its own timeout: {@code prepare} (which may load the data set) is bounded by the prepare timeout, and every
+ * warm-up and repetition by the step timeout. An optional case cap bounds the whole case, as a hang detector over the sum. A
+ * single deadline over the whole case would make a workload whose repetitions are each well inside the limit time out only
+ * because it has many of them (#12839).
  */
 public final class BenchRunner {
   private final int      reps;
   private final int      warmup;
+  private final Duration stepTimeout;
+  private final Duration prepareTimeout;
+  // zero = no cap over the whole case
   private final Duration caseTimeout;
   private final Duration interruptGrace;
 
@@ -55,19 +65,50 @@ public final class BenchRunner {
   // the case whose worker outlived its timeout: it still loads the host, so no later case of any workload is measured
   private String  abandoned;
 
-  public BenchRunner(final int reps, final int warmup, final Duration caseTimeout) {
-    this(reps, warmup, caseTimeout, Duration.ofSeconds(5));
+  /** {@code stepTimeout} bounds prepare and every warm-up and repetition; the case as a whole has no cap. */
+  public BenchRunner(final int reps, final int warmup, final Duration stepTimeout) {
+    this(reps, warmup, stepTimeout, stepTimeout, Duration.ZERO);
   }
 
-  BenchRunner(final int reps, final int warmup, final Duration caseTimeout, final Duration interruptGrace) {
+  /**
+   * @param stepTimeout    the limit of each warm-up and each measured repetition
+   * @param prepareTimeout the limit of {@code prepare}, which may load the data set
+   * @param caseTimeout    the limit of the whole case, prepare included; {@link Duration#ZERO} for none
+   */
+  public BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
+      final Duration caseTimeout) {
+    this(reps, warmup, stepTimeout, prepareTimeout, caseTimeout, Duration.ofSeconds(5));
+  }
+
+  BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration interruptGrace) {
+    this(reps, warmup, stepTimeout, stepTimeout, Duration.ZERO, interruptGrace);
+  }
+
+  BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
+      final Duration caseTimeout, final Duration interruptGrace) {
     if (reps < 1)
       throw new IllegalArgumentException("reps must be at least 1, got " + reps);
     if (warmup < 0)
       throw new IllegalArgumentException("warmup must not be negative, got " + warmup);
+    if (!stepTimeout.isPositive())
+      throw new IllegalArgumentException("step timeout must be positive, got " + stepTimeout);
+    if (!prepareTimeout.isPositive())
+      throw new IllegalArgumentException("prepare timeout must be positive, got " + prepareTimeout);
+    if (caseTimeout.isNegative())
+      throw new IllegalArgumentException("case timeout must not be negative (zero = no cap), got " + caseTimeout);
     this.reps = reps;
     this.warmup = warmup;
+    this.stepTimeout = stepTimeout;
+    this.prepareTimeout = prepareTimeout;
     this.caseTimeout = caseTimeout;
     this.interruptGrace = interruptGrace;
+  }
+
+  /** The step the worker is in, when it started and how long it may take; replaced by the worker as it moves on. */
+  private record Step(String name, long startNanos, long timeoutNanos) {
+    long overdueNanos(final long now) {
+      return now - startNanos - timeoutNanos;
+    }
   }
 
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter) {
@@ -103,12 +144,14 @@ public final class BenchRunner {
       t.setDaemon(true);
       return t;
     });
-    final long deadline = System.nanoTime() + caseTimeout.toNanos();
+    final long caseStart = System.nanoTime();
+    final long caseTimeoutNanos = caseTimeout.toNanos();
+    final AtomicReference<Step> step = new AtomicReference<>(new Step("prepare", caseStart, prepareTimeout.toNanos()));
     // a flag of its own: a measure() that swallows the interrupt must not let the worker start another repetition
     final AtomicBoolean cancelled = new AtomicBoolean();
     final Future<CaseResult> future = executor.submit(() -> {
       try {
-        return execute(w, ctx, caseName, cancelled);
+        return execute(w, ctx, caseName, cancelled, step);
       } catch (final CaseFailedWithMetrics e) {
         return result(w, ctx, caseName, e.metrics(), CaseResult.Status.FAILED, e.getMessage());
       } catch (final Throwable t) {
@@ -118,14 +161,14 @@ public final class BenchRunner {
     CaseResult result;
     boolean workerStopped = true;
     try {
-      result = future.get(Math.max(0L, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+      result = await(future, step, caseStart, caseTimeoutNanos);
     } catch (final TimeoutException e) {
       cancelled.set(true);
       future.cancel(true);
       executor.shutdownNow();
       workerStopped = awaitStopped(executor);
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.TIMEOUT,
-          "case exceeded " + caseTimeout.toMillis() + " ms" + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
+          e.getMessage() + (workerStopped ? "" : "; " + WORKER_STILL_RUNNING));
     } catch (final InterruptedException e) {
       cancelled.set(true);
       future.cancel(true);
@@ -151,6 +194,34 @@ public final class BenchRunner {
     return result;
   }
 
+  /**
+   * Waits for the worker, re-reading its current step after every wake-up: the wait ends at the earlier of the current step's
+   * deadline and the case cap, and a timeout is declared only when one of them has passed. The exception message names it.
+   */
+  private static CaseResult await(final Future<CaseResult> future, final AtomicReference<Step> step, final long caseStart,
+      final long caseTimeoutNanos) throws InterruptedException, ExecutionException, TimeoutException {
+    while (true) {
+      final Step s = step.get();
+      final long now = System.nanoTime();
+      final long stepOverdue = s.overdueNanos(now);
+      if (stepOverdue >= 0)
+        throw new TimeoutException(s.name() + " exceeded " + TimeUnit.NANOSECONDS.toMillis(s.timeoutNanos()) + " ms");
+      long wait = -stepOverdue;
+      if (caseTimeoutNanos > 0) {
+        final long caseLeft = caseStart + caseTimeoutNanos - now;
+        if (caseLeft <= 0)
+          throw new TimeoutException(
+              "case exceeded " + TimeUnit.NANOSECONDS.toMillis(caseTimeoutNanos) + " ms (during " + s.name() + ")");
+        wait = Math.min(wait, caseLeft);
+      }
+      try {
+        return future.get(wait, TimeUnit.NANOSECONDS);
+      } catch (final TimeoutException e) {
+        // the worker may have moved on to a later step meanwhile: look again
+      }
+    }
+  }
+
   private boolean awaitStopped(final ExecutorService executor) {
     try {
       return executor.awaitTermination(interruptGrace.toNanos(), TimeUnit.NANOSECONDS);
@@ -166,11 +237,13 @@ public final class BenchRunner {
       throw new InterruptedException("case abandoned");
   }
 
-  private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName, final AtomicBoolean cancelled)
-      throws Exception {
+  private CaseResult execute(final Workload w, final WorkloadContext ctx, final String caseName, final AtomicBoolean cancelled,
+      final AtomicReference<Step> step) throws Exception {
     w.prepare(ctx, caseName);
+    final long stepNanos = stepTimeout.toNanos();
     for (int i = 0; i < warmup; i++) {
       stopIfCancelled(cancelled);
+      step.set(new Step("warm-up " + (i + 1) + "/" + warmup, System.nanoTime(), stepNanos));
       w.measure(ctx, caseName);
     }
 
@@ -179,6 +252,7 @@ public final class BenchRunner {
     final Map<String, Metric> first = new LinkedHashMap<>();
     for (int i = 0; i < reps; i++) {
       stopIfCancelled(cancelled);
+      step.set(new Step("rep " + (i + 1) + "/" + reps, System.nanoTime(), stepNanos));
       for (final Metric m : w.measure(ctx, caseName).perRep()) {
         first.putIfAbsent(m.name(), m);
         values.computeIfAbsent(m.name(), k -> new ArrayList<>()).add(m.median());

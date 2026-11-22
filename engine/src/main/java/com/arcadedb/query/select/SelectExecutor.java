@@ -73,6 +73,12 @@ public class SelectExecutor {
   private List<TypeIndex>       indexesRead;
   private List<IndexInternal[]> indexesReadSnapshots;
 
+  // #12701: THE BUCKETS OF THE SELECT'S TYPE SCOPE (fromType, AND ITS SUBTYPES WHEN polymorphic), BUILT ON FIRST USE. null UNTIL THEN
+  private IntHashSet scopeBucketIds;
+  // #12701: SET BY lookForIndexes() WHEN AN INDEX THE CURSORS READ SPANS BUCKETS OUTSIDE THE SCOPE: buildIterator() THEN DELIVERS ONLY
+  // THE RECORDS OF THE SCOPE. null WHEN EVERY ENTRY OF THE INDEXES BELONGS TO IT, THE COMMON CASE, WHICH PAYS NOTHING
+  private IntHashSet bucketScopeFilter;
+
   // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
   // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
   // OWN, SO INSTALLING select.timeoutInMs THERE - THE ONLY THING THAT USED TO HAPPEN - SILENTLY DROPPED IT FOR EVERY
@@ -427,7 +433,7 @@ public class SelectExecutor {
     final Iterator<? extends Identifiable> iterator;
 
     if (iteratorFromIndexes != null)
-      iterator = iteratorFromIndexes;
+      iterator = bucketScopeFilter != null ? new BucketScopedCursor(iteratorFromIndexes, bucketScopeFilter, this) : iteratorFromIndexes;
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
@@ -457,6 +463,7 @@ public class SelectExecutor {
       indexBeingRead = null;
       indexesRead = null;
       indexesReadSnapshots = null;
+      bucketScopeFilter = null;
       try {
         // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
         // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
@@ -477,7 +484,10 @@ public class SelectExecutor {
           // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
           // UNCONDITIONALLY DISQUALIFIED
           final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
-          indexCandidateLimit = exactLeaf != null && answersExactly(exactLeaf.index) && isOrderBySafeForCap(exactLeaf) ?
+          // #12701: NOT WHEN THE INDEX SPANS BUCKETS OUTSIDE THE SCOPE: THE CAP WOULD COUNT THE CANDIDATES BUILT FROM THEIR RECORDS, WHICH
+          // THE SCOPE FILTER DISCARDS AFTER THE CURSOR, SO THE SELECT WOULD COME BACK SHORT
+          indexCandidateLimit = exactLeaf != null && answersExactly(exactLeaf.index) && isOrderBySafeForCap(exactLeaf)
+              && !spansBucketsOutsideTheScope(exactLeaf.index) ?
               computeExactCandidateLimit() :
               -1;
 
@@ -495,6 +505,11 @@ public class SelectExecutor {
             fallBackToScan(cursors, null);
             return null;
           }
+          if (usedIndexesSpanBucketsOutsideTheScope())
+            // #12701: AN INDEX DECLARED ON A SUPERTYPE READS THE SUB-INDEXES OF THE WHOLE HIERARCHY, SO ITS CURSORS CARRY THE RECORDS OF
+            // THE SIBLING TYPES (fromType(subtype)) AND OF THE SUBTYPES (polymorphic(false)) THAT THE SELECT DID NOT ASK FOR. THE INDEX
+            // STAYS, AND buildIterator() DROPS THOSE RECORDS BY THE BUCKET OF THEIR RID, BEFORE THEY ARE LOADED
+            bucketScopeFilter = bucketScope();
           return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
         }
 
@@ -533,6 +548,46 @@ public class SelectExecutor {
     }
     indexesRead.add(index);
     indexesReadSnapshots.add(index.getIndexesOnBuckets());
+  }
+
+  /**
+   * #12701: the buckets of the select's type scope: those of {@code fromType}, and of its subtypes only when the select is
+   * polymorphic. Built once per execution.
+   */
+  private IntHashSet bucketScope() {
+    if (scopeBucketIds == null) {
+      final IntHashSet ids = new IntHashSet();
+      for (final Bucket bucket : select.fromType.getBuckets(select.polymorphic))
+        ids.add(bucket.getFileId());
+      scopeBucketIds = ids;
+    }
+    return scopeBucketIds;
+  }
+
+  /**
+   * #12701: whether {@code index} holds a sub-index on a bucket the select's type scope excludes. An index declared on a supertype
+   * spans the whole hierarchy, so its cursors would deliver the records of the sibling types and, for a non-polymorphic select,
+   * of the subtypes. The index of the select's own type read by a polymorphic select never does: no scope set is built for it.
+   */
+  private boolean spansBucketsOutsideTheScope(final Index index) {
+    if (select.fromType == null || !(index instanceof final TypeIndex typeIndex))
+      return false;
+    if (select.polymorphic && typeIndex.getTypeName().equals(select.fromType.getName()))
+      return false;
+
+    final IntHashSet scope = bucketScope();
+    for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
+      if (!scope.contains(subIndex.getAssociatedBucketId()))
+        return true;
+    return false;
+  }
+
+  private boolean usedIndexesSpanBucketsOutsideTheScope() {
+    if (usedIndexes != null)
+      for (final IndexInfo info : usedIndexes)
+        if (spansBucketsOutsideTheScope(info.index))
+          return true;
+    return false;
   }
 
   /**
@@ -702,7 +757,8 @@ public class SelectExecutor {
     // THE WHOLE WHERE-TREE'S RESULT SET (EVERY LEAF WAS CONSUMED BY THE MATCHED PREFIX, NOTHING LEFT FOR
     // evaluateWhere() TO DISCARD) AND THE ORDER BY, IF ANY, IS ALREADY SATISFIED BY THE CURSOR ITSELF - OTHERWISE
     // fetchResultInCaseOfOrderBy()'S FULL-DRAIN SORT NEEDS EVERY MATCH, NOT JUST skip + limit OF THEM.
-    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement) && answersExactly(bestIndex);
+    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement) && answersExactly(bestIndex)
+        && !spansBucketsOutsideTheScope(bestIndex);
     indexCandidateLimit = exactMatch && (select.orderBy == null || orderByElided) ? computeExactCandidateLimit() : -1;
 
     return true;

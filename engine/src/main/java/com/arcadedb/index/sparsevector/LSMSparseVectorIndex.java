@@ -40,6 +40,8 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
+import com.arcadedb.index.vector.PredicateRidSet;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -57,6 +59,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.logging.Level;
@@ -107,6 +110,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * more rows than this and narrows nothing still gets them (PR #8001 review).
    */
   private static final int MAX_OVERFETCH_ROWS = 100_000;
+
+  /** Candidates a filtered search fetches per row it wants on its first pass, to find that many members of the allow-list. */
+  private static final int FILTER_OVERFETCH        = 8;
+
+  /** The factor by which a filtered search widens {@link #FILTER_OVERFETCH} when the allow-list left its answer short. */
+  private static final int FILTER_OVERFETCH_GROWTH = 8;
 
   /**
    * How much a rescored search widens its candidate budget when the answer came up short because candidates were
@@ -304,9 +313,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @param queryIndices non-negative dimension ids of the query
    * @param queryValues  weights matching {@code queryIndices}
    * @param k            number of neighbors to return; must be > 0
-   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter,
-   *                     so over-fetching by a small factor mitigates fewer-than-K results when
-   *                     the whitelist is selective.
+   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter: the
+   *                     candidate fetch widens (x8 per step, up to {@code MAX_OVERFETCH_ROWS}) while
+   *                     the whitelist leaves fewer than K, so members ranked low are still found
+   *                     (issue #12716). A predicate whitelist (a {@code where}) that accepts few
+   *                     records therefore tests, and loads the record of, up to that many candidates.
    *
    * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}.
    */
@@ -328,15 +339,26 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs,
       final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    checkQueryArrays(queryIndices, queryValues);
     if (k <= 0)
       throw new IndexException("k must be > 0");
+    return topKWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), k, allowedRIDs, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topK(int[], float[], int, Set, SparseTransactionOverlay)} with the weights already scaled by
+   * {@link #effectiveWeights(int[], float[])}. A fan-out caller (one search per bucket index of a type) resolves them ONCE
+   * and hands the same array to every search: with the {@code IDF} modifier each resolution counts the postings under
+   * every query dim in every bucket of the type, so one per search would multiply that cost by the number of buckets.
+   *
+   * @param effectiveWeights what {@link #effectiveWeights(int[], float[])} returned for {@code queryIndices}
+   */
+  public List<RidScore> topKWeighted(final int[] queryIndices, final float[] effectiveWeights, final int k,
+      final Set<RID> allowedRIDs, final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    if (k <= 0)
+      throw new IndexException("k must be > 0");
 
     final List<RidScore> committed = committedTopK(queryIndices, effectiveWeights, k, allowedRIDs,
         overlay != null ? overlay.touchedRIDs() : null, overlay != null ? overlay.touchedCount() : 0);
@@ -373,11 +395,18 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final int oversample = rescoreOversample();
     int keep = oversampled(k, oversample);
     int previousFetchK = -1;
+    // How many candidates a filtered search fetches per row it wants. A filter that leaves the answer short of it while the
+    // index still holds more candidates widens it and asks again (see below)
+    int filterFanout = FILTER_OVERFETCH;
+    // How many members of the allow-list this index can return at most, counted the first time a widening is considered
+    // (-1 until then): a fetch that already holds them all has nothing left to widen for
+    int filterMembers = -1;
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
       // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
-      // because the top-scored RIDs were filtered out. The fixed cap keeps worst-case work bounded even when the
-      // filter is very selective.
+      // because the top-scored RIDs were filtered out: filterFanout candidates per row wanted, widened below while the
+      // filter leaves the answer short. MAX_OVERFETCH_ROWS keeps worst-case work bounded even when the filter is very
+      // selective.
       //
       // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
       // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
@@ -389,7 +418,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
       // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
       // is public and an embedded caller is not going through it.
-      final int fetchK = filtered ? (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
+      final int fetchK = filtered ? (int) Math.min(widened * filterFanout, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
       // A budget the cap kept where it was would only fetch the same candidates again.
       if (fetchK == previousFetchK)
         break;
@@ -419,6 +448,22 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         candidates = out;
       }
 
+      // A filter ranks no better than the candidates it is applied to: when it left fewer than `keep` of a budget the index
+      // filled completely, the members of the list that are left sit further down the ranking than this fetch reached, and
+      // answering now would be a short (or empty) answer while the index holds them. Widen the fetch and ask again, until
+      // the answer is full, the index runs out of candidates, or the budget reaches MAX_OVERFETCH_ROWS, as the dense search
+      // keeps walking until it holds k members of the list. A listed allow-list smaller than `keep` would otherwise always
+      // widen to the cap, for members the first fetch already found: it stops once the fetch holds every member it lists here
+      if (filtered && candidates.size() < keep && raw.size() >= fetchK && fetchK < MAX_OVERFETCH_ROWS
+          && attempt + 1 < STALE_TOP_UP_MAX_ATTEMPTS) {
+        if (filterMembers < 0)
+          filterMembers = allowListMembersInBucket(allowedRIDs);
+        if (candidates.size() < filterMembers) {
+          filterFanout *= FILTER_OVERFETCH_GROWTH;
+          continue;
+        }
+      }
+
       if (oversample == 0)
         return candidates.size() <= k ? candidates : candidates.subList(0, k);
 
@@ -440,6 +485,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       keep = wider;
     }
     return committed;
+  }
+
+  /**
+   * An upper bound of the members of {@code allowedRIDs} this index can return: those of a listed allow-list that live in its
+   * bucket. The size of a {@link PredicateRidSet} is no count of what it accepts (a {@code where} decides one candidate at a
+   * time, and testing a listed member would load its record), so it is taken as it is.
+   */
+  private int allowListMembersInBucket(final Set<RID> allowedRIDs) {
+    if (allowedRIDs instanceof PredicateRidSet)
+      return allowedRIDs.size();
+    final int bucketId = getAssociatedBucketId();
+    if (bucketId < 0)
+      return allowedRIDs.size();
+    int members = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId)
+        ++members;
+    return members;
   }
 
   /** The exact-rescoring oversampling this index applies; see {@link LSMSparseVectorIndexMetadata#rescoreOversample}. */
@@ -663,19 +726,23 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
       final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
-    if (limit <= 0)
-      throw new IndexException("limit must be > 0");
-    if (groupSize <= 0)
-      throw new IndexException("groupSize must be > 0");
-    if (groupKeyResolver == null)
-      throw new IndexException("groupKeyResolver must not be null");
+    checkQueryArrays(queryIndices, queryValues);
+    checkGroupedArguments(limit, groupSize, groupKeyResolver);
+    return topKGroupedWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), limit, groupSize, allowedRIDs,
+        groupKeyResolver, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topKGrouped(int[], float[], int, int, Set, Function, SparseTransactionOverlay)} with the weights already scaled
+   * by {@link #effectiveWeights(int[], float[])}, resolved once by a fan-out caller (see
+   * {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay)}).
+   */
+  public List<RidScore> topKGroupedWeighted(final int[] queryIndices, final float[] effectiveWeights, final int limit,
+      final int groupSize, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    checkGroupedArguments(limit, groupSize, groupKeyResolver);
 
     // Exact rescoring (issue #8576) widens both caps: which groups win and which members fill them are decided on the
     // exact scores, so the quantized pass only has to hand over enough of each.
@@ -790,19 +857,33 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final int groupSize, final float floor, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final SparseTransactionOverlay overlay) {
     checkIsValid();
-    if (queryIndices == null || queryValues == null)
-      throw new IndexException("Query indices and values must not be null");
-    if (queryIndices.length != queryValues.length)
-      throw new IndexException(
-          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    checkQueryArrays(queryIndices, queryValues);
     if (groupSize <= 0)
       throw new IndexException("groupSize must be > 0");
     if (groupKeyResolver == null)
       throw new IndexException("groupKeyResolver must not be null");
     if (groupKeys == null || groupKeys.isEmpty())
       return List.of();
+    return topKForGroupsWeighted(queryIndices, effectiveWeights(queryIndices, queryValues), groupKeys, groupSize, floor,
+        allowedRIDs, groupKeyResolver, overlay);
+  }
 
-    final float[] effectiveWeights = effectiveWeights(queryIndices, queryValues);
+  /**
+   * {@link #topKForGroups(int[], float[], Set, int, float, Set, Function, SparseTransactionOverlay)} with the weights
+   * already scaled by {@link #effectiveWeights(int[], float[])}, resolved once by a fan-out caller (see
+   * {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay)}).
+   */
+  public List<RidScore> topKForGroupsWeighted(final int[] queryIndices, final float[] effectiveWeights,
+      final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
+      final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, effectiveWeights);
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+    if (groupKeys == null || groupKeys.isEmpty())
+      return List.of();
 
     final List<RidScore> committed = committedForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor,
         allowedRIDs, groupKeyResolver, overlay != null ? overlay.touchedRIDs() : null, rescoreOversample());
@@ -969,40 +1050,96 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     planner.addSource(rids, scores, keys, capped);
   }
 
+  private static void checkQueryArrays(final int[] queryIndices, final float[] queryValues) {
+    if (queryIndices == null || queryValues == null)
+      throw new IndexException("Query indices and values must not be null");
+    if (queryIndices.length != queryValues.length)
+      throw new IndexException(
+          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+  }
+
+  private static void checkGroupedArguments(final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver) {
+    if (limit <= 0)
+      throw new IndexException("limit must be > 0");
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+  }
+
   /**
    * The query weights actually scored: the caller's, times each dim's IDF when the index was created with
-   * {@code modifier = "IDF"}.
+   * {@code modifier = "IDF"}. The IDF is a property of the TYPE (its document frequency over every bucket index, against
+   * its record count), so it is the same whichever bucket index resolves it, and a caller searching several bucket indexes
+   * resolves it once and passes the result to the {@code *Weighted} searches instead of letting each one count again.
+   * <p>
+   * Every bucket index of the type counts its own postings, concurrently on the {@link SparseVectorScoringPool} as the
+   * per-bucket searches of a fan-out are, so the counting takes about what counting one bucket's postings does. It runs on
+   * the calling thread alone when the caller holds uncommitted changes (a worker could not see a segment its transaction
+   * flushed) or is itself a pool worker.
    */
-  private float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
+  public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
+    checkIsValid();
+    checkQueryArrays(queryIndices, queryValues);
     final boolean useIDF = sparseMetadata != null
         && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
+    if (!useIDF)
+      return queryValues.clone();
 
+    final List<LSMSparseVectorIndex> typeIndexes = bucketIndexesOfType();
+    final List<Callable<long[]>> counts = new ArrayList<>(typeIndexes.size());
+    for (final LSMSparseVectorIndex bucketIndex : typeIndexes)
+      counts.add(() -> bucketIndex.countPostings(queryIndices, queryValues));
+    final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(
+        underlyingIndex.getMutableIndex().getDatabase().getDatabasePath());
+
+    final long[] documentFrequency = new long[queryIndices.length];
+    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial))
+      for (int i = 0; i < documentFrequency.length; i++)
+        documentFrequency[i] += partial[i];
+
+    final long n = totalDocuments();
     final float[] effectiveWeights = new float[queryValues.length];
-    if (useIDF) {
-      final long n = totalDocuments();
-      // df is computed against engine.totalPostings under each dim. Cached per dim within this
-      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf
-      // mid-query don't multiply the cost.
-      final HashMap<Integer, Long> dfCache = new HashMap<>();
-      for (int i = 0; i < queryIndices.length; i++) {
-        final int qDim = queryIndices[i];
-        if (qDim < 0)
-          throw new IndexException("Query dimension must be >= 0, found: " + qDim);
-        if (queryValues[i] == 0.0f) {
-          effectiveWeights[i] = 0.0f;
-          continue;
-        }
-        Long df = dfCache.get(qDim);
-        if (df == null) {
-          df = countPostings(qDim);
-          dfCache.put(qDim, df);
-        }
-        effectiveWeights[i] = queryValues[i] * idf(n, df);
-      }
-    } else {
-      System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
-    }
+    for (int i = 0; i < queryValues.length; i++)
+      if (queryValues[i] != 0.0f)
+        effectiveWeights[i] = queryValues[i] * idf(n, documentFrequency[i]);
     return effectiveWeights;
+  }
+
+  /**
+   * Every bucket index of the type this index belongs to, itself included: the population an IDF document frequency is
+   * counted over, as {@code N} counts every record of the type. Just this index when it is not part of a type's indexes.
+   */
+  private List<LSMSparseVectorIndex> bucketIndexesOfType() {
+    final IndexInternal[] bucketIndexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : null;
+    if (bucketIndexes == null)
+      return List.of(this);
+    final List<LSMSparseVectorIndex> siblings = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMSparseVectorIndex.class, null);
+    return siblings.contains(this) ? siblings : List.of(this);
+  }
+
+  /**
+   * The live postings of THIS bucket index under each query dim, aligned with {@code queryIndices}: the part of a document
+   * frequency one bucket index holds. A dim with a zero weight is not scored and is not counted (0), and a dim repeated in
+   * the query is counted once. O(df) per distinct dim.
+   */
+  private long[] countPostings(final int[] queryIndices, final float[] queryValues) {
+    final long[] counts = new long[queryIndices.length];
+    final HashMap<Integer, Long> dfCache = new HashMap<>();
+    for (int i = 0; i < queryIndices.length; i++) {
+      final int qDim = queryIndices[i];
+      if (qDim < 0)
+        throw new IndexException("Query dimension must be >= 0, found: " + qDim);
+      if (queryValues[i] == 0.0f)
+        continue;
+      Long df = dfCache.get(qDim);
+      if (df == null) {
+        df = countPostings(qDim);
+        dfCache.put(qDim, df);
+      }
+      counts[i] = df;
+    }
+    return counts;
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
