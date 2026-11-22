@@ -37,6 +37,7 @@ import com.arcadedb.serializer.BinaryTypes;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -2489,6 +2490,19 @@ public class HashIndexBucket extends PaginatedComponent {
    */
   private int findNextEntry(final BasePage page, final int entryCount, final byte[] searchKey, final int tag, final int from) {
     if (tagged) {
+      final ByteBuffer content = page.getContent();
+      if (content.hasArray()) {
+        // THE TAG OF EVERY SLOT IS COMPARED, SO THE SCAN READS THE BACKING ARRAY WITH A STRIDE: NO PER-SLOT CALL CHAIN, NO BUFFER BOUNDS CHECK.
+        // SLOTS GROW DOWNWARDS FROM THE END OF THE PAGE, THE TAG BEING THE LAST BYTE OF A SLOT
+        final byte[] bytes = content.array();
+        final byte tagByte = (byte) tag;
+        int tagIndex = content.arrayOffset() + BasePage.PAGE_HEADER_SIZE + slotPosition(from) + SLOT_SIZE;
+        for (int i = from; i < entryCount; i++, tagIndex -= TAGGED_SLOT_SIZE)
+          if (bytes[tagIndex] == tagByte && keysMatch(page, readSlot(page, i), searchKey))
+            return i;
+        return -1;
+      }
+
       for (int i = from; i < entryCount; i++)
         if (readTag(page, i) == tag && keysMatch(page, readSlot(page, i), searchKey))
           return i;
