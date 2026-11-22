@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.ScanPressureReporter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -368,6 +369,13 @@ class Issue12888ResultSetLimitCapsRowsTest {
     for (final Iterator<Record> all = database.iterateBucket(bucketName); all.hasNext(); all.next())
       ++count;
     assertThat(count).isEqualTo(inBucket);
+
+    // THE WRAPPER STILL REPORTS THE SCAN PRESSURE OF THE BUCKET SCAN TO THE openCypher OPERATORS THAT ASK FOR IT
+    final Iterator<Record> wrapped = database.iterateBucket(bucketName);
+    assertThat(wrapped).isInstanceOf(ScanPressureReporter.class);
+    assertThat(((ScanPressureReporter) wrapped).getBudgetShrunkBatches()).isZero();
+    ((ScanPressureReporter) wrapped).releaseReadAhead();
+    assertThat(wrapped.hasNext()).isTrue();
   }
 
   /**
