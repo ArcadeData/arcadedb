@@ -274,7 +274,7 @@ class PlannerTest {
     final JSONObject first = plan(data(TIME, points));
     final JSONObject create = action(first, "create");
     assertThat(create.getString("key")).isEqualTo("release:26.11.1");
-    assertThat(create.getString("title")).isEqualTo("Performance regression: 1 lines worse in release 26.11.1 vs 26.10.2");
+    assertThat(create.getString("title")).isEqualTo("Performance regression: 1 line worse in release 26.11.1 vs 26.10.2");
 
     points.add(r("26.12.1", 3, 100));
     final JSONObject second = plan(data(TIME, points), open(7, markerOf(create)));
@@ -333,7 +333,7 @@ class PlannerTest {
 
     assertThat(ops(plan)).containsExactly("create");
     assertThat(markerOf(action(plan, "create")).lineIds()).containsExactly(STATUS.id());
-    assertThat(action(plan, "create").getString("title")).isEqualTo("Performance regression: 1 lines worse between aaaaaaa..bbbbbbb");
+    assertThat(action(plan, "create").getString("title")).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
   }
 
   @Test
@@ -563,5 +563,31 @@ class PlannerTest {
 
     assertThat(ops(plan(lines, new TrackedIssue(3, false, true, accepted)))).isEmpty();
     assertThat(ops(plan(lines, new TrackedIssue(3, false, true, accepted), new TrackedIssue(9, false, false, accepted)))).isEmpty();
+  }
+
+  @Test
+  void improvementsAreTheIssueWorkloadsOnlyAndCapped() {
+    final Map<LineKey, List<Point>> lines = data(TIME, List.of(n(A, 1, 100), n(B, 2, 150)));
+    final List<LineKey> better = new ArrayList<>();
+    for (int i = 0; i < 25; i++) {
+      final LineKey key = new LineKey("perf-01", "jvm", "M", "vector", String.format("case-%02d", i), "time");
+      better.add(key);
+      lines.put(key, new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 100))));
+    }
+    final LineKey otherWorkload = new LineKey("perf-01", "jvm", "M", "fulltext", "search", "time");
+    lines.put(otherWorkload, new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 100))));
+    final Marker marker = markerOf(action(plan(lines), "create"));
+
+    lines.get(TIME).add(n(C, 3, 150));
+    for (int i = 0; i < 25; i++)
+      lines.get(better.get(i)).add(n(C, 3, 50 + i));
+    lines.get(otherWorkload).add(n(C, 3, 10));
+    final String body = action(plan(lines, open(7, marker)), "comment").getString("body");
+
+    final String improvements = body.substring(body.indexOf("Improvements"));
+    assertThat(improvements).doesNotContain("fulltext");
+    assertThat(improvements.lines().filter(l -> l.startsWith("- ")).toList()).hasSize(20);
+    assertThat(improvements).contains("case-00").contains("case-19").doesNotContain("case-20");
+    assertThat(improvements.indexOf("case-00")).isLessThan(improvements.indexOf("case-01"));
   }
 }

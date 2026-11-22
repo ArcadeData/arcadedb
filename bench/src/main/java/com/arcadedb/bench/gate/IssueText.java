@@ -47,6 +47,8 @@ public final class IssueText {
   /** GitHub refuses an issue body or comment longer than this. */
   static final int MAX_TEXT = 65536;
 
+  private static final double MIB = 1048576;
+
   static final String BENCH_CHANGED = "the bench changed between these runs: check it first";
   static final String BENCH_UNKNOWN = "bench change unknown";
 
@@ -60,10 +62,11 @@ public final class IssueText {
 
   public static String title(final Marker m) {
     final int n = m.lineIds().size();
+    final String lines = n == 1 ? " line" : " lines";
     if (NIGHTLY.equals(m.getTrigger()))
-      return "Performance regression: " + n + " lines worse between " + shortRef(m.getTrigger(), m.getBaseRef()) + ".." + shortRef(
+      return "Performance regression: " + n + lines + " worse between " + shortRef(m.getTrigger(), m.getBaseRef()) + ".." + shortRef(
           m.getTrigger(), m.getRef());
-    return "Performance regression: " + n + " lines worse in release " + m.getRef() + " vs " + m.getBaseRef();
+    return "Performance regression: " + n + lines + " worse in release " + m.getRef() + " vs " + m.getBaseRef();
   }
 
   /**
@@ -229,8 +232,8 @@ public final class IssueText {
     final Point n = v.newest();
     if (Double.isNaN(n.median()))
       return "- `" + v.key().id() + "`: `" + b.status() + "` -> `" + n.status() + "`";
-    return "- `" + v.key().id() + "`: " + number(b.median()) + unit(b.unit()) + " -> " + number(n.median()) + unit(n.unit()) + " (" + percent(
-        -v.change()) + " better)";
+    return "- `" + v.key().id() + "`: " + measure(b.median(), b.unit()) + " -> " + measure(n.median(), n.unit()) + " (" + percent(-v.change(),
+        decimals(v.change(), v.band())) + " better)";
   }
 
   static String shortRef(final String trigger, final String ref) {
@@ -261,7 +264,7 @@ public final class IssueText {
   /** The base or last value of an entry: its median with its unit, or its status for a status line. */
   private static String value(final JSONObject e, final String prefix) {
     if (e.has(prefix + "Median"))
-      return number(e.getDouble(prefix + "Median")) + unit(e.getString("unit", null));
+      return measure(e.getDouble(prefix + "Median"), e.getString("unit", null));
     return "`" + e.getString(prefix + "Status", "?") + "`";
   }
 
@@ -269,11 +272,20 @@ public final class IssueText {
     if (!e.has(prefix + "Change"))
       return "status";
     final double c = e.getDouble(prefix + "Change");
-    return c > 0 ? percent(c) + " worse" : c < 0 ? percent(-c) + " better" : "0.0%";
+    final int decimals = decimals(c, e.getDouble(prefix + "Band", Double.NaN));
+    return c > 0 ? percent(c, decimals) + " worse" : c < 0 ? percent(-c, decimals) + " better" : percent(0, decimals);
   }
 
   private static String band(final JSONObject e, final String prefix) {
-    return e.has(prefix + "Band") ? percent(e.getDouble(prefix + "Band")) : "";
+    if (!e.has(prefix + "Band"))
+      return "";
+    final double b = e.getDouble(prefix + "Band");
+    return percent(b, decimals(e.getDouble(prefix + "Change", Double.NaN), b));
+  }
+
+  /** One decimal of a percentage, two when the change is within 0.1 percentage point of the band, so the two never read the same. */
+  private static int decimals(final double change, final double band) {
+    return Math.abs(Math.abs(change) - band) < 0.001 ? 2 : 1;
   }
 
   private static String changeSuffix(final JSONObject e) {
@@ -286,12 +298,15 @@ public final class IssueText {
     return " ([raw](" + RAW + runId.substring(0, 4) + "/" + runId.substring(5, 7) + "/" + runId + ".json))";
   }
 
-  private static String unit(final String unit) {
-    return unit == null || unit.isEmpty() ? "" : " " + unit;
+  /** A value with its unit; bytes as MiB with one decimal. */
+  private static String measure(final double value, final String unit) {
+    if ("bytes".equals(unit))
+      return String.format(Locale.ROOT, "%.1f MiB", value / MIB);
+    return number(value) + (unit == null || unit.isEmpty() ? "" : " " + unit);
   }
 
-  private static String percent(final double ratio) {
-    return String.format(Locale.ROOT, "%.1f%%", ratio * 100);
+  private static String percent(final double ratio, final int decimals) {
+    return String.format(Locale.ROOT, decimals == 2 ? "%.2f%%" : "%.1f%%", ratio * 100);
   }
 
   static String number(final double v) {

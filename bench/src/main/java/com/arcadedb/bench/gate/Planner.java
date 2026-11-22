@@ -41,6 +41,9 @@ import java.util.TreeMap;
 public final class Planner {
   static final String LABEL = "performance-regression";
 
+  /** Improvements listed in one comment. */
+  static final int MAX_IMPROVEMENTS = 20;
+
   private static final Comparator<Point> BY_TIME = Comparator.comparing(Point::t).thenComparing(Point::runAt).thenComparing(Point::ref);
 
   private Planner() {
@@ -192,14 +195,27 @@ public final class Planner {
     return newest != null ? newest.ref() : greatest;
   }
 
-  /** Lines of the run that improved on their own baseline and that no open issue tracks, in line order. */
+  /**
+   * Lines of the run that improved on their own baseline, in a workload of the issue, that no open issue tracks: at most
+   * {@link #MAX_IMPROVEMENTS}, the largest change first.
+   */
   private static List<String> improvements(final List<Verdict> verdicts, final Marker marker, final String ref, final Set<String> tracked) {
     final String trigger = marker.getTrigger();
-    final List<String> rows = new ArrayList<>();
+    final Set<String> workloads = new HashSet<>();
+    for (final String id : marker.lineIds()) {
+      final String[] parts = id.split("/");
+      if (parts.length > 3)
+        workloads.add(parts[3]);
+    }
+    final List<Verdict> better = new ArrayList<>();
     for (final Verdict v : verdicts)
-      if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(trigger) && v.newest().ref().equals(ref) && !tracked.contains(
-          lineKey(trigger, v.key().id())))
-        rows.add(IssueText.improvementRow(v));
+      if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(trigger) && v.newest().ref().equals(ref) && workloads.contains(
+          v.key().workload()) && !tracked.contains(lineKey(trigger, v.key().id())))
+        better.add(v);
+    better.sort(Comparator.comparingDouble((Verdict v) -> Math.abs(v.change())).reversed().thenComparing(v -> v.key().id()));
+    final List<String> rows = new ArrayList<>(Math.min(better.size(), MAX_IMPROVEMENTS));
+    for (int i = 0; i < better.size() && i < MAX_IMPROVEMENTS; i++)
+      rows.add(IssueText.improvementRow(better.get(i)));
     return Collections.unmodifiableList(rows);
   }
 

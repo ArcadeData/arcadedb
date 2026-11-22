@@ -117,7 +117,10 @@ class IssueTextTest {
 
   @Test
   void titles() {
-    assertThat(IssueText.title(sample())).isEqualTo("Performance regression: 1 lines worse between aaaaaaa..bbbbbbb");
+    assertThat(IssueText.title(sample())).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
+    final Marker oneRelease = Marker.create("release", "26.11.1", "26.10.2");
+    oneRelease.putLine(TIME_ID, entry("26.10.2", "2026-10-02T01-00-00Z-r", 100, 150));
+    assertThat(IssueText.title(oneRelease)).isEqualTo("Performance regression: 1 line worse in release 26.11.1 vs 26.10.2");
     final Marker release = Marker.create("release", "26.11.1", "26.10.2");
     release.putLine(TIME_ID, entry("26.10.2", "2026-10-02T01-00-00Z-r", 100, 150));
     release.putLine(RECALL_ID, entry("26.10.2", "2026-10-02T01-00-00Z-r", 100, 150));
@@ -187,5 +190,29 @@ class IssueTextTest {
     assertThat(rows.getFirst()).contains("case-00");
     assertThat(rows.get(39)).contains("case-39");
     assertThat(rows.getLast()).startsWith("\nand 5 more lines: see the dashboard: [vector](https://perf.arcadedb.com/workload.html?w=vector)");
+  }
+
+  @Test
+  void changeAndBandGetTwoDecimalsOnlyWhenTheyAreClose() {
+    final Marker marker = sample();
+    marker.putLine(RECALL_ID, entry(A, "2026-11-20T01-00-00Z-1-jvm", 100, 110.04));
+
+    final String body = IssueText.body(marker, NO_BENCH);
+
+    assertThat(rowOf(body, "time")).contains("| 50.0% worse | 10.0% |");
+    assertThat(rowOf(body, "recall")).contains("| 10.04% worse | 10.00% |");
+    final List<String> rows = IssueText.runRows(marker, B);
+    assertThat(rows).isEmpty();
+    final Marker later = Marker.create("nightly", A, Z);
+    later.putLine(RECALL_ID, entry(Z, "2026-11-20T01-00-00Z-1-jvm", 100, 110.04));
+    assertThat(IssueText.runRows(later, B)).singleElement().asString().endsWith("(10.04% worse, band 10.00%)");
+  }
+
+  @Test
+  void bytesAreShownInMiB() {
+    final Marker marker = Marker.create("nightly", B, A);
+    marker.putLine("perf-01/jvm/M/vector/build/peak_heap", entry(A, "2026-11-20T01-00-00Z-1-jvm", 104857600, 157286400).put("unit", "bytes"));
+
+    assertThat(rowOf(IssueText.body(marker, NO_BENCH), "peak_heap")).contains("100.0 MiB").contains("150.0 MiB").doesNotContain("bytes");
   }
 }
