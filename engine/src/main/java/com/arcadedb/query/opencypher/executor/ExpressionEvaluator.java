@@ -300,6 +300,10 @@ public class ExpressionEvaluator {
   /**
    * Evaluates a SKIP or LIMIT expression to an integer value.
    * Supports integer literals, parameters, and function calls like toInteger(ceil(1.7)).
+   * <p>
+   * A value above the largest int is every row: the rows a statement answers are counted with an int, so the value is
+   * clamped to {@link Integer#MAX_VALUE} instead of wrapping to a negative number, which refused the statement as a
+   * negative one it never was (issue #12982).
    */
   public int evaluateSkipLimit(final Expression expr, final Result result, final CommandContext context) {
     final Object value = evaluate(expr, result, context);
@@ -310,10 +314,10 @@ public class ExpressionEvaluator {
         if (d != Math.floor(d) || Double.isInfinite(d))
           throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
       }
-      final int intVal = num.intValue();
-      if (intVal < 0)
-        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + intVal);
-      return intVal;
+      final long longVal = num.longValue();
+      if (longVal < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + longVal);
+      return (int) Math.min(longVal, Integer.MAX_VALUE);
     }
     if (value instanceof String)
       return Integer.parseInt((String) value);

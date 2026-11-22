@@ -300,10 +300,10 @@ public class OrderByStep extends AbstractExecutionStep {
         // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
         // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
         // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
-        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+        final PriorityQueue<Keyed> topK = new PriorityQueue<>(initialHeapCapacity(k), comparator.reversed());
 
         // Pull all results and maintain a top-K heap
-        final int batchSize = Math.max(1000, k * 10);
+        final int batchSize = pullBatchSize(k);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();
@@ -677,6 +677,24 @@ public class OrderByStep extends AbstractExecutionStep {
   }
 
   /** The first {@code k} rows of {@code kept} in the order of {@code comparator}. */
+  /**
+   * The capacity the top-K heap starts with: one more than the limit it keeps, capped at 1000 entries, which the heap grows
+   * past as it needs. The addition is done in long: a limit above the largest int (every row, issue #12982) wrapped it to a
+   * negative number, and the heap refused to be built with it.
+   */
+  private static int initialHeapCapacity(final int k) {
+    return (int) Math.min((long) k + 1, 1000L);
+  }
+
+  /**
+   * The batch the rows are pulled in: ten times the limit, so a limit of a few thousand rows is pulled in one batch. The
+   * multiplication is done in long: a limit above the largest int (every row, issue #12982) wrapped it to a negative number,
+   * which the smallest batch replaced - and a batch of that size would ask the step upstream for more rows than it can hold.
+   */
+  private static int pullBatchSize(final int k) {
+    return k > Integer.MAX_VALUE / 10 ? 1000 : Math.max(1000, k * 10);
+  }
+
   private static List<Result> sortedRows(final List<Keyed> kept, final int k, final Comparator<Keyed> comparator) {
     kept.sort(comparator);
     final int size = Math.min(k, kept.size());
@@ -709,7 +727,7 @@ public class OrderByStep extends AbstractExecutionStep {
       this.k = k;
       this.comparator = comparator;
       this.heapLimit = heapLimit;
-      this.heap = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+      this.heap = new PriorityQueue<>(initialHeapCapacity(k), comparator.reversed());
     }
 
     /**

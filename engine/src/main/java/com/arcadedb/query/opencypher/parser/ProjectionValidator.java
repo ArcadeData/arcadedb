@@ -184,7 +184,9 @@ final class ProjectionValidator {
           if (d != Math.floor(d) || Double.isInfinite(d))
             throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
         }
-        if (((Number) val).intValue() < 0)
+        // The value is read as a long: a literal above the largest int (3000000000) wrapped to a negative number when it
+        // was read as an int, and the statement was refused as a negative one it never was (issue #12982)
+        if (((Number) val).longValue() < 0)
           throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
       }
     }
