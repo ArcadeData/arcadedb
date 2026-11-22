@@ -91,16 +91,28 @@ answers and nothing else:
 - the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
 
 **Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
-answers from every record the member may read. Gremlin, the MongoDB wire protocol and embedded code that reads through
-`iterateType()` were capped only by the scan truncation, and now read every record: they never applied the quota as a row cap.
+answers from every record the member may read.
 
-**Quota bypass to be aware of.** This is a breaking security change for a deployment that grants those entry points
-to a group under a quota. Until a row cap exists on those entry points (#13087), `resultSetLimit` no longer bounds how much a
-member of the group can read through Gremlin, the MongoDB wire protocol or the record API: before it bounded only the first N
-records of each bucket scan, now nothing. If the quota is what an administrator relies on to limit what a group can extract,
-do not grant that group access to those protocols until a row cap is added there. The quota still bounds the rows a SQL
-or openCypher statement answers. The maintainers accepted this interim gap for 26.12.1 rather than keep a cap that gave
-wrong answers on every entry point.
+**Gremlin and the MongoDB wire protocol (#13087).** They never applied the quota as a row cap and were bounded only by the
+scan truncation. They now cap the rows they answer, as SQL and openCypher do:
+
+- a Gremlin traversal answers at most the quota of rows, whatever sends it: the `gremlin` language of the HTTP API and of the
+  drivers, a script or a bytecode request to the Gremlin Server, the fluent Java API. The cap is on the root traversal, so a
+  `union()` answers the quota as a whole and a child traversal (`map()`, `where()`, `project().by()`) reads every row it
+  matches. `withoutStrategies()` cannot remove it. A traversal that writes (`property()`, `addV()`, `drop()`...) is applied
+  to every record it reaches, and only the rows it answers are capped. A traversal a script runs to build another one
+  (`g.V(g.V().has('name', 'a').id().next())`) is a traversal of its own and is capped as one;
+- a MongoDB `find` (and the legacy query, and the `mongo` query language) answers at most the quota of documents, after its
+  filter, sort and skip, and a `limit` below the quota stays in force. An `aggregate` runs its pipeline over every document
+  and answers at most the quota. A `count` counts every document that matches, and an `update` or a `delete` of many
+  documents reaches every one: under a quota a filtered `find` could miss documents, a sort ordered the first N candidates,
+  a `count` answered at most N and a `deleteMany` stopped after N.
+
+A value that holds many records in one row (`fold()`, `toList()` in a script, a `$group` with `$push`) is one row, as
+`collect()` is in openCypher.
+
+**The record API is not a query.** Embedded code that reads through `Database.iterateType()` or `iterateBucket()` was capped
+only by the scan truncation and now reads every record: `resultSetLimit` does not bound it, by design.
 
 **Resource use.** A member under a quota who runs a `WHERE`, an aggregate or an `ORDER BY` now makes the engine read every
 record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
