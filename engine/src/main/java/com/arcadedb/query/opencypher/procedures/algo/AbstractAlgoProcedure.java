@@ -1482,7 +1482,11 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           "1 sorted copy of a row of " + row.length + " entries");
       final int[] sorted = row.clone();
       final int size = sortDistinct(sorted);
-      return size == sorted.length ? sorted : Arrays.copyOf(sorted, size);
+      if (size == sorted.length)
+        return sorted;
+      // The compact copy lives beside the sorted one until it is returned: room for it is checked, its entries are already reserved
+      memory.checkRoom(saturatingProduct(size, INT_BYTES), "the neighbourhood rows", "1 row of " + size + " distinct entries");
+      return Arrays.copyOf(sorted, size);
     }
 
     /**
