@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -38,7 +40,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * documents, in the same order, with the same scores.
  */
 class FullTextTopKRequiredTermTest extends TestHelper {
-  private int topKQueries;
   private static final int VOCABULARY = 300;
 
   @Test
@@ -55,11 +56,9 @@ class FullTextTopKRequiredTermTest extends TestHelper {
             "(grp:\"" + group + "\") AND (" + keywords + ") AND (grp:\"g" + random.nextInt(4) + "\")" };
         for (final String query : shapes)
           for (final int limit : new int[] { 1, 10, 100, -1 })
-            assertSame(index, query, limit);
+            assertSame(index, query, limit, new HashSet<>(Arrays.asList(keywords.split(" "))).size() >= 2);
       }
     }
-    // most of the queries have several distinct keywords: they must have taken the top-k path, or this test compares nothing
-    assertThat(topKQueries).isGreaterThan(700);
   }
 
   @Test
@@ -86,7 +85,7 @@ class FullTextTopKRequiredTermTest extends TestHelper {
         "-grp:g1 AND (" + WORD(1) + " " + WORD(2) + ")")).isNull();
   }
 
-  private void assertSame(final TypeIndex index, final String query, final int limit) {
+  private void assertSame(final TypeIndex index, final String query, final int limit, final boolean expectTopK) {
     final Map<RID, Float> top = FullTextSearch.search(index, query, limit, WorkGuard.forCommandDeadline(null), null, null);
     final Map<RID, Float> general = FullTextSearch.searchMatchingFirst(FullTextSearch.getBucketIndexes(index), query, limit,
         WorkGuard.forCommandDeadline(null), null, null);
@@ -100,11 +99,11 @@ class FullTextTopKRequiredTermTest extends TestHelper {
     // the general path answers (each bucket's best matches), so there only the ranking is compared.
     final boolean topK = new FullTextQueryExecutor(FullTextSearch.getBucketIndexes(index).getFirst(),
         WorkGuard.forCommandDeadline(null), null, null).termShape(query) != null;
+    assertThat(topK).as("top-k path taken for %s", query).isEqualTo(expectTopK);
     if (topK)
       assertThat(top.size()).as("kept for %s", query).isEqualTo(expected.size());
     else
       assertThat(top.size()).as("kept for %s", query).isGreaterThanOrEqualTo(expected.size());
-    topKQueries += topK ? 1 : 0;
   }
 
   private static List<Map.Entry<RID, Float>> ranked(final Map<RID, Float> scores, final int limit) {
