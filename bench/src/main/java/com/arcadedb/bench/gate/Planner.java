@@ -35,10 +35,13 @@ import java.util.TreeMap;
  * Turns the judged lines and the tracked issues into a plan of GitHub actions: {@code create}, {@code update} (title and body),
  * {@code comment} (one per issue and run, keyed by the run so the workflow upserts it) and {@code close} (carrying its last comment).
  * The plan is a pure function of its inputs, and the state it needs next time is in the markers it writes, so a rerun over the same
- * data plans nothing.
+ * data plans nothing. For each issue the comments and the close come before the update that moves its marker, so an effect that failed is
+ * planned again; an open issue whose lines have all recovered already is closed even without new data.
  */
 public final class Planner {
   static final String LABEL = "performance-regression";
+
+  private static final Comparator<Point> BY_TIME = Comparator.comparing(Point::t).thenComparing(Point::runAt).thenComparing(Point::ref);
 
   private Planner() {
   }
@@ -135,36 +138,63 @@ public final class Planner {
           .put("body", IssueText.body(marker, bench)));
     }
 
+    // per issue the comments and the close come before the update: the update moves the marker, so an effect that failed is planned again
+    // next time. A comment is upserted by its run key and a close by its comment's, so planning one twice never doubles it.
     for (final Map.Entry<Integer, Marker> e : markers.entrySet()) {
       final int number = e.getKey();
       final Marker marker = e.getValue();
+      final boolean close = PlanEntries.allRecovered(marker);
+      final Map<String, Point> runs = runsByIssue.get(number);
+      if (runs != null) {
+        final List<Point> ordered = new ArrayList<>(runs.values());
+        ordered.sort(BY_TIME);
+        for (int i = 0; i < ordered.size(); i++) {
+          final String ref = ordered.get(i).ref();
+          final List<String> rows = IssueText.runRows(marker, ref);
+          if (close && i == ordered.size() - 1)
+            actions.put(close(number, marker, ref, verdicts, openByLine.keySet()));
+          else if (!rows.isEmpty())
+            actions.put(new JSONObject().put("op", "comment").put("issue", number).put("runKey", runKey(marker.getTrigger(), ref))
+                .put("body", IssueText.runComment(runKey(marker.getTrigger(), ref), rows, improvements(verdicts, marker, ref, openByLine.keySet()),
+                    null)));
+        }
+      } else if (close)
+        // every line had recovered already: the close planned with the run that completed the streaks did not happen
+        actions.put(close(number, marker, closingRef(marker, lines, keysById), verdicts, openByLine.keySet()));
       if (!marker.render().equals(rendered.get(number)))
         actions.put(new JSONObject().put("op", "update").put("issue", number).put("title", IssueText.title(marker))
             .put("body", IssueText.body(marker, bench)));
-      final Map<String, Point> runs = runsByIssue.get(number);
-      if (runs == null)
-        continue;
-      final List<Point> ordered = new ArrayList<>(runs.values());
-      ordered.sort(Comparator.comparing(Point::t).thenComparing(Point::runAt).thenComparing(Point::ref));
-      final boolean close = PlanEntries.allRecovered(marker);
-      for (int i = 0; i < ordered.size(); i++) {
-        final String ref = ordered.get(i).ref();
-        final String key = runKey(marker.getTrigger(), ref);
-        final List<String> rows = IssueText.runRows(marker, ref);
-        final List<String> improvements = improvements(verdicts, marker.getTrigger(), ref, openByLine.keySet());
-        if (close && i == ordered.size() - 1)
-          actions.put(new JSONObject().put("op", "close").put("issue", number)
-              .put("body", IssueText.runComment(key, rows, improvements, IssueText.closing(marker.getTrigger()))));
-        else if (!rows.isEmpty())
-          actions.put(new JSONObject().put("op", "comment").put("issue", number).put("runKey", key)
-              .put("body", IssueText.runComment(key, rows, improvements, null)));
-      }
     }
     return new JSONObject().put("label", LABEL).put("actions", actions);
   }
 
+  private static JSONObject close(final int number, final Marker marker, final String ref, final List<Verdict> verdicts,
+      final Set<String> tracked) {
+    final String key = runKey(marker.getTrigger(), ref);
+    return new JSONObject().put("op", "close").put("issue", number).put("body",
+        IssueText.runComment(key, IssueText.runRows(marker, ref), improvements(verdicts, marker, ref, tracked),
+            IssueText.closing(marker.getTrigger())));
+  }
+
+  /** The newest run any line of the marker was last followed to: the newest of their points, or the greatest ref without data. */
+  private static String closingRef(final Marker marker, final Map<LineKey, List<Point>> lines, final Map<String, LineKey> keysById) {
+    Point newest = null;
+    String greatest = null;
+    for (final String id : marker.lineIds()) {
+      final String lastRun = marker.line(id).getString("lastRun", null);
+      if (greatest == null || lastRun.compareTo(greatest) > 0)
+        greatest = lastRun;
+      final LineKey key = keysById.get(id);
+      final Point point = key == null ? null : Judge.newest(lines.get(key), marker.getTrigger());
+      if (point != null && point.ref().equals(lastRun) && (newest == null || BY_TIME.compare(point, newest) > 0))
+        newest = point;
+    }
+    return newest != null ? newest.ref() : greatest;
+  }
+
   /** Lines of the run that improved on their own baseline and that no open issue tracks, in line order. */
-  private static List<String> improvements(final List<Verdict> verdicts, final String trigger, final String ref, final Set<String> tracked) {
+  private static List<String> improvements(final List<Verdict> verdicts, final Marker marker, final String ref, final Set<String> tracked) {
+    final String trigger = marker.getTrigger();
     final List<String> rows = new ArrayList<>();
     for (final Verdict v : verdicts)
       if (v.kind() == Verdict.Kind.BETTER && v.trigger().equals(trigger) && v.newest().ref().equals(ref) && !tracked.contains(

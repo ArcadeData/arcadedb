@@ -181,7 +181,7 @@ class PlannerTest {
 
     final Map<LineKey, List<Point>> withNative = data(TIME, time, TIME2, time2, NATIVE, List.of(n(A, 1, 200), n(B, 2, 300)));
     final JSONObject second = plan(withNative, open(7, markerOf(action(first, "create"))));
-    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(ops(second)).containsExactly("comment", "update");
     final JSONObject update = action(second, "update");
     assertThat(update.getInt("issue")).isEqualTo(7);
     assertThat(update.getString("title")).isEqualTo("Performance regression: 3 lines worse between aaaaaaa..bbbbbbb");
@@ -202,12 +202,12 @@ class PlannerTest {
 
     time.add(n(C, 3, 150));
     final JSONObject jvmFile = plan(data(TIME, time, NATIVE, nat), open(7, markerOf(action(first, "create"))));
-    assertThat(ops(jvmFile)).containsExactly("update", "comment");
+    assertThat(ops(jvmFile)).containsExactly("comment", "update");
     assertThat(action(jvmFile, "comment").getString("body")).contains(TIME.id()).doesNotContain(NATIVE.id());
 
     nat.add(n(C, 3, 300));
     final JSONObject nativeFile = plan(data(TIME, time, NATIVE, nat), open(7, markerOf(action(jvmFile, "update"))));
-    assertThat(ops(nativeFile)).containsExactly("update", "comment");
+    assertThat(ops(nativeFile)).containsExactly("comment", "update");
     final JSONObject comment = action(nativeFile, "comment");
     assertThat(comment.getString("runKey")).isEqualTo("nightly:" + C);
     assertThat(comment.getString("body")).contains(TIME.id()).contains(NATIVE.id());
@@ -221,7 +221,7 @@ class PlannerTest {
 
     final JSONObject second = plan(data(TIME, List.of(n(A, 1, 100), n(B, 2, 150), n(C, 3, 152))), open(7, markerOf(action(first, "create"))));
 
-    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(ops(second)).containsExactly("comment", "update");
     final JSONObject line = markerOf(action(second, "update")).line(TIME.id());
     assertThat(line.getString("lastRun")).isEqualTo(C);
     assertThat(line.getInt("streak")).isEqualTo(0);
@@ -238,13 +238,13 @@ class PlannerTest {
 
     points.add(n(C, 3, 101));
     final JSONObject second = plan(data(TIME, points), open(7, markerOf(action(first, "create"))));
-    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(ops(second)).containsExactly("comment", "update");
     assertThat(action(second, "comment").getString("body")).contains("recovered");
     assertThat(markerOf(action(second, "update")).line(TIME.id()).getInt("streak")).isEqualTo(1);
 
     points.add(n(D, 4, 100));
     final JSONObject third = plan(data(TIME, points), open(7, markerOf(action(second, "update"))));
-    assertThat(ops(third)).containsExactly("update", "close");
+    assertThat(ops(third)).containsExactly("close", "update");
     final JSONObject close = action(third, "close");
     assertThat(close.getInt("issue")).isEqualTo(7);
     assertThat(close.getString("body")).startsWith("<!-- perf-regression-run nightly:" + D + " -->").contains("recovered");
@@ -265,7 +265,7 @@ class PlannerTest {
 
     points.add(n(E, 5, 100));
     final JSONObject last = plan(data(TIME, points), open(7, marker));
-    assertThat(ops(last)).containsExactly("update", "comment");
+    assertThat(ops(last)).containsExactly("comment", "update");
   }
 
   @Test
@@ -278,7 +278,7 @@ class PlannerTest {
 
     points.add(r("26.12.1", 3, 100));
     final JSONObject second = plan(data(TIME, points), open(7, markerOf(create)));
-    assertThat(ops(second)).containsExactly("update", "close");
+    assertThat(ops(second)).containsExactly("close", "update");
     assertThat(action(second, "close").getString("body")).startsWith("<!-- perf-regression-run release:26.12.1 -->");
   }
 
@@ -315,7 +315,7 @@ class PlannerTest {
     assertThat(marker.line(TIME.id()).getInt("streak")).isEqualTo(1);
     points.add(n(D, 4, 108));
     final JSONObject closing = plan(data(TIME, points), open(7, marker));
-    assertThat(ops(closing)).containsExactly("update", "close");
+    assertThat(ops(closing)).containsExactly("close", "update");
     final Marker closed = markerOf(action(closing, "update"));
 
     // D is +13.7% on C, but it was already reported (as recovered) in the issue the bot closed
@@ -343,12 +343,12 @@ class PlannerTest {
 
     status.add(s(C, 3, "ok"));
     final JSONObject second = plan(data(STATUS, status), open(7, markerOf(action(first, "create"))));
-    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(ops(second)).containsExactly("comment", "update");
     assertThat(action(second, "comment").getString("body")).contains("recovered");
 
     status.add(s(D, 4, "ok"));
     final JSONObject third = plan(data(STATUS, status), open(7, markerOf(action(second, "update"))));
-    assertThat(ops(third)).containsExactly("update", "close");
+    assertThat(ops(third)).containsExactly("close", "update");
   }
 
   @Test
@@ -362,7 +362,7 @@ class PlannerTest {
     points.add(failed(D, 4, 100));
     final JSONObject plan = plan(data(TIME, points), open(7, marker));
 
-    assertThat(ops(plan)).containsExactly("update", "comment");
+    assertThat(ops(plan)).containsExactly("comment", "update");
     assertThat(action(plan, "comment").getString("body")).contains("not judged");
     assertThat(markerOf(action(plan, "update")).line(TIME.id()).getInt("streak")).isEqualTo(0);
   }
@@ -374,7 +374,7 @@ class PlannerTest {
 
     final JSONObject plan = plan(later, new TrackedIssue(7, true, false, marker));
 
-    assertThat(ops(plan)).containsExactly("update", "comment");
+    assertThat(ops(plan)).containsExactly("comment", "update");
     assertThat(action(plan, "comment").getString("body")).contains("still worse");
   }
 
@@ -402,7 +402,7 @@ class PlannerTest {
     time.add(n(C, 3, 100));
     time2.add(n(C, 3, 70));
     final JSONObject second = plan(data(TIME, time, TIME2, time2), open(7, markerOf(action(first, "create"))));
-    assertThat(ops(second)).containsExactly("update", "comment");
+    assertThat(ops(second)).containsExactly("comment", "update");
     final String body = action(second, "comment").getString("body");
     assertThat(body).contains("recovered").contains("Improvements");
     assertThat(body.substring(body.indexOf("Improvements"))).contains(TIME2.id());
@@ -420,7 +420,7 @@ class PlannerTest {
     time.add(n(C, 3, 150));
     time2.add(n(C, 3, 150));
     final JSONObject second = plan(data(TIME, time, TIME2, time2), open(7, markerOf(action(first, "create"))));
-    assertThat(ops(second)).containsExactly("create", "update", "comment");
+    assertThat(ops(second)).containsExactly("create", "comment", "update");
     final Marker seven = markerOf(action(second, "update"));
     final Marker eight = markerOf(action(second, "create"));
     assertThat(eight.lineIds()).containsExactly(TIME2.id());
@@ -533,5 +533,35 @@ class PlannerTest {
       if (line.startsWith("| ["))
         row = line;
     assertThat(row).contains("150 ms").contains("50.0% worse").contains("/" + regressed.runId() + ".json").doesNotContain("101 ms");
+  }
+
+  @Test
+  void aCloseThatFailedIsPlannedAgainWithoutNewData() {
+    final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), n(B, 2, 150)));
+    Marker marker = markerOf(action(plan(data(TIME, points)), "create"));
+    points.add(n(C, 3, 101));
+    marker = markerOf(action(plan(data(TIME, points), open(7, marker)), "update"));
+    points.add(n(D, 4, 100));
+    final JSONObject closing = plan(data(TIME, points), open(7, marker));
+    assertThat(ops(closing)).containsExactly("close", "update");
+
+    // the update was applied, the close failed: the issue is still open with every line recovered
+    final JSONObject retry = plan(data(TIME, points), open(7, markerOf(action(closing, "update"))));
+
+    assertThat(ops(retry)).containsExactly("close");
+    assertThat(action(retry, "close").getString("body")).isEqualTo(action(closing, "close").getString("body"));
+    // once closed by the bot, nothing more
+    assertThat(ops(plan(data(TIME, points), new TrackedIssue(7, false, false, markerOf(action(closing, "update")))))).isEmpty();
+  }
+
+  @Test
+  void aReleaseRegressionAcceptedLongAgoStaysAccepted() {
+    // the planner sees no age: a maintainer close is honoured for as long as the newest release is the one it accepted
+    final Map<LineKey, List<Point>> lines = data(TIME, List.of(r("26.10.2", 1, 100), r("26.11.1", 2, 150)), TIME2,
+        List.of(r("26.10.2", 1, 100), r("26.11.1", 2, 100)));
+    final Marker accepted = markerOf(action(plan(lines), "create"));
+
+    assertThat(ops(plan(lines, new TrackedIssue(3, false, true, accepted)))).isEmpty();
+    assertThat(ops(plan(lines, new TrackedIssue(3, false, true, accepted), new TrackedIssue(9, false, false, accepted)))).isEmpty();
   }
 }
