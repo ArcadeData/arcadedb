@@ -71,7 +71,8 @@ public final class IssueText {
 
   /**
    * The body: the regression's own numbers ({@code worse*}, never the newest run's) for at most {@link #MAX_ROWS} lines, most severe
-   * first, then the marker. Fewer rows are shown if the marker of a very large event would otherwise push the body over GitHub's limit.
+   * first, then the marker. Fewer rows are shown if the marker of a very large event would otherwise push the body over GitHub's limit;
+   * a marker too large on its own is never cut, the body stays over the limit and the planner flags its action as {@code oversized}.
    */
   public static String body(final Marker m, final BenchChanges bench) {
     final List<String> ids = bySeverity(m, "worse");

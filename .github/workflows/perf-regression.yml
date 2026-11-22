@@ -142,6 +142,8 @@ jobs:
             const fs = require('fs');
             const {owner, repo} = context.repo;
             const plan = JSON.parse(fs.readFileSync('plan.json', 'utf8'));
+            // GitHub refuses an issue body or comment longer than this.
+            const MAX_TEXT = 65536;
 
             try {
               await github.rest.issues.getLabel({owner, repo, name: plan.label});
@@ -205,6 +207,17 @@ jobs:
               const what = action.op === 'create' ? `create ${action.key}` : `${action.op} #${action.issue}`;
               if (action.issue !== undefined && failedIssues.has(action.issue)) {
                 core.warning(`skipped ${what}: an earlier action on the issue failed`);
+                continue;
+              }
+              // GitHub refuses a body or comment over its limit with a 422 on every run: refuse it here, by name.
+              const oversized = ['body', 'issueBody']
+                .filter(f => typeof action[f] === 'string' && action[f].length > MAX_TEXT)
+                .map(f => `${f} is ${action[f].length} characters`);
+              if (oversized.length > 0 || action.oversized !== undefined) {
+                failures++;
+                if (action.issue !== undefined) failedIssues.add(action.issue);
+                const sizes = oversized.length > 0 ? oversized.join(', ') : `the gate flagged ${action.oversized} characters`;
+                core.error(`${what} refused: ${sizes}, over GitHub's limit of ${MAX_TEXT}`);
                 continue;
               }
               try {

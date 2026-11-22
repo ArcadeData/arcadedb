@@ -46,6 +46,9 @@ public final class Planner {
   /** Improvements listed in one comment. */
   static final int MAX_IMPROVEMENTS = 20;
 
+  /** The fields of an action that GitHub stores as an issue body or a comment. */
+  private static final String[] TEXTS = { "body", "issueBody" };
+
   private static final Comparator<Point> BY_TIME = Comparator.comparing(Point::t).thenComparing(Point::runAt).thenComparing(Point::ref);
 
   private Planner() {
@@ -183,7 +186,43 @@ public final class Planner {
         actions.put(new JSONObject().put("op", "update").put("issue", number).put("title", IssueText.title(marker))
             .put("body", IssueText.body(marker, bench)));
     }
+    flagOversized(actions);
     return new JSONObject().put("label", LABEL).put("actions", actions);
+  }
+
+  /**
+   * One line per text of the plan longer than GitHub accepts, naming its action and size. The texts are never cut (an issue body ends
+   * with its marker, the issue's state), so the gate says it here and the workflow refuses the action.
+   */
+  public static List<String> oversized(final JSONObject plan) {
+    final List<String> warnings = new ArrayList<>();
+    final JSONArray actions = plan.getJSONArray("actions");
+    for (int i = 0; i < actions.length(); i++) {
+      final JSONObject action = actions.getJSONObject(i);
+      if (!action.has("oversized"))
+        continue;
+      final String what = action.has("issue") ? action.getString("op") + " #" + action.getInt("issue") : action.getString("op") + " " +
+          action.getString("key", "");
+      for (final String field : TEXTS) {
+        final int length = action.getString(field, "").length();
+        if (length > IssueText.MAX_TEXT)
+          warnings.add(what + ": " + field + " is " + length + " characters, over GitHub's limit of " + IssueText.MAX_TEXT
+              + ": the workflow will refuse it");
+      }
+    }
+    return warnings;
+  }
+
+  /** Flags each action carrying a text GitHub would refuse with {@code oversized}, the length of its longest text. */
+  private static void flagOversized(final JSONArray actions) {
+    for (int i = 0; i < actions.length(); i++) {
+      final JSONObject action = actions.getJSONObject(i);
+      int longest = 0;
+      for (final String field : TEXTS)
+        longest = Math.max(longest, action.getString(field, "").length());
+      if (longest > IssueText.MAX_TEXT)
+        action.put("oversized", longest);
+    }
   }
 
   private static JSONObject close(final int number, final Marker marker, final String ref, final List<Verdict> verdicts,

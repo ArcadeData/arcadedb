@@ -565,6 +565,38 @@ class PlannerTest {
   }
 
   @Test
+  void aMarkerTooLargeForAnIssueBodyIsReportedNotTruncated() {
+    final String a = "1a2b3c4d5e".repeat(4);
+    final String b = "2b3c4d5e6f".repeat(4);
+    final Map<LineKey, List<Point>> lines = new TreeMap<>();
+    for (int i = 0; i < 1000; i++) {
+      final String variant = i % 2 == 0 ? "jvm" : "native";
+      final LineKey key = new LineKey("perf-01", variant, "L", "workload-" + (i % 10), "case-number-" + i, "latency_p95_ms");
+      final double base = 100.123456 + i * 0.987654;
+      lines.put(key, new ArrayList<>(List.of(real(a, 1, variant, base), real(b, 2, variant, base * 1.5 + i * 0.001234))));
+    }
+
+    final JSONObject plan = plan(lines);
+
+    final JSONObject create = action(plan, "create");
+    final String body = create.getString("body");
+    // the marker is the issue's state: it is never cut, the action is flagged instead so the workflow refuses it
+    assertThat(body.length()).isGreaterThan(IssueText.MAX_TEXT);
+    assertThat(markerOf(create).lineIds()).hasSize(1000);
+    assertThat(create.getInt("oversized")).isEqualTo(body.length());
+    assertThat(Planner.oversized(plan)).singleElement().asString()
+        .isEqualTo("create nightly:" + b + ": body is " + body.length() + " characters, over GitHub's limit of 65536: the workflow will refuse it");
+  }
+
+  @Test
+  void aPlanThatFitsHasNoOversizedAction() {
+    final JSONObject plan = plan(data(TIME, List.of(n(A, 1, 100), n(B, 2, 150))));
+
+    assertThat(action(plan, "create").has("oversized")).isFalse();
+    assertThat(Planner.oversized(plan)).isEmpty();
+  }
+
+  @Test
   void bodyKeepsTheRegressedNumbersAfterAFollow() {
     final Point regressed = n(B, 2, 150);
     final List<Point> points = new ArrayList<>(List.of(n(A, 1, 100), regressed));

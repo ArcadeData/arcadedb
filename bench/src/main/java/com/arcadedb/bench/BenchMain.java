@@ -319,6 +319,8 @@ public final class BenchMain {
     final BenchChanges bench = BenchChanges.read(o.containsKey("bench-changes") ? Path.of(o.get("bench-changes")) : null, err);
     final List<TrackedIssue> issues = TrackedIssue.readAll(issuesFile, err);
     final JSONObject plan = Planner.plan(RawData.read(data, err), issues, bench);
+    for (final String warning : Planner.oversized(plan))
+      err.println("warning: " + warning);
     try {
       Files.writeString(outFile, plan.toString(2), StandardCharsets.UTF_8);
     } catch (final IOException e) {
