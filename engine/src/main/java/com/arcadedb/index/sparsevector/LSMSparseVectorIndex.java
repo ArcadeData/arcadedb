@@ -311,9 +311,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @param queryIndices non-negative dimension ids of the query
    * @param queryValues  weights matching {@code queryIndices}
    * @param k            number of neighbors to return; must be > 0
-   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter,
-   *                     so over-fetching by a small factor mitigates fewer-than-K results when
-   *                     the whitelist is selective.
+   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter: the
+   *                     candidate fetch widens (x8 per step, up to {@code MAX_OVERFETCH_ROWS}) while
+   *                     the whitelist leaves fewer than K, so members ranked low are still found
+   *                     (issue #12716). A predicate whitelist (a {@code where}) that accepts few
+   *                     records therefore tests, and loads the record of, up to that many candidates.
    *
    * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}.
    */

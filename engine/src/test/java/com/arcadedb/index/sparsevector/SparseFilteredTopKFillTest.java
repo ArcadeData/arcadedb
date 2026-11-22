@@ -97,7 +97,8 @@ class SparseFilteredTopKFillTest extends TestHelper {
   }
 
   @Test
-  void indexApiAllowedRidsOfTheLowestRankedDocumentsIsAnsweredInFull() {    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(INDEX);
+  void indexApiAllowedRidsOfTheLowestRankedDocumentsIsAnsweredInFull() {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(INDEX);
     final Set<RID> favoured = new HashSet<>(rids.subList(0, FAVOURED));
     final List<RID> got = new ArrayList<>();
     for (final var sub : typeIndex.getIndexesOnBuckets())
