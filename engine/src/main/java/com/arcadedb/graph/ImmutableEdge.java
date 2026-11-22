@@ -243,6 +243,11 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
+  public synchronized Map<String, Object> toMapReportingDamage(final String[] damage) {
+    return super.toMapReportingDamage(damage);
+  }
+
+  @Override
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject json = super.toJSON(includeMetadata);
     if (includeMetadata)

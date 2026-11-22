@@ -124,7 +124,8 @@ public class ResultInternal implements Result {
    * Asking for each name in turn reads a row backed by a stored record once per property, since
    * {@code ImmutableDocument.get(name)} walks the record header from its first byte until it meets the name, so a row of P
    * properties cost P walks. The values of a plain row come from {@link #toPropertyMap(boolean)} instead, which reads the
-   * record once (issue #10098), so the row costs two passes whatever its size: that one and the name list. A projection row
+   * record once (issue #10098), so the row costs one pass whatever its size (two when that read reports that a part of the record did
+   * not decode, which is when the names are needed to tell a missing property from an unreadable one, issue #12979). A projection row
    * (one that holds its own values) gets the map {@code toPropertyMap} built and nothing else: its names are that map's keys,
    * so neither a name set nor a second map is built for it. The names still decide what a record row holds: the single read
    * leaves out a property whose value does not decode (a damaged record), which a read by name answers with {@code null}.
@@ -160,6 +161,29 @@ public class ResultInternal implements Result {
     // walks, in that order, and its values are already in memory, so its map is the answer
     if (plain.element == null || (plain.content != null && !plain.content.isEmpty()))
       return plain.toPropertyMap(false);
+
+    // A STORED RECORD NOTHING NARROWED IS READ IN ONE PASS (issue #12979): the map of its values is also the list of its names, unless
+    // the read reports that a part of the record did not decode, which is the one case that needs the names to tell a property
+    // that is not there from one that could not be read. Listing the names first cost a second walk over the header, a set of them
+    // and a copy of the map for every row of a result.
+    if (plain.element instanceof ImmutableDocument stored && excluded.isEmpty() && plain.projectionExcludes == null
+        && (plain.tombstones == null || plain.tombstones.isEmpty())) {
+      final String[] damage = new String[1];
+      final Map<String, Object> read = stored.toMapReportingDamage(damage);
+      if (damage[0] == null) {
+        for (final Map.Entry<String, Object> entry : read.entrySet()) {
+          final Object value = entry.getValue();
+          if (value instanceof Identifiable)
+            entry.setValue(toPropertyValue(value));
+        }
+        return read;
+      }
+      final Set<String> names = stored.getPropertyNames();
+      final Map<String, Object> properties = new LinkedHashMap<>(names.size() * 4 / 3 + 1);
+      for (final String name : names)
+        properties.put(name, toPropertyValue(read.get(name)));
+      return properties;
+    }
 
     // The names getPropertyNames() lists, minus the caller's exclusions, noting whether any stored name was dropped
     final Set<String> names = new LinkedHashSet<>();

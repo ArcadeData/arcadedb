@@ -514,6 +514,21 @@ public class ImmutableDocument extends BaseDocument {
     return result;
   }
 
+  /**
+   * {@link #toMap(boolean) toMap(false)}, telling the caller whether it lost anything: the first part of the content that did not
+   * decode is described in {@code damage[0]}, which stays null when the whole record decoded. A consumer that needs the names of the
+   * record as well (a row serializer: a property that does not decode is still a column, with a null value) learns from it that
+   * the values it was handed are every property the record holds, and skips the second pass over the header that listing the names
+   * costs (issue #12979).
+   *
+   * @return a NEW, mutable map the caller owns
+   */
+  public Map<String, Object> toMapReportingDamage(final String[] damage) {
+    checkForLazyLoading();
+    final Binary content = requireBuffer("convert to a map");
+    return database.getSerializer().deserializePropertiesReportingDamage(database, content, new EmbeddedModifierObject(this), rid, damage);
+  }
+
   @Override
   public String toString() {
     final StringBuilder output = new StringBuilder(256);
