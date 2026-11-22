@@ -92,6 +92,16 @@ answers and nothing else:
 answers from every record the member may read. Gremlin, the MongoDB wire protocol and embedded code that reads through
 `iterateType()` were capped only by the scan truncation, and now read every record: they never applied the quota as a row cap.
 
+**Quota bypass to be aware of.** Until a row cap exists on those entry points, `resultSetLimit` no longer bounds how much a
+member of the group can read through Gremlin, the MongoDB wire protocol or the record API: before it bounded only the first N
+records of each bucket scan, now nothing. If the quota is what an administrator relies on to limit what a group can extract,
+do not grant that group access to those protocols until a row cap is added there. The quota still bounds the rows a SQL
+or openCypher statement answers.
+
+**Resource use.** A member under a quota who runs a `WHERE`, an aggregate or an `ORDER BY` now makes the engine read every
+record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
+`resultSetLimit` and no `readTimeout` has no protection against a long scan, so set both.
+
 ## Fixes
 
 - **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a

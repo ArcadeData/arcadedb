@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -34,8 +35,10 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * A security group's {@code resultSetLimit} caps the rows a query answers, never the data it reads (issue #12888). It used to be
@@ -157,6 +160,88 @@ class Issue12888ResultSetLimitCapsRowsTest {
     }
   }
 
+  /** An EXISTS subquery reads the records of its own pattern: the row cap does not reach it, and it does not cap the outer rows. */
+  @Test
+  void aCypherExistsSubqueryReadsEveryRecord() {
+    bindUser(quota(QUOTA));
+    // k = 40 sits past the first two records of every bucket, and of the type
+    assertThat(ks("opencypher", "MATCH (i:Item) WHERE i.k = 1 AND EXISTS { MATCH (j:Item) WHERE j.k = 40 } RETURN i.k AS k"))
+        .containsExactly(1);
+    assertThat(ks("opencypher", "MATCH (i:Item) WHERE i.k = 1 AND NOT EXISTS { MATCH (j:Item) WHERE j.k = 40 } RETURN i.k AS k"))
+        .isEmpty();
+    assertThat(count("opencypher", "MATCH (i:Item) WHERE EXISTS { MATCH (j:Item) WHERE j.k = 40 } RETURN i.k AS k"))
+        .as("the outer statement is capped, its EXISTS is not").isEqualTo(QUOTA);
+  }
+
+  /** {@code apoc.do.when} runs its branch as a query of its own and drains every row of it. */
+  @Test
+  void anApocDoWhenBranchReadsEveryRecord() {
+    bindUser(quota(QUOTA));
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (i:Item) WHERE i.k = 1 CALL apoc.do.when(true, 'MATCH (j:Item) RETURN j.k AS k', '') YIELD value "
+            + "RETURN count(value) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").intValue()).isEqualTo(RECORDS);
+    }
+  }
+
+  /** A user-defined function written in Cypher runs its body as a query of its own, on the thread that evaluates the row. */
+  @Test
+  void aUserDefinedCypherFunctionReadsEveryRecord() {
+    database.command("sql", "DEFINE FUNCTION cap.keys \"MATCH (j:Item) RETURN collect(j.k) AS ks\" LANGUAGE opencypher");
+    bindUser(quota(QUOTA));
+    // a function call may write, so the statement is a command
+    try (final ResultSet rs = database.command("opencypher", "MATCH (i:Item) WHERE i.k = 1 RETURN size(cap.keys()) AS n")) {
+      assertThat(rs.next().<Number>getProperty("n").intValue()).isEqualTo(RECORDS);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * A callback that runs while a capped statement does - the function above - reads for the statement, which answers the quota of
+   * rows whatever the callback read. And nothing it leaves behind lets the next top-level statement of the thread through uncapped.
+   */
+  @Test
+  void aStatementThatRanACallbackLeavesTheThreadCapped() {
+    database.command("sql", "DEFINE FUNCTION cap.keys \"MATCH (j:Item) RETURN collect(j.k) AS ks\" LANGUAGE opencypher");
+    bindUser(quota(QUOTA));
+    assertThat(count(database.command("opencypher", "MATCH (i:Item) RETURN size(cap.keys()) AS n"))).isEqualTo(QUOTA);
+    assertThat(count("opencypher", "MATCH (i:Item) RETURN i")).as("the next top-level statement").isEqualTo(QUOTA);
+  }
+
+  /** The rows are pulled after execute() returned: the answer is still the quota, and a statement run in between is capped too. */
+  @Test
+  void aResultSetConsumedLazilyIsCappedAndLeavesTheThreadCapped() {
+    bindUser(quota(QUOTA));
+    try (final ResultSet lazy = database.query("opencypher", "MATCH (i:Item) RETURN i.k AS k ORDER BY k DESC")) {
+      assertThat(count("opencypher", "MATCH (i:Item) RETURN i")).as("another statement while the first is not read").isEqualTo(QUOTA);
+
+      final List<Integer> ks = new ArrayList<>();
+      while (lazy.hasNext())
+        ks.add(lazy.next().<Number>getProperty("k").intValue());
+      assertThat(ks).containsExactly(40, 39);
+      assertThat(lazy.hasNext()).isFalse();
+
+      assertThat(count("opencypher", "MATCH (i:Item) RETURN i")).as("and after it was read").isEqualTo(QUOTA);
+    }
+  }
+
+  /** {@code LIMIT :n} and {@code LIMIT ?} of a script statement are compared with the quota by the value they bind. */
+  @Test
+  void aScriptStatementKeepsAParameterLimitBelowTheQuota() {
+    bindUser(quota(QUOTA));
+    final String named = "SELECT k FROM Item ORDER BY k DESC LIMIT :n;";
+    assertThat(ks(database.command("sqlscript", named, Map.of("n", 1)))).as("LIMIT :n below the quota").containsExactly(40);
+    assertThat(ks(database.command("sqlscript", named, Map.of("n", 10)))).as("LIMIT :n above the quota").containsExactly(40, 39);
+
+    final String positional = "SELECT k FROM Item ORDER BY k DESC LIMIT ?;";
+    assertThat(ks(database.command("sqlscript", positional, 1))).as("LIMIT ? below the quota").containsExactly(40);
+    assertThat(ks(database.command("sqlscript", positional, 10))).as("LIMIT ? above the quota").containsExactly(40, 39);
+
+    // the statements are parsed for each execution: the first user's value does not stay in the next one's
+    bindUser(null);
+    assertThat(ks(database.command("sqlscript", named, Map.of("n", 10)))).hasSize(10);
+  }
+
   /** A write runs to its end before the caller reads a row, so the quota caps the rows it answers and none of what it writes. */
   @Test
   void aCypherWriteAppliesEveryRowAndAnswersTheQuota() {
@@ -190,6 +275,25 @@ class Issue12888ResultSetLimitCapsRowsTest {
     for (final Bucket bucket : database.getSchema().getType("Item").getBuckets(false))
       for (final Iterator<Record> it = database.iterateBucket(bucket.getName()); it.hasNext(); it.next())
         ++count;
+    assertThat(count).isEqualTo(RECORDS);
+  }
+
+  /** The readTimeout of the user is what bounds a scan now: it still interrupts the record API, with the quota out of the way. */
+  @Test
+  void theReadTimeoutStillInterruptsTheRecordIterator() throws InterruptedException {
+    bindUser(quota(QUOTA, 1L));
+    final Iterator<Record> it = database.iterateType("Item", true);
+    Thread.sleep(50);
+    assertThatThrownBy(() -> {
+      while (it.hasNext())
+        it.next();
+    }).isInstanceOf(TimeoutException.class);
+
+    // a generous timeout lets the whole type through: the quota is not what stops the scan
+    bindUser(quota(QUOTA, 600_000L));
+    int count = 0;
+    for (final Iterator<Record> all = database.iterateType("Item", true); all.hasNext(); all.next())
+      ++count;
     assertThat(count).isEqualTo(RECORDS);
   }
 
@@ -239,6 +343,10 @@ class Issue12888ResultSetLimitCapsRowsTest {
   }
 
   private static SecurityDatabaseUser quota(final long resultSetLimit) {
+    return quota(resultSetLimit, -1L);
+  }
+
+  private static SecurityDatabaseUser quota(final long resultSetLimit, final long readTimeout) {
     return new SecurityDatabaseUser() {
       @Override
       public String getName() {
@@ -267,7 +375,7 @@ class Issue12888ResultSetLimitCapsRowsTest {
 
       @Override
       public long getReadTimeout() {
-        return -1L;
+        return readTimeout;
       }
     };
   }
