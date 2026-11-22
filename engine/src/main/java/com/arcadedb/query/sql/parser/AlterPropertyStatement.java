@@ -39,11 +39,18 @@ import com.arcadedb.schema.Property;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public class AlterPropertyStatement extends DDLStatement {
   /** The settings ALTER PROPERTY can change, in the order its documentation lists them. */
   private static final List<String> SUPPORTED_SETTINGS = List.of("name", "readonly", "mandatory", "notnull", "hidden", "external",
       "compression", "max", "min", "default", "regexp");
+
+  /**
+   * The settings that are flags: a statement that names one of them without a value turns it on, as the same flag in
+   * {@code CREATE PROPERTY} does (issue #13030).
+   */
+  private static final Set<String> FLAG_SETTINGS = Set.of("readonly", "mandatory", "notnull", "hidden", "external");
 
   public Expression settingValue;
   public Identifier typeName;
@@ -100,7 +107,8 @@ public class AlterPropertyStatement extends DDLStatement {
       // NAME) or a backtick-quoted `NAME \`odd name\`` to the plain, unescaped name - rather than as an evaluated
       // expression, so it is taken literally rather than resolved as a variable reference, and any backtick
       // quoting is unescaped instead of being stored as part of the property name.
-      final Object finalValue = "name".equalsIgnoreCase(setting) ? settingValue.getDefaultAlias().getStringValue()
+      final Object finalValue = settingValue == null ? valueOfMissingValue(setting)
+          : "name".equalsIgnoreCase(setting) ? settingValue.getDefaultAlias().getStringValue()
           : "default".equalsIgnoreCase(setting) ? settingValue.toString() : PropertyAttributeValues.evaluate(setting, settingValue, context);
 
       final Object oldValue;
@@ -168,6 +176,29 @@ public class AlterPropertyStatement extends DDLStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * The value of an attribute the statement named without one. The grammar lets the value of an attribute be absent
+   * ({@code identifier expression?}), and the engine's own rule for an absent value is that it means true for a flag
+   * attribute: {@code CREATE PROPERTY ... (MANDATORY)} sets the flag, and the parser says so in as many words ("If no
+   * value specified, leave settingValue as null (implies true for boolean flags)"). ALTER PROPERTY dereferenced the
+   * absent value instead, and the statement answered a server fault (HTTP 500) for a mistake the statement alone
+   * decides (issue #13030).
+   * <p>
+   * An attribute that takes a value says so, instead of failing the same way: the same message CREATE PROPERTY
+   * gives for a DEFAULT without one, and a parsing exception, so the statement answers a client error (400). The
+   * status the refusals of a wrong value answer is #12809's subject.
+   *
+   * @param setting the attribute the statement named, in lower case
+   * @return the value of the attribute
+   */
+  private static Object valueOfMissingValue(final String setting) {
+    if (FLAG_SETTINGS.contains(setting))
+      return Boolean.TRUE;
+    if ("default".equals(setting))
+      throw new CommandSQLParsingException("Default value not set");
+    throw new CommandSQLParsingException(setting.toUpperCase(Locale.ENGLISH) + " takes a value");
   }
 
   /**
