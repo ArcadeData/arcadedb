@@ -288,6 +288,8 @@ public class StringUtils {
           // A literal percent sign, padded to the width
           total += width;
         else if (conversion != 'n') {
+          // '%n' is left out: a line separator is no longer than the two characters that ask for it, and it takes no
+          // width.
           // The '<' flag wins over an explicit index, and leaves both counters where they were.
           if (!previous)
             last = explicit > 0 ? explicit - 1 : ++ordinary;

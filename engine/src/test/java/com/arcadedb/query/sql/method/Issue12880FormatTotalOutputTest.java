@@ -23,6 +23,7 @@ import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StringUtils;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -149,7 +150,9 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
         String.format(Locale.ROOT, "%1$d %1$s %1$x %1$,d", small));
   }
 
+  // Formats strings of 17MB and 34MB for real
   @Test
+  @Tag("slow")
   void whatTheCallerAlreadyHoldsIsNotCounted() {
     final int large = StringUtils.MAX_FORMAT_OUTPUT + WIDTH;
     final String text = "a".repeat(large);
@@ -181,9 +184,11 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
   /**
    * The estimate is what the ceiling is taken on, so it must not fall short of what the formatter writes: each pattern
    * is formatted for real and repeated up to just under the ceiling of the estimate, which the output may not exceed
-   * by more than the arguments it prints.
+   * by more than the arguments it prints. Each refusal comes before anything is formatted, but the patterns alone are
+   * up to 32MB each.
    */
   @Test
+  @Tag("slow")
   void theOutputStaysUnderTheCeilingPlusTheArguments() {
     final BigDecimal decimal = new BigDecimal("123456789012345678901234567890.123456789");
     final BigInteger integer = BigInteger.TEN.pow(60).negate();
