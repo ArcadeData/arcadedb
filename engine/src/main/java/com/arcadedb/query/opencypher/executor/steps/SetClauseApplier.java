@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -42,6 +43,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -497,6 +499,13 @@ public final class SetClauseApplier {
 
     final boolean propertyExisted;
     if (value == null) {
+      // A null written to a NOTNULL property is refused, as the SQL path refuses it: here the property is removed, so the
+      // presence-based rule of the validator would not see the null any more and the constraint would be bypassed
+      // (issue #13039)
+      final Property property = mutableDoc.getType().getPolymorphicPropertyIfExists(propertyName);
+      if (property != null && property.isNotNull())
+        throw new ValidationException(ValidationException.Kind.NOT_NULL,
+            "The property '" + mutableDoc.getType().getName() + "." + propertyName + "' cannot be null, record: " + mutableDoc);
       // Removing an absent property is a no-op for Neo4j-compatible statistics: only count it when the property
       // actually existed before the removal.
       propertyExisted = mutableDoc.has(propertyName);

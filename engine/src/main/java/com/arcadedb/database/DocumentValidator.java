@@ -213,10 +213,15 @@ public class DocumentValidator {
    */
   public static ExistenceConstraint unmetExistenceConstraint(final Document document, final String name, final boolean mandatory,
       final boolean notNull) {
-    if (mandatory && !document.has(name))
-      return ExistenceConstraint.MANDATORY;
+    // MANDATORY is "the property has a value": a property the record holds with a null value is as good as absent, and
+    // the SQL path stores an explicit null instead of removing the property (#10194). Without this, a mandatory property
+    // could end up holding a null value, and the two languages would answer differently for the same write: openCypher
+    // removes the property on a null and refused it, SQL kept it and accepted it (issue #13039).
+    // A property that is both MANDATORY and NOTNULL reports the NOTNULL one: the value is there, and it is null
     if (notNull && document.has(name) && document.get(name) == null)
       return ExistenceConstraint.NOT_NULL;
+    if (mandatory && (!document.has(name) || document.get(name) == null))
+      return ExistenceConstraint.MANDATORY;
     return null;
   }
 
