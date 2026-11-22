@@ -192,6 +192,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
             blockDepth--;
           retryBlock |= commit.getRetry() != null;
         } else if (statement instanceof RollbackStatement && blockDepth > 0)
+          // ISSUE #12797: A ROLLBACK closes its BEGIN block as executeInternal plans it, so what follows is outside that block
           blockDepth--;
         else if (blockDepth == 0 && !statement.isIdempotent())
           return false;
