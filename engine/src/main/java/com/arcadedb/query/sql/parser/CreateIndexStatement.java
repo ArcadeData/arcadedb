@@ -68,9 +68,12 @@ public class CreateIndexStatement extends DDLStatement {
    * Only that one setting is mandatory: it is compared against the length of every candidate vector, so
    * an index built without it indexes nothing. The others all have defaults, which the previous wording
    * ("requires METADATA with dimensions, similarity, maxConnections, and beamWidth") did not say (#5607).
+   * An index that takes its dimensions from its first vector is the alternative, and the hint names it: the
+   * clause is accepted since issue #13027, as the Cypher path accepted it before.
    */
   private static final String LSM_VECTOR_METADATA_HINT =
-      "LSM_VECTOR index requires a METADATA clause with a positive 'dimensions', e.g. METADATA {\"dimensions\": 384}. "
+      "LSM_VECTOR index requires a METADATA clause with a positive 'dimensions', e.g. METADATA {\"dimensions\": 384}, "
+          + "or one that takes them from the first vector written, e.g. METADATA {\"sizeOnFirstVector\": true}. "
           + "Optional: similarity (default COSINE), maxConnections (default 32), beamWidth (default 100), "
           + "quantization (default NONE)";
 
@@ -444,7 +447,11 @@ public class CreateIndexStatement extends DDLStatement {
         // An empty or dimension-less METADATA satisfied the null check above and then built an index with
         // dimensions=0, which accepts writes and indexes nothing. The builder refuses it too, but raising a
         // parsing exception here keeps a malformed statement a client error (HTTP 400) instead of a 500.
-        if (jsonMetadata.getInt("dimensions", 0) < 1)
+        // A clause that asks the index to take its dimensions from its first vector is the alternative the
+        // builder's own refusal names ("or the index must take them from its first vector: METADATA
+        // {\"sizeOnFirstVector\": true}"), and the Cypher path accepts it: the check below read the dimensions
+        // and nothing else, so it refused the very alternative it points at (issue #13027).
+        if (jsonMetadata.getInt("dimensions", 0) < 1 && !jsonMetadata.getBoolean("sizeOnFirstVector", false))
           throw new CommandSQLParsingException(LSM_VECTOR_METADATA_HINT);
 
         // Read the buildGraphNow directive (default true), then strip every directive before the clause reaches the

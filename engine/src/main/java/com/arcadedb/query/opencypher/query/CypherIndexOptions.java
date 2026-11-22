@@ -188,6 +188,16 @@ final class CypherIndexOptions {
       metadata.put("similarity", "COSINE");
     final LSMVectorIndexMetadata definition = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
     checked(metadata, definition, Schema.INDEX_TYPE.LSM_VECTOR);
+    // A non-positive 'dimensions' is refused here, as the SQL path refuses it: the index creation refuses it too,
+    // but as a failed build (HTTP 500) instead of a client error (issue #13027). The Neo4j spelling of the setting
+    // goes through positiveInt and is refused above; the native one arrives here, read and stored as it is.
+    // An index that takes its dimensions from its first vector is the alternative and is accepted, as it is in SQL.
+    if (metadata.has("dimensions") && definition.dimensions < 1
+        && !metadata.getBoolean("sizeOnFirstVector", false))
+      throw new CommandParsingException(
+          "Invalid vector index OPTIONS: 'dimensions' must be a positive integer, found " + definition.dimensions
+              + ": it must match the number of components of the indexed vectors, or the index must take them from its first vector"
+              + " (sizeOnFirstVector: true)");
     // Here as well as where the index is created, so the statement is refused before it creates a type or a property for it
     try {
       LSMVectorIndexMetadata.checkDimensionsBound(definition.dimensions, configuration);
