@@ -20,6 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
@@ -94,6 +95,22 @@ class OverlappingUniqueIndexScopeTest extends TestHelper {
 
     database.transaction(() -> database.newDocument("Child12724").set("id", 4).set("p", 7L).save());
     assertThat(database.countType("Parent12724", true)).isEqualTo(3L);
+  }
+
+  @Test
+  void theSuperTypeIndexCannotBeCreatedOverADuplicateTheSubTypeHolds() {
+    createHierarchy();
+    database.command("sql", "CREATE INDEX ON Child12724 (p) UNIQUE");
+    // THE CHILD TAKES THE PARENT'S KEY BEFORE THE PARENT HAS AN INDEX: ONLY THE CHILD'S OWN INDEX IS THERE TO REFUSE IT, AND IT DOES NOT
+    database.transaction(() -> database.newDocument("Child12724").set("id", 3).set("p", 0L).save());
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON Parent12724 (p) UNIQUE"))
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.getSchema().getType("Parent12724").getIndexByProperties("p")).isNull();
+    try (final ResultSet rows = database.query("sql", "SELECT FROM Parent12724 WHERE p = 0")) {
+      assertThat(rows.stream().count()).isEqualTo(2L);
+    }
   }
 
   /** A parent holding p = 0 and a child holding p = 1: no duplicate yet, so either index can be created over them. */

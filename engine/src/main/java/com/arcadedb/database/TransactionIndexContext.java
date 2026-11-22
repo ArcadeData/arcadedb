@@ -1277,8 +1277,9 @@ public class TransactionIndexContext {
     if (!(index instanceof LSMTreeIndex))
       return null;
     // the type index the entry belongs to, not the one (type name, properties) resolves to: see checkUniqueIndexKeys (#12724)
-    final TypeIndex typeIndex = index.getTypeIndex() != null ?
-        index.getTypeIndex() :
+    final TypeIndex ownTypeIndex = index.getTypeIndex();
+    final TypeIndex typeIndex = ownTypeIndex != null ?
+        ownTypeIndex :
         index.getTypeName() == null ?
             null :
             database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
@@ -1366,7 +1367,11 @@ public class TransactionIndexContext {
    * no other transaction commits to the index until its own pass has run.
    */
   private boolean isUniqueCheckDeferred(final IndexInternal index) {
-    final String typeName = index.getTypeName();
+    // The type DECLARING the index, not the type owning the bucket (#12724): a super type's index has a bucket index in each sub type
+    // bucket, named after the sub type, so asking the bucket's type left the build of a super type's index checking every commit to a
+    // sub type bucket against the index it was filling, and the build of a polymorphic type stayed quadratic
+    final TypeIndex typeIndex = index.getTypeIndex();
+    final String typeName = typeIndex != null ? typeIndex.getTypeName() : index.getTypeName();
     return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
         && type.isUniqueCheckDeferred(index.getPropertyNames());
   }
