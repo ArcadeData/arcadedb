@@ -773,6 +773,26 @@ public class LocalDocumentType implements DocumentType {
         .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
   }
 
+  /**
+   * Refused before a file moves (issue #12715): a bucket renamed onto the name of one that exists - a free bucket, one a dropped type
+   * left behind, one of another type - would share its name with it, the file manager and the schema could no longer tell the two
+   * apart, and the next open of the database fails with "Component 'X' was built on file id N but the file registered under that
+   * name has id M". {@code moved} are the buckets the rename gives a name derived from the type name; a bucket attached under a name
+   * of its own is not renamed and so cannot collide.
+   */
+  protected final void checkBucketRenameTargets(final String oldName, final String newName, final Collection<Bucket> moved) {
+    for (final Bucket bucket : moved) {
+      final String target = LocalSchema.rebaseComponentName(bucket.getName(), oldName, newName, schema.getEncoding());
+      if (target == null)
+        continue;
+      final Bucket holder = schema.getBucketByNameIfExists(target);
+      if (holder != null && holder != bucket)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot rename type '" + oldName + "' to '" + newName + "': its bucket '" + bucket.getName() + "' would be named '" + target
+                + "', which is the name of an existing bucket");
+    }
+  }
+
   private void checkInsideRename() {
     if (!renameLock.isHeldByCurrentThread())
       throw new IllegalStateException("The document part of type '" + name + "' can only be renamed from inside a rename "
@@ -925,6 +945,9 @@ public class LocalDocumentType implements DocumentType {
                 + "', which is the name of an index of type '" + holder.getTypeName() + "'");
     }
 
+    if (!targetIsOwnReservation)
+      checkBucketRenameTargets(oldName, newName, buckets);
+
     final List<Bucket> removedBuckets = new ArrayList<>();
     final List<TypeIndex> renamedIndexes = new ArrayList<>();
     final List<TypeIndex> renamedInheritedIndexes = new ArrayList<>();
@@ -938,7 +961,7 @@ public class LocalDocumentType implements DocumentType {
           // Bucket attached with addBucket() under a name of its own: it does not follow the type name.
           continue;
 
-        ((LocalBucket) bucket).rename(newBucketName);
+        moveBucketTo(bucket, newBucketName);
 
         removedBuckets.add(bucket);
 
@@ -1033,8 +1056,10 @@ public class LocalDocumentType implements DocumentType {
           if (restoredName == null)
             corrupted = true;
           else
-            ((LocalBucket) bucket).rename(restoredName);
-        } catch (IOException ex) {
+            moveBucketTo(bucket, restoredName);
+        } catch (IOException | RuntimeException ex) {
+          // RuntimeException too: the old name taken by another bucket meanwhile is refused by the claim, and one bucket left
+          // under the new name must not keep the others from going back
           corrupted = true;
         } finally {
           rekeyBucket(bucket, renamedBucketName);
@@ -1080,6 +1105,36 @@ public class LocalDocumentType implements DocumentType {
 
     schema.bucketMap.remove(previousKey, bucket);
     schema.bucketMap.put(currentName, (LocalBucket) bucket);
+  }
+
+  /**
+   * Moves a bucket of this type under {@code newBucketName}, claiming the name first (issue #12715). The check a rename makes
+   * before anything moves ({@link #checkBucketRenameTargets}) runs outside every lock, and a {@code CREATE BUCKET} of the same name
+   * can land after it: renamed anyway, the bucket would share its name with that one in the file manager and in the schema, and the
+   * next open of the database would fail. The claim is a {@code putIfAbsent} on the schema's bucket map under the database write
+   * lock, the lock {@link LocalSchema#createBucket} registers a new bucket under after checking its name again, so exactly one of
+   * the two gets the name. Only the claim is under the lock: the rename itself waits for the whole database's pages to be flushed.
+   * The claim is given back if the rename fails, and once it succeeded {@link #rekeyBucket} retires the previous key.
+   *
+   * @throws AlreadyExistsException if another bucket holds the name, with nothing moved
+   */
+  protected final void moveBucketTo(final Bucket bucket, final String newBucketName) throws IOException {
+    final LocalBucket localBucket = (LocalBucket) bucket;
+    ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
+      final LocalBucket holder = schema.bucketMap.putIfAbsent(newBucketName, localBucket);
+      if (holder != null && holder != localBucket)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot rename bucket '" + bucket.getName() + "' to '" + newBucketName + "': a bucket with that name already exists");
+      return null;
+    });
+
+    try {
+      localBucket.rename(newBucketName);
+    } catch (final IOException | RuntimeException e) {
+      if (!newBucketName.equals(bucket.getName()))
+        schema.bucketMap.remove(newBucketName, localBucket);
+      throw e;
+    }
   }
 
   /**

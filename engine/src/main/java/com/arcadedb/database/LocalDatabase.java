@@ -440,7 +440,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         final String content = FileUtils.readFileAsString(configurationFile);
         configuration.reset();
-        configuration.fromJSON(content);
+        configuration.fromJSON(content, "configuration of database '" + name + "'");
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e,
             configurationFile);
@@ -877,7 +877,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       TransactionContext tx = current.getLastTransaction();
       // NOT ONE WHOSE TRANSACTION IS STILL CONCLUDING EITHER (#10687): ITS COMMIT COUNT IS ABOUT TO BE READ BY THE CALLER OF THE
       // COMMIT THAT ENDED IT, SEE TransactionContext.isRunningAfterCompletionCallbacks()
-      if (tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
+      // NULL WHEN DatabaseContext.init() ROLLED BACK THE TRANSACTIONS OF A CONTEXT THIS THREAD ALREADY HAD AND COULD NOT BUILD THE
+      // ONE THAT REPLACES THEM (#12817): THE CONTEXT STAYS, IT CARRIES THE CURRENT USER, AND GETS ITS TRANSACTION HERE
+      if (tx == null || tx.isActive() || tx.isRunningAfterCompletionCallbacks()) {
         // CREATE A NESTED TX
         tx = new TransactionContext(getWrappedDatabaseInstance());
         current.pushTransaction(tx);
@@ -2734,8 +2736,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
-                  + "boundary): NOT retrying, because replaying it would apply the already durable half a second "
-                  + "time. Propagating %s to the caller",
+                  + "boundary, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
+                  + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
           throw e;
         }

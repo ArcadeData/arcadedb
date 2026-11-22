@@ -40,6 +40,7 @@ import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.GroupedTopUpPlanner;
+import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
@@ -109,6 +110,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * more rows than this and narrows nothing still gets them (PR #8001 review).
    */
   private static final int MAX_OVERFETCH_ROWS = 100_000;
+
+  /** Candidates a filtered search fetches per row it wants on its first pass, to find that many members of the allow-list. */
+  private static final int FILTER_OVERFETCH        = 8;
+
+  /** The factor by which a filtered search widens {@link #FILTER_OVERFETCH} when the allow-list left its answer short. */
+  private static final int FILTER_OVERFETCH_GROWTH = 8;
 
   /**
    * How much a rescored search widens its candidate budget when the answer came up short because candidates were
@@ -306,9 +313,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @param queryIndices non-negative dimension ids of the query
    * @param queryValues  weights matching {@code queryIndices}
    * @param k            number of neighbors to return; must be > 0
-   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter,
-   *                     so over-fetching by a small factor mitigates fewer-than-K results when
-   *                     the whitelist is selective.
+   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter: the
+   *                     candidate fetch widens (x8 per step, up to {@code MAX_OVERFETCH_ROWS}) while
+   *                     the whitelist leaves fewer than K, so members ranked low are still found
+   *                     (issue #12716). A predicate whitelist (a {@code where}) that accepts few
+   *                     records therefore tests, and loads the record of, up to that many candidates.
    *
    * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}.
    */
@@ -386,11 +395,18 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final int oversample = rescoreOversample();
     int keep = oversampled(k, oversample);
     int previousFetchK = -1;
+    // How many candidates a filtered search fetches per row it wants. A filter that leaves the answer short of it while the
+    // index still holds more candidates widens it and asks again (see below)
+    int filterFanout = FILTER_OVERFETCH;
+    // How many members of the allow-list this index can return at most, counted the first time a widening is considered
+    // (-1 until then): a fetch that already holds them all has nothing left to widen for
+    int filterMembers = -1;
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
       // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
-      // because the top-scored RIDs were filtered out. The fixed cap keeps worst-case work bounded even when the
-      // filter is very selective.
+      // because the top-scored RIDs were filtered out: filterFanout candidates per row wanted, widened below while the
+      // filter leaves the answer short. MAX_OVERFETCH_ROWS keeps worst-case work bounded even when the filter is very
+      // selective.
       //
       // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
       // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
@@ -402,7 +418,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
       // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
       // is public and an embedded caller is not going through it.
-      final int fetchK = filtered ? (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
+      final int fetchK = filtered ? (int) Math.min(widened * filterFanout, MAX_OVERFETCH_ROWS) : (int) Math.min(widened, Integer.MAX_VALUE);
       // A budget the cap kept where it was would only fetch the same candidates again.
       if (fetchK == previousFetchK)
         break;
@@ -432,6 +448,22 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         candidates = out;
       }
 
+      // A filter ranks no better than the candidates it is applied to: when it left fewer than `keep` of a budget the index
+      // filled completely, the members of the list that are left sit further down the ranking than this fetch reached, and
+      // answering now would be a short (or empty) answer while the index holds them. Widen the fetch and ask again, until
+      // the answer is full, the index runs out of candidates, or the budget reaches MAX_OVERFETCH_ROWS, as the dense search
+      // keeps walking until it holds k members of the list. A listed allow-list smaller than `keep` would otherwise always
+      // widen to the cap, for members the first fetch already found: it stops once the fetch holds every member it lists here
+      if (filtered && candidates.size() < keep && raw.size() >= fetchK && fetchK < MAX_OVERFETCH_ROWS
+          && attempt + 1 < STALE_TOP_UP_MAX_ATTEMPTS) {
+        if (filterMembers < 0)
+          filterMembers = allowListMembersInBucket(allowedRIDs);
+        if (candidates.size() < filterMembers) {
+          filterFanout *= FILTER_OVERFETCH_GROWTH;
+          continue;
+        }
+      }
+
       if (oversample == 0)
         return candidates.size() <= k ? candidates : candidates.subList(0, k);
 
@@ -453,6 +485,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       keep = wider;
     }
     return committed;
+  }
+
+  /**
+   * An upper bound of the members of {@code allowedRIDs} this index can return: those of a listed allow-list that live in its
+   * bucket. The size of a {@link PredicateRidSet} is no count of what it accepts (a {@code where} decides one candidate at a
+   * time, and testing a listed member would load its record), so it is taken as it is.
+   */
+  private int allowListMembersInBucket(final Set<RID> allowedRIDs) {
+    if (allowedRIDs instanceof PredicateRidSet)
+      return allowedRIDs.size();
+    final int bucketId = getAssociatedBucketId();
+    if (bucketId < 0)
+      return allowedRIDs.size();
+    int members = 0;
+    for (final RID rid : allowedRIDs)
+      if (rid.getBucketId() == bucketId)
+        ++members;
+    return members;
   }
 
   /** The exact-rescoring oversampling this index applies; see {@link LSMSparseVectorIndexMetadata#rescoreOversample}. */

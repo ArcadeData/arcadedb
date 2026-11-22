@@ -293,6 +293,13 @@ class BenchMainTest {
   }
 
   @Test
+  void replaceReleaseIsAFlagThatTakesNoValue() {
+    // the flag before the path: were it to take a value it would swallow the path, and the upload would miss its target
+    final String[] args = { "upload", "--url", "u", "--user", "perf-writer", "--password-env", "P", "--replace-release", "dir" };
+    assertThat(BenchMain.parse(args, true, BenchMain.UPLOAD_OPTIONS)).containsEntry("replace-release", "true").containsEntry("", "dir");
+  }
+
+  @Test
   void uploadOfMissingPathExits2() {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     assertThat(run(buf, "upload", "--url", "http://localhost:1", "--user", "perf-writer", "--password-env", "PATH",
@@ -346,15 +353,15 @@ class BenchMainTest {
     // the flags scripts/run-all.sh and the workflows of arcadedb-perf-infra pass to the jar
     final String[] run = { "run", "--workload", "w", "--scale", "M", "--image", "i", "--variant", "jvm", "--trigger", "nightly",
         "--machine-id", "perf-01", "--commit", "c", "--server-cpus", "auto", "--skip-idle-check", "--out", "o", "--version", "v",
-        "--tag", "t", "--bench-commit", "b", "--commit-date", "2026-01-01T00:00:00Z" };
+        "--tag", "t", "--bench-commit", "b", "--commit-date", "2026-01-01T00:00:00Z", "--reps", "3", "--warmup", "1" };
     assertThat(BenchMain.parse(run, false, BenchMain.RUN_OPTIONS)).containsKeys("workload", "bench-commit", "skip-idle-check",
-        "commit-date");
+        "commit-date", "reps", "warmup");
     final String[] convert = { "ldbc-convert", "--summary", "s", "--dataset", "d", "--commit", "c", "--machine-id", "m",
         "--trigger", "t", "--out", "o", "--started-at", "2026-01-01T00:00:00Z", "--version", "v", "--tag", "t", "--bench-commit",
         "b", "--commit-date", "2026-01-01T00:00:00Z" };
     assertThat(BenchMain.parse(convert, false, BenchMain.LDBC_CONVERT_OPTIONS)).containsKeys("summary", "started-at", "commit-date");
-    final String[] upload = { "upload", "dir", "--url", "u", "--user", "perf-writer", "--password-env", "P" };
-    assertThat(BenchMain.parse(upload, true, BenchMain.UPLOAD_OPTIONS)).containsKeys("", "url");
+    final String[] upload = { "upload", "dir", "--url", "u", "--user", "perf-writer", "--password-env", "P", "--replace-release" };
+    assertThat(BenchMain.parse(upload, true, BenchMain.UPLOAD_OPTIONS)).containsKeys("", "url").containsEntry("replace-release", "true");
     final String[] export = { "export", "--url", "u", "--user", "perf-reader", "--password-env", "P", "--out", "o" };
     assertThat(BenchMain.parse(export, false, BenchMain.EXPORT_OPTIONS)).containsKeys("out");
     final String[] init = { "init-store", "--url", "u", "--root-user", "root", "--root-password-env", "R", "--writer-password-env",
