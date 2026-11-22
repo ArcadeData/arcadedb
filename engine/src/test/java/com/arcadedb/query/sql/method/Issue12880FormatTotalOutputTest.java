@@ -151,6 +151,52 @@ class Issue12880FormatTotalOutputTest extends TestHelper {
   }
 
   @Test
+  void anObjectIsMeasuredByItsTextWhateverItsClass() {
+    final String text = "a".repeat(WIDTH);
+    final Object object = new Object() {
+      @Override
+      public String toString() {
+        return text;
+      }
+    };
+    // The first print is the text the object holds, as it is for a string: a field as wide as the text pads nothing
+    assertThat(StringUtils.format("format", ("%1$" + WIDTH + "s").repeat(FIELDS + 1), object)).hasSize((FIELDS + 1) * WIDTH);
+    assertThatThrownBy(() -> StringUtils.format("format", ("%1$" + WIDTH + "s").repeat(FIELDS + 2), object)).isInstanceOf(
+        IllegalArgumentException.class);
+
+    // A number of another class prints the text its class decides, not a few digits
+    final Number number = new Number() {
+      @Override
+      public int intValue() {
+        return 0;
+      }
+
+      @Override
+      public long longValue() {
+        return 0;
+      }
+
+      @Override
+      public float floatValue() {
+        return 0;
+      }
+
+      @Override
+      public double doubleValue() {
+        return 0;
+      }
+
+      @Override
+      public String toString() {
+        return text;
+      }
+    };
+    assertThatThrownBy(() -> StringUtils.format("format", "%1$s".repeat(FIELDS + 2), number)).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("more than " + StringUtils.MAX_FORMAT_OUTPUT);
+    assertThat(StringUtils.format("format", "%1$s%1$s", number)).hasSize(2 * WIDTH);
+  }
+
+  @Test
   void anUpperCasedArgumentCountsForWhatItGrowsTo() {
     // 'ß' is printed as 'SS' by %S: two million characters each time, of which the argument holds one million once
     final String text = "ß".repeat(WIDTH);

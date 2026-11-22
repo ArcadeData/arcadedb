@@ -333,9 +333,9 @@ public class StringUtils {
               size = upperCasedFrom;
               growth = upperCasedGrowth;
             } else if (isTextBuiltToBeMeasured(kind, arg)) {
-              // Only its text says how long it is. The first print is not counted, so it is not built for it, and the
-              // padding is then counted in full.
-              if (firstPrint)
+              // Only its text says how long it is. The first print is not counted, so without a width to pad it to it is
+              // not built for it.
+              if (firstPrint && width == 0)
                 size = 0;
               else {
                 if (measured != last) {
@@ -391,7 +391,7 @@ public class StringUtils {
 
   /** Whether {@code %S} changes the case of text that may not be ASCII: a number, a boolean and null print as they are long. */
   private static boolean isUpperCasedText(final Object arg) {
-    return arg != null && !(arg instanceof Number) && !(arg instanceof Boolean);
+    return arg instanceof CharSequence || isTextBuiltToBeMeasured('s', arg);
   }
 
   /**
@@ -411,12 +411,14 @@ public class StringUtils {
 
   /** Whether the size of what {@code %s} prints is known only by building it: anything but text and numbers. */
   private static boolean isTextBuiltToBeMeasured(final char kind, final Object arg) {
-    return kind == 's' && arg != null && !(arg instanceof CharSequence) && !(arg instanceof Number) && !isScalar(arg);
+    return kind == 's' && arg != null && !(arg instanceof CharSequence) && !(arg instanceof BigInteger)
+        && !(arg instanceof BigDecimal) && !isScalar(arg);
   }
 
+  /** A value whose text is a few characters whatever it holds. Any other {@link Number} prints what its class decides. */
   private static boolean isScalar(final Object arg) {
-    return arg instanceof Boolean || arg instanceof Character || (arg instanceof Number && !(arg instanceof BigInteger)
-        && !(arg instanceof BigDecimal));
+    return arg instanceof Boolean || arg instanceof Character || arg instanceof Integer || arg instanceof Long
+        || arg instanceof Double || arg instanceof Float || arg instanceof Short || arg instanceof Byte;
   }
 
   /**
