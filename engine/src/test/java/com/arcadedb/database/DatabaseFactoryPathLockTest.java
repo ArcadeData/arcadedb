@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -37,6 +38,7 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * {@code open()} and {@code create()} take turns per database PATH, not per factory: every caller builds its own
@@ -193,5 +195,44 @@ class DatabaseFactoryPathLockTest {
     assertThatThrownBy(() -> new DatabaseFactory(PATH).create()).isInstanceOf(DatabaseOperationException.class)
         .hasMessageContaining("already exists");
     assertThat(DatabaseFactory.isPathLockInUse(PATH)).isFalse();
+  }
+
+  /**
+   * {@code create()} makes the directory before it computes the key of its monitor, so a failure before anything was written
+   * must take the directory back, as it did when {@link LocalDatabase#create()} made it.
+   */
+  @Test
+  @Timeout(60)
+  void aCreateThatFailsBeforeWritingLeavesNoDirectoryBehind() {
+    final File invalid = new File("target/databases/DatabaseFactoryPathLockTest*Invalid");
+    FileUtils.deleteRecursively(invalid);
+    assertThatThrownBy(() -> new DatabaseFactory(invalid.getPath()).create()).isInstanceOf(DatabaseOperationException.class);
+    assertThat(invalid).doesNotExist();
+    assertThat(DatabaseFactory.isPathLockInUse(invalid.getPath())).isFalse();
+  }
+
+  /**
+   * On a case-insensitive volume two spellings of one directory are one database: the second is refused as active before it
+   * builds anything, whether it opens or creates. The key of the monitor and of the registry is the real path, which the open
+   * and the create both compute only once the directory exists (the create makes it first).
+   */
+  @Test
+  @Timeout(60)
+  void anotherCaseOfThePathIsTheSameDatabaseOnACaseInsensitiveVolume() {
+    final String spelled = "target/databases/DatabaseFactoryPathLockTestCase";
+    final String otherCase = "target/databases/databasefactorypathlocktestcase";
+    FileUtils.deleteRecursively(new File(spelled));
+    try (final Database db = new DatabaseFactory(spelled).create()) {
+      assumeTrue(new File(otherCase).exists(), "the volume is case sensitive");
+
+      assertThat(DatabaseFactory.getActiveDatabaseInstance(otherCase)).isSameAs(db);
+      assertThatThrownBy(() -> new DatabaseFactory(otherCase).open()).isInstanceOf(DatabaseOperationException.class)
+          .hasMessageContaining("Found active instance");
+      assertThatThrownBy(() -> new DatabaseFactory(otherCase.toUpperCase(Locale.ROOT)).create())
+          .isInstanceOf(DatabaseOperationException.class).hasMessageContaining("Found active instance");
+      assertThat(db.isOpen()).isTrue();
+    } finally {
+      FileUtils.deleteRecursively(new File(spelled));
+    }
   }
 }

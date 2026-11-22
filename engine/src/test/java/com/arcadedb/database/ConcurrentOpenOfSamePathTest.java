@@ -30,6 +30,11 @@ import org.junit.jupiter.api.Timeout;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,14 +79,20 @@ class ConcurrentOpenOfSamePathTest {
     final AtomicInteger failedCommits = new AtomicInteger();
     final List<String> failures = new ArrayList<>();
 
-    final Runnable loop = () -> {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(240);
+    final Callable<Void> loop = () -> {
       int mine = 0;
       while (mine < OPENS) {
+        if (System.nanoTime() - deadline > 0)
+          throw new AssertionError("only " + mine + " of " + OPENS + " opens in the time given");
         final Database db;
         try {
           db = new DatabaseFactory(PATH).open();
         } catch (final DatabaseOperationException e) {
-          // refused: another thread holds the database, or won the race to open it
+          // refused: another thread holds the database, or won the race to open it (refused by the file lock before #12791).
+          // Anything else is a failure of its own and ends the test
+          if (!isRefusalOfAConcurrentOpen(e))
+            throw e;
           continue;
         }
         mine++;
@@ -122,14 +133,20 @@ class ConcurrentOpenOfSamePathTest {
           db.close();
         }
       }
+      return null;
     };
 
-    final Thread a = new Thread(loop, "open-a");
-    final Thread b = new Thread(loop, "open-b");
-    a.start();
-    b.start();
-    a.join();
-    b.join();
+    // FUTURES, NOT BARE THREADS: AN EXCEPTION OF A WORKER (A QUERY, A CLOSE, AN UNEXPECTED REFUSAL) REACHES THE TEST THREAD
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      final Future<Void> a = executor.submit(loop);
+      final Future<Void> b = executor.submit(loop);
+      a.get();
+      b.get();
+    } finally {
+      executor.shutdownNow();
+      executor.awaitTermination(30, TimeUnit.SECONDS);
+    }
 
     assertThat(opened.get()).isEqualTo(2 * OPENS);
     assertThat(failures).as("what the winner saw while the loser's open was refused").isEmpty();
@@ -139,6 +156,12 @@ class ConcurrentOpenOfSamePathTest {
     try (final Database db = new DatabaseFactory(PATH).open()) {
       assertThat(db.countType("T", false)).isEqualTo(ROWS);
     }
+  }
+
+  private static boolean isRefusalOfAConcurrentOpen(final DatabaseOperationException e) {
+    final String message = e.getMessage();
+    return message != null && (message.startsWith("Found active instance of database") || message.startsWith(
+        "Error on creating new database instance"));
   }
 
   private static long count(final Database db, final String sql) {

@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -37,6 +38,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 public class DatabaseFactory implements AutoCloseable {
@@ -127,11 +129,27 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
+    if (!new File(databasePath).exists()) {
+      // Refused before the per-path monitor, and before anything is built: the key of a path that does not exist keeps the
+      // caller's spelling of the missing names, so on a case-insensitive volume it is not the key a create of the same directory
+      // spelled another way takes. Only a path that exists has a key every spelling agrees on (its real path)
+      checkForActiveInstance(databasePath);
+      throw new DatabaseNotFoundException("Database '" + databasePath + "' does not exist");
+    }
+    return underPathLock(() -> openLocked(mode));
+  }
+
+  /**
+   * Runs {@code body} holding the monitor of the database path. The key is computed here, so the caller makes sure the
+   * directory exists first: its real path is then the one key every spelling of it resolves to (links, and the case on a
+   * case-insensitive volume).
+   */
+  private Database underPathLock(final Supplier<Database> body) {
     final Path path = getRegistryKey(databasePath);
     final PathLock lock = acquirePathLock(path);
     try {
       synchronized (lock) {
-        return openLocked(mode);
+        return body.get();
       }
     } finally {
       releasePathLock(path);
@@ -201,19 +219,20 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database create() {
-    final Path path = getRegistryKey(databasePath);
-    final PathLock lock = acquirePathLock(path);
-    try {
-      synchronized (lock) {
-        return createLocked();
-      }
-    } finally {
-      releasePathLock(path);
-    }
+    // The directory BEFORE the key (see underPathLock): keyed while missing, a create spelled "Db" and an open or create spelled
+    // "db" on a case-insensitive volume took two monitors, and the second could build an instance over the files of the first
+    final File directory = new File(databasePath);
+    final boolean madeDirectory = !directory.exists() && directory.mkdirs();
+    return underPathLock(() -> createLocked(directory, madeDirectory));
   }
 
-  private Database createLocked() {
-    checkForActiveInstance(databasePath);
+  private Database createLocked(final File directory, final boolean madeDirectory) {
+    try {
+      checkForActiveInstance(databasePath);
+    } catch (final DatabaseOperationException e) {
+      removeIfMadeAndEmpty(directory, madeDirectory);
+      throw e;
+    }
 
     // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
     // ACTIVE_INSTANCES.isEmpty() check-then-act raced concurrent open/close across factory instances.
@@ -234,8 +253,20 @@ public class DatabaseFactory implements AutoCloseable {
       // once per instance (#5070): see open().
       if (database == null || !database.isPageManagerReferenceReleased())
         PageManager.INSTANCE.release();
+      removeIfMadeAndEmpty(directory, madeDirectory);
       throw e;
     }
+  }
+
+  /**
+   * A create that fails before it wrote anything (an invalid name, refused as active) leaves no directory behind, as it did when
+   * the directory was made by {@link LocalDatabase#create()}. Under the path monitor, so a create of the same directory waiting
+   * for it makes the directory again.
+   */
+  private static void removeIfMadeAndEmpty(final File directory, final boolean madeDirectory) {
+    if (madeDirectory)
+      // DELETES NOTHING BUT AN EMPTY DIRECTORY: ONE THE FAILED CREATE WROTE INTO IS LEFT AS IT WAS BEFORE
+      directory.delete();
   }
 
   public synchronized DatabaseFactory setAutoTransaction(final boolean enabled) {
