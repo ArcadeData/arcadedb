@@ -3267,6 +3267,11 @@ public class LocalDocumentType implements DocumentType {
     return buckets.getFirst().getFileId();
   }
 
+  /**
+   * Whether this type is {@code type} or one of its sub types, {@code type} being the name a statement used: the type's name or one
+   * of its aliases, as {@link #instanceOf(String)} matches. The query filters ask this with the name of their target, and an alias
+   * left out here made every record an index returned for {@code FROM <alias>} fail the filter (issue #12968).
+   */
   @Override
   public boolean isSubTypeOf(final String type) {
     if (type == null)
@@ -3274,6 +3279,11 @@ public class LocalDocumentType implements DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
+    // most types have no alias: no iterator for them, this runs once per record a type filter reads
+    if (!aliases.isEmpty())
+      for (final String alias : aliases)
+        if (type.equalsIgnoreCase(alias))
+          return true;
     for (final DocumentType superType : superTypes) {
       if (superType.isSubTypeOf(type))
         return true;
