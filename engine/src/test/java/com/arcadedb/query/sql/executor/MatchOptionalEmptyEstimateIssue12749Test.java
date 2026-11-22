@@ -41,6 +41,9 @@ class MatchOptionalEmptyEstimateIssue12749Test extends TestHelper {
       database.command("sql", "CREATE PROPERTY OA.id INTEGER");
       database.command("sql", "CREATE INDEX ON OA (id) UNIQUE");
       database.command("sql", "CREATE VERTEX TYPE OEmpty");
+      // SAME SHAPE AS OEmpty, BUT HOLDING ONE VERTEX NOTHING LINKS TO: ITS ESTIMATE IS NOT 0, SO IT TAKES THE NORMAL PLAN
+      database.command("sql", "CREATE VERTEX TYPE OLone");
+      database.command("sql", "CREATE VERTEX OLone");
       database.command("sql", "CREATE EDGE TYPE OR1");
       database.command("opencypher", "CREATE (b1:OB {id: 1}), (b2:OB {id: 2}), (a1:OA {id: 10}), (b1)-[:OR1]->(a1)");
     });
@@ -96,6 +99,27 @@ class MatchOptionalEmptyEstimateIssue12749Test extends TestHelper {
       final ExecutionPlan plan = rs.getExecutionPlan().get();
       assertThat(plan.getSteps()).anyMatch(s -> s instanceof EmptyStep);
     }
+  }
+
+  @Test
+  void emptyTypeAnswersLikeANonEmptyTypeNothingReaches() {
+    assertThat(rows("MATCH {type: OB, as: b}-->{type: OEmpty, as: e, optional: true} RETURN b.id AS b, e AS e"))
+        .isEqualTo(rows("MATCH {type: OB, as: b}-->{type: OLone, as: e, optional: true} RETURN b.id AS b, e AS e"));
+  }
+
+  @Test
+  void optionalBetweenTwoMandatoryNodesAnswersLikeANonEmptyType() {
+    final List<String> emptyType = rows(
+        "MATCH {type: OB, as: b}-->{type: OEmpty, as: e, optional: true}-->{type: OA, as: a} RETURN b.id AS b, e AS e");
+    final List<String> lonelyType = rows(
+        "MATCH {type: OB, as: b}-->{type: OLone, as: e, optional: true}-->{type: OA, as: a} RETURN b.id AS b, e AS e");
+    assertThat(emptyType).isEqualTo(lonelyType);
+  }
+
+  @Test
+  void optionalOnEmptyTypeWithMandatoryHopAfterTheRoot() {
+    assertThat(rows("MATCH {type: OA, as: a}<-OR1-{type: OB, as: b}-->{type: OEmpty, as: e, optional: true} RETURN b.id AS b, e AS e"))
+        .containsExactly("1:null");
   }
 
   @Test

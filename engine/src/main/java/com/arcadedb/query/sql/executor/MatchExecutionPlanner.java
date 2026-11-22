@@ -1096,6 +1096,7 @@ public class MatchExecutionPlanner {
       if (entry.getValue() != 0L)
         continue;
       final PatternNode node = pattern.aliasToNode.get(entry.getKey());
+      // AN ALIAS WITH NO PATTERN NODE IS TREATED AS MANDATORY: THE SAFE DEFAULT IS THE EMPTY RESULT THE PLANNER ALWAYS GAVE
       if (node == null || !node.isOptionalNode())
         return true;
     }
