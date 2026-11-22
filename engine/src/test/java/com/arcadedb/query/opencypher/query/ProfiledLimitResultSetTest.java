@@ -127,6 +127,63 @@ class ProfiledLimitResultSetTest {
     assertThat(ProfiledLimitResultSet.isRunning()).isFalse();
   }
 
+  /** The ways to read a result set that it does not override all go through the capped hasNext() and next(). */
+  @Test
+  void theInheritedWaysToReadTheRowsAreCappedToo() {
+    assertThat(ProfiledLimitResultSet.run(3, () -> rows(10)).stream().count()).as("stream()").isEqualTo(3);
+    assertThat(drain(ProfiledLimitResultSet.run(3, () -> rows(10)).copy())).as("copy()").isEqualTo(3);
+
+    final int[] visited = new int[1];
+    ProfiledLimitResultSet.run(3, () -> rows(10)).forEachRemaining(row -> ++visited[0]);
+    assertThat(visited[0]).as("forEachRemaining()").isEqualTo(3);
+
+    final ResultSet capped = ProfiledLimitResultSet.run(1, () -> rows(10));
+    assertThat(capped.nextIfAvailable()).isNotSameAs(ResultSet.EMPTY_RESULT);
+    assertThat(capped.nextIfAvailable()).as("nextIfAvailable() past the cap").isSameAs(ResultSet.EMPTY_RESULT);
+  }
+
+  /**
+   * The rows may be read by another thread than the one that ran the statement, as a server does when it hands the result to a
+   * writer: each pull marks the thread that makes it, so what the statement runs during that pull is still a part of it, the cap
+   * counts across the threads, and neither thread is left marked.
+   */
+  @Test
+  void theRowsCanBeReadByAnotherThreadThanTheOneThatRanTheStatement() throws Exception {
+    final boolean[] duringPull = new boolean[1];
+    final InternalResultSet delegate = new InternalResultSet() {
+      @Override
+      public Result next() {
+        duringPull[0] = ProfiledLimitResultSet.isRunning();
+        return super.next();
+      }
+    };
+    for (int i = 0; i < 10; i++)
+      delegate.add(new ResultInternal());
+
+    final ResultSet capped = ProfiledLimitResultSet.run(3, () -> delegate);
+    capped.next();
+
+    final int[] readByTheOtherThread = new int[1];
+    final boolean[] leftRunning = new boolean[1];
+    final Throwable[] failure = new Throwable[1];
+    final Thread reader = new Thread(() -> {
+      try {
+        readByTheOtherThread[0] = drain(capped);
+        leftRunning[0] = ProfiledLimitResultSet.isRunning();
+      } catch (final Throwable t) {
+        failure[0] = t;
+      }
+    });
+    reader.start();
+    reader.join();
+
+    assertThat(failure[0]).isNull();
+    assertThat(readByTheOtherThread[0]).as("the rows left under the cap").isEqualTo(2);
+    assertThat(duringPull[0]).as("while the other thread pulls a row").isTrue();
+    assertThat(leftRunning[0]).as("the other thread, once it has read").isFalse();
+    assertThat(ProfiledLimitResultSet.isRunning()).as("the thread that ran the statement").isFalse();
+  }
+
   @Test
   void theCounterIsBackToZeroWhenTheExecutionFails() {
     assertThatThrownBy(() -> ProfiledLimitResultSet.run(3, () -> {
