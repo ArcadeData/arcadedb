@@ -552,9 +552,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         scoreMap.put(c, new double[1]);
       }
 
-    // Reused across tokens to avoid per-token allocations (candidate path only).
-    final List<FullTextPostingRID> hits = new ArrayList<>();
-
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
       // Fresh single-element lookup key per token: it is handed to underlyingIndex.get(), and allocating it here (rather than
       // reusing one array) keeps this correct even if that lookup ever became lazy/async and retained the array - the few small
@@ -563,28 +560,31 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final float boost = e.getValue();
 
       if (candidates != null) {
-        // Single pass over this bucket: collect only candidate postings. For a leaf-index query, count df locally; for a
-        // type-wide query, FullTextSearch already counted df across every bucket and supplied it in the scoring context.
+        // The postings of the token as primitive arrays: no object per posting and no RID deserialized per
+        // posting. A scoring token of a query with a tenant filter matches a third of the corpus, and every
+        // one of those postings was an object the query allocated, deserialized and threw away (issue #13100).
+        // For a leaf-index query the document frequency is counted here; for a type-wide query, FullTextSearch
+        // already counted df across every bucket and supplied it in the scoring context.
         long df = scoringContext != null ? scoringContext.documentFrequency(e.getKey()) : 0L;
-        hits.clear();
-        try (final IndexCursor cursor = underlyingIndex.get(storedKey)) {
-          while (cursor.hasNext()) {
-            guard.checkPeriodically(++ticks);
-            final Identifiable id = cursor.next();
-            // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
-            if (id.getIdentity().getBucketId() < 0)
-              continue;
-            if (scoringContext == null)
-              ++df;
-            if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
-              hits.add(s);
-          }
-        }
+        final LSMTreeIndexPostings postings = underlyingIndex.getPostings(storedKey);
+        final int postingCount = postings.size();
+        if (scoringContext == null)
+          df = postingCount;
         if (df == 0L)
           continue;
         final double idf = BM25Scorer.idf(totalDocs, df);
-        for (final FullTextPostingRID s : hits)
-          scoreMap.get(s.getIdentity())[0] += BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
+        final int[] postingBuckets = postings.bucketIds();
+        final long[] postingPositions = postings.positions();
+        final int[] postingTermFrequencies = postings.termFrequencies();
+        final int[] postingDocumentLengths = postings.documentLengths();
+        for (int i = 0; i < postingCount; ++i) {
+          guard.checkPeriodically(++ticks);
+          final double[] cell = scoreMap.get(new RID(postingBuckets[i], postingPositions[i]));
+          if (cell == null)
+            // Not a candidate: the posting is not scored
+            continue;
+          cell[0] += BM25Scorer.termScore(idf, postingTermFrequencies[i], postingDocumentLengths[i], avgdl, k1, b) * boost;
+        }
       } else {
         // No candidate filter: a leaf-index query counts df locally with a streaming first pass. A type-wide coordinator has
         // already counted global df, so it goes straight to the scoring pass over this bucket.
