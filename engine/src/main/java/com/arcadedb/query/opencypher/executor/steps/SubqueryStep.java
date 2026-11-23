@@ -94,6 +94,8 @@ public class SubqueryStep extends AbstractExecutionStep {
   private boolean streamBody;
   // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
   private ResultSet streamedBody;
+  // THE BODY'S PLAN, BUILT ON THE FIRST OUTER ROW AND RUN FOR EVERY LATER ONE (ISSUE #12136)
+  private CypherExecutionPlan innerPlan;
   // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
   private String[] returnedColumns;
 
@@ -740,12 +742,17 @@ public class SubqueryStep extends AbstractExecutionStep {
     return row;
   }
 
-  /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
+  /**
+   * Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled.
+   * The body is planned once for the step, and in a statement that cannot write its step chain is run again for each outer
+   * row (issue #12136).
+   */
   private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
     if (innerMayWrite)
       refreshWrittenBindings(outerRow);
-    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
-        database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
+    if (innerPlan == null)
+      innerPlan = new CypherExecutionPlan(database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(),
+          null, expressionEvaluator);
     return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
   }
 
