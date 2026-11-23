@@ -24,6 +24,8 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.query.facet.FacetFallbackScanner;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.Arrays;
+
 /**
  * Tells whether a SKIP can pass over the row of an index entry without loading its record (issue #11954). The row is thrown
  * away, so the load matters only for what the load itself decides:
@@ -34,8 +36,9 @@ import com.arcadedb.schema.DocumentType;
  * </ul>
  * The first two are answered from the record's slot by {@link Bucket#existsRecord}, which asks the permission the load asks and
  * reads the slot through the transaction. The third is answered only by the load, so the entries of a type that fires read events
- * are loaded as before. One instance serves one scan: the answers of the last bucket are kept, the entries of an index coming
- * bucket after bucket.
+ * are loaded as before. One instance serves one scan: what the schema says of a bucket is asked once per bucket and kept, since
+ * the entries of an index that spans several buckets (a type with more than one bucket, or a super type) come interleaved, in key
+ * order and not bucket after bucket.
  */
 public final class IndexEntrySkip {
   /** What the row of an entry is to a SKIP. */
@@ -48,12 +51,20 @@ public final class IndexEntrySkip {
     LOAD
   }
 
+  // What is known of a bucket, by its id. A bucket id is a file id, which the database hands out one after the other: the arrays
+  // grow to the highest bucket the entries name, and a lookup is an array read. A bucket id past MAX_BUCKET_ID is not cached,
+  // its entries are loaded: nothing a well-formed index holds
+  private static final int  MAX_BUCKET_ID = 1 << 16;
+  private static final byte UNKNOWN       = 0;
+  private static final byte MUST_LOAD     = 1;
+  private static final byte IS_ROW        = 2;
+  private static final byte IS_NOT_A_ROW  = 3;
+
   private final DatabaseInternal database;
   private final String           typeName;
-  private       int              bucketId = -1;
-  // null when the entries of the bucket have to be loaded
-  private       Bucket           bucket;
-  private       boolean          ofType;
+  private       byte[]           kinds   = new byte[32];
+  // the bucket of the ids whose kind is IS_ROW or IS_NOT_A_ROW
+  private       Bucket[]         buckets = new Bucket[32];
 
   /**
    * @param typeName the type the rows must be an instance of, as a filter after the scan checks, or null when every record the index
@@ -65,16 +76,33 @@ public final class IndexEntrySkip {
   }
 
   public Verdict verdict(final RID rid) {
-    if (rid.getBucketId() != bucketId) {
-      bucketId = rid.getBucketId();
-      final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
-      bucket = type == null || FacetFallbackScanner.firesReadEvents(database, type) ?
-          null :
-          database.getSchema().getBucketByIdIfExists(bucketId);
-      ofType = typeName == null || (type != null && type.isSubTypeOf(typeName));
-    }
-    if (bucket == null || !bucket.existsRecord(rid))
+    final int bucketId = rid.getBucketId();
+    if (bucketId < 0 || bucketId > MAX_BUCKET_ID)
       return Verdict.LOAD;
-    return ofType ? Verdict.ROW : Verdict.NOT_A_ROW;
+    if (bucketId >= kinds.length)
+      grow(bucketId);
+    byte kind = kinds[bucketId];
+    if (kind == UNKNOWN)
+      kind = resolve(bucketId);
+    if (kind == MUST_LOAD || !buckets[bucketId].existsRecord(rid))
+      return Verdict.LOAD;
+    return kind == IS_ROW ? Verdict.ROW : Verdict.NOT_A_ROW;
+  }
+
+  private byte resolve(final int bucketId) {
+    final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
+    final Bucket bucket = type == null || FacetFallbackScanner.firesReadEvents(database, type) ?
+        null :
+        database.getSchema().getBucketByIdIfExists(bucketId);
+    if (bucket == null)
+      return kinds[bucketId] = MUST_LOAD;
+    buckets[bucketId] = bucket;
+    return kinds[bucketId] = typeName == null || type.isSubTypeOf(typeName) ? IS_ROW : IS_NOT_A_ROW;
+  }
+
+  private void grow(final int bucketId) {
+    final int capacity = Math.max(bucketId + 1, kinds.length << 1);
+    kinds = Arrays.copyOf(kinds, capacity);
+    buckets = Arrays.copyOf(buckets, capacity);
   }
 }

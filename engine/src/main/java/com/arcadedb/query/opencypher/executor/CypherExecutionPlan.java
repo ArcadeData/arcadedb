@@ -1512,9 +1512,15 @@ public class CypherExecutionPlan {
   /**
    * Hands the statement's SKIP to the index scan at the root of the operators that {@code matchStep} runs, which then passes over
    * those rows itself (issue #11954). Only for a plan {@link CypherStepBuilder} checked can count its skipped rows in the scan.
+   *
+   * @return whether the scan takes the SKIP: false when {@code matchStep} is not this plan's step or no index scan is at the root
+   * of its operators, the SKIP then being left to the step that discards the rows
    */
-  static void passSkipToScan(final AbstractExecutionStep matchStep, final int skip) {
-    ((OptimizedMatchStep) matchStep).skipInScan = skip;
+  boolean passSkipToScan(final AbstractExecutionStep matchStep, final int skip) {
+    if (!(matchStep instanceof OptimizedMatchStep step) || !(physicalPlan.getRootOperator() instanceof NodeIndexRangeScan))
+      return false;
+    step.skipInScan = skip;
+    return true;
   }
 
   /**
@@ -1536,10 +1542,11 @@ public class CypherExecutionPlan {
       // Once closed this step stays closed: re-executing the operator tree here would open a second
       // set of cursors that the already-spent close() chain would never reach.
       if (operatorResults == null && !closed) {
-        // Execute physical operators on first pull
-        operatorResults = skipInScan > 0 ?
-            ((NodeIndexRangeScan) physicalPlan.getRootOperator()).execute(ctx, nRecords, skipInScan) :
-            physicalPlan.getRootOperator().execute(ctx, nRecords);
+        // Execute physical operators on first pull. A skip is only set by passSkipToScan(), which saw an index scan at the root
+        final PhysicalOperator root = physicalPlan.getRootOperator();
+        operatorResults = skipInScan > 0 && root instanceof NodeIndexRangeScan scan ?
+            scan.execute(ctx, nRecords, skipInScan) :
+            root.execute(ctx, nRecords);
       }
       return operatorResults != null ? operatorResults : new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }

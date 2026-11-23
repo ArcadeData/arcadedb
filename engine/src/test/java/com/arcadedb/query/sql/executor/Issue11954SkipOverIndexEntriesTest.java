@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.security.SecurityDatabaseUser;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ import java.util.Set;
 import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #11954: a SKIP over a scan that reads an index in order passes over the skipped rows without loading their records, when nothing
@@ -151,6 +153,49 @@ class Issue11954SkipOverIndexEntriesTest extends TestHelper {
       restricted.drop();
       secured.close();
     }
+  }
+
+  @Test
+  void aTypeWithSeveralBucketsIsPassedOverWithoutLoadingItsRecords() {
+    // The entries of an index over several buckets come in key order, interleaved: the buckets are not read one after the other
+    database.getSchema().buildVertexType().withName("Wide").withTotalBuckets(4).create();
+    database.transaction(() -> {
+      database.command("sql", "CREATE PROPERTY Wide.w INTEGER");
+      database.command("sql", "CREATE INDEX ON Wide (w) UNIQUE");
+      for (int i = 0; i < 500; i++)
+        database.newVertex("Wide").set("w", i).save();
+    });
+    assertThat(database.getSchema().getType("Wide").getBucketIds(false)).hasSize(4);
+
+    assertLoadsAtMost(database, "SELECT FROM Wide WHERE w >= 0 ORDER BY w SKIP 400 LIMIT 5", 30);
+    assertLoadsAtMost(database, "SELECT w FROM Wide ORDER BY w DESC SKIP 400 LIMIT 5", 30);
+    for (final int skip : new int[] { 1, 99, 250, 499, 500, 1000 }) {
+      final String statement = "SELECT w FROM Wide WHERE w >= 0 ORDER BY w";
+      assertThat(outcome(database, statement + " SKIP " + skip + " LIMIT 7", 0)).as("SKIP %d", skip)
+          .isEqualTo(outcome(database, statement + " LIMIT " + (skip + 7), skip));
+    }
+  }
+
+  @Test
+  void aProjectionIsNotComputedForTheRowsASkipThrowsAway() {
+    // In an index-ordered plan the projection comes before the SKIP. A row the SKIP throws away is not projected, as in the plan
+    // with no ORDER BY, where the planner puts the SKIP first: the division by the zero of the first row is never evaluated
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE Divisor");
+      database.command("sql", "CREATE PROPERTY Divisor.d INTEGER");
+      database.command("sql", "CREATE INDEX ON Divisor (d) UNIQUE");
+      for (int i = 0; i < 50; i++)
+        database.newVertex("Divisor").set("d", i).save();
+    });
+
+    assertThatThrownBy(() -> rows(database, "SELECT 10 / d AS q FROM Divisor WHERE d >= 0 ORDER BY d LIMIT 3")).isInstanceOf(
+        ArithmeticErrorException.class);
+    final List<String> ordered = rows(database, "SELECT 10 / d AS q FROM Divisor WHERE d >= 0 ORDER BY d SKIP 1 LIMIT 3");
+    assertThat(ordered).hasSize(3);
+    assertThat(ordered).isEqualTo(rows(database, "SELECT 10 / d AS q FROM Divisor WHERE d >= 0 SKIP 1 LIMIT 3"));
+    // the skip was passed over in the index: it is what kept the zero from being divided by
+    final ResultSet profiled = database.query("sql", "PROFILE SELECT 10 / d AS q FROM Divisor WHERE d >= 0 ORDER BY d SKIP 1 LIMIT 3");
+    assertThat(profiled.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("1 rows passed over in the index");
   }
 
   private static void createSchemaAndRecords(final Database database) {

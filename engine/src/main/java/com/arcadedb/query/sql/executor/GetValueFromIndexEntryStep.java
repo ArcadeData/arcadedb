@@ -529,12 +529,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Object value = entry.getProperty("rid");
         if (!passesBucketFilter(value))
           continue;
+        IndexEntrySkip.Verdict verdict = value instanceof RID rid ? judge.verdict(rid) : IndexEntrySkip.Verdict.LOAD;
         // Once a commit published since the scan began, an entry may name a record that commit moved out of the range (issue
-        // #11790): only its record can tell, so it is loaded and held to the range as the rows are
-        final IndexEntrySkip.Verdict verdict = value instanceof RID rid
-            && noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence()) ?
-            judge.verdict(rid) :
-            IndexEntrySkip.Verdict.LOAD;
+        // #11790): only its record can tell, so it is loaded and held to the range as the rows are. Asked AFTER the slot was read,
+        // as the load path asks it after the record was loaded: a commit that lands between the two leaves the record there, and
+        // asked before, the entry would be counted as a row
+        if (verdict != IndexEntrySkip.Verdict.LOAD && !noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence()))
+          verdict = IndexEntrySkip.Verdict.LOAD;
         if (verdict == IndexEntrySkip.Verdict.LOAD) {
           pendingEntries.addFirst(entry);
           break;

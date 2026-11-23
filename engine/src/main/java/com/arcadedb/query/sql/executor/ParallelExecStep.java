@@ -28,6 +28,10 @@ import java.util.stream.Collectors;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ParallelExecStep extends AbstractExecutionStep {
+  // The rows a SKIP reads from a sub-plan that loads its records at once, as the SKIP reads its own: bounds what is held in memory
+  // while the rows are discarded, see skipUnloaded()
+  private static final int SKIP_PAGE = 100;
+
   private final List<InternalExecutionPlan> subExecutionPlans;
 
   int current = 0;
@@ -112,7 +116,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
           break;
         current++;
       } else {
-        final ResultSet rows = subExecutionPlans.get(current).fetchNext(Math.min(n - skipped, 100));
+        final ResultSet rows = subExecutionPlans.get(current).fetchNext(Math.min(n - skipped, SKIP_PAGE));
         if (!rows.hasNext()) {
           current++;
           continue;

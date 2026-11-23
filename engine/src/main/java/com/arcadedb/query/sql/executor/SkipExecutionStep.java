@@ -91,10 +91,13 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   /**
    * Hands the SKIP to the step that reads the index entries, which passes over the rows without loading their records (issue
-   * #11954), when every step in between makes one row of each row it reads and decides nothing on the record: a projection, which
-   * SQL does not compute for skipped rows anyway when the SKIP comes before it, and the type filter, whose decision the index step
-   * takes from the record's bucket. Any other step in between (a WHERE left to evaluate, DISTINCT, expand(), UNWIND, LET) leaves
-   * the SKIP to discard the rows as they come.
+   * #11954), when every step in between makes one row of each row it reads and decides nothing on the record: a projection, and the
+   * type filter, whose decision the index step takes from the record's bucket. Any other step in between (a WHERE left to evaluate,
+   * DISTINCT, expand(), UNWIND, LET) leaves the SKIP to discard the rows as they come.
+   * <p>
+   * A projection under the SKIP is not computed for the rows passed over: what it would evaluate for a row the SKIP throws away (an
+   * error, a function with a side effect) is not evaluated, exactly as in a statement with no ORDER BY, where the planner chains the
+   * SKIP before the projection.
    *
    * @return the rows passed over, the rest of the SKIP being discarded from the rows that follow
    */
@@ -111,6 +114,9 @@ public class SkipExecutionStep extends AbstractExecutionStep {
       else if (stepClass == FilterByTypeStep.class && typeName == null) {
         typeName = ((FilterByTypeStep) step).getTypeName();
         step = ((FilterByTypeStep) step).getPrev();
+        // the filter judges the stored record, which the index step knows from its bucket: not a row a projection made of it
+        if (step == null || step.getClass() != GetValueFromIndexEntryStep.class && step.getClass() != ParallelExecStep.class)
+          return 0;
       } else if (stepClass == GetValueFromIndexEntryStep.class)
         return ((GetValueFromIndexEntryStep) step).skipUnloaded(context, skipValue, typeName);
       else if (stepClass == ParallelExecStep.class)

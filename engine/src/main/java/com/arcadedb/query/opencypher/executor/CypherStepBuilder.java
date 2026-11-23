@@ -29,17 +29,17 @@ import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
-import com.arcadedb.query.opencypher.ast.ForeachClause;
-import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.LoadCSVClause;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
-import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -420,9 +420,7 @@ final class CypherStepBuilder {
     if (statement.getSkip() != null) {
       final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
           context);
-      final boolean skippedByScan = skipVal > 0 && skipPassesToScan(currentStep, matchStep);
-      if (skippedByScan)
-        CypherExecutionPlan.passSkipToScan(matchStep, skipVal);
+      final boolean skippedByScan = skipVal > 0 && skipPassesToScan(currentStep, matchStep) && plan.passSkipToScan(matchStep, skipVal);
       final SkipStep skipStep = new SkipStep(skipVal, skippedByScan, context);
       skipStep.setPrevious(currentStep);
       currentStep = skipStep;
