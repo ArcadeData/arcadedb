@@ -510,7 +510,7 @@ public class ResultInternal implements Result {
    * Whether this row carries nothing at all: no record, no value, no property. The row a SELECT without a target produces for its
    * projection to run on (issue #12537), which a subquery evaluated under it cannot share with anything.
    */
-  public boolean isBare() {
+  boolean isBare() {
     return element == null && value == null && (content == null || content.isEmpty()) && (temporaryContent == null
         || temporaryContent.isEmpty());
   }

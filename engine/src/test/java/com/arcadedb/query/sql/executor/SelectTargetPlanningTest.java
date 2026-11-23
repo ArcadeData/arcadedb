@@ -47,6 +47,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -828,11 +830,18 @@ class SelectTargetPlanningTest extends TestHelper {
             .set("embedding", new float[] { i % 7 + 1, i % 3 + 1, i % 5 + 1, i % 11 + 1 }).save();
     });
 
+    // The consumer of a parallel scan scans itself the units no worker had taken when it got there (#8594), so a scan that is parallel
+    // may still be read on the caller's thread alone. The caller therefore cedes: its first read of the type, until a producer has
+    // read one, waits for that producer, so a parallel scan is always seen on a producer thread and a sequential one never is.
     final AtomicLong producerReads = new AtomicLong();
+    final AtomicBoolean patient = new AtomicBoolean(true);
     final AfterRecordReadListener listener = record -> {
-      if (Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread && record instanceof Document document
-          && "Doc12537".equals(document.getTypeName()))
-        producerReads.incrementAndGet();
+      if (record instanceof Document document && "Doc12537".equals(document.getTypeName())) {
+        if (Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
+          producerReads.incrementAndGet();
+        else if (producerReads.get() == 0 && patient.get())
+          awaitAProducerRead(producerReads, patient);
+      }
       return record;
     };
     database.getEvents().registerListener(listener);
@@ -865,6 +874,26 @@ class SelectTargetPlanningTest extends TestHelper {
       assertThat(producerReads.getAndSet(0)).as("a subquery in the projection of a SELECT without a target").isPositive();
     } finally {
       database.getEvents().unregisterListener(listener);
+    }
+  }
+
+  /**
+   * Waits for a producer thread to read a record. The bound is a hang detector, not a latency bound: it expires only when no
+   * producer reads at all (a sequential scan), and then the caller stops waiting for the rest of the test so it fails fast.
+   */
+  private static void awaitAProducerRead(final AtomicLong producerReads, final AtomicBoolean patient) {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    try {
+      while (producerReads.get() == 0) {
+        if (System.nanoTime() > deadline) {
+          patient.set(false);
+          return;
+        }
+        Thread.sleep(1);
+      }
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      patient.set(false);
     }
   }
 
