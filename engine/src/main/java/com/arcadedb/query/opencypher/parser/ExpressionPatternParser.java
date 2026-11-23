@@ -157,8 +157,10 @@ final class ExpressionPatternParser {
     // as a generic expression and coerced to a predicate, mirroring the relationship form below, so
     // comparisons, AND/OR/NOT and boolean-typed properties are all covered.
     BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
+    if (ctx.expression() != null) {
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
       whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+    }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
@@ -232,8 +234,10 @@ final class ExpressionPatternParser {
     // a generic expression and coerced to a predicate so comparisons, AND/OR/NOT and boolean-typed
     // properties are all covered without duplicating the boolean-parsing hierarchy.
     BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
+    if (ctx.expression() != null) {
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
       whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+    }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,

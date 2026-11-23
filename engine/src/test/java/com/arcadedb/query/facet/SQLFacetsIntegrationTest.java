@@ -508,13 +508,15 @@ class SQLFacetsIntegrationTest extends TestHelper {
     data.reuseRatio = 0.1;
     load(data, RECORDS);
     final String sql = "SELECT FROM " + TYPE + " FACETS brand TERMS TOP 1000 LIMIT 2";
-    assertThat(profile(sql)).contains("matchSource=projection");
-
     // what reading two rows costs without FACETS (a sequential scan reads its first page; a parallel one reads ahead at random)
     final Object parallel = database.getConfiguration().getValue(GlobalConfiguration.QUERY_PARALLEL_SCAN);
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_PARALLEL_SCAN, false);
     final FacetResult brand;
     try {
+      // under the sequential setting too: a parallel PROFILE cancels its producers on close without joining them, and a batch one of
+      // them was still reading is counted when it ends, inside the window measured below
+      assertThat(profile(sql)).contains("matchSource=projection");
+
       long before = readRecords();
       try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " LIMIT 2")) {
         assertThat(rids(rs)).hasSize(2);

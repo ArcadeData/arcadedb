@@ -339,6 +339,25 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Describes why this node's replication has stopped while nothing is recovering it, or {@code null} while it has not
+   * (issue #12552). The Raft implementation reports a terminated StateMachineUpdater thread (no committed entry is
+   * applied, whatever the division reports), a close of a previous Ratis server that never finished (no in-place
+   * restart can run beside it), and a health monitor whose tick loop has died or stalled (nothing recovers the node in
+   * place any more).
+   * <p>
+   * NOT behind {@code arcadedb.server.readinessRequiresHA}, for the reason {@link #getCriticalHaltReason()} gives: the
+   * node is not behind, it has stopped. Unlike the halt it can clear: an in-place restart that succeeds, or a stuck close
+   * that finally ends, brings the node back into the Service on its own.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such concept.
+   *
+   * @return a human-readable description, suitable for a readiness response body, or {@code null}
+   */
+  default String getReplicationFailureReason() {
+    return null;
+  }
+
+  /**
    * Whether this node was added to the cluster's membership by a change it applied while running - an
    * {@code addPeer}, a {@code connect cluster} or a {@code KubernetesAutoJoin} self-join - rather than being a
    * member from the first configuration it observed (issue #7819).

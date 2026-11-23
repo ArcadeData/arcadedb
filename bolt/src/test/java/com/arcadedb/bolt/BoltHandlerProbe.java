@@ -21,6 +21,7 @@ package com.arcadedb.bolt;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.bolt.message.BeginMessage;
 import com.arcadedb.bolt.message.BoltMessage;
+import com.arcadedb.bolt.message.RouteMessage;
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -37,6 +38,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.Socket;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -216,6 +218,47 @@ final class BoltHandlerProbe {
       reader.readRawByte();
       reader.readRawByte();
       return (Map<String, Object>) reader.readValue();
+    }
+  }
+
+  /** What {@link #route} observed: the raw reply (structure header and signature first) and the state after it. */
+  record RouteReply(byte[] message, String stateAfter) {
+    byte signature() {
+      return message[1];
+    }
+
+    @SuppressWarnings("unchecked")
+    Map<String, Object> metadata() throws Exception {
+      final PackStreamReader reader = new PackStreamReader(message);
+      reader.readRawByte();
+      reader.readRawByte();
+      return (Map<String, Object>) reader.readValue();
+    }
+  }
+
+  /**
+   * Runs the private {@code handleRoute} of an executor in READY on {@code server}, the way a ROUTE read off the socket
+   * reaches it, and reports what it answered (issue #12551). The socket is unconnected, so a table that names this node
+   * names it on port -1.
+   */
+  static RouteReply route(final ArcadeDBServer server) throws Exception {
+    try (final Socket socket = new Socket()) {
+      final BoltNetworkExecutor executor = new BoltNetworkExecutor(server, socket, null);
+      final ByteArrayOutputStream wire = new ByteArrayOutputStream();
+
+      set(executor, "output", new BoltChunkedOutput(wire));
+      set(executor, "protocolVersion", 0x00000405);
+      set(executor, "user", grantedEverywhere());
+      set(executor, "state", stateNamed(READY));
+
+      final Method handleRoute = BoltNetworkExecutor.class.getDeclaredMethod("handleRoute", RouteMessage.class);
+      handleRoute.setAccessible(true);
+      handleRoute.invoke(executor, new RouteMessage(Map.of(), List.of(), "probe"));
+
+      final Field stateField = BoltNetworkExecutor.class.getDeclaredField("state");
+      stateField.setAccessible(true);
+      final String stateAfter = ((Enum<?>) stateField.get(executor)).name();
+      return new RouteReply(new BoltChunkedInput(new ByteArrayInputStream(wire.toByteArray())).readMessage(), stateAfter);
     }
   }
 

@@ -50,8 +50,10 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryAdmissionException;
@@ -143,6 +145,8 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   private final ArcadeDBServer      server;
+  // The readiness gates ROUTE reads (issue #12551), built on the first ROUTE of this connection. Connection thread only.
+  private ServerControlPlane        controlPlane;
   private volatile Socket           socket; // Reassigned to the SSLSocket once TLS negotiation completes
   private final BoltSslHelper       sslHelper;
   /**
@@ -1325,6 +1329,18 @@ public class BoltNetworkExecutor extends Thread {
    * Handle ROUTE message - return routing table for cluster-aware drivers.
    */
   private void handleRoute(final RouteMessage message) throws IOException {
+    // Issue #12551: a node of a cluster that cannot take traffic yet (still starting, its HA layer not registered, out of
+    // the cluster, its replication stopped) refuses the table instead of describing one. Before, a starting node had no
+    // HA plugin yet and took the single-node branch below, naming ITSELF as the writer, and a driver that refreshed its
+    // table there sent its writes to a node that had not caught up. A transient error is not fatal to discovery: the
+    // driver asks the next router it knows.
+    final String refusal = routeRefusalReason();
+    if (refusal != null) {
+      sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "This node cannot serve a routing table: " + refusal);
+      state = State.FAILED;
+      return;
+    }
+
     final Map<String, Object> rt = new LinkedHashMap<>();
     rt.put("ttl", server.getConfiguration().getValueAsLong(GlobalConfiguration.BOLT_ROUTING_TTL));
     rt.put("db", message.getDatabase() != null ? message.getDatabase() : helloDatabaseName);
@@ -1372,6 +1388,24 @@ public class BoltNetworkExecutor extends Thread {
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
+  }
+
+  /**
+   * Why this node must not answer ROUTE, or {@code null} when it may (issue #12551). Only a node configured for high
+   * availability refuses: other routers can answer for it, and the readiness it reads is the one {@code /api/v1/ready}
+   * reads, so a node out of the Service is not a router either. HA is decided by the configuration, not by the plugin
+   * being registered, because the plugin registers itself after the Bolt listener starts accepting connections. A
+   * standalone server is the only router its clients have, so it keeps answering.
+   */
+  private String routeRefusalReason() {
+    if (!server.isHARequested())
+      return null;
+    if (server.getHA() == null)
+      return "high availability is configured but not active on this node yet";
+    ServerControlPlane plane = controlPlane;
+    if (plane == null)
+      controlPlane = plane = new ServerControlPlane(server);
+    return plane.notReadyReason();
   }
 
   /**
@@ -2200,6 +2234,15 @@ public class BoltNetworkExecutor extends Thread {
     if (category == ErrorCategory.VALIDATION && CauseChain.find(error, ValidationException.class) instanceof ValidationException refused
         && refused.getKind() != null && refused.getKind().isDeclaredConstraint())
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A delete refused for what the database holds - a node that still has relationships (openCypher's DeleteConnectedNode): Neo4j's
+    // ConstraintValidationFailed, where the category alone says ArgumentError (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ObjectInUseException.class))
+      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+
+    // A LOAD CSV URL that cannot be opened or read: Neo4j's ExternalResourceFailed (issue #11974)
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, ExternalResourceException.class))
+      return BoltErrorCodes.EXTERNAL_RESOURCE_FAILED_ERROR;
 
     // A CALL of a procedure nothing answers: Neo4j's ProcedureNotFound, where the category alone says SyntaxError, the title of
     // a FUNCTION nothing answers (issue #11384)

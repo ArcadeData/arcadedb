@@ -180,9 +180,9 @@ class CypherDurationTest {
     @Test
     void durationOnTheLeftOfPlusIsAccepted() {
       assertThat(scalar("RETURN toString(duration({days: 1}) + date('2024-01-01')) AS r")).isEqualTo("2024-01-02");
-      assertThat(scalar("RETURN toString(duration({days: 1}) + datetime('2024-01-01T00:00Z')) AS r")).isEqualTo("2024-01-02T00:00Z");
-      assertThat(scalar("RETURN toString(duration({days: 1}) + localdatetime('2024-01-01T00:00')) AS r")).isEqualTo("2024-01-02T00:00");
-      assertThat(scalar("RETURN toString(duration({hours: 1}) + localtime('12:00')) AS r")).isEqualTo("13:00");
+      assertThat(scalar("RETURN toString(duration({days: 1}) + datetime('2024-01-01T00:00Z')) AS r")).isEqualTo("2024-01-02T00:00:00Z");
+      assertThat(scalar("RETURN toString(duration({days: 1}) + localdatetime('2024-01-01T00:00')) AS r")).isEqualTo("2024-01-02T00:00:00");
+      assertThat(scalar("RETURN toString(duration({hours: 1}) + localtime('12:00')) AS r")).isEqualTo("13:00:00");
       expectError("RETURN duration({days: 1}) - date('2024-01-01')");
     }
 

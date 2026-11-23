@@ -35,6 +35,8 @@ public class IfExecutionPlan implements InternalExecutionPlan {
 
   protected IfStep step;
 
+  private boolean ranToEnd = false;
+
   public IfExecutionPlan(final CommandContext context) {
     this.context = context;
   }
@@ -52,6 +54,9 @@ public class IfExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(final int n) {
+    // the branch already ran to its end through executeFull() without a RETURN: it has nothing left to answer
+    if (ranToEnd)
+      return new InternalResultSet();
     return step.syncPull(context, n);
   }
 
@@ -113,5 +118,27 @@ public class IfExecutionPlan implements InternalExecutionPlan {
       }
     }
     return null;
+  }
+
+  /**
+   * Runs the branch the condition selects, every statement of it, as a script line that is not the last one: returns the step of
+   * the {@code RETURN} (or the {@code BREAK}) that ended it, or null when it ran to its end without one. Unlike
+   * {@link #executeUntilReturn()}, which hands back the branch's last statement unexecuted so a standalone IF can answer its rows,
+   * a non-null answer here always means the script has to stop (issue #11892).
+   */
+  public ExecutionStepInternal executeFull() {
+    final ScriptExecutionPlan branch;
+    if (step.evaluate(context)) {
+      step.initPositivePlan(context);
+      branch = step.positivePlan;
+    } else {
+      step.initNegativePlan(context);
+      branch = step.negativePlan;
+    }
+
+    final ExecutionStepInternal result = branch != null ? branch.executeFull() : null;
+    if (result == null)
+      ranToEnd = true;
+    return result;
   }
 }
