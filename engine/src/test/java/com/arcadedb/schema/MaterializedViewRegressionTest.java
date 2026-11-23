@@ -3070,19 +3070,39 @@ class MaterializedViewRegressionTest {
   }
 
   /**
-   * Regression for #12220: an INCREMENTAL view refreshed as a whole (a GROUP BY) is brought up to date by an after-commit callback
-   * that runs once the source commit is durable. A process that died between the two left the view without the commit, reported
-   * VALID, until the next commit on a source type. The open that replays the WAL now hands every INCREMENTAL view the recovery full
-   * pass, as #11550 does for per-record views, and a view says STALE until that pass ends.
+   * Regression for #12220: an INCREMENTAL view refreshed as a whole is brought up to date by an after-commit callback that runs once
+   * the source commit is durable. A process that died between the two left the view without the commit, reported VALID, until the
+   * next commit on a source type. The open that replays the WAL now hands every INCREMENTAL view the recovery full pass, as #11550
+   * does for per-record views, and a view says STALE until that pass ends.
+   * <p>
+   * The views here must be ones the schema refreshes as a whole: a GROUP BY the grouped delta plan accepts (issue #11937) is
+   * recovered by the per-record path already, and a test over one would pass without the fix. {@link #WHOLE_QUERY} has an ORDER BY,
+   * which the plan refuses, and {@link #DELTA_QUERY} is the control that keeps the recovery of the delta views.
    */
   @Nested
   class WholeViewSelfHeal extends TestHelper {
-    private static final String QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n";
+    /** The ORDER BY decides the order the rows are written in, which a delta cannot keep: no delta plan, so every commit reruns the query */
+    private static final String WHOLE_QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n ORDER BY n";
+    /** The same groups without the ORDER BY: maintained by delta in a standalone database */
+    private static final String DELTA_QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n";
 
     @Test
     void aCommitWhoseRefreshDiedWithTheProcessReachesTheViewAfterTheReopen() {
-      createGroupedView();
-      database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(QUERY)
+      createView(WHOLE_QUERY);
+      assertThat(view("V").tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
+      commitWhoseRefreshDiesWithTheProcessThenReopen(WHOLE_QUERY);
+    }
+
+    /** The control: a view maintained by delta (issue #11937) keeps the recovery it had, through the same open */
+    @Test
+    void aGroupedViewMaintainedByDeltaIsRecoveredAfterTheReopenToo() {
+      createView(DELTA_QUERY);
+      assertThat(view("V").isGroupedDelta()).as("the view is maintained by delta").isTrue();
+      commitWhoseRefreshDiesWithTheProcessThenReopen(DELTA_QUERY);
+    }
+
+    private void commitWhoseRefreshDiesWithTheProcessThenReopen(final String query) {
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(query)
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create());
       final MaterializedViewImpl view = view("V");
       assertThat(view.isPerRecord()).isFalse();
@@ -3105,25 +3125,26 @@ class MaterializedViewRegressionTest {
       final String status = view("V").getStatus();
       final List<String> rows = groups("V");
       if (MaterializedViewStatus.VALID.name().equals(status))
-        assertThat(rows).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+        assertThat(rows).containsExactlyInAnyOrderElementsOf(groups(query));
 
       // No source commit and no REFRESH: the open handed the view its recovery full pass
       Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
           .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("11/1"));
-      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(query));
       assertThat(view("V").owesRecoveryPass()).isFalse();
       assertThat(view("Manual").getRefreshCount()).as("a MANUAL view is not maintained on commit, nor recovered").isZero();
 
       // And it keeps its maintenance on commit afterwards
       database.transaction(() -> database.command("sql", "UPDATE B SET n = 12 WHERE k = 4"));
-      assertThat(groups("V")).contains("12/1").containsExactlyInAnyOrderElementsOf(groups(QUERY));
+      assertThat(groups("V")).contains("12/1").containsExactlyInAnyOrderElementsOf(groups(query));
     }
 
     /** A whole-view refresh that a close dropped (issue #11464) or that failed leaves the view STALE, persisted: a clean open recovers it. */
     @Test
     void aViewPersistedStaleConvergesAtACleanReopenWithoutATrigger() {
-      createGroupedView();
+      createView(WHOLE_QUERY);
       final MaterializedViewImpl view = view("V");
+      assertThat(view.tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
       assertThat(view.tryBeginRefresh()).isTrue();
       database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
       view.setStatus(MaterializedViewStatus.STALE);
@@ -3135,7 +3156,7 @@ class MaterializedViewRegressionTest {
 
       Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
           .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
-      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(WHOLE_QUERY));
 
       // The VALID the recovery pass ended in was persisted
       reopenDatabase();
@@ -3144,7 +3165,7 @@ class MaterializedViewRegressionTest {
 
     @Test
     void aCleanReopenOfAValidViewRunsNoPass() {
-      createGroupedView();
+      createView(WHOLE_QUERY);
       reopenDatabase();
       assertThat(view("V").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
       assertThat(view("V").owesRecoveryPass()).isFalse();
@@ -3153,7 +3174,8 @@ class MaterializedViewRegressionTest {
 
     @Test
     void theLeaderRecoveryAsksTheViewsRefreshedAsAWholeToo() {
-      createGroupedView();
+      createView(WHOLE_QUERY);
+      assertThat(view("V").tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
       assertThat(view("V").tryBeginRefresh()).isTrue();
       database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
       view("V").endRefresh();
@@ -3162,10 +3184,38 @@ class MaterializedViewRegressionTest {
       assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
       Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
           .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
-      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(QUERY));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(WHOLE_QUERY));
     }
 
-    private void createGroupedView() {
+    /**
+     * A node of an HA cluster applies no delta (the delta of a commit lives in the memory of the node that made it), so there every
+     * GROUP BY view is refreshed as a whole, the ones the delta plan accepts included: the leader recovery has to reach them too.
+     */
+    @Test
+    void theLeaderRecoveryAsksAGroupedViewOfAReplicatedNodeToo() {
+      createView(DELTA_QUERY);
+      factory.setReplicatedNode(true);
+      try {
+        reopenDatabase();
+        final MaterializedViewImpl view = view("V");
+        assertThat(view.isGroupedDelta()).as("a replicated node keeps the full pass").isFalse();
+        assertThat(view.tracksPendingDelta()).isFalse();
+
+        assertThat(view.tryBeginRefresh()).isTrue();
+        database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+        view.endRefresh();
+        assertThat(groups("V")).doesNotContain("10/1");
+
+        assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
+        Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+            .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+        assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(DELTA_QUERY));
+      } finally {
+        factory.setReplicatedNode(false);
+      }
+    }
+
+    private void createView(final String query) {
       database.transaction(() -> {
         final DocumentType type = database.getSchema().createDocumentType("B");
         type.createProperty("k", Type.INTEGER);
@@ -3175,7 +3225,7 @@ class MaterializedViewRegressionTest {
         for (int k = 0; k < 100; k++)
           database.newDocument("B").set("k", k).set("n", k % 10).save();
       });
-      database.transaction(() -> database.getSchema().buildMaterializedView().withName("V").withQuery(QUERY)
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("V").withQuery(query)
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create());
     }
 
