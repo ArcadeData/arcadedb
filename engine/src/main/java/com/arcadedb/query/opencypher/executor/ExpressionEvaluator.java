@@ -307,13 +307,16 @@ public class ExpressionEvaluator {
       final Number num = (Number) value;
       if (num instanceof Float || num instanceof Double) {
         final double d = num.doubleValue();
-        if (d != Math.floor(d) || Double.isInfinite(d))
+        if (d != Math.floor(d) || Double.isInfinite(d) || Double.isNaN(d))
           throw new CommandParsingException("InvalidArgumentType: SKIP/LIMIT value must be an integer, got: Float(" + d + ")");
+        if (d < 0)
+          throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + num);
+        return d >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) d;
       }
-      final int intVal = num.intValue();
-      if (intVal < 0)
-        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + intVal);
-      return intVal;
+      final long longVal = num.longValue();
+      if (longVal < 0)
+        throw new CommandParsingException("NegativeIntegerArgument: SKIP/LIMIT value must not be negative, got: " + longVal);
+      return longVal > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) longVal;
     }
     if (value instanceof String)
       return Integer.parseInt((String) value);

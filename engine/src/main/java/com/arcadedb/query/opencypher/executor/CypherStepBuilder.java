@@ -393,22 +393,7 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY (if any), unless the operators already produce the rows in that order from an index (issue #8422)
     if (statement.getOrderByClause() != null && !physicalPlan.isIndexOrdered()) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results so SKIP can discard from them
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1010,22 +995,7 @@ final class CypherStepBuilder {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(),
-              new ResultInternal(), context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-              new ResultInternal(), context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1902,22 +1872,7 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
-      // Evaluate LIMIT before creating OrderByStep for Top-K optimization
-      // When SKIP is also present, TopK must keep SKIP + LIMIT results
-      Integer limitVal = statement.getLimit() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getLimit(), new ResultInternal(),
-              context) : null;
-      if (limitVal != null && statement.getSkip() != null) {
-        final int skipVal = new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(),
-            new ResultInternal(), context);
-        limitVal = limitVal + skipVal;
-      }
-
-      // Top-K must account for SKIP so enough rows survive after skipping
-      final Integer skipVal = statement.getSkip() != null ?
-          new ExpressionEvaluator(functionFactory).evaluateSkipLimit(statement.getSkip(), new ResultInternal(),
-              context) : null;
-      final Integer topKVal = limitVal != null ? limitVal + (skipVal != null ? skipVal : 0) : null;
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep = new OrderByStep(
           statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1954,5 +1909,17 @@ final class CypherStepBuilder {
     }
 
     return withLastWriteStreaming(currentStep);
+  }
+
+  private Integer evaluateTopKLimit(final CypherStatement statement, final CommandContext context,
+      final CypherFunctionFactory functionFactory) {
+    if (statement.getLimit() == null)
+      return null;
+    final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
+    final int limitVal = evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
+    final int skipVal = statement.getSkip() != null
+        ? evaluator.evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context) : 0;
+    final long topK = (long) limitVal + skipVal;
+    return topK <= Integer.MAX_VALUE ? (int) topK : null;
   }
 }

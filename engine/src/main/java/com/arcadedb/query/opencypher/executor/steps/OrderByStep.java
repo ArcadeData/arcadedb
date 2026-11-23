@@ -225,7 +225,7 @@ public class OrderByStep extends AbstractExecutionStep {
         final long begin = context.isProfiling() ? System.nanoTime() : 0;
         try {
           // Top-K optimization: Use bounded priority queue when LIMIT is present
-          if (limit != null && limit > 0 && !orderByClause.isEmpty()) {
+          if (limit != null && limit > 0 && limit < Integer.MAX_VALUE && !orderByClause.isEmpty()) {
             sortedResults = materializeTopK(limit);
           } else {
             // Standard sorting: materialize all results. Pulled at the plan's batch size, as the top-K path below and
@@ -300,10 +300,11 @@ public class OrderByStep extends AbstractExecutionStep {
         // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
         // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
         // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
-        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+        final PriorityQueue<Keyed> topK = new PriorityQueue<>((int) Math.min((long) k + 1, 1000), comparator.reversed());
 
-        // Pull all results and maintain a top-K heap
-        final int batchSize = Math.max(1000, k * 10);
+        // Pull all results and maintain a top-K heap; cap the pull batch so large LIMIT
+        // values do not force upstream steps to materialize unbounded buffers.
+        final int batchSize = (int) Math.min(Math.max(1000L, (long) k * 10), 10_000L);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();
@@ -709,7 +710,7 @@ public class OrderByStep extends AbstractExecutionStep {
       this.k = k;
       this.comparator = comparator;
       this.heapLimit = heapLimit;
-      this.heap = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+      this.heap = new PriorityQueue<>((int) Math.min((long) k + 1, 1000), comparator.reversed());
     }
 
     /**
