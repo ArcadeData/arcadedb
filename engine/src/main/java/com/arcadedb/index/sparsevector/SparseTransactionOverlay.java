@@ -22,7 +22,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionIndexContext;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -152,7 +151,12 @@ public final class SparseTransactionOverlay {
     if (scored.isEmpty())
       return List.of();
 
-    scored.sort(Comparator.comparingDouble((RidScore r) -> r.score()).reversed());
+    // Best score first, equal scores by RID ascending: the order BmwScorer gives the committed side, so the two halves of a merged
+    // answer agree at the top-k boundary, and not the iteration order of `pending`, which is whatever RID.hashCode() makes it
+    scored.sort((a, b) -> {
+      final int byScore = Float.compare(b.score(), a.score());
+      return byScore != 0 ? byScore : SparseSegmentBuilder.compareRid(a.rid(), b.rid());
+    });
     return scored.size() <= k ? scored : scored.subList(0, k);
   }
 }
