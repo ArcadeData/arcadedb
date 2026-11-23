@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   private static final int DIMENSIONS = 32;
-  /** The floor of the first cache, and the smallest cache worth publishing after it (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
+  /** The room the budget grants the first cache, and the smallest remainder worth handing to a later one (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
   private static final int FLOOR      = 8_192;
   /** What an index holding no vector plans on, and the smallest search cache (LSMVectorIndex.MIN_SEARCH_CACHE_SLOTS). */
   private static final int SLOTS      = 1_024;
@@ -167,10 +167,26 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   /** An index plans on the range of the vector ids it holds, rounded up to a power of two, once that range is past the smallest cache. */
   @Test
   void anIndexPlansOnTheRangeOfItsOwnVectorIds() {
+    assertThat(capacityAfterInserting(1_500)).as("1,500 vector ids").isEqualTo(2_048);
+  }
+
+  /** The rounding rule at the edge of the smallest cache: exactly 1,024 ids fit it, one more id needs the next power of two. */
+  @Test
+  void theCapacityRoundsUpToThePowerOfTwoAtTheEdgeOfTheSmallestCache() {
+    assertThat(capacityAfterInserting(SLOTS)).as("exactly %d vector ids", SLOTS).isEqualTo(SLOTS);
+  }
+
+  @Test
+  void oneIdPastTheSmallestCacheDoublesIt() {
+    assertThat(capacityAfterInserting(SLOTS + 1)).as("%d vector ids", SLOTS + 1).isEqualTo(2 * SLOTS);
+  }
+
+  /** The capacity the only index of a type is given for the vector ids {@code ids} it holds, with room for far more than that. */
+  private int capacityAfterInserting(final int ids) {
     final LSMVectorIndex index = createBucketIndexes(database, "Doc", 1, null)[0];
     final float[] vector = new float[DIMENSIONS];
     database.transaction(() -> {
-      for (int i = 0; i < 1_500; i++) {
+      for (int i = 0; i < ids; i++) {
         vector[i % DIMENSIONS] = i + 1;
         database.newDocument("Doc").set("embedding", vector.clone()).save();
       }
@@ -179,7 +195,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
 
     final FlatVectorCache cache = index.getSearchVectorCache(() -> available);
     assertThat(cache).isNotNull();
-    assertThat(cache.capacity()).as("1,500 vector ids").isEqualTo(2_048);
+    return cache.capacity();
   }
 
   /**

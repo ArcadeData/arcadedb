@@ -15257,12 +15257,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * a search cache sized next to it used to plan on the very bytes the build had just taken. A database with a build running
    * therefore has no "first cache" either: the floor below applies only when nothing else plans on the budget.
    * <p>
-   * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
-   * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
-   * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
-   * less than that many entries: its searches read the vectors from the pages. The capacity an index is given is the
-   * range of its own vector ids rounded up to a power of two ({@code MIN_SEARCH_CACHE_SLOTS} at least), so a small
-   * index plans on a small cache and a type of small bucket indexes no longer spends the budget on the floor.
+   * {@code MIN_SEARCH_CACHE_SIZE} is the room the database's first cache is always granted by the budget, so that a small
+   * index is still fully resident from its first query on a small heap, and the smallest remainder worth handing to a later
+   * one: past the first, an index gets what the shared budget leaves, and none when it leaves less than that many entries:
+   * its searches read the vectors from the pages. It is a budget figure and no longer what an index plans on (issue #13242):
+   * the capacity an index is given is the range of its own vector ids rounded up to a power of two ({@code MIN_SEARCH_CACHE_SLOTS}
+   * at least, 1,024), cut to that room. A small index therefore plans on a small cache, even as the first of the database, and a
+   * type of small bucket indexes no longer spends the budget on the floor.
    * <p>
    * The share is the database's, and only the database's: the walk sees the caches of this schema, while the heap reading is
    * the JVM's. The caches of another database in the same JVM reach this budget only once they are filled and a collection
