@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,6 +56,7 @@ class Issue12190RemoteRecordFactoriesIT extends BaseGraphServerTest {
     database.command("sql", "create document type Address12190");
     database.command("sql", "create vertex type Person12190");
     database.command("sql", "create document type Note12190");
+    database.command("sql", "create edge type Knows12190");
   }
 
   @AfterEach
@@ -84,7 +87,7 @@ class Issue12190RemoteRecordFactoriesIT extends BaseGraphServerTest {
   @Test
   void newEmbeddedDocumentInListAndMap() {
     final MutableDocument doc = database.newDocument("Doc12190");
-    doc.set("addresses", new java.util.ArrayList<>());
+    doc.set("addresses", new ArrayList<>());
     doc.newEmbeddedDocument("Address12190", "addresses").set("city", "Rome");
     doc.newEmbeddedDocument("Address12190", "addresses").set("city", "Milan");
     doc.newEmbeddedDocument("Address12190", "byName", "home").set("city", "Turin");
@@ -144,5 +147,58 @@ class Issue12190RemoteRecordFactoriesIT extends BaseGraphServerTest {
     vertex.set("name", "alice");
     vertex.save();
     assertThat(database.countType("Person12190", false)).isEqualTo(1);
+  }
+
+  @Test
+  void newEmbeddedDocumentOnAnEdge() {
+    final MutableVertex from = database.newVertex("Person12190").save();
+    final MutableVertex to = database.newVertex("Person12190").save();
+    final MutableEdge edge = from.newEdge("Knows12190", to);
+    edge.newEmbeddedDocument("Address12190", "address").set("city", "Rome");
+    edge.save();
+
+    try (final ResultSet rs = database.query("sql", "SELECT address.city AS city FROM " + edge.getIdentity())) {
+      assertThat(rs.next().<String>getProperty("city")).isEqualTo("Rome");
+    }
+  }
+
+  @Test
+  void newDocumentAndNewVertexOnAnEdgeTypeAreRefused() {
+    assertThatThrownBy(() -> database.newDocument("Knows12190"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is not a document type");
+    assertThatThrownBy(() -> database.newVertex("Knows12190"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("is not a vertex type");
+  }
+
+  @Test
+  void newDocumentOnATimeSeriesTypeIsNotRefused() {
+    // as the embedded API, which accepts a time-series type next to a plain document type
+    database.command("sql", "create timeseries type Metric12190 timestamp ts fields (value double)");
+    assertThat(database.newDocument("Metric12190")).isNotNull();
+  }
+
+  @Test
+  void typeNewRecordBuildsTheRecordOfItsKind() {
+    final MutableDocument doc = database.getSchema().getType("Note12190").newRecord();
+    doc.set("text", "hello");
+    doc.save();
+    assertThat(database.lookupByRID(doc.getIdentity(), true).asDocument().getString("text")).isEqualTo("hello");
+
+    // a vertex type builds a vertex, as the embedded API: it used to build a document that saved a vertex
+    final MutableDocument vertex = database.getSchema().getType("Person12190").newRecord();
+    assertThat(vertex).isInstanceOf(MutableVertex.class);
+    vertex.set("name", "alice");
+    vertex.save();
+    assertThat(database.lookupByRID(vertex.getIdentity(), true).asVertex().getString("name")).isEqualTo("alice");
+    assertThat(database.countType("Person12190", false)).isEqualTo(1);
+  }
+
+  @Test
+  void edgeTypeNewRecordIsRefused() {
+    // as the embedded API: an edge needs its two vertices
+    assertThatThrownBy(() -> database.getSchema().getType("Knows12190").newRecord())
+        .isInstanceOf(UnsupportedOperationException.class);
   }
 }

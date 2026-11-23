@@ -152,9 +152,14 @@ public class RemoteDocumentType implements DocumentType {
     remoteDatabase.getSchema().reload();
   }
 
+  /**
+   * Through {@link RemoteDatabase#newDocument(String)}, so a type that is not a document type is refused as the embedded API
+   * does (issue #12190): a record built straight on a vertex type saved a vertex. {@link RemoteVertexType} and
+   * {@link RemoteEdgeType} override it.
+   */
   @Override
   public MutableDocument newRecord() {
-    return new RemoteMutableDocument(remoteDatabase, name);
+    return remoteDatabase.newDocument(name);
   }
 
   public int count() {

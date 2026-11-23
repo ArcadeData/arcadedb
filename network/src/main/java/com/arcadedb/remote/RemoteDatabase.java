@@ -221,7 +221,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new IllegalArgumentException("Type is null");
 
     // Issue #12190: as the embedded API, a vertex or edge type is refused here. Not checked, save() ran INSERT INTO <type>,
-    // which on a vertex type created a vertex
+    // which on a vertex type created a vertex. The kind is the one of the cached schema: the server stays the authority for a
+    // type another client recreated as a different kind since
     final DocumentType type = getSchema().getType(typeName);
     if (type instanceof VertexType || type instanceof EdgeType)
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
