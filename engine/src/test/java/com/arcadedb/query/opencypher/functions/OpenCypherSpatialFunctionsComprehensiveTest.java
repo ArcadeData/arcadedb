@@ -433,13 +433,17 @@ class OpenCypherSpatialFunctionsComprehensiveTest extends TestHelper {
 
   @Test
   void pointCartesian3D_NoHeightAccessor() {
-    // Cartesian 3D points do NOT expose .height - only .z; reading it raises, as in Neo4j (issue #12276)
-    final ResultSet result = database.command("opencypher", "WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p RETURN p.z AS z");
-    final Number z = result.next().getProperty("z");
+    // Cartesian 3D points should NOT expose .height - only .z
+    final ResultSet result = database.command("opencypher",
+        """
+        WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p \
+        RETURN p.z AS z, p.height AS height""");
+    Assertions.assertThat(result.hasNext() != false).isTrue();
+    final Result row = result.next();
+    final Number z = row.getProperty("z");
+    final Object height = row.getProperty("height");
     assertThat(z.doubleValue()).isCloseTo(3.0, within(0.001));
-    Assertions.assertThatThrownBy(() -> database.command("opencypher",
-            "WITH point({x: 1.0, y: 2.0, z: 3.0}) AS p RETURN p.height AS height").next())
-        .hasMessageContaining("Field: height is not available on point");
+    Assertions.assertThat(height == null).isTrue();
   }
 
   // #4578: the 2-arg positional point(a, b) follows the GIS convention point(x, y) = point(longitude, latitude)

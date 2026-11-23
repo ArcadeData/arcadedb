@@ -103,17 +103,18 @@ class CypherPointTest {
       assertThat(point("point({x: 1, y: 2, crs: 'WGS-84', srid: 4326})").get("srid")).isEqualTo(4326);
     }
 
-    // Unknown crs names and srid codes are refused, as in Neo4j (issue #12276); they used to be kept as given
     @Test
-    void unknownSridIsRejected() {
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 9999})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system: code=9999");
+    void unknownSridFallsBackToCartesianName() {
+      final Map<?, ?> p = point("point({x: 1, y: 2, srid: 9999})");
+      assertThat(p.get("srid")).isEqualTo(9999);
+      assertThat(p.get("crs")).isEqualTo("cartesian");
     }
 
     @Test
-    void unknownCrsNameIsRejected() {
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'foo'})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system: foo");
+    void unknownCrsNameIsKeptWithoutSrid() {
+      final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'foo'})");
+      assertThat(p.get("crs")).isEqualTo("foo");
+      assertThat(p.containsKey("srid")).isFalse();
     }
 
     @Test
@@ -163,11 +164,11 @@ class CypherPointTest {
     }
 
     @Test
-    void unknownCrsOrSridWith3DCoordinatesIsRejected() {
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, crs: 'foo'})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system");
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 9999})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system");
+    void unknownCrsOrSridWith3DCoordinates() {
+      final Map<?, ?> unknownCrs = point("point({x: 1, y: 2, z: 3, crs: 'foo'})");
+      assertThat(unknownCrs.get("crs")).isEqualTo("foo");
+      assertThat(unknownCrs.containsKey("srid")).isFalse();
+      assertThat(point("point({x: 1, y: 2, z: 3, srid: 9999})").get("crs")).isEqualTo("cartesian-3d");
     }
 
     @Test
@@ -183,14 +184,14 @@ class CypherPointTest {
       assertThat(point("point({x: 1, y: 2, z: 3, srid: 9157})").get("crs")).isEqualTo("cartesian-3d");
       assertThatThrownBy(() -> point("point({x: 1, y: 2, z: 3, srid: 7203})")).isInstanceOf(CommandSemanticException.class)
           .hasMessageContaining("dimension");
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, srid: 2147483647})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system");
+      assertThat(point("point({x: 1, y: 2, srid: 2147483647})").get("srid")).isEqualTo(Integer.MAX_VALUE);
     }
 
     @Test
-    void unknownCrsAndUnknownSridAreRejected() {
-      assertThatThrownBy(() -> point("point({x: 1, y: 2, crs: 'foo', srid: 9999})")).isInstanceOf(CommandSemanticException.class)
-          .hasMessageContaining("Unknown coordinate reference system");
+    void unknownCrsAndUnknownSridAreKept() {
+      final Map<?, ?> p = point("point({x: 1, y: 2, crs: 'foo', srid: 9999})");
+      assertThat(p.get("crs")).isEqualTo("foo");
+      assertThat(p.get("srid")).isEqualTo(9999);
     }
 
     @Test

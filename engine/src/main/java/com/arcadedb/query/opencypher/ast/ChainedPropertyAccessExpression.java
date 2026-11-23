@@ -22,7 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
-import com.arcadedb.function.geo.CypherPointFunction;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -89,9 +88,10 @@ public class ChainedPropertyAccessExpression implements PropertyReadExpression {
     if (baseValue instanceof Document document)
       return TemporalUtil.convertFromStorage(document, propertyName);
 
-    // Handle Map types; a point raises on a coordinate it does not have (issue #12276)
-    if (baseValue instanceof Map<?, ?> map)
-      return CypherPointFunction.readProperty(map, propertyName);
+    // Handle Map types
+    if (baseValue instanceof Map) {
+      return ((Map<?, ?>) baseValue).get(propertyName);
+    }
 
     // Handle Result types
     if (baseValue instanceof Result) {
