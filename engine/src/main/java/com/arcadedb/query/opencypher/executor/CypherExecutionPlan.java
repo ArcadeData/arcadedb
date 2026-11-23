@@ -60,6 +60,9 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
+import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
 import com.arcadedb.query.opencypher.executor.steps.CSRCountStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.ConstantCountStep;
@@ -85,6 +88,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
 import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.IndexStatistics;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
@@ -143,9 +147,22 @@ public class CypherExecutionPlan {
    * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
    * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
    * at most 13 us. A factor of 100 keeps the seek ahead even at that worst ratio, so only a seek that clearly reads a small part of
-   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more.
+   * the label declines the push-down. With the optimizer's estimates that is a UNIQUE key, or a key of three columns or more; the
+   * estimate of a NOTUNIQUE key is an average over its keys, so the entries of the key sought are counted, up to this share of the
+   * label (issue #11889).
    */
   private static final int SELECTIVE_ANCHOR_LABEL_SHARE = 100;
+
+  /**
+   * How much smaller than its label the range of an index range seek must be, counted, for a count to be left to the ordinary
+   * plan rather than pushed down (issue #11889). The optimizer estimates any range at a fixed share of the label, so the range
+   * is counted instead, up to this share. Only the optimizer's plan seeks a range. On a graph of 60,000 vertices and 120,000
+   * relationships the range seek plus its expansion was faster than the push-down at every range up to a quarter of the label,
+   * in every shape measured (a star with a filtered arm and without, and a chain in either direction), and the two cost about
+   * the same between a quarter and half of it; past half the star without a filtered arm was faster pushed down (61 ms against
+   * 131 ms over the whole label).
+   */
+  private static final int RANGE_ANCHOR_LABEL_SHARE = 4;
 
   private final DatabaseInternal     database;
   private final CypherStatement      statement;
@@ -435,10 +452,17 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     context.setProfiling(profile != null);
+    // A statement that writes nothing hands out the rows of its sorts and aggregations as they are, without asking for the
+    // transaction's copies of the records they hold (issue #12565)
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
     inheritIncomingEdgeLookup(context, outerContext);
     inheritGraphViewPins(context, outerContext);
+    // A branch of a write UNION shares the label replacements of the whole statement: a later branch's label write deletes
+    // the records the rows of an earlier branch hold, and the UNION redirects them with that map (issue #10614)
+    if (outerContext != null && !statement.isReadOnly() && LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(context, outerContext);
 
     AbstractExecutionStep rootStep;
 
@@ -476,7 +500,14 @@ public class CypherExecutionPlan {
     }
 
     // Execute the step chain
-    final ResultSet resultSet = rootStep.syncPull(context, 100);
+    final ResultSet resultSet;
+    try {
+      resultSet = rootStep.syncPull(context, 100);
+    } catch (final RuntimeException | Error e) {
+      // A step that writes eagerly can fail here, after a label write already held the slots it freed (issue #12336)
+      LabelReplacements.endOfStatement(context);
+      throw e;
+    }
 
     // IMPORTANT: For write operations, we need to materialize the ResultSet immediately
     // to force execution (since ResultSet is lazy). This is crucial for CREATE/SET/DELETE/MERGE/REMOVE
@@ -494,10 +525,15 @@ public class CypherExecutionPlan {
           guard.check();
           materializedResults.add((ResultInternal) resultSet.next());
         }
+        // A row produced before a later row's label write still holds what that write deleted: answered with the live
+        // records instead (issue #10614)
+        LabelReplacements.redirectRows(context, materializedResults);
       } finally {
         // Nothing reads the step chain after the drain: its cursors, and the heap its buffers reserved from the budget
         // of all the queries, go back now rather than when the garbage collector finds the chain (issue #8591)
         resultSet.close();
+        // ... and no binding of a record a label write replaced is left to resolve: its slot may be reused (issue #12336)
+        LabelReplacements.endOfStatement(context);
       }
       // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
       // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
@@ -621,9 +657,14 @@ public class CypherExecutionPlan {
       // Each branch runs seeded with the row, one after the other and only as far as the consumer pulls: collecting every
       // branch first ran the whole body for a LIMIT the first branch could satisfy (issue #11082). The UNION de-duplicates
       // on the canonical keys of the statement-level UNION, under the same heap limit.
-      // No inherit() here on purpose: the branch runs through this same method with the REAL outerContext, so it takes
-      // the non-union path below and does its own inherit under the same gate. A second copy here would be one more
-      // thing to keep in step with that gate (issue #6977).
+      // Each branch runs through this same method with the REAL outerContext, so it takes the non-union path below and
+      // does its own inherit (issue #6977). The UNION itself inherits the map too, under the same gate, only to key its rows:
+      // a replaced node held as the original by one branch and as the replacement by a later one is one row (issue #10614)
+      if (outerContext != null && !statement.isReadOnly()) {
+        LabelReplacements.inherit(ctx, outerContext);
+        // A write in the body of a CALL reaches the copies of lists and maps the outer clauses indexed (issue #11754)
+        HeldCollectionRefresher.inherit(ctx, outerContext);
+      }
       final UnionStep unionStep = new UnionStep(branchPlans, removeDuplicates,
           branchPlan -> branchPlan.executeWithSeedRow(seedRow, outerContext, batchSize), ctx);
       return unionStep.syncPull(ctx, batchSize);
@@ -632,6 +673,8 @@ public class CypherExecutionPlan {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
     context.setInputParameters(parameters);
+    // The seed row comes from the enclosing statement: it holds only current records when that statement does (issue #12565)
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     // Only share the outer statistics accumulator for a write CALL body: getStatistics() lazily
     // allocates, so sharing it unconditionally would allocate a QueryStatistics even for a
@@ -643,6 +686,9 @@ public class CypherExecutionPlan {
       // deleted (issue #6977). Same gate as the statistics above - a read-only body performs no label write and
       // must not make the enclosing statement allocate a map for one.
       LabelReplacements.inherit(context, outerContext);
+      // ...and so does the refresher of the lists and maps the statement holds: a write in the body has to reach the copies
+      // the outer clauses indexed (issue #11754)
+      HeldCollectionRefresher.inherit(context, outerContext);
     }
     inheritCommandDeadline(context, outerContext);
     CypherFunctionHelper.inheritStatementTime(context, outerContext);
@@ -884,6 +930,7 @@ public class CypherExecutionPlan {
     context.setDatabase(database);
     context.setInputParameters(parameters);
     context.setProfiling(profile != null);
+    context.setCurrentRecordsOnly(WrittenCopy.holdsCurrentRecordsOnly(statement.isReadOnly(), outerContext));
     setupFunctionResolver(context);
     // Every branch runs on a context of its own, so the statement clock has to travel from here into each of
     // them - and into here from an enclosing statement when this UNION is a CALL body (issue #7052).
@@ -905,13 +952,15 @@ public class CypherExecutionPlan {
 
     // Write UNION: materialize to force each branch's mutation steps to execute (mirroring the
     // non-union write path), then surface the summed per-branch statistics.
-    final ResultSet rs = unionStep.syncPull(context, 100);
+    shareLabelReplacementsWithBranches(context, outerContext);
     final List<Result> rows = new ArrayList<>();
-    try {
+    try (final ResultSet rs = unionStep.syncPull(context, 100)) {
       while (rs.hasNext())
         rows.add(rs.next());
+      // A row of an earlier branch still holds what a later branch's label write deleted (issue #10614)
+      LabelReplacements.redirectRows(context, rows);
     } finally {
-      rs.close();
+      LabelReplacements.endOfStatement(context);
     }
     final IteratorResultSet out = new IteratorResultSet(rows.iterator());
     // Always attach the accumulator for a write UNION, even when no branch actually mutated
@@ -919,6 +968,17 @@ public class CypherExecutionPlan {
     // mirroring the non-union write path above.
     out.setStatistics(unionStep.getAggregatedStatistics());
     return out;
+  }
+
+  /**
+   * Gives the context of a write UNION the label replacements every branch shares (the branches inherit them, see
+   * {@code executeStreaming}): the enclosing statement's when it has one, else a map of its own, which the UNION ends.
+   */
+  private static void shareLabelReplacementsWithBranches(final CommandContext unionContext, final CommandContext outerContext) {
+    if (LabelReplacements.existing(outerContext) != null)
+      LabelReplacements.inherit(unionContext, outerContext);
+    else
+      LabelReplacements.of(unionContext);
   }
 
   /**
@@ -1234,12 +1294,17 @@ public class CypherExecutionPlan {
     if (unionSubqueryPlans != null && !unionSubqueryPlans.isEmpty()) {
       final UnionStep unionStep =
           new UnionStep(unionSubqueryPlans, unionRemoveDuplicates, context);
+      if (!statement.isReadOnly())
+        shareLabelReplacementsWithBranches(context, null);
       try (final ResultSet resultSet = unionStep.syncPull(context, Integer.MAX_VALUE)) {
         while (resultSet.hasNext()) {
           final Result row = resultSet.next();
           if (keepRows)
             results.add(row);
         }
+        redirectProfiledRows(context, results);
+      } finally {
+        LabelReplacements.endOfStatement(context);
       }
     } else {
       // FAST PATH: Count-push-down (same logic as execute())
@@ -1260,6 +1325,10 @@ public class CypherExecutionPlan {
             if (keepRows)
               results.add(row);
           }
+          redirectProfiledRows(context, results);
+        } finally {
+          // The run is drained: no binding of a record a label write replaced is left to resolve (issue #12336)
+          LabelReplacements.endOfStatement(context);
         }
       }
     }
@@ -1274,6 +1343,20 @@ public class CypherExecutionPlan {
     if (!statement.isReadOnly())
       results.setStatistics(context.getStatistics());
     return results;
+  }
+
+  /**
+   * Points the rows a profiled write kept at the live records, as {@code execute()} answers them (issue #10614): a row produced
+   * before a later row's label write still holds what that write deleted. The rows are redirected in place, and only when the
+   * statement replaced something, so a profile without a label write pays one check.
+   */
+  private static void redirectProfiledRows(final CommandContext context, final InternalResultSet results) {
+    final LabelReplacements replacements = LabelReplacements.existing(context);
+    if (replacements == null || replacements.isEmpty())
+      return;
+    while (results.hasNext())
+      replacements.redirect(results.next());
+    results.reset();
   }
 
   /**
@@ -1483,15 +1566,22 @@ public class CypherExecutionPlan {
 
     @Override
     public String parallelVariable() {
-      return physicalPlan.getRootOperator() instanceof NodeByLabelScan scan ? scan.getVariable() : null;
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.getVariable();
+      // An adaptive range scan that may give way to a label scan, which then runs in the workers (issue #11873)
+      return root instanceof NodeIndexRangeScan rangeScan && rangeScan.mayServeInParallel() ? rangeScan.getVariable() : null;
     }
 
     @Override
     public ParallelRecordScan planParallelRows(final CommandContext ctx, final List<BooleanExpression> filters) {
       // Only before the operators were pulled: a started scan cannot be taken over
-      if (operatorResults != null || closed || !(physicalPlan.getRootOperator() instanceof NodeByLabelScan scan))
+      if (operatorResults != null || closed)
         return null;
-      return scan.planParallelRows(ctx, filters);
+      final PhysicalOperator root = physicalPlan.getRootOperator();
+      if (root instanceof NodeByLabelScan scan)
+        return scan.planParallelRows(ctx, filters);
+      return root instanceof NodeIndexRangeScan rangeScan ? rangeScan.planParallelRows(ctx, filters) : null;
     }
   }
 
@@ -2129,27 +2219,28 @@ public class CypherExecutionPlan {
     // is seeded from the anchor its outer row bound, and a chain from the vertex a UNIQUE key pins (issue #11594), so neither
     // has a label to walk: that walk costs the seek and the paths of one vertex, without a row per path.
     if (!correlation.isCorrelated() && !(op instanceof PropagateChainOp chain && chain.isSeeded())
-        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor())
+        && pipelinePlan.ordinaryPlanSeeksASelectiveAnchor(context))
       return null;
 
     return new CSRCountStep(op, alias, context);
   }
 
   /**
-   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, estimated to find a few vertices of
-   * a label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
+   * Whether the ordinary plan of this statement starts from an index seek, or a lookup by id, that finds a few vertices of a
+   * label (issue #11680). That plan costs the seek and the expansion from what it finds, the same at any graph size, while a
    * count push-down walks a whole label to reach the same answer.
    * <p>
    * The anchor is the one the ordinary plan actually starts from, so the answer is never "seekable" for a plan that would scan:
    * the optimizer's own anchor when its physical plan runs, which an index-backed node always wins (issue #5306), and otherwise
    * the first node of the first MATCH clause, which is where the pipeline of {@link CypherStepBuilder#buildExecutionSteps} and
    * {@link CypherStepBuilder#buildExecutionStepsWithOrder} starts. Both are judged by {@link AnchorSelector}, the estimate the optimizer plans
-   * with, rather than by a second index matcher.
+   * with, rather than by a second index matcher, and where that estimate cannot tell, by counting what the seek finds, see
+   * {@link #isSelectiveSeek}.
    */
-  private boolean ordinaryPlanSeeksASelectiveAnchor() {
+  private boolean ordinaryPlanSeeksASelectiveAnchor(final CommandContext context) {
     final StatisticsProvider statistics = new StatisticsProvider(database);
     if (canUseOptimizedPhysicalPlan())
-      return isSelectiveSeek(physicalPlan.getAnchor(), statistics);
+      return isSelectiveSeek(physicalPlan.getAnchor(), statistics, context);
 
     final List<MatchClause> matchClauses = statement.getMatchClauses();
     if (matchClauses == null || matchClauses.isEmpty())
@@ -2175,23 +2266,50 @@ public class CypherExecutionPlan {
         null, null, false, false, false));
     statistics.collectStatistics(node.getLabels());
     final LogicalNode firstNode = plan.getPatternNodes().values().iterator().next();
-    return isSelectiveSeek(new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan), statistics);
+    final AnchorSelection anchor = new AnchorSelector(statistics, new CostModel(statistics)).evaluateNodeDirect(firstNode, plan);
+    // the node step seeks an equality, never a range
+    return anchor != null && !anchor.isRangeScan() && isSelectiveSeek(anchor, statistics, context);
   }
 
   /**
-   * Whether an anchor is an index seek estimated to find few vertices: one row of a UNIQUE index whose whole key is bound, or
-   * fewer than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label it seeks. A range scan never is, whatever its
-   * estimate.
+   * Whether an anchor is an index seek that finds few vertices of the label it seeks (issues #11680, #11889).
+   * <ul>
+   * <li>An equality seek is when the optimizer's estimate says so: one row of a UNIQUE index whose whole key is bound, or fewer
+   * than one row in {@link #SELECTIVE_ANCHOR_LABEL_SHARE} of the label. That estimate is an average over the keys of a
+   * NOTUNIQUE index, so otherwise the entries of the key sought are counted, up to that share of the label.</li>
+   * <li>A range seek is when its entries, counted, are fewer than one in {@link #RANGE_ANCHOR_LABEL_SHARE} of the label: the
+   * optimizer estimates any range at a fixed share of the label whatever its bounds.</li>
+   * </ul>
+   * The entries are counted, with the parameters of this execution bound, by the operator the optimizer builds for the anchor,
+   * the very one its plan runs. The count stops at the cap and loads no record: it costs at most that many index entries read,
+   * against a push-down that walks the whole label. It does not catch what the operator refuses with (an index the schema no
+   * longer offers, a timeout): the plan was built from the schema it reads, and the seek would refuse the same way.
    */
-  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics) {
-    if (anchor == null || !anchor.useIndex() || anchor.isRangeScan() || anchor.getNode() == null)
+  private static boolean isSelectiveSeek(final AnchorSelection anchor, final StatisticsProvider statistics,
+      final CommandContext context) {
+    if (anchor == null || !anchor.useIndex() || anchor.getNode() == null)
       return false;
-    final long rows = Math.max(1L, anchor.getEstimatedCardinality());
-    final IndexStatistics index = anchor.getIndex();
-    if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
-      return true;
     final LogicalNode node = anchor.getNode();
-    return rows * SELECTIVE_ANCHOR_LABEL_SHARE < statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
+    final long labelVertices = statistics.getMatchingVertexCardinality(node.getLabels(), node.isLabelDisjunction());
+    if (!anchor.isRangeScan()) {
+      final long rows = Math.max(1L, anchor.getEstimatedCardinality());
+      final IndexStatistics index = anchor.getIndex();
+      if (rows == 1L && index != null && index.isUnique() && anchor.getKeyValues().size() == index.getPropertyNames().size())
+        return true;
+      if (rows * SELECTIVE_ANCHOR_LABEL_SHARE < labelVertices)
+        return true;
+    }
+
+    final PhysicalOperator seek = new IndexSelectionRule(statistics, new CostModel(statistics)).createAnchorOperator(anchor);
+    if (seek instanceof NodeIndexRangeScan range) {
+      final long cap = labelVertices / RANGE_ANCHOR_LABEL_SHARE;
+      return cap > 0 && range.countEntries(context, cap) < cap;
+    }
+    if (seek instanceof NodeIndexSeek equality) {
+      final long cap = labelVertices / SELECTIVE_ANCHOR_LABEL_SHARE;
+      return cap > 0 && equality.countEntries(context, cap) < cap;
+    }
+    return false;
   }
 
   /**

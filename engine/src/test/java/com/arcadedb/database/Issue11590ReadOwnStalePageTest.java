@@ -80,8 +80,17 @@ class Issue11590ReadOwnStalePageTest extends TestHelper {
     database.begin();
     database.command("sql", "INSERT INTO D SET id = 1, f = 0");
     commitFromAnotherThread("sql", "INSERT INTO D SET id = 100, f = 0");
-    final long deleted = countOf(database.command("sql", "DELETE FROM D WHERE id = 100"));
-    final Throwable failure = commitOrFailure();
+    long deleted = 0L;
+    Throwable failure;
+    try {
+      deleted = countOf(database.command("sql", "DELETE FROM D WHERE id = 100"));
+      failure = commitOrFailure();
+    } catch (final ConcurrentModificationException e) {
+      // #12644: the row committed there is read from the committed page, and deleting it through the transaction's older copy of the
+      // page is refused by the statement, which is the same retryable conflict the commit gave when the row was not found at all
+      failure = e;
+      database.rollback();
+    }
 
     if (failure == null)
       assertThat(deleted).as("a DELETE that matched no row must not commit when the row was committed before it ran")

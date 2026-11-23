@@ -372,8 +372,10 @@ class PostgresCatalogTest {
     final PostgresCatalog.Answer answer = resolve(
         "SELECT COLLATION_SCHEMA, COLLATION_NAME FROM INFORMATION_SCHEMA.COLLATIONS");
 
-    assertThat(answer.rows).hasSize(1);
+    // the default collation, and the C collation of name (issue #12449), which PostgreSQL lists here too
+    assertThat(answer.rows).hasSize(2);
     assertThat(answer.rows.get(0)).containsEntry("collation_name", "default");
+    assertThat(answer.rows.get(1)).containsEntry("collation_name", "C").containsEntry("collation_schema", "pg_catalog");
   }
 
   @Test

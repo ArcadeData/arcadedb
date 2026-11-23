@@ -58,12 +58,13 @@ class PropertyReadWithoutTransactionContextTest extends TestHelper {
     assertThat(doc.get("missing")).isNull();
     assertThat(doc.getList("tags")).containsExactly("a", "b");
     assertThat(doc.getMap("attrs")).containsEntry("k", "v");
+    assertThat(doc.getPropertyNames()).containsExactlyInAnyOrder("name", "age", "tags", "attrs", "address");
 
     assertThat(DatabaseContext.INSTANCE.getContextIfExists(path))
         .as("a property read of a loaded record set up a transaction context it does not use")
         .isNull();
 
-    // An embedded document resolves its type through the schema, which sets the context up as any other schema access does
+    // An embedded document resolves its type through the schema, which is allowed to set the context up
     assertThat(doc.getEmbedded("address").getString("city")).isEqualTo("Rome");
     assertThat(doc.toMap()).containsEntry("name", "alice");
   }

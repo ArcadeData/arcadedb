@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -224,6 +225,10 @@ class LabelReplacementsTest {
     });
   }
 
+  private boolean isHeld(final RID rid) {
+    return ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).isPositionHeld(rid.getPosition());
+  }
+
   private static List<Object> edgeWeights(final Vertex vertex, final Vertex.DIRECTION direction) {
     final List<Object> weights = new ArrayList<>();
     for (final Edge edge : vertex.getEdges(direction))
@@ -250,11 +255,11 @@ class LabelReplacementsTest {
     final Vertex[] firstReplacement = new Vertex[1];
     database.transaction(() -> firstReplacement[0] = replacements.replace(original[0], "B"));
 
-    // The precondition the guard exists for: the engine does hand that slot out again
+    // The freed slot is held while the map can answer for it: no new A vertex takes it
     database.begin();
     final RID probe = database.newVertex("A").save().getIdentity();
     database.rollback();
-    assertThat(probe).as("a new A vertex takes the freed slot").isEqualTo(freed);
+    assertThat(probe).as("a new A vertex does not take the held slot").isNotEqualTo(freed);
 
     // Batch 2 relabels another vertex B -> A: its replacement is created in A's bucket, where the freed slot is
     final Vertex[] other = new Vertex[1];
@@ -266,9 +271,15 @@ class LabelReplacementsTest {
     assertThat(replacements.resolve(original[0])).isSameAs(firstReplacement[0]);
     assertThat(replacements.resolve(other[0])).isSameAs(secondReplacement[0]);
     assertThat(replacements.resolve(secondReplacement[0])).isSameAs(secondReplacement[0]);
-    // The record created and dropped to step over the freed slot leaves nothing behind
     assertThat(database.countType("A", false)).isEqualTo(1);
     assertThat(database.countType("B", false)).isEqualTo(1);
+
+    // Once the statement is over the slot is the engine's again: the hold was all that kept it
+    replacements.releaseHeldPositions();
+    database.begin();
+    final RID afterRelease = database.newVertex("A").save().getIdentity();
+    database.rollback();
+    assertThat(afterRelease).as("a new A vertex takes the released slot").isEqualTo(freed);
   }
 
   /**
@@ -297,11 +308,11 @@ class LabelReplacementsTest {
     final Edge firstCopy = replacements.resolveEdge(bound[0]);
     assertThat(firstCopy.getIdentity()).isNotEqualTo(freed);
 
-    // The precondition the guard exists for: the engine does hand the freed edge slot out again
+    // The freed edge slot is held while the map can answer for it: no new E edge takes it
     database.begin();
     final RID probe = database.newVertex("A").save().newEdge("E", database.newVertex("B").save()).getIdentity();
     database.rollback();
-    assertThat(probe).as("a new E edge takes the freed slot").isEqualTo(freed);
+    assertThat(probe).as("a new E edge does not take the held slot").isNotEqualTo(freed);
 
     // Batch 2 relabels the target: the copy is re-attached again, in E's bucket, where the freed slot is
     final Vertex[] newTarget = new Vertex[1];
@@ -315,5 +326,142 @@ class LabelReplacementsTest {
     assertThat(live.getIn()).isEqualTo(newTarget[0].getIdentity());
     assertThat(live.<Integer>get("w")).isEqualTo(7);
     assertThat(database.countType("E", false)).isEqualTo(1);
+
+    replacements.releaseHeldPositions();
+    database.begin();
+    final RID afterRelease = database.newVertex("A").save().newEdge("E", database.newVertex("B").save()).getIdentity();
+    database.rollback();
+    assertThat(afterRelease).as("a new E edge takes the released slot").isEqualTo(freed);
+  }
+
+  /**
+   * Issue #12336: an ordinary insert after a committed batch - a CREATE of the same statement, or a concurrent transaction -
+   * used to take the slot of a record the statement replaced. The new record then had the replaced record's RID, and a binding
+   * of it was redirected to the replacement. The slot is held instead, so the new record has a RID of its own and resolves to
+   * itself, while the old binding still resolves to the replacement.
+   */
+  @Test
+  void aPlainInsertNeverTakesTheSlotOfAReplacedRecordWhileTheStatementRuns() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").set("name", "old").save());
+    final RID freed = original[0].getIdentity();
+
+    final Vertex[] replacement = new Vertex[1];
+    database.transaction(() -> replacement[0] = replacements.replace(original[0], "B"));
+
+    final Vertex[] fresh = new Vertex[1];
+    database.transaction(() -> fresh[0] = database.newVertex("A").set("fresh", true).save());
+
+    assertThat(fresh[0].getIdentity()).isNotEqualTo(freed);
+    final Vertex readBack = database.lookupByRID(fresh[0].getIdentity(), true).asVertex();
+    assertThat(replacements.resolve(readBack)).isSameAs(readBack);
+    assertThat(replacements.resolve(original[0])).isSameAs(replacement[0]);
+    assertThat(isHeld(freed)).isTrue();
+
+    replacements.releaseHeldPositions();
+    assertThat(isHeld(freed)).isFalse();
+  }
+
+  /**
+   * Two running statements can both hold one position (both relabel the same vertex before either commits): the one that
+   * ends first must not free the slot the other still answers for.
+   */
+  @Test
+  void aPositionStaysHeldUntilEveryHolderReleasedIt() {
+    final Vertex[] vertex = new Vertex[1];
+    database.transaction(() -> vertex[0] = database.newVertex("A").save());
+    final RID rid = vertex[0].getIdentity();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+
+    bucket.holdPosition(rid.getPosition());
+    bucket.holdPosition(rid.getPosition());
+    bucket.releaseHeldPosition(rid.getPosition());
+    assertThat(isHeld(rid)).isTrue();
+    bucket.releaseHeldPosition(rid.getPosition());
+    assertThat(isHeld(rid)).isFalse();
+    // a release with no hold left is a no-op, never a negative count
+    bucket.releaseHeldPosition(rid.getPosition());
+    bucket.holdPosition(rid.getPosition());
+    assertThat(isHeld(rid)).isTrue();
+    bucket.releaseHeldPosition(rid.getPosition());
+    assertThat(isHeld(rid)).isFalse();
+  }
+
+  /** Ending a map twice gives each hold back once: the second call must not release a hold another statement took. */
+  @Test
+  void releasingTwiceDoesNotReleaseAnotherHoldersPosition() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").save());
+    final RID rid = original[0].getIdentity();
+    database.transaction(() -> replacements.replace(original[0], "B"));
+
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    bucket.holdPosition(rid.getPosition()); // another statement's hold
+    replacements.releaseHeldPositions();
+    replacements.releaseHeldPositions();
+    assertThat(isHeld(rid)).isTrue();
+    bucket.releaseHeldPosition(rid.getPosition());
+    assertThat(isHeld(rid)).isFalse();
+  }
+
+  /**
+   * A page whose every record was replaced, its whole record table included, takes records again once the statement released
+   * its holds: holding a slot never leaves the page in a state the allocator stops offering.
+   */
+  @Test
+  void aPageEmptiedWhileItsSlotsAreHeldIsReusedOnceTheHoldsAreReleased() {
+    database.getSchema().buildDocumentType().withName("Small").withTotalBuckets(1).create();
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getType("Small").getBuckets(false).getFirst();
+    final int maxRecordsInPage = bucket.getMaxRecordsInPage();
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < maxRecordsInPage; i++)
+        rids.add(database.newDocument("Small").save().getIdentity());
+    });
+    final RID first = rids.getFirst();
+    assertThat(rids.getLast().getPosition()).as("the record table of page 0 is full").isEqualTo(first.getPosition() + maxRecordsInPage - 1);
+
+    // What a statement relabelling every record of the page does to it: every slot held, every record deleted and committed
+    for (final RID rid : rids)
+      bucket.holdPosition(rid.getPosition());
+    database.transaction(() -> {
+      for (final RID rid : rids)
+        database.deleteRecord(rid.asDocument());
+    });
+
+    final RID[] whileHeld = new RID[1];
+    database.begin();
+    whileHeld[0] = database.newDocument("Small").save().getIdentity();
+    database.rollback();
+    assertThat(whileHeld[0].getPosition()).as("no held slot of page 0 is handed out").isGreaterThanOrEqualTo(maxRecordsInPage);
+
+    for (final RID rid : rids)
+      bucket.releaseHeldPosition(rid.getPosition());
+    final RID[] afterRelease = new RID[1];
+    database.begin();
+    afterRelease[0] = database.newDocument("Small").save().getIdentity();
+    database.rollback();
+    assertThat(afterRelease[0]).as("the emptied page takes records again").isEqualTo(first);
+  }
+
+  /** A rolled-back attempt deleted nothing in the end, so the positions it held go back with the entries it recorded. */
+  @Test
+  void restoringASnapshotReleasesThePositionsTheDiscardedEntriesHeld() {
+    final LabelReplacements replacements = new LabelReplacements();
+    final Vertex[] original = new Vertex[1];
+    database.transaction(() -> original[0] = database.newVertex("A").save());
+    final RID rid = original[0].getIdentity();
+
+    final LabelReplacements.Snapshot before = replacements.copy();
+    database.begin();
+    replacements.replace(original[0], "B");
+    database.rollback();
+    assertThat(isHeld(rid)).isTrue();
+
+    replacements.restore(before);
+    assertThat(isHeld(rid)).isFalse();
+    assertThat(replacements.isEmpty()).isTrue();
   }
 }

@@ -398,10 +398,10 @@ final class DatabaseQuarantine {
   }
 
   /**
-   * The decision for one database that opened with a unique index it could not load, for a file with no header page (issue
-   * #11258): the index enforces nothing on this node, and the load cannot tell a half-arrived compaction file from one a power
-   * loss emptied. Like {@link #quarantineAfterIncompleteRecovery}, it quarantines the database and re-installs it from the
-   * leader, unless this node is the only voter.
+   * The decision for one database that opened with a unique index it could not load whole: a file with no header page (issue
+   * #11258), or a compacted sub-index the load could not attach (issue #12348). The index enforces nothing on this node, or only on
+   * part of the keys, and the load cannot tell how its files got there. Like {@link #quarantineAfterIncompleteRecovery}, it
+   * quarantines the database and re-installs it from the leader, unless this node is the only voter.
    *
    * @return {@code true} when this call quarantined the database
    */
@@ -412,17 +412,18 @@ final class DatabaseQuarantine {
 
     if (raftHA.isSoleVoter()) {
       LogManager.instance().log(sm, Level.SEVERE,
-          "Database '%s' opened without its unique indexes %s (no header page) and this node is the only voter, so there is "
-              + "no peer to re-install it from. It is NOT quarantined; the constraint is not enforced: run REBUILD INDEX "
-              + "(issue #11258)", null, dbName, indexNames);
+          "Database '%s' opened without its unique indexes %s whole (no header page, or no compacted sub-index) and this node "
+              + "is the only voter, so there is no peer to re-install it from. It is NOT quarantined; the constraint is not "
+              + "enforced: run REBUILD INDEX (issues #11258, #12348)", null, dbName, indexNames);
       return false;
     }
     if (!quarantineDatabase(dbName, DivergenceCause.UNAVAILABLE_UNIQUE_INDEX))
       return false;
 
     LogManager.instance().log(sm, Level.SEVERE,
-        "Database '%s' opened without its unique indexes %s (no header page), so its constraint is not enforced here: "
-            + "quarantining it and re-installing it from the leader (issue #11258)", null, dbName, indexNames);
+        "Database '%s' opened without its unique indexes %s whole (no header page, or no compacted sub-index), so its "
+            + "constraint is not enforced here: quarantining it and re-installing it from the leader (issues #11258, #12348)", null,
+        dbName, indexNames);
     sm.triggerDatabaseResync(dbName);
     sm.resync.handOffLeadershipIfLeader(dbName);
     return true;

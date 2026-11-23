@@ -98,7 +98,7 @@ public class AllReduceExpression implements Expression {
       final ResultInternal predicateResult = createIterationResult(result, item, accumulator);
       final Object predicateCheck = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(predicateExpression, predicateResult, context);
 
-      if (!Boolean.TRUE.equals(predicateCheck))
+      if (!Boolean.TRUE.equals(BooleanCoercionExpression.toPredicate(predicateCheck)))
         return false;
     }
 

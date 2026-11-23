@@ -116,7 +116,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * back as a {@code StringIndexOutOfBoundsException} out of the middle of the analysis, naming neither the option
    * nor the value (issue #7867).
    */
-  private String delimiterFor(final ImporterSettings settings) {
+  protected String delimiterFor(final ImporterSettings settings) {
     final String resolved = delimiter != null ? delimiter : settings.getValue("delimiter", ",");
     if (resolved != null && resolved.isEmpty())
       throw new IllegalArgumentException("The CSV delimiter is set to an empty value: a field separator is at least "
@@ -219,6 +219,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final boolean[] txOpen = { false };
     final TransactionContext[] ownTx = { null };
 
+    // In "abort" mode, the documents saved into the transaction the import owns and not yet committed. They are credited to
+    // context.createdDocuments only once a commit made them durable (the same rule "skip" mode follows per row), so a
+    // transaction that fails or is refused never leaves them counted. When the caller owns the transaction nothing is ever
+    // committed here, so they accumulate until the end of the file: whether they become durable is the caller's decision, not
+    // this import's to report on (see csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction).
+    // "skip" mode doesn't use it: each row is counted directly, gated on its own commit() succeeding.
+    long pendingDocuments = 0;
+    // The documents the periodic commits below made durable. Already in context.createdDocuments, and the part of a failed
+    // import that stays on the disk.
+    long committedDocuments = 0;
+    boolean completed = false;
+
     try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
@@ -260,14 +272,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // NO RAGGEDNESS TO CATCH - THE TWO READ AS INDEPENDENT CONDITIONS BUT ARE NOT. A FUTURE CHANGE THAT POPULATES
       // 'properties' FROM ANYTHING OTHER THAN 'entity' HAS TO GIVE THIS ONE A HEADER WIDTH TOO (issue #7782).
       final int headerColumns = headerColumnsOf(entity);
-
-      // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
-      // once the whole file has parsed without a mid-loop failure. On failure this is deliberate even when
-      // ownsTransaction is false: rows saved before the failing one are left staged, uncommitted, in the caller's
-      // own still-open transaction (see csvDocumentImportAbortsWithoutDiscardingCallersPendingWorkInExternallyManagedTransaction)
-      // - whether they ultimately become durable is the caller's own commit/rollback decision, not this import's to
-      // report on. "skip" mode doesn't use this: each row is counted directly, gated on its own commit() succeeding.
-      long documentsCreatedThisFile = 0;
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -313,7 +317,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             context.createdDocuments.incrementAndGet();
             ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
           } else
-            ++documentsCreatedThisFile;
+            ++pendingDocuments;
         } catch (final RuntimeException e) {
           ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
 
@@ -322,6 +326,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
           logSkippedRow("document", line, e);
           context.errors.incrementAndGet();
+          ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
+        }
+
+        // The -commitEvery boundary (issue #12637). Without it every row, its dirty pages and its pending index entries
+        // stayed in the heap of one transaction until the end of the file, and a large file ran out of memory: loadEdges(),
+        // the JSONL and RDF imports and the async vertex path all commit every -commitEvery rows already. Only "abort" mode
+        // gets here with rows pending: "skip" mode commits per row above, so pendingDocuments stays 0 for it. Gated on
+        // ownership: a transaction that predates the import is the caller's, who decides when, and whether, its rows become
+        // durable, so there the whole file stays in it.
+        //
+        // Deliberately outside the per-row catch above, as loadEdges() has it: a commit failure is not a row error, and
+        // inside that try it would be handled as the failure of the row that happened to trip the boundary. Left to escape
+        // it reaches the catch below, which rolls back the batch and lets the real cause propagate, with the batches
+        // committed before it counted and kept.
+        if (ownsTransaction && pendingDocuments > 0 && pendingDocuments >= settings.commitEvery) {
+          ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
+          context.createdDocuments.addAndGet(pendingDocuments);
+          committedDocuments += pendingDocuments;
+          pendingDocuments = 0;
           ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
         }
 
@@ -337,7 +360,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // as a side effect of this import succeeding. A refusal reaches the catch below with the flag restored.
       ImporterTransactions.commitOwnTransaction(database, txOpen, ownTx[0]);
 
-      context.createdDocuments.addAndGet(documentsCreatedThisFile);
+      context.createdDocuments.addAndGet(pendingDocuments);
+      completed = true;
 
     } catch (final IOException e) {
       ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
@@ -348,6 +372,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       ImporterTransactions.rollbackOwnTransaction(database, txOpen, ownTx);
       throw e;
     } finally {
+      // Not "completed" and with a batch already committed: what the caller is left with is a part of the file, which a
+      // failure used to be unable to leave behind (the one transaction was rolled back whole). Said here because the
+      // exception that propagates names the cause, not the rows that stay (issue #12637).
+      if (!completed && committedDocuments > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Document import failed: the import is PARTIAL - %,d documents were made durable by earlier batch commits and stay "
+                + "on the disk, the other %,d saved since the last commit were rolled back", null, committedDocuments,
+            pendingDocuments);
+
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance()
           .log(this, Level.INFO, "Importing of documents from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,

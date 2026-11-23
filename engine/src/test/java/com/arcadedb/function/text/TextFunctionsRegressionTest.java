@@ -69,10 +69,11 @@ class TextFunctionsRegressionTest {
     }
 
     @Test
-    void charAtReturnsTheWholeCharacter() {
-      assertThat(both("text.charAt('" + VALUE + "', 0)")).isEqualTo("a");
-      assertThat(both("text.charAt('" + VALUE + "', 1)")).isEqualTo(EMOJI);
-      assertThat(both("text.charAt('" + VALUE + "', 2)")).isEqualTo("b");
+    void charAtReturnsTheCodePointOfTheWholeCharacter() {
+      // the code point, as apoc.text.charAt answers (issue #12104)
+      assertThat(both("text.charAt('" + VALUE + "', 0)")).isEqualTo((long) 'a');
+      assertThat(both("text.charAt('" + VALUE + "', 1)")).isEqualTo((long) EMOJI.codePointAt(0));
+      assertThat(both("text.charAt('" + VALUE + "', 2)")).isEqualTo((long) 'b');
       assertThat(both("text.charAt('" + VALUE + "', 3)")).isNull();
       assertThat(both("text.charAt('" + VALUE + "', -1)")).isNull();
     }
@@ -81,7 +82,8 @@ class TextFunctionsRegressionTest {
     void charAtAgreesWithTheCharAtMethod() {
       try (final ResultSet rs = database.query("sql", "SELECT text.charAt(s, 1) AS f, s.charAt(1) AS m FROM T")) {
         final Result row = rs.next();
-        assertThat(row.<String>getProperty("f")).isEqualTo(EMOJI).isEqualTo(row.<String>getProperty("m"));
+        assertThat(row.<String>getProperty("m")).isEqualTo(EMOJI);
+        assertThat(row.<Long>getProperty("f")).isEqualTo((long) row.<String>getProperty("m").codePointAt(0));
       }
     }
 
@@ -369,8 +371,9 @@ class TextFunctionsRegressionTest {
     void nullAndEqualStringsKeepTheirAnswers() {
       assertThat(both("text.levenshteinDistance($a, $b)", "a", null, "b", "x")).isNull();
       assertThat(both("text.levenshteinDistance($a, $b)", "a", P, "b", P)).isEqualTo(0L);
-      assertThat(both("text.jaroWinklerDistance($a, $b)", "a", P, "b", P)).isEqualTo(1.0);
-      assertThat(both("text.jaroWinklerDistance($a, $b)", "a", P, "b", "")).isEqualTo(0.0);
+      // a distance, as apoc.text.jaroWinklerDistance answers (issue #12104): 0 for equal strings
+      assertThat(both("text.jaroWinklerDistance($a, $b)", "a", P, "b", P)).isEqualTo(0.0);
+      assertThat(both("text.jaroWinklerDistance($a, $b)", "a", P, "b", "")).isEqualTo(1.0);
       assertThat(both("text.levenshteinSimilarity($a, $b)", "a", "", "b", "")).isEqualTo(1.0);
     }
 
@@ -520,8 +523,9 @@ class TextFunctionsRegressionTest {
       // the letters have no case, so the answer is the input, as for the BMP twin
       assertThat(both("text.camelCase($s)", "s", twin)).isEqualTo(twin);
       assertThat(both("text.camelCase($s)", "s", supplementary)).isEqualTo(supplementary);
-      assertThat(both("text.snakeCase($s)", "s", twin)).isEqualTo(twin);
-      assertThat(both("text.snakeCase($s)", "s", supplementary)).isEqualTo(supplementary);
+      // snakeCase starts a word at every character that is not a lower-case letter, a caseless one too (apoc.text.snakeCase, #12104)
+      assertThat(both("text.snakeCase($s)", "s", twin)).isEqualTo("一-丁x");
+      assertThat(both("text.snakeCase($s)", "s", supplementary)).isEqualTo(E1 + "-" + E2 + "x");
       assertThat(both("text.upperCamelCase($s)", "s", twin)).isEqualTo(twin);
       assertThat(both("text.upperCamelCase($s)", "s", supplementary)).isEqualTo(supplementary);
     }
@@ -532,7 +536,7 @@ class TextFunctionsRegressionTest {
       assertThat(both("text.camelCase($s)", "s", CAPITAL_DESERET + "_" + CAPITAL_DESERET_2)).isEqualTo(SMALL_DESERET + CAPITAL_DESERET_2);
       assertThat(both("text.upperCamelCase($s)", "s", SMALL_DESERET + " " + SMALL_DESERET_2 + "X")).isEqualTo(
           CAPITAL_DESERET + CAPITAL_DESERET_2 + "x");
-      assertThat(both("text.snakeCase($s)", "s", "a" + CAPITAL_DESERET + "b")).isEqualTo("a_" + SMALL_DESERET + "b");
+      assertThat(both("text.snakeCase($s)", "s", "a" + CAPITAL_DESERET + "b")).isEqualTo("a-" + SMALL_DESERET + "b");
     }
 
     @Test
@@ -540,7 +544,8 @@ class TextFunctionsRegressionTest {
       // emoji are not letters or digits: they separate words, as the punctuation of the BMP does
       assertThat(both("text.camelCase($s)", "s", "ab" + P + "cd")).isEqualTo("abCd");
       assertThat(both("text.upperCamelCase($s)", "s", "ab" + P + "cd")).isEqualTo("AbCd");
-      assertThat(both("text.snakeCase($s)", "s", "ab" + P + "cd")).isEqualTo("ab_cd");
+      // snakeCase keeps a separator at the start of the word it begins, as apoc.text.snakeCase does ('a.b' is 'a-.b', #12104)
+      assertThat(both("text.snakeCase($s)", "s", "ab" + P + "cd")).isEqualTo("ab-" + P + "cd");
     }
 
     // ---- empty-search replace and empty-delimiter split
@@ -561,8 +566,10 @@ class TextFunctionsRegressionTest {
     }
 
     @Test
-    void textSplitKeepsTheEmptyTrailingPieceLikeSplit() {
-      assertThat(both("text.split($s, $c)", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
+    void textSplitDropsTheEmptyTrailingPieceUnlikeSplit() {
+      // text.split() is apoc.text.split(), String.split with its default limit 0 (issue #12104); a negative limit keeps the piece
+      assertThat(both("text.split($s, $c)", "s", "a" + P, "c", P)).isEqualTo(List.of("a"));
+      assertThat(both("text.split($s, $c, -1)", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
       assertThat(cypher("RETURN split($s, $c) AS v", "s", "a" + P, "c", P)).isEqualTo(List.of("a", ""));
     }
 
@@ -755,7 +762,7 @@ class TextFunctionsRegressionTest {
     void formatIgnoresTheJvmDefaultLocale() {
       Locale.setDefault(Locale.GERMANY);
       try {
-        assertThat(function.execute(new Object[] { "%,.2f", 1234567.891 }, null)).isEqualTo("1,234,567.89");
+        assertThat(function.execute(new Object[] { "%,.2f", List.of(1234567.891) }, null)).isEqualTo("1,234,567.89");
       } finally {
         Locale.setDefault(originalDefault);
       }
@@ -766,7 +773,7 @@ class TextFunctionsRegressionTest {
       Locale.setDefault(Locale.US);
       final Object usResult;
       try {
-        usResult = function.execute(new Object[] { "%,.2f", 1234567.891 }, null);
+        usResult = function.execute(new Object[] { "%,.2f", List.of(1234567.891) }, null);
       } finally {
         Locale.setDefault(originalDefault);
       }
@@ -774,7 +781,7 @@ class TextFunctionsRegressionTest {
       Locale.setDefault(Locale.GERMANY);
       final Object germanResult;
       try {
-        germanResult = function.execute(new Object[] { "%,.2f", 1234567.891 }, null);
+        germanResult = function.execute(new Object[] { "%,.2f", List.of(1234567.891) }, null);
       } finally {
         Locale.setDefault(originalDefault);
       }

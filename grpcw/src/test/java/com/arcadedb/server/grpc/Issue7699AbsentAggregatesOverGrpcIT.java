@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7699: the gRPC twin of {@code Issue7584AbsentSumAvgOverHttpIT} and {@code Issue7043AbsentMinMaxOverHttpIT},
+ * Issue #7699: the gRPC twin of {@code TimeSeriesHttpIT},
  * driving the streaming {@code TimeSeriesQuery} RPC over a real channel.
  * <p>
  * Issue #7694 added {@code Issue7694AbsentSumAvgGrpcEncodingTest}, which composes the real
@@ -211,7 +211,7 @@ public class Issue7699AbsentAggregatesOverGrpcIT extends BaseGrpcServerTest {
 
   /**
    * A NaN sample has no line-protocol or SQL literal, so these go in through the server's own database - the same
-   * way {@code Issue7584AbsentSumAvgOverHttpIT} writes them.
+   * way {@code TimeSeriesHttpIT} writes them.
    */
   private void appendSamples(final long[] timestamps, final Object[] values) {
     final Database database = getServerDatabase(0, getDatabaseName());

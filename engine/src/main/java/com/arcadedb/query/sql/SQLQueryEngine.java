@@ -354,6 +354,16 @@ public class SQLQueryEngine implements QueryEngine {
       }
 
       @Override
+      public boolean isTransactionControl() {
+        return statement.isTransactionControl();
+      }
+
+      @Override
+      public boolean inspectsTheLocalNode() {
+        return statement.inspectsTheLocalNode();
+      }
+
+      @Override
       public Set<OperationType> getOperationTypes() {
         return statement.getOperationTypes();
       }

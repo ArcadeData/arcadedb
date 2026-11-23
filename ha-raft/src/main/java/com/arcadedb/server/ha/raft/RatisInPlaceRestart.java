@@ -240,7 +240,9 @@ final class RatisInPlaceRestart {
           return;
         }
 
-        ha.stateMachine = ha.createStateMachine();
+        // Issue #11921: not under a commit published outside the log, which holds the validation lock of the old ledger. An
+        // interrupt at the gate leaves the flag set, so the catch below reads the restart as abandoned, not failed.
+        ha.replaceStateMachineBetweenPublications(ratisCloseTimeoutMs());
 
         final RaftProperties properties = RaftPropertiesBuilder.build(ha.configuration);
         final File storageDir = ha.storageFiles.getRaftStorageDir();

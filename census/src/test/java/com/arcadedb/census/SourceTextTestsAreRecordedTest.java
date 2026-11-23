@@ -76,23 +76,21 @@ class SourceTextTestsAreRecordedTest {
       entry("grpc-client/src/test/java/com/arcadedb/remote/grpc/Issue10154AdminMappingTest.java", NAMED_FILES + ": RemoteGrpcServer"),
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue10158GrpcWrappedRefusalStatusTest.java",
           NAMED_FILES + ": the two gRPC services' status ladders"),
-      entry("server/src/test/java/com/arcadedb/server/http/handler/Issue10573OpenApiNativeReflectionTest.java",
+      entry("server/src/test/java/com/arcadedb/server/http/handler/OpenApiNativeReflectionTest.java",
           NAMED_FILES + ": OpenApiModelReflectionFeature and the native pom"),
-      entry("server/src/test/java/com/arcadedb/server/support/Issue10738FormerKeySupportSourceTest.java",
+      entry("server/src/test/java/com/arcadedb/server/support/SupportDiagnosticsConfigurationTest.java",
           NAMED_FILES + ": SupportDiagnostics"),
       // TEST SOURCES
       entry("server/src/test/java/com/arcadedb/server/HardcodedTestServerPortsTest.java", TEST_SOURCES + "; and ports are folded literals"),
       entry("server/src/test/java/com/arcadedb/server/InlineMocksOfJitWarmTypesTest.java", TEST_SOURCES),
       entry("server/src/test/java/com/arcadedb/server/NoNewMocksOfServerTypesTest.java", TEST_SOURCES),
-      entry("server/src/test/java/com/arcadedb/server/Issue10533ClientsHonourTheMarksTest.java",
+      entry("server/src/test/java/com/arcadedb/server/ClientsHonourTheMarksTest.java",
           TEST_SOURCES + "; the production classes are held by ClientsHonourTheMarksCensusTest"),
       entry("server/src/test/java/com/arcadedb/server/PluginPortFixtureScan.java",
           TEST_SOURCES + "; the shared scan of plugin fixtures' ports, folded literals"),
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue7496GrpcHaItsAllocateTheirPortsTest.java",
           TEST_SOURCES + "; and ports are folded literals"),
-      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8203RaftFixturePortsTest.java", TEST_SOURCES + "; and ports are folded literals"),
-      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue8222StandaloneRaftFixturePortsTest.java",
-          TEST_SOURCES + "; and ports are folded literals"),
+      entry("ha-raft/src/test/java/com/arcadedb/server/ha/raft/RaftFixturePortsTest.java", TEST_SOURCES + "; and ports are folded literals"),
       // SOURCE ONLY
       entry("grpcw/src/test/java/com/arcadedb/server/grpc/Issue7472EveryGrpcFailureIsConcealableTest.java", SOURCE_ONLY
           + ": an inlined static final String, and a throwable's message reaching a status is data flow; its call-site scan is "
