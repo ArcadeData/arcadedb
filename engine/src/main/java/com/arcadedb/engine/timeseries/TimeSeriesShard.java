@@ -73,6 +73,14 @@ public class TimeSeriesShard implements AutoCloseable {
   private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
   /**
+   * The longest a compaction waits, at each of its commits of the header page, for an entry of another node to be applied here
+   * (issue #12470). The entry holds a version of the page from its validation by the leader until its apply, one Raft round
+   * trip: milliseconds on a healthy cluster, so this is a generous multiple of it, and short enough that a request nothing will
+   * ever apply (the ledger sweeps it only after several client timeouts) costs a few seconds of a maintenance pass and not more.
+   */
+  static final long RESERVATION_WAIT_MS = 1_000L;
+
+  /**
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
    * have left them. Public only because the test that sets it is an HA integration test in another module
@@ -1149,14 +1157,6 @@ public class TimeSeriesShard implements AutoCloseable {
    * Maximum number of samples per sealed block. Keeps decompression cost bounded.
    */
   static final int SEALED_BLOCK_SIZE = 65_536;
-
-  /**
-   * The longest a compaction waits, at each of its commits of the header page, for an entry of another node to be applied here
-   * (issue #12470). The entry holds a version of the page from its validation by the leader until its apply, one Raft round
-   * trip: milliseconds on a healthy cluster, so this is a generous multiple of it, and short enough that a request nothing will
-   * ever apply (the ledger sweeps it only after several client timeouts) costs a few seconds of a maintenance pass and not more.
-   */
-  static final long RESERVATION_WAIT_MS = 1_000L;
 
   /**
    * Compacts mutable data into sealed columnar storage.

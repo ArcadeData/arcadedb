@@ -181,7 +181,8 @@ class TimeSeriesCompactionReservedHeaderPageTest extends TestHelper {
   }
 
   private long countRows() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM " + TYPE)) {
+    // count(), not count(*): the rows are counted, not a stored counter
+    try (final ResultSet rs = database.query("sql", "SELECT count() AS c FROM " + TYPE)) {
       return rs.next().<Number>getProperty("c").longValue();
     }
   }
