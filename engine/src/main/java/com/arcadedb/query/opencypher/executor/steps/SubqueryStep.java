@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -431,6 +432,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         // Execute the batch in its own transaction
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
+        committedWrites = commitStatementWrites(committedWrites);
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
         // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
@@ -527,6 +529,39 @@ public class SubqueryStep extends AbstractExecutionStep {
         SubqueryStep.this.close();
       }
     };
+  }
+
+  /**
+   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS} and has not committed yet, then begins
+   * its transaction again for the clauses that follow (issue #13172). The batch runs in a transaction of its own, which does not
+   * see the uncommitted writes of the statement's: a label written before the CALL replaces the node by a new record, and the
+   * body, pointed at that record, failed with "Record not found". IN TRANSACTIONS already gives up the atomicity of the statement,
+   * each batch committing on its own, so committing what the statement wrote before it is consistent with that. It runs before
+   * every batch, not only the first: the outer rows of a later batch are produced after the earlier batches committed, and what
+   * the clauses before the CALL wrote for them is pending again.
+   * <p>
+   * Only the statement's own transaction is committed: the implicit one the engine or a server opened around the statement, at
+   * the first level. A transaction its caller owns is refused with IN TRANSACTIONS before anything runs (issue #11588), and a
+   * deeper level belongs to someone else, so both are left alone.
+   *
+   * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
+   */
+  private RidHashSet commitStatementWrites(final RidHashSet committedWrites) {
+    if (database.getNestedTransactions() != 1)
+      return committedWrites;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isImplicit() || tx.hasChangedNothing())
+      return committedWrites;
+
+    // The copies the outer rows produced so far hold are a version behind once this commits
+    final RidHashSet written = committedWrites != null ? committedWrites : new RidHashSet();
+    tx.collectWrittenRecordIds(written);
+
+    final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = tx.getIsolationLevel();
+    database.commit();
+    database.begin(isolationLevel);
+    database.getTransaction().setImplicit(true);
+    return written;
   }
 
   /**
