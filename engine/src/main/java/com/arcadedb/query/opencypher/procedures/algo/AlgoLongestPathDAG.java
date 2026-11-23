@@ -143,6 +143,9 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
     for (int ti = 0; ti < n; ti++) {
       final int u = topoOrder[ti];
       final Vertex vu = graph.getVertex(u);
+      if (vu == null)
+        // deleted since the graph was loaded: no edges to relax
+        continue;
       for (final Edge edge : vu.getEdges(Vertex.DIRECTION.OUT)) {
         try {
           if (relTypes != null) {

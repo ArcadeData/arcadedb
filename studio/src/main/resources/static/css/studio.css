@@ -714,6 +714,40 @@ div.dt-search {
   white-space: nowrap;
 }
 
+/* Type filter above the type badges (issue #6550) */
+.sidebar-filter {
+  padding: 8px 12px 0;
+}
+
+.sidebar-filter-input {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border-ddd);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  outline: none;
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.sidebar-filter-input:focus {
+  border-color: var(--color-brand);
+}
+
+.sidebar-filter-status {
+  font-size: 0.68rem;
+  color: var(--text-lightest);
+  padding-top: 3px;
+}
+
+.sidebar-filter-status:empty {
+  display: none;
+}
+
+.sidebar-filter-hidden {
+  display: none !important;
+}
+
 .sidebar-empty {
   padding: 20px 12px;
   text-align: center;

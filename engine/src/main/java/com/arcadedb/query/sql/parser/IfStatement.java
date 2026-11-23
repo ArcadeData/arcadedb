@@ -173,33 +173,9 @@ public class IfStatement extends Statement {
     return statements;
   }
 
+  @Override
   public boolean containsReturn() {
-    for (final Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement) {
-        return true;
-      }
-      if (stm instanceof ForEachBlock block && block.containsReturn()) {
-        return true;
-      }
-      if (stm instanceof IfStatement statement && statement.containsReturn()) {
-        return true;
-      }
-    }
-
-    if (elseStatements != null) {
-      for (final Statement stm : this.elseStatements) {
-        if (stm instanceof ReturnStatement) {
-          return true;
-        }
-        if (stm instanceof ForEachBlock block && block.containsReturn()) {
-          return true;
-        }
-        if (stm instanceof IfStatement statement && statement.containsReturn()) {
-          return true;
-        }
-      }
-    }
-    return false;
+    return anyContainsReturn(statements) || anyContainsReturn(elseStatements);
   }
 }
 

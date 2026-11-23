@@ -18,16 +18,12 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
-import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
-import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
+import com.arcadedb.graph.olap.GraphAnalyticalViewCommands;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.Map;
 
@@ -39,20 +35,8 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final DatabaseInternal database = context.getDatabase();
-    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     final String viewName = name.getStringValue();
-
-    GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, viewName);
-    if (liveView != null)
-      liveView.build();
-    else {
-      // A view whose build failed on open leaves the registry and keeps its definition: built again from it here, so the reason
-      // it fails, if it still does, reaches the caller rather than a log line (issue #10368)
-      liveView = GraphAnalyticalViewPersistence.rebuildFromDefinition(database, viewName);
-      if (liveView == null)
-        throw new SchemaException("Graph Analytical View '" + viewName + "' does not exist");
-    }
+    final GraphAnalyticalView liveView = GraphAnalyticalViewCommands.rebuild(context.getDatabase(), viewName);
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal r = new ResultInternal();

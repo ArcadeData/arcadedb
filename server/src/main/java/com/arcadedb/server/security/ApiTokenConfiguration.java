@@ -214,7 +214,7 @@ public class ApiTokenConfiguration {
   /**
    * The tokens half of the shared reload policy (issue #10404). Two answers differ from the default policy and are
    * pinned by tests: a first load that cannot READ the file keeps what is in memory
-   * ({@code Issue7373ClusterWideGroupsAndTokensTest}), and a reload refuses while the tokens in force are newer than the
+   * ({@code ClusterWideGroupsAndTokensTest}), and a reload refuses while the tokens in force are newer than the
    * file ({@link #diskBehind}).
    */
   private final class Policy extends ReloadableSecurityArtifact<LoadedTokens> {

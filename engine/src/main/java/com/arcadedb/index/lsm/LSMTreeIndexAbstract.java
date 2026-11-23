@@ -76,6 +76,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       null);
   protected static final byte                               valueType = BinaryTypes.TYPE_COMPRESSED_RID;
 
+  // the shapes numberTextKind() tells a key text apart by, see there
+  /** The text is none of the shapes below. */
+  private static final int NOT_A_NUMBER    = 0;
+  /** {@code -?digits}: the canonical text of a whole number. */
+  private static final int WHOLE_NUMBER    = 1;
+  /** {@code -?digits.digits}: the canonical text of a fraction, and what Java writes for a double or a decimal of a moderate size. */
+  private static final int DECIMAL_NUMBER  = 2;
+  /** {@code -?digits[.digits](e|E)[+|-]digits}: what Java writes for a double or a decimal of an extreme size. */
+  private static final int EXPONENT_NUMBER = 3;
+
   protected       LSMTreeIndex     mainIndex;
   protected final BinaryComparator comparator;
   protected final BinarySerializer serializer;
@@ -448,12 +458,41 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     // The run cannot extend past the matched entry on the side the scan is LEAVING, so only the other side is searched,
     // and only as far as the bracket the caller narrowed.
-    final int step = purpose == 2 ? -1 : 1;
-    final int limit = purpose == 2 ? low : high;
+    final int boundary = purpose == 2 ?
+        runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, -1, low) :
+        runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, 1, high);
+    if (boundary == matched)
+      return match;
 
+    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
+
+    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
+    // entry the search above compared last.
+    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
+
+    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
+  }
+
+  /**
+   * The index of the LAST entry of the run of entries that compare equal to {@code convertedKeys}, given {@code matched},
+   * any entry of that run. This is where a write appends its entry for the key, after every older one. Galloping, as
+   * {@link #seekRunBoundary} does, so it costs {@code O(log k)} key comparisons for a run of {@code k} entries instead of
+   * the walk of {@link #findLastEntryOfSameKey} (issue #11935).
+   */
+  protected int lastEntryOfRun(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys,
+      final int count, final int matched) {
+    return runEdge(currentPageBuffer, startIndexArray, convertedKeys, count, matched, 1, count - 1);
+  }
+
+  /**
+   * The furthest entry, in direction {@code step} (-1 or 1) and no further than {@code limit}, of the run of entries that
+   * compare equal to {@code convertedKeys} and contain {@code matched}.
+   */
+  private int runEdge(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, final int count,
+      final int matched, final int step, final int limit) {
     if (matched == limit)
       // already at the edge of the bracket: there is nowhere for the run to extend to
-      return match;
+      return matched;
 
     // GALLOP outward in doubling strides. `good` is an index known to compare equal, `bad` one known not to - or, when
     // the gallop reaches the bracket's edge without finding a mismatch, the virtual index one past it, which the
@@ -485,18 +524,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else
         bad = probe;
     }
-
-    final int boundary = good;
-    if (boundary == matched)
-      return match;
-
-    statsAdjacentSteps.addAndGet(Math.abs(boundary - matched));
-
-    // Re-read the entry the scan will actually start from, so the reported position describes IT and not whichever
-    // entry the search above compared last.
-    compareKey(currentPageBuffer, startIndexArray, convertedKeys, boundary, count);
-
-    return new LookupResult(true, false, boundary, new int[] { currentPageBuffer.position() });
+    return good;
   }
 
   protected void writeEntrySingleValue(final Binary buffer, final Object[] keys, final Object rid, final int pageUsableSpace) {
@@ -706,6 +734,137 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return convertedKeys;
   }
 
+  /**
+   * The keys as an older build wrote them, or null when it wrote them the same way. On a property nothing declares, two builds
+   * keyed a value by the text Java gives it where {@link #convertKeysToDeclaredTypes} now writes a canonical text, and an index
+   * they wrote keeps those entries until it is rebuilt, so a seek, a removal and a uniqueness check look under both texts:
+   * <ul>
+   * <li>a floating point or decimal number, by {@code toString()} before #9132 (26.9.1): {@code 1.0}, {@code -0.0},
+   * {@code 1.0E300} where the canonical key is {@code 1}, {@code 0} and the plain digits (issue #12233);</li>
+   * <li>a list, by {@code List.toString()} before #11615: {@code [1.5, 2.0]} where the canonical key is {@code [1.5, 2]}
+   * (issue #12160).</li>
+   * </ul>
+   * The old text is rebuilt with {@link Type#convertIndexKeyOrNull} to STRING, which still turns a list or a number into the text
+   * those builds wrote (pinned by {@code LSMTreeIndexLegacyKeysTest} and the {@code UndeclaredIndexLegacy*} tests, which write the old
+   * text by hand: a change of that conversion turns them red instead of silently ending the lookups of the old entries). Arrays have
+   * no old text to look under: those builds keyed an array by its identity text
+   * ({@code [I@1b6d3586}), which differs for every array instance, so no seek ever found such an entry.
+   *
+   * @param keys          the keys as the caller gave them, before any conversion: the list or the number itself
+   * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}, as the index stores them today
+   *
+   * @return a copy of {@code convertedKeys} with each key that had an old text replaced by that text, or null when no key had one
+   */
+  Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return null;
+    Object[] legacyKeys = null;
+    for (int i = 0; i < keys.length && i < convertedKeys.length; ++i) {
+      final Object key = keys[i];
+      if (!(key instanceof Collection || key instanceof Double || key instanceof Float || key instanceof BigDecimal)
+          || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
+        continue;
+      Object legacyKey = Type.convertIndexKeyOrNull(database, key, String.class);
+      if (legacyKey instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
+          && caseInsensitiveKeys[i])
+        legacyKey = string.toLowerCase(Locale.ROOT);
+      if (legacyKey == null || legacyKey.equals(convertedKeys[i]))
+        continue;
+      if (legacyKeys == null)
+        legacyKeys = convertedKeys.clone();
+      legacyKeys[i] = legacyKey;
+    }
+    return legacyKeys;
+  }
+
+  /**
+   * Whether converted keys can be the canonical key of a value an older build keyed another way ({@link #legacyKeys}): a STRING key
+   * of a property nothing declares that reads as a list ({@code [1.5, 2]}) or as the canonical text of a number ({@code 1},
+   * {@code 2.5}). Answers without loading anything, so that a caller holding only converted keys loads the record they came from only
+   * when it can matter: a date, a version, an address or any other text that is no list and no number loads nothing.
+   */
+  boolean mayBeCanonicalKeyOfLegacyValue(final Object[] convertedKeys) {
+    if (convertedKeys == null)
+      return false;
+    for (int i = 0; i < convertedKeys.length && i < binaryKeyTypes.length; ++i)
+      if (binaryKeyTypes[i] == BinaryTypes.TYPE_STRING && convertedKeys[i] instanceof String string
+          && (isListText(string) || numberTextKind(string) != NOT_A_NUMBER) && isUndeclaredProperty(i))
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether a STRING given as a key on a property nothing declares can be spelled as an older build spelled the key of a list or a
+   * number ({@link #legacyKeys}), so that an entry such a build wrote for that list or number is under it too (PR #12166 review).
+   * Those spellings differ from the canonical ones by a decimal point or an exponent ({@code 1.0}, {@code -0.0}, {@code 1.0E300},
+   * {@code 2.500}, {@code [1.5, 2.0]}), and are the text Java gives a number or a list: {@code 3.1.4}, {@code 10.0.0.1}, a timestamp or
+   * {@code 1.5 kg} are none of them. Answers without loading anything.
+   */
+  boolean maySpellALegacyKey(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return false;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < binaryKeyTypes.length; ++i) {
+      if (!(keys[i] instanceof CharSequence) || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING
+          || !(convertedKeys[i] instanceof String string))
+        continue;
+      final boolean spellsOne;
+      if (isListText(string))
+        spellsOne = string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0;
+      else {
+        final int kind = numberTextKind(string);
+        spellsOne = kind == DECIMAL_NUMBER || kind == EXPONENT_NUMBER;
+      }
+      if (spellsOne && isUndeclaredProperty(i))
+        return true;
+    }
+    return false;
+  }
+
+  /** Whether a key text is the text of a list: the one {@code List.toString()} writes and {@link Type#canonicalListKey} keeps. */
+  private static boolean isListText(final String text) {
+    return text.length() > 1 && text.charAt(0) == '[' && text.charAt(text.length() - 1) == ']';
+  }
+
+  /**
+   * The shape of a key text that is a number as Java writes one ({@code Double.toString}, {@code BigDecimal.toString}) or as
+   * {@link Type#canonicalNumberKey} does: {@link #WHOLE_NUMBER}, {@link #DECIMAL_NUMBER}, {@link #EXPONENT_NUMBER}, or
+   * {@link #NOT_A_NUMBER} for any other text. One pass, no allocation.
+   */
+  private static int numberTextKind(final String text) {
+    final int length = text.length();
+    int i = length > 0 && text.charAt(0) == '-' ? 1 : 0;
+    final int integerStart = i;
+    while (i < length && isAsciiDigit(text.charAt(i)))
+      ++i;
+    if (i == integerStart)
+      return NOT_A_NUMBER;
+    int kind = WHOLE_NUMBER;
+    if (i < length && text.charAt(i) == '.') {
+      final int fractionStart = ++i;
+      while (i < length && isAsciiDigit(text.charAt(i)))
+        ++i;
+      if (i == fractionStart)
+        return NOT_A_NUMBER;
+      kind = DECIMAL_NUMBER;
+    }
+    if (i < length && (text.charAt(i) == 'e' || text.charAt(i) == 'E')) {
+      ++i;
+      if (i < length && (text.charAt(i) == '+' || text.charAt(i) == '-'))
+        ++i;
+      final int exponentStart = i;
+      while (i < length && isAsciiDigit(text.charAt(i)))
+        ++i;
+      if (i == exponentStart)
+        return NOT_A_NUMBER;
+      kind = EXPONENT_NUMBER;
+    }
+    return i == length ? kind : NOT_A_NUMBER;
+  }
+
+  private static boolean isAsciiDigit(final char c) {
+    return c >= '0' && c <= '9';
+  }
+
   /** True when the schema declares no property for the i-th key: the Cypher fallback of an index created before any value existed. */
   private boolean isUndeclaredProperty(final int keyIndex) {
     final LSMTreeIndex main = mainIndex;
@@ -874,6 +1033,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return rids;
   }
 
+  /**
+   * The value of an entry that holds exactly one, or null when it holds several. Reads the value count and, only for a
+   * single-value entry, that one value: a removal marker is always written alone ({@link #writeEntrySingleValue}), so this
+   * tells whether an entry is a marker without deserializing the values of a multi-value put (issue #11935).
+   */
+  protected RID readSoleEntryValue(final Binary buffer) {
+    final int items = (int) serializer.deserializeValue(database, buffer, BinaryTypes.TYPE_INT, null);
+    return items == 1 ? readEntryValue(buffer) : null;
+  }
+
   private void readEntryValues(final Binary buffer, final List<RID> list) {
     final int items = (int) serializer.deserializeValue(database, buffer, BinaryTypes.TYPE_INT, null);
 
@@ -1034,6 +1203,57 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         if (keys[i] == null)
           throw new IllegalArgumentException(
               "Indexed key " + typeName + propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
+  }
+
+  /**
+   * What a lookup of one key does with each page the read path hands it. The walk feeds the pages newest first at every level
+   * (mutable pages, then the compacted series, see {@code searchInNonCompactedIndex}), which is the order the deletion markers are
+   * resolved in.
+   */
+  @FunctionalInterface
+  protected interface KeyLookupSink {
+    /**
+     * @return false to stop the walk
+     */
+    boolean onPage(BasePage page, Binary pageBuffer, int count);
+  }
+
+  /** The sink of a {@code get()}: the live entries of the key, as {@link IndexCursorEntry} objects. */
+  protected KeyLookupSink resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
+      final Set<IndexCursorEntry> set) {
+    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
+    final RidHashSet deletedRIDs = new RidHashSet();
+    return (page, pageBuffer, count) -> lookupInPageAndAddInResultset(page, pageBuffer, count, originalKeys, convertedKeys, limit,
+        set, removedKeys, deletedRIDs);
+  }
+
+  /**
+   * The sink of {@link LSMTreeIndex#getPostings}: every value of the key, decoded into primitives in the order the walk meets them,
+   * deletion markers included, for {@link LSMTreeIndexPostings#resolve()} to apply them (issue #12458). It stops at a key-wide
+   * deletion marker, which removes every older value of the key.
+   */
+  protected KeyLookupSink postingsSink(final Object[] convertedKeys, final LSMTreeIndexPostings postings) {
+    return (page, pageBuffer, count) -> {
+      final LookupResult result = lookupInPage(page.getPageId().getPageNumber(), count, pageBuffer, convertedKeys, 1);
+      if (!result.found)
+        return true;
+      // The values of a page are read oldest first, which is how LSMTreeIndexPostings expects a page's values
+      postings.startPage();
+      for (int i = 0; i < result.valueBeginPositions.length; ++i) {
+        pageBuffer.position(result.valueBeginPositions[i]);
+        // through the serializer as readEntryValues reads it: with data encryption on, the count is encrypted, the RIDs are not
+        final int items = (int) serializer.deserializeValue(database, pageBuffer, BinaryTypes.TYPE_INT, null);
+        for (int v = 0; v < items; ++v) {
+          // the layout of readEntryValue: a compressed RID, then the posting's statistics when the index stores them
+          final int bucketId = (int) pageBuffer.getNumber();
+          final long position = pageBuffer.getNumber();
+          final int tf = storeTermFrequency ? (int) pageBuffer.getUnsignedNumber() : 0;
+          final int docLength = storeTermFrequency ? (int) pageBuffer.getUnsignedNumber() : 0;
+          postings.addRaw(bucketId, position, tf, docLength);
+        }
+      }
+      return postings.endPage();
+    };
   }
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,

@@ -25,6 +25,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -106,6 +107,12 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     }
 
+    // The variable of an aggregating map projection is a grouping key the row does not carry (issue #12316): one group per
+    // value of it, so the projection reads it from a row of its own group. Not added again when it is projected bare.
+    for (final String variable : ImplicitGroupingKeys.of(returnClause.getReturnItems()))
+      if (!isProjectedBare(groupingKeys, variable))
+        groupingKeys.add(new GroupingKey(null, new VariableExpression(variable)));
+
     // Convert aggregation items to arrays for fast indexed access (avoids per-row HashMap lookups)
     final int aggCount = aggregationItems.size();
     final FunctionCallExpression[] aggExpressions = new FunctionCallExpression[aggCount];
@@ -140,6 +147,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       releaseHeap();
       throw e;
     }
+    // Every input row has made its writes by now: the records the groups hold are read as those writes left them (issue #12565)
+    WrittenCopy.resolveRows(context, results);
 
     return new ResultSet() {
       private int index = 0;
@@ -397,13 +406,23 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results = new ArrayList<>(groups.size());
     final long beginBuild = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      // A complex item reads the group's first row (h{.v, c: count(*)} reads h.v there): every input row has made its writes
+      // by now, so its records are read as those writes left them. The grouping keys were computed already (issue #12565)
+      if (!complexAggregationItems.isEmpty() && WrittenCopy.resolves(context)) {
+        final List<Result> representatives = new ArrayList<>(groups.size());
+        for (final GroupAggregators groupAgg : groups.values())
+          representatives.add(groupAgg.representativeRow);
+        WrittenCopy.resolveRows(context, representatives);
+      }
+
       for (final Map.Entry<GroupKeyValues, GroupAggregators> groupEntry : groups.entrySet()) {
         final GroupKeyValues keyValues = groupEntry.getKey();
         final GroupAggregators groupAgg = groupEntry.getValue();
         final ResultInternal groupResult = new ResultInternal();
 
         for (int i = 0; i < groupingKeys.size(); i++)
-          groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
+          if (groupingKeys.get(i).outputName != null)
+            groupResult.setProperty(groupingKeys.get(i).outputName, keyValues.values[i]);
 
         for (int i = 0; i < aggCount; i++)
           groupResult.setProperty(aggOutputNames[i], groupAgg.aggregatorArray[i].getAggregatedResult());
@@ -413,7 +432,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
           final Map<String, Object> overrides = new HashMap<>();
           for (final Map.Entry<String, StatelessFunction> funcEntry : innerFuncs.entrySet())
-            overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+            // the records collect() gathered, as the writes of every row left them (issue #12565)
+            overrides.put(funcEntry.getKey(), WrittenCopy.resolveValue(funcEntry.getValue().getAggregatedResult(), context));
           evaluator.setAggregationOverrides(overrides);
           try {
             final Object value = evaluator.evaluate(complexItem.expression, groupAgg.representativeRow, context);
@@ -430,6 +450,14 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         cost += System.nanoTime() - beginBuild;
     }
     return results;
+  }
+
+  /** Whether {@code variable} is already a grouping key as itself, {@code RETURN p, p{n: count(*)}}. */
+  private static boolean isProjectedBare(final List<GroupingKey> groupingKeys, final String variable) {
+    for (final GroupingKey key : groupingKeys)
+      if (key.expression instanceof VariableExpression bare && bare.getVariableName().equals(variable))
+        return true;
+    return false;
   }
 
   /**
@@ -585,70 +613,21 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
   }
 
   /**
-   * Recursively collects all aggregation FunctionCallExpressions from an expression tree.
+   * Collects every aggregate call nested in an expression tree, keyed by the call's text for deduplication, with a fresh
+   * function instance for each. The walk is the one {@link NestedAggregates} shares with the other aggregation step.
    */
   private void collectAggregations(final Expression expr,
       final Map<String, FunctionCallExpression> innerAggs,
       final Map<String, StatelessFunction> innerFunctions) {
-    if (expr == null)
-      return;
-    if (expr instanceof FunctionCallExpression funcExpr) {
-      if (funcExpr.isAggregation()) {
-        final String key = funcExpr.getText();
-        if (!innerAggs.containsKey(key)) {
-          innerAggs.put(key, funcExpr);
-          final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(funcExpr.getFunctionName(), funcExpr.isDistinct());
-          funcExpr.validateArity(innerFunction);
-          innerFunctions.put(key, innerFunction);
-        }
-        return;
+    NestedAggregates.forEach(expr, funcExpr -> {
+      final String key = funcExpr.getText();
+      if (!innerAggs.containsKey(key)) {
+        innerAggs.put(key, funcExpr);
+        final StatelessFunction innerFunction = functionFactory.getFunctionExecutor(funcExpr.getFunctionName(), funcExpr.isDistinct());
+        funcExpr.validateArity(innerFunction);
+        innerFunctions.put(key, innerFunction);
       }
-      for (final Expression arg : funcExpr.getArguments())
-        collectAggregations(arg, innerAggs, innerFunctions);
-    } else if (expr instanceof ArithmeticExpression arith) {
-      collectAggregations(arith.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(arith.getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListComprehensionExpression lce) {
-      collectAggregations(lce.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListPredicateExpression lpe) {
-      collectAggregations(lpe.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListExpression le) {
-      for (final Expression elem : le.getElements())
-        collectAggregations(elem, innerAggs, innerFunctions);
-    } else if (expr instanceof ComparisonExpressionWrapper cew) {
-      collectAggregations(cew.getComparison().getLeft(), innerAggs, innerFunctions);
-      collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof CaseExpression ce) {
-      collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
-      for (final CaseAlternative alt : ce.getAlternatives()) {
-        collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
-        collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
-      }
-      collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListSliceExpression lse) {
-      collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListIndexExpression lie) {
-      collectAggregations(lie.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(lie.getIndexExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ReduceExpression re) {
-      collectAggregations(re.getInitialValue(), innerAggs, innerFunctions);
-      collectAggregations(re.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof MapExpression me) {
-      for (final Expression value : me.getEntries().values())
-        collectAggregations(value, innerAggs, innerFunctions);
-    } else if (expr instanceof BooleanWrapperExpression bwe) {
-      collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof TernaryLogicalExpression logical) {
-      // AND, OR, XOR and NOT in expression position (issue #11597)
-      collectAggregations(logical.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(logical.getRight(), innerAggs, innerFunctions);
-    }
+    });
   }
 
-  private void collectBooleanAggregations(final BooleanExpression boolExpr,
-      final Map<String, FunctionCallExpression> innerAggs,
-      final Map<String, StatelessFunction> innerFunctions) {
-    BooleanWrapperExpression.forEachOperand(boolExpr, operand -> collectAggregations(operand, innerAggs, innerFunctions));
-  }
 }

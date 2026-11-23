@@ -19,12 +19,14 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.sql.graph.SQLFunctionAstar;
+import com.arcadedb.graph.EdgeWeight;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -33,9 +35,20 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: algo.dijkstra(startNode, endNode, relTypes, weightProperty)
+ * Procedure: algo.dijkstra(startNode, endNode, relTypesAndDirections, weightProperty, [defaultWeight])
  * <p>
  * Finds the shortest weighted path between two nodes using Dijkstra's algorithm.
+ * </p>
+ * <p>
+ * {@code relTypesAndDirections} is APOC's relationship pattern ({@code 'ROAD>|<RAIL'}, {@code '>'}, a blank one for every
+ * relationship), and the fifth argument APOC's {@code defaultWeight}, the weight of a relationship without a numeric weight
+ * (issue #12103). A text fifth argument is still read as the direction ArcadeDB took there before, applied to the alternatives
+ * without a direction marker.
+ * </p>
+ * <p>
+ * A default weight that is NaN is no default, and a relationship weighs 1 without a weight, as it did. One that is negative or
+ * infinite makes the relationships without a weight not walkable, as a stored weight of that kind is: Dijkstra settles a
+ * vertex for good the first time it reaches it, so a negative weight has no shortest path to give.
  * </p>
  * <p>
  * Example Cypher usage:
@@ -82,22 +95,32 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     final Vertex startNode = extractVertex(args[0], "startNode");
     final Vertex endNode = extractVertex(args[1], "endNode");
-    final String relType = extractString(args[2], "relTypes");
-    requireEdgeTypes(context.getDatabase(), relType);
+    final RelationshipPattern relTypes = extractRelationshipPattern(args[2], context);
     final String weightProperty = extractString(args[3], "weightProperty");
-    final String direction = extractString(argOrDefault(args, 4, "BOTH"), "direction");
 
-    // Build options map for edge type filtering
+    // APOC's defaultWeight; APOC defaults it to NaN, which leaves ArcadeDB's rule, an edge without a weight weighs 1
+    final Object fifth = argOrDefault(args, 4, null);
+    Vertex.DIRECTION unmarked = Vertex.DIRECTION.BOTH;
+    double missingWeight = EdgeWeight.MISSING;
+    if (fifth instanceof Number number) {
+      if (!Double.isNaN(number.doubleValue()))
+        missingWeight = number.doubleValue();
+    } else if (fifth instanceof String direction)
+      unmarked = parseDirection(direction);
+    else if (fifth != null)
+      throw new IllegalArgumentException(getName() + "(): the fifth argument is the default weight (a number) or the direction (IN, OUT or "
+          + "BOTH), got " + fifth.getClass().getSimpleName());
+
+    // the direction applies to the alternatives without a marker, a mixed pattern's included
+    final RelationshipPattern pattern = relTypes.withUnmarked(unmarked);
+
     final Map<String, Object> options = new HashMap<>();
     options.put("emptyIfMaxDepth", true);
-    if (direction != null && !direction.isEmpty())
-      options.put("direction", direction);
-    if (relType != null && !relType.isEmpty())
-      options.put("edgeTypeNames", new String[] { relType });
 
     // Use ArcadeDB's existing A* implementation (Dijkstra internally uses A*)
-    final SQLFunctionAstar astar = new SQLFunctionAstar();
-    final Object[] params = new Object[]{startNode, endNode, weightProperty, options};
+    final SQLFunctionAstar astar = new SQLFunctionAstar().setMissingWeight(missingWeight);
+    configureSearch(astar, options, pattern);
+    final Object[] params = new Object[] { startNode, endNode, weightProperty, options };
     final LinkedList<RID> pathRids = astar.execute(null, null, null, params, context);
 
     if (pathRids == null || pathRids.isEmpty())
@@ -105,7 +128,7 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
 
     // The A* implementation returns vertices only. Traverse the edges between consecutive
     // vertices to reconstruct the path's total weight and to expose the relationships.
-    final WeightedPath weighted = attachEdges(pathRids, relType, parseDirection(direction), weightProperty);
+    final WeightedPath weighted = attachEdges(pathRids, pattern, weightProperty, missingWeight);
 
     // Build path representation including edges
     final TraversalPath path = buildPath(weighted.ridsWithEdges(), context.getDatabase());

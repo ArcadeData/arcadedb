@@ -70,5 +70,10 @@ public class RollbackStatement extends SimpleExecStatement {
     return true;
   }
 
+  @Override
+  public boolean isTransactionControl() {
+    return true;
+  }
+
 }
 /* JavaCC - OriginalChecksum=7efe0306e0cec51e035d64cad02ebc30 (do not edit this line) */
