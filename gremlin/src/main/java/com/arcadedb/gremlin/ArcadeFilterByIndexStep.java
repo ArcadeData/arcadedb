@@ -177,9 +177,10 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
    * Opens the cursor, or returns null when no key can satisfy the predicate. A bound no key of an integral index equals (29.5)
    * is moved onto the key that bounds the same keys, inclusive (the {@code HasStep} after the step re-checks the exact
    * predicate): the index would otherwise truncate it toward zero and drop a match for {@code lt} above zero and {@code gt}
-   * below zero (#9206). A strict bound at zero is read inclusive too: Gremlin orders -0.0 below 0 and 0.0, as
-   * {@link Double#compare} does, where the index reads every zero as one key, so {@code gt(-0.0)} skipped the 0 of an integral
-   * index and {@code lt(0)} the -0.0 of a floating one (#12027).
+   * below zero (#9206). A strict bound at zero that the entries of the zero key can satisfy is read inclusive too (#12027): Gremlin
+   * orders -0.0 below 0 and 0.0, as {@link Double#compare} does, where the index reads every zero as one key, so {@code gt(-0.0)}
+   * skipped the 0 of an integral index and {@code lt(0)} the -0.0 of a floating one. See
+   * {@link #isStrictBoundReadingTheZeroKey}.
    */
   private IndexCursor openCursor(final TypeIndex index) {
     if (predicate == Compare.eq)
@@ -190,7 +191,8 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     Object[] bound = keys;
 
     final Type[] keyTypes = index.getKeyTypes();
-    final byte leadingKeyType = IntegralKeyBound.binaryTypeOf(keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null);
+    final Type leadingType = keyTypes != null && keyTypes.length > 0 ? keyTypes[0] : null;
+    final byte leadingKeyType = IntegralKeyBound.binaryTypeOf(leadingType);
     // isInexact is true only for a Number, so the cast below is safe
     if (bound.length > 0 && IntegralKeyBound.isInexact(leadingKeyType, bound[0])) {
       final Number mapped = lowerBound ?
@@ -201,13 +203,34 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
       bound = bound.clone();
       bound[0] = mapped;
       inclusive = true;
-    } else if (!inclusive && bound.length > 0 && isZero(bound[0]))
+    } else if (!inclusive && bound.length > 0 && isStrictBoundReadingTheZeroKey(lowerBound, bound[0], leadingType))
       inclusive = true;
     return index.iterator(lowerBound, bound, inclusive);
   }
 
-  private static boolean isZero(final Object value) {
-    return value instanceof Number number && number.doubleValue() == 0.0;
+  /**
+   * Whether a strict bound at zero must be opened inclusive. Gremlin orders -0.0 below 0 and 0.0 ({@link Double#compare}), while
+   * the index holds the integer 0, 0.0 and -0.0 under one key, so the entries of the zero key can satisfy the strict predicate
+   * even though the bound lands on that very key. Only two bounds can have them do so, and every other strict bound at zero keeps
+   * the exclusive cursor, which matters because a candidate costs a record load before the {@code HasStep} drops it, and
+   * {@code gt(0)} and {@code lt(0)} are the common predicates:
+   * <ul>
+   *   <li>{@code gt} of a negative zero, whatever the key type: the 0 or the 0.0 of the zero key is above -0.0;</li>
+   *   <li>{@code lt} of a zero that is not negative, when the key type is floating (or not known) and so can hold a -0.0: it is
+   *   below 0. An integral key cannot hold one, and the 0 it holds is not below anything at zero.</li>
+   * </ul>
+   * A bound is read by its double value, so a decimal too small for a double, which the key conversion makes a zero as well, is a
+   * zero here with the sign it has.
+   */
+  private static boolean isStrictBoundReadingTheZeroKey(final boolean lowerBound, final Object bound, final Type leadingType) {
+    if (!(bound instanceof Number number))
+      return false;
+    final double value = number.doubleValue();
+    if (value != 0.0)
+      return false;
+    if (Double.doubleToRawLongBits(value) < 0)
+      return lowerBound;
+    return !lowerBound && (leadingType == null || leadingType == Type.DOUBLE || leadingType == Type.FLOAT);
   }
 
   /**
