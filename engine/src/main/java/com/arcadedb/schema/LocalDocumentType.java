@@ -3919,14 +3919,16 @@ public class LocalDocumentType implements DocumentType {
    */
   private void createSubIndexesFor(final TypeIndex index, final boolean sharesCallerTransaction, final List<Index> created,
       final List<Index> toBuild) {
+    // THIS type's buckets and, deduplicated, the ones of every type below it: the list a polymorphic read of this type walks
     final List<Bucket> subtreeBuckets = cachedPolymorphicBuckets;
     for (int i = 0; i < subtreeBuckets.size(); i++) {
       final Bucket bucket = subtreeBuckets.get(i);
-      final LocalDocumentType owner = schema.getBucketOwner(bucket.getFileId());
+      final LocalDocumentType bucketOwner = schema.getBucketOwner(bucket.getFileId());
+      // The sub-indexes of a sub type's bucket are bound to the sub type, not to this one, so it is the one to ask
+      final LocalDocumentType carrier = bucketOwner != null ? bucketOwner : this;
 
       boolean alreadyCreated = false;
-      for (final IndexInternal idx : (owner != null ? owner : this).getPolymorphicBucketIndexByBucketId(bucket.getFileId(),
-          index.getPropertyNames())) {
+      for (final IndexInternal idx : carrier.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
         final TypeIndex typeIndex = idx.getTypeIndex();
         if (typeIndex != null && typeIndex.equals(index)) {
           alreadyCreated = true;

@@ -95,9 +95,9 @@ class SuperTypeSubtreeIndexPropagationTest extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class)//
         .hasMessageContaining("w1");
 
-    assertRefusedAndUndone();
+    assertSubtreeIsNotUnderTheSuperType();
     reopenDatabase();
-    assertRefusedAndUndone();
+    assertSubtreeIsNotUnderTheSuperType();
   }
 
   @Test
@@ -115,7 +115,7 @@ class SuperTypeSubtreeIndexPropagationTest extends TestHelper {
         .isInstanceOf(DuplicatedKeyException.class)//
         .hasMessageContaining("k");
 
-    assertRefusedAndUndone();
+    assertSubtreeIsNotUnderTheSuperType();
   }
 
   @Test
@@ -178,6 +178,92 @@ class SuperTypeSubtreeIndexPropagationTest extends TestHelper {
         .containsExactlyInAnyOrder("W", "A", "X", "Y");
   }
 
+  /** The build joins the caller's transaction when that transaction wrote only into the bucket of a sub type of the joining one. */
+  @Test
+  void recordOfASubTypeWrittenInTheCallersTransactionIsIndexed() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.s STRING");
+    database.command("sql", "CREATE INDEX ON W (s) UNIQUE");
+    createSubtree();
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO X SET s = 'x1'");
+      database.getSchema().getType("A").addSuperType("W");
+      // the caller reads its own write through the index, not only after the commit
+      assertThat(keyRids("W[s]", "x1")).hasSize(1);
+    });
+
+    assertCallersRecordIsIndexed();
+    reopenDatabase();
+    assertCallersRecordIsIndexed();
+  }
+
+  /** A caller that rolls back loses its record and its entry, and leaves the sub-indexes of the whole subtree in place and usable. */
+  @Test
+  void rollbackOfTheCallerLeavesTheSubIndexesOfTheSubtreeUsable() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.s STRING");
+    database.command("sql", "CREATE INDEX ON W (s) UNIQUE");
+    createSubtree();
+
+    database.begin();
+    database.command("sql", "INSERT INTO X SET s = 'x1'");
+    database.getSchema().getType("A").addSuperType("W");
+    database.rollback();
+
+    assertThat(database.countType("X", false)).isZero();
+    assertThat(database.getSchema().getIndexByName("W[s]").countEntries()).isZero();
+    assertThat(subIndexBucketNames("W[s]")).contains(bucketOf("A"), bucketOf("X"), bucketOf("Y"));
+
+    database.transaction(() -> database.command("sql", "INSERT INTO X SET s = 'x1'"));
+    assertCallersRecordIsIndexed();
+  }
+
+  /** The reverse operation takes the sub-indexes of the sub types' buckets away too, and the constraint of the super type with them. */
+  @Test
+  void removingTheSuperTypeAgainTakesTheSubIndexesOfTheWholeSubtreeAway() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.s STRING");
+    database.command("sql", "CREATE INDEX ON W (s) UNIQUE");
+    createSubtree();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO W SET s = 'w1'");
+      database.command("sql", "INSERT INTO X SET s = 'x1'");
+    });
+    database.command("sql", "ALTER TYPE A SUPERTYPE +W");
+    assertThat(subIndexBucketNames("W[s]")).contains(bucketOf("W"), bucketOf("A"), bucketOf("X"), bucketOf("Y"));
+
+    database.command("sql", "ALTER TYPE A SUPERTYPE -W");
+
+    assertSubtreeIsNotUnderTheSuperType();
+    // the key of W is free again for the subtree
+    database.transaction(() -> database.command("sql", "INSERT INTO Y SET s = 'w1'"));
+    reopenDatabase();
+    assertSubtreeIsNotUnderTheSuperType();
+  }
+
+  /** A sub type that already carries the index through another super type keeps the one sub-index it has. */
+  @Test
+  void subTypeThatAlreadyCarriesTheIndexThroughAnotherSuperTypeGetsNoSecondSubIndex() {
+    database.command("sql", "CREATE VERTEX TYPE W");
+    database.command("sql", "CREATE PROPERTY W.s STRING");
+    database.command("sql", "CREATE INDEX ON W (s) UNIQUE");
+    database.command("sql", "CREATE VERTEX TYPE A");
+    database.command("sql", "CREATE VERTEX TYPE X EXTENDS A");
+    database.getSchema().getType("X").addSuperType("W");
+    assertThat(subIndexCountOnBucket("W[s]", bucketOf("X"))).isEqualTo(1);
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO A SET s = 'a1'");
+      database.command("sql", "INSERT INTO X SET s = 'x1'");
+    });
+
+    database.command("sql", "ALTER TYPE A SUPERTYPE +W");
+
+    assertDiamondHasOneSubIndexPerBucket();
+    reopenDatabase();
+    assertDiamondHasOneSubIndexPerBucket();
+  }
+
   /** A, X EXTENDS A, Y EXTENDS X: a subtree two levels deep below the type that joins. */
   private void createSubtree() {
     database.command("sql", "CREATE VERTEX TYPE A");
@@ -201,7 +287,25 @@ class SuperTypeSubtreeIndexPropagationTest extends TestHelper {
     }
   }
 
-  private void assertRefusedAndUndone() {
+  private void assertCallersRecordIsIndexed() {
+    assertThat(keyRids("W[s]", "x1")).hasSize(1);
+    assertThat(subIndexBucketNames("W[s]")).contains(bucketOf("A"), bucketOf("X"), bucketOf("Y"));
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO Y SET s = 'x1'")))//
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  private void assertDiamondHasOneSubIndexPerBucket() {
+    for (final String type : List.of("A", "X"))
+      assertThat(subIndexCountOnBucket("W[s]", bucketOf(type))).as("sub-indexes on the bucket of " + type).isEqualTo(1);
+
+    assertThat(keyRids("W[s]", "a1")).hasSize(1);
+    assertThat(keyRids("W[s]", "x1")).hasSize(1);
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO X SET s = 'a1'")))//
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  /** The subtree is not under W: not a sub type of it, and no sub-index of W's index on any of its buckets. */
+  private void assertSubtreeIsNotUnderTheSuperType() {
     assertThat(database.getSchema().getType("A").isSubTypeOf("W")).isFalse();
     assertThat(database.getSchema().getType("Y").isSubTypeOf("W")).isFalse();
     assertThat(subIndexBucketNames("W[s]")).containsExactly(bucketOf("W"));
@@ -213,6 +317,15 @@ class SuperTypeSubtreeIndexPropagationTest extends TestHelper {
 
   private String bucketOf(final String type) {
     return database.getSchema().getType(type).getBuckets(false).getFirst().getName();
+  }
+
+  private long subIndexCountOnBucket(final String indexName, final String bucketName) {
+    final int bucketId = database.getSchema().getBucketByName(bucketName).getFileId();
+    long count = 0;
+    for (final IndexInternal idx : ((TypeIndex) database.getSchema().getIndexByName(indexName)).getIndexesOnBuckets())
+      if (idx.getAssociatedBucketId() == bucketId)
+        count++;
+    return count;
   }
 
   private Set<String> subIndexBucketNames(final String indexName) {
