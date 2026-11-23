@@ -51,6 +51,7 @@ import java.util.logging.Level;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class ProtoUtils {
@@ -400,12 +401,17 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, tsToMillis(ts));
     }
     case LIST_VALUE: {
-      var out = new ArrayList<>();
-      for (GrpcValue e : v.getListValue().getValuesList())
+      final List<GrpcValue> values = v.getListValue().getValuesList();
+      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it. Decoded
+      // straight from the wire values: no list of boxed numbers is built first
+      final Object array = GrpcArrayCodec.toArray(values, v.getLogicalType());
+      if (array != null)
+        return dbgDec("fromGrpcValue", v, array);
+
+      var out = new ArrayList<>(values.size());
+      for (GrpcValue e : values)
         out.add(fromGrpcValue(e));
-      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it
-      final Object array = GrpcArrayCodec.toArray(out, v.getLogicalType());
-      return dbgDec("fromGrpcValue", v, array != null ? array : out);
+      return dbgDec("fromGrpcValue", v, out);
     }
     case MAP_VALUE: {
       var out = new LinkedHashMap<String, Object>();

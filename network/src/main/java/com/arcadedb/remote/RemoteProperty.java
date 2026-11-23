@@ -45,10 +45,11 @@ public class RemoteProperty extends AbstractProperty {
   }
 
   /**
-   * The type schema:types names. The server writes the constant's name ({@code ARRAY_OF_LONGS}), which
-   * {@link Type#getTypeByName} does not know for the five array types, whose declared name is {@code Long[]} and the like:
-   * such a property had no type on the client, so its values kept the list the JSON parser built instead of being read as the
-   * primitive array they are (issue #12189).
+   * The type a {@code schema:types} entry names, or null when the name is missing or unknown. The server writes the name of the
+   * constant ({@code ARRAY_OF_LONGS}), which {@link Type#getTypeByName} does not know for the five array types, whose declared
+   * name is {@code Long[]} and the like: such a property had no type on the client, so its values kept the list the JSON parser
+   * built instead of being read as the primitive array they are (issue #12189). The one place that resolves the name, for the
+   * constructor and for {@link #describes}.
    */
   static Type typeOf(final String name) {
     if (name == null)
@@ -131,11 +132,12 @@ public class RemoteProperty extends AbstractProperty {
   /**
    * Whether this is the property {@code entry} of a {@code schema:types} record describes. The id and the type of a
    * property are fixed when it is built, so an entry that carries another type describes a property dropped and declared
-   * again under the same name, and this instance must not stand for it (issue #12188).
+   * again under the same name, and this instance must not stand for it (issue #12188). The type name is resolved by
+   * {@link #typeOf}, as the constructor did: {@link Type#getTypeByName} answers null for the constant name of an array type, so
+   * comparing against it would make every {@code ARRAY_OF_*} property a different declaration on each reload (issue #12189).
    */
   boolean describes(final Map<String, Object> entry) {
-    return entry.get("id") instanceof Integer entryId && entryId == id
-        && type == Type.getTypeByName((String) entry.get("type"));
+    return entry.get("id") instanceof Integer entryId && entryId == id && type == typeOf((String) entry.get("type"));
   }
 
   void reload(final Map<String, Object> entry) {

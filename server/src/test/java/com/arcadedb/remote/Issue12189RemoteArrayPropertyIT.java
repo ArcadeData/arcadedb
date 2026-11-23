@@ -35,6 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #12189: a property declared ARRAY_OF_SHORTS/INTEGERS/LONGS/FLOATS/DOUBLES read from a record through the remote client
  * was an ArrayList of whatever the JSON parser built, while the embedded API (and a projection of the same property) returns the
  * primitive array: the five array types had no type on the client.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12189RemoteArrayPropertyIT extends BaseGraphServerTest {
   private RemoteDatabase database;

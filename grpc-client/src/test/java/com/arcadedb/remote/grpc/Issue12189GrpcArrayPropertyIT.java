@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #12189 over gRPC: an ARRAY_OF_* property reached the client as an ArrayList of boxed numbers, on a record read and on a
  * projection alike, where the embedded API returns the primitive array. The server now tags a primitive array's list with its
  * class and the client decodes it back to the array.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12189GrpcArrayPropertyIT extends BaseGrpcClientServerTest {
   private RemoteGrpcServer   grpcServer;
@@ -64,17 +66,14 @@ class Issue12189GrpcArrayPropertyIT extends BaseGrpcClientServerTest {
     }
   }
 
+  // one method, so the client is closed before the server goes down
   @AfterEach
-  void closeClient() {
+  @Override
+  public void endTest() {
     if (grpc != null)
       grpc.close();
     if (grpcServer != null)
       grpcServer.close();
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
     super.endTest();
   }
