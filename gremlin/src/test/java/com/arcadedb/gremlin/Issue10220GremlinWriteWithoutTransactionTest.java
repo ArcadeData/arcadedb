@@ -398,6 +398,35 @@ class Issue10220GremlinWriteWithoutTransactionTest {
     }
   }
 
+  /**
+   * The context of the thread is one object, reused by every transaction it begins: the caller who commits the transaction the read
+   * opened and begins one of its own, while the result is still open, must find it alive and its write kept when the result ends.
+   */
+  @Test
+  void aReadDoesNotEndATransactionTheCallerBeganAfterCommittingTheOneTheReadOpened() throws Exception {
+    final ResultSet rs = database.command("gremlin", "g.V().limit(1)");
+    try {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(database.isTransactionActive()).as("the read opened its transaction").isTrue();
+
+      database.commit();
+      database.begin();
+      database.newVertex("N").set("k", "callers").save();
+
+      while (rs.hasNext())
+        rs.next();
+      rs.close();
+
+      assertThat(database.isTransactionActive()).as("the caller's transaction is still there").isTrue();
+      database.commit();
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    assertThat(committedCount("callers")).as("the caller's write survived the end of the result").isEqualTo(1);
+  }
+
   private void readToTheEnd(final String gremlin) {
     try (final ResultSet rs = database.command("gremlin", gremlin)) {
       while (rs.hasNext())

@@ -21,6 +21,7 @@ package com.arcadedb.gremlin.query;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.NeedRetryException;
@@ -254,9 +255,12 @@ public class GremlinQueryEngine implements QueryEngine {
   /**
    * The rows of a read, which ends the transaction the traversal opened for itself. The thread held none when the statement began, so
    * a transaction that is open after a pull (or after the statement was evaluated) and was not open before it, was opened by the
-   * traversal: it belongs to this result, and is rolled back when the rows are exhausted, when a pull fails, or when the result is
-   * closed. A transaction the caller begins between two pulls is the caller's: it is open before the pull, so it is never claimed, and
-   * a result closed or exhausted on another thread than the one whose transaction it claimed leaves that one alone.
+   * traversal: it belongs to this result, which keeps its identity ({@code TransactionContext.getBeginSequence()}, unique to every
+   * begin) and rolls back exactly that transaction when the rows are exhausted, when a pull fails, or when the result is closed.
+   * <p>
+   * What is not that transaction is never touched: one the caller begins between two pulls is open before the pull, so it is never
+   * claimed; one the caller begins after committing the claimed transaction has another identity, even though the context of the
+   * thread is the same object; and a result closed on another thread finds no such transaction there.
    * <p>
    * While no transaction was claimed, a pull costs two lookups of the transaction of the thread.
    *
@@ -265,8 +269,8 @@ public class GremlinQueryEngine implements QueryEngine {
   private static final class TransactionEndingResultSet implements ResultSet {
     private final DatabaseInternal database;
     private final ResultSet        delegate;
-    // THE THREAD WHOSE TRANSACTION THE TRAVERSAL OPENED, NULL WHILE IT OPENED NONE
-    private       Thread           owner;
+    // THE IDENTITY OF THE TRANSACTION THE TRAVERSAL OPENED, -1 WHILE IT OPENED NONE
+    private       long             ownedSequence = -1L;
 
     private TransactionEndingResultSet(final DatabaseInternal database, final ResultSet delegate) {
       this.database = database;
@@ -277,7 +281,7 @@ public class GremlinQueryEngine implements QueryEngine {
 
     @Override
     public boolean hasNext() {
-      final boolean openBefore = owner != null || database.isTransactionActive();
+      final boolean openBefore = ownedSequence >= 0L || database.isTransactionActive();
       boolean hasNext = false;
       try {
         hasNext = delegate.hasNext();
@@ -292,7 +296,7 @@ public class GremlinQueryEngine implements QueryEngine {
 
     @Override
     public Result next() {
-      final boolean openBefore = owner != null || database.isTransactionActive();
+      final boolean openBefore = ownedSequence >= 0L || database.isTransactionActive();
       boolean failed = true;
       try {
         final Result next = delegate.next();
@@ -325,15 +329,25 @@ public class GremlinQueryEngine implements QueryEngine {
     }
 
     private void claimIfOpened(final boolean openBefore) {
-      if (!openBefore && owner == null && database.isTransactionActive())
-        owner = Thread.currentThread();
+      if (!openBefore) {
+        final TransactionContext tx = database.getTransactionIfExists();
+        // -1 WHEN NO TRANSACTION IS ACTIVE
+        final long sequence = tx != null ? tx.getBeginSequence() : -1L;
+        if (sequence >= 0L)
+          ownedSequence = sequence;
+      }
     }
 
     private void end() {
-      if (owner == Thread.currentThread()) {
-        owner = null;
-        endTransaction(database);
-      }
+      if (ownedSequence < 0L)
+        return;
+
+      final long sequence = ownedSequence;
+      ownedSequence = -1L;
+      // STILL THE TRANSACTION THE TRAVERSAL OPENED: THE CALLER MAY HAVE COMMITTED IT AND BEGUN ANOTHER ONE
+      final TransactionContext tx = database.getTransactionIfExists();
+      if (tx != null && tx.getBeginSequence() == sequence)
+        database.rollback();
     }
   }
 }
