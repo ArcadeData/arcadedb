@@ -25,6 +25,7 @@ import org.testcontainers.containers.GenericContainer;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The same suites run against the JVM image and the native one, so the server must be configured in a way both read:
@@ -93,5 +94,20 @@ class ContainersTestTemplateTest {
       Metrics.removeRegistry(template.loggingMeterRegistry);
       Metrics.removeRegistry(template.cumulativeMeterRegistry);
     }
+  }
+
+  /**
+   * A container that was never started, or that a test stopped (stop() removes it), has no inspect info, and
+   * {@link GenericContainer#getContainerName()} then throws a NullPointerException. The log dump runs in the finally
+   * block of the failover tests, right after a container was killed on purpose, so a throwing label replaced the test's
+   * real failure with that NPE.
+   */
+  @Test
+  void containerLabelOfAContainerWithNoInspectInfoDoesNotThrow() {
+    final GenericContainer<?> container = new GenericContainer<>("arcadedata/arcadedb:latest").withNetworkAliases("arcadedb-1");
+    // the state that made the label throw: no inspect info behind the name
+    assertThatThrownBy(container::getContainerName).isInstanceOf(NullPointerException.class);
+    assertThat(ContainersTestTemplate.containerLabel(container, 1)).isEqualTo("arcadedb-1");
+    assertThat(ContainersTestTemplate.containerLabel(new GenericContainer<>("arcadedata/arcadedb:latest"), 2)).isEqualTo("container-2");
   }
 }

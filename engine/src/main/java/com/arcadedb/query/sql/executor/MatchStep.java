@@ -111,7 +111,11 @@ public class MatchStep extends AbstractExecutionStep {
       guard.check();
       if (traverser != null && traverser.hasNext(context)) {
         nextResult = traverser.next(context);
-        break;
+        // null: a candidate whose end point disagrees with the alias an earlier hop bound (a hop that closes a cycle). It is skipped, as the
+        // loop below skips it, not taken for the end of the stream
+        if (nextResult != null)
+          break;
+        continue;
       }
 
       if (upstream == null || !upstream.hasNext()) {
@@ -166,7 +170,7 @@ public class MatchStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("  ");
     result.append("{").append(edge.edge.out.alias).append("}");
-    result.append(edge.edge.item.getMethod());
+    edge.edge.item.traversalToString(null, result);
     result.append("{").append(edge.edge.in.alias).append("}");
     return result.toString();
   }

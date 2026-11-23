@@ -36,4 +36,15 @@ public interface PageVersionReservations {
    * copy is current
    */
   int reservedVersion(PageId pageId);
+
+  /**
+   * Called once by the first phase of a leader commit, when it holds every file lock it is going to take and before it
+   * reads the version of its first page. An authority whose own assignments must not interleave with this commit's checks
+   * and with the publication that follows them takes its lock here (issue #11921): after the file locks, so the order is
+   * the one an ordinary commit follows, and before the first local version is read, so no page is checked against a copy
+   * the authority has moved since. Nothing to do by default.
+   */
+  default void beforeVersionChecks() {
+    // NO LOCK OF ITS OWN TO TAKE: THE RESERVATIONS ALONE ORDER THE COMMIT
+  }
 }

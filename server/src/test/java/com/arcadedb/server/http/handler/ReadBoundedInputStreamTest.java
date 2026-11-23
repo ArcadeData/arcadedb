@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code BodyHandlers.ofInputStream}, which has no per-read timeout, so a leader that sent its headers and then
  * stalled parked the follower's worker thread indefinitely. {@link ReadBoundedInputStream} bounds every read.
  * <p>
- * The end-to-end reachability of this class from the relay is {@code Issue7738StreamingBatchRelayReadDeadlineTest}.
+ * The end-to-end reachability of this class from the relay is {@code LeaderForwardStreamedRelayTest.StreamingRelayReadDeadline}.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

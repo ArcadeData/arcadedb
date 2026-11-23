@@ -54,6 +54,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IPAddressBlocklist;
 import com.arcadedb.utility.SystemVariableResolver;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -87,6 +88,7 @@ import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
+import java.util.zip.ZipException;
 
 /**
  * The server's control plane: the administrative operations that do not depend on the transport
@@ -204,7 +206,7 @@ public class ServerControlPlane {
    * {@code ArcadeDbGrpcAdminService}.
    * <p>
    * <b>Reported, not thrown</b>, because the older contract this had to be reconciled with is the stronger one:
-   * {@code Issue7401ServerControlPlaneConnectClusterTest.aFailingUsersSeedDoesNotFailTheJoin} pins that the join
+   * {@code ConnectClusterTest.Outcomes#aFailingUsersSeedDoesNotFailTheJoin} pins that the join
    * does not fail on a seed, and it must not - by the time the seed runs the peer is a committed member, and a
    * caller that retried a failed join would be retrying something that already happened. A return value says
    * "the join happened AND part of the follow-up did not" without ever saying the join failed, which an
@@ -458,6 +460,18 @@ public class ServerControlPlane {
     if (criticalHalt != null)
       return "Replication state machine has halted after a critical error on this node " + criticalHalt
           + ". It applies no further entries and does not recover in place: restart this node.";
+
+    // Issue #12552: the same kind of stop, which the HA layer may still clear by itself (a restart that succeeds, a stuck
+    // close that ends). Outside the readinessRequiresHA gate for the reason the halt is: the node is not behind.
+    final String replicationFailure = haReplicationFailure();
+    if (replicationFailure != null)
+      return "Replication has stopped on this node and is not being recovered: " + replicationFailure;
+
+    // Issue #12552: a client listener thread that died (an OutOfMemoryError is enough) leaves its port closed or
+    // accepting connections nobody answers, while the rest of the server stays up.
+    final String listenerFailure = listenerFailure();
+    if (listenerFailure != null)
+      return listenerFailure;
 
     // Checked here for the same reason and on the same terms as the log failure above (issue #7519): the
     // readinessRequiresHA gate below is about a node that is BEHIND the cluster, and this node is not behind -
@@ -796,6 +810,59 @@ public class ServerControlPlane {
       return ha.getCriticalHaltReason();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Cannot read the HA critical-halt signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's description of a replication that stopped and is not being recovered, or {@code null} (issue #12552).
+   * Reads {@link HAServerPlugin#getReplicationFailureReason()}, with the defensiveness of {@link #haCriticalHalt()}.
+   */
+  private String haReplicationFailure() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getReplicationFailureReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the HA replication-failure signal for the readiness probe",
+          e);
+      return null;
+    }
+  }
+
+  /**
+   * The first client listener thread found dead, the HTTP server's or a plugin's, or {@code null} (issue #12552). A
+   * plugin that throws is skipped: a signal that cannot be read is treated as absent, as for the HA signals above.
+   */
+  private String listenerFailure() {
+    final HttpServer http = server.getHttpServer();
+    if (http != null) {
+      final String failure = listenerFailureOf(http);
+      if (failure != null)
+        return failure;
+    }
+    final Collection<ServerPlugin> plugins;
+    try {
+      plugins = server.getPlugins();
+    } catch (final RuntimeException e) {
+      // No plugin manager (a server that was never started): no plugin listener to report
+      return null;
+    }
+    for (final ServerPlugin plugin : plugins) {
+      final String failure = listenerFailureOf(plugin);
+      if (failure != null)
+        return failure;
+    }
+    return null;
+  }
+
+  private String listenerFailureOf(final ServerPlugin plugin) {
+    try {
+      return plugin.getListenerFailure();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the listener state of '%s' for the readiness probe", e,
+          plugin.getName());
       return null;
     }
   }
@@ -1902,9 +1969,25 @@ public class ServerControlPlane {
     server.checkDatabaseNameIsValid(databaseName);
   }
 
+  /** Whether a file of a database's backup folder is an archive the backup commands address: any .zip, see {@link #resolveBackupFile}. */
   private static boolean isBackupArchive(final Path p) {
-    final String name = p.getFileName().toString();
-    return name.endsWith(".zip") && name.contains("-backup-");
+    return p.getFileName().toString().endsWith(".zip");
+  }
+
+  /**
+   * Whether a failure of the restore says the archive itself cannot be read, which is a bad input the caller chose (issue #12406),
+   * where an I/O failure of the server's own disk is not. Two shapes say it: a zip that ends early or is not a zip
+   * ({@link ZipException}, {@link EOFException}), and the restorer's own refusal of the archive, a {@code RestoreException} with no
+   * cause anywhere below it ("the archive is incomplete", "carries no usable schema", "does not exist"): the restorer wraps a failure
+   * it did not expect with its cause, and that one stays a server fault. The restorer is reached by reflection, as everywhere in this
+   * class, so the type is read by name.
+   */
+  private static boolean isUnreadableArchive(final Throwable failure) {
+    for (Throwable t = failure; t != null; t = t.getCause())
+      if (t instanceof ZipException || t instanceof EOFException || (t.getCause() == null
+          && "com.arcadedb.integration.restore.RestoreException".equals(t.getClass().getName())))
+        return true;
+    return false;
   }
 
   /**
@@ -1994,7 +2077,7 @@ public class ServerControlPlane {
 
   public JSONObject deleteBackup(final String databaseName, final String fileName) {
     if (databaseName.isEmpty() || fileName.isEmpty())
-      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+      throw new BackupRefusedException("Usage: delete backup <database> <fileName>");
 
 
     final Path backupFile = resolveBackupFile(databaseName, fileName);
@@ -2023,20 +2106,23 @@ public class ServerControlPlane {
   public Path resolveBackupFile(final String databaseName, final String fileName) {
     requireBackupDatabaseName(databaseName);
 
-    // Reject anything that is not a plain backup file name.
+    // Reject anything that is not a plain archive name: the database's backup folder is the boundary, so any .zip directly in it is
+    // an archive the backup commands address, whatever its name. The SQL BACKUP DATABASE statement lets the caller choose the name,
+    // and the reference says what it writes is visible to list/delete/restore backup (issue #12405). Retention keeps its own
+    // "-backup-" rule, so an archive named by hand is never pruned.
     if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..") || fileName.isBlank()
-        || !fileName.endsWith(".zip") || !fileName.contains("-backup-"))
-      throw new IllegalArgumentException("Invalid backup file name: " + fileName);
+        || !fileName.endsWith(".zip"))
+      throw new BackupRefusedException("Invalid backup file name: " + fileName);
 
     final Path dbBackupDir = resolveBackupDirectory().resolve(databaseName).normalize();
     final Path resolved = dbBackupDir.resolve(fileName).normalize();
 
     // Defence in depth: the resolved file must still live inside the database backup directory.
     if (!resolved.startsWith(dbBackupDir))
-      throw new IllegalArgumentException("Invalid backup file path");
+      throw new BackupRefusedException("Invalid backup file path");
 
     if (!Files.exists(resolved) || !Files.isRegularFile(resolved))
-      throw new IllegalArgumentException("Backup file not found: " + fileName);
+      throw new BackupRefusedException("Backup file not found: " + fileName);
 
     return resolved;
   }
@@ -2338,7 +2424,7 @@ public class ServerControlPlane {
    */
   public void restoreDatabase(final String databaseName, final String url, final ProgressListener listener) {
     if (databaseName == null || databaseName.isEmpty() || url == null || url.isEmpty())
-      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+      throw new BackupRefusedException("Usage: restore database <name> <url>");
 
     validateClientRestoreImportUrl(url);
 
@@ -2386,7 +2472,7 @@ public class ServerControlPlane {
       final boolean overwrite, final ProgressListener listener) {
     if (databaseName == null || databaseName.isEmpty() || fileName == null || fileName.isEmpty()
         || targetDatabase == null || targetDatabase.isEmpty())
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     // The target is a caller-supplied name that becomes a directory under SERVER_DATABASE_DIRECTORY,
     // exactly as 'restore database' name is; validating only the latter left this one able to escape
@@ -2432,7 +2518,7 @@ public class ServerControlPlane {
       final String refusal) {
     synchronized (server.getDatabasesLock()) {
       if (databaseNameIsTaken(databaseName, dbPath) && !overwrite)
-        throw new IllegalArgumentException(refusal);
+        throw new BackupRefusedException(refusal);
 
       server.reserveDatabaseNameForRestore(databaseName);
     }
@@ -2695,6 +2781,12 @@ public class ServerControlPlane {
         clazz.getMethod("restoreDatabase").invoke(restorer);
       } catch (final InvocationTargetException e) {
         FileUtils.deleteRecursively(tempDir);
+        // An archive that ends early or is not a zip is a bad input the caller chose, not a fault of the server (issue #12406). The
+        // label is fixed text: the restorer's own message names the server's file path, which production mode keeps out of the
+        // answer, and it travels as the cause, in 'detail' where the mode allows it
+        if (isUnreadableArchive(e.getTargetException()))
+          throw new BackupRefusedException("Invalid backup archive: it cannot be read as a database backup, it may be truncated,"
+              + " corrupt or not a backup", e.getTargetException());
         throw new CommandExecutionException("Error restoring database", e.getTargetException());
       } catch (final ReflectiveOperationException e) {
         FileUtils.deleteRecursively(tempDir);

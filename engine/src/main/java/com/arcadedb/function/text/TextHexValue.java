@@ -21,12 +21,18 @@ package com.arcadedb.function.text;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.HexFormat;
+
 /**
- * text.hexValue(value) - Convert to hexadecimal string.
+ * text.hexValue(value) - Upper-case hexadecimal of a number, zero-padded as {@code apoc.text.hexValue} pads it (issue #12104): 4 digits
+ * up to 0xFFFF, 8 digits up to 0xFFFFFFFF and for a negative number in the int range (two's complement: -1 is {@code 'FFFFFFFF'}),
+ * 16 digits for the rest. A string is written one UTF-16 unit at a time and a byte array one byte at a time.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextHexValue extends AbstractTextFunction {
+  private static final HexFormat HEX = HexFormat.of().withUpperCase();
+
   @Override
   protected String getSimpleName() {
     return "hexValue";
@@ -44,7 +50,7 @@ public class TextHexValue extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Convert value to hexadecimal string representation";
+    return "Convert value to upper-case hexadecimal, zero-padded to 4, 8 or 16 digits";
   }
 
   @Override
@@ -54,24 +60,23 @@ public class TextHexValue extends AbstractTextFunction {
 
     if (args[0] instanceof Number) {
       // Issue #10850: a whole number - longValue() rendered 255.9 as "ff"
-      return Long.toHexString(CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "value"));
+      final long value = CypherFunctionHelper.requireWholeNumberArgument(args[0], getName(), "value");
+      // APOC writes a number below the int range as the 4 or 8 low digits of its int value (-4294967296 is "0000"), and all 16 here
+      if (value > 0xFFFFFFFFL || value < Integer.MIN_VALUE)
+        return HEX.toHexDigits(value);
+      if (value > 0xFFFFL || value < 0)
+        return HEX.toHexDigits((int) value);
+      return HEX.toHexDigits((short) value);
     }
 
-    if (args[0] instanceof byte[]) {
-      final byte[] bytes = (byte[]) args[0];
-      final StringBuilder hex = new StringBuilder(bytes.length * 2);
-      for (final byte b : bytes) {
-        hex.append(String.format("%02x", b));
-      }
-      return hex.toString();
-    }
+    if (args[0] instanceof byte[] bytes)
+      return HEX.formatHex(bytes);
 
     // For strings, convert each character to hex
     final String str = asString(args[0]);
     final StringBuilder hex = new StringBuilder(str.length() * 4);
-    for (int i = 0; i < str.length(); i++) {
-      hex.append(String.format("%04x", (int) str.charAt(i)));
-    }
+    for (int i = 0; i < str.length(); i++)
+      hex.append(HEX.toHexDigits(str.charAt(i)));
     return hex.toString();
   }
 }

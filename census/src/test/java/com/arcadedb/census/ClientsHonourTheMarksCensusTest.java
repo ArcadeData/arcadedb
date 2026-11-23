@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the operator's own steps ({@code open database}, the restore itself, the snapshot installer) and therefore cannot refuse. A
  * client of one of those protocols could open the copy an {@code overwrite} restore was about to destroy, write to it, be
  * acknowledged, and lose the writes to the swap. The fix is a second entry point, {@code getDatabaseForClient(String)}, that
- * every client surface shares with HTTP; the behaviour is pinned by {@code Issue10533ClientsHonourTheMarksTest} in the server
+ * every client surface shares with HTTP; the behaviour is pinned by {@code ClientsHonourTheMarksTest} in the server
  * module, and this census holds the client surfaces to it.
  * <p>
  * The census ranges over the authority (#11288): every call of an entry point of {@code ArcadeDBServer} that sees past the
@@ -127,7 +127,7 @@ class ClientsHonourTheMarksCensusTest {
   /**
    * Issue #10802: {@code getDatabase(String)} became {@code getDatabaseForOperator(String)}, a name that says whom it serves, and
    * the old one is deprecated for removal, kept only for the embedded servers and plugins outside this repository. No production
-   * class calls it; the test sources are held to the same by {@code Issue10533ClientsHonourTheMarksTest}.
+   * class calls it; the test sources are held to the same by {@code ClientsHonourTheMarksTest}.
    */
   @Test
   void noProductionClassCallsTheDeprecatedNameOfTheOperatorsEntryPoint() throws Exception {

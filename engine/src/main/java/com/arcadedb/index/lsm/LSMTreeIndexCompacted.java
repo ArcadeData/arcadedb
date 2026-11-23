@@ -23,7 +23,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFile;
@@ -35,7 +34,6 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
-import com.arcadedb.utility.RidHashSet;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -177,7 +175,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       final Set<IndexCursorEntry> set = new HashSet<>();
 
       // SEARCH IN COMPACTED INDEX
-      searchInCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
+      searchInCompactedIndex(convertedKeys, resultSetSink(keys, convertedKeys, limit, set));
 
       return set;
 
@@ -435,7 +433,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   public List<LSMTreeIndexUnderlyingCompactedSeriesCursor> newIterators(final boolean ascendingOrder, final Object[] fromKeys,
       final Object[] toKeys)
       throws IOException {
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = getHeaderPage();
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -652,11 +650,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return iterator;
   }
 
-  protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) throws IOException {
+  protected void searchInCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = getHeaderPage();
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -792,8 +788,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
             final Binary currentPageBuffer = new Binary(currentPage.slice());
             final int count = getCount(currentPage);
 
-            if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-                removedKeys, deletedRIDs))
+            if (!sink.onPage(currentPage, currentPageBuffer, count))
               return;
           }
         } else {
@@ -802,8 +797,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           final Binary currentPageBuffer = new Binary(currentPage.slice());
           final int count = getCount(currentPage);
 
-          if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-              removedKeys, deletedRIDs))
+          if (!sink.onPage(currentPage, currentPageBuffer, count))
             return;
         }
 
@@ -817,14 +811,26 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
           final Binary precedingPageBuffer = new Binary(precedingPage.slice());
           final int precedingCount = getCount(precedingPage);
 
-          if (!lookupInPageAndAddInResultset(precedingPage, precedingPageBuffer, precedingCount, originalKeys, convertedKeys,
-              limit, set, removedKeys, deletedRIDs))
+          if (!sink.onPage(precedingPage, precedingPageBuffer, precedingCount))
             return;
         }
       }
 
       --pageNumber;
     }
+  }
+
+  /**
+   * The header page of the file, which says how many pages hold published series. It is the only page of the file that changes
+   * once written: an incremental compaction round appends its series after the published ones and then rewrites the header to
+   * name them, together with the swap that puts in the new, empty mutable file. A {@code REPEATABLE_READ} transaction must not
+   * pin it (issue #13050): the header it read first names the series of an earlier round only, and the mutable file it reads
+   * afterwards no longer holds the entries that round moved into the new series, so a key committed before the transaction began
+   * would answer no entry, and a duplicate of it would pass the uniqueness check. The series themselves never change, so they
+   * stay pinned like any other page.
+   */
+  private BasePage getHeaderPage() throws IOException {
+    return database.getTransaction().getPageForAbsoluteReadsNeverPinned(new PageId(database, file.getFileId(), 0), pageSize);
   }
 
   private int getCompactedPageNumberOfSeries(final BasePage currentPage) {

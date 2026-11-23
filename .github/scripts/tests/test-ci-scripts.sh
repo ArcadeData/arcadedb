@@ -2641,13 +2641,356 @@ expect "reports a workflow it cannot find" 1 "not found" \
 expect "the repository's own claude-code-action prompts are executable" 0 "prompts are executable" \
     "$PROMPTMUT"
 
-# The label the review flags with must be the one the repository has: `do not merge`, with spaces.
-# #10600's instruction named "do to not merge", and its own report then named `do-not-merge`.
-if grep -qF "labels[]=do not merge'" .github/workflows/claude-code-review.yml; then
-    pass "the review flags a hazardous PR with the repository's 'do not merge' label"
+# classify-pr.yml runs a model over an untrusted PR under pull_request_target, where secrets are
+# present. Its containment is the job split: the `classify` job that runs the model holds no write
+# scope and no write tool, reads files only (each tool pinned to a path, since a bare `Read` reaches
+# /proc/self/environ and the runner's files), denies Bash, Edit, Write, NotebookEdit, WebFetch and
+# WebSearch outright, and nothing in the workflow checks out the PR head.
+# The `do not merge` flag of the deleted claude-code-review.yml now lives in pr-classify-apply.js
+# and is pinned by test-pr-workflow-scripts.js.
+echo
+echo "classify-pr.yml containment"
+
+# Prints one line per broken containment rule of a classify-pr workflow; nothing when it holds.
+classify_pr_problems() {
+    python3 -c '
+import re, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+jobs = doc.get("jobs") or {}
+problems = []
+classify = jobs.get("classify")
+if not isinstance(classify, dict):
+    problems.append("no classify job")
+    classify = {}
+perms = classify.get("permissions")
+if not isinstance(perms, dict):
+    problems.append("classify job sets no explicit permissions map")
+else:
+    for scope, level in perms.items():
+        if level == "write":
+            problems.append(f"classify job holds {scope}: write")
+tools, denied = [], []
+for step in classify.get("steps") or []:
+    if "anthropics/claude-code-action" in str(step.get("uses", "")):
+        args = str((step.get("with") or {}).get("claude_args", ""))
+        for m in re.finditer(r"--allowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
+            tools += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+        for m in re.finditer(r"--disallowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
+            denied += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+# Deny rules beat allow rules from any settings source, so the allow list alone is not enough.
+for name in ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"):
+    if name not in denied:
+        problems.append(f"classify job does not deny {name} in --disallowed-tools")
+for tool in denied:
+    if tool.startswith("StructuredOutput"):
+        problems.append(f"classify job denies the structured-output tool: {tool}")
+if not tools:
+    problems.append("classify job has no --allowed-tools list")
+for tool in tools:
+    if tool.startswith("Bash"):
+        problems.append(f"classify job allows a shell command: {tool}")
+    for banned in ("gh pr comment", "gh api", "gh pr edit", "git push"):
+        if banned in tool:
+            problems.append(f"classify job allows a write tool: {tool}")
+    if tool in ("Read", "Grep", "Glob") or re.fullmatch(r"(Read|Grep|Glob)\(\s*\)", tool):
+        problems.append(f"classify job allows {tool} on any path")
+for job_id, job in jobs.items():
+    for step in (job or {}).get("steps") or []:
+        if "actions/checkout" not in str(step.get("uses", "")):
+            continue
+        w = step.get("with") or {}
+        ref = str(w.get("ref", ""))
+        if re.search(r"head\.sha|head\.ref|refs/pull", ref):
+            problems.append(f"job {job_id} checks out the PR head ({ref})")
+        if w.get("persist-credentials") is not False:
+            problems.append(f"job {job_id} leaves the token in .git/config (persist-credentials)")
+print("\n".join(problems))
+' "$1"
+}
+
+CLASSIFYPR=".github/workflows/classify-pr.yml"
+if [[ -f $CLASSIFYPR ]]; then
+    pass "classify-pr.yml exists"
+    problems="$(classify_pr_problems "$CLASSIFYPR")"
+    if [[ -z $problems ]]; then
+        pass "classify-pr.yml: the model job is read-only, reads pinned paths only, and no checkout takes the PR head"
+    else
+        fail "classify-pr.yml: the model job is read-only, reads pinned paths only, and no checkout takes the PR head" "$problems"
+    fi
 else
-    fail "the review flags a hazardous PR with the repository's 'do not merge' label"
+    fail "classify-pr.yml exists"
 fi
+if [[ ! -e .github/workflows/claude-code-review.yml ]]; then
+    pass "claude-code-review.yml is gone (one automatic review per push)"
+else
+    fail "claude-code-review.yml is gone (one automatic review per push)"
+fi
+
+# The other direction: a classify job that broke every rule must be reported on each one.
+cat >"$work/classify-pr-bad.yml" <<'YAML'
+name: bad
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: Review.
+          claude_args: '--allowed-tools "Read,Grep(./**),Bash(gh pr comment 5:*),Bash(gh api:*)" --disallowed-tools "Edit,Write,StructuredOutput"'
+YAML
+problems="$(classify_pr_problems "$work/classify-pr-bad.yml")"
+for needle in "pull-requests: write" "Read on any path" "Bash(gh pr comment 5:*)" "write tool: Bash(gh api:*)" \
+    "checks out the PR head" "persist-credentials" "does not deny Bash in" "does not deny NotebookEdit" \
+    "does not deny WebFetch" "does not deny WebSearch" "denies the structured-output tool: StructuredOutput"; do
+    if [[ $problems == *"$needle"* ]]; then
+        pass "the classify-pr containment check reports: $needle"
+    else
+        fail "the classify-pr containment check reports: $needle" "$problems"
+    fi
+done
+for needle in "does not deny Edit" "does not deny Write"; do
+    if [[ $problems != *"$needle"* ]]; then
+        pass "the classify-pr containment check accepts a listed deny: $needle"
+    else
+        fail "the classify-pr containment check accepts a listed deny: $needle" "$problems"
+    fi
+done
+
+# #12492: the runner drops a job output whose value contains a string it has masked, and the text of
+# a review can. The decision must travel from `classify` to `apply` as an artifact (the runner does
+# not filter files or step outputs), never as a job output, and `apply` must still run when the
+# artifact is missing so the PR gets a `verdict=none` marker that says why.
+echo
+echo "classify-pr.yml decision hand-off"
+
+# Prints one line per broken hand-off rule of a classify-pr workflow; nothing when it holds.
+classify_pr_handoff_problems() {
+    python3 -c '
+import re, sys, yaml
+text = open(sys.argv[1]).read()
+doc = yaml.safe_load(text)
+jobs = doc.get("jobs") or {}
+problems = []
+classify = jobs.get("classify") or {}
+apply_job = jobs.get("apply") or {}
+# Named by the head the decision is for, so apply can never read the decision of another head:
+# not one left by an earlier attempt, and not a rerun of apply alone, which a per-attempt name
+# would send looking for an artifact its classify job never uploaded.
+NAME = "classify-pr-decision-${{ needs.gate.outputs.head_sha }}"
+FILE = "${{ runner.temp }}/classify-decision/decision.json"
+
+def steps(job, action):
+    return [s for s in (job.get("steps") or []) if action in str(s.get("uses", ""))]
+
+def always(step):
+    return "always()" in str(step.get("if", ""))
+
+# No job output may carry the model answer, and nothing may read one from `needs`.
+for name, value in (classify.get("outputs") or {}).items():
+    if "structured_output" in str(value):
+        problems.append(f"classify job exposes the decision as the job output {name}")
+if re.search(r"needs\.classify\.outputs\.structured_output", text):
+    problems.append("a job reads needs.classify.outputs.structured_output")
+if "decision_saved" not in (classify.get("outputs") or {}):
+    problems.append("classify job has no decision_saved output")
+
+uploads = [s for s in steps(classify, "actions/upload-artifact") if (s.get("with") or {}).get("name") == NAME]
+if not uploads:
+    problems.append(f"classify job does not upload the {NAME} artifact")
+for up in uploads:
+    w = up.get("with") or {}
+    if not always(up):
+        problems.append("the decision upload does not run with if: always()")
+    if str(w.get("path", "")) != FILE:
+        problems.append(f"the decision upload path is not the single file {FILE}")
+    days = w.get("retention-days")
+    if not isinstance(days, int) or not 1 <= days <= 7:
+        problems.append("the decision upload has no short retention-days (1 to 7)")
+    if w.get("overwrite") is not True:
+        problems.append("the decision upload does not set overwrite: true (a re-run would fail on the name)")
+
+saves = [s for s in (classify.get("steps") or []) if s.get("id") == "save"]
+if not saves:
+    problems.append("classify job has no save step writing the decision file")
+for save in saves:
+    if not always(save):
+        problems.append("the save step does not run with if: always()")
+    if set((save.get("env") or {}).keys()) != {"DECISION"}:
+        problems.append("the save step takes more than the decision in its environment")
+    if "steps.classify.outputs.structured_output" not in str((save.get("env") or {}).get("DECISION", "")):
+        problems.append("the save step does not read the model step output")
+
+# The save step reads the model step output, so it must come after the model step.
+ids = [s.get("id") for s in (classify.get("steps") or [])]
+if "classify" in ids and "save" in ids and ids.index("save") < ids.index("classify"):
+    problems.append("the save step runs before the model step")
+
+if "classify" not in (apply_job.get("needs") or []):
+    problems.append("apply does not need classify")
+downloads = [s for s in steps(apply_job, "actions/download-artifact") if (s.get("with") or {}).get("name") == NAME]
+if not downloads:
+    problems.append(f"apply job does not download the {NAME} artifact")
+for down in downloads:
+    if down.get("continue-on-error") is not True:
+        problems.append("the decision download does not set continue-on-error: true")
+    if str((down.get("with") or {}).get("path", "")) != "${{ runner.temp }}/classify-decision":
+        problems.append("the decision download path is not the directory of the uploaded file")
+
+script_envs = [s.get("env") or {} for s in (apply_job.get("steps") or []) if "actions/github-script" in str(s.get("uses", ""))]
+if not any(e.get("DECISION_FILE") == FILE for e in script_envs):
+    problems.append(f"apply does not pass DECISION_FILE: {FILE}")
+if not any("needs.classify.result" in str(e.get("CLASSIFY_RESULT", "")) for e in script_envs):
+    problems.append("apply does not pass CLASSIFY_RESULT from needs.classify.result")
+if not any("needs.classify.outputs.decision_saved" in str(e.get("DECISION_SAVED", "")) for e in script_envs):
+    problems.append("apply does not pass DECISION_SAVED from needs.classify.outputs.decision_saved")
+if any("STRUCTURED_OUTPUT" in e for e in script_envs):
+    problems.append("apply still reads STRUCTURED_OUTPUT")
+
+# apply must still run, and post a marker, when classify failed.
+cond = str(apply_job.get("if", ""))
+if "always()" not in cond or "!cancelled()" not in cond:
+    problems.append("apply does not run when classify failed (if: always() && !cancelled())")
+print("\n".join(problems))
+' "$1"
+}
+
+if [[ -f $CLASSIFYPR ]]; then
+    problems="$(classify_pr_handoff_problems "$CLASSIFYPR")"
+    if [[ -z $problems ]]; then
+        pass "classify-pr.yml: the decision goes from classify to apply as an artifact, not as a job output"
+    else
+        fail "classify-pr.yml: the decision goes from classify to apply as an artifact, not as a job output" "$problems"
+    fi
+fi
+
+# The old shape: the decision as a job output, read through needs.
+cat >"$work/classify-pr-joboutput.yml" <<'YAML'
+name: joboutput
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      structured_output: ${{ steps.classify.outputs.structured_output }}
+    steps:
+      - id: classify
+        uses: anthropics/claude-code-action@v1
+  apply:
+    needs: [classify]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          STRUCTURED_OUTPUT: ${{ needs.classify.outputs.structured_output }}
+YAML
+problems="$(classify_pr_handoff_problems "$work/classify-pr-joboutput.yml")"
+for needle in "exposes the decision as the job output structured_output" \
+    "reads needs.classify.outputs.structured_output" "no decision_saved output" \
+    "does not upload the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" "has no save step" \
+    "does not download the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" "does not pass DECISION_FILE" \
+    "does not pass CLASSIFY_RESULT" "does not pass DECISION_SAVED" "still reads STRUCTURED_OUTPUT"; do
+    if [[ $problems == *"$needle"* ]]; then
+        pass "the classify-pr hand-off check reports: $needle"
+    else
+        fail "the classify-pr hand-off check reports: $needle" "$problems"
+    fi
+done
+
+# An artifact hand-off with every knob wrong: uploaded only on success, wide path, long retention,
+# no overwrite, a save step that sees more than the decision, and an apply that stops on a failed
+# classify or on a missing artifact.
+cat >"$work/classify-pr-weak.yml" <<'YAML'
+name: weak
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      decision_saved: ${{ steps.save.outputs.saved }}
+    steps:
+      - id: save
+        env:
+          DECISION: ${{ steps.classify.outputs.structured_output }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo saved=true >> "$GITHUB_OUTPUT"
+      - id: classify
+        uses: anthropics/claude-code-action@v1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
+          path: ${{ github.workspace }}
+          retention-days: 90
+  apply:
+    needs: [classify]
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
+          path: ${{ runner.temp }}/elsewhere
+      - uses: actions/github-script@v9
+        env:
+          DECISION_FILE: ${{ runner.temp }}/classify-decision/decision.json
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DECISION_SAVED: ${{ needs.classify.outputs.decision_saved }}
+YAML
+problems="$(classify_pr_handoff_problems "$work/classify-pr-weak.yml")"
+for needle in "the decision upload does not run with if: always()" \
+    "the decision upload path is not the single file" "no short retention-days" \
+    "does not set overwrite: true" "the save step does not run with if: always()" \
+    "the save step takes more than the decision in its environment" "the save step runs before the model step" \
+    "does not set continue-on-error: true" "download path is not the directory of the uploaded file" \
+    "apply does not run when classify failed"; do
+    if [[ $problems == *"$needle"* ]]; then
+        pass "the classify-pr hand-off check reports: $needle"
+    else
+        fail "the classify-pr hand-off check reports: $needle" "$problems"
+    fi
+done
+
+# An artifact name shared by every head and attempt of the run: a decision left by an earlier
+# attempt, for another head, could be downloaded and posted under the current head's marker; and
+# a per-attempt name would make a rerun of apply alone look for an artifact classify never uploaded.
+for fixed in "classify-pr-decision" 'classify-pr-decision-${{ github.run_attempt }}'; do
+    cat >"$work/classify-pr-fixed-name.yml" <<YAML
+name: fixed
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: $fixed
+          path: \${{ runner.temp }}/classify-decision/decision.json
+  apply:
+    needs: [classify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: $fixed
+YAML
+    problems="$(classify_pr_handoff_problems "$work/classify-pr-fixed-name.yml")"
+    for needle in "does not upload the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" \
+        "does not download the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact"; do
+        if [[ $problems == *"$needle"* ]]; then
+            pass "the classify-pr hand-off check reports a name of '$fixed': $needle"
+        else
+            fail "the classify-pr hand-off check reports a name of '$fixed': $needle" "$problems"
+        fi
+    done
+done
 
 # The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
 # linux/amd64 leg, so it must carry a `suffix` that keeps its workflow artifact and its release

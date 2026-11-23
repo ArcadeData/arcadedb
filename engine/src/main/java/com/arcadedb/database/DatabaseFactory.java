@@ -28,6 +28,7 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -36,6 +37,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 public class DatabaseFactory implements AutoCloseable {
@@ -44,6 +46,13 @@ public class DatabaseFactory implements AutoCloseable {
   private              boolean                                                    replicatedNode       = false;
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
   private static final Map<Path, Database>                                        ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
+  private static final Map<Path, PathLock>                                        OPEN_LOCKS           = new ConcurrentHashMap<>();
+  /**
+   * The databases whose committed pages may be in neither a forced data file nor a forced WAL because of how their last
+   * instance closed (issue #12025), keyed by path, valued by the {@link LocalDatabase#getInstanceSequence() sequence} of the
+   * newest instance that put them there. See {@link #getDatabasesClosedWithPagesLeftToRecovery()}.
+   */
+  private static final ConcurrentHashMap<Path, Long>                               PAGES_LEFT_TO_RECOVERY = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new ConcurrentHashMap<>();
@@ -119,6 +128,77 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final ComponentFile.MODE mode) {
+    return underPathLock(() -> openLocked(mode));
+  }
+
+  /**
+   * Runs {@code body} holding the monitor of the database path (see {@link #getMonitorKey}).
+   */
+  private Database underPathLock(final Supplier<Database> body) {
+    while (true) {
+      final Path key = getMonitorKey(databasePath);
+      final PathLock lock = acquirePathLock(key);
+      try {
+        synchronized (lock) {
+          // The path can resolve elsewhere once this caller holds the monitor (a link pointed at another directory while it
+          // waited): the key every later caller of that directory computes is then another one, so take that one instead
+          if (key.equals(getMonitorKey(databasePath)))
+            return body.get();
+        }
+      } finally {
+        releasePathLock(key);
+      }
+    }
+  }
+
+  /**
+   * The key of the per-path monitor: the registry key ({@link #getRegistryKey}, the real path) folded to lower case. A directory
+   * that does not exist yet has no real path, so its key keeps the caller's spelling of the missing names, and on a
+   * case-insensitive volume a create spelled "Db" and an open or a create spelled "db" took two monitors: the second could build
+   * an instance over the files the first was writing. Folded, every spelling of the directory takes one monitor whether it exists
+   * or not. On a case-sensitive volume two directories that differ only by case share a monitor, which costs them nothing but
+   * taking turns to open; the registry itself stays keyed by the real path.
+   */
+  // @VisibleForTesting
+  static Path getMonitorKey(final String path) {
+    return Path.of(getRegistryKey(path).toString().toLowerCase(Locale.ROOT));
+  }
+
+  /**
+   * The monitor of one database PATH. {@code open} and {@code create} are {@code synchronized} on their factory, which is a new
+   * object per caller, so threads opening the same path passed {@link #checkForActiveInstance} together and each built a whole
+   * {@link LocalDatabase} over the same files. The one refused afterwards still ran its open and its failure clean-up, and a
+   * {@code LocalDatabase} equals every other of its path, so that clean-up dropped the winner's cached and queued pages and rolled
+   * back its transactions (record counters off, commits failing with NullPointerException). Callers of one path now take turns:
+   * the second finds the winner registered and is refused before it builds anything.
+   * <p>
+   * Counted, and removed with its last user: a monitor kept for every path ever opened would grow for the life of the JVM in an
+   * application that creates databases under names it never reuses.
+   */
+  private static final class PathLock {
+    // GUARDED BY THE ConcurrentHashMap BIN LOCK: ONLY EVER TOUCHED INSIDE compute / computeIfPresent
+    private int users;
+  }
+
+  private static PathLock acquirePathLock(final Path path) {
+    return OPEN_LOCKS.compute(path, (key, lock) -> {
+      final PathLock result = lock != null ? lock : new PathLock();
+      result.users++;
+      return result;
+    });
+  }
+
+  private static void releasePathLock(final Path path) {
+    OPEN_LOCKS.computeIfPresent(path, (key, lock) -> --lock.users == 0 ? null : lock);
+  }
+
+  /** Whether an {@code open} or {@code create} of {@code databasePath} is in flight or queued: false once none is (test only). */
+  // @VisibleForTesting
+  static boolean isPathLockInUse(final String databasePath) {
+    return OPEN_LOCKS.containsKey(getMonitorKey(databasePath));
+  }
+
+  private Database openLocked(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
     // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
@@ -147,6 +227,10 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database create() {
+    return underPathLock(this::createLocked);
+  }
+
+  private Database createLocked() {
     checkForActiveInstance(databasePath);
 
     // #4927: refcounted acquire under the PageManager's global lifecycle lock - the previous
@@ -216,22 +300,114 @@ public class DatabaseFactory implements AutoCloseable {
     return Path.of(path).toAbsolutePath().normalize();
   }
 
+  /**
+   * The key of the registry of open instances, and of the per-path monitors of {@code open} and {@code create}: the REAL path of
+   * the directory, which sees through a symbolic link (and, where the file system is case insensitive, through a difference of
+   * case) that {@link #getNormalizedPath} does not. A second factory reaching an open database by a link used to pass the
+   * "already in use" check, build an instance over the same files and be refused by the file lock, whose clean-up closed the lock
+   * file: on Linux and macOS that releases every lock the process holds on the file, so the winner stayed registered but no other
+   * process was kept out of its database any more.
+   * <p>
+   * A path that does not exist (yet) has no real path: its deepest existing ancestor is resolved and the missing names are
+   * appended to it, so the key a {@code create} computes before its directory exists is the key every later caller computes once
+   * it does. Keeping the normalised path there gave a create through a link of a PARENT directory (or through {@code /tmp} on
+   * macOS, a link to {@code /private/tmp}) a different monitor than a concurrent open of the directory it was creating.
+   */
+  // @VisibleForTesting
+  static Path getRegistryKey(final String path) {
+    final Path normalized = getNormalizedPath(path);
+    Path existing = normalized;
+    Path missing = null;
+    while (existing != null) {
+      try {
+        final Path real = existing.toRealPath();
+        return missing == null ? real : real.resolve(missing);
+      } catch (final IOException | SecurityException e) {
+        final Path name = existing.getFileName();
+        if (name == null)
+          break;
+        missing = missing == null ? name : name.resolve(missing);
+        existing = existing.getParent();
+      }
+    }
+    return normalized;
+  }
+
   public static Database getActiveDatabaseInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    return ACTIVE_INSTANCES.get(normalizedPath);
+    return ACTIVE_INSTANCES.get(getRegistryKey(databasePath));
   }
 
   protected static boolean removeActiveDatabaseInstance(final String databasePath, final Database instance) {
-    final var normalizedPath = getNormalizedPath(databasePath);
     // Keyed to the instance (#5070): when registerActiveInstance closes a same-path open-race LOSER,
     // the loser's close must not remove the WINNER's still-live mapping - a plain remove(path) did, orphaning
     // the winner from the registry and letting a third open of the same path pass checkForActiveInstance.
-    ACTIVE_INSTANCES.remove(normalizedPath, instance);
+    // By IDENTITY, not Map.remove(key, value): that compares with equals(), and a LocalDatabase equals every other one of its path,
+    // so the loser's removal took the winner's entry anyway
+    final Path key = getRegistryKey(databasePath);
+    if (ACTIVE_INSTANCES.get(key) == instance)
+      ACTIVE_INSTANCES.computeIfPresent(key, (path, registered) -> registered == instance ? null : registered);
+    else
+      // O(OPEN DATABASES), AND ONLY OFF THE COMMON PATH: A REFUSED LOSER, A REPEATED CLOSE, OR AN INSTANCE
+      // NOT UNDER THE KEY THE PATH RESOLVES TO NOW: A REFUSED LOSER (THEN NOTHING MATCHES), OR A DIRECTORY THAT WAS ITSELF A LINK
+      // AND IS GONE (A DROP, A DELETE FROM OUTSIDE), SO ITS REAL PATH CANNOT BE RESOLVED ANY MORE: FIND IT BY IDENTITY
+      ACTIVE_INSTANCES.values().removeIf(registered -> registered == instance);
     return ACTIVE_INSTANCES.isEmpty();
   }
 
   public static Collection<Database> getActiveDatabaseInstances() {
     return Collections.unmodifiableCollection(ACTIVE_INSTANCES.values());
+  }
+
+  /**
+   * The databases, not open now, whose last instance closed without making its pages durable: the bounded flush wait gave
+   * up, an fsync failed, the database was fenced, or a WAL record or a columnar recovery set could not be written (issue
+   * #12025). Such a close keeps the WAL and the lock file, so the next open replays it, but the WAL of a replicated commit
+   * is not forced (#11746) and a follower writes none, so until a later instance has forced the files again the committed
+   * pages of those databases may be in the OS cache only. A caller that is about to declare "everything committed so far
+   * is on the disk" - the Raft snapshot checkpoint - must not include them.
+   * <p>
+   * A path is listed from the moment its close starts (the instance reports itself closed before the close decides how it
+   * ended) until a clean close of an instance at least as new, a drop, or a successful
+   * {@link com.arcadedb.engine.PageManager#flushAndSyncDatabase} of a NEWER instance, whose open ran the recovery and so
+   * forces every file at its first sync. A path whose directory is gone has nothing left to lose and is forgotten here.
+   */
+  public static List<Path> getDatabasesClosedWithPagesLeftToRecovery() {
+    if (PAGES_LEFT_TO_RECOVERY.isEmpty())
+      return List.of();
+    final List<Path> result = new ArrayList<>();
+    for (final Map.Entry<Path, Long> entry : PAGES_LEFT_TO_RECOVERY.entrySet()) {
+      final Path path = entry.getKey();
+      if (!new File(path.toString()).isDirectory())
+        PAGES_LEFT_TO_RECOVERY.remove(path, entry.getValue());
+      else
+        // Listed even while a newer instance is open: only its successful sync releases the path, and one opened after the
+        // caller's own sync pass has not been forced yet
+        result.add(path);
+    }
+    return result;
+  }
+
+  /** Lists the path of a closing instance (issue #12025), before it reports itself closed. */
+  static void markClosingWithPagesAtRisk(final LocalDatabase closing) {
+    PAGES_LEFT_TO_RECOVERY.merge(getNormalizedPath(closing.getDatabasePath()), closing.getInstanceSequence(), Math::max);
+  }
+
+  /**
+   * Unlists the path of {@code synced} once it forced its files (issue #12025), when an EARLIER instance listed it: this one
+   * opened after that close, so its open ran the recovery, which leaves every file to be forced by the first sync.
+   */
+  public static void releasePagesLeftToRecoveryByEarlierInstances(final LocalDatabase synced) {
+    releasePagesLeftToRecovery(synced, false);
+  }
+
+  /**
+   * Unlists a path once {@code instance} made its pages durable (issue #12025): its clean close or its drop when
+   * {@code includingOwn}, otherwise a sync of a newer instance than the one that listed it.
+   */
+  static void releasePagesLeftToRecovery(final LocalDatabase instance, final boolean includingOwn) {
+    final long sequence = instance.getInstanceSequence();
+    PAGES_LEFT_TO_RECOVERY.computeIfPresent(getNormalizedPath(instance.getDatabasePath()),
+        (path, listedBy) -> listedBy < sequence || (includingOwn && listedBy == sequence) ? null : listedBy);
   }
 
   /**
@@ -355,16 +531,16 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   private static void checkForActiveInstance(final String databasePath) {
-    var normalizedPath = getNormalizedPath(databasePath);
-    if (ACTIVE_INSTANCES.get(normalizedPath) != null)
-      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
+    final Path key = getRegistryKey(databasePath);
+    if (ACTIVE_INSTANCES.get(key) != null)
+      throw new DatabaseOperationException("Found active instance of database '" + key + "' already in use");
   }
 
   private static void registerActiveInstance(final LocalDatabase database) {
-    var normalizedPath = getNormalizedPath(database.databasePath);
-    if (ACTIVE_INSTANCES.putIfAbsent(normalizedPath, database) != null) {
+    final Path key = getRegistryKey(database.databasePath);
+    if (ACTIVE_INSTANCES.putIfAbsent(key, database) != null) {
       database.close();
-      throw new DatabaseOperationException("Found active instance of database '" + normalizedPath + "' already in use");
+      throw new DatabaseOperationException("Found active instance of database '" + key + "' already in use");
     }
   }
 }

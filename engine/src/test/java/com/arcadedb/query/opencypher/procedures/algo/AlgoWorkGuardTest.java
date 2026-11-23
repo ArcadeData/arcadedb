@@ -139,15 +139,15 @@ class AlgoWorkGuardTest {
         "algo.maxFlow                     | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.maxFlow(a, c, 'LINK', 'w') YIELD maxFlow RETURN maxFlow",
         "algo.msa                         | MATCH (a:Node {name:'A'}) CALL algo.msa(a, 'LINK', 'w') YIELD source RETURN source",
         "algo.knn                         | CALL algo.knn(2) YIELD node1 RETURN node1",
-        "algo.hierarchicalClustering      | CALL algo.hierarchicalClustering('LINK', 2) YIELD node RETURN node",
-        "algo.clique                      | CALL algo.clique('LINK', 2) YIELD nodes RETURN nodes",
+        "algo.hierarchicalClustering      | CALL algo.hierarchicalClustering('LINK', 2) YIELD nodeId RETURN nodeId",
+        "algo.clique                      | CALL algo.clique('LINK', 2) YIELD clique RETURN clique",
         "algo.allsimplepaths              | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.allSimplePaths(a, c, 'LINK', 5) YIELD path RETURN path",
-        "algo.kTruss                      | CALL algo.kTruss('LINK', 3) YIELD node RETURN node",
+        "algo.kTruss                      | CALL algo.kTruss('LINK', 3) YIELD nodeId RETURN nodeId",
         "algo.triangleCount               | CALL algo.triangleCount() YIELD node RETURN node",
         "algo.localClusteringCoefficient  | CALL algo.localClusteringCoefficient() YIELD node RETURN node",
         "algo.densestSubgraph             | CALL algo.densestSubgraph() YIELD node RETURN node",
         "algo.bipartiteMatching           | CALL algo.bipartiteMatching() YIELD node1 RETURN node1",
-        "algo.voteRank                    | CALL algo.voteRank() YIELD node RETURN node",
+        "algo.voteRank                    | CALL algo.voteRank() YIELD nodeId RETURN nodeId",
         "algo.richClub                    | CALL algo.richClub() YIELD degree RETURN degree" })
     @Timeout(120)
     void aGraphDrivenProcedureStopsOnAThreadInterrupt(final String procedure, final String query) {
@@ -176,13 +176,13 @@ class AlgoWorkGuardTest {
         "algo.maxFlow                     | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.maxFlow(a, c, 'LINK', 'w') YIELD maxFlow RETURN maxFlow",
         "algo.msa                         | MATCH (a:Node {name:'A'}) CALL algo.msa(a, 'LINK', 'w') YIELD source RETURN source",
         "algo.knn                         | CALL algo.knn(2) YIELD node1 RETURN node1",
-        "algo.hierarchicalClustering      | CALL algo.hierarchicalClustering('LINK', 2) YIELD node RETURN node",
+        "algo.hierarchicalClustering      | CALL algo.hierarchicalClustering('LINK', 2) YIELD nodeId RETURN nodeId",
         "algo.allsimplepaths              | MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) CALL algo.allSimplePaths(a, c, 'LINK', 5) YIELD path RETURN path",
         "algo.triangleCount               | CALL algo.triangleCount() YIELD node RETURN node",
         "algo.localClusteringCoefficient  | CALL algo.localClusteringCoefficient() YIELD node RETURN node",
         "algo.densestSubgraph             | CALL algo.densestSubgraph() YIELD node RETURN node",
         "algo.bipartiteMatching           | CALL algo.bipartiteMatching() YIELD node1 RETURN node1",
-        "algo.voteRank                    | CALL algo.voteRank() YIELD node RETURN node",
+        "algo.voteRank                    | CALL algo.voteRank() YIELD nodeId RETURN nodeId",
         "algo.richClub                    | CALL algo.richClub() YIELD degree RETURN degree" })
     @Timeout(120)
     void anUninterruptedCallStillReturnsItsResult(final String procedure, final String query) {
@@ -1049,7 +1049,7 @@ class AlgoWorkGuardTest {
   class WeightedAdjacencyRecordsCheckpoint {
     /** Below the every-1024-nodes checkpoint boundary and far below ADJACENCY_CHECKPOINT_ENTRIES (1_048_576). */
     private static final int  NODE_COUNT  = 200;
-    private static final long GRAPH_BYTES = (NODE_COUNT + 1) * 96L; // OLTP_VERTEX_BYTES, +1 for the load's own headroom check
+    private static final long GRAPH_BYTES = (NODE_COUNT + 1) * 16L; // LOADED_NODE_BYTES, +1 for the load's own headroom check
     private static final long ROW_HEADER_BYTES = NODE_COUNT * 64L; // 2 * MATRIX_ROW_OVERHEAD_BYTES per node
 
     private Database database;

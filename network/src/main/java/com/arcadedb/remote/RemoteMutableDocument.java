@@ -21,6 +21,9 @@ package com.arcadedb.remote;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -142,5 +145,51 @@ public class RemoteMutableDocument extends MutableDocument {
   @Override
   protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
     return value;
+  }
+
+  @Override
+  protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+    return embeddedDocument(remoteDatabase, this, embeddedTypeName, propertyName);
+  }
+
+  /**
+   * The embedded document a remote record stores in {@code propertyName}, built on the client: the inherited path asked the
+   * record's {@code Database}, which a remote record has none of, and threw a {@link NullPointerException} (issue #12190). It is
+   * sent with its owner's content on {@code save()}, as the embedded document of a JSON {@code @type}. As the embedded API, only a
+   * document type can be embedded.
+   */
+  static MutableEmbeddedDocument embeddedDocument(final RemoteDatabase remoteDatabase, final Document owner,
+      final String embeddedTypeName, final String propertyName) {
+    if (embeddedTypeName == null)
+      throw new IllegalArgumentException("Type is null");
+
+    final DocumentType type = remoteDatabase.getSchema().getType(embeddedTypeName);
+    if (type.getClass() != RemoteDocumentType.class)
+      throw new IllegalArgumentException(
+          "Cannot create an embedded document of type '" + embeddedTypeName + "' because it is a " + type.getClass().getName()
+              + " instead of a document type ");
+
+    return new RemoteMutableEmbeddedDocument(remoteDatabase, type, new EmbeddedModifierProperty(owner, propertyName));
+  }
+
+  /** An embedded document of a remote record, which can hold embedded documents of its own. */
+  private static final class RemoteMutableEmbeddedDocument extends MutableEmbeddedDocument {
+    private final RemoteDatabase remoteDatabase;
+
+    private RemoteMutableEmbeddedDocument(final RemoteDatabase remoteDatabase, final DocumentType type,
+        final EmbeddedModifier modifier) {
+      super(null, type, modifier);
+      this.remoteDatabase = remoteDatabase;
+    }
+
+    @Override
+    protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
+      return value;
+    }
+
+    @Override
+    protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+      return embeddedDocument(remoteDatabase, this, embeddedTypeName, propertyName);
+    }
   }
 }
