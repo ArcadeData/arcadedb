@@ -2161,12 +2161,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
-   * Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it.
-   *
-   * @param structural true when the update assigned no property, as the caller observed it BEFORE the write: the record cannot be
-   *                   asked here, since a write that reached the page already cleared what it would answer (issue #11024)
-   */
-  /**
    * Whether the update sets an edge-list head of a vertex that never decoded its properties: they are the stored ones, so validating
    * them, diffing the indexes on them and serializing them again would all find nothing. What {@code GraphEngine.writeEdgeListHead}
    * writes for the first edge of a direction, on a vertex it just took from {@code modify()}.
@@ -2175,6 +2169,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return record instanceof MutableVertex vertex && vertex.areEdgeListHeadsAssigned() && !vertex.arePropertiesLoaded();
   }
 
+  /**
+   * Counts an update that completed (issue #10194) and, while an openCypher statement holds the record provisional, tallies it.
+   *
+   * @param structural true when the update assigned no property, as the caller observed it BEFORE the write: the record cannot be
+   *                   asked here, since a write that reached the page already cleared what it would answer (issue #11024)
+   */
   private static boolean isEdgeListWriteOnly(final Record record) {
     if (!(record instanceof MutableDocument document))
       // an edge segment, or any other record that holds no properties

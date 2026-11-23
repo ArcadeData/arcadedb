@@ -22,9 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -34,6 +37,7 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The first edge of a direction sets a head pointer of the vertex record, a 12-byte field at a fixed place. The write is a head-only
@@ -53,12 +57,12 @@ class VertexEdgeListHeadUpdateTest extends TestHelper {
 
   private void createSchema() {
     database.transaction(() -> {
-      final var type = database.getSchema().createVertexType("Entity", 1);
+      final VertexType type = database.getSchema().createVertexType("Entity", 1);
       type.createProperty("uuid", Type.STRING);
       type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
       type.createProperty("name", Type.STRING);
-      type.createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "uuid");
-      type.createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, false, "name");
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "uuid");
+      type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
       database.getSchema().createEdgeType("LINKS");
     });
   }
@@ -125,6 +129,7 @@ class VertexEdgeListHeadUpdateTest extends TestHelper {
     ((DatabaseInternal) database).updateRecordNoLock(vertex, false);
 
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    // TransactionContext offers no accessor for the pages it holds: read the field as StatementSavepointPageBytesTest does
     final Field field = TransactionContext.class.getDeclaredField("modifiedPages");
     field.setAccessible(true);
     @SuppressWarnings("unchecked") final Map<PageId, MutablePage> pages = (Map<PageId, MutablePage>) field.get(tx);
@@ -136,6 +141,9 @@ class VertexEdgeListHeadUpdateTest extends TestHelper {
     }
     database.commit();
 
+    // The two heads are 12 bytes each (a bucket id int and a position long) at fixed places of the record, 24 bytes at most, and the
+    // page's modified ranges are merged when close, so a few bytes of slack stay well below the 4 KB of the embedding: the whole
+    // record rewritten (what this replaces) marks more than 4,096 bytes
     assertThat(written).as("bytes of the page marked modified by a head-only update of a record of 4 KB").isBetween(1, 64);
 
     final Vertex reloaded = rid.asVertex();
@@ -178,5 +186,29 @@ class VertexEdgeListHeadUpdateTest extends TestHelper {
     ((DatabaseInternal) database).updateRecordWithoutEvents(vertex);
     database.commit();
     assertThat(rid.asVertex().getString("uuid")).isEqualTo("u1");
+  }
+
+  @Test
+  void aVertexWhoseStoredPropertyBreaksALaterConstraintStillTakesItsFirstEdge() {
+    createSchema();
+    final RID[] holder = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex first = database.newVertex("Entity").set("uuid", "u1").set("name", "x").save();
+      final MutableVertex second = database.newVertex("Entity").set("uuid", "u2").set("name", "yy").save();
+      holder[0] = first.getIdentity();
+      holder[1] = second.getIdentity();
+    });
+    // a constraint added after the data: the stored value of the first vertex no longer satisfies it
+    database.transaction(() -> database.getSchema().getType("Entity").getProperty("name").setMin("5"));
+
+    // intended behaviour of a head-only write: the properties are the stored ones, so they are not validated again, and the vertex takes
+    // its edges
+    database.transaction(() -> holder[0].asVertex().newEdge("LINKS", holder[1]));
+    assertThat(holder[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "LINKS")).isEqualTo(1);
+    assertThat(holder[1].asVertex().countEdges(Vertex.DIRECTION.IN, "LINKS")).isEqualTo(1);
+
+    // writing the property itself is still validated
+    assertThatThrownBy(() -> database.transaction(() -> holder[0].asVertex().modify().set("name", "z").save()))
+        .isInstanceOf(ValidationException.class);
   }
 }
