@@ -41,6 +41,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
+import com.arcadedb.server.backup.BackupRetentionManager;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.http.HttpServer;
@@ -2036,10 +2037,23 @@ public class ServerControlPlane {
    * serialised end to end - prune included - rather than overlapping (issue #7472). The SQL {@code BACKUP DATABASE}
    * statement reaches this through {@code BackupDirectoryResolver.applyRetention()} from inside the
    * BACKUP slot it holds, for the same reason (issue #9844).
+   * <p>
+   * The partial archives that a backup killed mid-write left behind are swept FIRST and whatever the auto-backup state is
+   * (issue #12530): the plugin's retention does nothing while auto-backup is disabled, which is the default, yet the on-demand
+   * backups write partial archives just the same and no other command can reach one. That sweep is not a retention: it removes
+   * no archive and is not counted in the result.
    *
    * @return the number of archives deleted
    */
   int pruneBackups(final Path backupDirectory, final String databaseName) {
+    try {
+      BackupRetentionManager.deleteStalePartialArchives(backupDirectory.resolve(databaseName).toFile());
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot sweep the partial archives left by a backup that did not complete for database '%s': %s", databaseName,
+          e.getMessage());
+    }
+
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin();
     if (plugin == null)
       return 0;
@@ -2192,7 +2206,9 @@ public class ServerControlPlane {
    * operator can see it without triggering anything.
    * <p>
    * Retention pruning runs only while the auto-backup scheduler is ENABLED: with it off, an on-demand archive stays
-   * until {@code delete backup} removes it, which is now possible. While it is on, an on-demand
+   * until {@code delete backup} removes it, which is now possible. The one exception is the partial archive of a backup
+   * killed mid-write, which no command can address: it is swept after every on-demand backup, enabled or not (issue
+   * #12530). While it is on, an on-demand
    * {@code trigger backup} prunes too, with that database's effective policy - including for a database absent from
    * the auto-backup configuration, whose archives the scheduler never touches because it does not know about it
    * (issue #7472).
