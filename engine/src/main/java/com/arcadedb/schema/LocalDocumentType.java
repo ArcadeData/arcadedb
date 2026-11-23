@@ -41,6 +41,8 @@ import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
@@ -3696,7 +3698,17 @@ public class LocalDocumentType implements DocumentType {
    *                   {@link #addSuperType(DocumentType, boolean)})
    */
   void checkCanAddSuperType(final LocalDocumentType superType, final boolean newLinkage) {
+    // FIRST, before anything below walks the hierarchy: a super type that is already this type or one of its sub types would close a
+    // cycle, and every polymorphic walk over a cycle recurses until the stack overflows (issue #12028)
+    checkNoCycle(superType);
+
     checkTimeSeriesHierarchy(superType);
+
+    // A record of the sub type is a record of the super type, so both must store the same kind of record (issue #12029). Skipped for a
+    // linkage that already holds, so a database written before the check still opens. After the time series check, which has a
+    // message of its own for a TIMESERIES type (a document type) put under a vertex or an edge type
+    if (newLinkage)
+      checkSameRecordKind(name, getType(), superType);
 
     // final review C-I2: the super type's COLUMNAR indexes reach every bucket of this type and of its sub types, which must not hold
     // a COLUMNAR column on the same property already (a bucket projection keys its dictionaries by property). Skipped for a linkage
@@ -3727,17 +3739,74 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
+   * Refuses a link that would close a cycle (issue #12028): {@code superType} is this type itself or already one of its sub types.
+   */
+  private void checkNoCycle(final LocalDocumentType superType) {
+    if (superType.isSameOrSubTypeOf(this))
+      throw new SchemaException("Cannot make type '" + name + "' a sub type of '" + superType.getName() + "': '" + superType.getName()
+          + "' " + (superType == this ? "is the type itself" : "is already a sub type of '" + name + "'")
+          + ", and a type hierarchy cannot have a cycle");
+  }
+
+  /**
+   * Whether {@code ancestor} is this type itself or one of the types above it, answered by the identity of the type and not by its name:
+   * {@link #isSubTypeOf(String)} compares names ignoring the case, and two types whose names differ only by case are two types. Each
+   * type is visited once, so a lattice of diamonds costs its size and not its number of paths, and the walk ends even over a cycle.
+   */
+  boolean isSameOrSubTypeOf(final LocalDocumentType ancestor) {
+    return isSameOrSubTypeOf(ancestor, new HashSet<>());
+  }
+
+  private boolean isSameOrSubTypeOf(final LocalDocumentType ancestor, final Set<LocalDocumentType> visited) {
+    if (this == ancestor)
+      return true;
+    if (!visited.add(this))
+      return false;
+    for (final LocalDocumentType superType : superTypes)
+      if (superType.isSameOrSubTypeOf(ancestor, visited))
+        return true;
+    return false;
+  }
+
+  /**
+   * Refuses a super type that stores another kind of graph record, or a graph super type for a document type (issue #12029): a document
+   * type under a vertex type is scanned as one of its vertices, an edge type under a vertex type the same, and openCypher fails on the
+   * first such record it casts. A DOCUMENT super type stays legal for every kind: schemas use it to share properties (a vertex type
+   * extending a document type), and a vertex or an edge is a document too, so a scan of the super type reads nothing it cannot hold.
+   */
+  private static void checkSameRecordKind(final String typeName, final byte recordKind, final DocumentType superType) {
+    final byte superKind = superType.getType();
+    if (superKind != recordKind && superKind != Document.RECORD_TYPE)
+      throw new SchemaException("Cannot make the " + recordKindName(recordKind) + " type '" + typeName + "' a sub type of the "
+          + recordKindName(superKind) + " type '" + superType.getName()
+          + "': a type can only extend a document type or a type of its own kind");
+  }
+
+  private static String recordKindName(final byte recordKind) {
+    return switch (recordKind) {
+      case Vertex.RECORD_TYPE -> "vertex";
+      case Edge.RECORD_TYPE -> "edge";
+      default -> "document";
+    };
+  }
+
+  /**
    * The refusals of {@link #checkCanAddSuperType} that a type NOT CREATED YET can already be told, so that {@link TypeBuilder} asks
    * them before it registers anything: a new type has no sub types and is no time series, so what is left is the super type being a
-   * time series or a backing type (issue #11204), and the new type being a LIGHTWEIGHT edge type that would inherit a property it
-   * cannot honour (issue #10394).
+   * time series or a backing type (issue #11204), the super type storing another kind of record than the new type does (issue
+   * #12029), and the new type being a LIGHTWEIGHT edge type that would inherit a property it cannot honour (issue #10394).
    * <p>
    * Public only because the {@code CREATE ... TYPE} statements, in another package, ask the same questions before they create the type;
    * internal to the schema and the statements that build types, not an API for applications.
+   *
+   * @param recordKind the kind of record the new type stores: {@link Document#RECORD_TYPE}, {@link Vertex#RECORD_TYPE} or
+   *                   {@link Edge#RECORD_TYPE}
    */
-  public static void checkSuperTypeOfNewType(final String typeName, final LocalDocumentType superType, final boolean lightweightEdge) {
+  public static void checkSuperTypeOfNewType(final String typeName, final byte recordKind, final LocalDocumentType superType,
+      final boolean lightweightEdge) {
     if (superType instanceof LocalTimeSeriesType)
       throw timeSeriesHierarchyRefusal(typeName, superType.getName(), superType.getName());
+    checkSameRecordKind(typeName, recordKind, superType);
     superType.schema.checkCanExtend(typeName, superType);
     if (lightweightEdge)
       LocalEdgeType.checkCanBeLightweight(typeName, superType);

@@ -20,11 +20,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -240,6 +243,15 @@ public class TypeBuilder<T> {
     return t;
   }
 
+  /** The kind of record the type this builder creates stores, for the same-kind rule of its super types (issue #12029). */
+  private byte recordKind() {
+    if (VertexType.class.isAssignableFrom(type))
+      return Vertex.RECORD_TYPE;
+    if (EdgeType.class.isAssignableFrom(type))
+      return Edge.RECORD_TYPE;
+    return Document.RECORD_TYPE;
+  }
+
   private T createInternal(final LocalSchema schema) {
     final LocalDocumentType t = schema.typeMap().get(typeName);
     if (t != null) {
@@ -329,7 +341,7 @@ public class TypeBuilder<T> {
       // refused create would leave a half-built type behind (issues #9846, #10394)
       if (superTypes != null)
         for (final LocalDocumentType sup : superTypes)
-          LocalDocumentType.checkSuperTypeOfNewType(typeName, sup, edgeLightweight);
+          LocalDocumentType.checkSuperTypeOfNewType(typeName, recordKind(), sup, edgeLightweight);
 
       // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
       // which left the type behind with the buckets before it (issue #10317)

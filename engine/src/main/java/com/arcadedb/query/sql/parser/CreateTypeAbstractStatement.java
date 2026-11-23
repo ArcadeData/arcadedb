@@ -104,6 +104,12 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected abstract DocumentType createType(Schema schema, String typeName);
 
   /**
+   * The kind of record the type this statement creates stores: {@code Document.RECORD_TYPE}, {@code Vertex.RECORD_TYPE} or
+   * {@code Edge.RECORD_TYPE}. A super type has to store the same kind, or be a document type (issue #12029).
+   */
+  protected abstract byte newTypeRecordKind();
+
+  /**
    * Batchable into a DDL script's bulk schema scope (issue #6990). Creating a type registers it and creates its buckets. No record is read or written, so a batch of them is exactly the case this feature exists for.
    */
   @Override
@@ -302,14 +308,15 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   }
 
   /**
-   * Validates the super types against what this statement declares, BEFORE the type is created. The default accepts all.
+   * Validates the super types against what this statement declares, BEFORE the type is created.
    */
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
-    // A TIMESERIES type is refused as a super type whatever the new type is, and addSuperType would only say so once the type
-    // exists (issue #10394). CreateEdgeTypeStatement adds what only an edge type can be refused for
+    // A TIMESERIES type is refused as a super type whatever the new type is, and so is a super type that stores another kind of record
+    // than the new type does (issue #12029). addSuperType would only say so once the type exists (issue #10394).
+    // CreateEdgeTypeStatement adds what only an edge type can be refused for
     for (final DocumentType superclass : superclasses)
       if (superclass instanceof LocalDocumentType local)
-        LocalDocumentType.checkSuperTypeOfNewType(typeName, local, false);
+        LocalDocumentType.checkSuperTypeOfNewType(typeName, newTypeRecordKind(), local, false);
   }
 
   protected DocumentType[] getSuperTypes(final Schema schema) {
