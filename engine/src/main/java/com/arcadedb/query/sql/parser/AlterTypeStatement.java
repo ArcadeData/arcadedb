@@ -31,7 +31,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -455,28 +454,18 @@ public class AlterTypeStatement extends DDLStatement {
     if (item.identifierListValue == null)
       throw new CommandExecutionException("Invalid super type names");
 
-    // every name is resolved before the first change, so a name that does not exist leaves the type as it was
-    final List<DocumentType> superclasses = new ArrayList<>(item.identifierListValue.size());
     for (int i = 0; i < item.identifierListValue.size(); i++) {
       final Identifier superTypeName = item.identifierListValue.get(i);
+      final Boolean add = item.identifierListAddRemove.get(i);
+
       final DocumentType superclass = context.getDatabase().getSchema().getType(superTypeName.getStringValue());
       if (superclass == null)
         throw new SchemaException("Super type '" + superTypeName.getStringValue() + "' not found");
-      superclasses.add(superclass);
-    }
 
-    // issue #12038: the items are still applied in the order they are written, but whether an index keeps its property is asked once
-    // for all of them, about what the type is left with, before the first one is applied
-    if (superclasses.size() > 1 && type instanceof LocalDocumentType localType) {
-      localType.changeSuperTypes(superclasses, item.identifierListAddRemove);
-      return;
-    }
-
-    for (int i = 0; i < superclasses.size(); i++) {
-      if (item.identifierListAddRemove.get(i))
-        type.addSuperType(superclasses.get(i));
+      if (add)
+        type.addSuperType(superclass);
       else
-        type.removeSuperType(superclasses.get(i));
+        type.removeSuperType(superclass);
     }
   }
 

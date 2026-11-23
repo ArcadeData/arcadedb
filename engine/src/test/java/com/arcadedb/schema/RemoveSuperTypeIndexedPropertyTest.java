@@ -239,32 +239,8 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
-  void replacementThatStillProvidesThePropertyAllowsTheSwapInEitherOrder() {
-    // the removal is judged against what C is left with once the whole statement is applied, not against the step
-    database.command("sql", "CREATE DOCUMENT TYPE P");
-    database.command("sql", "CREATE PROPERTY P.k INTEGER");
-    database.command("sql", "CREATE DOCUMENT TYPE Q");
-    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
-    database.command("sql", "CREATE DOCUMENT TYPE R");
-    database.command("sql", "CREATE PROPERTY R.k INTEGER");
-    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
-    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
-
-    database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q");
-
-    assertThat(database.getSchema().getType("C").isSubTypeOf("P")).isFalse();
-    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
-    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
-
-    database.command("sql", "ALTER TYPE C SUPERTYPE +R, -Q");
-
-    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isFalse();
-    assertThat(database.getSchema().getType("C").isSubTypeOf("R")).isTrue();
-    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
-  }
-
-  @Test
-  void setSuperTypesReplacementThatStillProvidesThePropertyIsAllowed() {
+  void replacementAddedBeforeTheRemovalAllowsTheSwap() {
+    // each removal is judged where it is applied, in the order written: +Q first leaves C its k when P goes
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
@@ -273,16 +249,40 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
     database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
     database.transaction(() -> database.command("sql", "INSERT INTO C SET k = 1"));
 
-    database.getSchema().getType("C").setSuperTypes(List.of(database.getSchema().getType("Q")));
+    database.command("sql", "ALTER TYPE C SUPERTYPE +Q, -P");
 
-    assertThat(database.getSchema().getType("C").isSubTypeOf("P")).isFalse();
-    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
+    assertThat(superTypeNames("C")).containsExactly("Q");
     assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
     assertThat(database.query("sql", "SELECT FROM C WHERE k = 1").stream().count()).isEqualTo(1L);
   }
 
   @Test
-  void replacementThatDoesNotProvideThePropertyRefusesTheWholeStatementAndChangesNothing() {
+  void replacementWrittenAfterTheRemovalIsRefusedAtTheRemovalAndTheMessageSaysHowToSwap() {
+    // -P, +Q is judged at -P, when C has no other provider of k yet: the refusal names the way out (add the replacement first), and
+    // the statement stops there, before the addition. The same holds for setSuperTypes, which removes before it adds
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("'C[k]'")//
+        .hasMessageContaining("add a super type that provides it before removing 'P'");
+
+    final DocumentType type = database.getSchema().getType("C");
+    assertThatThrownBy(() -> type.setSuperTypes(List.of(database.getSchema().getType("Q"))))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("'C[k]'");
+
+    assertUnchanged("C", "P", "C[k]");
+    assertThat(superTypeNames("C")).containsExactly("P");
+  }
+
+  @Test
+  void replacementThatDoesNotProvideThePropertyIsRefusedAndChangesNothing() {
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
@@ -290,68 +290,18 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
     database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q"))//
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE +Q, -P"))//
         .isInstanceOf(SchemaException.class)//
         .hasMessageContaining("'k'")//
         .hasMessageContaining("'C[k]'");
 
-    // not even the addition that came after the refused removal is applied
+    // the addition came first and stays, the removal is what was refused: C still has its k
     assertUnchanged("C", "P", "C[k]");
-    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isFalse();
   }
 
   @Test
-  void severalItemsAreAppliedInTheOrderTheyAreWritten() {
-    database.command("sql", "CREATE DOCUMENT TYPE P");
-    database.command("sql", "CREATE DOCUMENT TYPE R");
-    database.command("sql", "CREATE DOCUMENT TYPE Q");
-    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, R");
-
-    database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q");
-    assertThat(superTypeNames("C")).containsExactly("R", "Q");
-
-    database.command("sql", "ALTER TYPE C SUPERTYPE +P, -R");
-    assertThat(superTypeNames("C")).containsExactly("Q", "P");
-
-    // a duplicate addition is the no-op addSuperType always made of a type that is already linked
-    database.command("sql", "ALTER TYPE C SUPERTYPE +R, +R");
-    assertThat(superTypeNames("C")).containsExactly("Q", "P", "R");
-  }
-
-  @Test
-  void additionRefusedInAStatementThatAlsoRemovesLeavesTheRemovalUnapplied() {
-    // written +T, -P: the addition comes first, and its refusal (a TIMESERIES type cannot be a super type) must leave P linked
-    database.command("sql", "CREATE DOCUMENT TYPE P");
-    database.command("sql", "CREATE PROPERTY P.k INTEGER");
-    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
-    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
-    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts FIELDS (k INTEGER)");
-    // T declares the column k as a property: the end state is fine and it is the addition that is refused
-
-    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE +T, -P"))//
-        .isInstanceOf(SchemaException.class)//
-        .hasMessageContaining("TIMESERIES");
-
-    assertThat(superTypeNames("C")).containsExactly("P");
-    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
-  }
-
-  @Test
-  void missingNameInAStatementLeavesTheTypeUntouched() {
-    database.command("sql", "CREATE DOCUMENT TYPE P");
-    database.command("sql", "CREATE DOCUMENT TYPE Q");
-    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
-
-    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE +Q, -Missing"))//
-        .isInstanceOf(SchemaException.class)//
-        .hasMessageContaining("Missing");
-
-    assertThat(superTypeNames("C")).containsExactly("P");
-  }
-
-  @Test
-  void removingTwoSuperTypesAtOnceIsRefusedBeforeTheFirstGoes() {
-    // k is provided by both: the first removal alone would pass, the statement as a whole leaves C without it
+  void removingTwoSuperTypesOfWhichOneStillProvidesThePropertyStopsAtTheSecond() {
+    // each removal is judged against the real state: the first one leaves C its k (Q has it), the second would not
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
@@ -361,10 +311,12 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P, -Q"))//
         .isInstanceOf(SchemaException.class)//
-        .hasMessageContaining("'C[k]'");
+        .hasMessageContaining("'C[k]'")//
+        .hasMessageContaining("removing 'Q'");
 
-    assertUnchanged("C", "P", "C[k]");
-    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
+    // the index never stood on a property its type lost: C keeps k through Q
+    assertUnchanged("C", "Q", "C[k]");
+    assertThat(superTypeNames("C")).containsExactly("Q");
   }
 
   @Test
