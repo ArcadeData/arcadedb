@@ -117,4 +117,62 @@ class LiveVectorBitsFilterEdgeOracleTest {
       assertThat(unselective.get(ordinal)).as("ordinal %d: answered, never given up", ordinal)
           .isEqualTo(broad.contains(new RID(BUCKET, ordinal)));
   }
+
+  @Test
+  void aRowTheCallingTransactionSupersededIsRefusedWhetherOrNotThereIsAnAllowList() {
+    final VectorLocationIndex locations = new VectorLocationIndex();
+    for (int id = 0; id < 3; id++)
+      locations.addOrUpdate(id, false, 10L + id, new RID(BUCKET, id), false);
+    final int[] map = { 0, 1, 2 };
+    final Set<RID> superseded = Set.of(new RID(BUCKET, 1));
+
+    final LiveVectorBitsFilter unrestricted = new LiveVectorBitsFilter(null, map, locations, superseded);
+    assertThat(unrestricted.get(0)).isTrue();
+    assertThat(unrestricted.get(1)).as("live, but superseded").isFalse();
+    assertThat(unrestricted.get(2)).isTrue();
+
+    final LiveVectorBitsFilter listed = new LiveVectorBitsFilter(Set.of(new RID(BUCKET, 0), new RID(BUCKET, 1)), map, locations,
+        superseded);
+    assertThat(listed.get(0)).isTrue();
+    assertThat(listed.get(1)).as("allowed, but superseded").isFalse();
+    assertThat(listed.get(2)).as("live, but not allowed").isFalse();
+  }
+
+  /**
+   * At the 32nd call the walk has accepted 15 of 32 candidates: a rate of 1/2. It needs a beam of 16, so it has one candidate left
+   * to find, which costs 2 more calls, and the listing is capped at 8 times that: 16, or what the plan takes if that is less. The walk is
+   * given up when the {@code vectors} the predicate keeps at that rate, twice, are no more than the cap.
+   */
+  @Test
+  void aWalkIsGivenUpWhenTheListingCostsNoMoreThanHalfOfTheRestOfTheWalk() {
+    assertThat(listingCapOfTheWalkAfter32Calls(16, 1_000)).as("2 * (1/2) * 16 = 16, the cap: given up").isEqualTo(16);
+    assertThat(listingCapOfTheWalkAfter32Calls(17, 1_000)).as("2 * (1/2) * 17 = 17, past the cap: walked on").isEqualTo(-1);
+    assertThat(listingCapOfTheWalkAfter32Calls(100, 1_000)).isEqualTo(-1);
+    assertThat(listingCapOfTheWalkAfter32Calls(1, 1_000)).isEqualTo(16);
+    assertThat(listingCapOfTheWalkAfter32Calls(10, 10)).as("the plan takes 10 at most: the listing is capped at what it takes").isEqualTo(10);
+    assertThat(listingCapOfTheWalkAfter32Calls(11, 10)).isEqualTo(-1);
+  }
+
+  /** The cap of the listing the walk asks for, or -1 when 32 calls (15 accepted) do not give the walk up. */
+  private static int listingCapOfTheWalkAfter32Calls(final int vectors, final int maxCandidates) {
+    final VectorLocationIndex locations = new VectorLocationIndex();
+    final int[] map = new int[32];
+    final Set<RID> allowed = new HashSet<>();
+    for (int id = 0; id < 32; id++) {
+      final RID rid = new RID(BUCKET, id);
+      locations.addOrUpdate(id, false, id, rid, false);
+      map[id] = id;
+      if (id < 15)
+        allowed.add(rid);
+    }
+    final LiveVectorBitsFilter filter = new LiveVectorBitsFilter(allowed, map, locations, null, null, 16, vectors, maxCandidates);
+    for (int ordinal = 0; ordinal < 31; ordinal++)
+      filter.get(ordinal);
+    try {
+      filter.get(31);
+      return -1;
+    } catch (final LiveVectorBitsFilter.SelectiveWalkException e) {
+      return e.listingCap;
+    }
+  }
 }
