@@ -19,10 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,9 +60,14 @@ class Issue12968AliasIndexedQueryTest extends TestHelper {
       "SELECT FROM %s ORDER BY k", "SELECT FROM %s ORDER BY k DESC LIMIT 2", "SELECT FROM %s WHERE s CONTAINSTEXT 'word3'",
       "SELECT FROM %s WHERE u = 3", "SELECT FROM %s WHERE k = 6" })
   void theAliasAnswersWhatTheTypeNameAnswers(final String query) {
-    final long byName = count(query.formatted("Person"));
-    assertThat(byName).as(query).isPositive();
-    assertThat(count(query.formatted("Human"))).as(query.formatted("Human")).isEqualTo(byName);
+    final List<RID> byName = rids(query.formatted("Person"));
+    assertThat(byName).as(query).isNotEmpty();
+    final List<RID> byAlias = rids(query.formatted("Human"));
+    // the same records, and in the same order when the statement asks for one
+    if (query.contains("ORDER BY"))
+      assertThat(byAlias).as(query.formatted("Human")).containsExactlyElementsOf(byName);
+    else
+      assertThat(byAlias).as(query.formatted("Human")).containsExactlyInAnyOrderElementsOf(byName);
   }
 
   @Test
@@ -86,5 +95,14 @@ class Issue12968AliasIndexedQueryTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", query)) {
       return rs.stream().count();
     }
+  }
+
+  private List<RID> rids(final String query) {
+    final List<RID> rids = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", query)) {
+      while (rs.hasNext())
+        rids.add(rs.next().getIdentity().orElseThrow());
+    }
+    return rids;
   }
 }
