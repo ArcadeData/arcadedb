@@ -240,9 +240,12 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // opens) "local" or "config" by name exactly like any other, so a database called that is no exemption.
     if (!isAdminDatabase(databaseName)) {
       final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Command '" + command + "'");
-      // A cursor continuation is not admitted: it only serves the rows its find already read, and refusing it would break a
-      // cursor the client cannot resume
-      final boolean admit = !"getmore".equals(normalizedCommand) && !"killcursors".equals(normalizedCommand);
+      // A getMore of the cursor of a find is admitted like the find: it reads, filters and converts the rows of its batch (a filtered
+      // cursor scans the collection to find the next matches), so it is bounded by the gate, listed as a running query and stopped
+      // by a terminate. A refused one leaves the cursor where it was. What is not that, a killCursors that only releases and a
+      // getMore of a cursor of the library (its rows are read already), is not admitted
+      final boolean admit = !"killcursors".equals(normalizedCommand) && (!"getmore".equals(normalizedCommand) || readsFindCursor(
+          databaseName, query));
       return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> handleCommandOrCursor(channel,
           databaseName, command, normalizedCommand, query));
     }
@@ -259,6 +262,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
     return super.handleCommand(channel, databaseName, command, query);
   }
 
+  /** Whether a {@code getMore} names a cursor of a {@code find} of the database: the rows of its batch are read by the request itself. */
+  private boolean readsFindCursor(final String databaseName, final Document getMore) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper && wrapper.holdsFindCursor(getMore.get("getMore"));
+  }
+
   /**
    * A {@code getMore} or {@code killCursors} on a cursor of a {@code find} is served by the database that holds it, for the user that
    * opened it; anything else (a change stream's cursor, an unknown id) is the library's.
@@ -267,7 +275,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
       final String normalizedCommand, final Document query) {
     if ("getmore".equals(normalizedCommand)) {
       if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
-        final Document reply = wrapper.getMore(channel, query);
+        final Document reply = wrapper.getMore(query);
         if (reply != null)
           return reply;
       }

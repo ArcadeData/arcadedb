@@ -387,6 +387,9 @@ public class CypherOptimizer {
         orderByIndex(logicalPlan, rootOperator, anchorOperator) : null;
     if (indexOrdered != null)
       rootOperator = indexOrdered;
+    else
+      // 9b. A statement that reads only the distinct far ends of its top chain of anonymous hops gets each far end once
+      rootOperator = DistinctEndsRewrite.apply(statement, rootOperator);
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();

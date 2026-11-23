@@ -1213,6 +1213,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else if (replaced.isDeleted(id))
             rebuilt.addOrUpdate(id, false, 0L, null, true);
         }
+    // An id below the snapshot that the pages did not yield either: a commit that had replayed its index operations (handing out
+    // the id and recording its location) when the snapshot was taken, and had not yet written its pages when they were read, which
+    // is what a page reader sees of a commit until its second phase. The loop above starts at the snapshot and cannot know it, so
+    // the record would be left with no location while the pages hold its vector (issue #12828). Only a live location of a record the
+    // rebuilt index has no live id for is taken over: an id the pages answered for, or one a record left out of the pages on purpose
+    // shares with another, is never one of those.
+    if (replaced != null) {
+      final int below = Math.min(Math.max(0, idsFrom), nextId.get());
+      final PrimitiveIterator.OfInt replacedLive = replaced.getAllVectorIds().iterator();
+      while (replacedLive.hasNext()) {
+        final int id = replacedLive.nextInt();
+        if (id >= below)
+          break;
+        if (rebuilt.isLive(id) || rebuilt.isDeleted(id))
+          continue;
+        final long offsetAndFlag = replaced.getOffsetAndFlag(id);
+        final RID rid = replaced.getRid(id);
+        if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null && rebuilt.getVectorIdsForRid(rid).length == 0)
+          rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag), rid,
+              false);
+      }
+    }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
     // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,

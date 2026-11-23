@@ -47,8 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * A {@code find} answers a first batch and leaves a cursor for the rest, as mongod does, instead of converting every document of the
  * collection before the first one is sent: the answer is the same documents in the same order whatever the cursor options, the first
- * batch converts no more than it holds, and what a cursor holds is released when it is exhausted, killed, abandoned with its
- * connection or idle.
+ * batch converts no more than it holds, and what a cursor holds is released when it is exhausted, killed or idle (a cursor is the
+ * client's, not the connection's: any connection of its user may read its batches).
  */
 public class MongoFindBatchesTest extends BaseMongoServerTest {
   private static final int    DOCUMENTS = 10_000;
@@ -282,18 +282,84 @@ public class MongoFindBatchesTest extends BaseMongoServerTest {
         MongoCommandException.class, e -> assertThat(e.getErrorCode()).isEqualTo(43));
   }
 
+  /**
+   * A driver pools its connections, closes them (a pool cleared by an error on another connection, {@code maxIdleTimeMS}) while a
+   * cursor is still being read, and asks the next batch on any other one: mongod's cursors are not tied to a connection, and a
+   * cursor that went with the connection it was last read on answered a client in the middle of its scan CursorNotFound.
+   */
   @Test
-  void theConnectionThatLastReadACursorTakesItAwayWhenItCloses() {
-    // a cursor opened and left behind on a connection of its own
+  void aCursorSurvivesTheConnectionThatOpenedItAndIsReadOnAnotherOne() {
+    final long id;
     try (final MongoClient other = newClient("root", DEFAULT_PASSWORD_FOR_TESTS)) {
       final Document reply = other.getDatabase(getDatabaseName()).runCommand(new Document("find", "c").append("batchSize", 5));
-      assertThat(idOf(reply)).isNotZero();
+      id = idOf(reply);
+      assertThat(id).isNotZero();
       assertThat(wrapper().openCursors()).isEqualTo(1);
     }
-    // the server notices the closed socket on its own thread
-    for (int i = 0; i < 200 && wrapper().openCursors() > 0; i++)
+    // the server notices the closed socket on its own thread: give it the time it needs to (wrongly) drop the cursor
+    for (int i = 0; i < 20; i++)
       sleepBriefly();
-    assertThat(wrapper().openCursors()).as("the cursor went with its connection").isZero();
+
+    assertThat(wrapper().openCursors()).as("the cursor is the client's, not the connection's").isEqualTo(1);
+    final Document more = run(new Document("getMore", id).append("collection", "c").append("batchSize", 3));
+    assertThat(batchOf(more, "nextBatch")).extracting(d -> d.get("n")).containsExactly(5, 6, 7);
+    assertThat(idOf(more)).isEqualTo(id);
+  }
+
+  @Test
+  void theBatchesOfACursorMayBeAskedOnDifferentConnectionsAndThreads() {
+    // the rows of a type scan, of a filter the SQL answers, and of a sort, each read by the batches of two connections in turn
+    try (final MongoClient other = newClient("root", DEFAULT_PASSWORD_FOR_TESTS)) {
+      final var otherDb = other.getDatabase(getDatabaseName());
+      final Document[] finds = { new Document("find", "c").append("batchSize", 7),
+          new Document("find", "c").append("filter", new Document("g", 3)).append("batchSize", 7),
+          new Document("find", "c").append("sort", new Document("n", -1)).append("batchSize", 7) };
+      final List<List<Document>> models = List.of(model(d -> true, null, 1, 0, 0, null), model(d -> d.getInteger("g") == 3, null, 1, 0, 0, null),
+          model(d -> true, "n", -1, 0, 0, null));
+      for (int f = 0; f < finds.length; f++) {
+        // the find on a connection of its own, the batches alternate between it and the other one
+        try (final MongoClient opener = newClient("root", DEFAULT_PASSWORD_FOR_TESTS)) {
+          final Document reply = opener.getDatabase(getDatabaseName()).runCommand(finds[f]);
+          final List<Document> got = new ArrayList<>(batchOf(reply, "firstBatch"));
+          final long id = idOf(reply);
+          assertThat(id).isNotZero();
+          for (int turn = 0; ; turn++) {
+            final var db = turn % 2 == 0 ? otherDb : client.getDatabase(getDatabaseName());
+            final Document more = db.runCommand(new Document("getMore", id).append("collection", "c").append("batchSize", 1_000));
+            got.addAll(batchOf(more, "nextBatch"));
+            if (idOf(more) == 0L)
+              break;
+          }
+          assertThat(got).as("find #%d", f).isEqualTo(models.get(f));
+        }
+      }
+    }
+    assertThat(wrapper().openCursors()).isZero();
+  }
+
+  @Test
+  void aUserThatHoardsCursorsClosesItsOwnAndNotTheOnesOfTheOtherUsers() {
+    final ServerSecurity security = getServer(0).getSecurity();
+    security.createUser(new JSONObject().put("name", LIMITED_USER).put("password", security.encodePassword(LIMITED_PASSWORD))
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("admin"))));
+
+    // the cursor of the other user is the idlest of the database: a plain least-recently-used eviction would close it first
+    final long mine;
+    try (final MongoClient other = newClient(LIMITED_USER, LIMITED_PASSWORD)) {
+      mine = idOf(other.getDatabase(getDatabaseName()).runCommand(new Document("find", "c").append("batchSize", 1)));
+    }
+
+    final long hoarded = idOf(run(new Document("find", "c").append("batchSize", 1)));
+    for (int i = 1; i < MongoDBDatabaseWrapper.MAX_OPEN_CURSORS; i++)
+      run(new Document("find", "c").append("batchSize", 1));
+    assertThat(wrapper().openCursors()).as("the cap holds").isEqualTo(MongoDBDatabaseWrapper.MAX_OPEN_CURSORS);
+
+    assertThatThrownBy(() -> run(new Document("getMore", hoarded).append("collection", "c"))).as(
+        "the idlest of the user that holds the most made room").isInstanceOf(MongoCommandException.class);
+    try (final MongoClient other = newClient(LIMITED_USER, LIMITED_PASSWORD)) {
+      assertThat(batchOf(other.getDatabase(getDatabaseName()).runCommand(new Document("getMore", mine).append("collection", "c")
+          .append("batchSize", 1)), "nextBatch")).as("the cursor of the other user is still there").hasSize(1);
+    }
   }
 
   @Test

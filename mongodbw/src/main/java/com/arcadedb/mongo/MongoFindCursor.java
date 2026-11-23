@@ -22,7 +22,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import de.bwaldvogel.mongo.backend.Cursor;
 import de.bwaldvogel.mongo.bson.Document;
-import io.netty.channel.Channel;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -40,8 +39,8 @@ import java.util.logging.Level;
  * It is a plain {@link Cursor}: {@link #takeDocuments} serves a {@code getMore}. The rows are pulled from a live iterator (a type
  * scan, or a SQL {@link com.arcadedb.query.sql.executor.ResultSet}), so the cursor holds that resource until it is exhausted or
  * {@link #close() closed}: the creator closes it when the first batch drains the rows, and the database wrapper closes it on
- * {@code killCursors}, when the connection that last used it goes away, when it has been idle for too long, or when the database it
- * reads is replaced.
+ * {@code killCursors}, when it has been idle for too long, when the collection is dropped, or when the database it reads is
+ * replaced. It is not tied to a connection: the batches of one cursor may be asked on different connections, and threads.
  * <p>
  * Skip and limit are counted on the rows, before any conversion: a skipped row is never converted, and the rows past the limit are
  * never read. The cursor is used by one request at a time (a {@code getMore} racing the {@code killCursors} of the same id is
@@ -61,13 +60,12 @@ final class MongoFindCursor implements Cursor {
   private       boolean        closed;
   private       boolean        drained;
 
-  // WHAT THE DATABASE WRAPPER KNOWS ABOUT A REGISTERED CURSOR
+  // WHAT THE DATABASE WRAPPER KNOWS ABOUT A REGISTERED CURSOR: SET BEFORE THE CURSOR IS PUBLISHED IN ITS MAP, WHICH PUBLISHES THEM TOO
   private volatile long    id;
   private          String  owner;
   private          String  collection;
   /** Asked for with {@code noCursorTimeout}: never closed for being idle. */
   private          boolean noTimeout;
-  private volatile Channel channel;
   private volatile long    lastUsedNanos;
 
   /**
@@ -136,6 +134,7 @@ final class MongoFindCursor implements Cursor {
     final List<Document> batch = new ArrayList<>((int) Math.min(maxDocuments, 128L));
     try {
       skipRows();
+      final boolean budgeted = maxBytes != Long.MAX_VALUE;
       long bytes = 0L;
       while (batch.size() < maxDocuments) {
         if (remaining <= 0L || !rows.hasNext()) {
@@ -146,13 +145,15 @@ final class MongoFindCursor implements Cursor {
         if (projection != null)
           document = projection.apply(document);
         batch.add(document);
-        bytes += estimateSize(document);
+        // the size is not asked of a batch with no budget (an OP_QUERY answers every document in one reply): it would walk every value
+        if (budgeted)
+          bytes += estimateSize(document);
         // the limit is reached with this document: known without reading a row more
         if (--remaining <= 0L) {
           drained = true;
           break;
         }
-        if (bytes >= maxBytes)
+        if (budgeted && bytes >= maxBytes)
           break;
       }
     } catch (final RuntimeException | Error e) {
@@ -212,17 +213,16 @@ final class MongoFindCursor implements Cursor {
 
   // ---- the part the database wrapper uses to keep it between requests
 
-  void register(final long id, final String owner, final String collection, final boolean noTimeout, final Channel channel,
-      final long nowNanos) {
+  /** Called before the cursor is published to the requests of the other connections: what they read of it is set by then. */
+  void register(final long id, final String owner, final String collection, final boolean noTimeout, final long nowNanos) {
     this.id = id;
     this.owner = owner;
     this.collection = collection;
     this.noTimeout = noTimeout;
-    touch(channel, nowNanos);
+    touch(nowNanos);
   }
 
-  void touch(final Channel channel, final long nowNanos) {
-    this.channel = channel;
+  void touch(final long nowNanos) {
     this.lastUsedNanos = nowNanos;
   }
 
@@ -232,10 +232,6 @@ final class MongoFindCursor implements Cursor {
 
   String getCollection() {
     return collection;
-  }
-
-  Channel getChannel() {
-    return channel;
   }
 
   long getLastUsedNanos() {
