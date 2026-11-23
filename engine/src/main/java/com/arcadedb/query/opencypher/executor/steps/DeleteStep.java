@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
+import com.arcadedb.query.opencypher.executor.DeletedReferences;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -52,7 +53,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -147,24 +147,41 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
 
-  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
-  private String[]                              rowVariables;
-  private final IdentityHashMap<Object, Object> containerMemo    = new IdentityHashMap<>();
-  private long                                  memoChangeCount  = -1;
-  private int                                   memoPendingSize  = -1;
-  private long                                  markStateVersion = 0;
-  private Set<Object>                           pinnedVisited;
+  /**
+   * Lines the rows this step serves up with what the statement deleted: the entity the clause deleted is the marker in its
+   * own column already, and the rest of the row - the other aliases of it, and the lists, maps and paths that hold it - is
+   * handled by {@link DeletedReferences} when the row is served (issue #12548).
+   */
+  private final DeletedReferences rowReferences = new DeletedReferences(this::isDeletedOrDoomed);
 
-  private long syncMarkState() {
-    final long cc = deleted.getChangeCount();
-    final int ps = pendingVertices.size();
-    if (cc != memoChangeCount || ps != memoPendingSize) {
-      containerMemo.clear();
-      memoChangeCount = cc;
-      memoPendingSize = ps;
-      markStateVersion++;
-    }
-    return markStateVersion;
+  /**
+   * The records of a FOREACH iteration's DELETE, which is run when the iteration ends (see {@link #DEFERRED_DELETE_BATCH_VAR}):
+   * the clauses after it in the body read them as deleted already, as they read the variable it deleted. Null outside a FOREACH
+   * body. A relationship of a lightweight type is not kept: its twins share one RID, and the survivor must not read as deleted.
+   */
+  private Set<RID> deferredRids;
+
+  // The lightweight edges the rows retain in collections, whose occurrence is resolved already: each collection once, by identity
+  private Set<Object> pinnedVisited;
+
+  /**
+   * @return true when the statement deleted {@code record}, or this DELETE is about to: a vertex it found still connected and
+   * left to the end (see {@link #pendingVertices}), or a record its FOREACH iteration deletes when it ends
+   */
+  private boolean isDeletedOrDoomed(final Document record) {
+    if (deleted.isDeleted(record))
+      return true;
+    if (!pendingVertices.isEmpty() && record instanceof Vertex vertex && pendingVertices.contains(vertex.getIdentity()))
+      return true;
+    if (deferredRids == null)
+      return false;
+    final RID rid = record.getIdentity();
+    return rid != null && !(rid instanceof LightEdgeRID) && deferredRids.contains(rid);
+  }
+
+  /** @return true when something was deleted, or is about to be, that a row can still hold */
+  private boolean hasDeletions() {
+    return !deleted.isEmpty() || !pendingVertices.isEmpty() || deferredRids != null;
   }
 
   private Set<Object> getPinnedVisited() {
@@ -192,7 +209,6 @@ public class DeleteStep extends AbstractExecutionStep {
       private List<Result> materializedInput = null;
       private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
-      private final List<Long> bufferVersions = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
 
@@ -216,11 +232,11 @@ public class DeleteStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        final int index = bufferIndex++;
-        final Result row = buffer.get(index);
-        final long rowVersion = bufferVersions.get(index);
-        if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && syncMarkState() != rowVersion && row instanceof ResultInternal mutableRow)
-          markCurrentRow(mutableRow, null);
+        final Result row = buffer.get(bufferIndex++);
+        // Served after every row of the batch deleted what it deletes, so a node a later row deleted is read as deleted
+        // through the aliases, lists, maps and paths this row holds (issue #12548). One check per row while nothing was deleted
+        if (hasDeletions())
+          rowReferences.mark(row);
         return row;
       }
 
@@ -234,7 +250,6 @@ public class DeleteStep extends AbstractExecutionStep {
 
       private void fetchMore(final int n) {
         buffer.clear();
-        bufferVersions.clear();
         bufferIndex = 0;
 
         // Initialize prevResults on first call
@@ -294,12 +309,8 @@ public class DeleteStep extends AbstractExecutionStep {
               }
             }
 
-            if ((!deleted.isEmpty() || !pendingVertices.isEmpty()) && inputResult instanceof ResultInternal mutableResult)
-              markCurrentRow(mutableResult, deletedVars);
-
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
-            bufferVersions.add(markStateVersion);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -358,124 +369,6 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
-  }
-
-  /**
-   * Recursively marks deleted entities in the row's properties with {@link DeletedEntityMarker}.
-   * Memoizes visited containers per deletion version to prevent O(N * size) traversal overhead
-   * when multiple rows share the same container reference (e.g. from collect()).
-   *
-   * @param row     the result row to inspect and mutate
-   * @param deleted what has been deleted so far
-   */
-  static void markRowDeletedReferences(final ResultInternal row, final DeletedSoFar deleted) {
-    markRowDeletedReferences(row, deleted, new IdentityHashMap<>());
-  }
-
-  static void markRowDeletedReferences(final ResultInternal row, final DeletedSoFar deleted, final Map<Object, Object> memo) {
-    for (final String variable : row.getPropertyNames()) {
-      final Object value = row.getProperty(variable);
-      final Object marked = markDeletedValue(value, deleted, null, memo);
-      if (marked != value) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
-        row.setProperty(variable, marked);
-    }
-  }
-
-  private void markCurrentRow(final ResultInternal row, final Set<String> deletedVars) {
-    syncMarkState();
-    if (rowVariables == null)
-      rowVariables = row.getPropertyNames().toArray(new String[0]);
-    for (final String variable : rowVariables) {
-      if (deletedVars != null && deletedVars.contains(variable))
-        continue;
-      final Object value = row.getProperty(variable);
-      final Object marked = markDeletedValue(value, deleted, pendingVertices, containerMemo);
-      if (marked != value) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
-        row.setProperty(variable, marked);
-    }
-  }
-
-  /**
-   * Recursively marks deleted entities inside containers with {@link DeletedEntityMarker}.
-   * Memoizes visited containers (List, Map, TraversalPath) by identity to avoid O(N * size) traversal
-   * when multiple rows share containers. Skips {@link LongRangeList} since numeric ranges can never
-   * contain vertices or edges.
-   * <p>
-   * Note: This method handles openCypher row value types ({@link Edge}, {@link Vertex}/{@link Document},
-   * {@link List}, {@link Map}, and {@link TraversalPath}). It does not descend into nested {@link Result}
-   * instances or detached map-serialized path copies.
-   */
-  private static Object markDeletedValue(final Object value, final DeletedSoFar deleted, final Set<RID> pendingVertices,
-      final Map<Object, Object> memo) {
-    if (value instanceof Edge edge) {
-      if (deleted.isDeletedEdge(edge))
-        return new DeletedEntityMarker(edge.getTypeName());
-      return value;
-    }
-
-    if (value instanceof Document doc) {
-      if (deleted.isDeletedRecord(doc) || (doc instanceof Vertex v && pendingVertices != null && pendingVertices.contains(v.getIdentity())))
-        return DeletedEntityMarker.INSTANCE;
-      return value;
-    }
-
-    if (value instanceof TraversalPath path) {
-      if (memo != null) {
-        final Object cached = memo.get(path);
-        if (cached != null)
-          return cached;
-      }
-      final Object marked = path.withDeleted(
-          v -> deleted.isDeletedRecord(v) || (pendingVertices != null && pendingVertices.contains(v.getIdentity())),
-          e -> deleted.isDeletedEdge(e));
-      if (memo != null)
-        memo.put(path, marked);
-      return marked;
-    }
-
-    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
-      if (memo != null) {
-        final Object cached = memo.get(list);
-        if (cached != null)
-          return cached;
-      }
-      List<Object> rebuilt = null;
-      for (int i = 0; i < list.size(); i++) {
-        final Object element = list.get(i);
-        final Object marked = markDeletedValue(element, deleted, pendingVertices, memo);
-        if (marked != element && rebuilt == null) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
-          rebuilt = new ArrayList<>(list);
-        if (rebuilt != null)
-          rebuilt.set(i, marked);
-      }
-      final Object result = rebuilt != null ? rebuilt : value;
-      if (memo != null)
-        memo.put(list, result);
-      return result;
-    }
-
-    if (value instanceof Map<?, ?> map) {
-      if (memo != null) {
-        final Object cached = memo.get(map);
-        if (cached != null)
-          return cached;
-      }
-      Map<Object, Object> rebuilt = null;
-      for (final Map.Entry<?, ?> entry : map.entrySet()) {
-        final Object val = entry.getValue();
-        final Object marked = markDeletedValue(val, deleted, pendingVertices, memo);
-        if (marked != val && rebuilt == null) // NOPMD: by identity, markDeletedValue returns original reference when unchanged
-          rebuilt = new LinkedHashMap<>(map);
-        if (rebuilt != null)
-          rebuilt.put(entry.getKey(), marked);
-      }
-      final Object result = rebuilt != null ? rebuilt : value;
-      if (memo != null)
-        memo.put(map, result);
-      return result;
-    }
-
-    return value;
   }
 
   /**
@@ -579,10 +472,14 @@ public class DeleteStep extends AbstractExecutionStep {
 
       if (deferredBatch != null) {
         final boolean detach = deleteClause.isDetach();
-        for (final Object edge : allEdges)
+        for (final Object edge : allEdges) {
           deferredBatch.add(new DeferredDeleteTarget(edge, detach));
-        for (final Object other : allOther)
+          rememberDeferred(edge);
+        }
+        for (final Object other : allOther) {
           deferredBatch.add(new DeferredDeleteTarget(other, detach));
+          rememberDeferred(other);
+        }
         return;
       }
 
@@ -604,6 +501,15 @@ public class DeleteStep extends AbstractExecutionStep {
       pendingVertices.clear();
       throw e;
     }
+  }
+
+  /** Notes a record the iteration of a FOREACH will delete when it ends, so the rest of its body reads it as deleted. */
+  private void rememberDeferred(final Object target) {
+    if (!(target instanceof Document record) || record.getIdentity() == null || record.getIdentity() instanceof LightEdgeRID)
+      return;
+    if (deferredRids == null)
+      deferredRids = new HashSet<>();
+    deferredRids.add(record.getIdentity());
   }
 
   /**
@@ -701,7 +607,8 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   private static void deleteObjectStatic(final Object obj, final DeletedSoFar deleted, final QueryStatistics stats) {
-    if (obj == null)
+    // A binding a row reads as deleted (an earlier iteration of the FOREACH deleted it) has nothing left to delete
+    if (obj == null || obj instanceof DeletedEntityMarker)
       return;
     if (obj instanceof Edge e) {
       if (deleted.claim(e))
@@ -1006,7 +913,8 @@ public class DeleteStep extends AbstractExecutionStep {
   @Override
   public void close() {
     pendingVertices.clear();
-    containerMemo.clear();
+    rowReferences.clear();
+    deferredRids = null;
     if (pinnedVisited != null)
       pinnedVisited.clear();
     releaseHeap();
@@ -1050,17 +958,14 @@ public class DeleteStep extends AbstractExecutionStep {
    * The edges a DETACH reads off a vertex are read after the deletes before it, so their lightweight twins are numbered
    * anew and are never compared with the ones already deleted: they exist, so they are deleted. And an edge whose
    * endpoint the statement already deleted went with it.
+   * <p>
+   * It is also what a row asks, through {@link DeletedReferences.Deletions}, whether a node or a relationship it holds is gone.
    */
-  public static final class DeletedSoFar {
+  public static final class DeletedSoFar implements DeletedReferences.Deletions {
     // VERTICES AND DOCUMENTS: RECORDS EQUAL BY RID (SEE BaseRecord.equals), SO INSTANCES OF ONE RECORD COLLAPSE
     private final Set<Object>     records  = new HashSet<>();
     private final EdgeIdentitySet edges    = new EdgeIdentitySet();
     private final RidHashSet      vertices = new RidHashSet();
-    private long                  changeCount;
-
-    long getChangeCount() {
-      return changeCount;
-    }
 
     /**
      * @return true when {@code edge} is still to delete, recording it as deleted: neither deleted already, nor taken
@@ -1074,10 +979,7 @@ public class DeleteStep extends AbstractExecutionStep {
         // THE EDGE RECORD IS GONE ALREADY
         return false;
       }
-      final boolean added = edges.add(edge.getIdentity());
-      if (added)
-        changeCount++;
-      return added;
+      return edges.add(edge.getIdentity());
     }
 
     /**
@@ -1090,10 +992,7 @@ public class DeleteStep extends AbstractExecutionStep {
      * lightweight one twice.
      */
     boolean claimJustRead(final Edge edge) {
-      final boolean added = edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
-      if (added)
-        changeCount++;
-      return added;
+      return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
     }
 
     /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
@@ -1110,16 +1009,15 @@ public class DeleteStep extends AbstractExecutionStep {
       return records.isEmpty() && edges.isEmpty() && vertices.isEmpty();
     }
 
-    boolean isDeletedEdge(final Edge edge) {
-      return edges.contains(edge.getIdentity()) || (!vertices.isEmpty() && wentWithDeletedVertex(edge));
-    }
-
-    boolean isDeletedRecord(final Document doc) {
-      return records.contains(doc);
-    }
-
-    boolean hasDeletedVertices() {
-      return !vertices.isEmpty();
+    /**
+     * @return true when the statement deleted {@code record}: a node or a record it removed, a relationship it removed or that
+     * went with an endpoint it removed
+     */
+    @Override
+    public boolean isDeleted(final Document record) {
+      if (record instanceof Edge edge)
+        return edges.contains(edge.getIdentity()) || (!vertices.isEmpty() && wentWithDeletedVertex(edge));
+      return records.contains(record);
     }
 
     boolean contains(final Object record) {
@@ -1127,14 +1025,12 @@ public class DeleteStep extends AbstractExecutionStep {
     }
 
     void add(final Object record) {
-      if (records.add(record))
-        changeCount++;
+      records.add(record);
     }
 
     void vertexDeleted(final Vertex vertex) {
       records.add(vertex);
       vertices.add(vertex.getIdentity());
-      changeCount++;
     }
   }
 }

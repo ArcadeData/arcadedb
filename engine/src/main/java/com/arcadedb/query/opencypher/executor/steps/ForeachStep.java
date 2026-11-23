@@ -34,6 +34,7 @@ import com.arcadedb.query.opencypher.ast.MergeClause;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
+import com.arcadedb.query.opencypher.executor.DeletedReferences;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
@@ -50,7 +51,6 @@ import com.arcadedb.query.sql.executor.WorkGuard;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -65,27 +65,19 @@ import java.util.NoSuchElementException;
 public class ForeachStep extends AbstractExecutionStep {
   /**
    * CommandContext variable holding the active {@link DeleteStep.DeletedSoFar} instance for the current FOREACH
-   * hierarchy. Nested FOREACH loops share the enclosing DeletedSoFar so deletions made in an inner FOREACH
-   * loop propagate back to the outer loop's bindings and collections upon completion.
+   * hierarchy. A FOREACH nested in the body of another runs on a plan of its own per iteration, so without this it would keep
+   * its own record of what it deleted: the outer loop would serve its rows without knowing the inner one removed a node they
+   * hold. Nested FOREACH loops share the outermost one's DeletedSoFar instead (issue #12548).
    */
   public static final String FOREACH_DELETED_SO_FAR_VAR = "__cypherForeachDeletedSoFar__";
   private final ForeachClause foreachClause;
   // WHAT THE DELETES OF EVERY ITERATION HAVE DELETED SO FAR: AN ELEMENT A LATER ITERATION BINDS AGAIN, OR A RELATIONSHIP
   // AN EARLIER ONE'S DETACH TOOK AWAY, IS NOT DELETED AND COUNTED AGAIN (#10008)
-  private final DeleteStep.DeletedSoFar         deletedSoFar    = new DeleteStep.DeletedSoFar();
-  private final IdentityHashMap<Object, Object> deleteMemo      = new IdentityHashMap<>();
-  private long                                  deleteMemoCount = -1;
+  private final DeleteStep.DeletedSoFar deletedSoFar = new DeleteStep.DeletedSoFar();
+  // THE ROWS SERVED READ WHAT THE DELETES ABOVE DELETED THROUGH THEIR ALIASES, LISTS, MAPS AND PATHS (#12548)
+  private final DeletedReferences deletedReferences = new DeletedReferences(deletedSoFar);
   private final ExpressionEvaluator evaluator;
   private final CypherFunctionFactory functionFactory;
-
-  private Map<Object, Object> getDeleteMemo() {
-    final long cc = deletedSoFar.getChangeCount();
-    if (cc != deleteMemoCount) {
-      deleteMemo.clear();
-      deleteMemoCount = cc;
-    }
-    return deleteMemo;
-  }
 
   /**
    * When true, the whole upstream row set is read to completion before the first FOREACH iteration
@@ -161,7 +153,6 @@ public class ForeachStep extends AbstractExecutionStep {
       private List<Result> materializedInput = null;
       private int materializedIndex = 0;
       private final List<Result> buffer = new ArrayList<>();
-      private final List<Long> bufferDeleteCounts = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
       private final LabelReplacements labelReplacements = LabelReplacements.of(context);
@@ -180,21 +171,21 @@ public class ForeachStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        final int index = bufferIndex++;
-        final Result result = buffer.get(index);
-        final long bufferedCount = bufferDeleteCounts.get(index);
+        final Result result = buffer.get(bufferIndex++);
         // A record this row holds may have been replaced after it was buffered: by a later row of the same batch, or by a
         // label write of a step downstream that consumed the rows served before it (a CALL body). Served with the live
         // records, not the deleted ones (issue #11764). Free while the statement replaced nothing: redirect() returns at
         // once, and otherwise it is one walk per row served
         labelReplacements.redirect(result);
-        if (!deletedSoFar.isEmpty() && deletedSoFar.getChangeCount() != bufferedCount && result instanceof ResultInternal mutableRow)
-          DeleteStep.markRowDeletedReferences(mutableRow, deletedSoFar, getDeleteMemo());
+        // A node an iteration of any row deleted is read as deleted through the aliases, lists, maps and paths this row holds
+        // (issue #12548). Free while the statement deleted nothing
+        final DeleteStep.DeletedSoFar active = activeDeletedSoFar(context);
+        if (!active.isEmpty())
+          (active == deletedSoFar ? deletedReferences : new DeletedReferences(active)).mark(result); // NOPMD: by identity
         if (finished && eagerHeapLimit != null && bufferIndex == buffer.size()) {
           // EVERY ROW OF THE EAGER EXECUTION WAS SERVED: IT IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT
           // SET OPEN
           buffer.clear();
-          bufferDeleteCounts.clear();
           bufferIndex = 0;
           eagerHeapLimit.release();
         }
@@ -211,7 +202,6 @@ public class ForeachStep extends AbstractExecutionStep {
 
       private void fetchMore(final int n) {
         buffer.clear();
-        bufferDeleteCounts.clear();
         bufferIndex = 0;
 
         if (prevResults == null) {
@@ -253,7 +243,6 @@ public class ForeachStep extends AbstractExecutionStep {
             executeForeach(inputRow, context);
             // Pass through the input row unchanged
             buffer.add(inputRow);
-            bufferDeleteCounts.add(deletedSoFar.getChangeCount());
             if (eagerExecution) {
               // HELD UNTIL THE LAST WRITE IS APPLIED, NOT JUST FOR A BATCH (a materialized input shares the rows, so they
               // are counted twice while both hold them: conservatively)
@@ -323,9 +312,10 @@ public class ForeachStep extends AbstractExecutionStep {
     Map<RID, Document> written = null;
 
     final Object existingDeleted = context.getVariable(FOREACH_DELETED_SO_FAR_VAR);
-    final DeleteStep.DeletedSoFar activeDeleted =
-        existingDeleted instanceof DeleteStep.DeletedSoFar d ? d : this.deletedSoFar;
+    final DeleteStep.DeletedSoFar activeDeleted = activeDeletedSoFar(context);
     context.setVariable(FOREACH_DELETED_SO_FAR_VAR, activeDeleted);
+    final DeletedReferences iterationReferences =
+        activeDeleted == deletedSoFar ? deletedReferences : new DeletedReferences(activeDeleted); // NOPMD: by identity
 
     // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
     final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
@@ -343,6 +333,9 @@ public class ForeachStep extends AbstractExecutionStep {
         // label write on x) is bound as its live record, not as the deleted original. The other bindings come from the
         // outer row, kept live below
         iterationRow.setProperty(variable, labelReplacements.resolveValue(element));
+        // The outer row was copied as it was bound: what an earlier iteration deleted is read as deleted by this one too
+        if (!activeDeleted.isEmpty())
+          iterationReferences.mark(iterationRow);
         final long replacementsBefore = labelReplacements.getReplacementCount();
 
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
@@ -375,9 +368,11 @@ public class ForeachStep extends AbstractExecutionStep {
     // refreshed, and walking it after every element would make the loop quadratic
     if (written != null)
       RowAliases.propagateUpdates(inputRow, written);
+  }
 
-    if (!activeDeleted.isEmpty() && inputRow instanceof ResultInternal mutableRow)
-      DeleteStep.markRowDeletedReferences(mutableRow, activeDeleted);
+  /** @return what the statement's FOREACH loops deleted so far: the outermost loop's, shared by the ones nested in its body */
+  private DeleteStep.DeletedSoFar activeDeletedSoFar(final CommandContext context) {
+    return context.getVariable(FOREACH_DELETED_SO_FAR_VAR) instanceof DeleteStep.DeletedSoFar shared ? shared : deletedSoFar;
   }
 
   private static boolean holdsCollection(final Result row) {
@@ -567,7 +562,7 @@ public class ForeachStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    deleteMemo.clear();
+    deletedReferences.clear();
     releaseHeap();
     if (eagerHeapLimit != null)
       eagerHeapLimit.release();

@@ -21,10 +21,13 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -337,39 +340,59 @@ class CypherDeletedEntityInCollectionIssue12548Test {
 
   @Test
   void testParallelLightweightEdgesDeletionRetainsSurvivingEdge() {
-    database.transaction(() -> {
-      execute("""
-          CREATE (p1:Leaf {id: 101, v: 1010})
-          CREATE (p2:Leaf {id: 102, v: 1020})
-          CREATE (p1)-[:R {k: 1}]->(p2)
-          CREATE (p1)-[:R {k: 2}]->(p2)""");
-    });
+    // Two LIGHTWEIGHT edges of one type over the same ordered pair share their RID: told apart by the entry of the edge list they
+    // were read from. Deleting one renumbers the other, so a survivor retained in a collection must keep the number it had
+    createTwoParallelLightweightEdges();
 
-    final List<Long> survivingK = new ArrayList<>();
     final List<Object> survivingKeys = new ArrayList<>();
+    final List<Long> sizes = new ArrayList<>();
 
     database.transaction(() -> {
       try (final ResultSet rs = database.command("opencypher", """
-          MATCH (p1:Leaf {id: 101})-[r:R]->(p2:Leaf {id: 102})
+          MATCH (p1:Leaf {id: 101})-[r:L]->(p2:Leaf {id: 102})
           WITH collect(r) AS rs
           DELETE rs[0]
-          RETURN rs[1].k AS k, keys(rs[1]) AS ks""")) {
+          RETURN keys(rs[1]) AS ks, size(rs) AS s""")) {
         while (rs.hasNext()) {
           final Result row = rs.next();
-          survivingK.add(((Number) row.getProperty("k")).longValue());
           survivingKeys.add(row.getProperty("ks"));
+          sizes.add(((Number) row.getProperty("s")).longValue());
         }
       }
     });
 
-    assertThat(survivingK).hasSize(1);
+    // The twin that was not deleted is read as it is, where a deleted one raises
     assertThat(survivingKeys).hasSize(1);
+    assertThat((List<?>) survivingKeys.get(0)).isEmpty();
+    assertThat(sizes).containsExactly(2L);
 
+    // ... and the one deleted is read as deleted
     assertDeletedEntityAccess("""
-        MATCH (p1:Leaf {id: 101})-[r:R]->(p2:Leaf {id: 102})
+        MATCH (p1:Leaf {id: 101})-[r:L]->(p2:Leaf {id: 102})
         WITH collect(r) AS rs
         DELETE rs[0]
-        RETURN rs[0].k""");
+        RETURN keys(rs[0]) AS ks""");
+  }
+
+  @Test
+  void testParallelLightweightEdgesDeletedTogetherAreBothDeleted() {
+    createTwoParallelLightweightEdges();
+
+    assertDeletedEntityAccess("""
+        MATCH (p1:Leaf {id: 101})-[r:L]->(p2:Leaf {id: 102})
+        WITH collect(r) AS rs
+        DELETE rs[0], rs[1]
+        RETURN keys(rs[1]) AS ks""");
+  }
+
+  private void createTwoParallelLightweightEdges() {
+    database.getSchema().createEdgeType("L");
+    database.transaction(() -> {
+      final MutableVertex p1 = database.newVertex("Leaf").set("id", 101L).save();
+      final MutableVertex p2 = database.newVertex("Leaf").set("id", 102L).save();
+      p1.newLightEdge("L", p2);
+      p1.newLightEdge("L", p2);
+    });
   }
 
   @Test
@@ -382,10 +405,130 @@ class CypherDeletedEntityInCollectionIssue12548Test {
 
   @Test
   void testMultiRowForeachBufferedRowSeesLaterRowDeletion() {
+    // Row lid = 6 is processed first and deletes nothing; row lid = 7 deletes b. Only the EARLIER row reads the list, so it is
+    // the earlier row that has to raise: it was buffered before the node it holds was deleted
     assertDeletedEntityAccess("""
         MATCH (b:B {id: 2}), (l:Leaf)
         WITH b, [b] AS list, l.id AS lid ORDER BY lid
         FOREACH (i IN CASE WHEN lid = 7 THEN [1] ELSE [] END | DETACH DELETE b)
-        RETURN list[0].v""");
+        RETURN CASE WHEN lid = 6 THEN list[0].v ELSE null END AS v""");
+  }
+
+  @Test
+  void testForeachRowWithANullListIsServedReadingTheDeletionOfALaterRow() {
+    // The FOREACH list of row lid = 6 is null: its body never runs, but the row holds a node row lid = 7 deletes
+    assertDeletedEntityAccess("""
+        MATCH (b:B {id: 2}), (l:Leaf)
+        WITH b, [b] AS list, l.id AS lid ORDER BY lid
+        FOREACH (i IN CASE WHEN lid = 7 THEN [1] END | DETACH DELETE b)
+        RETURN CASE WHEN lid = 6 THEN list[0].v ELSE null END AS v""");
+  }
+
+  @Test
+  void testForeachBodyClauseAfterTheDeleteReadsTheNestedAliasAsDeleted() {
+    // The body's DELETE runs when the iteration ends, but the clause after it reads the node as deleted already, through the
+    // list as it does through the variable
+    assertDeletedEntityAccess("""
+        MATCH (b:B {id: 2}), (a:A)
+        WITH a, b, [b] AS refs
+        FOREACH (i IN [1] | DETACH DELETE b SET a.c = refs[0].v)""");
+
+    assertDeletedEntityAccess("""
+        MATCH (b:B {id: 2}), (a:A)
+        WITH a, b
+        FOREACH (i IN [1] | DETACH DELETE b SET a.c = b.v)""");
+  }
+
+  @Test
+  void testForeachLaterIterationReadsWhatAnEarlierOneDeleted() {
+    assertDeletedEntityAccess("""
+        MATCH (n:Isolated), (a:A)
+        FOREACH (i IN [1, 2] | SET a.c = n.v DELETE n)""");
+  }
+
+  @Test
+  void testForeachDeletingTheSameNodeInEveryIterationDeletesItOnce() {
+    final List<Long> deleted = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Isolated)
+          FOREACH (i IN [1, 2, 3] | DELETE n)
+          RETURN count(*) AS c""")) {
+        while (rs.hasNext())
+          deleted.add(((Number) rs.next().getProperty("c")).longValue());
+      }
+    });
+
+    assertThat(deleted).containsExactly(1L);
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Isolated) RETURN count(n) AS c")) {
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isZero();
+    }
+  }
+
+  @Test
+  void testLabelWriteAfterTheDeleteKeepsThePathReadingTheDeletion() {
+    // SET a:Extra replaces the node a under a new RID and rebuilds the path that holds it: the rebuilt path still reads b as deleted
+    database.getSchema().createVertexType("Extra");
+    assertDeletedEntityAccess("""
+        MATCH p = (a:A)-[:R]->(b:B)
+        DETACH DELETE b
+        SET a:Extra
+        UNWIND nodes(p) AS nn
+        RETURN nn.v""");
+  }
+
+  @Test
+  void testAnOrdinaryDeleteStillAnswersRowsThatHoldNoDeletedEntity() {
+    final List<Long> values = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (a:A), (b:B)
+          WITH a, b, [a, 'text', 3] AS mixed, {k: a.v} AS m
+          DETACH DELETE b
+          RETURN a.v AS av, size(mixed) AS s, mixed[0].v AS mv, m.k AS k""")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          values.add(((Number) row.getProperty("av")).longValue());
+          values.add(((Number) row.getProperty("s")).longValue());
+          values.add(((Number) row.getProperty("mv")).longValue());
+          values.add(((Number) row.getProperty("k")).longValue());
+        }
+      }
+    });
+    assertThat(values).containsExactly(10L, 3L, 10L, 10L);
+  }
+
+  /**
+   * The rows of a DELETE that removes one node per row share the list that holds them all: the cost of a row must not grow with
+   * the size of that list (a copy or a walk of it per row made the statement quadratic).
+   */
+  @Test
+  @Tag("slow")
+  void testPerRowDeleteOfAnElementOfASharedListIsLinear() {
+    final int count = 50_000;
+    database.getSchema().createVertexType("Perf");
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        database.newVertex("Perf").set("i", (long) i).save();
+    });
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+    final long[] rows = new long[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Perf)
+          WITH collect(n) AS ns
+          UNWIND ns AS x
+          DELETE x
+          RETURN size(ns) AS s""")) {
+        while (rs.hasNext()) {
+          assertThat(((Number) rs.next().getProperty("s")).longValue()).isEqualTo(count);
+          rows[0]++;
+        }
+      }
+    });
+
+    assertThat(rows[0]).isEqualTo(count);
+    stopwatch.assertGaveUpWithin(60_000L, "linear in the rows (a few seconds) from quadratic in the size of the shared list (minutes)");
   }
 }

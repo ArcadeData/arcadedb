@@ -19,23 +19,27 @@
 package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
+import com.arcadedb.query.opencypher.executor.DeletedReferences.Deletions;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Unit tests for TraversalPath methods handling deleted entities:
- * withDeleted, subPath, reversed, toAlternatingList, toMap, getMember, equals, hashCode,
- * and constructor preservation of deletion masks.
+ * Unit tests for the way a {@link TraversalPath} reads the nodes and relationships a statement deleted (issue #12548):
+ * {@code withDeletions}, and what the derived paths ({@code subPath}, {@code reversed}, {@code withRecord}, the constructors)
+ * keep of it.
  */
 class TraversalPathDeletedEntitiesTest extends TestHelper {
   private Vertex a;
@@ -77,160 +81,201 @@ class TraversalPathDeletedEntitiesTest extends TestHelper {
     return path;
   }
 
-  @Test
-  void testWithDeletedIdentityWhenUnchanged() {
-    final TraversalPath path = createPath();
-    final TraversalPath result = path.withDeleted(v -> false, e -> false);
-    assertThat(result).isSameAs(path);
+  /** What a statement deleted, as a set of records the test fills in whenever it likes. */
+  private static Deletions deleting(final Set<RID> deleted) {
+    return (final Document record) -> deleted.contains(record.getIdentity());
+  }
+
+  private static Set<RID> rids(final Document... records) {
+    final Set<RID> set = new HashSet<>();
+    for (final Document record : records)
+      set.add(record.getIdentity());
+    return set;
   }
 
   @Test
-  void testWithDeletedIncrementalMarking() {
+  void aPathWithNoDeletionCheckReadsItsRecords() {
     final TraversalPath path = createPath();
-    final TraversalPath path1 = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
-
-    assertThat(path1).isNotSameAs(path);
-    final List<Object> nodes1 = path1.getNodesOrDeleted();
-    assertThat(nodes1).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
-    assertThat(path1.getRelationshipsOrDeleted()).containsExactly(ab, bc);
-
-    // Incremental marking: mark edge ab deleted
-    final TraversalPath path2 = path1.withDeleted(v -> false, e -> e.getIdentity().equals(ab.getIdentity()));
-    assertThat(path2).isNotSameAs(path1);
-    assertThat(path2.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
-    final List<Object> rels2 = path2.getRelationshipsOrDeleted();
-    assertThat(rels2.get(0)).isInstanceOf(DeletedEntityMarker.class);
-    assertThat(((DeletedEntityMarker) rels2.get(0)).getRelationshipType()).isEqualTo("E");
-    assertThat(rels2.get(1)).isSameAs(bc);
-
-    // Re-running with same predicates returns path2 by identity
-    final TraversalPath unchanged = path2.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> e.getIdentity().equals(ab.getIdentity()));
-    assertThat(unchanged).isSameAs(path2);
+    assertThat(path.getDeletions()).isNull();
+    assertThat(path.getNodesOrDeleted()).containsExactly(a, b, c);
+    assertThat(path.getRelationshipsOrDeleted()).containsExactly(ab, bc);
   }
 
   @Test
-  void testWithDeletedIndependenceFromAddStep() {
+  void withDeletionsOfTheSameCheckReturnsThePathItself() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
+    final Deletions deletions = deleting(rids());
+    final TraversalPath checked = path.withDeletions(deletions);
 
-    // Modifying original path after withDeleted does not affect pathWithDel
+    assertThat(checked).isNotSameAs(path);
+    assertThat(checked.withDeletions(deletions)).isSameAs(checked);
+  }
+
+  @Test
+  void theCheckIsAskedWhenThePathIsRead() {
+    final TraversalPath path = createPath();
+    final Set<RID> deleted = rids();
+    final TraversalPath checked = path.withDeletions(deleting(deleted));
+
+    assertThat(checked.getNodesOrDeleted()).containsExactly(a, b, c);
+
+    // Deleted after the path was handed on: read as deleted all the same
+    deleted.add(b.getIdentity());
+    deleted.add(ab.getIdentity());
+
+    assertThat(checked.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
+    final List<Object> relationships = checked.getRelationshipsOrDeleted();
+    assertThat(relationships.get(0)).isInstanceOf(DeletedEntityMarker.class);
+    assertThat(((DeletedEntityMarker) relationships.get(0)).getRelationshipType()).isEqualTo("E");
+    assertThat(relationships.get(1)).isSameAs(bc);
+  }
+
+  @Test
+  void theOriginalPathIsNotChangedByTheCopy() {
+    final TraversalPath path = createPath();
+    final TraversalPath checked = path.withDeletions(deleting(rids(b)));
+
+    assertThat(path.getNodesOrDeleted()).containsExactly(a, b, c);
+    assertThat(checked.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
+
+    // The copy holds lists of its own: extending the original cannot change what the copy reads
     path.addStep(cd, d);
-
     assertThat(path.length()).isEqualTo(3);
-    assertThat(path.getVertices()).hasSize(4);
-
-    assertThat(pathWithDel.length()).isEqualTo(2);
-    assertThat(pathWithDel.getVertices()).hasSize(3);
-    assertThat(pathWithDel.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
+    assertThat(checked.length()).isEqualTo(2);
+    assertThat(checked.getVertices()).hasSize(3);
+    assertThat(checked.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
   }
 
   @Test
-  void testSubPathPreservesDeletedMarkers() {
+  void twoChecksAreBothAsked() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> e.getIdentity().equals(ab.getIdentity()));
+    final TraversalPath checked = path.withDeletions(deleting(rids(a))).withDeletions(deleting(rids(c, bc)));
 
-    final TraversalPath sub0to1 = pathWithDel.subPath(0, 1);
-    assertThat(sub0to1.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE);
-    assertThat(sub0to1.getRelationshipsOrDeleted().get(0)).isInstanceOf(DeletedEntityMarker.class);
-
-    final TraversalPath sub1to2 = pathWithDel.subPath(1, 2);
-    assertThat(sub1to2.getNodesOrDeleted()).containsExactly(DeletedEntityMarker.INSTANCE, c);
-    assertThat(sub1to2.getRelationshipsOrDeleted()).containsExactly(bc);
+    assertThat(checked.getNodesOrDeleted()).containsExactly(DeletedEntityMarker.INSTANCE, b, DeletedEntityMarker.INSTANCE);
+    final List<Object> relationships = checked.getRelationshipsOrDeleted();
+    assertThat(relationships.get(0)).isSameAs(ab);
+    assertThat(relationships.get(1)).isInstanceOf(DeletedEntityMarker.class);
   }
 
   @Test
-  void testReversedPreservesDeletedMarkers() {
+  void subPathOfAPartiallyDeletedPathKeepsOnlyWhatItsPartDeleted() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> e.getIdentity().equals(ab.getIdentity()));
+    final TraversalPath checked = path.withDeletions(deleting(rids(b, ab)));
 
-    final TraversalPath reversed = pathWithDel.reversed();
+    // Only some entries of the whole path are deleted: each part reads its own
+    final TraversalPath first = checked.subPath(0, 1);
+    assertThat(first.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE);
+    assertThat(first.getRelationshipsOrDeleted().get(0)).isInstanceOf(DeletedEntityMarker.class);
+
+    final TraversalPath second = checked.subPath(1, 2);
+    assertThat(second.getNodesOrDeleted()).containsExactly(DeletedEntityMarker.INSTANCE, c);
+    assertThat(second.getRelationshipsOrDeleted()).containsExactly(bc);
+
+    // A part that holds nothing deleted reads its records
+    final TraversalPath lastNode = checked.subPath(2, 2);
+    assertThat(lastNode.getNodesOrDeleted()).containsExactly(c);
+    assertThat(lastNode.getRelationshipsOrDeleted()).isEmpty();
+  }
+
+  @Test
+  void reversedOfAPartiallyDeletedPathReadsTheSameEntriesDeleted() {
+    final TraversalPath path = createPath();
+    final TraversalPath checked = path.withDeletions(deleting(rids(b, ab)));
+
+    final TraversalPath reversed = checked.reversed();
     assertThat(reversed.getNodesOrDeleted()).containsExactly(c, DeletedEntityMarker.INSTANCE, a);
-    final List<Object> revRels = reversed.getRelationshipsOrDeleted();
-    assertThat(revRels.get(0)).isSameAs(bc);
-    assertThat(revRels.get(1)).isInstanceOf(DeletedEntityMarker.class);
+    final List<Object> relationships = reversed.getRelationshipsOrDeleted();
+    assertThat(relationships.get(0)).isSameAs(bc);
+    assertThat(relationships.get(1)).isInstanceOf(DeletedEntityMarker.class);
   }
 
   @Test
-  void testToAlternatingListWithDeletedMarkers() {
+  void withRecordKeepsTheDeletionCheckAndReplacesOnlyTheMemberAskedFor() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> e.getIdentity().equals(bc.getIdentity()));
+    final TraversalPath checked = path.withDeletions(deleting(rids(b)));
 
-    final List<Object> alt = pathWithDel.toAlternatingList();
-    assertThat(alt).hasSize(5);
-    assertThat(alt.get(0)).isSameAs(a);
-    assertThat(alt.get(1)).isSameAs(ab);
-    assertThat(alt.get(2)).isInstanceOf(DeletedEntityMarker.class);
-    assertThat(alt.get(3)).isInstanceOf(DeletedEntityMarker.class);
-    assertThat(alt.get(4)).isSameAs(c);
+    // The writer replaced the snapshot of a with a newer one of the same record
+    final MutableVertex newerA = a.modify();
+    final TraversalPath replaced = checked.withRecord(a.getIdentity(), newerA);
+
+    assertThat(replaced).isNotSameAs(checked);
+    assertThat(replaced.getDeletions()).isSameAs(checked.getDeletions());
+    final List<Object> nodes = replaced.getNodesOrDeleted();
+    assertThat(nodes.get(0)).isSameAs(newerA);
+    assertThat(nodes.get(1)).isSameAs(DeletedEntityMarker.INSTANCE);
+    assertThat(nodes.get(2)).isSameAs(c);
   }
 
   @Test
-  void testToMapAndGetMember() {
+  void toAlternatingListMarksTheDeletedEntries() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
+    final TraversalPath checked = path.withDeletions(deleting(rids(b, bc)));
 
-    final Map<String, Object> map = pathWithDel.toMap();
+    final List<Object> alternating = checked.toAlternatingList();
+    assertThat(alternating).hasSize(5);
+    assertThat(alternating.get(0)).isSameAs(a);
+    assertThat(alternating.get(1)).isSameAs(ab);
+    assertThat(alternating.get(2)).isInstanceOf(DeletedEntityMarker.class);
+    assertThat(alternating.get(3)).isInstanceOf(DeletedEntityMarker.class);
+    assertThat(alternating.get(4)).isSameAs(c);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void toMapAndGetMemberMarkTheDeletedEntries() {
+    final TraversalPath path = createPath();
+    final TraversalPath checked = path.withDeletions(deleting(rids(b)));
+
+    final Map<String, Object> map = checked.toMap();
     assertThat(map.get(TraversalPath.TYPE_KEY)).isEqualTo(TraversalPath.PATH_TYPE);
     assertThat(map.get(TraversalPath.LENGTH_KEY)).isEqualTo(2);
+    assertThat((List<Object>) map.get(TraversalPath.NODES_KEY)).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
+    assertThat((List<Object>) map.get(TraversalPath.RELATIONSHIPS_KEY)).containsExactly(ab, bc);
 
-    @SuppressWarnings("unchecked")
-    final List<Object> nodes = (List<Object>) map.get(TraversalPath.NODES_KEY);
-    assertThat(nodes).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
-
-    @SuppressWarnings("unchecked")
-    final List<Object> memberNodes = (List<Object>) pathWithDel.getMember(TraversalPath.NODES_KEY);
-    assertThat(memberNodes).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
-    assertThat(pathWithDel.getMember(TraversalPath.LENGTH_KEY)).isEqualTo(2);
-    assertThat(pathWithDel.getMember(TraversalPath.TYPE_KEY)).isEqualTo(TraversalPath.PATH_TYPE);
+    assertThat((List<Object>) checked.getMember(TraversalPath.NODES_KEY)).containsExactly(a, DeletedEntityMarker.INSTANCE, c);
+    assertThat(checked.getMember(TraversalPath.LENGTH_KEY)).isEqualTo(2);
+    assertThat(checked.getMember(TraversalPath.TYPE_KEY)).isEqualTo(TraversalPath.PATH_TYPE);
   }
 
   @Test
-  void testEqualsAndHashCodeRemainEqualBeforeAndAfterMarkingDeleted() {
+  void equalityAndHashCodeStayOnTheRecords() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> e.getIdentity().equals(ab.getIdentity()));
+    final TraversalPath checked = path.withDeletions(deleting(rids(b, ab)));
 
-    assertThat(pathWithDel).isEqualTo(path);
-    assertThat(path).isEqualTo(pathWithDel);
-    assertThat(pathWithDel.hashCode()).isEqualTo(path.hashCode());
+    assertThat(checked).isEqualTo(path);
+    assertThat(path).isEqualTo(checked);
+    assertThat(checked.hashCode()).isEqualTo(path.hashCode());
   }
 
   @Test
-  void testConstructorsPreserveDeletedMarkers() {
+  void theConstructorsKeepTheDeletionCheck() {
     final TraversalPath path = createPath();
-    final TraversalPath pathWithDel = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
+    final TraversalPath checked = path.withDeletions(deleting(rids(b, cd)));
 
-    // Constructor extending by edge and vertex
-    final TraversalPath extended = new TraversalPath(pathWithDel, cd, d);
+    // Extending by an edge and a vertex
+    final TraversalPath extended = new TraversalPath(checked, cd, d);
     assertThat(extended.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c, d);
-    assertThat(extended.getRelationshipsOrDeleted()).containsExactly(ab, bc, cd);
+    assertThat(extended.getRelationshipsOrDeleted().get(2)).isInstanceOf(DeletedEntityMarker.class);
 
-    // Constructor extending by another path
-    final TraversalPath extPath = new TraversalPath(c);
-    extPath.addStep(cd, d);
-    final TraversalPath extPathWithDel = extPath.withDeleted(v -> v.getIdentity().equals(d.getIdentity()), e -> false);
-
-    final TraversalPath concatenated = new TraversalPath(pathWithDel, extPathWithDel);
+    // Extending by another path, which carries a check of its own
+    final TraversalPath tail = new TraversalPath(c);
+    tail.addStep(cd, d);
+    final TraversalPath checkedTail = tail.withDeletions(deleting(rids(d)));
+    final TraversalPath concatenated = new TraversalPath(checked, checkedTail);
     assertThat(concatenated.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE, c, DeletedEntityMarker.INSTANCE);
 
-    // Constructor extending by another path where the shared join vertex is marked deleted in extension
-    final TraversalPath extPath2 = new TraversalPath(c);
-    extPath2.addStep(cd, d);
-    final TraversalPath extPath2WithDel = extPath2.withDeleted(v -> v.getIdentity().equals(c.getIdentity()), e -> false);
-    final TraversalPath concatenatedJoinDeleted = new TraversalPath(path, extPath2WithDel);
-    assertThat(concatenatedJoinDeleted.getNodesOrDeleted()).containsExactly(a, b, DeletedEntityMarker.INSTANCE, d);
+    // Extending a path no DELETE saw by one that was
+    final TraversalPath plainBase = new TraversalPath(new TraversalPath(a), ab, b);
+    final TraversalPath joined = new TraversalPath(plainBase, new TraversalPath(b).withDeletions(deleting(rids(b))));
+    assertThat(joined.getNodesOrDeleted()).containsExactly(a, DeletedEntityMarker.INSTANCE);
   }
 
   @Test
-  void testAddStepThrowsOnMarkedPath() {
+  void addStepIsRefusedOnAPathThatReadsDeletions() {
     final TraversalPath path = createPath();
-    final TraversalPath markedVertices = path.withDeleted(v -> v.getIdentity().equals(b.getIdentity()), e -> false);
-    assertThatThrownBy(() -> markedVertices.addStep(cd, d))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
+    final TraversalPath checked = path.withDeletions(deleting(rids()));
 
-    final TraversalPath markedEdges = path.withDeleted(v -> false, e -> e.getIdentity().equals(ab.getIdentity()));
-    assertThatThrownBy(() -> markedEdges.addStep(cd, d))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("Cannot call addStep() on a TraversalPath carrying deleted entity markers");
+    assertThatThrownBy(() -> checked.addStep(cd, d)).isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Cannot call addStep() on a TraversalPath carrying deleted entity checks");
   }
 }
