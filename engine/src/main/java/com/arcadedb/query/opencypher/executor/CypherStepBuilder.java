@@ -387,7 +387,7 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY (if any), unless the operators already produce the rows in that order from an index (issue #8422)
     if (statement.getOrderByClause() != null && !physicalPlan.isIndexOrdered()) {
-      final Integer topKVal = evaluateTopKLimit(statement, context);
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -945,7 +945,7 @@ final class CypherStepBuilder {
 
     // ORDER BY
     if (statement.getOrderByClause() != null && currentStep != null) {
-      final Integer topKVal = evaluateTopKLimit(statement, context);
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep =
           new OrderByStep(statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1822,7 +1822,7 @@ final class CypherStepBuilder {
 
     // Step 8: ORDER BY clause - sort results
     if (statement.getOrderByClause() != null && currentStep != null) {
-      final Integer topKVal = evaluateTopKLimit(statement, context);
+      final Integer topKVal = evaluateTopKLimit(statement, context, functionFactory);
 
       final OrderByStep orderByStep = new OrderByStep(
           statement.getOrderByClause(), context, functionFactory, topKVal).withProjection(returnItemsOf(statement));
@@ -1861,7 +1861,8 @@ final class CypherStepBuilder {
     return withLastWriteStreaming(currentStep);
   }
 
-  private Integer evaluateTopKLimit(final CypherStatement statement, final CommandContext context) {
+  private Integer evaluateTopKLimit(final CypherStatement statement, final CommandContext context,
+      final CypherFunctionFactory functionFactory) {
     if (statement.getLimit() == null)
       return null;
     final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
