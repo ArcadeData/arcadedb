@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -233,10 +234,13 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     QueryAdmissionGate.Ticket admission = null;
     RunningQuery runningQuery = null;
     HttpClientDisconnectWatch disconnectWatch = null;
+    boolean keepsTheLeadersAnswer = false;
     try {
       // A write forwarded to the leader leaves its answer here (ForwardedRequestIdContext), for the catch below. Only an HA
-      // request outside a session forwards: a session's statements run on this node
-      if (haDbForRead != null && activeSession == null)
+      // request outside a session forwards: a session's statements run on this node. And only a route whose body is one command: the
+      // leader's answer to the write it forwarded is the answer to that command, and to nothing else a request could ask for
+      keepsTheLeadersAnswer = haDbForRead != null && activeSession == null && commandForwardIsWholeRequest();
+      if (keepsTheLeadersAnswer)
         ForwardedRequestIdContext.armCommittedWriteAnswer();
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
@@ -312,16 +316,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // Emit bookmark header for read-your-writes consistency
       emitCommitIndexBookmark(exchange, haDbForRead);
 
-    } catch (final NeedRetryException | DatabaseIsReopeningException failure) {
+    } catch (final RuntimeException failure) {
       // A write this request forwarded to the leader is durable there: a refusal the client is told to retry, raised by what this
       // node does afterwards (its copy of the database replaced by an HA resync under the request, a commit gate refusing the empty
       // transaction around the forward), must not be answered as one, because the retry would run the write a second time. Any
       // other failure (a security or serialization error, a timeout, a cancel) is not a statement about the write and is raised
-      if (!answerWithTheLeadersAnswer(response, failure))
+      if (!keepsTheLeadersAnswer || !isRetryableRefusal(failure) || !answerWithTheLeadersAnswer(response, failure))
         throw failure;
     } finally {
       // Whatever way the request ends, a pooled worker thread keeps no answer of this request (handleRequest clears the rest)
-      if (haDbForRead != null && activeSession == null)
+      if (keepsTheLeadersAnswer)
         ForwardedRequestIdContext.disarmCommittedWriteAnswer();
       try {
         if (haDbForRead != null) {
@@ -364,13 +368,25 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
-   * Settles a request that failed with a retryable refusal ({@link NeedRetryException}, {@link DatabaseIsReopeningException}) after
-   * the leader answered the write it forwarded: the answer of the request becomes the leader's own, unless the handler had rendered
-   * one already. Such a refusal can only be of what this node does with a write the leader has committed, so it says nothing about
-   * the write, and the 503 it maps to invites the replay that applies it twice.
+   * Whether a failure is one the client is told to retry: a {@link NeedRetryException} or a {@link DatabaseIsReopeningException},
+   * which {@link AbstractServerHttpHandler#classifyError} answers 503 wherever they sit in the cause chain, so the engine's wrapper
+   * around them (a transaction or command failure) does not change what the client does with them. Package-private for direct unit
+   * testing.
+   */
+  static boolean isRetryableRefusal(final Throwable failure) {
+    return CauseChain.contains(failure, NeedRetryException.class) || CauseChain.contains(failure, DatabaseIsReopeningException.class);
+  }
+
+  /**
+   * Settles a request that failed with a retryable refusal ({@link #isRetryableRefusal}) after the leader answered the write it
+   * forwarded: the answer of the request becomes the leader's own, unless the handler had rendered one already. Such a refusal can
+   * only be of what this node does with a write the leader has committed, so it says nothing about the write, and the 503 it maps to
+   * invites the replay that applies it twice.
    * <p>
-   * Only when the request forwarded exactly one write ({@link ForwardedRequestIdContext#takeCommittedWriteAnswer()}): with
-   * several, the latest answer covers a part of the request. Package-private for direct unit testing.
+   * Only when the leader's answer can stand for the whole request ({@link ForwardedRequestIdContext#takeCommittedWriteAnswer()}):
+   * one write forwarded, no forward that failed after it, no command executed on this node. The body is the leader's rendering of
+   * the forwarded statement, which is the client's own only when that forward was the client's whole request with its key relayed.
+   * Package-private for direct unit testing.
    *
    * @return true when the request has an answer now, false when the failure has to be raised as it is
    */

@@ -752,19 +752,20 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // rolled back here rather than left open, the same end a conflict at commit gives it, so the retry the refusal
     // asks for starts from a clean slate.
     //
-    // Not for a transaction that wrote nothing: it has no page delta to compute against a discarded copy, and refusing it
-    // answers "retry" for what may already be done. A write a follower forwarded to the leader leaves exactly such a
-    // transaction behind - the HTTP handler's, around the forward - and by the time it commits the leader has applied the
-    // write; the refusal turned that into a 503 the client replays (the retry loop is stopped by #12635, the answer is not).
-    final boolean wroteNothing = activeTransactionWroteNothing();
-    if (!wroteNothing)
-      try {
-        refuseClientWhileDirectoryIsReplaced();
-      } catch (final NeedRetryException e) {
+    // Not for the empty transaction that closes a write this node forwarded to the leader (issue #12889): it has no page delta to
+    // compute against a discarded copy, and by the time it commits the leader has applied the write, so refusing it answers "retry"
+    // for what is already done. The HTTP handler's transaction around the forward is exactly that, and the 503 the refusal turned it
+    // into is replayed by the client (the retry loop is stopped by #12635, the answer is not). Asked only once a refusal is about to
+    // be raised, so a healthy commit pays nothing for it.
+    try {
+      refuseClientWhileDirectoryIsReplaced();
+    } catch (final NeedRetryException e) {
+      if (!commitsOnlyAWriteForwardedToTheLeader()) {
         if (proxied.isTransactionActive())
           proxied.rollback();
         throw e;
       }
+    }
 
     proxied.incrementStatsWriteTx();
 
@@ -789,14 +790,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * Whether the transaction this thread would commit holds no write at all: no page, no index entry and no record written or
-   * queued for the commit. What {@code TransactionContext.commit1stPhase} treats as a read-only transaction, so such a commit
-   * replicates nothing, applies nothing and reads nothing of this node's copy.
+   * Whether the transaction this thread would commit is the empty one that closes a write this node forwarded to the leader (issue
+   * #12889): the leader answered it ({@link TransactionContext#getWritesCommittedByAnotherNode()}, set on every transaction of the
+   * thread by {@link #forwardCommandToLeaderViaRaft}) and the transaction has written nothing
+   * ({@link TransactionContext#hasWrittenNothing()}), so its commit is a read-only one that publishes and replicates nothing.
+   * <p>
+   * Both parts matter. An empty transaction that forwarded nothing is a client transaction that began before the replacement, and the
+   * gates keep refusing it. One that forwarded a write and wrote on its own account as well has pages computed against the copy being
+   * discarded, or an entry the closed state machine cannot apply, and is refused too.
+   * <p>
+   * The count lives as long as the thread's transaction context, which an HTTP request drops at its end; on a thread that keeps its
+   * context (a wire-protocol connection) it also covers a later empty transaction, which has nothing to compute against the discarded
+   * copy either.
    */
-  private boolean activeTransactionWroteNothing() {
+  private boolean commitsOnlyAWriteForwardedToTheLeader() {
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
     final TransactionContext tx = context != null ? context.getLastTransaction() : null;
-    return tx != null && tx.isActive() && !tx.hasChanges() && !tx.hasWrittenRecords();
+    return tx != null && tx.isActive() && tx.getWritesCommittedByAnotherNode() > 0 && tx.hasWrittenNothing();
   }
 
   /**
@@ -943,16 +953,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     // Issue #9411: a closed local state machine applies nothing, so an entry committed now could neither be published by
     // it nor by this thread without racing the replacement a restart builds (#8785): the commit would block for the
-    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably. A transaction that
-    // wrote nothing publishes no entry, so it is not refused (see commit()).
-    if (!activeTransactionWroteNothing())
-      try {
-        refuseCommitWhileStateMachineIsClosed();
-      } catch (final NeedRetryException e) {
+    // whole quorum timeout and be released unpublished. Refuse it before anything is prepared, retryably. The empty transaction that
+    // closes a write this node forwarded to the leader publishes no entry, so it is not refused (see commit()).
+    try {
+      refuseCommitWhileStateMachineIsClosed();
+    } catch (final NeedRetryException e) {
+      if (!commitsOnlyAWriteForwardedToTheLeader()) {
         if (proxied.isTransactionActive())
           proxied.rollback();
         throw e;
       }
+    }
 
     // --- PHASE 1 (read lock): capture WAL bytes and delta ---
     final ReplicationPayload payload = proxied.executeInReadLock(() -> {
@@ -5748,6 +5759,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs, final boolean mayWrite) {
     final AtomicLong leaderBookmark = new AtomicLong(-1L);
+    // So the request knows a write of it went out and, when it ends, whether the leader answered it (issue #12889): the leader's
+    // answer to one write stands for the request only while no other write of it failed
+    if (mayWrite)
+      ForwardedRequestIdContext.writeForwardStarted();
     try {
       final ResultSet result = forwardCommandToLeaderViaRaft(language, query, mapArgs, positionalArgs, true, mayWrite, leaderBookmark);
       // Whatever this node's role is now: one elected since the forward has not necessarily applied the old leader's entry yet
@@ -5758,6 +5773,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } finally {
       // Also when the forward failed after the leader answered: the bookmark is only ever set from a 200
       recordRequestWrite(leaderBookmark.get());
+      if (mayWrite)
+        ForwardedRequestIdContext.writeForwardEnded();
     }
   }
 

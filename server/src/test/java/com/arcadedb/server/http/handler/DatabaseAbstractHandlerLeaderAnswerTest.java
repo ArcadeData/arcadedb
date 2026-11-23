@@ -22,9 +22,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
@@ -134,6 +136,9 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     private HttpServer        httpServer;
     private ServerSecurityUser user;
     private int               publishes;
+    private int               refusedForwardsAfter;
+    private boolean           executedLocally;
+    private boolean           oneCommandRoute;
     private RuntimeException  failure;
 
     @BeforeEach
@@ -165,6 +170,10 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
       user = mock(ServerSecurityUser.class);
       when(user.canAccessToDatabase(anyString())).thenReturn(true);
       publishes = 1;
+      refusedForwardsAfter = 0;
+      executedLocally = false;
+      // A route whose body is one command, as POST /command: the only kind the leader's answer can stand for
+      oneCommandRoute = true;
       failure = null;
     }
 
@@ -177,13 +186,27 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     private ExecutionResponse run(final String databaseName, final String sessionId) throws Exception {
       final DatabaseAbstractHandler handler = new DatabaseAbstractHandler(httpServer) {
         @Override
+        protected boolean commandForwardIsWholeRequest() {
+          return oneCommandRoute;
+        }
+
+        @Override
         protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database db,
             final JSONObject payload) {
+          if (executedLocally)
+            ForwardedRequestIdContext.markExecutedLocally();
           // What the forward does on the way: the leader answered, the write is durable there
           for (int i = 0; i < publishes; i++) {
+            ForwardedRequestIdContext.writeForwardStarted();
             ForwardedRequestIdContext.publishCommittedWriteAnswer(LEADERS_BODY);
+            ForwardedRequestIdContext.writeForwardEnded();
             // As the forward does (issue #12635): the auto-commit loop around this block must not replay a write the leader committed
             DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath()).reportWriteCommittedByAnotherNode();
+          }
+          // A forward the leader never answered (refused, unreachable), after the ones above
+          for (int i = 0; i < refusedForwardsAfter; i++) {
+            ForwardedRequestIdContext.writeForwardStarted();
+            ForwardedRequestIdContext.writeForwardEnded();
           }
           if (failure != null)
             throw failure;
@@ -238,6 +261,61 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
       publishes = 2;
       assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
       publishes = 0;
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+    }
+
+    /**
+     * A refusal reaches the request boundary under the wrapper the engine put around it, and the error mapping answers it 503 all the
+     * same (it looks down the cause chain): the leader's answer covers that shape too, or the client replays the write.
+     */
+    @Test
+    void aRetryableRefusalUnderAWrapperIsAnsweredWithTheLeadersAnswer() throws Exception {
+      failure = new TransactionException("Error on commit", new NeedRetryException("Database 'ha' is being replaced from the leader"));
+      assertThat(run("ha", null).getResponse()).isEqualTo(LEADERS_BODY);
+
+      failure = new CommandExecutionException("Error on command", new DatabaseIsReopeningException("Database 'ha' is being reopened"));
+      assertThat(run("ha", null).getResponse()).isEqualTo(LEADERS_BODY);
+    }
+
+    /** The wrapper is not what decides: a wrapped failure that is not a refusal to retry is raised, as it is unwrapped. */
+    @Test
+    void aWrappedFailureThatIsNotARetryableRefusalIsRaised() {
+      failure = new TransactionException("Error on commit", new IllegalStateException("rendering failed"));
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+    }
+
+    /**
+     * Issue #12889, the partial success: a forward the leader answered, and then one it did not (refused at the entry gate, a
+     * snapshot-install 503, a refused connection). The first answer is the answer to a part of the request, and the 200 it would give
+     * hides that the second write never ran, which the client will not retry.
+     */
+    @Test
+    void aForwardThatFailedAfterAnAnsweredOneIsRaised() {
+      failure = new NeedRetryException("Database 'ha' is being replaced from the leader");
+      refusedForwardsAfter = 1;
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).as("the pooled thread is left clean").isNull();
+    }
+
+    /**
+     * A command this node ran itself is part of the request: the leader's answer to the one write it forwarded does not say what
+     * the rest did, and a 200 for it loses the local part of the request silently.
+     */
+    @Test
+    void aRequestThatExecutedACommandLocallyIsRaised() {
+      failure = new NeedRetryException("Database 'ha' is being replaced from the leader");
+      executedLocally = true;
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+    }
+
+    /**
+     * Only a route whose body is one command can be answered with the answer to one forwarded write: on any other the request asks
+     * for more than that write.
+     */
+    @Test
+    void aRouteThatIsNotOneCommandNeverArms() {
+      oneCommandRoute = false;
+      failure = new NeedRetryException("refused");
       assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
     }
 

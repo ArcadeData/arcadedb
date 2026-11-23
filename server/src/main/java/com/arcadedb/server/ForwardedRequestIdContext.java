@@ -99,6 +99,11 @@ public final class ForwardedRequestIdContext {
     private String  committedWriteAnswer;
     private int     committedWrites;
     private boolean committedWriteAnswerArmed;
+    // Set once the request did something that makes that answer the answer to a part of the request: a forward the leader never
+    // answered after one it did, or a command this node executed itself
+    private boolean committedWriteAnswerDisqualified;
+    // A write forward that started and has not been answered by the leader yet
+    private boolean writeForwardPending;
   }
 
   /**
@@ -208,9 +213,14 @@ public final class ForwardedRequestIdContext {
    * Records that this node executes a command of the request being served locally, so any command it forwards from
    * now on is a part of the request rather than the whole of it and relays no client key. Kept across
    * {@link #restartOrdinals()}: the retried attempt executes the same command locally again.
+   * <p>
+   * It also keeps the leader's answer to a write the request forwarded from standing for the request ({@link
+   * #takeCommittedWriteAnswer()}): what this node executed itself is not in that answer, wherever in the request it came.
    */
   public static void markExecutedLocally() {
-    STATE.get().commandForwardIsWholeRequest = false;
+    final State state = STATE.get();
+    state.commandForwardIsWholeRequest = false;
+    state.committedWriteAnswerDisqualified = true;
   }
 
   private static void clearWholeRequest(final State state) {
@@ -224,11 +234,15 @@ public final class ForwardedRequestIdContext {
     state.committedWriteAnswer = null;
     state.committedWrites = 0;
     state.committedWriteAnswerArmed = false;
+    state.committedWriteAnswerDisqualified = false;
+    state.writeForwardPending = false;
   }
 
   /**
-   * Starts keeping, for the request being served on this thread, the answers of the writes it forwards to the leader (see
-   * {@link #publishCommittedWriteAnswer}). Called by the HTTP handler that can answer with one; undone by {@link #clear()}.
+   * Starts keeping, for the request being served on this thread, the answer of the write it forwards to the leader (see
+   * {@link #publishCommittedWriteAnswer}). Called by the HTTP handler of a route whose body is one command, which is the only kind of
+   * request the leader's answer to a forwarded write can stand for; undone by {@link #disarmCommittedWriteAnswer()} and
+   * {@link #clear()}.
    */
   public static void armCommittedWriteAnswer() {
     final State state = STATE.get();
@@ -239,6 +253,32 @@ public final class ForwardedRequestIdContext {
   /** Drops what {@link #armCommittedWriteAnswer()} started keeping, whether or not an answer was taken. */
   public static void disarmCommittedWriteAnswer() {
     clearCommittedWrites(STATE.get());
+  }
+
+  /**
+   * Records that a write of the request is on its way to the leader, so {@link #writeForwardEnded()} can tell one the leader never
+   * answered. Does nothing on a thread no handler armed.
+   */
+  public static void writeForwardStarted() {
+    final State state = STATE.get();
+    if (state.committedWriteAnswerArmed)
+      state.writeForwardPending = true;
+  }
+
+  /**
+   * Records that the forward {@link #writeForwardStarted()} announced has ended, however it ended. When the leader never answered it
+   * (refused, unreachable, a deadline) and answered another write of this request before, the request did one write that stood and
+   * failed to do another: the first answer is the answer to a part of the request, and {@link #takeCommittedWriteAnswer()} gives
+   * none. A forward the leader never answered before any was answered leaves nothing behind: the request's loop sends the write
+   * again, and the answer it gets is the request's own.
+   */
+  public static void writeForwardEnded() {
+    final State state = STATE.get();
+    if (!state.writeForwardPending)
+      return;
+    state.writeForwardPending = false;
+    if (state.committedWrites > 0)
+      state.committedWriteAnswerDisqualified = true;
   }
 
   /**
@@ -257,16 +297,24 @@ public final class ForwardedRequestIdContext {
     if (!state.committedWriteAnswerArmed)
       return;
     state.committedWriteAnswer = answer;
+    state.writeForwardPending = false;
     ++state.committedWrites;
   }
 
   /**
-   * The leader's answer to the write this request forwarded, or null when the request forwarded no write, or more than one: with
-   * several, the latest answer is the answer to a part of the request, not to the request. Consumed.
+   * The leader's answer to the write this request forwarded, or null when it cannot stand for the request: it forwarded no write, or
+   * more than one (the latest answer is the answer to a part of the request), a forward of it failed after another was answered
+   * ({@link #writeForwardEnded()}), or this node executed a command of it itself ({@link #markExecutedLocally()}). Consumed.
+   * <p>
+   * The answer is the leader's own rendering of the statement this node forwarded. When that forward was the client's whole request
+   * with its key relayed it is the client's own body, and exactly what the client asked for; otherwise the body is the one rebuilt
+   * from the statement, so a {@code serializer}, {@code limit} or {@code typeHints} of the client is not applied to it. It is
+   * a correct acknowledgement of the write, in the default shape, which is better than a failure the client answers by
+   * writing again.
    */
   public static String takeCommittedWriteAnswer() {
     final State state = STATE.get();
-    final String answer = state.committedWrites == 1 ? state.committedWriteAnswer : null;
+    final String answer = state.committedWrites == 1 && !state.committedWriteAnswerDisqualified ? state.committedWriteAnswer : null;
     clearCommittedWrites(state);
     return answer;
   }

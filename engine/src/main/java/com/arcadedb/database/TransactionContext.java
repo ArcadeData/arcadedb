@@ -824,6 +824,18 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Whether this transaction has written nothing: no page modified or created, no index entry queued, and no record written or queued
+   * for the commit. The commit of such a transaction is a read-only one ({@link #commit1stPhase} answers null for it): it has no page
+   * delta to compute, and nothing to publish or replicate.
+   * <p>
+   * At least as strict as that test, which runs once the deferred updates have been applied to their pages: a transaction holding one
+   * has written something here, whatever the commit makes of it.
+   */
+  public boolean hasWrittenNothing() {
+    return !hasChanges() && !hasWrittenRecords();
+  }
+
+  /**
    * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
    * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
    * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
