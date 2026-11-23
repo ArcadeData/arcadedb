@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,9 +71,96 @@ class CypherMetaProceduresPerTypeAclTest extends TestHelper {
     assertThat(render("meta.stats")).contains("PublicNode");
   }
 
+  /**
+   * The relationship-based paths of the {@code meta.*} procedures (the endpoint labels of {@code meta.stats} and
+   * {@code meta.graph}, the target labels of {@code meta.relTypeProperties}) resolve a label from the endpoint's bucket: a
+   * readable relationship type that reaches a node of an unreadable type must not name that type's label (issue #12109).
+   */
+  @Test
+  void aReadableRelationshipTypeDoesNotNameTheLabelOfAnUnreadableEndpoint() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("PublicNode").createProperty("title", Type.STRING);
+      database.getSchema().createVertexType("SecretNode").createProperty("cardNumber", Type.STRING);
+      database.getSchema().createEdgeType("LINK").createProperty("since", Type.INTEGER);
+      database.command("cypher", """
+          CREATE (:PublicNode {title: 'a'})-[:LINK {since: 1}]->(:SecretNode {cardNumber: '1'}),
+                 (:SecretNode {cardNumber: '2'})-[:LINK {since: 2}]->(:PublicNode {title: 'b'}),
+                 (:PublicNode {title: 'c'})-[:LINK {since: 3}]->(:PublicNode {title: 'd'})""");
+    });
+
+    // control: unbound, the secret label is named by every procedure that walks the relationships
+    for (final String procedure : List.of("meta.stats", "meta.graph", "meta.relTypeProperties"))
+      assertThat(render(procedure)).as(procedure).contains("SecretNode");
+
+    bindUserDenying(Set.of("SecretNode"));
+
+    for (final String procedure : PROCEDURES)
+      assertThat(render(procedure)).as(procedure).doesNotContain("SecretNode", "cardNumber");
+    // what the principal may read is still described, relationships included
+    assertThat(render("meta.stats")).contains("PublicNode", "LINK");
+    assertThat(render("meta.graph")).contains("PublicNode", "LINK");
+    assertThat(render("meta.relTypeProperties")).contains("LINK", "since", "PublicNode");
+  }
+
+  /**
+   * A principal that may read a vertex type but not one of the relationship types leaving it: {@code meta.relTypeProperties}
+   * walks the relationships of the sampled nodes, and must describe the readable ones without ever reading the content of a
+   * relationship of the unreadable type. A read of it is a refused READ_RECORD, which the edge walk swallows as a corrupt entry
+   * (a WARNING with a stack trace) after the call has done the work, so the number of refusals the principal collects must
+   * not grow with the unreadable relationships (issue #12109). Run against a database with a security manager, the only kind
+   * that checks the file permission of a record read.
+   */
+  @Test
+  void anUnreadableRelationshipTypeLeavingAReadableNodeIsLeftOutWithoutLoadingItsRecords() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("PublicNode").createProperty("title", Type.STRING);
+      database.getSchema().createEdgeType("LINK").createProperty("since", Type.INTEGER);
+      database.getSchema().createEdgeType("SECRET_LINK").createProperty("secretWeight", Type.DOUBLE);
+      database.command("cypher", """
+          CREATE (a:PublicNode {title: 'a'})-[:LINK {since: 1}]->(b:PublicNode {title: 'b'}),
+                 (a)-[:SECRET_LINK {secretWeight: 2.5}]->(b)""");
+    });
+
+    // Without a security manager the engine asks no file permission at all, whatever user is bound: this is the case that
+    // needs the READ_RECORD check of the bucket a loaded record lives in
+    factory.setSecurity(db -> {
+    });
+    reopenDatabase();
+
+    // control: unbound, both relationship types are described
+    assertThat(render("meta.relTypeProperties")).contains("LINK", "SECRET_LINK", "secretWeight");
+
+    final AtomicInteger refused = new AtomicInteger();
+    bindUserDenying(Set.of("SECRET_LINK"), refused);
+    final String described = render("meta.relTypeProperties");
+    assertThat(described).contains("LINK", "since", "PublicNode").doesNotContain("SECRET_LINK", "secretWeight");
+    final int refusedWithOneSecretRelationship = refused.get();
+
+    for (final String procedure : PROCEDURES)
+      assertThat(render(procedure)).as(procedure).doesNotContain("SECRET_LINK", "secretWeight");
+    assertThat(render("meta.stats")).contains("LINK");
+
+    // six unreadable relationships leaving the same node: what the principal is refused does not grow with them, because none
+    // of their records is read. The refusals that remain are the type's own, one per check of which types are readable
+    unbind();
+    database.transaction(() -> database.command("cypher", """
+        MATCH (a:PublicNode {title: 'a'}), (b:PublicNode {title: 'b'})
+        UNWIND range(1, 5) AS i CREATE (a)-[:SECRET_LINK {secretWeight: 1.5}]->(b)""").close());
+    refused.set(0);
+    bindUserDenying(Set.of("SECRET_LINK"), refused);
+    assertThat(render("meta.relTypeProperties")).isEqualTo(described);
+    assertThat(refused.get()).as("READ_RECORD refusals on the buckets of the unreadable type").isPositive()
+        .isEqualTo(refusedWithOneSecretRelationship);
+  }
+
   private String render(final String procedure) {
+    // meta.graph answers virtual nodes and relationships, which a serialized row names by their RIDs only: project what they carry
+    final String query = "meta.graph".equals(procedure) ?
+        "CALL meta.graph() YIELD nodes, relationships RETURN [n IN nodes | properties(n)] AS nodes, "
+            + "[r IN relationships | [type(r), properties(r), properties(startNode(r)), properties(endNode(r))]] AS relationships" :
+        "CALL " + procedure + "()";
     final StringBuilder out = new StringBuilder();
-    try (final ResultSet rs = database.query("cypher", "CALL " + procedure + "()")) {
+    try (final ResultSet rs = database.query("cypher", query)) {
       while (rs.hasNext())
         out.append(rs.next().toJSON()).append('\n');
     }
@@ -80,6 +168,13 @@ class CypherMetaProceduresPerTypeAclTest extends TestHelper {
   }
 
   private void bindUserDenying(final Set<String> deniedTypes) {
+    bindUserDenying(deniedTypes, new AtomicInteger());
+  }
+
+  /**
+   * @param refusedReads counts the READ_RECORD requests the user refused on a bucket of a denied type
+   */
+  private void bindUserDenying(final Set<String> deniedTypes, final AtomicInteger refusedReads) {
     final Set<Integer> deniedBucketIds = new HashSet<>();
     for (final String typeName : deniedTypes)
       deniedBucketIds.addAll(database.getSchema().getType(typeName).getBucketIds(false));
@@ -97,7 +192,10 @@ class CypherMetaProceduresPerTypeAclTest extends TestHelper {
 
       @Override
       public boolean requestAccessOnFile(final int fileId, final ACCESS access) {
-        return !deniedBucketIds.contains(fileId);
+        final boolean denied = deniedBucketIds.contains(fileId);
+        if (denied && access == ACCESS.READ_RECORD)
+          refusedReads.incrementAndGet();
+        return !denied;
       }
 
       @Override
