@@ -30,6 +30,8 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
  * Regression test for issue #4802: an abandoned gRPC transaction (the client begins a transaction and then
@@ -164,5 +167,38 @@ public class GrpcTransactionReaperIT extends BaseGrpcServerTest {
         .build();
     final ExecuteQueryResponse queryResponse = authenticatedStub.executeQuery(queryRequest);
     assertThat(queryResponse.getResultsList().get(0).getRecordsList()).isEmpty();
+  }
+
+  /**
+   * Issue #13249: a query sent to a transaction the reaper rolled back is refused with the status every other transaction-scoped RPC
+   * answers, which names the transaction ("Unknown or expired transaction id: <id> (it may have been rolled back by the idle
+   * reaper)"). A client that classifies the refusal by that wording (modelhub's gRPC seam replays the whole verb on it) reads
+   * "Invalid transaction ID" as an ordinary failure instead, and gives up.
+   */
+  @Test
+  void executeQueryOnReapedTransactionAnswersLikeEveryOtherRpc() throws Exception {
+    final ArcadeDbGrpcService service = grpcService();
+    final String txId = authenticatedStub.beginTransaction(
+        BeginTransactionRequest.newBuilder().setDatabase(getDatabaseName()).setCredentials(credentials()).build()).getTransactionId();
+
+    final long deadline = System.currentTimeMillis() + 30_000L;
+    while (service.getActiveTransactionCount() > 0 && System.currentTimeMillis() < deadline)
+      Thread.sleep(100);
+    assertThat(service.getActiveTransactionCount()).as("the idle transaction is reaped").isEqualTo(0);
+
+    final TransactionContext tx = TransactionContext.newBuilder().setTransactionId(txId).setDatabase(getDatabaseName()).build();
+    final StatusRuntimeException command = catchThrowableOfType(StatusRuntimeException.class,
+        () -> authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder().setDatabase(getDatabaseName())
+            .setCredentials(credentials()).setCommand("SELECT FROM Person").setTransaction(tx).build()));
+    final StatusRuntimeException query = catchThrowableOfType(StatusRuntimeException.class,
+        () -> authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder().setDatabase(getDatabaseName())
+            .setCredentials(credentials()).setQuery("SELECT FROM Person").setTransaction(tx).build()));
+
+    assertThat(command).isNotNull();
+    assertThat(command.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+    assertThat(command.getStatus().getDescription()).startsWith("Unknown or expired transaction id: " + txId);
+    assertThat(query).isNotNull();
+    assertThat(query.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+    assertThat(query.getStatus().getDescription()).isEqualTo(command.getStatus().getDescription());
   }
 }
