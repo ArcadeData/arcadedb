@@ -246,33 +246,23 @@ async def test_multiple_parameters(connection, test_type_setup):
 
 @pytest.mark.asyncio
 async def test_parameterized_insert(connection, test_type_setup):
-    """Test 6: INSERT with parameters"""
+    """Test 6: INSERT with parameters (Issue #1630, #11650)
+
+    The parameterized INSERT must succeed on its own: a protocol error (older servers sent result rows for a
+    write with no RETURN after describing it as returning none, which asyncpg rejects; #11017 settled it on
+    every protocol path) or a row that is not persisted has to fail this test. There is deliberately no
+    fallback that inserts the row another way, which would make the closing SELECT pass whatever the
+    parameterized path did.
+    """
     # Note: Using strings for all params since ArcadeDB declares VARCHAR for all param types
-    # Known issue: ArcadeDB PostgreSQL protocol has a bug where parameterized INSERT
-    # returns data but doesn't properly describe the columns, causing a protocol error.
-    # We test the functionality with a workaround using string interpolation for now.
+    status = await connection.execute(
+        "INSERT INTO AsyncpgTest SET id = $1, name = $2, value = $3",
+        "test_param_insert", "Charlie", "300"
+    )
+    # A write with no RETURN is tagged with the affected count, as PostgreSQL tags an INSERT (#11017)
+    assert status == "INSERT 0 1"  # nosec B101
 
-    try:
-        # Try the ideal approach first (parameterized query)
-        await connection.execute(
-            "INSERT INTO AsyncpgTest SET id = $1, name = $2, value = $3",
-            "test_param_insert", "Charlie", "300"
-        )
-        inserted = True
-    except asyncpg.exceptions._base.ProtocolError as e:
-        # The insert may have succeeded but the response parsing failed
-        # Check if the record was actually inserted
-        check_rows = await connection.fetch(
-            "SELECT FROM AsyncpgTest WHERE id = $1",
-            "test_param_insert"
-        )
-        if len(check_rows) == 0:
-            # Record wasn't inserted, use workaround
-            await connection.execute(
-                "INSERT INTO AsyncpgTest SET id = 'test_param_insert', name = 'Charlie', value = '300'"
-            )
-
-    # Verify insertion using parameterized SELECT (which works correctly)
+    # Verify the row the parameterized INSERT wrote
     rows = await connection.fetch(
         "SELECT FROM AsyncpgTest WHERE id = $1",
         "test_param_insert"
