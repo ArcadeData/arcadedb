@@ -706,8 +706,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The statement is also one unit for memory: a write over millions of records is held until its commit, as over HTTP
     // and in Neo4j, and CALL { ... } IN TRANSACTIONS is the way to commit it in batches.
     final ResultSet[] result = new ResultSet[1];
-    execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
-        statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    final boolean inTransactions = statement.hasSubqueryInTransactions();
+    execDb.transaction(() -> {
+      // Opened here around this one statement, as its auto-commit: an implicit transaction, which a CALL { ... } IN TRANSACTIONS
+      // commits before each of its batches so the batch sees what the statement wrote before it (issue #13172)
+      if (inTransactions)
+        execDb.getTransaction().setImplicit(true);
+      result[0] = executeWrite(plan, execDb, profile, timeExecution);
+    }, false, inTransactions ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
     return result[0];
   }
 

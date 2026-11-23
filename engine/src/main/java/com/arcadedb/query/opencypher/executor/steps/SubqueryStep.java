@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -431,6 +432,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         // Execute the batch in its own transaction
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
+        committedWrites = commitStatementWrites(committedWrites);
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
         // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
@@ -527,6 +529,43 @@ public class SubqueryStep extends AbstractExecutionStep {
         SubqueryStep.this.close();
       }
     };
+  }
+
+  /**
+   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS}, then begins its transaction again
+   * for the clauses that follow (issue #13172). The batch's own transaction does not see the statement's uncommitted writes, so a
+   * label written before the CALL left the body pointed at a record it could not find. IN TRANSACTIONS already gives up the
+   * statement's atomicity, so committing these writes is consistent with it. It runs before every batch: the outer rows of a later
+   * batch are produced after the earlier batches committed.
+   * <p>
+   * Only the implicit transaction at the first level is committed: a caller's transaction is refused with IN TRANSACTIONS before
+   * anything runs (issue #11588), and a deeper level belongs to someone else.
+   * <p>
+   * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
+   * <p>
+   * Known gaps, tracked on their own: a record the prefix left provisional under a deferred existence check is committed here, so
+   * the check at the end of the statement cannot remove it although its message says so (#13221); in a Postgres pipeline's implicit
+   * block this also commits the earlier statements of the block (#13222); and a server wrapper that retries the request replays
+   * the writes committed here (#13223).
+   *
+   * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
+   */
+  private RidHashSet commitStatementWrites(final RidHashSet committedWrites) {
+    if (database.getNestedTransactions() != 1)
+      return committedWrites;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isImplicit() || tx.hasChangedNothing())
+      return committedWrites;
+
+    // The copies the outer rows produced so far hold are a version behind once this commits
+    final RidHashSet written = committedWrites != null ? committedWrites : new RidHashSet();
+    tx.collectWrittenRecordIds(written);
+
+    final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = tx.getIsolationLevel();
+    database.commit();
+    database.begin(isolationLevel);
+    database.getTransaction().setImplicit(true);
+    return written;
   }
 
   /**

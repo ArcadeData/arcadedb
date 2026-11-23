@@ -1707,7 +1707,9 @@ public class TransactionContext implements Transaction {
   /**
    * Whether a server opened this transaction around one request on the client's behalf, as its auto-commit: the HTTP
    * command handler, the gRPC auto-wrap, the MCP tools, the implicit block of a Postgres pipeline. Neo4j calls it an
-   * implicit transaction. Every other transaction belongs to its caller, an embedded {@code begin()} or
+   * implicit transaction. So is the auto-commit transaction the openCypher engine opens around one statement with a
+   * {@code CALL { ... } IN TRANSACTIONS} when the caller has none, which that subquery commits before each of its batches
+   * (issue #13172). Every other transaction belongs to its caller, an embedded {@code begin()} or
    * {@code transaction()} included, and is not one: a {@code CALL { ... } IN TRANSACTIONS} commits its batches on their
    * own and is refused there, since the caller's rollback could not undo them (issue #11588). A transaction the client
    * later declares its own ({@link #isClientManaged()}) stops being implicit. Released by {@link #reset()}.
