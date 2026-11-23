@@ -64,6 +64,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.RidHashSet;
 import com.arcadedb.utility.ScanPressureReporter;
 
@@ -116,6 +117,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // type (no label, or several) pinned by a value the row decides is answered by index seeks that are made again for
   // every row, so its candidates are not the same for every row and must not be cached (issue #12522)
   private       boolean             candidatesDependOnTheRow = false;
+  // The label whose vertices the user was found allowed to read, so that a chained MATCH, which re-opens the scan per outer row,
+  // asks the permission of a static label once (issue #12663)
+  private       String              readableLabel;
   // The full type scan the step reads from, kept only to report in a profile whether the heap budget reduced its read-ahead (#9404)
   // READ BY THE PROFILE WHILE THE THREAD THAT RUNS THE STEP WRITES THEM
   private volatile ScanPressureReporter scanIterator;
@@ -698,6 +702,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
           return Collections.emptyIterator();
         }
 
+        // An index seek of the type, which every branch below that has a property or a WHERE filter to seek by may make, loads a
+        // record only when the index holds the key: asked afterwards, the permission would refuse the statement for a key the type
+        // holds and answer for one it does not (issue #12663). The walk is refused by its bucket whatever the key is
+        if ((pattern.hasProperties() && !pattern.getProperties().isEmpty()) || whereFilter != null)
+          requireReadable(type, label);
+
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
@@ -819,6 +829,22 @@ public class MatchNodeStep extends AbstractExecutionStep {
     @SuppressWarnings("unchecked") final Iterator<Identifiable> everyVertex =
         (Iterator<Identifiable>) (Object) Labels.iterateMatchingVertices(context.getDatabase(), labels, false);
     return everyVertex;
+  }
+
+  /**
+   * Refuses the user who may not read the vertices of {@code type}, or of a type under it, before an index seek of it is tried
+   * (issue #12663), as the walk of its buckets does whatever the key is. The index of a type holds the vertices of its subtypes
+   * too, which may carry an access of their own, so the buckets of every one of them are asked.
+   * <p>
+   * A chained MATCH opens the scan once per outer row, so the label asked last is remembered: the answer cannot change while the
+   * step runs, since the step lives for one execution and the user is bound to it. It is remembered only once the check passed, so
+   * a refused label is refused again.
+   */
+  private void requireReadable(final DocumentType type, final String label) {
+    if (label.equals(readableLabel))
+      return;
+    SecurityHelper.checkReadOnTypeAndSubTypes(context.getDatabase(), type);
+    readableLabel = label;
   }
 
   /**
