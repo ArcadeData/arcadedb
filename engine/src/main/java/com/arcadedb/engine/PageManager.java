@@ -1962,6 +1962,51 @@ public class PageManager extends LockContext {
   }
 
   /**
+   * Waits, at most {@code timeoutMs}, until the replication layer holds no version of the page that this node has not applied
+   * yet (see {@link PageVersionReservations}), which is exactly what makes {@link #checkPageVersion} refuse the page with a
+   * {@link ConcurrentModificationException} while the local copy itself has not moved. Such a reservation lasts for the
+   * round trip of the entry that took it, so retrying the refused commit at once meets the same reservation every time
+   * (issue #12470); a caller that retries, or that cannot, calls this first.
+   * <p>
+   * Only a reservation ABOVE the local version counts, the same test the check applies: one at or below it is a leftover
+   * that fences nothing. Nothing is locked while waiting (the reservation lookup is a map read), so the wait can
+   * neither hold up nor be held up by the entry it waits for. Answers at once on a standalone database and on a replica,
+   * where no reservations are installed.
+   *
+   * @return {@code true} when the page holds no reservation ahead of the local copy, {@code false} when the wait gave up
+   * or was interrupted (the interrupt flag is set again): the caller goes on and meets the refusal itself
+   */
+  public boolean awaitReservedVersionApplied(final PageId pageId, final int pageSize, final long timeoutMs) throws IOException {
+    if (!(((DatabaseInternal) pageId.getDatabase()).getEmbedded() instanceof LocalDatabase localDatabase))
+      return true;
+
+    final long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+    long pauseMs = 1L;
+    while (true) {
+      // Read per round: an in-place restart of the replication layer installs its hook again, and an uninstalled one
+      // (null) leaves nothing to wait for
+      final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+      if (reservations == null)
+        return true;
+      final int reserved = reservations.reservedVersion(pageId);
+      if (reserved < 0 || reserved <= getMostRecentVersionOfPage(pageId, pageSize))
+        return true;
+
+      if (System.nanoTime() - deadline >= 0)
+        return false;
+
+      try {
+        Thread.sleep(pauseMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+      // Backed off (1, 2, 4, 8, 10 ms): the entry normally lands within a few milliseconds, and a poll is two lookups
+      pauseMs = Math.min(pauseMs * 2, 10L);
+    }
+  }
+
+  /**
    * Atomic convenience form of {@link #validateAndBumpVersions} + {@link #publishPages}. NOTE: since #4936
    * the engine commit path no longer calls this - commit2ndPhase invokes the two halves separately with the
    * WAL append in between, so validate+publish are NOT atomic under one lock there. Kept as public API for
