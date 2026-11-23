@@ -90,7 +90,10 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   private       boolean          pendingRecovery;
   /** The delta of the commits since the last pass of a grouped view drained it (issue #11937); under {@link #pendingDeltaLock}. */
   private       MaterializedViewGroupedState.Groups pendingGroups;
-  /** The transactions of a grouped view between their commit point and the delivery of their delta; under the same lock. */
+  /**
+   * The transactions of a grouped view between their commit point and the delivery of their delta, both made while they hold their
+   * locks (issue #12720); under the same lock.
+   */
   private final Set<MaterializedViewChangeListener.GroupedCapture> groupedInFlight = new LinkedHashSet<>();
   /** The watch of the rebuild pass running, or null; under the same lock. */
   private       MaterializedViewGroupedState.Watch groupedWatch;
@@ -500,11 +503,12 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
   }
 
   /**
-   * The transaction committed: takes it out of flight and, unless a rebuild pass took its changes over, hands its delta to the view.
-   * One critical section, not two: a rebuild that begins between the two would no longer find the transaction in flight, yet its
-   * scan reads what the transaction published, and the delta handed over after would then be applied on top of a state that
-   * already holds it. The rebuild takes the same lock to begin, so it either finds the transaction in flight (and takes it over) or
-   * begins after the delta is pending (and drops it).
+   * The transaction published its pages: takes it out of flight and, unless a rebuild pass took its changes over, hands its delta to
+   * the view. Called while the transaction still holds its locks, from {@code GroupedCapture.onPublished()}, unless it never reached
+   * its commit point. One critical section, not two: a rebuild that begins between the two would no longer find the transaction in
+   * flight, yet its scan reads what the transaction published, and the delta handed over after would then be applied on top of a
+   * state that already holds it. The rebuild takes the same lock to begin, so it either finds the transaction in flight (and takes it
+   * over) or begins after the delta is pending (and drops it).
    *
    * @param delta what the view adopts, null when the transaction has nothing to hand over (the caller then asks for a full pass if
    *              it owes one)
@@ -541,6 +545,11 @@ public class MaterializedViewImpl implements MaterializedView, TypeNameDependant
    * Opens the watch of a rebuild pass: every transaction between its commit point and its delivery is taken over by the rebuild, as
    * is every one reaching its commit point until {@link #closeGroupedWatch}. The pending delta is dropped: the transactions it holds
    * have published their changes, which the rebuild's scan reads.
+   * <p>
+   * The after-image a transaction in flight holds of each record it changed is the newest one, which the rebuild counts in place of
+   * whatever its scan reads (issue #12720): the transaction is in flight only while it holds its locks, so no other transaction can
+   * have committed a change of the same records on top of it. One that commits afterwards reaches its commit point after this one
+   * left flight, and is absorbed by the watch if it is still open, or hands its delta over to the next pass otherwise.
    */
   MaterializedViewGroupedState.Watch openGroupedWatch() {
     synchronized (pendingDeltaLock) {

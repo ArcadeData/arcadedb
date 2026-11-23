@@ -6818,8 +6818,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final PageId firstPageId = firstPage.pageId;
     final int firstChunkSlot = (int) (originalRID.getPosition() % maxRecordsInPage);
     final TransactionContext walkTransaction = database.getTransactionIfExists();
-    final boolean repeatableRead = walkTransaction != null
-            && walkTransaction.getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final boolean repeatableRead = walkTransaction != null && walkTransaction.isRepeatableRead();
     // Whether a retry can read the head chunk from a newer image: under READ_COMMITTED it re-reads it from the page
     // manager, under REPEATABLE_READ only a head this read pinned itself can be released and pinned again.
     final boolean headRefreshable = !repeatableRead || headPinnedByThisRead;

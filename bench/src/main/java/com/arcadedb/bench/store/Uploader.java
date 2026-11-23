@@ -139,7 +139,7 @@ public final class Uploader {
     for (final String candidate : candidates)
       try (final ResultSet rs = db.query("sql", "SELECT count(*) AS n FROM Measurement WHERE runId = :runId AND scale IN :scales",
           Map.of("runId", candidate, "scales", new ArrayList<>(scales)))) {
-        if (((Number) rs.next().getProperty("n")).longValue() > 0)
+        if (rs.hasNext() && ((Number) rs.next().getProperty("n", 0L)).longValue() > 0)
           sameScale.add(candidate);
       }
     return sameScale;
