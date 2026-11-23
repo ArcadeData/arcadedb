@@ -303,6 +303,107 @@ class Issue12191RemoteVertexPagingIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void lightweightAndRecordEdgesOfSeveralTypesAreWalkedWholeAtEveryPageSize() {
+    // lightweight and record-backed edges of two types, whose records sit in several buckets, with a twin, walked at page sizes
+    // that end a page inside a bucket, at its end and across buckets: every edge is read once, in both directions
+    database.command("sql", "create edge type E12191B");
+    for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
+      final MixedHub fixture = createMixedHub(direction);
+      final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(fixture.hub).asVertex(), database);
+
+      for (final int pageSize : new int[] { 1, 2, 3, 5, 7, 100 }) {
+        final List<String> edges = new ArrayList<>();
+        for (final Edge e : remoteHub.getEdgesPaged(direction, pageSize))
+          edges.add(describe(e, direction));
+        final List<RID> neighbours = new ArrayList<>();
+        for (final Vertex v : remoteHub.getVerticesPaged(direction, pageSize))
+          neighbours.add(v.getIdentity());
+
+        assertThat(edges).as("%s edges at page size %d", direction, pageSize).containsExactlyInAnyOrderElementsOf(fixture.edges);
+        assertThat(neighbours).as("%s neighbours at page size %d", direction, pageSize)
+            .containsExactlyInAnyOrderElementsOf(fixture.neighbours);
+      }
+    }
+  }
+
+  @Test
+  void anEdgeAlreadyReadDeletedBetweenPagesDoesNotHideLiveOnesAmongSeveralTypes() {
+    database.command("sql", "create edge type E12191B");
+    for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
+      for (final int pageSize : new int[] { 2, 3, 5, 7 }) {
+        final MixedHub fixture = createMixedHub(direction);
+        final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(fixture.hub).asVertex(), database);
+
+        final Iterator<Edge> it = remoteHub.getEdgesPaged(direction, pageSize).iterator();
+        final List<String> read = new ArrayList<>();
+        Edge first = null;
+        for (int i = 0; i < pageSize; i++) {
+          final Edge e = it.next();
+          if (first == null)
+            first = e;
+          read.add(describe(e, direction));
+        }
+        // the first edge in RID order is a lightweight one of the type created first: the lightweight edges of a bucket sort
+        // before its records, and the buckets of the first type before those of the second
+        assertThat(first.getIdentity().getPosition()).isNegative();
+        assertThat(first.getTypeName()).isEqualTo("E12191");
+        deleteLightweightEdge(fixture.hub, direction == Vertex.DIRECTION.OUT ? first.getIn() : first.getOut(), direction);
+
+        while (it.hasNext())
+          read.add(describe(it.next(), direction));
+
+        assertThat(read).as("%s edges at page size %d", direction, pageSize).containsExactlyInAnyOrderElementsOf(fixture.edges);
+      }
+    }
+  }
+
+  private static String describe(final Edge edge, final Vertex.DIRECTION direction) {
+    return edge.getIdentity() + " -> " + (direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+  }
+
+  private record MixedHub(RID hub, List<String> edges, List<RID> neighbours) {
+  }
+
+  /**
+   * A hub with, for each of two edge types, six lightweight edges to five leaves (the one to the third twice) and three
+   * record-backed edges, outgoing or incoming. The edges are described as the client tells them from each other: the RID, which
+   * does not tell lightweight edges apart, and the vertex at their other end.
+   */
+  private MixedHub createMixedHub(final Vertex.DIRECTION direction) {
+    final Database embeddedDatabase = getServerDatabase(0, getDatabaseName());
+    final RID[] hub = new RID[1];
+    final List<String> edges = new ArrayList<>();
+    final List<RID> neighbours = new ArrayList<>();
+    embeddedDatabase.transaction(() -> {
+      final MutableVertex hubVertex = embeddedDatabase.newVertex("V12191").set("name", "mixedHub").save();
+      hub[0] = hubVertex.getIdentity();
+      final List<MutableVertex> leaves = new ArrayList<>();
+      for (int i = 0; i < 6; i++)
+        leaves.add(embeddedDatabase.newVertex("V12191").set("name", "mixedLeaf").save());
+      // in RID order, which is the order the lightweight edges of the hub are read in: the first leaf has no twin
+      leaves.sort(Comparator.comparing(MutableVertex::getIdentity));
+
+      for (final String type : new String[] { "E12191", "E12191B" })
+        for (int i = 0; i < leaves.size(); i++) {
+          final MutableVertex from = direction == Vertex.DIRECTION.OUT ? hubVertex : leaves.get(i);
+          final MutableVertex to = direction == Vertex.DIRECTION.OUT ? leaves.get(i) : hubVertex;
+          final int lightweight = i < 5 ? (i == 2 ? 2 : 1) : 0;
+          for (int t = 0; t < lightweight; t++) {
+            final Edge edge = from.newLightEdge(type, to);
+            edges.add(describe(edge, direction));
+            neighbours.add(leaves.get(i).getIdentity());
+          }
+          if (i >= 3) {
+            final Edge edge = from.newEdge(type, to);
+            edges.add(describe(edge, direction));
+            neighbours.add(leaves.get(i).getIdentity());
+          }
+        }
+    });
+    return new MixedHub(hub[0], edges, neighbours);
+  }
+
   /** The vertex at the other side of an edge or, for a vertex, the vertex itself. */
   private static RID farEndpoint(final Object element, final Vertex.DIRECTION direction) {
     if (element instanceof Vertex vertex)

@@ -313,9 +313,17 @@ class RemoteVertexTest {
   @Test
   void pagedIterationRefusesANonPositivePageSize() {
     assertThatThrownBy(() -> remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 0))
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("The page size must be positive, it is 0");
     assertThatThrownBy(() -> remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 0))
-        .isInstanceOf(IllegalArgumentException.class);
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("The page size must be positive, it is 0");
+    assertThatThrownBy(() -> remoteVertex.getEdgesPaged(Vertex.DIRECTION.IN, -5))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("The page size must be positive, it is -5");
+    assertThatThrownBy(() -> remoteVertex.getVerticesPaged(Vertex.DIRECTION.BOTH, -1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("The page size must be positive, it is -1");
   }
 
   @Test

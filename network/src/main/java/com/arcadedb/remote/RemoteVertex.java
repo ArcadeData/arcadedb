@@ -120,7 +120,7 @@ public class RemoteVertex {
 
   /**
    * Returns all edges for this vertex, transparently paginating over multiple HTTP calls using
-   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getEdgesPaged} to control the page size explicitly.
+   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getEdgesPaged} to control the page size explicitly. The edges come in RID order.
    */
   public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
     return getEdgesPaged(direction, DEFAULT_PAGE_SIZE, edgeTypes);
@@ -198,7 +198,8 @@ public class RemoteVertex {
 
   /**
    * Returns all neighbor vertices, transparently paginating over multiple HTTP calls using
-   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getVerticesPaged} to control the page size explicitly.
+   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getVerticesPaged} to control the page size explicitly, and see it for the order
+   * of the vertices and for the vertices deleted meanwhile.
    */
   public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
     return getVerticesPaged(direction, DEFAULT_PAGE_SIZE, edgeTypes);
@@ -238,6 +239,10 @@ public class RemoteVertex {
    * Returns a lazy iterator that transparently fetches neighbor vertices in pages of {@code pageSize} elements over multiple
    * HTTP calls: the page of edges {@link #getEdgesPaged} reads, then their vertices on the other side in one query by RID, so
    * deleting the vertices while iterating does not skip any either (issue #12191).
+   * <p>
+   * The vertices come in the order of their edges, which is RID order and not the order of the edge list, and a vertex reached
+   * by several edges comes once per edge. A vertex deleted since its edge was read is left out, so fewer vertices than edges
+   * can come back.
    */
   public IterableGraph<Vertex> getVerticesPaged(final Vertex.DIRECTION direction, final int pageSize,
       final String... edgeTypes) {
