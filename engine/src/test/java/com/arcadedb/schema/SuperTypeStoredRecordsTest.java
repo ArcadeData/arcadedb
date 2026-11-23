@@ -201,6 +201,58 @@ class SuperTypeStoredRecordsTest extends TestHelper {
     assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
   }
 
+  /**
+   * A type made with its super type has no stored record: the link is made, and the inherited constraints hold for what is written
+   * afterwards, so there is nothing for the scan to refuse and nothing is lost by running it.
+   */
+  @Test
+  void aNewTypeMadeWithItsSuperTypeIsLinked() {
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10, MANDATORY true)");
+
+    database.command("sql", "CREATE DOCUMENT TYPE T EXTENDS S");
+
+    assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO T SET p = 5")))
+        .isInstanceOf(ValidationException.class);
+  }
+
+  /** The route through the type builder, for a type that exists: the same refusal, and the type is left as it was. */
+  @Test
+  void aTypeMadeAgainWithAnotherSuperTypeIsRefusedOverViolatingRecords() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    final String[] violating = new String[1];
+    database.transaction(() -> violating[0] = insert("INSERT INTO T SET p = 5"));
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10)");
+
+    assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("T").withSuperType("S").withIgnoreIfExists(true).create())
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("record " + violating[0] + " violates the properties it would inherit");
+    assertThat(database.getSchema().getType("T").getSuperTypes()).isEmpty();
+
+    database.transaction(() -> database.command("sql", "UPDATE T SET p = 11"));
+    assertThatCode(() -> database.getSchema().buildDocumentType().withName("T").withSuperType("S").withIgnoreIfExists(true).create())
+        .doesNotThrowAnyException();
+    assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
+  }
+
+  /** A super type with an index is linked over conforming records, and the index it propagates finds them. */
+  @Test
+  void aSuperTypeWithAnIndexIsLinkedOverConformingRecords() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10)");
+    database.command("sql", "CREATE INDEX ON S (p) NOTUNIQUE");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET p = 20"));
+
+    assertThatCode(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S")).doesNotThrowAnyException();
+
+    try (final ResultSet resultSet = database.query("sql", "SELECT FROM S WHERE p = 20")) {
+      assertThat(resultSet.stream().count()).isEqualTo(1L);
+    }
+  }
+
   /** @return the RID of the record the INSERT created */
   private String insert(final String sql) {
     try (final ResultSet resultSet = database.command("sql", sql)) {

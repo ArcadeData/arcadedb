@@ -3482,7 +3482,9 @@ public class LocalDocumentType implements DocumentType {
       }
 
       // Last, being the one that reads the records: the stored records of this type and of its sub types must meet what they are about
-      // to inherit, as CREATE PROPERTY and ALTER PROPERTY require of them (issue #12030)
+      // to inherit, as CREATE PROPERTY and ALTER PROPERTY require of them (issue #12030). It stays after every structural refusal of
+      // this method, a refusal of a link that closes a cycle included: it walks the polymorphic properties of the super type and the
+      // polymorphic buckets of this type, which only an acyclic hierarchy can answer
       checkStoredRecordsMeetInheritedProperties(superType);
     }
   }
