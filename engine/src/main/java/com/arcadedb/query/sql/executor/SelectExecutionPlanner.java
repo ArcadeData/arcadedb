@@ -5278,12 +5278,38 @@ public class SelectExecutionPlanner {
     if (subBlocks == null || letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
       return false;
 
-    for (final BooleanExpression exp : subBlocks)
-      for (final String name : variableNamesIn(exp.toString()))
+    for (final BooleanExpression exp : subBlocks) {
+      final String rendered = exp.toString();
+      for (final LetItem item : letClause.getItems()) {
+        final String varName = item.getVarName().getStringValue();
+        // A lifted sub-query's alias (_$$$SUBQUERY$$$_0) carries no leading sigil, so variableNamesIn() never reads it
+        // whole: look for it as a word of its own, so that _$$$SUBQUERY$$$_1 is not found in _$$$SUBQUERY$$$_10 (issue #12287)
+        if (SubQueryCollector.isGeneratedAlias(varName) && mentionsWord(rendered, varName))
+          return true;
+      }
+      for (final String name : variableNamesIn(rendered))
         for (final LetItem item : letClause.getItems())
           if (name.equals(withoutSigil(item.getVarName().getStringValue())))
             return true;
+    }
 
+    return false;
+  }
+
+  /**
+   * Whether {@code word} occurs in {@code rendered} as a word of its own: neither the character before nor the one after
+   * it can be part of an identifier. Quoted runs are not skipped: a literal that spells a generated alias is not
+   * something a user writes, and reading one as a reference only defers a filter behind the LET (a plan, never a row).
+   */
+  static boolean mentionsWord(final String rendered, final String word) {
+    int from = rendered.indexOf(word);
+    while (from >= 0) {
+      final int end = from + word.length();
+      if ((from == 0 || !Character.isJavaIdentifierPart(rendered.charAt(from - 1)))
+          && (end == rendered.length() || !Character.isJavaIdentifierPart(rendered.charAt(end))))
+        return true;
+      from = rendered.indexOf(word, from + 1);
+    }
     return false;
   }
 
