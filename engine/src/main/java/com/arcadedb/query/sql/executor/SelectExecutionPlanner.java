@@ -5121,9 +5121,10 @@ public class SelectExecutionPlanner {
         if (withoutSigil(SCORE_VARIABLE).equals(withoutSigil(item.getVarName().getStringValue()))
             || (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context, false)))
           return true;
+    // the whole item, not only its expression: the items of a nested projection (x:{...}) are evaluated on every row as well
     if (info.projection != null && info.projection.getItems() != null)
       for (final ProjectionItem projected : info.projection.getItems())
-        if (!projected.isAll() && projected.getExpression() != null && mayRunScoringCall(projected.getExpression(), context, false))
+        if (mayRunScoringCall(projected, context, false))
           return true;
     return false;
   }

@@ -218,6 +218,8 @@ class FilteredSearchIndexTopKTest extends TestHelper {
     // a projection item that runs a search sets $score before the item that reads it
     assertLimitKeepsTheOrderOf("ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), false) AS hit, ", "");
     assertLimitKeepsTheOrderOf("SEARCH_FIELDS(['body'], 'w2 w5') AS hit, ", "");
+    // and one in an item of a nested projection, which is evaluated on every row too
+    assertLimitKeepsTheOrderOf("@this:{n, ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), false) AS hit} AS nested, ", "");
   }
 
   @Test
