@@ -71,6 +71,9 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
   // The in-place reader of the documents (issue #11298), made for the thread that read last: not volatile, since a thread that
   // sees another's reader, or none, only makes one of its own
   private       StoredVectorReader  storedVectorReader;
+  // The buffers a search scores the vectors it reads from the index pages through ({@link #readQuantizedForScoring}), made for the
+  // thread that used them last, like the reader above: a thread that finds another's makes its own
+  private       MissScratch         missScratch;
 
   // Sentinel vector returned for deleted/missing ordinals to prevent NPE in JVector's GraphSearcher (issue #3715).
   // It is a placeholder of the right shape, NOT a low score: no vector scores low against every query, so callers
@@ -241,7 +244,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return cached;
     }
 
-    return load(ordinal, vectorId);
+    return load(ordinal, vectorId, false);
   }
 
   /**
@@ -260,7 +263,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       final float resident = searchCache.similarity(ordinalToVectorId[ordinal], query, function);
       if (!Float.isNaN(resident))
         return resident;
-      final VectorFloat<?> vector = load(ordinal, ordinalToVectorId[ordinal]);
+      final VectorFloat<?> vector = load(ordinal, ordinalToVectorId[ordinal], true);
       return vector == deletedSentinelVector ? Float.NaN : FlatVectorCache.similarity(function, query, vector, 0, dimensions);
     }
 
@@ -268,8 +271,56 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     return vector == deletedSentinelVector ? Float.NaN : function.compare(query, vector);
   }
 
-  /** Reads the vector of {@code vectorId} from where it is stored, and caches it. {@link #getVector} after its cache missed. */
-  private VectorFloat<?> load(final int ordinal, final int vectorId) {
+  /**
+   * The INT8 vector of {@code vectorId} read from its index page into buffers this reader reuses (issue #13154), or {@code null} when
+   * {@link #load} has to answer: a build reader (its cache keeps the vector it is given), an index that is not INT8, vectors kept in
+   * the graph file, a row that cannot be read or has another width. Where it answers, it answers what {@link #load}
+   * reads from the same row, dequantized by the same function, without the {@code byte[]} and {@code float[]} that
+   * {@link LSMVectorIndex#readVectorFromOffset} allocates and the wrapper {@code load} makes for every vector (a search whose cache
+   * holds a fraction of the index reads hundreds of vectors from their pages).
+   * <p>
+   * The vector returned is the reader's buffer: valid until the next call on the same thread, so only for scoring it at once and
+   * for copying it into the search cache, never for keeping.
+   */
+  private VectorFloat<?> readQuantizedForScoring(final int vectorId, final long offsetAndFlag) {
+    if (locations == null || vectorCache != null || byOrdinal != null
+        || lsmIndex.metadata.quantizationType != VectorQuantizationType.INT8 || lsmIndex.metadata.storeVectorsInGraph
+        || lsmIndex.metadata.dimensions != dimensions)
+      return null;
+
+    MissScratch buffers = missScratch;
+    if (buffers == null || buffers.owner != Thread.currentThread())
+      missScratch = buffers = new MissScratch(dimensions);
+    if (lsmIndex.readQuantizedRowFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag), VectorLocationIndex.isCompactedOf(offsetAndFlag),
+        buffers.row, 0, buffers.scales) != LSMVectorIndex.ROW_OK)
+      return null;
+
+    QuantizedBuildVectors.dequantizeInt8(buffers.row, 0, dimensions, buffers.scales[0], buffers.scales[1], buffers.components);
+    lsmIndex.metrics.incrementVectorFetchFromQuantized();
+    return buffers.vector;
+  }
+
+  /** The quantized row, its scales and the dequantized components of one vector, and the vector over them. Used by one thread. */
+  private static final class MissScratch {
+    final Thread        owner = Thread.currentThread();
+    final byte[]        row;
+    final float[]       scales = new float[2];
+    final float[]       components;
+    final VectorFloat<?> vector;
+
+    MissScratch(final int dimensions) {
+      row = new byte[dimensions];
+      components = new float[dimensions];
+      vector = vts.createFloatVector(components);
+    }
+  }
+
+  /**
+   * Reads the vector of {@code vectorId} from where it is stored, and caches it. {@link #getVector} after its cache missed.
+   * {@code forScoring}: the caller scores the vector at once and does not keep it, so an INT8 vector may come back in the reader's
+   * buffers ({@link #readQuantizedForScoring}).
+   */
+  private VectorFloat<?> load(final int ordinal, final int vectorId, final boolean forScoring) {
     // One lookup, one word: the offset and the compacted flag come out together so they cannot be read from two
     // different generations, and nothing is materialized for an ordinal this method is only going to reject.
     final long offsetAndFlag = locations == null ? VectorLocationIndex.ABSENT : locations.getOffsetAndFlag(vectorId);
@@ -310,6 +361,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     // If LSM index is available and quantization is enabled, try reading from index pages first
     if (lsmIndex != null) {
       try {
+        if (forScoring) {
+          final VectorFloat<?> scored = readQuantizedForScoring(vectorId, offsetAndFlag);
+          if (scored != null) {
+            cache(vectorId, scored);
+            return scored;
+          }
+        }
         final float[] vector = lsmIndex.readVectorFromOffset(VectorLocationIndex.offsetOf(offsetAndFlag),
             VectorLocationIndex.isCompactedOf(offsetAndFlag));
         if (vector != null) {
