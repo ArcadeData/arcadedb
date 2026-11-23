@@ -392,7 +392,12 @@ public class DeleteStep extends AbstractExecutionStep {
   /**
    * Resolves and caches the occurrence of lightweight edges retained in a row's properties, collections, or paths
    * before deleting any lightweight edge, so a surviving parallel edge does not collide with a deleted twin after
-   * the vertex's edge list shrinks.
+   * the vertex's edge list shrinks (issue #10008). A row reads whether such an edge is deleted when it is served, which is
+   * after the delete renumbered its twins: left unnumbered, a survivor read as the first of its triple and collided with the
+   * twin deleted first.
+   * <p>
+   * Walked only for a row that deletes a lightweight edge that has a twin, and once per collection ({@code visited}, by
+   * identity), so the rows of a statement that share one {@code collect()} list pay for it once.
    */
   private static void pinRetainedEdgeOccurrences(final Object value, final Set<Object> visited) {
     if (value == null)

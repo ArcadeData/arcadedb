@@ -478,6 +478,55 @@ class CypherDeletedEntityInCollectionIssue12548Test {
   }
 
   @Test
+  void testEqualityDistinctAndMembershipStillWorkOnCollectionsHoldingDeletedEntities() {
+    // What is read of a deleted entity raises, but the collection that holds it is still a value: it can be counted, compared,
+    // grouped and searched, as the entity the clause deleted is
+    final List<Object> answers = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:B {id: 2})
+          WITH n, [n, 3] AS ns
+          DETACH DELETE n
+          RETURN count(DISTINCT ns) AS d, size(ns) AS s, n IN ns AS has, 3 IN ns AS hasThree, ns = ns AS same""")) {
+        final Result row = rs.next();
+        answers.add(((Number) row.getProperty("d")).longValue());
+        answers.add(((Number) row.getProperty("s")).longValue());
+        answers.add(row.getProperty("has"));
+        answers.add(row.getProperty("hasThree"));
+        answers.add(row.getProperty("same"));
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+
+    assertThat(answers).containsExactly(1L, 2L, true, true, true);
+  }
+
+  @Test
+  void testAPathThatWentThroughADeleteIsUsedByTheClausesAfterIt() {
+    // The path is extended nowhere, rebuilt nowhere: it is read as the row carries it, over a plan with a disconnected pattern
+    // after the delete
+    final List<Long> lengths = new ArrayList<>();
+    final List<Long> nodeCounts = new ArrayList<>();
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH p = (a:A)-[:R]->(b:B), (l:Leaf)
+          DETACH DELETE b
+          WITH p, l
+          MATCH (h:Hub)
+          RETURN length(p) AS len, size(nodes(p)) AS s""")) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          lengths.add(((Number) row.getProperty("len")).longValue());
+          nodeCounts.add(((Number) row.getProperty("s")).longValue());
+        }
+      }
+    });
+
+    assertThat(lengths).containsExactly(1L, 1L);
+    assertThat(nodeCounts).containsExactly(2L, 2L);
+  }
+
+  @Test
   void testAnOrdinaryDeleteStillAnswersRowsThatHoldNoDeletedEntity() {
     final List<Long> values = new ArrayList<>();
     database.transaction(() -> {
@@ -505,7 +554,7 @@ class CypherDeletedEntityInCollectionIssue12548Test {
   @Test
   @Tag("slow")
   void testPerRowDeleteOfAnElementOfASharedListIsLinear() {
-    final int count = 50_000;
+    final int count = 100_000;
     database.getSchema().createVertexType("Perf");
     database.transaction(() -> {
       for (int i = 0; i < count; i++)
@@ -529,6 +578,7 @@ class CypherDeletedEntityInCollectionIssue12548Test {
     });
 
     assertThat(rows[0]).isEqualTo(count);
-    stopwatch.assertGaveUpWithin(60_000L, "linear in the rows (a few seconds) from quadratic in the size of the shared list (minutes)");
+    // Measured: a couple of seconds for 100,000 rows, where a copy or a walk of the shared list per row took minutes
+    stopwatch.assertGaveUpWithin(20_000L, "linear in the rows (seconds) from quadratic in the size of the shared list (minutes)");
   }
 }

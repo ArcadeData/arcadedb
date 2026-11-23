@@ -93,6 +93,24 @@ class DeletedReferencesTest extends TestHelper {
   }
 
   @Test
+  void aCollectionOfScalarsIsLeftAsTheObjectTheRowCameWith() {
+    final List<Object> list = new ArrayList<>(List.of("text", 1L, 2.5d));
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("k", 2L);
+    map.put("s", "text");
+    final DeletedReferences references = references();
+    final ResultInternal first = row("list", list, "map", map);
+    final ResultInternal second = row("list", list, "map", map);
+
+    references.mark(first);
+    references.mark(second);
+
+    assertThat((Object) first.getProperty("list")).isSameAs(list);
+    assertThat((Object) first.getProperty("map")).isSameAs(map);
+    assertThat((Object) second.getProperty("list")).isSameAs(list);
+  }
+
+  @Test
   void aDeletedNodeInAnotherAliasReadsAsTheMarker() {
     deleted.add(doomed.getIdentity());
     final ResultInternal row = row("a", alive, "b", doomed);

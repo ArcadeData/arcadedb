@@ -45,6 +45,11 @@ import java.util.Set;
  * shares it ({@code WITH collect(n) AS ns UNWIND ns AS x DELETE x} is a quadratic statement the other way). A view is live: a
  * row buffered before a later row deleted an element it holds reads the deletion too, with nothing to re-mark.
  * <p>
+ * A list or a map that holds no record, no path and no collection - numbers, strings, a lazy range - is left as it is, the
+ * very object the row came with: it can never hold a deleted entity, and what a later clause does with its type or its
+ * identity is not changed by this one. Which lists those are is found once per collection, as the rows that share one share
+ * the view of it.
+ * <p>
  * Only a read is answered with the marker: {@code size()} of the list, {@code type()} of a relationship in it and the number
  * of elements are unchanged, as they are for the entity the clause deleted.
  * <p>
@@ -115,13 +120,22 @@ public final class DeletedReferences {
     for (int i = 0; i < MEMO_SIZE; i++)
       if (memoSources[i] == collection) // NOPMD: by identity
         return memoViews[i];
-    final Object view = resolve(collection, deletions);
-    if (view != collection) { // NOPMD: by identity, as resolve answers an unchanged value
-      memoSources[memoNext] = collection;
-      memoViews[memoNext] = view;
-      memoNext = (memoNext + 1) % MEMO_SIZE;
-    }
+    // A collection of scalars cannot hold a deleted record: it stays the object it is, so what the rest of the statement does with
+    // its type or identity is unchanged, and no row of a long statement pays a wrapper for it
+    final Object view = holdsRecordsOrCollections(collection) ? resolve(collection, deletions) : collection;
+    memoSources[memoNext] = collection;
+    memoViews[memoNext] = view;
+    memoNext = (memoNext + 1) % MEMO_SIZE;
     return view;
+  }
+
+  /** @return true when a list or a map holds a record, a path or another collection, which can hold one */
+  private static boolean holdsRecordsOrCollections(final Object collection) {
+    final Iterable<?> elements = collection instanceof Map<?, ?> map ? map.values() : (List<?>) collection;
+    for (final Object element : elements)
+      if (element instanceof Document || element instanceof TraversalPath || element instanceof List || element instanceof Map)
+        return true;
+    return false;
   }
 
   /**
