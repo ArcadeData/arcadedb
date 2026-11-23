@@ -121,7 +121,7 @@ class ConsistentKeyLookupLockOrderTest extends TestHelper {
     assertThat(loaded.get()).isNotNull();
     assertThat(loaded.get().getIdentity()).isEqualTo(rid);
     assertThat(database.getSchema().existsType("Other")).isTrue();
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS total FROM Item")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS total FROM Item")) {
       assertThat(rs.next().<Long>getProperty("total")).isEqualTo(2L);
     }
   }
