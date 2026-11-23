@@ -209,14 +209,15 @@ public class GeoUtils {
    * Spatial4j's {@code relate} returns a single relation, in which CONTAINS and WITHIN are OGC's covers and covered-by.
    * For two equal shapes it answers one of the two, which one depending on the kinds of shape and their order (CONTAINS
    * for a polygon against itself, WITHIN for a box read as a rectangle against the same box written with an extra vertex),
-   * and INTERSECTS for two equal points. Reading CONTAINS alone, and WITHIN alone for {@code geo.within}, left a shape out of
-   * itself, and an indexed {@code geo.within(coords, <shape>)} missed the record holding that very shape (issue #12271).
+   * and INTERSECTS for two equal points or two equal collections of shapes. Reading CONTAINS alone, and WITHIN alone for
+   * {@code geo.within}, left a shape out of itself, and an indexed {@code geo.within(coords, <shape>)} missed the record
+   * holding that very shape (issue #12271).
    */
   public static boolean contains(final Shape a, final Shape b) {
     final SpatialRelation relation = a.relate(b);
     if (relation == SpatialRelation.CONTAINS)
       return true;
-    return relation == SpatialRelation.WITHIN ? sameSet(a, b) : equalPoints(relation, a, b);
+    return relation == SpatialRelation.WITHIN ? sameSet(a, b) : equalShapes(relation, a, b);
   }
 
   /**
@@ -227,25 +228,37 @@ public class GeoUtils {
     final SpatialRelation relation = a.relate(b);
     if (relation == SpatialRelation.WITHIN)
       return true;
-    return relation == SpatialRelation.CONTAINS ? sameSet(a, b) : equalPoints(relation, a, b);
+    return relation == SpatialRelation.CONTAINS ? sameSet(a, b) : equalShapes(relation, a, b);
   }
 
-  /** Spatial4j answers INTERSECTS for two points that are equal, DISJOINT otherwise. */
-  private static boolean equalPoints(final SpatialRelation relation, final Shape a, final Shape b) {
-    return relation == SpatialRelation.INTERSECTS && a instanceof Point && b instanceof Point;
+  /**
+   * Spatial4j answers INTERSECTS for two points that are equal (DISJOINT otherwise), and for two equal collections of
+   * shapes (a mixed GEOMETRYCOLLECTION, a BUFFER of a line), which combine the relations of their members: a member
+   * contained and another disjoint make INTERSECTS, where any other kind of shape answers CONTAINS for the same set of
+   * points. Such a collection has no JTS form to compare, so it is the same set when it is the same shape as written.
+   */
+  private static boolean equalShapes(final SpatialRelation relation, final Shape a, final Shape b) {
+    return relation == SpatialRelation.INTERSECTS && ((a instanceof Point && b instanceof Point) || a.equals(b));
   }
 
   /**
    * Whether two shapes, one of which covers the other, are the same set of points. A circle is compared as written, the
-   * polygon JTS would make of it being an approximation.
+   * polygon JTS would make of it being an approximation, and so is a shape JTS has no geometry for (a collection of mixed
+   * shapes, a buffered line): {@code getGeometryFrom} throws for it, where {@code geo.within} and {@code geo.contains}
+   * answered false before shapes were compared.
    */
   private static boolean sameSet(final Shape a, final Shape b) {
     if (a.equals(b))
       return true;
-    if (a instanceof Circle || b instanceof Circle)
+    if (!hasJtsForm(a) || !hasJtsForm(b))
       return false;
     final JtsShapeFactory shapeFactory = SPATIAL_CONTEXT.getShapeFactory();
     return shapeFactory.getGeometryFrom(a).equalsTopo(shapeFactory.getGeometryFrom(b));
+  }
+
+  /** The shapes {@link JtsShapeFactory#getGeometryFrom} makes a geometry of, a circle excepted (it is only approximated). */
+  private static boolean hasJtsForm(final Shape shape) {
+    return shape instanceof JtsGeometry || shape instanceof Point || shape instanceof Rectangle;
   }
 
   /**

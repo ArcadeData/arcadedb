@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * A shape is within itself and contains itself, as OGC {@code ST_Within}/{@code ST_Contains}, JTS and PostGIS answer, so
@@ -38,6 +39,13 @@ class GeoWithinEqualShapesTest extends TestHelper {
   private static final String BOX  = "POLYGON ((2 48, 3 48, 3 49, 2 49, 2 48))";
   private static final String TRI  = "POLYGON ((2 48, 3 48, 2 49, 2 48))";
   private static final String LINE = "LINESTRING (2 48, 3 49)";
+
+  /** Shapes Spatial4j reads as something other than a JTS geometry, a point or a rectangle, or relates in its own way. */
+  private static final List<String> EXOTIC = List.of(
+      "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POINT (50 50))",
+      "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POLYGON ((20 20, 30 20, 30 30, 20 30, 20 20)))",
+      "GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (2 2, 3 3))", "MULTIPOINT ((1 1), (2 2))",
+      "BUFFER(LINESTRING (0 0, 10 0), 1)", "BUFFER(POINT (5 5), 1)");
 
   @Test
   void aShapeIsWithinAndContainsItself() {
@@ -86,6 +94,61 @@ class GeoWithinEqualShapesTest extends TestHelper {
             .isEqualTo(bool("SELECT geo.contains(?, ?) AS v", b, a));
   }
 
+  /**
+   * A shape that has no JTS form (Spatial4j reads a GEOMETRYCOLLECTION of mixed members as a ShapeCollection, and BUFFER(..)
+   * as a buffered line) answered false before the same-shape comparison existed, so it must still answer, not fail the
+   * statement, whichever way round it is passed.
+   */
+  @Test
+  void aShapeWithoutAJtsFormStillAnswers() {
+    final String mixed = "GEOMETRYCOLLECTION (POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0)), POINT (50 50))";
+    final String inside = "POINT (5 5)";
+    final String outside = "POINT (20 20)";
+
+    assertThat(bool("SELECT geo.within(?, ?) AS v", inside, mixed)).isTrue();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", mixed, inside)).isTrue();
+    assertThat(bool("SELECT geo.within(?, ?) AS v", mixed, inside)).isFalse();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", inside, mixed)).isFalse();
+    assertThat(bool("SELECT ?.isWithin(?) AS v", mixed, inside)).isFalse();
+    assertThat(bool("SELECT ?.isWithin(?) AS v", inside, mixed)).isTrue();
+
+    assertThat(bool("SELECT geo.within(?, ?) AS v", outside, mixed)).isFalse();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", mixed, outside)).isFalse();
+    assertThat(bool("SELECT geo.within(?, ?) AS v", mixed, outside)).isFalse();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", outside, mixed)).isFalse();
+
+    final String buffered = "BUFFER(LINESTRING (0 0, 10 0), 1)";
+    assertThat(bool("SELECT geo.within(?, ?) AS v", "POINT (5 0)", buffered)).isTrue();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", buffered, "POINT (5 0)")).isTrue();
+    assertThat(bool("SELECT geo.within(?, ?) AS v", buffered, "POINT (5 0)")).isFalse();
+    assertThat(bool("SELECT geo.contains(?, ?) AS v", "POINT (5 0)", buffered)).isFalse();
+    assertThat(bool("SELECT ?.isWithin(?) AS v", buffered, "POINT (5 0)")).isFalse();
+  }
+
+  /** Two collections written the same are the same set of points, whichever predicate asks. */
+  @Test
+  void aCollectionWithoutAJtsFormIsWithinAndContainsItself() {
+    for (final String w : EXOTIC) {
+      assertThat(bool("SELECT geo.within(?, ?) AS v", w, w)).as("within %s", w).isTrue();
+      assertThat(bool("SELECT geo.contains(?, ?) AS v", w, w)).as("contains %s", w).isTrue();
+      assertThat(bool("SELECT ?.isWithin(?) AS v", w, w)).as("isWithin %s", w).isTrue();
+    }
+  }
+
+  /** Whatever the kinds of the two shapes, a predicate answers: the comparison of equal shapes never fails a statement. */
+  @Test
+  void everyPairOfShapeKindsAnswersInBothOrders() {
+    final List<String> shapes = new ArrayList<>(EXOTIC);
+    shapes.addAll(List.of(PT, BOX, TRI, LINE, "ENVELOPE (2, 3, 49, 48)", "POINT (5 5)"));
+    for (final String a : shapes)
+      for (final String b : shapes) {
+        final String pair = a + " | " + b;
+        assertThatCode(() -> bool("SELECT geo.within(?, ?) AS v", a, b)).as("within %s", pair).doesNotThrowAnyException();
+        assertThatCode(() -> bool("SELECT geo.contains(?, ?) AS v", a, b)).as("contains %s", pair).doesNotThrowAnyException();
+        assertThatCode(() -> bool("SELECT ?.isWithin(?) AS v", a, b)).as("isWithin %s", pair).doesNotThrowAnyException();
+      }
+  }
+
   @Test
   void anIndexedWithinFindsTheRecordHoldingTheShape() {
     database.command("sql", "CREATE DOCUMENT TYPE L");
@@ -97,6 +160,12 @@ class GeoWithinEqualShapesTest extends TestHelper {
       database.command("sql", "INSERT INTO L SET name = 'tri', coords = ?", TRI);
       database.command("sql", "INSERT INTO L SET name = 'line', coords = ?", LINE);
     });
+
+    // the answers below are only the index's if the plan fetches through it, and not through the scan checked further down
+    for (final String shape : List.of(PT, BOX, TRI, LINE))
+      assertThat(planUsesIndex("SELECT name FROM L WHERE geo.within(coords, ?) = true", shape)).as("index used for %s", shape)
+          .isTrue();
+    assertThat(planUsesIndex("SELECT name FROM L WHERE geo.within(coords.trim(), ?) = true", PT)).isFalse();
 
     assertThat(names("SELECT name FROM L WHERE geo.within(coords, ?) = true", PT)).containsExactly("pt");
     assertThat(names("SELECT name FROM L WHERE geo.within(coords, ?) = true", BOX)).containsExactlyInAnyOrder("box", "line",
@@ -111,6 +180,14 @@ class GeoWithinEqualShapesTest extends TestHelper {
   private boolean bool(final String sql, final Object... args) {
     try (final ResultSet result = database.query("sql", sql, args)) {
       return result.next().<Boolean>getProperty("v");
+    }
+  }
+
+  private boolean planUsesIndex(final String sql, final Object... args) {
+    try (final ResultSet result = database.query("sql", sql, args)) {
+      while (result.hasNext())
+        result.next();
+      return result.getExecutionPlan().orElseThrow().prettyPrint(0, 2).contains("FETCH FROM INDEXED FUNCTION");
     }
   }
 
