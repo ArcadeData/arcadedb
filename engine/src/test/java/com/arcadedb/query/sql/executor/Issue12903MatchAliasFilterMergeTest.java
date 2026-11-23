@@ -88,6 +88,27 @@ class Issue12903MatchAliasFilterMergeTest extends TestHelper {
         + "RETURN x.id AS x, y.id AS y, z.id AS z")).containsExactly("0,1,0");
   }
 
+  @Test
+  void aDepthWhereBelongsToItsRecursiveHopAndIsNotCopiedToTheOtherOccurrencesOfItsAlias() {
+    // b is bound by the plain hop a -> m -> b and met again by the recursive hop: where: ($depth = 2) means something only on the
+    // recursive hop, so the plain one must not be filtered by it (no walk has given $depth a value there)
+    assertThat(rows("MATCH {type: V, as: a}.out(){as: m}.out(){as: b}, {as: a}.out(){as: b, while: ($depth < 2), where: ($depth = 2)} "
+        + "RETURN a.id AS a, b.id AS b")).containsExactly("0,2", "1,0", "2,1");
+    // the plain where: of the other occurrence still applies, whichever of the two is written first
+    assertThat(rows("MATCH {type: V, as: a}.out(){as: m}.out(){as: b, where: (id = 0)}, "
+        + "{as: a}.out(){as: b, while: ($depth < 2), where: ($depth = 2)} RETURN a.id AS a, b.id AS b")).containsExactly("1,0");
+    assertThat(rows("MATCH {type: V, as: a}.out(){as: b, while: ($depth < 2), where: ($depth = 2)}, "
+        + "{as: a}.out(){as: m}.out(){as: b, where: (id = 0)} RETURN a.id AS a, b.id AS b")).containsExactly("1,0");
+  }
+
+  @Test
+  void aWhereThatReadsAnotherAliasFiltersTheNodeBoundThroughAnOccurrenceWithoutIt() {
+    // y is bound by the first path (x -> m -> y), whose last hop carries no where:; the second path closes on it with the only
+    // where:, which reads x through $matched. Both paths are two hops long, so y is the vertex two hops from x
+    assertThat(rows("MATCH {type: V, as: x}.out(){as: m}.out(){as: y}, {as: x}.out(){as: n}.out(){as: y, where: ($matched.x.id = 1)} "
+        + "RETURN x.id AS x, y.id AS y")).containsExactly("1,0");
+  }
+
   private List<String> rows(final String match) {
     final List<String> out = new ArrayList<>();
     try (final ResultSet rs = database.query("sql", match)) {

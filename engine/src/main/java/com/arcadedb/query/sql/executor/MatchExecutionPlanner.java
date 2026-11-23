@@ -1183,6 +1183,10 @@ public class MatchExecutionPlanner {
    * through. Each occurrence gets its own where: ANDed with the where:s of the other occurrences of its alias. A where: that reads
    * {@code $depth} is the one exception: it belongs to the recursive hop it is written on (the depth of its walk), and means nothing on
    * another occurrence of the alias, where no walk has given {@code $depth} a value.
+   * <p>
+   * {@code aliasFilters} (see {@link #addAliases}) holds the same merge once per alias, {@code $depth} included, and is what the root
+   * fetch, the reverse walk ({@code EdgeTraversal.leftFilter}) and the dependencies read. The two have to answer the same where: for a
+   * node, so a change to how the where:s of an alias are combined belongs in both places.
    */
   private void rebindFilters() {
     final Map<String, List<MatchFilter>> occurrences = new LinkedHashMap<>();
