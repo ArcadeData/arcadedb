@@ -21,6 +21,8 @@ package com.arcadedb.gremlin;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,6 +72,43 @@ class Issue12026RepeatedPropertyKeyTest {
     assertThat(g.E().values("w", "w").count().next()).isEqualTo(1L);
     assertThat(g.E().properties("w", "w").count().next()).isEqualTo(1L);
     assertThat(g.E().valueMap("w", "w").next()).isEqualTo(Map.of("w", 5));
+  }
+
+  /**
+   * A null key never named a property: {@code Document.get(null)} answers null, so the key was skipped. Naming one next to another
+   * key must not turn into a {@link NullPointerException} in the repeated-key scan.
+   */
+  @Test
+  void aNullKeyIsStillSkipped() {
+    final Vertex v = graph.traversal().V().has("n", 1).next();
+    assertThat(v.<Object>values("n", null)).toIterable().containsExactly(1);
+    assertThat(v.<Object>values("n", null, null, "m", "n")).toIterable().containsExactly(1, "a");
+    assertThat(v.<Object>properties("n", null, "n")).toIterable().hasSize(1);
+    final Edge e = graph.traversal().E().next();
+    assertThat(e.<Object>values("w", null, "w")).toIterable().containsExactly(5);
+    assertThat(e.<Object>properties("w", null, "w")).toIterable().hasSize(1);
+  }
+
+  /**
+   * A key list longer than a handful of names, as a generated traversal passes: each property still comes once, in the order its
+   * key was first named.
+   */
+  @Test
+  void aWideKeyListNamesEachPropertyOnce() {
+    final String[] keys = new String[64];
+    for (int i = 0; i < keys.length; i++)
+      keys[i] = "k" + (i % 30);
+    keys[5] = "m";
+    keys[40] = "n";
+    keys[41] = "m";
+    keys[63] = "n";
+
+    final Vertex v = graph.traversal().V().has("n", 1).next();
+    assertThat(v.<Object>values(keys)).toIterable().containsExactly("a", 1);
+    assertThat(v.<Object>properties(keys)).toIterable().hasSize(2);
+
+    final GraphTraversalSource g = graph.traversal();
+    assertThat(g.V().has("n", 1).valueMap(keys).next()).isEqualTo(Map.of("m", List.of("a"), "n", List.of(1)));
   }
 
   @Test
