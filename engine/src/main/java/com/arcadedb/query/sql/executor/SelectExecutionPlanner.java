@@ -1217,8 +1217,16 @@ public class SelectExecutionPlanner {
           }
         }
 
-        result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, context,
-            info.timeout != null ? info.timeout.getVal().longValue() : -1));
+        final AggregateProjectionCalculationStep aggregation = new AggregateProjectionCalculationStep(info.aggregateProjection,
+            info.groupBy, aggregationLimit, context, info.timeout != null ? info.timeout.getVal().longValue() : -1);
+        // The groups a caller that reads only a window of them is given are the first ones met, as for the LIMIT above, and under the
+        // same condition: the cap does not bound a statement that sorts or deduplicates its groups (issue #12016). The plan of an
+        // aggregation is kept in the plan cache under the text of the statement, so the SKIP it is bounded by must be the one the text
+        // says: a SKIP given as a parameter is another value for the next execution
+        // An expand() or an UNWIND after it can drop a group, so the first groups would not be the rows the caller reads
+        if (info.orderBy == null && !info.distinct && !info.expand && info.unwind == null && (info.skip == null || info.skip.num != null))
+          aggregation.boundByRowCap(rowCapSkip(info, context));
+        result.chain(aggregation);
         if (info.groupBy == null && hasAggregateItem(info.aggregateProjection, context)) {
           result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection, info.preAggregateProjection, context));
         }
@@ -2534,6 +2542,29 @@ public class SelectExecutionPlanner {
     }
   }
 
+  /**
+   * The SKIP the rows of a caller's row cap are counted after (see {@link com.arcadedb.query.ResultRowCapScope}, issue #12016), which
+   * is what a step marked for the cap adds to the cap itself; {@code -1} when no cap can bound the rows of the step asking, which
+   * is when the statement has a LIMIT of its own (the cap never lowers one: it is what the caller asked to read) or when its SKIP is
+   * not known at planning (a variable, an expression): the step then keeps every row, as it does for a caller with no cap.
+   * <p>
+   * Only a bound that cannot change the answer reads this. A decision that picks the shape of the plan - a DISTINCT as a GROUP BY, the
+   * columnar projection of a GROUP BY, an index walk for an ORDER BY - must not: it takes {@code info.limit}, and the cap is not one.
+   */
+  static int rowCapSkip(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.limit != null)
+      return -1;
+    if (info.skip == null)
+      return 0;
+    try {
+      final int skip = info.skip.getValue(context);
+      return skip < 0 ? -1 : skip;
+    } catch (final RuntimeException e) {
+      // SKIP depends on runtime state: the bound is not known, so there is none
+      return -1;
+    }
+  }
+
   public static void handleOrderBy(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext context) {
     int skipSize = 0;
     int limitSize = -1;
@@ -2561,8 +2592,15 @@ public class SelectExecutionPlanner {
     if (info.expand || info.unwind != null || info.distinct)
       maxResults = null;
 
-    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty())
-      plan.chain(new OrderByStep(info.orderBy, maxResults, context, info.timeout != null ? info.timeout.getVal().longValue() : -1));
+    if (!info.orderApplied && info.orderBy != null && info.orderBy.getItems() != null && !info.orderBy.getItems().isEmpty()) {
+      final OrderByStep sort = new OrderByStep(info.orderBy, maxResults, context,
+          info.timeout != null ? info.timeout.getVal().longValue() : -1);
+      // The same rows the sort keeps for a LIMIT, for the caller that reads only a window of them: nothing downstream may drop
+      // one, as for the LIMIT above (issue #12016)
+      if (maxResults == null && !info.expand && info.unwind == null && !info.distinct)
+        sort.boundByRowCap(rowCapSkip(info, context));
+      plan.chain(sort);
+    }
 
     // The projection that drops the aliases generated for the ORDER BY keys runs even when an index already ordered the rows
     // (#8811): the generated columns are in the rows either way
@@ -2634,6 +2672,8 @@ public class SelectExecutionPlanner {
       final int descendingLimit = timeSeriesDescendingScanLimit(tsType, info, context);
       if (descendingLimit >= 0) {
         final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, true, descendingLimit, context);
+        if (descendingLimit == 0)
+          fetch.boundByRowCap(timeSeriesRowCapSkip(tsType, info, context, true));
         consumeTimeSeriesWhereIfPushedDown(tsType, info, context, false);
         fuseTimeSeriesProjection(fetch, tsType, info);
         plan.chain(fetch);
@@ -2651,6 +2691,8 @@ public class SelectExecutionPlanner {
       final FieldFilter pushedFieldFilter = ascendingLimit > 0 ? null : fieldFilter;
       final FetchFromTimeSeriesStep fetch = new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, pushedFieldFilter, false,
           ascendingLimit, context);
+      if (ascendingLimit == 0)
+        fetch.boundByRowCap(timeSeriesRowCapSkip(tsType, info, context, false));
       consumeTimeSeriesWhereIfPushedDown(tsType, info, context, pushedFieldFilter != null);
       fuseTimeSeriesProjection(fetch, tsType, info);
       plan.chain(fetch);
@@ -4135,6 +4177,34 @@ public class SelectExecutionPlanner {
   }
 
   /**
+   * Issue #12016: the SKIP the rows of the row cap of a caller (see {@link com.arcadedb.query.ResultRowCapScope}) are counted after,
+   * for a fetch that stops at none of its own, or {@code -1} when the cap cannot bound it. The conditions are the ones under which
+   * the scan takes the statement's own LIMIT ({@link #timeSeriesDescendingScanLimit}, {@link #timeSeriesAscendingScanLimit}): the
+   * statement has none of its own, and nothing between the engine and the caller can add, drop or reorder a row. The fetch reads the
+   * whole series otherwise: a descending scan with no bound lists every row of it in memory.
+   */
+  private int timeSeriesRowCapSkip(final LocalTimeSeriesType tsType, final QueryPlanningInfo info, final CommandContext context,
+      final boolean descending) {
+    final int skip = rowCapSkip(info, context);
+    if (skip < 0 || info.facets != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return -1;
+    if (!descending) {
+      if (info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+        return -1;
+      // An ORDER BY re-orders the WHOLE result, unless the clause asks for exactly the ascending timestamp order the fetch produces
+      if (info.orderBy != null && !isTimeSeriesTimestampOrderByAsc(tsType, info))
+        return -1;
+    }
+    try {
+      // The residual FilterStep must not be able to discard a row the engine counted against the bound (issue #5414)
+      return isTimeSeriesWhereFullyPushedDown(tsType, info, context) ? skip : -1;
+    } catch (final RuntimeException e) {
+      // a predicate would not evaluate against a null record: a bound is an optimisation, it must never be why a query fails
+      return -1;
+    }
+  }
+
+  /**
    * Returns true when the ORDER BY is a single ASCENDING clause on the time-series timestamp column that the
    * fetch order alone already satisfies - the ascending mirror of {@link #isTimeSeriesTimestampOrderByDesc}, and
    * subject to the same caveats: the clause is applied after the projection, so it is only about the raw
@@ -4881,13 +4951,17 @@ public class SelectExecutionPlanner {
         // of its rows the LIMIT will take (issue #9895) - unless the branches are merged by score (issue #10022): a record
         // among the best n of the merge is among the best n of the branch that gives it its score, since every record ranked
         // above it there is ranked above it in the merge too
-        final int functionLimit =
-            (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez, info,
-                ridConditions, context) ?
-                indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
-                -1;
+        final boolean limitable = (info.flattenedWhereClause.size() == 1 || mergeByScore) && coversWholeHierarchy(filterClusters, typez,
+            info, ridConditions, context);
+        final int functionLimit = limitable ?
+            indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
+            -1;
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
             functionLimit, ridConditions, recordConditions, order, context);
+        // A caller that reads only a window of the rows (issue #12016) takes the rows of the first branch of its function only: the
+        // branches of an OR are concatenated and deduplicated, so none of them alone knows how many of its rows the window takes
+        if (limitable && functionLimit == -1 && info.flattenedWhereClause.size() == 1)
+          step.boundByRowCap(indexedFunctionRowCapSkip(blockCandidateFunction, block, recordConditions, info, order, context));
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
           // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
           info.orderApplied = true;
@@ -5056,16 +5130,7 @@ public class SelectExecutionPlanner {
   private static int indexedFunctionRowLimit(final BinaryCondition function, final AndBlock residual,
       final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
       final CommandContext context) {
-    if (info.limit == null || info.deferredLetWhereClause != null)
-      return -1;
-    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
-      return -1;
-    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
-    // empty), so the function's condition is the very instance the block holds
-    for (final BooleanExpression condition : residual.getSubBlocks())
-      if (condition != function && !containsInstance(recordConditions, condition))
-        return -1;
-    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
+    if (info.limit == null || !rowsOfFunctionAreTheFirstOnesTheCallerTakes(function, residual, recordConditions, info, order))
       return -1;
 
     try {
@@ -5081,6 +5146,39 @@ public class SelectExecutionPlanner {
       // SKIP/LIMIT depend on runtime state, or overflow: the function produces every row, as without a limit
       return -1;
     }
+  }
+
+  /**
+   * Issue #12016: the SKIP the rows of the row cap of a caller (see {@link com.arcadedb.query.ResultRowCapScope}) are counted after,
+   * for an indexed function fetch the statement's own LIMIT does not bound, or {@code -1} when the cap cannot bound it: the statement
+   * has a LIMIT of its own or a FACETS clause, or something between the fetch and the caller can drop, add or reorder a row (see
+   * {@link #indexedFunctionRowLimit}). An {@code ORDER BY $score DESC} stays a sort of the rows the function produces: only a LIMIT
+   * makes the fetch itself the order, and the plan does not depend on the cap.
+   */
+  private static int indexedFunctionRowCapSkip(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order,
+      final CommandContext context) {
+    if (info.facets != null || !rowsOfFunctionAreTheFirstOnesTheCallerTakes(function, residual, recordConditions, info, order))
+      return -1;
+    return rowCapSkip(info, context);
+  }
+
+  /**
+   * Whether nothing between an indexed function fetch and the caller can drop, add or reorder a row, so that the rows the caller takes
+   * are the first ones the function produces: the conditions {@link #indexedFunctionRowLimit} lists.
+   */
+  private static boolean rowsOfFunctionAreTheFirstOnesTheCallerTakes(final BinaryCondition function, final AndBlock residual,
+      final List<BinaryCondition> recordConditions, final QueryPlanningInfo info, final IndexedFunctionPushdown.Order order) {
+    if (info.deferredLetWhereClause != null)
+      return false;
+    if (info.expand || info.unwind != null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return false;
+    // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
+    // empty), so the function's condition is the very instance the block holds
+    for (final BooleanExpression condition : residual.getSubBlocks())
+      if (condition != function && !containsInstance(recordConditions, condition))
+        return false;
+    return info.orderBy == null || order != IndexedFunctionPushdown.Order.FUNCTION || isOrderByScoreDescending(info);
   }
 
   /**

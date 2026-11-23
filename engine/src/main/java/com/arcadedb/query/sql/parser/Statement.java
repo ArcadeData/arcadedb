@@ -67,8 +67,7 @@ public class Statement extends SimpleNode {
   // Memo of what the statements nested in this one do (issue #9628): a reflective walk of the (immutable once parsed)
   // tree, so computed once per parsed instance. Transient so the AST walkers never mistake it for part of the tree.
   // Valid because nothing adds a statement to a parsed tree after it is classified: rewrites happen on the text before
-  // parsing (the HTTP automatic LIMIT is appended to the command string) and planners work on copy(), which starts with
-  // no memo.
+  // parsing and planners work on copy(), which starts with no memo.
   private transient volatile NestedClassification nestedClassification;
   // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
   private transient volatile ParameterBounds positionalParameterBounds;
@@ -293,12 +292,18 @@ public class Statement extends SimpleNode {
    * concurrent DDL recreated it, and a DDL that keeps dropping and recreating it can take that one away too, attempt after
    * attempt (issue #9615). The last attempt therefore plans without the key indexes of the types it reads, which no DDL can take
    * away under it: a scan answers what such an index would have, slower.
+   *
+   * @param rowCap the rows the caller of the statement reads at most, handed to the plan of every attempt before the first row is
+   *               pulled (see {@link com.arcadedb.query.ResultRowCapScope}, issue #12016); {@code 0} for none
    */
-  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner) {
+  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner, final int rowCap) {
     for (int attempt = 1; ; attempt++) {
       InternalExecutionPlan plan = null;
       try {
         plan = planner.apply(attempt);
+        // Before the first row: the result set below pulls it (issue #12016)
+        if (rowCap > 0)
+          plan.applyRowCap(rowCap);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
