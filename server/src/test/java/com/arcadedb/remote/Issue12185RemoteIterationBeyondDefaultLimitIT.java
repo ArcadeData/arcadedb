@@ -31,6 +31,7 @@ import java.util.Iterator;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12185: the driver's own whole-result reads (iterateType, iterateBucket) and the streaming API stopped at the
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue12185RemoteIterationBeyondDefaultLimitIT extends BaseGraphServerTest {
   private static final int    CAP       = 50;
+  private static final int    CEILING   = 100;
   private static final int    RECORDS   = 120;
   private static final String TYPE_NAME = "Item12185";
 
@@ -108,6 +110,52 @@ class Issue12185RemoteIterationBeyondDefaultLimitIT extends BaseGraphServerTest 
   }
 
   @Test
+  void aWholeTypeAboveTheServerCeilingIsRefusedNotCut() {
+    // The hard ceiling is the operator's bound on one response, and asking for every row cannot widen it. What the driver
+    // must never do is end short without saying so, which is the defect: the buffered iteration is refused (HTTP 413)
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, CEILING);
+    try (final RemoteDatabase remote = newRemoteDatabase()) {
+      assertThatThrownBy(() -> remote.iterateType(TYPE_NAME, true)).hasMessageContaining("maximum of " + CEILING + " rows");
+      assertThatThrownBy(() -> remote.iterateType(TYPE_NAME, false)).hasMessageContaining("maximum of " + CEILING + " rows");
+
+      final String bucket = remote.getSchema().getType(TYPE_NAME).getBuckets(false).getFirst().getName();
+      assertThatThrownBy(() -> remote.iterateBucket(bucket)).hasMessageContaining("maximum of " + CEILING + " rows");
+    } finally {
+      resetCeiling();
+    }
+  }
+
+  @Test
+  void aStreamAboveTheServerCeilingEndsWithAnErrorNotAShortResult() {
+    // A 200 is already on the wire when the ceiling is reached, so the refusal travels in band: reading past the rows
+    // that fit raises, it does not look like a stream that ended on its own
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, CEILING);
+    try (final RemoteDatabase remote = newRemoteDatabase()) {
+      assertThatThrownBy(() -> {
+        try (final ResultSet rs = remote.queryStream("sql", "SELECT i FROM " + TYPE_NAME, Map.of())) {
+          rs.stream().count();
+        }
+      }).hasMessageContaining("maximum of " + CEILING + " rows");
+    } finally {
+      resetCeiling();
+    }
+  }
+
+  @Test
+  void aStreamWithinTheServerCeilingIsStreamedInFull() {
+    // The ceiling is above the record count here, so asking for every row must return every row (and not be refused)
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, RECORDS + 5);
+    try (final RemoteDatabase remote = newRemoteDatabase()) {
+      assertThat(count(remote.iterateType(TYPE_NAME, true))).isEqualTo(RECORDS);
+      try (final ResultSet rs = remote.queryStream("sql", "SELECT i FROM " + TYPE_NAME, Map.of())) {
+        assertThat(rs.stream().count()).isEqualTo(RECORDS);
+      }
+    } finally {
+      resetCeiling();
+    }
+  }
+
+  @Test
   void bufferedQueryKeepsTheServerDefaultCap() {
     // Unchanged on purpose: the buffered query() is capped by the server default and warns (issue #5711)
     try (final RemoteDatabase remote = newRemoteDatabase()) {
@@ -115,6 +163,11 @@ class Issue12185RemoteIterationBeyondDefaultLimitIT extends BaseGraphServerTest 
         assertThat(rs.stream().count()).isEqualTo(CAP);
       }
     }
+  }
+
+  private void resetCeiling() {
+    getServer(0).getConfiguration()
+        .setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getDefValue());
   }
 
   private static long count(final Iterator<Record> iterator) {

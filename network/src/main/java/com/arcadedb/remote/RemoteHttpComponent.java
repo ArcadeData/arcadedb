@@ -98,7 +98,7 @@ public class RemoteHttpComponent extends RWLockContext {
    * The {@code limit} of a request that asks the server for every row (any value {@code <= 0} means unlimited): the
    * server's hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} still applies, and refuses rather than truncates.
    */
-  public static final  int    UNLIMITED_ROWS            = -1;
+  static final         int    UNLIMITED_ROWS            = -1;
   /**
    * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
    * class lives in the server module, which this client does not depend on.
@@ -310,7 +310,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * Maximum number of rows the server is asked to serialize per command, or {@code null} (the default) to
-   * leave the decision to the server.
+   * leave the decision to the server. It governs the commands the application writes: the driver's own whole-result
+   * reads, {@code iterateType()} and {@code iterateBucket()}, ignore it and ask for every row (issue #12185).
    *
    * @see #setMaxResultRows(Integer)
    */
@@ -325,6 +326,12 @@ public class RemoteHttpComponent extends RWLockContext {
    * always honored as written, while a query stating none is capped by the server default
    * ({@code arcadedb.server.httpQueryDefaultLimit}) and the driver logs a warning when that cap drops rows
    * (issue #5711).
+   * <p>
+   * The cap applies to {@code query()}, {@code command()} and the streams ({@code queryStream()}, {@code commandStream()}).
+   * With {@code null} the buffered calls keep the server default, but a stream asks for every row, because it is the API
+   * for results too large to buffer (issue #12185). {@code iterateType()} and {@code iterateBucket()} ignore this setting
+   * altogether: their contract is the whole type or bucket, so a small cap must not hand the application a partial
+   * iteration that {@code countType()} contradicts.
    * <p>
    * Beware that removing the cap makes the server materialize the whole result set in memory before answering,
    * up to the server's hard ceiling ({@code arcadedb.server.httpQueryMaxResultRows}, 1,000,000 rows by
