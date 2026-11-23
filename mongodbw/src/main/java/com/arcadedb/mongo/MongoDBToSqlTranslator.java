@@ -18,31 +18,44 @@
  */
 package com.arcadedb.mongo;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Identifier;
 import de.bwaldvogel.mongo.backend.Utils;
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.Bson;
 import de.bwaldvogel.mongo.bson.BsonRegularExpression;
+import de.bwaldvogel.mongo.bson.Decimal128;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public class MongoDBToSqlTranslator {
   private static final Set<String> FIELD_OPERATORS = Set.of("$in", "$nin", "$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$exists", "$size");
+
+  // an unmapped class is reported once: see toBsonValue
+  private static final AtomicBoolean UNMAPPED_CLASS_WARNED = new AtomicBoolean();
 
   protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
     int expressionCount = 0;
@@ -458,27 +471,6 @@ public class MongoDBToSqlTranslator {
     return buffer.append('.').append(Identifier.quote(field.substring(start))).toString();
   }
 
-  protected static void fillResultSet(final int numberToSkip, final int numberToReturn, final List<Document> result, final Iterator it) {
-    for (int i = 0; it.hasNext(); ++i) {
-      // consume the element before deciding whether to skip it - a "continue" that never calls next() burns loop
-      // counter iterations without advancing the iterator, so skip has no effect for any numberToSkip >= 1
-      final Object next = it.next();
-
-      if (numberToSkip > 0 && i < numberToSkip)
-        continue;
-
-      if (next instanceof com.arcadedb.database.Document document)
-        result.add(convertDocumentToMongoDB(document));
-      else if (next instanceof Result result1)
-        result.add(convertDocumentToMongoDB(result1));
-      else
-        throw new IllegalArgumentException("Object not supported");
-
-      if (numberToReturn > 0 && result.size() >= numberToReturn)
-        break;
-    }
-  }
-
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
     return convertMapToMongoDB(doc.toMap(), true);
   }
@@ -566,14 +558,22 @@ public class MongoDBToSqlTranslator {
   /**
    * Maps a stored value onto a type the BSON encoder accepts. A temporal property is held as a {@code java.time} value, and
    * the encoder handles exactly one of those, {@link Instant}, rejecting the rest outright and failing the whole response.
-   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact.
+   * The engine anchors a stored date to UTC, so the conversion uses the same offset and is exact. The encoder takes no
+   * {@code Float}, {@code Short} or {@code Byte}, no primitive array, no record identity and no embedded document either, and
+   * the value it rejects closes the connection (issue #12796): each of those is converted to the BSON value that carries it,
+   * and any other class to its text. The conversion is total: whatever it answers, the encoder takes.
+   * <p>
+   * {@code com.arcadedb.database.Document} is spelled out in full: its simple name is the one of the MongoDB Document imported here.
    */
   private static Object toBsonValue(final Object value) {
-    if (value instanceof Instant)
+    // the classes the encoder takes as they are and that nearly every value has: answered before the chain of conversions
+    if (value == null || value instanceof Integer || value instanceof Long || value instanceof Double || value instanceof Boolean)
+      return value;
+    else if (value instanceof String string)
+      return MongoBsonValues.isEncodedString(string) ? MongoBsonValues.toBson(value) : value;
+    else if (value instanceof Instant)
       return value;
     else if (value instanceof BigDecimal)
-      return MongoBsonValues.toBson(value);
-    else if (value instanceof String string && MongoBsonValues.isEncodedString(string))
       return MongoBsonValues.toBson(value);
     else if (MongoBsonValues.isTagged(value)) {
       final Object bson = MongoBsonValues.toBson(value);
@@ -589,16 +589,82 @@ public class MongoDBToSqlTranslator {
       return dateTime.toInstant();
     else if (value instanceof Date date)
       return date.toInstant();
+    else if (value instanceof Calendar calendar)
+      // the fifth class a DATE or DATETIME property can be configured to read as
+      return calendar.toInstant();
+    else if (value instanceof Float number)
+      return floatToDouble(number);
+    else if (value instanceof Short || value instanceof Byte)
+      return ((Number) value).intValue();
+    else if (value instanceof BigInteger integer)
+      // a number stays a number: the same Decimal128 (or double, beyond its 34 digits) a DECIMAL of that value reads as
+      return MongoBsonValues.toBson(new BigDecimal(integer));
+    else if (value instanceof com.arcadedb.database.Document embedded && embedded.getIdentity() == null)
+      // an embedded document has no identity of its own; its @type and @cat are dropped like the ones of the record
+      return convertMapToMongoDB(embedded.toMap(false), false);
+    else if (value instanceof Identifiable identifiable)
+      return identifiable.getIdentity().toString();
+    else if (value instanceof Result row)
+      // a row nested in a row (a sub-query in a projection) is a sub-document, as a map is
+      return convertMapToMongoDB(row.toMap(), false);
     else if (value instanceof Map<?, ?> map)
       // an embedded document can hold a temporal property of its own
       return convertMapToMongoDB(map, false);
-    else if (value instanceof List<?> list) {
-      final List<Object> converted = new ArrayList<>(list.size());
-      for (final Object item : list)
+    else if (value instanceof Collection<?> collection) {
+      final List<Object> converted = new ArrayList<>(collection.size());
+      for (final Object item : collection)
         converted.add(toBsonValue(item));
       return converted;
-    }
-    return value;
+    } else if (value instanceof byte[] bytes)
+      return new BinData(bytes);
+    else if (value instanceof float[] array) {
+      // the arrays a vector is held in are read directly; the reflective loop below is for the ones nobody stores by the thousand
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final float item : array)
+        converted.add(floatToDouble(item));
+      return converted;
+    } else if (value instanceof double[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final double item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof int[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final int item : array)
+        converted.add(item);
+      return converted;
+    } else if (value instanceof long[] array) {
+      final List<Object> converted = new ArrayList<>(array.length);
+      for (final long item : array)
+        converted.add(item);
+      return converted;
+    } else if (value.getClass().isArray()) {
+      // short[], boolean[], char[] and any array of objects: each element is converted like a value of its own
+      final int length = Array.getLength(value);
+      final List<Object> converted = new ArrayList<>(length);
+      for (int i = 0; i < length; i++)
+        converted.add(toBsonValue(Array.get(value, i)));
+      return converted;
+    } else if (value instanceof Bson || value instanceof Decimal128 || value instanceof UUID)
+      // every other class the encoder takes: ObjectId, BinData, LegacyUUID, a regular expression, a timestamp, MinKey, MaxKey
+      // and JavaScript are all a Bson
+      return value;
+
+    // the encoder would refuse the value and the refusal closes the connection: its text keeps the record readable. Said once, at
+    // WARNING, because the value changes type on the way out and a large result set would otherwise flood the log
+    if (UNMAPPED_CLASS_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(MongoDBToSqlTranslator.class, Level.WARNING,
+          "A value of class %s has no BSON type and is returned to the MongoDB client as its text (further ones are not reported)",
+          value.getClass().getName());
+    return value.toString();
+  }
+
+  /**
+   * The double with the decimal text the float is written as, so that {@code 1.1f} reads {@code 1.1} as it does on every other
+   * protocol, not the {@code 1.100000023841858} a widening answers.
+   */
+  private static double floatToDouble(final float value) {
+    return Double.parseDouble(Float.toString(value));
   }
 
   protected static ObjectId getObjectId(final String s) {

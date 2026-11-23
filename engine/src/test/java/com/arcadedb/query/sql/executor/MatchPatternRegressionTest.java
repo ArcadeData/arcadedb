@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.HeapLimitExceededException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
@@ -492,7 +493,7 @@ class MatchPatternRegressionTest extends TestHelper {
     for (final String direction : new String[] { "", " ASC", " DESC" })
       assertThatThrownBy(() -> database.query("sql",
           "MATCH {type:S, as:s}.out('R'){as:p} RETURN s.@rid AS srid, p.n AS pn ORDER BY @rid" + direction).close())//
-          .isInstanceOf(CommandExecutionException.class)//
+          .isInstanceOf(CommandSQLParsingException.class)//
           .hasMessageContaining("ORDER BY @rid has no meaning on the rows of this MATCH")//
           .hasMessageContaining("<alias>.@rid");
   }
@@ -502,7 +503,7 @@ class MatchPatternRegressionTest extends TestHelper {
   void bareTypeOnAProjectionIsRefused() {
     orderByRecordAttributeGraph();
     assertThatThrownBy(() -> database.query("sql", "MATCH {type:S, as:s} RETURN s.n AS n ORDER BY @type").close())//
-        .isInstanceOf(CommandExecutionException.class)//
+        .isInstanceOf(CommandSQLParsingException.class)//
         .hasMessageContaining("ORDER BY @type has no meaning");
   }
 
@@ -511,9 +512,9 @@ class MatchPatternRegressionTest extends TestHelper {
   void bareRidOnPathsAndPatternsIsRefused() {
     orderByRecordAttributeGraph();
     assertThatThrownBy(() -> database.query("sql", "MATCH {type:S, as:s}.out('R'){as:p} RETURN $paths ORDER BY @rid").close())//
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSQLParsingException.class);
     assertThatThrownBy(() -> database.query("sql", "MATCH {type:S, as:s}.out('R'){as:p} RETURN $patterns ORDER BY @rid").close())//
-        .isInstanceOf(CommandExecutionException.class);
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   /** Regression test for issue #9911. */

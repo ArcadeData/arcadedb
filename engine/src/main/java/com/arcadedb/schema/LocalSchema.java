@@ -2449,6 +2449,13 @@ public class LocalSchema implements Schema {
     final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
+      // Again under the write lock, which the check above does not hold (issue #12715): a type rename claims the names it moves
+      // its buckets to under this lock, and so does a concurrent creation of the same name, so the one that comes second is
+      // refused here instead of registering a second bucket under a name the first one holds
+      if (lookupBucket(bucketName) != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot create bucket '" + bucketName + "' because already exists");
+
       try {
         final File parent = new File(dir);
         if (!parent.exists() && !parent.mkdirs())
@@ -3019,42 +3026,43 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * The recovery an open owes the per-record materialized views (issue #11550), and the grouped ones maintained by delta (issue
-   * #11937), called once the open has replayed the WAL. Their
-   * pending delta and recovery mark live in memory only, so a view persisted VALID by a process that crashed may be missing the
-   * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
-   * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
-   * on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
-   * whether it leads: there the leader runs {@link #recoverPerRecordMaterializedViews()} when it takes the leadership, and for a
+   * The recovery an open owes the INCREMENTAL materialized views, called once the open has replayed the WAL. A per-record view's
+   * pending delta and recovery mark live in memory only (issue #11550), and a view refreshed as a whole is brought up to date by an
+   * after-commit callback that runs once the source commit is durable (issue #12220): a process that died in between leaves a view
+   * persisted VALID without the commits whose pass had not run yet. After an unclean shutdown every INCREMENTAL view gets the
+   * recovery full pass, otherwise only the ones the load found owing it (persisted non-VALID: a pass that failed, or one a close
+   * dropped, issue #11464). Each says STALE before the open returns, and the passes run on the scheduler thread, so the open does
+   * not wait on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
+   * whether it leads: there the leader runs {@link #recoverIncrementalMaterializedViews()} when it takes the leadership, and for a
    * database it opens only later, once the HA wrapper is installed on it (issue #11555).
    *
    * @param uncleanShutdown whether the open found the database not closed properly
    */
-  public void recoverPerRecordMaterializedViewsAfterOpen(final boolean uncleanShutdown) {
+  public void recoverIncrementalMaterializedViewsAfterOpen(final boolean uncleanShutdown) {
     if (database.getMode() != ComponentFile.MODE.READ_WRITE || isReplicatedNode())
       return;
-    recoverPerRecordMaterializedViews(uncleanShutdown);
+    recoverIncrementalMaterializedViews(uncleanShutdown);
   }
 
   /**
-   * Hands the recovery full pass of every per-record materialized view to the scheduler thread (issue #11550): what a node that
-   * has just become the leader of an HA cluster owes the views, whose pending deltas died with the previous leader. Each view
-   * says STALE until its pass ends. Returns the number of views asked.
+   * Hands the recovery full pass of every INCREMENTAL materialized view to the scheduler thread (issues #11550, #12220): what a
+   * node that has just become the leader of an HA cluster owes the views, whose pending deltas, and the after-commit refreshes not
+   * made yet, died with the previous leader. Each view says STALE until its pass ends. Returns the number of views asked.
    */
-  public int recoverPerRecordMaterializedViews() {
-    return recoverPerRecordMaterializedViews(true);
+  public int recoverIncrementalMaterializedViews() {
+    return recoverIncrementalMaterializedViews(true);
   }
 
   /**
-   * As {@link #recoverPerRecordMaterializedViews()}, or, with {@code everyView} false, for the views that owe the recovery full
+   * As {@link #recoverIncrementalMaterializedViews()}, or, with {@code everyView} false, for the views that owe the recovery full
    * pass only (persisted non-VALID): what an HA leader owes a database it opens again within the leadership that already
-   * recovered it (issue #11555). Returns the number of views asked.
+   * recovered it (issue #11555), and what a clean open owes. Returns the number of views asked.
    */
-  public int recoverPerRecordMaterializedViews(final boolean everyView) {
+  public int recoverIncrementalMaterializedViews(final boolean everyView) {
     int asked = 0;
     for (final MaterializedView v : getMaterializedViews()) {
       final MaterializedViewImpl view = (MaterializedViewImpl) v;
-      if (!view.tracksPendingDelta() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
+      if (view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
         continue;
       if (!everyView && !view.owesRecoveryPass())
         continue;
@@ -5047,8 +5055,20 @@ public class LocalSchema implements Schema {
       // RESTORE THE INHERITANCE
       for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
         final LocalDocumentType type = getType(entry.getKey());
-        for (final String p : entry.getValue())
-          type.addSuperType(getType(p), false);
+        for (final String p : entry.getValue()) {
+          final LocalDocumentType parent = getType(p);
+          // A schema saved with a cycle (issue #12028: a refused ALTER TYPE ... SUPERTYPE + used to leave it in memory, for the next schema
+          // save to write) cannot be linked as written: every polymorphic walk would recurse until the stack overflows. The link that
+          // would close the cycle is left out, so the database opens. The types are compared by identity: two types whose names differ
+          // only by case are two types, and the link between them is no cycle
+          if (parent.isSameOrSubTypeOf(type)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Type '%s' is declared a sub type of '%s', which is the type itself or already one of its sub types: the link is left out "
+                    + "because a type hierarchy cannot have a cycle", type.getName(), parent.getName());
+            continue;
+          }
+          type.addSuperType(parent, false);
+        }
       }
 
       warnAboutTypesThatCannotHoldRecords(types.keySet());
@@ -5721,10 +5741,11 @@ public class LocalSchema implements Schema {
             view.setStatus(MaterializedViewStatus.STALE);
 
           // A per-record view loaded non-VALID may be missing the records of a failed or interrupted pass, and the recovery mark
-          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass. A grouped
-          // view maintained by delta (issue #11937) rebuilds its in-memory state at its first pass anyway; the mark also recovers it
-          // at the open
-          if (view.tracksPendingDelta() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
+          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass
+          // A view refreshed as a whole and loaded non-VALID owes a pass too (issue #12220): its refresh after the source commit failed
+          // or a close dropped it (issue #11464), and the open recovers it rather than leaving it STALE until the next source commit
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL
+              && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
             view.requestFullPass(true);
         } catch (final Exception e) {
           ++failures;

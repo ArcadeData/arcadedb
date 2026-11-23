@@ -67,9 +67,12 @@ public final class ExistingRecordsCheck {
     if (propertyNames.length == 0)
       return;
     if (type instanceof LocalTimeSeriesType tsType) {
+      // null when neither flag is being declared: nothing is required of the samples then
+      final ValidationException.Kind requiredBy = mandatory ? ValidationException.Kind.MANDATORY :
+          notNull ? ValidationException.Kind.NOT_NULL : null;
+      final String what = mandatory ? "MANDATORY" : "NOTNULL";
       for (final String propertyName : propertyNames)
-        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? "MANDATORY" : "NOTNULL", null, null, null,
-            mandatory ? "MANDATORY" : "NOTNULL");
+        requireSamples(db, tsType, propertyName, requiredBy, null, null, null, what);
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -80,11 +83,12 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw new CommandExecutionException("Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-              "MANDATORY" :
-              "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
-              + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
-              + ". Fix or delete the non-conforming records first");
+          // a refusal of the declaration for the data it would leave violating it, the type a write refused by the same constraint
+          // has: HTTP answers it as the caller's request, not as a server fault (issue #12037)
+          throw new ValidationException(kindOf(unmet),
+              "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? "MANDATORY" : "NOTNULL") + ": record "
+                  + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName,
+                  unmet) + ". Fix or delete the non-conforming records first");
       }
     }
   }
@@ -95,7 +99,7 @@ public final class ExistingRecordsCheck {
   public static void requireValues(final Database db, final DocumentType type, final Property property,
       final DocumentValidator.StoredValueConstraints constraints, final String what) {
     if (type instanceof LocalTimeSeriesType tsType) {
-      requireSamples(db, tsType, property.getName(), false, null, constraints.min(), constraints.max(), constraints.regexp(), what);
+      requireSamples(db, tsType, property.getName(), null, constraints.min(), constraints.max(), constraints.regexp(), what);
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -105,7 +109,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(
+        throw new ValidationException(e.getKind(),
             "Cannot set " + what + ": record " + document.getIdentity() + " violates it, " + e.getMessage()
                 + ". Fix or delete the non-conforming records first", e);
       }
@@ -128,12 +132,12 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw new CommandExecutionException(
+        throw new ValidationException(kindOf(unmet),
             createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
+        throw new ValidationException(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
       }
     }
   }
@@ -147,9 +151,14 @@ public final class ExistingRecordsCheck {
    * reads back as missing, and MANDATORY / NOTNULL find nothing to refuse there. The write path still holds every new sample to them.
    * MIN and REGEXP judge that empty text here and on the write path alike (issue #10336), so their outcome does not depend on whether
    * the constraint or the sample came first.
+   *
+   * @param requiredBy the existence constraint being declared (MANDATORY or NOTNULL), or null for a MIN, a MAX or a REGEXP; when it is
+   *                   set, {@code what} is the keyword of that constraint, which the column check names in its reason
+   * @param what       what is being declared, for the message
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
-      final boolean required, final String requiredBy, final String min, final String max, final String regexp, final String what) {
+      final ValidationException.Kind requiredBy, final String min, final String max, final String regexp, final String what) {
+    final boolean required = requiredBy != null;
     final TimeSeriesEngine engine = type.getEngine();
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
@@ -172,7 +181,7 @@ public final class ExistingRecordsCheck {
     final int index = column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP ? 0 : position + 1;
 
     final TimeSeriesColumnConstraints.ColumnCheck check = TimeSeriesColumnConstraints.columnCheck(db, column, property.getType(),
-        required, requiredBy, min, max, regexp);
+        required, required ? what : null, min, max, regexp);
     if (check == null)
       return;
 
@@ -196,17 +205,29 @@ public final class ExistingRecordsCheck {
       throw new CommandExecutionException("Cannot set " + what + ": the samples of the TIMESERIES type '" + type.getName()
           + "' could not be read to check it", e);
     }
-    if (violation[1] != null)
+    if (violation[1] != null) {
       // A SAMPLE CANNOT BE UPDATED, BUT IT CAN BE DELETED BY ITS TIME AND ITS TAGS (issues #10336, #10342)
-      throw new CommandExecutionException("Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
+      final String message = "Cannot set " + what + ": the sample at timestamp " + violation[0] + " of the TIMESERIES "
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
-          + "<value> ...], and insert them again if they are to be kept");
+          + "<value> ...], and insert them again if they are to be kept";
+      // a missing MANDATORY or NOTNULL names its kind, as the refusal of the same declaration over the records of a document type does
+      // (issue #12436)
+      if (required)
+        throw new ValidationException(requiredBy, message);
+      // the column check answers its reason as one sentence, whichever of MIN, MAX and REGEXP the sample breaks, so this refusal
+      // names no kind (as SaveElementStep#refuseViolation, the write path of the same check; issue #12037)
+      throw new ValidationException(message);
+    }
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
       final String reason) {
     return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
         + " violates it, " + reason + ". Fix or delete the non-conforming records first";
+  }
+
+  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY : ValidationException.Kind.NOT_NULL;
   }
 }

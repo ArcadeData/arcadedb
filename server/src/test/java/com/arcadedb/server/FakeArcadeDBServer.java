@@ -241,6 +241,12 @@ public class FakeArcadeDBServer extends ArcadeDBServer {
     return getDatabaseForOperator(databaseName);
   }
 
+  /** An HTTP request resolves the database the way the operator does here, for the same reason as {@link #getDatabaseForClient}. */
+  @Override
+  public ServerDatabase getDatabaseForRequest(final String databaseName) {
+    return getDatabaseForOperator(databaseName);
+  }
+
   /** Recorded, and forgets a database served here; the real registry of an unstarted server holds nothing. */
   @Override
   public void removeDatabase(final String databaseName) {
