@@ -115,6 +115,39 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
   }
 
   @Test
+  void aTypeThatHoldsNoVectorAnswersEmptyAndIsSizedByTheNextWrite() {
+    final Map<RID, float[]> live = createAndFill(1);
+    database.transaction(() -> {
+      for (final RID rid : live.keySet())
+        database.deleteRecord(rid.asDocument());
+    });
+    live.clear();
+    reopenWithTheDecisionForgotten();
+
+    // the first bucket holds only tombstones, the others nothing: every look finds no vector, and the second one is answered
+    // without reading the records again
+    for (int i = 0; i < 2; i++)
+      for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+        assertThat(((LSMVectorIndex) bucketIndex).findNeighborsFromVector(vector(DIMENSIONS, 1), 3)).isEmpty();
+    for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+      assertThat(((LSMVectorIndex) bucketIndex).getMetadata().dimensions).isZero();
+
+    // nothing fixes the size, so the next vector does, wherever it goes, and the look that found nothing does not hide it
+    final int otherLength = DIMENSIONS + 4;
+    database.transaction(() -> {
+      final float[] vector = vector(otherLength, 1000);
+      live.put(database.newDocument("Doc").set("embedding", vector).save("Doc_2").getIdentity(), vector);
+    });
+    for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+      assertThat(((LSMVectorIndex) bucketIndex).getMetadata().dimensions).isEqualTo(otherLength);
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newDocument("Doc").set("embedding", vector(DIMENSIONS, 1001)).save("Doc_0")))
+        .hasStackTraceContaining("does not match index dimension " + otherLength);
+    assertThat(bucketIndexOf("Doc_2").findNeighborsFromVector(vector(otherLength, 1000), 3)).extracting(Pair::getFirst)
+        .containsExactlyElementsOf(live.keySet());
+  }
+
+  @Test
   void aSearchOnAReopenedUndecidedIndexSeesTheVectorsItsPagesHold() {
     final Map<RID, float[]> live = createAndFill();
     reopenWithTheDecisionForgotten();
@@ -184,7 +217,11 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
     throw new IllegalStateException("No index on bucket " + bucketName);
   }
 
-  /** The schema as the node that crashed before saving the decision left it, the pages as it left them. */
+  /**
+   * The schema as the node that crashed before saving the decision left it, the pages as it left them. Coupled to the layout of
+   * {@code schema.json}: the edit replaces the saved {@code "dimensions": 8} of each bucket index, and asserts that it found one,
+   * so a change of that layout fails here rather than letting every test run against a decided index.
+   */
   private void reopenWithTheDecisionForgotten() {
     final String path = database.getDatabasePath();
     database.close();
