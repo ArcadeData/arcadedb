@@ -20,19 +20,18 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.text.Normalizer;
-import java.util.Locale;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * text.slug(string, [delimiter]) - Create URL-friendly slug.
+ * text.slug(string, [delimiter]) - Replace every run of characters other than letters, ASCII digits and '_' with the delimiter
+ * (default '-') after trimming the string, as {@code apoc.text.slug} does (issue #12104): the case and the letters are kept, so
+ * {@code 'Hello World'} is {@code 'Hello-World'}. A null delimiter answers null.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextSlug extends AbstractTextFunction {
-  private static final Pattern NON_ASCII = Pattern.compile("[^\\p{ASCII}]");
-  private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-zA-Z0-9]");
-  private static final Pattern MULTIPLE_DASHES = Pattern.compile("-+");
+  private static final Pattern NON_WORD = Pattern.compile("[^\\p{L}0-9_]+");
 
   @Override
   protected String getSimpleName() {
@@ -51,35 +50,17 @@ public class TextSlug extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Create a URL-friendly slug from the string";
+    return "Trim the string and replace every run of characters other than letters, digits and '_' with the delimiter (default '-')";
   }
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
-    if (str == null)
+    final String delimiter = args.length > 1 ? asString(args[1]) : "-";
+    if (str == null || delimiter == null)
       return null;
 
-    final String delimiter = args.length > 1 ? asString(args[1]) : "-";
-    final String delim = delimiter != null ? delimiter : "-";
-
-    // Normalize Unicode characters
-    String normalized = Normalizer.normalize(str, Normalizer.Form.NFD);
-    normalized = NON_ASCII.matcher(normalized).replaceAll("");
-
-    // Replace non-alphanumeric with delimiter
-    String slug = NON_ALPHANUMERIC.matcher(normalized).replaceAll(delim);
-
-    // Replace multiple delimiters with single
-    if ("-".equals(delim)) {
-      slug = MULTIPLE_DASHES.matcher(slug).replaceAll("-");
-    } else {
-      slug = slug.replaceAll(Pattern.quote(delim) + "+", delim);
-    }
-
-    // Trim delimiters from ends
-    slug = slug.replaceAll("^" + Pattern.quote(delim) + "|" + Pattern.quote(delim) + "$", "");
-
-    return slug.toLowerCase(Locale.ROOT);
+    // The delimiter is literal text: APOC reads '$1' or '\' in it as a replacement pattern and fails
+    return NON_WORD.matcher(str.trim()).replaceAll(Matcher.quoteReplacement(delimiter));
   }
 }

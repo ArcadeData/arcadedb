@@ -47,6 +47,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -63,7 +64,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * a {@code nodeCount x nodeCount} structure, to answer a question about a neighbourhood or a sparse graph.
  * <p>
  * Each rewrite is held to the answer of the algorithm it replaced, re-implemented here over the adjacency the vertex API lists (the
- * order and the repetitions the old {@code int[][]} adjacency had), on random multigraphs with parallel edges, reciprocal pairs,
+ * order and the repetitions the old {@code int[][]} adjacency had; the link-prediction scores and kNN over the neighbour sets those
+ * repetitions collapse to, issue #12934), on random multigraphs with parallel edges, reciprocal pairs,
  * self-loops and isolated vertices, with and without a Graph Analytical View. That it no longer scales with the database is asserted
  * through the working-memory budget rather than a clock: a budget that the old structure could not fit in serves the new one.
  *
@@ -561,6 +563,14 @@ class SparseNeighbourhoodAlgorithmsTest {
     return result;
   }
 
+  /**
+   * The neighbour SET of {@code rid} in {@code dir}, in the order {@link #neighbours} first lists them: what the link-prediction
+   * scores and the kNN similarity are defined on, a parallel or a reciprocal relationship being one neighbour (issue #12934).
+   */
+  private Set<RID> neighbourSet(final RID rid, final Vertex.DIRECTION dir) {
+    return new LinkedHashSet<>(neighbours(rid, dir));
+  }
+
   private List<RID> oracleWalk(final RID start, final int steps, final Vertex.DIRECTION dir, final long seed) {
     final Random random = new Random(seed);
     final List<RID> walk = new ArrayList<>();
@@ -577,13 +587,13 @@ class SparseNeighbourhoodAlgorithmsTest {
   }
 
   private Map<RID, Number> oracleCommonNeighbours(final RID source, final Vertex.DIRECTION dir) {
-    final Set<RID> srcSet = new HashSet<>(neighbours(source, dir));
+    final Set<RID> srcSet = neighbourSet(source, dir);
     final Map<RID, Number> result = new HashMap<>();
     for (final RID v : allVertices()) {
       if (v.equals(source))
         continue;
       int count = 0;
-      for (final RID w : neighbours(v, dir))
+      for (final RID w : neighbourSet(v, dir))
         if (srcSet.contains(w))
           count++;
       if (count >= 1)
@@ -593,18 +603,17 @@ class SparseNeighbourhoodAlgorithmsTest {
   }
 
   private Map<RID, Number> oracleJaccard(final RID source, final Vertex.DIRECTION dir) {
-    final List<RID> srcRow = neighbours(source, dir);
-    final Set<RID> srcSet = new HashSet<>(srcRow);
+    final Set<RID> srcSet = neighbourSet(source, dir);
     final Map<RID, Number> result = new HashMap<>();
     for (final RID v : allVertices()) {
       if (v.equals(source))
         continue;
-      final List<RID> row = neighbours(v, dir);
+      final Set<RID> row = neighbourSet(v, dir);
       int intersection = 0;
       for (final RID w : row)
         if (srcSet.contains(w))
           intersection++;
-      final int union = srcRow.size() + row.size() - intersection;
+      final int union = srcSet.size() + row.size() - intersection;
       if (union == 0)
         continue;
       final double similarity = (double) intersection / union;
@@ -616,12 +625,15 @@ class SparseNeighbourhoodAlgorithmsTest {
 
   private Map<RID, Number> oracleAdamicAdar(final RID source, final Vertex.DIRECTION dir) {
     final Map<RID, Double> scores = new LinkedHashMap<>();
-    for (final RID w : neighbours(source, dir)) {
-      final List<RID> row = neighbours(w, dir);
-      if (row.size() <= 1)
+    final Vertex.DIRECTION back = dir == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN :
+        dir == Vertex.DIRECTION.IN ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.BOTH;
+    for (final RID w : neighbourSet(source, dir)) {
+      final int degree = neighbourSet(w, dir).size();
+      if (degree <= 1)
         continue;
-      final double contribution = 1.0 / Math.log(row.size());
-      for (final RID v : row)
+      final double contribution = 1.0 / Math.log(degree);
+      // The nodes v whose neighbour set holds w: those w lists in the opposite direction
+      for (final RID v : neighbourSet(w, back))
         if (!v.equals(source))
           scores.merge(v, contribution, Double::sum);
     }
@@ -633,14 +645,14 @@ class SparseNeighbourhoodAlgorithmsTest {
   }
 
   private Map<RID, Number> oracleResourceAllocation(final RID source, final Vertex.DIRECTION dir) {
-    final Set<RID> srcSet = new HashSet<>(neighbours(source, dir));
+    final Set<RID> srcSet = neighbourSet(source, dir);
     final Map<RID, Number> result = new HashMap<>();
     for (final RID v : allVertices()) {
       if (v.equals(source))
         continue;
       double score = 0.0;
-      for (final RID w : neighbours(v, dir)) {
-        final int degree = neighbours(w, dir).size();
+      for (final RID w : neighbourSet(v, dir)) {
+        final int degree = neighbourSet(w, dir).size();
         if (srcSet.contains(w) && degree > 0)
           score += 1.0 / degree;
       }
@@ -651,14 +663,13 @@ class SparseNeighbourhoodAlgorithmsTest {
   }
 
   private long oracleTotalNeighbours(final RID a, final RID b, final Vertex.DIRECTION dir) {
-    final List<RID> rowA = neighbours(a, dir);
-    final Set<RID> setA = new HashSet<>(rowA);
-    final List<RID> rowB = neighbours(b, dir);
+    final Set<RID> setA = neighbourSet(a, dir);
+    final Set<RID> setB = neighbourSet(b, dir);
     int common = 0;
-    for (final RID w : rowB)
+    for (final RID w : setB)
       if (setA.contains(w))
         common++;
-    return (long) rowA.size() + rowB.size() - common;
+    return (long) setA.size() + setB.size() - common;
   }
 
   /** Bron-Kerbosch without pivoting over the simple undirected graph: every maximal clique, isolated vertices included. */
@@ -725,7 +736,7 @@ class SparseNeighbourhoodAlgorithmsTest {
 
   /**
    * The all-pairs scan the procedure ran: for every node with neighbours, every other node with neighbours in node order, the
-   * distinct-neighbour intersection over the union of the raw row lengths, kept in a top-k that replaces its minimum.
+   * distinct-neighbour intersection over the union of the neighbour sets (issue #12934), kept in a top-k that replaces its minimum.
    */
   private List<String> oracleKnn(final RID[] v, final int k, final Vertex.DIRECTION dir) {
     final List<RID> order = allVertices();
@@ -736,7 +747,7 @@ class SparseNeighbourhoodAlgorithmsTest {
     final int[][] adj = new int[n][];
     final BitSet[] sets = new BitSet[n];
     for (int i = 0; i < n; i++) {
-      final List<RID> row = neighbours(order.get(i), dir);
+      final List<RID> row = new ArrayList<>(neighbourSet(order.get(i), dir));
       adj[i] = new int[row.size()];
       sets[i] = new BitSet(n);
       for (int j = 0; j < row.size(); j++) {

@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.agg.ApocAggregates;
 import com.arcadedb.function.agg.CollectDistinctFunction;
 import com.arcadedb.function.agg.CollectFunction;
 import com.arcadedb.function.agg.CypherAvgFunction;
@@ -249,6 +250,9 @@ public class CypherFunctionFactory {
     if (lowercaseName.startsWith(SQL_PREFIX))
       sqlFunctionName = lowercaseName.substring(SQL_PREFIX.length());
     else {
+      // apoc.agg.* aggregate as in APOC, where agg.* of the same name are scalar functions over a list (issue #12102)
+      if (isApocAggregate(lowercaseName))
+        return true;
       final StatelessFunction registryFunction = CypherFunctionRegistry.get(lowercaseName);
       if (registryFunction != null)
         return registryFunction.aggregateResults();
@@ -307,6 +311,12 @@ public class CypherFunctionFactory {
       throw FunctionValidator.unknownFunction(cypherFunctionName);
     }
 
+    // apoc.agg.*: a new aggregator for each group, with APOC's semantics (issue #12102)
+    if (isApocAggregate(functionName)) {
+      final StatelessFunction aggregate = ApocAggregates.create(functionName);
+      return distinct ? new DistinctAggregationWrapper(aggregate) : aggregate;
+    }
+
     // Check CypherFunctionRegistry for namespaced functions (text.*, map.*, util.*, date.*, etc.)
     final StatelessFunction registryFunction = CypherFunctionRegistry.get(functionName);
     if (registryFunction != null) {
@@ -337,6 +347,15 @@ public class CypherFunctionFactory {
     }
 
     throw FunctionValidator.unknownFunction(cypherFunctionName);
+  }
+
+  /**
+   * Whether {@code lowercaseName} is one of APOC's aggregating {@code apoc.agg.*} functions, unless an application registered a
+   * function of its own under the name (issue #12102).
+   */
+  private static boolean isApocAggregate(final String lowercaseName) {
+    return lowercaseName.startsWith(ApocAggregates.PREFIX) && ApocAggregates.isAggregate(lowercaseName)
+        && CypherFunctionRegistry.isBuiltInOrUnregistered(lowercaseName);
   }
 
   /**

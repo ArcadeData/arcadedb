@@ -92,28 +92,48 @@ final class EagerBarriers {
    * subquery that does, in any branch of a UNION.
    */
   static boolean subqueryBodyDeletes(final CypherStatement body) {
+    return subqueryBodyDeletes(body, false);
+  }
+
+  /**
+   * True when the body of a {@code CALL { }} subquery holds a {@code DETACH DELETE}, in the places {@link #subqueryBodyDeletes}
+   * looks: the one delete that removes relationships besides the entity it names (issue #12254, see
+   * {@link #detachDeleteNeedsEagerRead}).
+   */
+  static boolean subqueryBodyDetachDeletes(final CypherStatement body) {
+    return subqueryBodyDeletes(body, true);
+  }
+
+  private static boolean subqueryBodyDeletes(final CypherStatement body, final boolean detachOnly) {
     if (body == null)
       return false;
     if (body instanceof UnionStatement union) {
       for (final CypherStatement branch : union.getQueries())
-        if (subqueryBodyDeletes(branch))
+        if (subqueryBodyDeletes(branch, detachOnly))
           return true;
       return false;
     }
     final List<ClauseEntry> clauses = body.getClausesInOrder();
     // a body that kept no clause order is classified by the flag the parser set
-    if (clauses == null || clauses.isEmpty())
-      return body.hasDelete();
+    if (clauses == null || clauses.isEmpty()) {
+      if (!detachOnly)
+        return body.hasDelete();
+      final DeleteClause delete = body.getDeleteClause();
+      return body.hasDelete() && (delete == null || delete.isDetach());
+    }
     for (final ClauseEntry bodyClause : clauses)
       switch (bodyClause.getType()) {
       case DELETE:
-        return true;
+        if (!detachOnly || ((DeleteClause) bodyClause.getClause()).isDetach())
+          return true;
+        break;
       case FOREACH:
-        if (((ForeachClause) bodyClause.getClause()).containsDelete())
+        final ForeachClause foreach = (ForeachClause) bodyClause.getClause();
+        if (detachOnly ? foreach.containsDetachDelete() : foreach.containsDelete())
           return true;
         break;
       case SUBQUERY:
-        if (subqueryBodyDeletes(((SubqueryClause) bodyClause.getClause()).getInnerStatement()))
+        if (subqueryBodyDeletes(((SubqueryClause) bodyClause.getClause()).getInnerStatement(), detachOnly))
           return true;
         break;
       default:
@@ -151,6 +171,98 @@ final class EagerBarriers {
   static boolean matchClausesNeedEagerDelete(final List<MatchClause> matchClauses) {
     return matchClausesHaveDisconnectedPatterns(matchClauses)
         || MatchClause.hasVariableLengthRelationships(matchClauses);
+  }
+
+  /**
+   * True when a {@code DETACH DELETE} fed by the given MATCH clause(s), or by the rows of an earlier segment whose walk is
+   * still open, must read its whole upstream row set before applying the first deletion (issue #12254).
+   * <p>
+   * A relationship of a fixed-length pattern is expanded by walking the edge list of the node it starts from while the rows
+   * of that node are still being produced. A DETACH DELETE removes every relationship of the node it deletes, so the first
+   * row's delete cuts the list the walk is still reading, the walk ends early and the rows it would have produced are
+   * silently lost: {@code MATCH (a)-[r]->(b) DETACH DELETE a, b} over 500 relationships deleted 166 nodes and answered 200,
+   * and every other write clause of the statement ran for those rows only. Neo4j reads the MATCH to completion first (its
+   * Eager operator). The disconnected and variable-length shapes of {@link #matchClausesNeedEagerDelete} are the same hazard
+   * reached by a cross join and by a traverser's open cursors.
+   * <p>
+   * Segment-wide on purpose, like {@link #matchClausesNeedEagerDelete}, and not narrowed to the variables the pattern binds:
+   * the node a DETACH removes reaches the walk through its relationships, not through the name the DELETE spells, and the
+   * entity arrives under any name a WITH, an UNWIND, a FOREACH or a CALL subquery gives it, or under none ({@code WITH
+   * endNode(r) AS b}, {@code nodes(p)}). One carried flag ({@code walkedBefore}) covers all of them where a set of names
+   * would need a propagation rule per clause. What it costs is the rows held in memory for a DETACH DELETE of a node that
+   * names none of the pattern's variables, which a relationship pattern before it makes rare.
+   * <p>
+   * What stays streaming: a DELETE without DETACH (it refuses a node that still has a relationship, until the last row), and
+   * a DETACH DELETE whose every target is a relationship variable of the segment's own patterns, which removes only the
+   * relationship the walk is standing on, the same thing a plain {@code DELETE r} does. It holds only while no earlier walk is
+   * open: a relationship the segment deletes can be an entry of an edge list an earlier segment is still reading ({@code
+   * MATCH (a)-[]->() WITH a MATCH (a)-[s]->() DETACH DELETE s}), so it is read first then, and so is one carried across a WITH,
+   * which is no longer known as a relationship variable. What a streaming delete of a relationship does not cover, and a plain
+   * {@code DELETE r} does not either, is a later expansion of the same edge list that starts after the delete (issue #12521).
+   *
+   * @param segmentMatchClauses the MATCH clause(s) of the segment feeding the DELETE (the ones since the last WITH)
+   * @param walkedBefore        true when an earlier segment matched a relationship pattern and no aggregating WITH drained it
+   *                            since: see {@link #relationshipsWalkedAfter}
+   */
+  static boolean detachDeleteNeedsEagerRead(final DeleteClause deleteClause, final List<MatchClause> segmentMatchClauses,
+      final boolean walkedBefore) {
+    if (!deleteClause.isDetach() || deleteClause.isEmpty())
+      return false;
+    if (walkedBefore)
+      return true;
+    return MatchClause.hasRelationshipPatterns(segmentMatchClauses)
+        && !deletesOnlyMatchedRelationships(deleteClause, segmentMatchClauses);
+  }
+
+  /**
+   * True when a relationship pattern of the open segment, or of an earlier one whose walk is still open, feeds the rows a write
+   * clause is about to see: the precondition of {@link #detachDeleteNeedsEagerRead}, asked on its own by a FOREACH body and a
+   * CALL subquery body, which delete per row behind the same walk.
+   */
+  static boolean relationshipsWalked(final List<MatchClause> segmentMatchClauses, final boolean walkedBefore) {
+    return walkedBefore || MatchClause.hasRelationshipPatterns(segmentMatchClauses);
+  }
+
+  /**
+   * Carries the walk of the relationship patterns across a WITH that closes the segment {@code closingSegment}: a WITH that
+   * forwards rows one at a time leaves the walk behind it open, and a WITH that aggregates or sorts reads it to the end before
+   * it emits its first row, which closes it for everything read before it (the same two rules as the #7171 barrier). Call it
+   * before {@link #closeMatchSegment} clears the segment.
+   */
+  static boolean relationshipsWalkedAfter(final WithClause withClause, final List<MatchClause> closingSegment,
+      final boolean walkedBefore) {
+    return !withClause.hasAggregations() && withClause.getOrderByClause() == null
+        && relationshipsWalked(closingSegment, walkedBefore);
+  }
+
+  /** Whether every target of the DELETE is, by its plain name, a relationship variable bound by the given MATCH clause(s). */
+  private static boolean deletesOnlyMatchedRelationships(final DeleteClause deleteClause, final List<MatchClause> matchClauses) {
+    if (matchClauses == null)
+      return false;
+    final List<String> targets = deleteClause.getVariables();
+    final List<Expression> expressions = deleteClause.getExpressions();
+    for (int i = 0; i < targets.size(); i++) {
+      final Expression expression = expressions != null && i < expressions.size() ? expressions.get(i) : null;
+      final String name;
+      if (expression instanceof VariableExpression variable)
+        name = variable.getVariableName();
+      else if (expression == null && isPlainIdentifier(targets.get(i)))
+        name = targets.get(i);
+      else
+        return false;
+      if (!bindsRelationship(matchClauses, name))
+        return false;
+    }
+    return true;
+  }
+
+  private static boolean bindsRelationship(final List<MatchClause> matchClauses, final String variable) {
+    for (final MatchClause match : matchClauses)
+      for (final PathPattern path : match.getPathPatterns())
+        for (final RelationshipPattern relationship : path.getRelationships())
+          if (variable.equals(relationship.getVariable()))
+            return true;
+    return false;
   }
 
   /**

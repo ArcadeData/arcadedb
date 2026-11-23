@@ -31,7 +31,7 @@ import static org.mockito.Mockito.mock;
  * <p>
  * Only the three deprecated document/vertex/edge builders are covered here. {@code buildTimeSeriesType()} was
  * one of the four #7335 gave a message to, but issue #7399 then IMPLEMENTED it remotely, so it no longer
- * throws at all; its behaviour is pinned by {@code Issue7399RemoteTimeSeriesTypeBuilderIT} instead.
+ * throws at all; its behaviour is pinned by {@code RemoteTimeSeriesIT.TypeBuilder} instead.
  * <p>
  * Each test asserts on the message TEXT, not merely on the exception type: a type-only assertion passes
  * against the pre-fix code and therefore proves nothing. The SQL alternative each message names is a real,

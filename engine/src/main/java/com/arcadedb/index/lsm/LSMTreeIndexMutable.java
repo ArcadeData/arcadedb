@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
@@ -39,7 +38,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
-import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
@@ -118,7 +116,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     // A file with no page at all has no header to read, and reading page 0 anyway would invent a zeroed one - and cache
     // it - instead of failing (issue #10046). An HA follower holds such a file between the entry that creates a
-    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short.
+    // compaction's new files and the one that writes their pages, and keeps it if the sequence is cut short. A header
+    // page committed and not flushed yet is counted (issue #12101, see PaginatedComponent), so it is not taken for one.
     if (getTotalPages() == 0)
       throw new MissingHeaderException("Index file '" + name + "' has no header page");
     onAfterLoad();
@@ -360,9 +359,26 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final Set<IndexCursorEntry> set = new HashSet<>();
 
     // NON COMPACTED INDEX, SEARCH IN ALL THE PAGES
-    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
+    searchInNonCompactedIndex(convertedKeys, resultSetSink(keys, convertedKeys, limit, set));
 
     return new TempIndexCursor(set);
+  }
+
+  /**
+   * Every value of a key, decoded into primitives with the deletion markers applied (issue #12458): see
+   * {@link LSMTreeIndex#getPostings}.
+   */
+  public LSMTreeIndexPostings getPostings(final Object[] keys) throws IOException {
+    checkForNulls(keys);
+
+    final LSMTreeIndexPostings postings = new LSMTreeIndexPostings();
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
+    if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
+      return postings;
+
+    searchInNonCompactedIndex(convertedKeys, postingsSink(convertedKeys, postings));
+    postings.resolve();
+    return postings;
   }
 
   @Override
@@ -466,9 +482,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return currentPage;
   }
 
-  private void searchInNonCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys,
-      final RidHashSet deletedRIDs) throws IOException {
+  private void searchInNonCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
     // SEARCH FROM THE LAST PAGE BACK
     final int totalPages = getTotalPages();
 
@@ -482,14 +496,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       final Binary currentPageBuffer = new Binary(currentPage.slice());
 
-      if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-          removedKeys, deletedRIDs))
+      if (!sink.onPage(currentPage, currentPageBuffer, count))
         return;
     }
 
     if (subIndex != null)
       // CONTINUE ON THE SUB-INDEX
-      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys, deletedRIDs);
+      subIndex.searchInCompactedIndex(convertedKeys, sink);
   }
 
   protected void internalPut(final Object[] keys, final RID[] rids) {

@@ -20,10 +20,17 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.CallLog;
 import com.arcadedb.server.FakeArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the leadership-transfer branch of the first-formation gate in
@@ -36,6 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * that post-transfer leader and the baseline was never committed. The widened gate accepts a positive
  * commit index when the state machine reports it has never applied an application entry, while still
  * rejecting a genuinely running cluster (issue #4800 preserved).
+ * <p>
+ * Also pins the cap and the reachability gate of the transfer to the elected source (#8714).
  */
 class BootstrapElectionTransferGateTest {
 
@@ -100,5 +109,48 @@ class BootstrapElectionTransferGateTest {
     final BootstrapElection election = new BootstrapElection(raft, server);
 
     assertThat(election.runIfEligible()).isEqualTo(BootstrapElection.Outcome.SKIPPED_NOT_FIRST_FORMATION);
+  }
+
+  // Regression for #8714: the transfer to the elected source is capped to a slice and only issued to a reachable source
+  /**
+   * The bootstrap election's transfer to the elected source is capped to a hand-off candidate's slice and only issued
+   * to a source proven reachable (issue #8714).
+   */
+  @Test
+  void transferIsCappedToACandidateSlice() {
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.returns("followerContactPeers", Set.of("peer-b"));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
+
+    election.transferToElectedSource("peer-b", 120_000L);
+
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(List.of("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
+  }
+
+  // Regression for #8714: the transfer to the elected source is capped to a slice and only issued to a reachable source
+  @Test
+  void aSourceThatBecomesReachableAfterAFewPollsIsTransferredTo() {
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.on("followerContactPeers", CallLog.inOrder(Set.of(), Set.of(), Set.of("peer-b")));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
+
+    election.transferToElectedSource("peer-b", 120_000L, 5_000L);
+
+    assertThat(ha.calls("transferLeadership")).containsOnlyOnce(List.of("peer-b", RaftClusterManager.candidateTransferBudgetMs(120_000L, 120_000L)));
+  }
+
+  // Regression for #8714: the transfer to the elected source is capped to a slice and only issued to a reachable source
+  @Test
+  void unreachableSourceIsNeverTransferredTo() {
+    final FakeRaftHAServer ha = FakeRaftHAServer.detached();
+    ha.returns("followerContactPeers", Set.of("peer-c"));
+    final BootstrapElection election = new BootstrapElection(ha, TestServerHelper.unstartedServer());
+
+    final AtomicBoolean announced = new AtomicBoolean();
+    assertThatThrownBy(() -> election.transferToElectedSource("peer-b", 120_000L, 150L, () -> announced.set(true)))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(announced).as("the hold is not replaced when no transfer is issued").isFalse();
+
+    assertThat(ha.calls("transferLeadership")).isEmpty();
   }
 }

@@ -83,11 +83,12 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw storedDataRefusal(kindOf(unmet), "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-              "MANDATORY" :
-              "NOTNULL") + ": record " + document.getIdentity() + " violates it, "
-              + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName, unmet)
-              + ". Fix or delete the non-conforming records first");
+          // a refusal of the declaration for the data it would leave violating it, the type a write refused by the same constraint
+          // has: HTTP answers it as the caller's request, not as a server fault (issue #12037)
+          throw new ValidationException(kindOf(unmet),
+              "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? "MANDATORY" : "NOTNULL") + ": record "
+                  + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName,
+                  unmet) + ". Fix or delete the non-conforming records first");
       }
     }
   }
@@ -108,7 +109,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(
+        throw new ValidationException(e.getKind(),
             "Cannot set " + what + ": record " + document.getIdentity() + " violates it, " + e.getMessage()
                 + ". Fix or delete the non-conforming records first", e);
       }
@@ -131,12 +132,12 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw storedDataRefusal(kindOf(unmet),
+        throw new ValidationException(kindOf(unmet),
             createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw new CommandExecutionException(createRefusal(type, property, document, e.getMessage()), e);
+        throw new ValidationException(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
       }
     }
   }
@@ -210,34 +211,23 @@ public final class ExistingRecordsCheck {
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
           + "<value> ...], and insert them again if they are to be kept";
+      // a missing MANDATORY or NOTNULL names its kind, as the refusal of the same declaration over the records of a document type does
+      // (issue #12436)
       if (required)
-        throw storedDataRefusal(requiredBy, message);
+        throw new ValidationException(requiredBy, message);
       // the column check answers its reason as one sentence, whichever of MIN, MAX and REGEXP the sample breaks, so this refusal
-      // names no kind (as SaveElementStep#refuseViolation, the write path of the same check)
-      throw new CommandExecutionException(message, new ValidationException(message));
+      // names no kind (as SaveElementStep#refuseViolation, the write path of the same check; issue #12037)
+      throw new ValidationException(message);
     }
-  }
-
-  /**
-   * The refusal of a constraint the stored data break (issue #12436): the caller's to resolve, so every protocol answers it as the
-   * validation error it is (HTTP 400, as the same refusal of a MIN, a MAX or a REGEXP already answered), and not as a server fault.
-   * It stays the {@link CommandExecutionException} it always was, so an embedded caller that catches one keeps catching it. The
-   * {@link ValidationException} under it carries the kind, which a protocol with a code for a violated constraint answers with
-   * (Postgres {@code 23502}), and the whole message: a protocol reports the message of the ValidationException it finds in the
-   * chain, so the record, the constraint and the remedy reach the caller.
-   */
-  private static CommandExecutionException storedDataRefusal(final ValidationException.Kind kind, final String message) {
-    return new CommandExecutionException(message, new ValidationException(kind, message));
-  }
-
-  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
-    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
-        ValidationException.Kind.NOT_NULL;
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,
       final String reason) {
     return "Cannot create property '" + type.getName() + "." + property.getName() + "': record " + document.getIdentity()
         + " violates it, " + reason + ". Fix or delete the non-conforming records first";
+  }
+
+  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY : ValidationException.Kind.NOT_NULL;
   }
 }

@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.graph.GraphBatch;
@@ -1580,7 +1581,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * whatever the POOL last left in it - for a connection whose first read filled it, the request head and the very
      * records already loaded. The next read is then served from that buffer without touching the channel, and the
      * parser is handed a replay of the payload: on a type with a unique index it surfaces as a 409 duplicate key
-     * ({@code Issue5470BatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
+     * ({@code PostBatchStreamStallIT} on {@code main}), and on one without it as silently duplicated rows and a
      * 200 (issue #6176).
      * <p>
      * So the failure is recorded here rather than raised: the probe answers -1, which is exactly the "the body is
@@ -1650,7 +1651,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
      * client that still owes bytes ends this at once with {@link BufferedDrain#EXHAUSTED}. Undertow reports a
      * finished body as -1 available rather than 0, which is the end-of-body signal both callers are looking for;
      * that is Undertow's own convention, not the {@link InputStream} contract (which says >= 0). An upgrade that
-     * changed it would not go unnoticed - {@code Issue5470BatchErrorDeliveryIT}'s
+     * changed it would not go unnoticed - {@code PostBatchErrorDeliveryIT}'s
      * {@code aRecordCutInHalfIsStillReportedAsATruncatedUpload} and
      * {@code aRejectedButCompletePayloadKeepsItsConnection} both fail when it reports 0 at end of body (verified by
      * mutation) - and if it ever does, the degradation is a worse diagnosis, never a wrong answer.
@@ -1851,7 +1852,29 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       final int lineNumber) {
     final RID srcRID = resolveRef(rec.fromRef, vertexRefs, lineNumber);
     final RID dstRID = resolveRef(rec.toRef, vertexRefs, lineNumber);
+    requireExistingVertex(batch, rec.fromRef, srcRID, lineNumber);
+    requireExistingVertex(batch, rec.toRef, dstRID, lineNumber);
     batch.newEdge(srcRID, rec.typeName, dstRID, rec.copyEdgeProperties());
+  }
+
+  /**
+   * An endpoint given as a RID comes from the client and is taken on trust by {@link GraphBatch#newEdge}: one that does not
+   * exist, or is not a vertex, used to surface at the close of the batch as a 404 or a 500 after the edge records were
+   * written, with no vertex leading to them (issue #12895). Refused here, on the line that names it, like a malformed RID.
+   * The endpoints given as temporary ids are vertices of this payload and need no check.
+   * <p>
+   * A missing record is re-raised as an {@link IllegalArgumentException} without it as the cause: the record is data of the
+   * payload, not the resource the request addresses, so it is a 400 like the rest of the payload's mistakes and not the 404 of a
+   * missing record (a cause is read by the error classification, which would answer it as one).
+   */
+  private static void requireExistingVertex(final GraphBatch batch, final String ref, final RID rid, final int lineNumber) {
+    if (ref.charAt(0) != '#')
+      return;
+    try {
+      batch.requireVertex(rid);
+    } catch (final IllegalArgumentException | RecordNotFoundException e) {
+      throw new IllegalArgumentException("Edge endpoint '" + ref + "' at line " + lineNumber + ": " + e.getMessage());
+    }
   }
 
   private RID resolveRef(final String ref, final VertexRefResolver vertexRefs, final int lineNumber) {
@@ -2087,7 +2110,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // Sent full duplex (issue #9216): the upload goes out on a thread of its own and the leader's answer is handed
         // back as soon as its headers arrive, so the client sees the leader's progress lines while it is still
         // uploading, as it does on the leader. The JDK client (21, 25, 27) hands back an HTTP/1.1 answer only once the
-        // relayed upload has been published whole (pinned by Issue8674StreamedRelayBodyCapTerminalLineTest), which is
+        // relayed upload has been published whole (pinned by LeaderForwardStreamedRelayTest.StreamedRelayBodyCapTerminalLine), which is
         // why it is not used here.
         //
         // The wait for the answer is counted from the last byte the upload relayed, not from the send (issue #8719): an

@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * Issue #12436, on every protocol: the DDL refusals of a caller's mistake that the HTTP API now answers 400 are classified by
  * {@link ErrorCategory}, which Bolt, Postgres, MongoDB and gRPC read too. They were plain {@link CommandExecutionException}s,
  * which no rule classifies, so every protocol answered them as a server fault ({@link ErrorCategory#SERVER}). They are
- * {@link ErrorCategory#VALIDATION} now, and still a {@link CommandExecutionException}, so an embedded caller that catches one
- * keeps catching it. A refusal of an existence constraint over stored data carries the {@link ValidationException.Kind} a protocol
- * with a code for a violated constraint answers with (Postgres {@code 23502}, Bolt {@code ConstraintValidationFailed}), the same
- * way the refusal of a MIN or a MAX over stored data already did.
+ * {@link ErrorCategory#VALIDATION} now. A refusal of an existence constraint over stored data is the {@link ValidationException}
+ * (issue #12037) and carries the {@link ValidationException.Kind} a protocol with a code for a violated constraint answers with
+ * (Postgres {@code 23502}, Bolt {@code ConstraintValidationFailed}), the same way the refusal of a MIN or a MAX over stored data
+ * already did, and so does the one of a TIMESERIES type whose stored samples lack a MANDATORY or NOTNULL value.
  */
 class Issue12436StoredDataRefusalCategoryTest extends TestHelper {
 
@@ -44,8 +44,6 @@ class Issue12436StoredDataRefusalCategoryTest extends TestHelper {
 
     assertRefusal(refused, ValidationException.Kind.MANDATORY);
     assertThat(refused).hasMessageContaining("violates it").hasMessageContaining("Fix or delete the non-conforming records first");
-    assertThat(CauseChain.find(refused, ValidationException.class)).as("a protocol reports the message of the ValidationException")
-        .hasMessage(refused.getMessage());
     assertThat(database.getSchema().getType("T").existsProperty("m")).isFalse();
   }
 
@@ -108,9 +106,9 @@ class Issue12436StoredDataRefusalCategoryTest extends TestHelper {
   }
 
   private static void assertRefusal(final Throwable refused, final ValidationException.Kind kind) {
-    assertThat(refused).as("still the CommandExecutionException an embedded caller catches").isInstanceOf(CommandExecutionException.class);
     assertThat(ErrorCategory.of(refused)).as("the caller's mistake on every protocol, not a server fault")
         .isEqualTo(ErrorCategory.VALIDATION);
+    // the SQL path throws the ValidationException itself, the openCypher one wraps it in the error of its command
     final ValidationException validation = CauseChain.find(refused, ValidationException.class);
     assertThat(validation).isNotNull();
     assertThat(validation.getKind()).isEqualTo(kind);

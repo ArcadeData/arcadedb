@@ -128,6 +128,65 @@ class CypherCallSubqueryExportShadowIssue11689Test extends TestHelper {
       }
   }
 
+  /**
+   * Issue #12387: a {@code RETURN *} of the body exports every variable in scope at it, and one the body declared afresh under
+   * the name of an outer variable it did not import is the same clash as an explicit item. It used to pass, and the outer
+   * variable was then overwritten on the rows the body answered and kept on the rows it did not.
+   */
+  @Test
+  void returnStarOfANonImportedOuterNameIsRejected() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("A12387");
+      database.getSchema().createVertexType("B12387");
+      database.getSchema().createEdgeType("X12387");
+    });
+    for (final String query : List.of(//
+        "MATCH (z:A12387), (b:B12387) OPTIONAL CALL (z) { MATCH (z)-[r:X12387]->(b) RETURN * } RETURN *",//
+        "MATCH (z:A12387), (b:B12387) CALL (z) { MATCH (z)-[r:X12387]->(b) RETURN * } RETURN *",//
+        "MATCH (z:A12387) CALL { MATCH (z:A12387) RETURN * } RETURN *",//
+        "MATCH (z:A12387), (b:B12387) CALL { WITH z MATCH (z)-[r:X12387]->(b) RETURN * } RETURN *",//
+        "UNWIND [1, 2] AS i CALL { UNWIND [5] AS i RETURN * } RETURN i",//
+        // every branch of a UNION body must have imported the name: the second one declares its own i
+        "UNWIND [1, 2] AS i CALL { WITH i RETURN * UNION UNWIND [5] AS i RETURN * } RETURN i",//
+        // nested: the inner subquery clashes with the variable the outer body bound
+        "UNWIND [1] AS k CALL { UNWIND [2] AS j CALL { UNWIND [3] AS j RETURN * } RETURN j AS m } RETURN m",//
+        // a leading WITH that aliases a value to the outer name is no import: the body's z is a value of its own
+        "MATCH (z:A12387) CALL { WITH 1 AS z RETURN * } RETURN z",//
+        "MATCH (z:A12387), (b:B12387) CALL { WITH b AS z RETURN * } RETURN z",//
+        // imported, then re-bound by the body before the RETURN *
+        "MATCH (z:A12387) CALL (z) { WITH 1 AS z RETURN * } RETURN z",//
+        "MATCH (z:A12387) CALL { WITH z WITH 1 AS z RETURN * } RETURN z",//
+        "MATCH (z:A12387) OPTIONAL CALL (*) { WITH 1 AS z RETURN * } RETURN z",//
+        "MATCH (z:A12387) CALL (z) { WITH 1 AS x MATCH (z:A12387) RETURN * } RETURN z"))
+      assertThatThrownBy(() -> database.query("opencypher", query).close(), query)
+          .isInstanceOf(CommandParsingException.class).hasMessageContaining("already declared in outer scope");
+  }
+
+  /** The control of #12387: an imported variable handed back by {@code RETURN *} is still accepted, whatever imported it. */
+  @Test
+  void returnStarOfAnImportedOuterNameIsAccepted() {
+    database.transaction(() -> {
+      database.getSchema().createVertexType("A12387");
+      database.getSchema().createVertexType("B12387");
+      database.getSchema().createEdgeType("X12387");
+      database.command("opencypher", "CREATE (:A12387 {i: 1})-[:X12387]->(:B12387 {j: 2})");
+    });
+    for (final String query : List.of(//
+        "MATCH (z:A12387) CALL (z) { MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j",//
+        "MATCH (z:A12387) CALL (*) { MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j",//
+        "MATCH (z:A12387) CALL { WITH z MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j",//
+        "MATCH (z:A12387) CALL { WITH * MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j",//
+        "MATCH (z:A12387) OPTIONAL CALL (z) { MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j",//
+        // forwarded as itself through later projections, it is still the outer variable
+        "MATCH (z:A12387) CALL { WITH z AS z WITH z, 1 AS x MATCH (z)-[r:X12387]->(b) RETURN * } RETURN z.i AS i, b.j AS j"))
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        final Result row = rs.next();
+        assertThat(((Number) row.getProperty("i")).longValue()).as(query).isEqualTo(1L);
+        assertThat(((Number) row.getProperty("j")).longValue()).as(query).isEqualTo(2L);
+        assertThat(rs.hasNext()).as(query).isFalse();
+      }
+  }
+
   @Test
   void distinctExportNameWorks() {
     final List<Long> js = new ArrayList<>();

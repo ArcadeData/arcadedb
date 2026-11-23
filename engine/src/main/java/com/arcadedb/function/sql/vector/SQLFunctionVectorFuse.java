@@ -92,10 +92,19 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length == 0)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // Detect the trailing options map.
     int sourceCount = params.length;
@@ -141,7 +150,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
     for (final Map.Entry<RID, Float> e : fused.entrySet())
       ranked.add(new RidScore(e.getKey(), e.getValue()));
-    ranked.sort((a, b) -> Float.compare(b.score(), a.score()));
+    // Equal fused scores are common (RRF ranks sum to the same value): break them by RID, not by the iteration order of `fused`, which
+    // is whatever RID.hashCode() makes it
+    ranked.sort((a, b) -> {
+      final int byScore = Float.compare(b.score(), a.score());
+      return byScore != 0 ? byScore : a.rid().compareTo(b.rid());
+    });
 
     // Single pass: one record per RID - the one a source row carried, else lookupByRID - applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for

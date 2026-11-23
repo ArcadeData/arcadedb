@@ -54,6 +54,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public static final String DEFAULT_ANALYZER = "org.apache.lucene.analysis.standard.StandardAnalyzer";
 
   /**
+   * The most indexed terms a fuzzy clause ({@code term~}, {@code term~1}, {@code term~2}) expands to, as in Lucene's FuzzyQuery
+   * (issue #12462): the best ones, by edit distance relative to the term length, then in term order.
+   */
+  public static final int DEFAULT_FUZZY_MAX_EXPANSIONS = 50;
+
+  /**
+   * The most a fuzzy clause may be set to expand to (issue #12505): Lucene's default max clause count
+   * ({@code IndexSearcher.getMaxClauseCount()}), which its FuzzyQuery clamps {@code maxExpansions} to, so ArcadeDB and Lucene
+   * answer the same for every accepted setting. A larger value is refused when an index is defined, and one persisted before
+   * this bound existed is read as this bound.
+   */
+  public static final int MAX_FUZZY_MAX_EXPANSIONS = 1024;
+
+  /**
    * BM25 similarity: ranks with term-frequency, inverse document frequency and document-length normalization. Default for newly
    * created full-text indexes.
    */
@@ -88,8 +102,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   private static final String UNBOUND_LENGTH_RULE = "-";
 
-  private static final String ANALYZER_SUFFIX = "_analyzer";
-  private static final String BOOST_SUFFIX    = "_boost";
+  private static final String ANALYZER_SUFFIX         = "_analyzer";
+  private static final String BOOST_SUFFIX            = "_boost";
+  private static final String FIELD_ANALYZERS_APPLIED = "ft_fieldAnalyzersApplied";
 
   /**
    * Fixed keys a user may write in {@code METADATA}. The key space is not closed: {@code <field>_analyzer} and
@@ -97,7 +112,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * persisted corpus counters ({@code ft_*}) are deliberately absent - they are maintained by the index, not configured.
    */
   private static final Set<String> USER_METADATA_KEYS = Set.of("analyzer", "index_analyzer", "query_analyzer",
-      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b");
+      "allowLeadingWildcard", "defaultOperator", "similarity", "bm25_k1", "bm25_b", "fuzzyMaxExpansions");
 
   // These scalar fields (analyzers, operator, wildcard flag, similarity, k1/b) are set once at index creation / schema load,
   // before any query-path read, so they need no volatile/synchronization (unlike the live corpus counters and the per-field
@@ -108,9 +123,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private          String              queryAnalyzerClass   = null;
   private          boolean             allowLeadingWildcard = false;
   private          String              defaultOperator      = "OR";
+  private          int                 fuzzyMaxExpansions   = DEFAULT_FUZZY_MAX_EXPANSIONS;
   // Per-field maps are concurrent: they are populated at index creation but read on the query path (getFieldBoost,
   // getAnalyzerClass) and iterated by writeToJSON on schema save, so a HashMap could throw ConcurrentModificationException.
   private final    Map<String, String> fieldAnalyzers       = new ConcurrentHashMap<>();
+  // Whether the postings of a property with an analyzer of its own were written with it (issue #12163). An index of a version that
+  // stored the per-field analyzers without applying them wrote every posting with the analyzer of the index, and goes on doing so,
+  // queries included, until a rebuild writes them again: persisted as ft_fieldAnalyzersApplied, absent on such an index
+  private          boolean             fieldAnalyzersApplied = true;
 
   // BM25 SCORING CONFIGURATION
   private String             similarity  = SIMILARITY_BM25;
@@ -217,11 +237,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
     copy.queryAnalyzerClass = queryAnalyzerClass;
     copy.allowLeadingWildcard = allowLeadingWildcard;
     copy.defaultOperator = defaultOperator;
+    copy.fuzzyMaxExpansions = fuzzyMaxExpansions;
     copy.fieldAnalyzers.putAll(fieldAnalyzers);
     copy.similarity = similarity;
     copy.bm25K1 = bm25K1;
     copy.bm25B = bm25B;
     copy.fieldBoosts.putAll(fieldBoosts);
+    copy.fieldAnalyzersApplied = fieldAnalyzersApplied;
     return copy;
   }
 
@@ -244,6 +266,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
+
+    // Set directly, as defaultOperator is: a persisted definition was validated when it was written. A value above the bound was
+    // accepted before it existed (issue #12505): clamp it as Lucene's FuzzyQuery does rather than refuse to open the index
+    this.fuzzyMaxExpansions = Math.min(metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS), MAX_FUZZY_MAX_EXPANSIONS);
 
     // An index persisted before BM25 support has no "similarity" key: keep it on CLASSIC so an upgrade does not silently change
     // ranking. Route an explicit value through the validating setter so an unknown similarity in METADATA {...} is rejected.
@@ -281,6 +307,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+    // A missing key is NOT the field's default of true: a definition written before per-field analyzers were applied (issue #12163)
+    // has no such key, and its postings were not written with them, so it is read as the legacy mode until a rebuild writes them
+    this.fieldAnalyzersApplied = metadata.getBoolean(FIELD_ANALYZERS_APPLIED, false);
   }
 
   @Override
@@ -347,6 +376,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (json.has("defaultOperator"))
       setDefaultOperator(json.getString("defaultOperator"));
 
+    if (json.has("fuzzyMaxExpansions"))
+      setFuzzyMaxExpansions(metadataInt(json, "fuzzyMaxExpansions"));
+
     // Route through the validating setters so an unknown similarity or an out-of-range k1/b in METADATA {...} is
     // reported at creation rather than silently scoring wrong.
     if (json.has("similarity"))
@@ -378,6 +410,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
       case "query_analyzer" -> queryAnalyzerClass;
       case "allowLeadingWildcard" -> allowLeadingWildcard;
       case "defaultOperator" -> defaultOperator;
+      case "fuzzyMaxExpansions" -> fuzzyMaxExpansions;
       case "similarity" -> similarity;
       case "bm25_k1" -> bm25K1;
       case "bm25_b" -> bm25B;
@@ -433,9 +466,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
       metadata.put("allowLeadingWildcard", true);
     if (!"OR".equalsIgnoreCase(defaultOperator))
       metadata.put("defaultOperator", defaultOperator);
+    if (fuzzyMaxExpansions != DEFAULT_FUZZY_MAX_EXPANSIONS)
+      metadata.put("fuzzyMaxExpansions", fuzzyMaxExpansions);
 
     for (final Map.Entry<String, String> entry : fieldAnalyzers.entrySet())
       metadata.put(entry.getKey() + ANALYZER_SUFFIX, entry.getValue());
+    if (!fieldAnalyzers.isEmpty() && fieldAnalyzersApplied)
+      metadata.put(FIELD_ANALYZERS_APPLIED, true);
 
     metadata.put("similarity", similarity);
     if (isBM25()) {
@@ -541,12 +578,52 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Returns the most indexed terms a fuzzy clause expands to (issue #12462), {@link #DEFAULT_FUZZY_MAX_EXPANSIONS} unless set.
+   */
+  public int getFuzzyMaxExpansions() {
+    return fuzzyMaxExpansions;
+  }
+
+  /**
+   * Sets the most indexed terms a fuzzy clause expands to: the best ones are kept, as Lucene's FuzzyQuery keeps its
+   * {@code maxExpansions} best ones.
+   *
+   * @param fuzzyMaxExpansions a positive number of terms, at most {@link #MAX_FUZZY_MAX_EXPANSIONS}
+   *
+   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too, or if it is above
+   *                                  {@link #MAX_FUZZY_MAX_EXPANSIONS}, which Lucene's FuzzyQuery clamps to (issue #12505)
+   */
+  public void setFuzzyMaxExpansions(final int fuzzyMaxExpansions) {
+    if (fuzzyMaxExpansions < 1)
+      throw new IllegalArgumentException("Full-text fuzzyMaxExpansions must be positive, got: " + fuzzyMaxExpansions);
+    if (fuzzyMaxExpansions > MAX_FUZZY_MAX_EXPANSIONS)
+      throw new IllegalArgumentException(
+          "Full-text fuzzyMaxExpansions must be at most " + MAX_FUZZY_MAX_EXPANSIONS + " (Lucene's max clause count), got: "
+              + fuzzyMaxExpansions);
+    this.fuzzyMaxExpansions = fuzzyMaxExpansions;
+  }
+
+  /**
    * Returns an unmodifiable view of the per-field analyzer map.
    *
    * @return map of field name to analyzer class name
    */
   public Map<String, String> getFieldAnalyzers() {
     return CollectionUtils.immutableMap(fieldAnalyzers);
+  }
+
+  /**
+   * Whether the postings of the properties with an analyzer of their own ({@link #getFieldAnalyzers()}) were written with it (issue
+   * #12163). False on an index written by a version that stored the per-field analyzers without applying them: such an index keeps
+   * analyzing every property with the analyzer of the index, writes and queries alike, until it is rebuilt.
+   */
+  public boolean isFieldAnalyzersApplied() {
+    return fieldAnalyzersApplied;
+  }
+
+  /** Marks the postings as written with the per-field analyzers, as a rebuild writes them. */
+  public void setFieldAnalyzersApplied(final boolean applied) {
+    this.fieldAnalyzersApplied = applied;
   }
 
   /**

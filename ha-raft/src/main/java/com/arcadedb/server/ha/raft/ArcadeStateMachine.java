@@ -81,6 +81,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -202,6 +203,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // before it refuses (issue #11258). A refused checkpoint only keeps the log one interval longer, so the bound protects
   // the apply thread, not the data
   static final long              SNAPSHOT_DATA_FLUSH_WAIT_MS = 5_000L;
+  // How often a checkpoint refused for a database closed with its pages left to the recovery says so at WARNING (#12025)
+  private static final long                  PAGES_LEFT_TO_RECOVERY_REMINDER_MS = 300_000L;
+  // When it last did; Long.MIN_VALUE / 2 so the first refusal always does. Only the checkpoint reads and writes it
+  private volatile long                      pagesLeftToRecoveryReminderMs      = Long.MIN_VALUE / 2;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
   private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
@@ -1292,7 +1297,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // refusal on the leader's target (issue #10689), and a replica commits its phase 1 locally, where nothing knows of it, so
     // its entry would be acknowledged during the download and destroyed by the swap. The leader's own commits are refused in
     // the database itself. Lock-free: one volatile read of the refusals. Repeated after the reservation below.
-    // Issue10965ReplicaEntryRefusedDuringRestoreClaimTest counts the databaseFor() lookups of this method (this one is the first,
+    // RestoreAndBackupProtectionTest.ReplicaEntryRefusedDuringRestoreClaim counts the databaseFor() lookups of this method (this one is the first,
     // the validation lookup below the second): adding a lookup before the reservation means updating that test.
     if (!isLocalOrigin && databaseName != null) {
       final NeedRetryException writesRefused = writesRefusedOnLeader(databaseForValidation(databaseName));
@@ -1492,6 +1497,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * with its cause before it is rethrown: Ratis reports it only as "caught a Throwable" on its own logger. The calling
    * thread is deliberately not recorded as the updater (issue #8652): this callback is not guaranteed to run on that
    * thread alone, and a short-lived caller must never read as a dead updater.
+   * <p>
+   * It moves the applied index, so it wakes the threads waiting for one (issue #11742), as {@link #applyTransaction} does. A
+   * bookmark this version answers with names the entry the state machine applied, not the metadata entry Ratis appends after
+   * it, so a read waiting for such a bookmark is released by {@link #applyTransaction}. The waiters this callback still
+   * releases are those whose target can be a Ratis-only index: a bookmark answered by a node of an earlier version, the Ratis
+   * index that stands in for a bookmark while the state machine has applied nothing, and the read index a linearizable read
+   * on a follower waits for, the leader's commit index, which counts the metadata entries too. Without the notification
+   * they saw such an index only at their next recheck, up to {@code APPLY_WAIT_RECHECK_INTERVAL_MS} later.
    */
   @Override
   public void notifyTermIndexUpdated(final long term, final long index) {
@@ -1505,6 +1518,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "closes the division; the health monitor restarts it in place (issue #8652)", t, term, index);
       throw t;
     }
+    final RaftHAServer raftHA = this.raftHAServer;
+    if (raftHA != null)
+      raftHA.notifyApplied();
   }
 
   /** Records the calling thread as the updater, as {@link #applyTransaction} does, for tests (issue #8652). */
@@ -1971,6 +1987,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return RaftLog.INVALID_LOG_INDEX;
     }
 
+    // A database that is not open was forced when it closed, unless the close was crash-equivalent (issue #12025): the
+    // flush wait gave up, an fsync failed, the database was fenced. Such a close leaves its pages to the next open's
+    // recovery, but the WAL of a replicated commit is not forced (#11746) and a follower writes none, so the pages of the
+    // entries it applied since the previous marker may be in the OS cache only. lastAppliedIndex is node-global, and the
+    // entries of another database carry it past them: checkpointing it would authorise Ratis to purge the only copy a power
+    // loss leaves. Refused until a later instance of that database has forced its files (the sync pass above releases it)
+    // or the database is gone. Checked AFTER the sync pass: a close lists its database before it reports itself closed, so
+    // an instance the pass skipped as closed is always listed here.
+    final List<String> leftToRecovery = databasesClosedWithPagesLeftToRecovery();
+    if (!leftToRecovery.isEmpty()) {
+      // At WARNING at most every five minutes, as the held-entry reminder: the Ratis auto-trigger retries a refused
+      // checkpoint as entries keep arriving, and the condition lasts until the database is reopened or dropped
+      final long now = System.currentTimeMillis();
+      final boolean remind = now - pagesLeftToRecoveryReminderMs >= PAGES_LEFT_TO_RECOVERY_REMINDER_MS;
+      if (remind)
+        pagesLeftToRecoveryReminderMs = now;
+      final String message = "Skipping snapshot checkpoint at index %d: database(s) %s closed without making their pages "
+          + "durable, so the log must stay replayable until they are reopened and forced (issue #12025)";
+      if (remind)
+        LogManager.instance().log(this, Level.WARNING, message, currentIndex, leftToRecovery);
+      else
+        HALog.log(this, HALog.BASIC, message, currentIndex, leftToRecovery);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
     // The columnar marks of every entry up to the checkpoint go to disk before the marker does (plan 3, Task 22). A follower
     // writes no local WAL, so the cleanWALFiles hook that persists the recovery set never covers a replicated change, and a
     // restart replays only what follows the marker: the pages an applied entry marked would otherwise live only in memory.
@@ -2004,7 +2045,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
    * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
    * the asynchronous flush, not at all while a backup suspends it, then forces the files written since their last fsync: a database with
-   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed.
+   * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed,
+   * except after a crash-equivalent close, which {@link #databasesClosedWithPagesLeftToRecovery()} reports (issue #12025).
    *
    * @return false when a database still had pages pending at the deadline or an fsync failed
    */
@@ -2024,6 +2066,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return false;
       }
     return true;
+  }
+
+  /**
+   * The databases of this server whose last close left their pages to the next open's recovery without forcing them, and
+   * that no later instance has forced since (issue #12025), for {@link #takeSnapshot()}. Read from the engine's list, which
+   * covers every database of the JVM: only the ones under this server's database directory are this node's, since a JVM
+   * hosting several servers must not have one server's close hold another's log.
+   */
+  List<String> databasesClosedWithPagesLeftToRecovery() {
+    if (this.server == null)
+      return List.of();
+    final List<Path> listed = DatabaseFactory.getDatabasesClosedWithPagesLeftToRecovery();
+    if (listed.isEmpty())
+      return List.of();
+    final String dbDir = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (dbDir == null)
+      return List.of();
+    final Path databasesDirectory = Path.of(dbDir).toAbsolutePath().normalize();
+    final List<String> result = new ArrayList<>();
+    for (final Path path : listed)
+      if (path.startsWith(databasesDirectory))
+        result.add(databasesDirectory.relativize(path).toString());
+    return result;
   }
 
   /**
@@ -2740,6 +2805,31 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Runs a commit that publishes its pages here ahead of the log under the validation of the database, see
+   * {@link PageVersionLedger#publishOutsideTheLog}. The ledger's reservation hook is installed on the database first: the
+   * commit takes the validation lock before its version checks, through that hook, and a database no entry was validated
+   * on yet has none, so the commit would check and publish without the lock (issue #11921).
+   * <p>
+   * Under the Raft server's publication gate, on the state machine current there: an in-place restart replaces the state
+   * machine, and with it the ledger the validations use, only between publications (issue #11921). A caller that resolved
+   * this instance before such a restart publishes on the new one.
+   */
+  <T> T publishOutsideTheLog(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return publishOnThisLedger(db, commit);
+    return raft.runPublication(() -> {
+      final ArcadeStateMachine current = raft.getStateMachine();
+      return (current != null ? current : this).publishOnThisLedger(db, commit);
+    });
+  }
+
+  private <T> T publishOnThisLedger(final DatabaseInternal db, final Callable<T> commit) throws Exception {
+    installReservations(db);
+    return pageVersions.publishOutsideTheLog(db.getName(), commit);
+  }
+
+  /**
    * The reservations the engine's phase-1 check consults, resolved through the Raft server on every call: an in-place
    * Ratis restart replaces the state machine, and with it the ledger, without closing the databases, so a hook bound
    * to one state machine instance would keep consulting a ledger nothing writes to any more.
@@ -2761,6 +2851,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return (current != null ? current : fallback).pageVersions.reservedVersion(databaseName, pageId.getFileId(),
           pageId.getPageNumber());
     }
+
+    @Override
+    public void beforeVersionChecks() {
+      final ArcadeStateMachine current = raft != null ? raft.getStateMachine() : null;
+      (current != null ? current : fallback).pageVersions.lockForPublication(databaseName);
+    }
   }
 
   /** The database an entry targets, or {@code null} when it cannot be resolved here (the entry is then refused). */
@@ -2777,13 +2873,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs
-   * the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
-   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}).
+   * Installs the ledger on the database, so the leader's own phase-1 validation refuses a page an in-flight entry reserved
+   * without waiting for the round trip (see {@link com.arcadedb.engine.PageVersionReservations}), and a commit
+   * {@link #publishOutsideTheLog} runs takes the validation lock before its version checks.
    */
-  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+  private void installReservations(final DatabaseInternal db) {
     if (db.getEmbedded() instanceof LocalDatabase local && !(local.getPageVersionReservations() instanceof LedgerReservations))
       local.setPageVersionReservations(new LedgerReservations(local.getName(), raftHAServer, this));
+  }
+
+  /** The local page versions of a database, as the ledger's seed for pages no in-flight entry reserved. Also installs the ledger. */
+  private PageVersionLedger.LocalVersions localVersionsOf(final DatabaseInternal db) {
+    installReservations(db);
 
     final FileManager fileManager = db.getFileManager();
     final PageManager pageManager = db.getPageManager();
@@ -3336,7 +3437,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * MUST stay a strict mirror of that predicate: every condition it tests has a line here, and nothing else does. The
    * hand-off reads this list after the predicate and treats an empty one as "the gap closed in between", so a condition
    * the predicate reports and this list omits would make every hand-off a silent no-op.
-   * {@code Issue8529LeaderServiceGapHandOffTest} pins the two against each other for every condition.
+   * {@code LeadershipHandOffReachabilityTest} pins the two against each other for every condition.
    */
   List<String> describeLeaderServiceGaps() {
     final List<String> gaps = new ArrayList<>(4);

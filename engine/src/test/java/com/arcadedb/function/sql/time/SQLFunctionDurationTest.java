@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.time;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,7 +79,8 @@ class SQLFunctionDurationTest {
     // issue #12362: one argument is the openCypher form (an ISO-8601 text or a map), so a lone number is refused for its kind
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5 }, null)).isInstanceOf(
         InvalidArgumentException.class).hasMessageContaining("ISO-8601 duration text or a map");
+    // issue #11944: the declared 1..2 arity refuses a third argument with the uniform "expects" semantic error
     assertThatThrownBy(() -> function.execute(null, null, null, new Object[] { 5, "hour", 3 }, null)).isInstanceOf(
-        InvalidArgumentException.class).hasMessageContaining("received 3 arguments");
+        CommandSemanticException.class).hasMessageContaining("expects 1-2 arguments but got 3");
   }
 }
