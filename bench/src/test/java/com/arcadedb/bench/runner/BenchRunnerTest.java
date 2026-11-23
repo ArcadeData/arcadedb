@@ -760,4 +760,92 @@ class BenchRunnerTest {
     assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
     assertThat(results).allSatisfy(r -> assertThat(r.notes().has("serverRestarted")).isFalse());
   }
+
+  /** A guard whose server never dies and whose every thread dump succeeds, recording the dump numbers asked for. */
+  private static final class DumpingGuard implements ServerGuard {
+    final List<Integer> dumps = new ArrayList<>();
+
+    @Override
+    public String deathReason() {
+      return null;
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      throw new AssertionError("no restart expected");
+    }
+
+    @Override
+    public synchronized boolean threadDump(final int n) {
+      dumps.add(n);
+      return true;
+    }
+  }
+
+  /** Cases whose name starts with "stall" sit in one sleep (an unchanging stack) well past the test's stall threshold. */
+  private static final class Stalling extends Fake {
+    final List<String> cases;
+
+    Stalling(final String... cases) {
+      this.cases = List.of(cases);
+    }
+
+    @Override
+    public List<String> cases() {
+      return cases;
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+      if (caseName.startsWith("stall"))
+        Thread.sleep(1_500);
+      return m(1);
+    }
+  }
+
+  private static BenchRunner stallRunner() {
+    final BenchRunner runner = new BenchRunner(1, 0, Duration.ofSeconds(30));
+    runner.stallTiming(Duration.ofMillis(20), Duration.ofMillis(200));
+    return runner;
+  }
+
+  private static boolean watchdogThreadAlive() {
+    return Thread.getAllStackTraces().keySet().stream().anyMatch(t -> t.getName().equals(BenchRunner.WATCHDOG_THREAD) && t.isAlive());
+  }
+
+  @Test
+  void stalledCaseGetsAThreadDumpAndANote() {
+    final DumpingGuard guard = new DumpingGuard();
+    final List<CaseResult> results = stallRunner().run(new Stalling("quick", "stall-1"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1);
+    assertThat(results.get(0).notes().has("stallDumps")).isFalse();
+    assertThat(results.get(1).notes().getInt("stallDumps", 0)).isEqualTo(1);
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    // the watchdog of a case never outlives it
+    assertThat(watchdogThreadAlive()).isFalse();
+  }
+
+  @Test
+  void dumpBudgetIsSharedAcrossWorkloads() {
+    final DumpingGuard guard = new DumpingGuard();
+    final BenchRunner runner = stallRunner();
+    final List<CaseResult> first = runner.run(new Stalling("stall-1", "stall-2"), CTX, guard, null, r -> {
+    });
+    final List<CaseResult> second = runner.run(new Stalling("stall-3", "stall-4"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1, 2, 3);
+    assertThat(first).allSatisfy(r -> assertThat(r.notes().getInt("stallDumps", 0)).isEqualTo(1));
+    assertThat(second.get(0).notes().getInt("stallDumps", 0)).isEqualTo(1);
+    assertThat(second.get(1).notes().has("stallDumps")).isFalse();
+  }
+
+  @Test
+  void noGuardMeansNoWatchdog() {
+    final List<CaseResult> results = stallRunner().run(new Stalling("stall-1"), CTX, null, null, r -> {
+    });
+    assertThat(results.getFirst().notes().has("stallDumps")).isFalse();
+  }
 }

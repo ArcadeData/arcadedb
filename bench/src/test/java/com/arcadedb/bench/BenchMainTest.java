@@ -25,6 +25,7 @@ import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.server.ServerUnderTest;
+import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -442,6 +443,80 @@ class BenchMainTest {
         assertThat(c.notes().has("serverDied")).isFalse();
         assertThat(c.notes().has("serverRestarted")).isFalse();
       });
+    }
+  }
+
+  @Test
+  void diagnosticsLandUnderTheWorkloadName() throws Exception {
+    final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+        return null;
+      }
+
+      @Override
+      public JSONObject diagnostics(final ServerUnderTest server) {
+        return new JSONObject().put("threads", 7);
+      }
+    };
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, REGISTRY, servers, new PrintStream(new ByteArrayOutputStream(), true,
+        StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      assertThat(result.diagnostics().keySet()).containsExactlyInAnyOrder("alpha", "beta");
+      assertThat(result.diagnostics().getJSONObject("alpha").getInt("threads", 0)).isEqualTo(7);
+      assertThat(result.diagnostics().getJSONObject("beta").getInt("threads", 0)).isEqualTo(7);
+    }
+  }
+
+  /** A run file and the guard of workload "alpha" over it, whose thread dumps write their file name as their content. */
+  private BenchMain.Guard dumpingGuard(final BenchMain.RunFile file) {
+    final BenchMain.ServerFactory servers = new BenchMain.ServerFactory() {
+      @Override
+      public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+        return null;
+      }
+
+      @Override
+      public boolean threadDump(final ServerUnderTest server, final Path target) {
+        try {
+          Files.writeString(target, target.getFileName().toString());
+        } catch (final Exception e) {
+          throw new IllegalStateException(e);
+        }
+        return true;
+      }
+    };
+    return new BenchMain.Guard(servers, null, "alpha", file, "i", "", 1, "1g", Scale.XS, 1L, new JSONObject());
+  }
+
+  private BenchMain.RunFile runFile(final Map<String, String> options) {
+    return new BenchMain.RunFile(tmp, Instant.parse("2026-11-23T03:00:00Z"), options, "jvm", "i", null, null, "manual", "local", 1, 0,
+        1, 1, 1, 1L, "", "");
+  }
+
+  @Test
+  void threadDumpIsNamedAfterTheRunId() throws Exception {
+    final BenchMain.RunFile file = runFile(Map.of("commit", "abc1234567"));
+    assertThat(dumpingGuard(file).threadDump(2)).isTrue();
+    assertThat(tmp.resolve("dumps").resolve("2026-11-23T03-00-00Z-abc1234567-jvm-2.txt")).exists();
+  }
+
+  @Test
+  void dumpTakenBeforeTheRunIdIsKnownIsRenamedOnceItIs() throws Exception {
+    // no --commit and no image info yet: the run id cannot be formed when the dump is taken
+    final BenchMain.RunFile file = runFile(Map.of());
+    assertThat(dumpingGuard(file).threadDump(1)).isTrue();
+    try (final Stream<Path> dumps = Files.list(tmp.resolve("dumps"))) {
+      assertThat(dumps.map(p -> p.getFileName().toString()).toList()).containsExactly("2026-11-23T03-00-00Z-pending-jvm-1.txt");
+    }
+    file.imageInfo = new JSONObject().put("revision", "fedcba9876");
+    file.write(List.of(), false);
+    try (final Stream<Path> dumps = Files.list(tmp.resolve("dumps"))) {
+      assertThat(dumps.map(p -> p.getFileName().toString()).toList()).containsExactly("2026-11-23T03-00-00Z-fedcba9876-jvm-1.txt");
     }
   }
 

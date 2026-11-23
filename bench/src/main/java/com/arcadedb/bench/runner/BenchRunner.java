@@ -34,6 +34,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,6 +72,22 @@ public final class BenchRunner {
   private final ClockPair clocks;
 
   private static final String WORKER_STILL_RUNNING = "teardown skipped: worker still running";
+
+  /** The name of the thread that watches a case's worker for a stall; it never outlives its case. */
+  static final String WATCHDOG_THREAD = "bench-stall-watchdog";
+  /** A worker whose stack has not changed for this long is stalled: the server gets a thread dump. */
+  private static final Duration STALL_THRESHOLD = Duration.ofSeconds(40);
+  private static final Duration STALL_PERIOD    = Duration.ofSeconds(5);
+  /** The most thread dumps of one run: the watchdog lives as long as the runner, which serves the whole run. */
+  private static final int      MAX_DUMPS       = 3;
+  /** How long the end of a case waits for a thread dump the watchdog is taking. */
+  private static final Duration DUMP_GRACE      = Duration.ofSeconds(30);
+
+  private Duration                stallPeriod = STALL_PERIOD;
+  private StallWatchdog           watchdog;
+  // the worker of the running case and the guard dumps go through; read by the watchdog thread
+  private volatile Thread         worker;
+  private volatile ServerGuard    dumpGuard;
 
   // set by runCase for run(), on the caller's thread
   private boolean lastWorkerStopped = true;
@@ -120,6 +137,27 @@ public final class BenchRunner {
     this.caseTimeout = caseTimeout;
     this.interruptGrace = interruptGrace;
     this.clocks = clocks;
+    this.watchdog = newWatchdog(STALL_THRESHOLD);
+  }
+
+  /** Shorter stall timing for a test; the dump budget starts afresh. */
+  void stallTiming(final Duration period, final Duration threshold) {
+    this.stallPeriod = period;
+    this.watchdog = newWatchdog(threshold);
+  }
+
+  private StallWatchdog newWatchdog(final Duration threshold) {
+    return new StallWatchdog(() -> {
+      final Thread t = worker;
+      return t == null ? new StackTraceElement[0] : t.getStackTrace();
+    }, System::nanoTime, threshold, MAX_DUMPS, n -> {
+      final ServerGuard g = dumpGuard;
+      try {
+        return g != null && g.threadDump(n);
+      } catch (final RuntimeException e) {
+        return false;
+      }
+    });
   }
 
   /** The step the worker is in, when it started and how long it may take; replaced by the worker as it moves on. */
@@ -149,10 +187,14 @@ public final class BenchRunner {
    * gets {@code "server died: <reason>; "} before its error, an ok one a {@code serverDied} note), hands {@code onCase} the
    * amended list and is restarted; the next case gets a {@code serverRestarted} note. A second death, or a restart that fails,
    * records every remaining case of the workload as not run.
+   * <p>
+   * With a guard, a watchdog samples the stack of each case's worker every 5 s; a stack unchanged for 40 s asks the guard for a
+   * thread dump of the server (at most 3 per run), and the case gets a {@code stallDumps} note with the number taken during it.
    */
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final ServerGuard guard,
       final Predicate<String> caseFilter, final Consumer<List<CaseResult>> onCase) {
     final List<CaseResult> results = new ArrayList<>();
+    dumpGuard = guard;
     WorkloadContext current = ctx;
     int deaths = 0;
     // why the remaining cases are not run; null while the workload goes on
@@ -235,6 +277,7 @@ public final class BenchRunner {
     final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
       final Thread t = new Thread(r, "bench-runner");
       t.setDaemon(true);
+      worker = t;
       return t;
     });
     final long caseStart = System.nanoTime();
@@ -251,6 +294,8 @@ public final class BenchRunner {
         return result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(t));
       }
     });
+    final int dumpsBefore = watchdog.dumpsTaken();
+    final ScheduledExecutorService stallWatch = dumpGuard != null ? startWatchdog() : null;
     CaseResult result;
     boolean workerStopped = true;
     try {
@@ -273,6 +318,7 @@ public final class BenchRunner {
       result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, describe(e));
     } finally {
       executor.shutdown();
+      stopWatchdog(stallWatch);
     }
     lastWorkerStopped = workerStopped;
     if (workerStopped) {
@@ -284,7 +330,43 @@ public final class BenchRunner {
               "teardown: " + describe(t));
       }
     }
-    return result;
+    final int dumps = watchdog.dumpsTaken() - dumpsBefore;
+    return dumps > 0 ? result.withNote("stallDumps", dumps) : result;
+  }
+
+  private ScheduledExecutorService startWatchdog() {
+    watchdog.reset();
+    final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, WATCHDOG_THREAD);
+      t.setDaemon(true);
+      return t;
+    });
+    final long period = stallPeriod.toNanos();
+    scheduler.scheduleAtFixedRate(() -> {
+      // a throwing task would never run again
+      try {
+        watchdog.sample();
+      } catch (final Throwable t) {
+        // the next sample tries again
+      }
+    }, period, period, TimeUnit.NANOSECONDS);
+    return scheduler;
+  }
+
+  /** Stops the case's watchdog, letting a dump in progress finish first, so its thread never outlives the case. */
+  private void stopWatchdog(final ScheduledExecutorService scheduler) {
+    if (scheduler == null)
+      return;
+    scheduler.shutdown();
+    try {
+      if (!scheduler.awaitTermination(DUMP_GRACE.toNanos(), TimeUnit.NANOSECONDS)) {
+        scheduler.shutdownNow();
+        scheduler.awaitTermination(interruptGrace.toNanos(), TimeUnit.NANOSECONDS);
+      }
+    } catch (final InterruptedException e) {
+      scheduler.shutdownNow();
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bench.server;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
@@ -32,6 +33,7 @@ import org.testcontainers.DockerClientFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.BindMode;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -43,6 +45,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -260,6 +263,106 @@ public final class ServerUnderTest implements AutoCloseable {
       return false;
     } catch (final IOException | RuntimeException e) {
       return false;
+    }
+  }
+
+  /** The rows of the class histogram kept in {@link #diagnostics()}: its header lines and the biggest classes. */
+  static final int HISTOGRAM_ROWS = 30;
+
+  /**
+   * Writes a thread dump of the server ({@code jcmd 1 Thread.print}, run inside the container) to {@code file}. The native image
+   * has no jcmd and no attach mechanism, and a SIGQUIT could end it: it gets no dump and no signal, and this returns false.
+   * False also when jcmd fails.
+   */
+  public boolean threadDump(final Path file) {
+    if (nativeImage)
+      return false;
+    final String text = jcmd("Thread.print");
+    if (text == null)
+      return false;
+    try {
+      Files.writeString(file, text, StandardCharsets.UTF_8);
+      return true;
+    } catch (final IOException e) {
+      LOGGER.warn("Cannot write the thread dump {}: {}", file, e.toString());
+      return false;
+    }
+  }
+
+  /**
+   * What the run file keeps about the server at the end of a workload: {@code threads}, its thread count read from
+   * {@code /proc/<pid>/status} on the host (absent where the host has no such file, as under Docker Desktop), and, for the JVM
+   * image only, {@code classHistogram}, the first {@value #HISTOGRAM_ROWS} lines of {@code jcmd 1 GC.class_histogram}. Nothing
+   * here sends the native image a signal.
+   */
+  public JSONObject diagnostics() {
+    final JSONObject json = new JSONObject();
+    final int threads = threadCount();
+    if (threads >= 0)
+      json.put("threads", threads);
+    if (!nativeImage) {
+      final String histogram = jcmd("GC.class_histogram");
+      if (histogram != null)
+        json.put("classHistogram", firstLines(histogram, HISTOGRAM_ROWS));
+    }
+    return json;
+  }
+
+  /** The first {@code n} non-empty lines of a text. */
+  static JSONArray firstLines(final String text, final int n) {
+    final JSONArray rows = new JSONArray();
+    for (final String line : text.split("\\R")) {
+      if (rows.length() >= n)
+        break;
+      if (!line.isBlank())
+        rows.put(line);
+    }
+    return rows;
+  }
+
+  /** The {@code Threads:} value of a {@code /proc/<pid>/status} text; -1 when it has none. */
+  static int threadsOf(final String status) {
+    for (final String line : status.split("\\R"))
+      if (line.startsWith("Threads:"))
+        try {
+          return Integer.parseInt(line.substring("Threads:".length()).trim());
+        } catch (final NumberFormatException e) {
+          return -1;
+        }
+    return -1;
+  }
+
+  /** The thread count of the server process as the host sees it; -1 when it cannot be read. */
+  private int threadCount() {
+    try {
+      final InspectContainerResponse.ContainerState state = docker.inspectContainerCmd(container.getContainerId()).exec().getState();
+      final Long pid = state != null ? state.getPidLong() : null;
+      if (pid == null || pid <= 0)
+        return -1;
+      final Path status = Path.of("/proc", String.valueOf(pid), "status");
+      if (!Files.isReadable(status))
+        return -1;
+      return threadsOf(Files.readString(status, StandardCharsets.UTF_8));
+    } catch (final IOException | RuntimeException e) {
+      return -1;
+    }
+  }
+
+  /** The output of {@code jcmd 1 <command>} inside the container (the JVM is PID 1, server.sh execs it); null on failure. */
+  private String jcmd(final String command) {
+    try {
+      final Container.ExecResult result = container.execInContainer("jcmd", "1", command);
+      if (result.getExitCode() != 0) {
+        LOGGER.warn("jcmd {} exited with {}: {}", command, result.getExitCode(), result.getStderr());
+        return null;
+      }
+      return result.getStdout();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    } catch (final IOException | RuntimeException e) {
+      LOGGER.warn("jcmd {} failed: {}", command, e.toString());
+      return null;
     }
   }
 

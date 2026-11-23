@@ -26,8 +26,10 @@ import com.github.dockerjava.api.command.InspectContainerResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.testcontainers.DockerClientFactory;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -112,5 +114,24 @@ class ServerUnderTestIT {
     final JSONObject settings = server.config().getJSONObject("settings");
     assertThat(settings.getString("arcadedb.server.rootPassword")).isEqualTo("***");
     assertThat(settings.toString()).doesNotContain(ServerUnderTest.PASSWORD);
+  }
+
+  @Test
+  void threadDumpAndDiagnosticsFollowTheVariant(@TempDir final Path tmp) throws Exception {
+    final Path dump = tmp.resolve("dump.txt");
+    final JSONObject diagnostics = server.diagnostics();
+    if (server.isNative()) {
+      // no jcmd and never a signal: no dump, no class histogram
+      assertThat(server.threadDump(dump)).isFalse();
+      assertThat(dump).doesNotExist();
+      assertThat(diagnostics.has("classHistogram")).isFalse();
+    } else {
+      assertThat(server.threadDump(dump)).isTrue();
+      assertThat(Files.readString(dump)).contains("Full thread dump");
+      assertThat(diagnostics.getJSONArray("classHistogram").length()).isEqualTo(ServerUnderTest.HISTOGRAM_ROWS);
+    }
+    // the host sees the server process only where Docker runs natively (Linux), not under Docker Desktop
+    if (Files.isDirectory(Path.of("/proc/self")))
+      assertThat(diagnostics.getInt("threads", 0)).isGreaterThan(0);
   }
 }
