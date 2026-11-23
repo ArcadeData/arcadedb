@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,9 +67,8 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
     for (int i = 0; i < order.length; i++) {
       final Map<String, Object> row = new LinkedHashMap<>();
       row.put("@rid", order[i]);
-      row.put("score", scores == null ? null : (float) scores[i]);
-      if (scores == null)
-        row.remove("score");
+      if (scores != null)
+        row.put("score", (float) scores[i]);
       rows.add(row);
     }
     return rows;
@@ -144,9 +145,11 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
 
   private void assertMatches(final Map<RID, Double> actual, final Map<RID, Double> model, final String ctx) {
     assertThat(actual.keySet()).as(ctx).containsExactlyInAnyOrderElementsOf(model.keySet());
+    // The tolerance covers the float scores the rows carry and the float arithmetic of the function against the double model:
+    // 1e-5 relative is tens of float ulps, loose enough not to flake over the random rounds, tight enough to catch a wrong formula
     for (final Map.Entry<RID, Double> e : model.entrySet())
       assertThat(actual.get(e.getKey())).as(ctx + " " + e.getKey()).isCloseTo(e.getValue(), within(1e-5 + 1e-5 * Math.abs(e.getValue())));
-    // the answer is ranked best first: a pair the model separates clearly must come in the model's order
+    // the answer is ranked best first: the fused scores come out in non-increasing order
     final List<RID> order = new ArrayList<>(actual.keySet());
     for (int i = 0; i + 1 < order.size(); i++)
       assertThat(actual.get(order.get(i))).as(ctx + " rank " + i).isGreaterThanOrEqualTo(actual.get(order.get(i + 1)));
@@ -154,7 +157,7 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
 
   private RID[] randomOrder(final Random rnd, final int size) {
     final List<RID> copy = new ArrayList<>(pool);
-    java.util.Collections.shuffle(copy, rnd);
+    Collections.shuffle(copy, rnd);
     return copy.subList(0, size).toArray(new RID[0]);
   }
 
@@ -169,6 +172,22 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
     return s;
   }
 
+  /** The options text of a weights list, {@code [w0,w1,...]}. */
+  private static String weightList(final double[] weights) {
+    final StringBuilder w = new StringBuilder("[");
+    for (int s = 0; s < weights.length; s++)
+      w.append(s > 0 ? "," : "").append(weights[s]);
+    return w.append("]").toString();
+  }
+
+  /** The scores as the rows carry them: floats, widened back to double for the model. */
+  private static double[] asFloats(final double[] scores) {
+    final double[] floats = new double[scores.length];
+    for (int i = 0; i < scores.length; i++)
+      floats[i] = (float) scores[i];
+    return floats;
+  }
+
   @Test
   void rrfMatchesTheFormula() {
     final Random rnd = new Random(7);
@@ -178,16 +197,15 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
       final List<List<Map<String, Object>>> sources = new ArrayList<>();
       final double[] weights = new double[sourceCount];
       final long k = round % 5 == 0 ? 0 : 1 + rnd.nextInt(100);
+      // every third round the weights are zero, negative or positive, so a source may contribute nothing or subtract
+      final boolean signedWeights = round % 3 == 0;
       for (int s = 0; s < sourceCount; s++) {
         final RID[] order = randomOrder(rnd, rnd.nextInt(DOCS + 1));
         orders.add(order);
         sources.add(source(order, null));
-        weights[s] = round % 3 == 0 ? (rnd.nextInt(3) - 1) * rnd.nextDouble() : 0.1 + rnd.nextDouble() * 3;
+        weights[s] = signedWeights ? (rnd.nextInt(3) - 1) * rnd.nextDouble() : 0.1 + rnd.nextDouble() * 3;
       }
-      final StringBuilder w = new StringBuilder("[");
-      for (int s = 0; s < sourceCount; s++)
-        w.append(s > 0 ? "," : "").append(weights[s]);
-      w.append("]");
+      final String w = weightList(weights);
       final String ctx = "round " + round + " k=" + k + " weights=" + w;
       assertMatches(fuse(sources, "{fusion: 'RRF', k: " + k + ", weights: " + w + "}"), modelRrf(orders, weights, k), ctx);
     }
@@ -206,24 +224,17 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
         final RID[] order = randomOrder(rnd, 1 + rnd.nextInt(DOCS));
         final double[] sc = randomScores(rnd, order.length);
         if (round % 7 == 0)
-          java.util.Arrays.fill(sc, 0.5);
+          Arrays.fill(sc, 0.5);
         orders.add(order);
         scores.add(sc);
         sources.add(source(order, sc));
         weights[s] = 0.1 + rnd.nextDouble() * 3;
       }
-      final StringBuilder w = new StringBuilder("[");
-      for (int s = 0; s < sourceCount; s++)
-        w.append(s > 0 ? "," : "").append(weights[s]);
-      w.append("]");
+      final String w = weightList(weights);
       // the model works on the float scores the rows carry
       final List<double[]> floatScores = new ArrayList<>();
-      for (final double[] sc : scores) {
-        final double[] f = new double[sc.length];
-        for (int i = 0; i < sc.length; i++)
-          f[i] = (float) sc[i];
-        floatScores.add(f);
-      }
+      for (final double[] sc : scores)
+        floatScores.add(asFloats(sc));
       assertMatches(fuse(sources, "{fusion: 'LINEAR', weights: " + w + "}"), modelLinear(orders, floatScores, weights), "round " + round);
     }
   }
@@ -243,18 +254,13 @@ class SQLFunctionVectorFuseOracleTest extends TestHelper {
         // one extreme outlier so that the 3 sigma clip is reached
         if (round % 2 == 0 && sc.length >= 8)
           sc[0] = sc[1] + 400;
-        final double[] f = new double[sc.length];
-        for (int i = 0; i < sc.length; i++)
-          f[i] = (float) sc[i];
+        final double[] f = asFloats(sc);
         orders.add(order);
         scores.add(f);
         sources.add(source(order, sc));
         weights[s] = 0.1 + rnd.nextDouble() * 3;
       }
-      final StringBuilder w = new StringBuilder("[");
-      for (int s = 0; s < sourceCount; s++)
-        w.append(s > 0 ? "," : "").append(weights[s]);
-      w.append("]");
+      final String w = weightList(weights);
       assertMatches(fuse(sources, "{fusion: 'DBSF', weights: " + w + "}"), modelDbsf(orders, scores, weights), "round " + round);
     }
   }
