@@ -235,6 +235,31 @@ class CypherUnlabelledSourceReverseIssue12149Test {
   }
 
   @Test
+  void theInternalNameOfAnAnonymousTargetIsNotProjected() {
+    // the reversed plan names the anonymous target to start from it: RETURN * must not show that name, as it does not in the written order
+    final String reversed = STEPS + "MATCH (x)-[:OF]->(:Doc {key: 7}) RETURN *";
+    final String written = STEPS + "MATCH (x)-[:OF]->(:Doc {key: 7}) WHERE x.i = x.i RETURN *";
+    assertThat(lineOf(profile(reversed, Map.of()), "MATCH NODE")).doesNotContain("MATCH NODE (x");
+
+    final Set<String> columns = new HashSet<>();
+    try (final ResultSet rs = database.query("opencypher", reversed)) {
+      int rows = 0;
+      while (rs.hasNext()) {
+        columns.addAll(rs.next().getPropertyNames());
+        ++rows;
+      }
+      assertThat(rows).isEqualTo(6);
+    }
+    final Set<String> writtenColumns = new HashSet<>();
+    try (final ResultSet rs = database.query("opencypher", written)) {
+      while (rs.hasNext())
+        writtenColumns.addAll(rs.next().getPropertyNames());
+    }
+    assertThat(columns).isEqualTo(writtenColumns).contains("x");
+    assertThat(columns).noneMatch(name -> name.startsWith(" "));
+  }
+
+  @Test
   void severalPatternsOfOneMatchAreEachStartedFromTheirTarget() {
     final String query = "MATCH (x)-[:OF]->(d:Doc {key: 7}), (y)-[:OF]->(e:Doc {key: 8}) RETURN x.i AS i, y.i AS j";
     final String plan = profile(STEPS + query, Map.of());
