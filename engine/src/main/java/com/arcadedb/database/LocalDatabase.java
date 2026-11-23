@@ -2194,10 +2194,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
     // AN EDGE RECORD THIS TRANSACTION ALREADY DELETED IS NOT DELETED A SECOND TIME (issue #12253). GraphEngine.deleteEdge ignores
-    // the not-found of its physical delete, so the -1 folded below drifted the bucket's cached record count behind count(*) for
-    // good (it is persisted), after the listeners and the index cleanup had run for it again. A vertex and a document already
-    // answer a second delete with their not-found (the vertex with the VertexNotFoundException of #6586). A lightweight edge owns
-    // no record, so it has no entry to check
+    // the not-found of its physical delete, so the -1 folded below would drift the persisted record count behind count(*) and the
+    // listeners and the index cleanup would run again. A vertex and a document already answer a second delete with their
+    // not-found. A lightweight edge owns no record, so there is nothing to check for it
     if (record instanceof Edge && record.getIdentity().getPosition() >= 0 && getTransactionIfExists() instanceof TransactionContext tx
         && tx.isDeletedInTransaction(record.getIdentity()))
       throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());

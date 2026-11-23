@@ -77,25 +77,54 @@ class EdgeDeletedTwiceRecordCountIssue12253Test extends TestHelper {
     assertThat(database.countType("P", false)).isEqualTo(scanned("P"));
   }
 
-  @Test
-  void cypherDeleteOfRelationshipAlreadyDetached() {
-    createGraph(1);
-    database.transaction(() -> database.command("opencypher", "MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r"));
-    assertCountsMatch(OTHER_EDGES);
+  /** Runs the statement in its own transaction and answers what it reports about the relationships it deleted. */
+  private int relationshipsDeletedBy(final String cypher) {
+    final int[] deleted = new int[1];
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", cypher)) {
+        while (rs.hasNext())
+          rs.next();
+        deleted[0] = rs.getStatistics().orElseThrow().getRelationshipsDeleted();
+      }
+    });
+    return deleted[0];
   }
 
   @Test
+  void cypherDeleteOfRelationshipAlreadyDetached() {
+    createGraph(1);
+    assertThat(relationshipsDeletedBy("MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r")).isEqualTo(1);
+    assertCountsMatch(OTHER_EDGES);
+  }
+
+  // Control: this shape was already fixed by #12254, it passes without the guard of #12253
+  @Test
   void cypherDeleteOfRelationshipsDetachedByAnEarlierRow() {
     createGraph(3);
-    database.transaction(() -> database.command("opencypher", "MATCH (a:P)-[r]->(b) DELETE r DETACH DELETE a"));
+    assertThat(relationshipsDeletedBy("MATCH (a:P)-[r]->(b) DELETE r DETACH DELETE a")).isEqualTo(3);
     assertCountsMatch(OTHER_EDGES);
   }
 
   @Test
   void cypherDetachDeleteThenDeleteSeveralRelationships() {
     createGraph(3);
-    database.transaction(() -> database.command("opencypher", "MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r"));
+    assertThat(relationshipsDeletedBy("MATCH (a:P)-[r]->(b) DETACH DELETE a DELETE r")).isEqualTo(3);
     assertCountsMatch(OTHER_EDGES);
+  }
+
+  // Control: a self-loop is the one edge both endpoints of which are deleted by the DETACH, and it passes without the guard too
+  @Test
+  void cypherDetachDeleteThenDeleteASelfLoop() {
+    database.getSchema().createVertexType("P");
+    database.getSchema().createEdgeType("F");
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("P").save();
+      a.newEdge("F", a);
+    });
+    assertThat(relationshipsDeletedBy("MATCH (a:P)-[r]->(a) DETACH DELETE a DELETE r")).isEqualTo(1);
+    assertThat(scanned("F")).isZero();
+    assertThat(database.countType("F", false)).isZero();
+    assertThat(database.countType("P", false)).isZero();
   }
 
   @Test
