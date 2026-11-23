@@ -26,6 +26,7 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -309,6 +310,92 @@ class Issue10220GremlinWriteWithoutTransactionTest {
 
     assertThat(commits.get()).as("the one commit of the statement went through the wrapper").isEqualTo(1);
     assertThat(committedCount("w")).isEqualTo(1);
+  }
+
+  /**
+   * The analysis that tells a write from a read runs a terminated traversal used as an argument, as the script is built. That read goes
+   * through the generic {@code GraphStep}, which opens the transaction of the AUTO model: nothing may be left of it, or the statement
+   * nests above a transaction nobody owns and the next write of the thread joins it, which is the reported symptom again.
+   */
+  @Test
+  void aNestedReadOfTheAnalysisLeavesNoTransactionBehind() throws Exception {
+    readToTheEnd("g.V(g.V().limit(1).id().next()).property('k', 'nested')");
+
+    assertThat(database.isTransactionActive()).as("the analysis left a transaction open").isFalse();
+    assertThat(committedCount("nested")).as("the statement is committed").isEqualTo(1);
+
+    // the next write of the thread must not join what the analysis left
+    readToTheEnd("g.addV('N').property('k', 'after')");
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(committedCount("after")).as("the next write is committed on its own").isEqualTo(1);
+  }
+
+  /** The analysis an HA follower asks for before it forwards a command is just as neutral. */
+  @Test
+  void theAnalysisOfAStatementWithANestedReadLeavesNoTransactionBehind() {
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("gremlin")
+        .analyze("g.V(g.V().limit(1).id().next()).property('k', 'analysed')");
+
+    assertThat(analyzed.isIdempotent()).isFalse();
+    assertThat(database.isTransactionActive()).as("the analysis left a transaction open").isFalse();
+  }
+
+  /**
+   * A read whose plan keeps the generic {@code GraphStep} ({@code g.V().limit(1)}: no label to rewrite it) opens the transaction of the
+   * AUTO model while it runs, and used to leave it open for the thread: the write that followed joined it and was never committed.
+   */
+  @Test
+  void aReadThroughTheGenericGraphStepLeavesNoTransactionForTheNextWrite() throws Exception {
+    readToTheEnd("g.V().limit(1)");
+    assertThat(database.isTransactionActive()).as("the read left its transaction open").isFalse();
+
+    readToTheEnd("g.addV('N').property('k', 'afterRead')");
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(committedCount("afterRead")).as("the write after the read is committed on its own").isEqualTo(1);
+  }
+
+  /** An eager terminal step runs the read while the statement is evaluated, before any row is pulled. */
+  @Test
+  void anEagerReadLeavesNoTransaction() {
+    readToTheEnd("g.V().limit(1).toList()");
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  @Test
+  void aReadAnsweredByQueryLeavesNoTransaction() {
+    try (final ResultSet rs = database.query("gremlin", "g.V().limit(1)")) {
+      while (rs.hasNext())
+        rs.next();
+    }
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  @Test
+  void aReadClosedBeforeItIsExhaustedLeavesNoTransaction() {
+    database.transaction(() -> database.newVertex("N").set("k", "second").save());
+
+    try (final ResultSet rs = database.command("gremlin", "g.V()")) {
+      assertThat(rs.hasNext()).isTrue();
+      rs.next();
+    }
+    assertThat(database.isTransactionActive()).as("a result closed half read").isFalse();
+  }
+
+  /** A transaction the caller begins while the result is open is the caller's: the end of the read leaves it alone. */
+  @Test
+  void aReadDoesNotEndATransactionTheCallerBeginsWhileItIsOpen() {
+    final ResultSet rs = database.command("gremlin", "g.V()");
+    try {
+      database.begin();
+      while (rs.hasNext())
+        rs.next();
+      rs.close();
+
+      assertThat(database.isTransactionActive()).as("the caller's transaction is still there").isTrue();
+    } finally {
+      database.rollback();
+    }
   }
 
   private void readToTheEnd(final String gremlin) {

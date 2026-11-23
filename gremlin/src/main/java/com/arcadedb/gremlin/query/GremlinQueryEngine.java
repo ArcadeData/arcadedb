@@ -28,11 +28,15 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGremlin;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 public class GremlinQueryEngine implements QueryEngine {
   static final  String      ENGINE_NAME = "gremlin";
@@ -51,10 +55,12 @@ public class GremlinQueryEngine implements QueryEngine {
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
     final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
     arcadeGremlin.setParameters(parameters);
-    if (!arcadeGremlin.parse().isIdempotent())
+    if (!parse(arcadeGremlin).isIdempotent())
       throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
     // A statement that only reads: it streams, and has no use for a transaction of its own
-    return execute(query, parameters);
+    return arcadeGraph.getDatabase() instanceof DatabaseInternal database && !database.isTransactionActive() ?
+        executeLeavingNoTransaction(database, query, parameters) :
+        execute(query, parameters);
   }
 
   @Override
@@ -79,21 +85,34 @@ public class GremlinQueryEngine implements QueryEngine {
    * never ran. The model stays for the graph API; the entry point of the query languages, {@code Database.command()}, owns the
    * transaction of the statement instead.
    * <ul>
-   * <li>A statement that only reads is untouched: it streams, as before.</li>
+   * <li>A statement that only reads still streams. It has no transaction either: a read that goes through the generic graph step
+   * ({@code g.V().limit(1)}, {@code g.V(id)}) opens the transaction of the AUTO model while it runs, and that one is ended when the
+   * result is exhausted or closed (rolled back, it wrote nothing), so it is not left to the next statement of the thread to join.</li>
    * <li>Inside a transaction of the caller (an explicit {@code begin()}, {@code transaction()}, the HTTP handler) the statement joins
    * it and the caller commits or rolls back, as for every language.</li>
    * <li>A conflict with a concurrent transaction runs the whole statement again, up to {@code arcadedb.txRetries} times. What a script
    * does OUTSIDE the database (a Groovy script calling another system) is repeated by it, as it is by the retry of the HTTP handler and
    * of {@code Database.transaction()}.</li>
    * <li>The rows of a write are held in memory until the commit, as the records it writes are.</li>
+   * <li>What a script commits itself ({@code g.tx().commit()}) is committed: the statement owns the transaction it opened, not what a
+   * script ends on purpose. The bulk readers of {@code io().read()} do the same, a commit every {@code batchSize} records (10000)
+   * through the graph the traversal is bound to, so for a file larger than a batch "a failure takes everything back" holds from the
+   * last batch only. A conflict raised after a batch was published is not run again ({@code TransactionContext.isPartiallyCommitted}),
+   * so no record is applied twice.</li>
    * </ul>
    */
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
-    final DatabaseInternal transactionDatabase = databaseToOpenTheTransactionOn(query, parameters);
-    if (transactionDatabase == null)
+    // A REMOTE DATABASE HAS NO LOCAL TRANSACTION, AND THE TRANSACTION OF THE CALLER IS THE CALLER'S: THE STATEMENT RUNS AS IT IS
+    if (!(arcadeGraph.getDatabase() instanceof DatabaseInternal database) || database.isTransactionActive())
       return execute(query, parameters);
 
+    if (!mayWrite(query, parameters))
+      return executeLeavingNoTransaction(database, query, parameters);
+
+    // THE INSTANCE THE DATABASE IS SERVED THROUGH, WHICH UNDER HA IS THE REPLICATED WRAPPER: A COMMIT ON THE RAW INSTANCE IS APPLIED
+    // ON THE LEADER AND NEVER REPLICATED (ISSUES #5492, #5655), SEE OpenCypherQueryEngine
+    final DatabaseInternal transactionDatabase = database.getWrappedDatabaseInstance();
     final InternalResultSet[] answer = new InternalResultSet[1];
     transactionDatabase.transaction(() -> answer[0] = executeToTheEnd(query, parameters), false,
         transactionDatabase.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
@@ -116,26 +135,13 @@ public class GremlinQueryEngine implements QueryEngine {
     try {
       final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
 
-      return arcadeGremlin.parse();
+      return parse(arcadeGremlin);
 
     } catch (final CommandParsingException e) {
       throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error on parsing Gremlin query", e);
     }
-  }
-
-  /**
-   * The database the statement opens its own transaction on, or null when it runs as it is: the caller holds a transaction, or the
-   * statement only reads. It is the instance the database is served through, which under HA is the replicated wrapper: a commit on the
-   * raw instance is applied on the leader and never replicated (issues #5492, #5655), see {@code OpenCypherQueryEngine}.
-   */
-  private DatabaseInternal databaseToOpenTheTransactionOn(final String query, final Map<String, Object> parameters) {
-    if (!(arcadeGraph.getDatabase() instanceof DatabaseInternal database))
-      return null;
-
-    final DatabaseInternal transactionDatabase = database.getWrappedDatabaseInstance();
-    return !transactionDatabase.isTransactionActive() && mayWrite(query, parameters) ? transactionDatabase : null;
   }
 
   /**
@@ -148,10 +154,52 @@ public class GremlinQueryEngine implements QueryEngine {
     try {
       final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
       arcadeGremlin.setParameters(parameters);
-      return !arcadeGremlin.parse().isIdempotent();
+      return !parse(arcadeGremlin).isIdempotent();
     } catch (final RuntimeException e) {
       return true;
     }
+  }
+
+  /**
+   * {@link ArcadeGremlin#parse()} that leaves the transaction state of the thread as it found it. The analysis runs nothing, except a
+   * terminated traversal used as an argument ({@code g.V(g.V().limit(1).id().next())}), which runs as the script is built: it reads
+   * through the generic graph step, which opens the transaction of the AUTO model and leaves it open. When the thread held no
+   * transaction, whatever is open afterwards was opened by the analysis, and it is ended here (rolled back, the analysis never
+   * writes): a statement run after it must not nest above it, and the next write of the thread must not join it.
+   */
+  private AnalyzedQuery parse(final ArcadeGremlin arcadeGremlin) {
+    if (!(arcadeGraph.getDatabase() instanceof DatabaseInternal database) || database.isTransactionActive())
+      return arcadeGremlin.parse();
+
+    try {
+      return arcadeGremlin.parse();
+    } finally {
+      endTransaction(database);
+    }
+  }
+
+  /**
+   * Runs a statement that only reads, with no transaction open on the thread. The traversal may open the transaction of the AUTO model
+   * as it runs (the generic graph step does, {@code g.V().limit(1)}), while the statement is evaluated (an eager terminal step) or
+   * as its rows are pulled, and nothing would ever end it: the next statement of the thread would join it, and a write would be left
+   * in it. The result ends the transaction a pull opened when it is exhausted or closed, see {@link TransactionEndingResultSet}.
+   */
+  private ResultSet executeLeavingNoTransaction(final DatabaseInternal database, final String query,
+      final Map<String, Object> parameters) {
+    final ResultSet result;
+    try {
+      result = execute(query, parameters);
+    } catch (final Throwable e) {
+      // THE THREAD HELD NO TRANSACTION WHEN THE STATEMENT BEGAN: WHAT IS OPEN NOW WAS OPENED BY IT
+      endTransaction(database);
+      throw e;
+    }
+    return new TransactionEndingResultSet(database, result);
+  }
+
+  private static void endTransaction(final DatabaseInternal database) {
+    if (database.isTransactionActive())
+      database.rollbackAllNested();
   }
 
   /**
@@ -200,6 +248,92 @@ public class GremlinQueryEngine implements QueryEngine {
       throw e;
     } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing Gremlin query", e);
+    }
+  }
+
+  /**
+   * The rows of a read, which ends the transaction the traversal opened for itself. The thread held none when the statement began, so
+   * a transaction that is open after a pull (or after the statement was evaluated) and was not open before it, was opened by the
+   * traversal: it belongs to this result, and is rolled back when the rows are exhausted, when a pull fails, or when the result is
+   * closed. A transaction the caller begins between two pulls is the caller's: it is open before the pull, so it is never claimed, and
+   * a result closed or exhausted on another thread than the one whose transaction it claimed leaves that one alone.
+   * <p>
+   * While no transaction was claimed, a pull costs two lookups of the transaction of the thread.
+   *
+   * @author lvca (l.garulli@arcadedata.com)
+   */
+  private static final class TransactionEndingResultSet implements ResultSet {
+    private final DatabaseInternal database;
+    private final ResultSet        delegate;
+    // THE THREAD WHOSE TRANSACTION THE TRAVERSAL OPENED, NULL WHILE IT OPENED NONE
+    private       Thread           owner;
+
+    private TransactionEndingResultSet(final DatabaseInternal database, final ResultSet delegate) {
+      this.database = database;
+      this.delegate = delegate;
+      // AN EAGER TERMINAL STEP RAN THE TRAVERSAL WHILE THE STATEMENT WAS EVALUATED, BEFORE THE FIRST PULL
+      claimIfOpened(false);
+    }
+
+    @Override
+    public boolean hasNext() {
+      final boolean openBefore = owner != null || database.isTransactionActive();
+      boolean hasNext = false;
+      try {
+        hasNext = delegate.hasNext();
+      } finally {
+        claimIfOpened(openBefore);
+        if (!hasNext)
+          // EXHAUSTED, OR THE PULL FAILED
+          end();
+      }
+      return hasNext;
+    }
+
+    @Override
+    public Result next() {
+      final boolean openBefore = owner != null || database.isTransactionActive();
+      boolean failed = true;
+      try {
+        final Result next = delegate.next();
+        failed = false;
+        return next;
+      } finally {
+        claimIfOpened(openBefore);
+        if (failed)
+          end();
+      }
+    }
+
+    @Override
+    public void close() {
+      try {
+        delegate.close();
+      } finally {
+        end();
+      }
+    }
+
+    @Override
+    public Optional<ExecutionPlan> getExecutionPlan() {
+      return delegate.getExecutionPlan();
+    }
+
+    @Override
+    public Optional<QueryStatistics> getStatistics() {
+      return delegate.getStatistics();
+    }
+
+    private void claimIfOpened(final boolean openBefore) {
+      if (!openBefore && owner == null && database.isTransactionActive())
+        owner = Thread.currentThread();
+    }
+
+    private void end() {
+      if (owner == Thread.currentThread()) {
+        owner = null;
+        endTransaction(database);
+      }
     }
   }
 }
