@@ -119,7 +119,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
     final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
     final Strategy strategy = parseStrategy(opts.getString("fusion", "RRF"));
-    final long k = opts.getLong("k", DEFAULT_K);
+    final long k = opts.getNonNegativeLong("k", DEFAULT_K);
     final float[] weights = parseWeights(opts.getList("weights"), sourceCount);
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
