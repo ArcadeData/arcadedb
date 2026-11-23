@@ -2040,9 +2040,8 @@ public class ServerControlPlane {
    * <p>
    * The partial archives that a backup killed mid-write left behind are swept here, before the plugin is consulted, so the
    * sweep runs whatever the auto-backup state is (issue #12530): the plugin's retention does nothing while auto-backup is
-   * disabled, which is the default, yet the on-demand
-   * backups write partial archives just the same and no other command can reach one. That sweep is not a retention: it removes
-   * no archive and is not counted in the result.
+   * disabled, which is the default, yet the on-demand backups write partial archives just the same and no other command can
+   * reach one. That sweep is not a retention: it removes no archive and is not counted in the result.
    *
    * @return the number of archives deleted
    */
@@ -2209,10 +2208,9 @@ public class ServerControlPlane {
    * Retention pruning runs only while the auto-backup scheduler is ENABLED: with it off, an on-demand archive stays
    * until {@code delete backup} removes it, which is now possible. The one exception is the partial archive of a backup
    * killed mid-write, which no command can address: it is swept after every on-demand backup, enabled or not (issue
-   * #12530). While it is on, an on-demand
-   * {@code trigger backup} prunes too, with that database's effective policy - including for a database absent from
-   * the auto-backup configuration, whose archives the scheduler never touches because it does not know about it
-   * (issue #7472).
+   * #12530). While it is on, an on-demand {@code trigger backup} prunes too, with that database's effective policy -
+   * including for a database absent from the auto-backup configuration, whose archives the scheduler never touches
+   * because it does not know about it (issue #7472).
    */
   public Path resolveBackupDirectory() {
     final Path serverRoot = Paths.get(server.getRootPath()).toAbsolutePath().normalize();
