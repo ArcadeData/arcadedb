@@ -72,6 +72,15 @@ class Issue12902MatchClosingHopTest extends TestHelper {
   }
 
   @Test
+  void aClosingHopWalkedBackwardIsAnsweredInFull() {
+    final int n = 12;
+    completeDigraph(n);
+    // a -> b -> c and a -> c, the last one walked from c through its incoming edges: same rows as the forward closing hop
+    assertThat(rows("MATCH {type: P, as: a}.out('Knows'){as: b}.out('Knows'){as: c}, {as: c}.in('Knows'){as: a} RETURN a.id AS a, b.id AS b, c.id AS c"))
+        .hasSize(n * (n - 1) * (n - 2));
+  }
+
+  @Test
   void everyRowOfTheClosingHopIsDistinctAndValid() {
     final int n = 7;
     completeDigraph(n);
