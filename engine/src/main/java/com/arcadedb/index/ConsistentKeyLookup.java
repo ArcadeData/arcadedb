@@ -56,9 +56,12 @@ import java.util.logging.Level;
  * The records are held until all are loaded, so a lookup with more than {@link #MAX_ENTRIES} entries is not served here:
  * {@link #lookup} returns {@code null} and the caller streams the cursors as it did before.
  * <p>
- * The last resort cannot deadlock: a publication held off waits for the hold with the page-manager lock and its file locks
- * taken, and the read under the hold takes neither (it loads pages, which takes no lock); the reader holds no hold while it
- * waits for one.
+ * The last resort cannot deadlock, because it takes its locks in the order a commit does: the database read lock first, the
+ * publication hold (or the page-manager lock) after it. A publication held off waits for the hold with the database read lock, the
+ * page-manager lock and its file locks taken. The read under the hold loads records by RID, which takes the database read lock
+ * again, and that lock is fair: a reader that does not own it is refused as soon as a schema change queues for the write lock, which
+ * waits for the commit that waits for the hold (#13112). Owning it before the hold makes that load a re-entry, which is always
+ * granted. Beyond that the read under the hold takes no lock (it loads pages), and the reader holds no hold while it waits for one.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -140,7 +143,7 @@ public final class ConsistentKeyLookup {
         MAX_ATTEMPTS);
     // the pages pinned by the attempts that overlapped a commit must not serve the last read either
     unpinRepeatableRead(database, index, lastBucketIds);
-    final Read read = readAgainstOneCommit(pageManager, () -> readAndLoad(database, index, keys, forQuery, prefix),
+    final Read read = readAgainstOneCommit(database, () -> readAndLoad(database, index, keys, forQuery, prefix),
         "Lookup on index '" + index.getName() + "'");
     return read == null ? null : read.entries;
   }
@@ -204,7 +207,8 @@ public final class ConsistentKeyLookup {
    *
    * @param indexName names the index in the message of the conflict
    */
-  public static <T> T readConsistently(final PageManager pageManager, final String indexName, final Supplier<T> read) {
+  public static <T> T readConsistently(final DatabaseInternal database, final String indexName, final Supplier<T> read) {
+    final PageManager pageManager = database.getPageManager();
     for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       final long before = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
       if ((before & 1) != 0)
@@ -213,7 +217,7 @@ public final class ConsistentKeyLookup {
       if (pageManager.getPublicationSequence() == before)
         return result;
     }
-    return readAgainstOneCommit(pageManager, read, "Lookup on index '" + indexName + "'");
+    return readAgainstOneCommit(database, read, "Lookup on index '" + indexName + "'");
   }
 
   /**
@@ -231,11 +235,20 @@ public final class ConsistentKeyLookup {
    * {@code read} must be short, must not publish and must not wait for anything a publication holds: it delays every commit and
    * apply of the JVM while it runs. It may run twice, so it must start from scratch every time. A {@code null} it returns is taken
    * as it is: it is the caller's "not held here", which promises no one state.
+   * <p>
+   * The whole call runs under the database read lock, taken before the hold and before the page-manager lock, which is the order of a
+   * commit (it holds the read lock while it waits for the holds to be released). {@code read} loads records, which takes that lock:
+   * taken after the hold it is a new acquisition, and the fair lock refuses one while a writer is queued, a schema change that
+   * waits for the very commit that waits for this hold (#13112). Taken first, the load re-enters a lock this thread owns.
    *
    * @param what names the read in the message of the conflict
    */
+  public static <T> T readAgainstOneCommit(final DatabaseInternal database, final Supplier<T> read, final String what) {
+    return database.executeInReadLock(() -> readAgainstOneCommitUnderReadLock(database.getPageManager(), read, what));
+  }
+
   @SuppressWarnings("unchecked")
-  public static <T> T readAgainstOneCommit(final PageManager pageManager, final Supplier<T> read, final String what) {
+  private static <T> T readAgainstOneCommitUnderReadLock(final PageManager pageManager, final Supplier<T> read, final String what) {
     final Object[] result = { NOT_READ };
     final Boolean held;
     try {
