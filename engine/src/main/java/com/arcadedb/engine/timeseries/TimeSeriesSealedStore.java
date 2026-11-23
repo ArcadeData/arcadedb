@@ -3140,8 +3140,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<BlockEntry> toDownsample = new ArrayList<>();
       final List<BlockEntry> toKeep = new ArrayList<>();
-      int unreadable = 0;
-      IOException firstUnreadable = null;
 
       for (final BlockEntry entry : blockDirectory) {
         if (entry.maxTimestamp >= cutoffTs) {
@@ -3168,31 +3166,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // The caller that wants a restart not to keep the shard waiting for the history has had proveBlocksIrreducible read it
         // before the write locks were taken (TimeSeriesEngine.applyDownsampling), and then what is read here is the blocks that
         // landed since and the reducible ones, which the sweep below reads for good anyway. Any other caller pays the whole read here.
-        final boolean reducible;
-        try {
-          reducible = hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols);
-        } catch (final IOException e) {
-          // A block that cannot be read cannot be said to be reducible, nor irreducible: it is left as it is, with no verdict, and
-          // the pass goes on. A density test that never read a block it skipped let one bad block among sparse ones alone, and the
-          // rest of the history must not stop being downsampled because one of its blocks is damaged
-          if (firstUnreadable == null)
-            firstUnreadable = e;
-          unreadable++;
-          toKeep.add(entry);
-          continue;
-        }
-        if (!reducible) {
+        // A block that cannot be read (its CRC does not match) fails the pass, and that is on purpose: a rewrite copies the blocks it
+        // keeps and stamps a CRC computed over the bytes it copied, so a rewrite that went on around a damaged block would make the
+        // damage look like data from then on. The pass fails before anything is written, and says which block.
+        if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
           entry.markIrreducibleOn(grid);
           toKeep.add(entry);
           continue;
         }
         toDownsample.add(entry);
       }
-
-      if (unreadable > 0)
-        LogManager.instance().log(this, Level.WARNING,
-            "Downsampling of sealed store '%s' left %d block(s) as they are because they could not be read, the first: %s",
-            getSealedFileName(), unreadable, firstUnreadable.getMessage());
 
       if (toDownsample.isEmpty())
         return;
@@ -3236,8 +3219,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Nothing is rewritten and no block is kept from the directory for more than its own read: the directory is looked at once to name
    * the candidates, and each of them is then found again in the live directory, as a walk does, under the read lock it is read with.
    * A block a rewrite replaced since is skipped (the pass that follows reads whatever is live), and the verdict of one that was only
-   * copied travels with the copy ({@link #writeRetainedBlock}). A block that cannot be read is skipped too and gets no verdict: the
-   * pass that follows meets it and reports it.
+   * copied travels with the copy ({@link #writeRetainedBlock}). A block that cannot be read is skipped too and gets no verdict, so
+   * that one damaged block does not stop the others from being proved: the pass that follows meets it and fails on it, before it
+   * writes anything ({@link #downsampleBlocks}).
    */
   void proveBlocksIrreducible(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
       final List<Integer> tagColIndices) {
@@ -3261,7 +3245,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols))
           live.markIrreducibleOn(grid);
       } catch (final IOException e) {
-        // no verdict for a block that cannot be read: downsampleBlocks meets it, leaves it as it is and says so
+        // no verdict for a block that cannot be read: downsampleBlocks meets it and fails on it before it writes anything
       } finally {
         directoryLock.readLock().unlock();
       }
