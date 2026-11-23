@@ -73,6 +73,7 @@ import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
@@ -1848,14 +1849,19 @@ public class BoltNetworkExecutor extends Thread {
    * For element results (e.g., RETURN n where n is a vertex), the whole element
    * is returned as a single value, converted to BoltNode/BoltRelationship.
    */
-  private List<Object> extractRecordValues(final Result result, final List<String> fields) {
-    final List<Object> values = new ArrayList<>();
+  static List<Object> extractRecordValues(final Result result, final List<String> fields) {
+    final List<Object> values = new ArrayList<>(fields.size());
 
     // Check if this is an unwrapped element result
     // (single vertex/edge returned directly from RETURN clause)
     if (result.isElement() && result.getMetadata(PROJECTION_NAME_METADATA) != null) {
       // Return the element as a single value
       values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
+    } else if (result.isElement()) {
+      // A row backed by a record: its properties are read in one pass, not one walk of the record per field (issue #12582)
+      final Map<String, Object> properties = ResultInternal.propertiesOf(result);
+      for (final String field : fields)
+        values.add(BoltStructureMapper.toPackStreamValue(properties.get(field)));
     } else {
       // Standard projection result - extract each field
       for (final String field : fields) {
