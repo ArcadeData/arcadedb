@@ -592,7 +592,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // while it is inside the KDF it serves no other connection multiplexed onto it: health probes, WebSocket
     // change-event frames and established clients all wait behind one password check (issue #7785). Dispatched
     // BEFORE authenticating, in the same shape as the X-Request-Id dispatch above.
-    if (exchange.isInIoThread() && authenticationNeedsWorkerThread(exchange)) {
+    //
+    // A session token can cost more than that: one this node does not hold, or holds a copy of whose lease is due, is
+    // confirmed with the node that issued it, a synchronous HTTP call bounded only by the peer connect timeout (issue
+    // #9864). Asked of the resolver that would make the call rather than read off the header, so only the request
+    // that is about to dial pays the hand-off.
+    if (exchange.isInIoThread() && (authenticationNeedsWorkerThread(exchange) || sessionTokenNeedsWorkerThread(exchange))) {
       exchange.dispatch(this);
       return;
     }
@@ -819,9 +824,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 // a lease the issuer renews (issue #7424).
                 final ClusterAuthSessionResolver clusterResolver = httpServer.getClusterAuthSessionResolver();
                 HttpAuthSession authSession = httpServer.getAuthSessionManager().getSessionByToken(token);
+                // Either call below asks the issuing node over the network. handleRequest moved the request to a
+                // worker thread before it got here whenever one of them was about to (issue #9864), so on the IO
+                // thread neither has to. What is left is the request whose answer changed in between, and mayDial
+                // keeps that one off the network too: a lease that fell due is served as it stands and renewed by
+                // the next request, a token that would now need its issuer is refused as it is when the lookups
+                // are saturated.
+                final boolean mayDial = !exchange.isInIoThread();
                 if (authSession == null)
-                  authSession = clusterResolver.resolve(token);
-                if (authSession == null || !clusterResolver.renew(authSession)) {
+                  authSession = clusterResolver.resolve(token, mayDial);
+                if (authSession == null || !clusterResolver.renew(authSession, mayDial)) {
                   exchange.setStatusCode(401);
                   sendErrorResponse(exchange, 401, "Invalid or expired authentication token", null, null);
                   return;
@@ -2720,10 +2732,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * {@code POST /api/v1/login} exists precisely to turn a password nobody has presented yet into a token, so it
    * misses by definition.
    * <p>
-   * Everything else stays on the IO thread, where it belongs: Bearer authentication (API token or session token) is
-   * a hash-map lookup plus one SHA-256, and a request with no {@code Authorization} header at all - the readiness
-   * and liveness probes among them - does no authentication work whatsoever. Dispatching those too would trade a
-   * cheap inline check for a thread hand-off on the server's most frequent requests.
+   * Nothing else can be told from the header alone, and nearly everything else stays on the IO thread, where it
+   * belongs: an API token is a hash-map lookup plus one SHA-256, a session token this node holds is a hash-map
+   * lookup, and a request with no {@code Authorization} header at all - the readiness and liveness probes among
+   * them - does no authentication work whatsoever. Dispatching those too would trade a cheap inline check for a
+   * thread hand-off on the server's most frequent requests. The one Bearer credential that is not cheap - a session
+   * token another node of the cluster has to confirm - depends on what this node holds, not on the header, and is
+   * decided by {@link #sessionTokenNeedsWorkerThread(HttpServerExchange)}.
    *
    * @return {@code true} when the request carries a Basic {@code Authorization} header
    */
@@ -2732,6 +2747,33 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Matched the same way the authentication below does - startsWith, not equalsIgnoreCase on a split scheme - so
     // the dispatch decision and the branch it is taken for cannot drift apart.
     return authorization != null && authorization.startsWith(AUTHORIZATION_BASIC);
+  }
+
+  /**
+   * Whether authenticating THIS request's session token would call another node of the cluster, which must not
+   * happen on an Undertow IO thread (issue #9864).
+   * <p>
+   * A login token lives on the node that issued it. A node that has never seen it asks the issuer the token names,
+   * and a node that holds a copy asks again whenever the copy's lease is due (issue #7424). Both are one synchronous
+   * HTTP call to a peer, bounded only by {@code arcadedb.ha.proxyConnectTimeout}: on a selector it stalls every
+   * connection multiplexed onto it for as long as the peer takes to answer, and a made-up {@code AU-<peer>-...}
+   * token is enough to cause it, so it is reachable without credentials.
+   * <p>
+   * The answer is {@link ClusterAuthSessionResolver#wouldDial(String)}, the guards of the very calls the
+   * authentication makes, rather than a guess from the token's shape: a session this node issued, a copy inside its
+   * lease, a token a peer refused a moment ago and every token on a server that is not clustered stay on the IO
+   * thread. A request a peer relayed with a forwarded user never authenticates its own token and may still be handed
+   * off here; that costs a hand-off and nothing else.
+   *
+   * @return {@code true} when the request carries a session token whose authentication is about to dial a peer
+   */
+  boolean sessionTokenNeedsWorkerThread(final HttpServerExchange exchange) {
+    final String authorization = exchange.getRequestHeaders().getFirst(Headers.AUTHORIZATION);
+    if (authorization == null || !authorization.startsWith(AUTHORIZATION_BEARER))
+      return false;
+    // Read exactly as the Bearer branch of handleRequest reads it, API tokens first.
+    final String token = authorization.substring(AUTHORIZATION_BEARER.length()).trim();
+    return !ApiTokenConfiguration.isApiToken(token) && httpServer.getClusterAuthSessionResolver().wouldDial(token);
   }
 
   /**
