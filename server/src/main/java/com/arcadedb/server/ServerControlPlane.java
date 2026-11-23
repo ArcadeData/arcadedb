@@ -2038,8 +2038,9 @@ public class ServerControlPlane {
    * statement reaches this through {@code BackupDirectoryResolver.applyRetention()} from inside the
    * BACKUP slot it holds, for the same reason (issue #9844).
    * <p>
-   * The partial archives that a backup killed mid-write left behind are swept FIRST and whatever the auto-backup state is
-   * (issue #12530): the plugin's retention does nothing while auto-backup is disabled, which is the default, yet the on-demand
+   * The partial archives that a backup killed mid-write left behind are swept here, before the plugin is consulted, so the
+   * sweep runs whatever the auto-backup state is (issue #12530): the plugin's retention does nothing while auto-backup is
+   * disabled, which is the default, yet the on-demand
    * backups write partial archives just the same and no other command can reach one. That sweep is not a retention: it removes
    * no archive and is not counted in the result.
    *
