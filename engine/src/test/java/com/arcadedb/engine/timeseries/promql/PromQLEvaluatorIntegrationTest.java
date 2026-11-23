@@ -2229,7 +2229,9 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       final InstantVector iv = (InstantVector) result;
       assertThat(iv.samples()).hasSize(1);
       final VectorSample sample = iv.samples().getFirst();
-      assertThat(sample.timestampMs()).as("the true latest timestamp").isEqualTo(4_000L);
+      // the element of an instant vector is stamped with the evaluation time, as Prometheus does (issue #11990); the value is what
+      // tells the true latest sample from the last one scanned
+      assertThat(sample.timestampMs()).as("the evaluation time").isEqualTo(5_000L);
       assertThat(sample.value()).as("the value paired with the true latest sample, not the last one scanned")
           .isEqualTo(104.0);
     }
