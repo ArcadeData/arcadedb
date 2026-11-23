@@ -172,7 +172,7 @@ public class GraphAnalyticalViewPersistence {
    * from it is the one that was saved.
    */
   static GraphAnalyticalViewBuilder builderFor(final Database database, final String gavName, final JSONObject gavDef) {
-    final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(gavName);
+    final GraphAnalyticalViewBuilder builder = GraphAnalyticalView.builder(database).withName(gavName).fromDefinition();
 
     final String[] vertexTypes = toArray(gavDef.getJSONArray("vertexTypes", null));
     if (vertexTypes != null)

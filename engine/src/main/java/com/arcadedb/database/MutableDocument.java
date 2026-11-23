@@ -354,8 +354,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     if (old instanceof Collection<?> collection) {
       try {
         ((Collection<EmbeddedDocument>) old).add(emb);
@@ -390,8 +389,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                                                      final String mapKey) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
 
     if (old == null) {
       final Map<String, EmbeddedDocument> embMap = new HashMap<>();
@@ -431,11 +429,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException(
           "Cannot store an embedded document in a map because another value was found instead of a Map");
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     putInStoredMap(propertyName, (Map<Object, EmbeddedDocument>) old, propertyMapKey, emb);
 
     return emb;
+  }
+
+  /**
+   * Creates the embedded document the {@code newEmbeddedDocument()} methods store in {@code propertyName}. A record with no
+   * {@link Database} behind it, the remote client's, builds it itself (issue #12190).
+   */
+  protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+    return database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
   }
 
   /**
@@ -689,6 +694,46 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     assignedAfterSave = true;
   }
 
+  /**
+   * Gives a record an earlier statement of the transaction queued for its commit the content it held before a statement that changed it
+   * was taken back (issue #10346), and keeps the buffer it was read with. That buffer is the image of the record the transaction
+   * started from: it stays frozen until the commit because the write is deferred, and everything that asks "what was this record read
+   * as" compares with it - the delete refusing a record changed by a concurrent commit since its read (#12472), the pre-update image
+   * the indexes are diffed against, the commit's own checks. Installing the snapshot as the buffer, as {@link #restoreContent} does,
+   * made the record look read from a slot that never held that content, and a later delete of it was refused as a conflict with a
+   * transaction that does not exist (issue #12747). The properties are decoded from the snapshot here, the record having no
+   * buffer to decode them from afterwards.
+   * <p>
+   * The buffer given back is the one the record held when the snapshot was taken, not the one it holds now: the failed statement may
+   * have replaced it (a reload against a slot a concurrent commit has changed since), and that newer image would silently become
+   * "what the record was read as". The prefix of the snapshot has the length of the one of the read image (a vertex prefix has a fixed
+   * length, the endpoints of an edge never change), so the offset of the properties parsed from it describes both.
+   *
+   * @param snapshot       the content of the record before the statement
+   * @param readBuffer     the buffer the record held when the snapshot was taken, null if it held none
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
+   */
+  void restoreQueuedContent(final Binary snapshot, final Binary readBuffer, final boolean dirtyBefore, final boolean assignedBefore) {
+    // The prefix (the heads of a vertex, the endpoints of an edge) and the properties are read from the snapshot
+    restoreContent(snapshot, dirtyBefore, assignedBefore);
+    if (readBuffer == null)
+      // A record with no image it was read with: the snapshot is the only content it has
+      return;
+
+    try {
+      checkForLazyLoadingProperties();
+    } catch (final RuntimeException e) {
+      // The snapshot stays the buffer: the record keeps the content of the earlier statements, at worst a later delete of it is refused
+      // as a conflict. Giving the read image back with no decoded properties would make the next read decode the image from before
+      // the transaction and silently drop those changes
+      map = null;
+      return;
+    }
+    if (map != null && undecodableContent == null)
+      buffer = readBuffer;
+  }
+
   protected void checkForLazyLoadingProperties() {
     if (this.map == null) {
       if (buffer == null) {
@@ -762,7 +807,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   private Object setTransformValue(final Object value, final String propertyName) {
     if (value instanceof EmbeddedDocument document) {
-      if (!document.getDatabase().getName().equals(database.getName())) {
+      if (fromAnotherDatabase(document)) {
         // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT
         // WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
@@ -779,7 +824,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
         final Object v = list.get(i);
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -796,7 +841,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final Map<String, Object> map = (Map<String, Object>) value;
       for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -812,6 +857,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return transformMapToEmbedded(materialiseMapValues(map, propertyName), propertyName);
     }
     return value;
+  }
+
+  /**
+   * Whether {@code document} was read from another database than this record's, so it has to be re-marshalled with the dictionary
+   * of this one. A record with no {@link Database} behind it, the remote client's, holds no dictionary ids (issue #12190).
+   */
+  private boolean fromAnotherDatabase(final Document document) {
+    return database != null && !document.getDatabase().getName().equals(database.getName());
   }
 
   /**

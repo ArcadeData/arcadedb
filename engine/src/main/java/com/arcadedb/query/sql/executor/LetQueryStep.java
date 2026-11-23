@@ -96,6 +96,9 @@ public class LetQueryStep extends AbstractExecutionStep {
         final long beginTime = System.nanoTime();
         // THE PREVIOUS ROW TOOK ITS VALUE DOWNSTREAM
         releaseValue();
+        // THE SUBQUERY READS THIS ROW AS $parent.$current: AN UPSTREAM STEP MAY HAVE LEFT SOMETHING ELSE THERE, AS THE INDEX
+        // FETCH LEAVES ITS (key, rid) ENTRY (ISSUE #12287)
+        context.setVariable("current", result);
 
         final DatabaseInternal database = context.getDatabase();
         final CorrelatedSubQueryCache cache = getResultCache(database);

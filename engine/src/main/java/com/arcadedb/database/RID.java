@@ -193,7 +193,11 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   @Override
   public int hashCode() {
-    final int base = bucketId * 31 + Long.hashCode(offset);
+    // Fibonacci hashing of the (bucket, offset) pair. The offsets of a bucket are page * 2048 + slot with a few dozen slots in use, and
+    // a HashMap picks its bin from the low bits of the hash: "bucketId * 31 + offset" left only (page mod 32) * 2048 + slot of them, so a
+    // map of one bucket's RIDs (what a full-text search builds per bucket and term) used about 3 % of its bins, most of them trees.
+    // The high half of the product depends on every bit of the offset.
+    final int base = (int) (((offset + ((long) bucketId << 40)) * 0x9E3779B97F4A7C15L) >>> 32);
     if (offset >= 0)
       return base;
     // Record-less RID: mirror equals() and fold the endpoints in, otherwise every lightweight edge of a type would

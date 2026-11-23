@@ -2413,6 +2413,30 @@ class CypherCountPushDownTest {
       assertThat(pushedDown("MATCH ()-[e:KNOWS|NOT_A_TYPE]->() RETURN count(e) AS n")).isEqualTo(knows);
     }
 
+    /**
+     * An alias is the type it names, so a type listed with its own alias is one family, not two: neither of them may be dropped
+     * as a sub-type of the other (issue #12968, where {@code isSubTypeOf} began to answer for the aliases too), or the family
+     * is not counted at all.
+     */
+    @Test
+    void aTypeListedWithItsAliasIsCountedOnce() {
+      database.command("sql", "ALTER TYPE KNOWS ALIASES Acquainted");
+      buildGraph(41, 200);
+      final long knows = byHand("KNOWS", Vertex.DIRECTION.OUT);
+      final long likes = byHand("LIKES", Vertex.DIRECTION.OUT);
+      assertThat(knows).isPositive();
+      assertThat(likes).isPositive();
+      assertThat(pushedDown("MATCH ()-[e:KNOWS|Acquainted]->() RETURN count(e) AS n")).isEqualTo(knows);
+      assertThat(pushedDown("MATCH ()-[e:Acquainted|KNOWS]->() RETURN count(e) AS n")).isEqualTo(knows);
+      assertThat(pushedDown("MATCH ()-[e:KNOWS|Acquainted|LIKES]->() RETURN count(e) AS n")).isEqualTo(knows + likes);
+      assertThat(pushedDown("MATCH ()-[e:Acquainted|LIKES|KNOWS]->() RETURN count(e) AS n")).isEqualTo(knows + likes);
+      assertThat(pushedDown("MATCH ()-[e:KNOWS_WELL|Acquainted|LIKES]->() RETURN count(e) AS n")).isEqualTo(knows + likes);
+      assertThat(pushedDown("MATCH ()-[e:Acquainted|Acquainted|KNOWS_WELL]->() RETURN count(e) AS n")).isEqualTo(knows);
+      // the alias alone is the type
+      assertThat(pushedDown("MATCH ()-[e:Acquainted]->() RETURN count(e) AS n")).isEqualTo(knows);
+      assertThat(pushedDown("MATCH ()-[e:Acquainted|LIKES]->() RETURN count(e) AS n")).isEqualTo(knows + likes);
+    }
+
     @Test
     void shapesTheOperatorDoesNotCountStayExact() {
       buildGraph(17, 200);

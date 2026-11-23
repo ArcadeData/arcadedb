@@ -1417,6 +1417,8 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     // THE ROWS READ FROM THE VIEW, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
     @SuppressWarnings("unchecked")
     private final Map<Integer, int[]>[]  viewRows = new Map[3];
+    // THE NUMBER OF DISTINCT NEIGHBOURS OF THE NODES ASKED, ONE MAP PER DIRECTION (BY ORDINAL), CREATED ON FIRST USE
+    private final IntIntHashMap[]        distinctDegrees = new IntIntHashMap[3];
 
     private Neighbourhood(final GraphTraversalProvider provider, final LocalAdjacency local, final String[] relTypes,
         final MemoryBudget memory) {
@@ -1469,6 +1471,64 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
     }
 
     /**
+     * The distinct neighbours of {@code node} in {@code direction}, sorted: {@link #neighbors} without the repetitions a parallel or
+     * a reciprocal relationship makes, the neighbour set a similarity or a link-prediction score is defined on (issue #12934). A
+     * self-loop is the node itself, once. The array belongs to the caller, and is reserved against the call's budget before it is
+     * allocated.
+     */
+    public int[] distinctNeighbors(final int node, final Vertex.DIRECTION direction) {
+      final int[] row = neighbors(node, direction);
+      memory.reserve(saturatingSum(ROW_BYTES, saturatingProduct(row.length, INT_BYTES)), "the neighbourhood rows",
+          "1 sorted copy of a row of " + row.length + " entries");
+      final int[] sorted = row.clone();
+      final int size = sortDistinct(sorted);
+      if (size == sorted.length)
+        return sorted;
+      // The compact copy lives beside the sorted one until it is returned: room for it is checked, its entries are already reserved
+      memory.checkRoom(saturatingProduct(size, INT_BYTES), "the neighbourhood rows", "1 row of " + size + " distinct entries");
+      return Arrays.copyOf(sorted, size);
+    }
+
+    /**
+     * How many distinct neighbours {@code node} has in {@code direction}: the size of {@link #distinctNeighbors}, kept per node as one
+     * int, so a degree asked again (a common neighbour of many candidates, the row of a candidate) costs neither a row nor a sort.
+     */
+    public int distinctDegree(final int node, final Vertex.DIRECTION direction) {
+      IntIntHashMap degrees = distinctDegrees[direction.ordinal()];
+      if (degrees == null) {
+        degrees = new IntIntHashMap();
+        distinctDegrees[direction.ordinal()] = degrees;
+      }
+      int degree = degrees.get(node, -1);
+      if (degree < 0) {
+        final int[] row = neighbors(node, direction);
+        if (row.length < 2)
+          degree = row.length;
+        else {
+          // The sorted copy lives only while it is counted: room for it is checked, and only the count is kept
+          memory.checkRoom(saturatingProduct(row.length, INT_BYTES), "the neighbourhood rows",
+              "1 sorted copy of a row of " + row.length + " entries");
+          degree = sortDistinct(row.clone());
+        }
+        memory.reserve(2 * INT_BYTES, "the neighbourhood degrees", "1 node");
+        degrees.put(node, degree);
+      }
+      return degree;
+    }
+
+    /** Sorts {@code row} and moves its distinct entries to its front, returning how many there are. */
+    private static int sortDistinct(final int[] row) {
+      if (row.length < 2)
+        return row.length;
+      Arrays.sort(row);
+      int size = 1;
+      for (int i = 1; i < row.length; i++)
+        if (row[i] != row[size - 1])
+          row[size++] = row[i];
+      return size;
+    }
+
+    /**
      * Every vertex of the graph, for an answer that lists them all (a score threshold that admits a score of zero): the node ids of
      * the view, or of the vertices read from the records, which numbers them all.
      *
@@ -1505,22 +1565,27 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
    * call's budget.
    */
   protected static final class NodeScores {
-    // A SLOT: ITS NODE, COUNT AND SCORE, AND ITS ENTRY IN THE NODE -> SLOT MAP
-    private static final long SLOT_BYTES = INT_BYTES + INT_BYTES + DOUBLE_BYTES + 2 * INT_BYTES;
+    // A SLOT: ITS NODE, COUNT, SCORE AND LAST CONTRIBUTOR, AND ITS ENTRY IN THE NODE -> SLOT MAP
+    private static final long SLOT_BYTES = INT_BYTES + INT_BYTES + DOUBLE_BYTES + INT_BYTES + 2 * INT_BYTES;
 
-    private final IntIntHashMap slotOf = new IntIntHashMap();
+    private final IntIntHashMap slotOf       = new IntIntHashMap();
     private final MemoryBudget  memory;
-    private       int[]         nodes  = new int[16];
-    private       int[]         counts = new int[16];
-    private       double[]      scores = new double[16];
+    private       int[]         nodes        = new int[16];
+    private       int[]         counts       = new int[16];
+    private       double[]      scores       = new double[16];
+    private       int[]         contributors = new int[16];
     private       int           size;
 
     public NodeScores(final MemoryBudget memory) {
       this.memory = memory;
     }
 
-    /** Adds {@code count} and {@code score} to the accumulators of {@code node}. */
-    public void add(final int node, final int count, final double score) {
+    /**
+     * Adds {@code count} and {@code score} to the accumulators of {@code node}, once per {@code contributor}: a contributor met again
+     * for the same node right after (a parallel or a reciprocal relationship naming the node twice in the contributor's row) adds
+     * nothing more. The contributors must come one after the other, each with all of its additions together.
+     */
+    public void add(final int node, final int contributor, final int count, final double score) {
       int slot = slotOf.get(node, -1);
       if (slot < 0) {
         if (size == nodes.length) {
@@ -1528,11 +1593,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
           nodes = Arrays.copyOf(nodes, size * 2);
           counts = Arrays.copyOf(counts, size * 2);
           scores = Arrays.copyOf(scores, size * 2);
+          contributors = Arrays.copyOf(contributors, size * 2);
         }
         slot = size++;
         slotOf.put(node, slot);
         nodes[slot] = node;
-      }
+      } else if (contributors[slot] == contributor)
+        return;
+      contributors[slot] = contributor;
       counts[slot] += count;
       scores[slot] += score;
     }
@@ -1560,13 +1628,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   /**
-   * The nodes whose row lists one of the distinct neighbours of {@code source}, each with how many entries of its row do and the sum
-   * of {@code weightOf(w)} over those entries (issue #12176): what a link-prediction score of the source against every other node
-   * needs, read from the two hops that can make it non-zero instead of from the row of every node of the graph. A node v lists w in
-   * its {@code direction} row exactly as often as w lists v in its row of the opposite direction, so the walk goes from each
-   * neighbour w of the source back along that row. The source itself is left out.
+   * The nodes whose row lists one of the distinct neighbours of {@code source}, each with how many distinct neighbours of the source
+   * its row lists and the sum of {@code weightOf(w)} over them (issue #12176): what a link-prediction score of the source against
+   * every other node needs, read from the two hops that can make it non-zero instead of from the row of every node of the graph. A
+   * node v lists w in its {@code direction} row exactly when w lists v in its row of the opposite direction, so the walk goes from
+   * each neighbour w of the source back along that row. A node reached by several relationships of one neighbour counts that
+   * neighbour once: the scores are defined on sets of neighbours (issue #12934). The source itself is left out.
    *
-   * @param weightOf the weight one entry naming the neighbour {@code w} adds to the score, given the node w
+   * @param weightOf the weight a common neighbour {@code w} adds to the score, given the node w
    */
   protected static NodeScores scoresThroughNeighbours(final Neighbourhood neighbourhood, final int source,
       final Vertex.DIRECTION direction, final IntToDoubleFunction weightOf, final WorkGuard guard) {
@@ -1576,18 +1645,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       default -> Vertex.DIRECTION.BOTH;
     };
     final NodeScores scores = new NodeScores(neighbourhood.memory());
-    final int[] distinct = neighbourhood.neighbors(source, direction).clone();
-    Arrays.sort(distinct);
     int step = 0;
-    for (int i = 0; i < distinct.length; i++) {
-      final int w = distinct[i];
-      if (i > 0 && w == distinct[i - 1])
-        continue;
+    for (final int w : neighbourhood.distinctNeighbors(source, direction)) {
       final double weight = weightOf.applyAsDouble(w);
+      // The raw row, in one pass: a v the row names twice is credited once for w by the scores themselves, with no copy and no sort
       for (final int v : neighbourhood.neighbors(w, back)) {
         guard.checkPeriodically(step++);
         if (v != source)
-          scores.add(v, 1, weight);
+          scores.add(v, w, 1, weight);
       }
     }
     return scores;
