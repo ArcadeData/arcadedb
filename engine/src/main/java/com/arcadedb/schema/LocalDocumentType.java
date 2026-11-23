@@ -838,11 +838,6 @@ public class LocalDocumentType implements DocumentType {
         schema.bucketMembershipChanged();
         // THE DEPENDANTS FOLLOW THE NEW NAME HERE, UNDER THE WRITE LOCK AND BEFORE THE SESSION SAVES THE SCHEMA (#10096)
         schema.carryTypeRenameToDependants(oldName, newName);
-        // AN EMBEDDED DOCUMENT STORES ITS TYPE AS THE DICTIONARY ID OF THE TYPE'S NAME, WHICH THE CREATION OF A DOCUMENT TYPE
-        // REGISTERS: WITHOUT THE NEW NAME IN THE DICTIONARY NO EMBEDDED DOCUMENT OF THE RENAMED TYPE COULD BE WRITTEN AGAIN
-        // ("Cannot find type ... declared in embedded document", issue #11305)
-        if (!(this instanceof LocalVertexType) && !(this instanceof LocalEdgeType))
-          schema.getDictionary().getIdByName(newName, true);
         final FileManager fileManager = database.getFileManager();
         // The type's files as they are NOW, not only the ones listed before the move: a component attached to the type
         // in between (an index built concurrently) was moved with the others but has no "before" name. Recording a file
@@ -851,6 +846,12 @@ public class LocalDocumentType implements DocumentType {
           if (!entry.getValue().equals(componentNamesBefore.get(entry.getKey())))
             fileManager.recordRename(entry.getKey(), entry.getValue());
         renamePublished(oldName);
+        // AN EMBEDDED DOCUMENT STORES ITS TYPE AS THE DICTIONARY ID OF THE TYPE'S NAME, WHICH THE CREATION OF A DOCUMENT TYPE
+        // REGISTERS: WITHOUT THE NEW NAME IN THE DICTIONARY NO EMBEDDED DOCUMENT OF THE RENAMED TYPE COULD BE WRITTEN AGAIN
+        // ("Cannot find type ... declared in embedded document", issue #11305). The LAST step of the callback: the registration
+        // commits into the dictionary on its own, and a step after it that refused would leave that page unpublished (#13092)
+        if (!(this instanceof LocalVertexType) && !(this instanceof LocalEdgeType))
+          schema.getDictionary().getIdByName(newName, true);
         return null;
       });
     } catch (final RuntimeException e) {
@@ -1908,6 +1909,8 @@ public class LocalDocumentType implements DocumentType {
             + "' because it is used by index '" + indexOnProperty.getName()
             + "'. Drop the index first, rename the property, then recreate the index on the new name");
 
+      // Every refusal is asked above: the copy registers the new name in the dictionary, a commit of its own that a refusal after it
+      // would leave behind, and on a Raft leader that page change quarantined the leader (issues #12958, #13092). Nothing below refuses
       final LocalProperty renamed = property.copyWithName(newPropertyName);
 
       properties.remove(propertyName);
