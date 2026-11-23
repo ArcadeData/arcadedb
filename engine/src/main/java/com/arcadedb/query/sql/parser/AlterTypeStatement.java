@@ -278,10 +278,8 @@ public class AlterTypeStatement extends DDLStatement {
       applyItem(context, type, item, result);
 
     if (lightweightRequested != null || uniqueRequested != null) {
-      if (!(type instanceof LocalEdgeType edgeType))
-        throw new CommandExecutionException(
-            "Settings 'lightweight' and 'unique' apply to edge types only, and '" + type.getName()
-                + "' is not one");
+      // An edge type: refused above, before the items, when it is not one
+      final LocalEdgeType edgeType = (LocalEdgeType) type;
 
       // One schema change for the storage shape, the UNIQUE flag and the index that enforces it (issue #9848): they used to
       // change in separate critical sections, with a window between them for a concurrent DROP INDEX of the very index

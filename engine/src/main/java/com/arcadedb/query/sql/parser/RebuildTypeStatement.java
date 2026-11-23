@@ -127,13 +127,9 @@ public class RebuildTypeStatement extends DDLStatement {
    * (issue #12033).
    */
   static void checkCanRepartition(final DocumentType type) {
-    checkCanRepartition(type.getName(), type);
-  }
-
-  private static void checkCanRepartition(final String typeName, final DocumentType type) {
     if (type.getType() != Document.RECORD_TYPE)
       throw new CommandSQLParsingException(
-          "REBUILD TYPE on type '" + typeName + "' with repartition = true is not supported: "
+          "REBUILD TYPE on type '" + type.getName() + "' with repartition = true is not supported: "
               + "every record would receive a new RID, and the move-phase re-creation path writes a Document "
               + "record-type byte that is incompatible with the type's actual record kind. Drop and re-import "
               + "the type under the new partitioning instead.");
@@ -168,7 +164,7 @@ public class RebuildTypeStatement extends DDLStatement {
       throw new SchemaException("Type not found: " + typeName.getStringValue());
 
     if (finalRepartition)
-      checkCanRepartition(typeName.getStringValue(), type);
+      checkCanRepartition(type);
 
     // A repartition relocates a record within its own type (#11066). The scan below is asked about the named type
     // and the move phase re-creates every relocated record as that type, so a subtype record would be re-created as
