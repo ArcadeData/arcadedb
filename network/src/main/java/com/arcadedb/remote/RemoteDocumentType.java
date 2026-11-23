@@ -26,8 +26,10 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -258,16 +260,16 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
+    final TypeIndex index = remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
-    return null;
+    return index;
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
+    final TypeIndex index = remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
-    return null;
+    return index;
   }
 
   @Override
@@ -367,45 +369,116 @@ public class RemoteDocumentType implements DocumentType {
     return result;
   }
 
+  // Issue #12193: the index lookups answer from the server's schema:indexes, as RemoteSchema.existsIndex() does, with the
+  // description RemoteTypeIndex gives of an index. They answered null or an empty list for an existing index, which a caller
+  // could not tell from "no index". A RemoteTypeIndex is never ready for queries, so no client side planner reads it.
+  //
+  // THE COST: ONE ROUND TRIP TO THE SERVER PER TYPE READ, A POLYMORPHIC LOOKUP ONE PER TYPE OF THE HIERARCHY, AND NOTHING IS CACHED:
+  // THE IDEMPOTENT SETUP "IF getIndexByProperties(...) == null THEN createTypeIndex(...)" NEEDS AN INDEX ANOTHER CLIENT JUST CREATED
+  // OR DROPPED TO BE SEEN, AND A CACHE CLEARED ONLY BY THIS CLIENT'S invalidateSchema() WOULD NOT SEE IT. A CALLER THAT ASKS IN A LOOP
+  // KEEPS THE ANSWER. THE GREMLIN STRATEGY DOES NOT ASK AT ALL OVER A RemoteDatabase (ArcadeTraversalStrategy).
+
   @Override
-  public List<TypeIndex> getIndexesByProperties(Collection<String> properties) {
-    return Collections.emptyList();
+  public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
+    final Set<TypeIndex> result = new LinkedHashSet<>(ownIndexes());
+    if (polymorphic)
+      for (final DocumentType superType : getSuperTypes())
+        result.addAll(superType.getAllIndexes(true));
+    return Collections.unmodifiableSet(result);
   }
 
   @Override
-  public TypeIndex getPolymorphicIndexByProperties(String... properties) {
-    // NEVER USES THE INDEX
+  public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
+    final Set<String> properties = new HashSet<>(propertiesN.length + 1);
+    properties.add(property1);
+    Collections.addAll(properties, propertiesN);
+    return getIndexesByProperties(properties);
+  }
+
+  @Override
+  public List<TypeIndex> getIndexesByProperties(final Collection<String> properties) {
+    final List<TypeIndex> result = new ArrayList<>();
+    for (final RemoteTypeIndex index : ownIndexes())
+      for (final String property : index.getPropertyNames())
+        if (properties.contains(property)) {
+          result.add(index);
+          break;
+        }
+    return result;
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
+    return getPolymorphicIndexByProperties(Arrays.asList(properties));
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(final List<String> properties) {
+    final TypeIndex index = getIndexByProperties(properties);
+    if (index != null)
+      return index;
+    for (final DocumentType superType : getSuperTypes()) {
+      final TypeIndex inherited = superType.getPolymorphicIndexByProperties(properties);
+      if (inherited != null)
+        return inherited;
+    }
     return null;
   }
 
   @Override
-  public TypeIndex getPolymorphicIndexByProperties(List<String> properties) {
-    // NEVER USES THE INDEX
-    return null;
+  public TypeIndex getIndexByProperties(final String... properties) {
+    return getIndexByProperties(Arrays.asList(properties));
   }
 
   @Override
-  public TypeIndex getIndexByProperties(String... properties) {
-    // NEVER USES THE INDEX
-    return null;
-  }
-
-  @Override
-  public TypeIndex getIndexByProperties(List<String> properties) {
-    // NEVER USES THE INDEX
+  public TypeIndex getIndexByProperties(final List<String> properties) {
+    // as the embedded type: the indexes keyed by their exact property list, the COLUMNAR ones apart (getColumnarIndex())
+    for (final RemoteTypeIndex index : ownIndexes())
+      if (index.getType() != Schema.INDEX_TYPE.COLUMNAR && index.getPropertyNames().equals(properties))
+        return index;
     return null;
   }
 
   @Override
   public TypeIndex getColumnarIndex(final String property) {
-    // NEVER USES THE INDEX
-    return null;
+    final List<String> byValue = List.of(property);
+    final List<String> byItem = List.of(property + ColumnarIndex.BY_ITEM_SUFFIX);
+    TypeIndex found = null;
+    for (final RemoteTypeIndex index : ownIndexes())
+      if (index.getType() == Schema.INDEX_TYPE.COLUMNAR) {
+        if (index.getPropertyNames().equals(byValue))
+          return index;
+        if (found == null && index.getPropertyNames().equals(byItem))
+          found = index;
+      }
+    return found;
   }
 
   @Override
   public TypeIndex getPolymorphicColumnarIndex(final String property) {
-    // NEVER USES THE INDEX
+    final TypeIndex index = getColumnarIndex(property);
+    if (index != null)
+      return index;
+    for (final DocumentType superType : getSuperTypes()) {
+      final TypeIndex inherited = superType.getPolymorphicColumnarIndex(property);
+      if (inherited != null)
+        return inherited;
+    }
     return null;
+  }
+
+  /** The type indexes the server lists for this type, the bucket indexes under them left out. */
+  private List<RemoteTypeIndex> ownIndexes() {
+    final List<RemoteTypeIndex> result = new ArrayList<>();
+    try (final ResultSet rows = remoteDatabase.commandUncounted("sql", "select from schema:indexes where typeName = :name",
+        Map.of("name", name))) {
+      while (rows.hasNext()) {
+        final Result row = rows.next();
+        if (RemoteTypeIndex.isTypeIndexRow(row))
+          result.add(new RemoteTypeIndex(remoteDatabase, this, row));
+      }
+    }
+    return result;
   }
 
   @Override
@@ -554,18 +627,8 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public Collection<TypeIndex> getAllIndexes(boolean polymorphic) {
-    throw new UnsupportedOperationException("getAllIndexes() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
-  }
-
-  @Override
   public List<IndexInternal> getPolymorphicBucketIndexByBucketId(int bucketId, List<String> filterByProperties) {
     throw new UnsupportedOperationException("getPolymorphicBucketIndexByBucketId() is not supported in remote database. Bucket sub-indexes are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:indexes instead.");
-  }
-
-  @Override
-  public List<TypeIndex> getIndexesByProperties(String property1, String... propertiesN) {
-    throw new UnsupportedOperationException("getIndexesByProperties() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Override
