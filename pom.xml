@@ -404,6 +404,12 @@
                     <skipTests>${skipTests}</skipTests>
                     <excludes>
                         <exclude>**/*IT.java</exclude>
+                        <!-- An explicit <excludes> REPLACES Surefire's default exclusion of inner classes, and this is that
+                             default put back (#12500). Without it a @Nested class named like a test (IndexedRangeQueryTest$OutOfRangeSeekTest)
+                             matches **/*Test.class and runs a second time as a top-level class, next to its outer class: in the other
+                             fork of a lane with -Dsurefire.forkCount=2, and in the same database directory, which TestHelper names after
+                             the simple name of the class. NestedTestClassesRunOnceTest holds it -->
+                        <exclude>**/*$*</exclude>
                     </excludes>
                 </configuration>
             </plugin>
@@ -433,6 +439,9 @@
                         <!--                        <exclude>**/*HARandomCrashIT.java</exclude>-->
                         <!--                        <exclude>**/*ReplicationServerLeaderDownIT</exclude>-->
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT</exclude>
+                        <!-- Failsafe's default exclusion of inner classes, which an explicit <excludes> replaces: the same trap as in the
+                             Surefire configuration above (#12500) -->
+                        <exclude>**/*$*</exclude>
                     </excludes>
                     <!-- Explicit, namespaced override of failsafe's excludedGroups (issue #5697): keeps
                          it independent of the surefire-only ${excludedGroups} default set above. -->
