@@ -20,9 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ValidationException;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -46,16 +50,20 @@ class SuperTypeStoredRecordsTest extends TestHelper {
   void aSuperTypeWhoseConstraintTheStoredRecordsViolateIsRefused(final String constraint, final String propertyType,
       final String insert, final ValidationException.Kind kind) {
     database.command("sql", "CREATE DOCUMENT TYPE T");
+    final List<String> rids = new ArrayList<>();
     database.transaction(() -> {
-      database.command("sql", insert);
-      database.command("sql", insert);
+      for (int i = 0; i < 2; i++)
+        rids.add(insert(insert));
     });
     database.command("sql", "CREATE DOCUMENT TYPE S");
     database.command("sql", "CREATE PROPERTY S.p " + propertyType + " (" + constraint + ")");
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
         .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("Cannot make type 'T' a sub type of 'S': 2 stored records of 'T' violate the properties it would inherit")
+        .hasMessageContaining("Cannot make type 'T' a sub type of 'S': record ")
+        .hasMessageContaining(" violates the properties it would inherit")
+        // the first violating record is named: which of the two the scan meets first is the order of the buckets
+        .satisfies(e -> assertThat(e.getMessage()).containsAnyOf(rids.toArray(new String[0])))
         .satisfies(e -> assertThat(((ValidationException) e).getKind()).isEqualTo(kind));
 
     assertThat(database.getSchema().getType("T").getSuperTypes()).isEmpty();
@@ -64,23 +72,40 @@ class SuperTypeStoredRecordsTest extends TestHelper {
   }
 
   @Test
-  void theRecordsOfTheSubTypesAreHeldToItTooAndCounted() {
+  void theRecordsOfTheSubTypesAreHeldToItToo() {
     database.command("sql", "CREATE DOCUMENT TYPE T");
     database.command("sql", "CREATE DOCUMENT TYPE U EXTENDS T");
     database.command("sql", "CREATE DOCUMENT TYPE S");
     database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10)");
+    final String[] violating = new String[1];
     database.transaction(() -> {
-      database.command("sql", "INSERT INTO T SET p = 20");
-      database.command("sql", "INSERT INTO U SET p = 1");
+      insert("INSERT INTO T SET p = 20");
+      violating[0] = insert("INSERT INTO U SET p = 1");
     });
 
     assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
         .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("1 stored record of 'T' violates the properties it would inherit");
+        .hasMessageContaining("Cannot make type 'T' a sub type of 'S': record " + violating[0] + " violates the properties it would inherit");
 
     database.transaction(() -> database.command("sql", "UPDATE U SET p = 11"));
     assertThatCode(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S")).doesNotThrowAnyException();
     assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
+  }
+
+  /** A property the super type inherits from its own super type is inherited by T too, so it is held against T's records as well. */
+  @Test
+  void thePropertiesOfTheSuperTypesOwnSuperTypesAreHeldToo() {
+    database.command("sql", "CREATE DOCUMENT TYPE A");
+    database.command("sql", "CREATE PROPERTY A.p INTEGER (MIN 10)");
+    database.command("sql", "CREATE DOCUMENT TYPE S EXTENDS A");
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    final String[] violating = new String[1];
+    database.transaction(() -> violating[0] = insert("INSERT INTO T SET p = 5"));
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("record " + violating[0] + " violates the properties it would inherit");
+    assertThat(database.getSchema().getType("T").getSuperTypes()).isEmpty();
   }
 
   /** A value of another type than the inherited declaration is refused here too, as CREATE PROPERTY refuses it, rather than by the index. */
@@ -99,8 +124,8 @@ class SuperTypeStoredRecordsTest extends TestHelper {
   }
 
   /**
-   * What the records already see is not inherited anew: a property the type declares itself shadows the super type's, and records
-   * that conform are linked as before.
+   * What the records already see is not inherited anew: a property the type declares itself shadows the super type's, so its
+   * declaration is the one the records meet, before and after the link, and records that conform are linked as before.
    */
   @Test
   void whatTheTypeAlreadySeesIsNotHeldAgainstIt() {
@@ -113,5 +138,73 @@ class SuperTypeStoredRecordsTest extends TestHelper {
 
     assertThatCode(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S")).doesNotThrowAnyException();
     assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
+    // the premise of passing the shadowed S.p over: the record is not held to its MIN afterwards either
+    assertThatCode(() -> database.transaction(() -> database.command("sql", "UPDATE T SET other = 2"))).doesNotThrowAnyException();
+  }
+
+  /** The same for a sub type that declares the property: its records meet its own declaration, T's are held to the inherited one. */
+  @Test
+  void aSubTypeThatDeclaresThePropertyShadowsTheInheritedOneForItsRecordsOnly() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE DOCUMENT TYPE U EXTENDS T");
+    database.command("sql", "CREATE PROPERTY U.p INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10)");
+    final String[] violating = new String[1];
+    database.transaction(() -> {
+      insert("INSERT INTO T SET p = 20");
+      insert("INSERT INTO U SET p = 5");
+      violating[0] = insert("INSERT INTO T SET p = 6");
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("record " + violating[0] + " violates the properties it would inherit");
+
+    database.transaction(() -> database.command("sql", "UPDATE T SET p = 12 WHERE p = 6"));
+    assertThatCode(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S")).doesNotThrowAnyException();
+    assertThatCode(() -> database.transaction(() -> database.command("sql", "UPDATE U SET other = 2"))).doesNotThrowAnyException();
+  }
+
+  /**
+   * A property of the same name and ANOTHER declared type does not shadow the inherited one: the write path holds a record to both,
+   * so a record that fails the inherited one has to refuse the link, or every later write to it fails.
+   */
+  @Test
+  void aSameNamePropertyOfAnotherTypeDoesNotShadowTheInheritedOne() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE PROPERTY T.p STRING");
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10)");
+    database.transaction(() -> database.command("sql", "INSERT INTO T SET p = '5'"));
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S"))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Cannot make type 'T' a sub type of 'S'");
+    assertThat(database.getSchema().getType("T").getSuperTypes()).isEmpty();
+    assertThatCode(() -> database.transaction(() -> database.command("sql", "UPDATE T SET other = 2"))).doesNotThrowAnyException();
+  }
+
+  /** Records that conform are linked, and a super type with nothing a stored record can violate is linked over any records. */
+  @Test
+  void conformingRecordsAreLinkedAsBefore() {
+    database.command("sql", "CREATE DOCUMENT TYPE T");
+    database.command("sql", "CREATE DOCUMENT TYPE S");
+    database.command("sql", "CREATE PROPERTY S.p INTEGER (MIN 10, MAX 100)");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO T SET p = 10");
+      database.command("sql", "INSERT INTO T SET p = 100");
+      database.command("sql", "INSERT INTO T SET p = '50'");
+    });
+
+    assertThatCode(() -> database.command("sql", "ALTER TYPE T SUPERTYPE +S")).doesNotThrowAnyException();
+    assertThat(database.getSchema().getType("T").getSuperTypes()).extracting(DocumentType::getName).containsExactly("S");
+  }
+
+  /** @return the RID of the record the INSERT created */
+  private String insert(final String sql) {
+    try (final ResultSet resultSet = database.command("sql", sql)) {
+      return resultSet.next().getIdentity().orElseThrow().toString();
+    }
   }
 }

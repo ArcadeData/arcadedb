@@ -31,7 +31,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.TimeBoundRegex;
 
 import java.io.IOException;
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 
@@ -142,75 +142,68 @@ public final class ExistingRecordsCheck {
   /**
    * The declarations a type is about to inherit from a new super type, held against its stored records and those of its sub types
    * (issue #12030): {@code ALTER TYPE T SUPERTYPE +S} accepted a super type whose MANDATORY, NOTNULL, MIN, MAX, REGEXP or declared type
-   * the stored records of {@code T} violate, and every later write to them failed. One pass over the type, counting the records that
-   * violate any of {@code properties}; a record whose own type already declares the property (directly or through a super type it
-   * keeps) is governed by that declaration, not the inherited one, and is passed over for it.
+   * the stored records of {@code T} violate, and every later write to them failed. One pass over the type, polymorphically, that stops
+   * at the first record violating any of {@code properties} and names it, as the other checks of this class do: the scan runs under the
+   * write lock of the schema change, so it must not pay for every offender of a type whose records all violate.
+   * <p>
+   * A record whose own type already sees a property is governed by that declaration, not by the inherited one, and is passed over for
+   * it. "Sees" is what the write path validates, the polymorphic properties of the record's type, a set that holds one entry for the
+   * properties that are equal (same name, declared type and element type) and both of two that differ in the declared type.
    *
    * @param superTypeName the super type about to be linked, for the message
    * @param properties    the properties of the super type the type does not see yet
+   *
+   * @throws ValidationException naming the first violating record
    */
   public static void requireInheritedDeclarations(final Database db, final DocumentType type, final String superTypeName,
       final List<Property> properties) {
-    final List<Property> checked = new ArrayList<>(properties.size());
-    final List<DocumentValidator.StoredValueConstraints> constraints = new ArrayList<>(properties.size());
+    final Property[] checked = new Property[properties.size()];
+    final DocumentValidator.StoredValueConstraints[] constraints = new DocumentValidator.StoredValueConstraints[checked.length];
+    int count = 0;
     for (final Property property : properties) {
       final DocumentValidator.StoredValueConstraints c = DocumentValidator.StoredValueConstraints.of(db, property);
       // Nothing a stored record holds can violate this declaration (e.g. a plain LINK with no flags)
       if (!property.isMandatory() && !property.isNotNull() && !c.canBeViolatedOn(property))
         continue;
-      checked.add(property);
-      constraints.add(c);
+      checked[count] = property;
+      constraints[count++] = c;
     }
-    if (checked.isEmpty())
+    if (count == 0)
       return;
 
-    long violating = 0;
-    Document first = null;
-    String firstReason = null;
-    ValidationException.Kind firstKind = null;
+    // What a record type sees is asked once per type, not per record: the records come bucket by bucket, so a run of records shares it
+    final boolean[] seen = new boolean[count];
+    DocumentType seenBy = null;
     final Iterator<Record> records = db.iterateType(type.getName(), true);
     while (records.hasNext()) {
       if (!(records.next() instanceof Document document))
         continue;
+
       final DocumentType recordType = document.getType();
-      for (int i = 0; i < checked.size(); i++) {
-        final Property property = checked.get(i);
-        if (recordType.getPolymorphicPropertyIfExists(property.getName()) != null)
+      if (recordType != seenBy) {
+        final Collection<? extends Property> visible = recordType.getPolymorphicProperties();
+        for (int i = 0; i < count; i++)
+          seen[i] = visible.contains(checked[i]);
+        seenBy = recordType;
+      }
+
+      for (int i = 0; i < count; i++) {
+        if (seen[i])
           continue;
 
-        String reason = null;
-        ValidationException.Kind kind = null;
+        final Property property = checked[i];
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
-        if (unmet != null) {
-          reason = DocumentValidator.describeUnmetExistenceConstraint(document, property);
-          kind = unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
-              ValidationException.Kind.NOT_NULL;
-        } else
-          try {
-            DocumentValidator.validateStoredValue(document, property, constraints.get(i));
-          } catch (final ValidationException e) {
-            reason = e.getMessage();
-            kind = e.getKind();
-          }
-
-        if (reason != null) {
-          if (first == null) {
-            first = document;
-            firstReason = reason;
-            firstKind = kind;
-          }
-          ++violating;
-          break;
+        if (unmet != null)
+          throw new ValidationException(
+              unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY : ValidationException.Kind.NOT_NULL,
+              inheritRefusal(type, superTypeName, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
+        try {
+          DocumentValidator.validateStoredValue(document, property, constraints[i]);
+        } catch (final ValidationException e) {
+          throw new ValidationException(e.getKind(), inheritRefusal(type, superTypeName, document, e.getMessage()));
         }
       }
     }
-
-    if (violating > 0)
-      throw new ValidationException(firstKind,
-          "Cannot make type '" + type.getName() + "' a sub type of '" + superTypeName + "': " + violating + " stored record"
-              + (violating == 1 ? "" : "s") + " of '" + type.getName() + "' violate" + (violating == 1 ? "s" : "")
-              + " the properties it would inherit, the first is " + first.getIdentity() + ": " + firstReason
-              + ". Fix or delete the non-conforming records first");
   }
 
   /**
@@ -277,6 +270,12 @@ public final class ExistingRecordsCheck {
           + "type '" + type.getName() + "' violates it, " + violation[1] + ". Delete the non-conforming samples first, by their time and "
           + "their tags: DELETE FROM " + type.getName() + " WHERE " + type.getTimestampColumn() + " = " + violation[0] + " [AND <tag> = "
           + "<value> ...], and insert them again if they are to be kept");
+  }
+
+  private static String inheritRefusal(final DocumentType type, final String superTypeName, final Document document,
+      final String reason) {
+    return "Cannot make type '" + type.getName() + "' a sub type of '" + superTypeName + "': record " + document.getIdentity()
+        + " violates the properties it would inherit, " + reason + ". Fix or delete the non-conforming records first";
   }
 
   private static String createRefusal(final DocumentType type, final Property property, final Document document,

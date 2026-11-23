@@ -3489,12 +3489,15 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Holds the stored records of this type, and of its sub types, against the properties {@code superType} would add to what they see
-   * (issue #12030). A property this type already sees, declared here or inherited from another super type, is not new to its records.
+   * (issue #12030). A property this type already sees, declared here or inherited from another super type, is not new to its records:
+   * the write path validates the polymorphic properties as a set, where equal ones (same name, declared type and element type) are one.
+   * A same-name property of another declared type is NOT the same one, both are validated, so it is not skipped.
    */
   private void checkStoredRecordsMeetInheritedProperties(final LocalDocumentType superType) {
+    final Collection<? extends Property> seen = getPolymorphicProperties();
     final List<Property> inherited = new ArrayList<>();
     for (final Property property : superType.getPolymorphicProperties())
-      if (getPolymorphicPropertyIfExists(property.getName()) == null)
+      if (!seen.contains(property))
         inherited.add(property);
     if (!inherited.isEmpty())
       ExistingRecordsCheck.requireInheritedDeclarations(schema.getDatabase(), this, superType.getName(), inherited);
