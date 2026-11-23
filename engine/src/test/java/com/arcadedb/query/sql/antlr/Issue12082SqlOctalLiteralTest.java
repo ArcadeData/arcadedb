@@ -23,7 +23,16 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.grammar.SQLLexer;
+import com.arcadedb.query.sql.grammar.SQLParser;
+import com.arcadedb.query.sql.parser.DropBucketStatement;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.TruncateBucketStatement;
 import com.arcadedb.schema.DocumentType;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -122,23 +131,50 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE H BUCKETS 10L")).isInstanceOf(RuntimeException.class);
     assertThat(database.getSchema().existsType("H")).isFalse();
 
-    // a bucket id whose decimal digits are all octal digits and whose octal reading would be another bucket: bucket:0NN is the
-    // bucket NN, as RID's own text form says (#NN:0 is the first record of the bucket NN)
-    final int bucketId = bucketIdWhoseOctalReadingDiffers();
-    final String padded = "0" + bucketId;
-
+    // the new type reads its record from a RID written with a zero-padded position: the parts of a RID are decimal
+    final int bucketId = type.getBuckets(false).getFirst().getFileId();
     database.transaction(() -> {
       for (int i = 0; i < 11; i++)
-        database.command("sql", "INSERT INTO bucket:" + padded + " SET n = ?", i);
+        database.command("sql", "INSERT INTO bucket:" + bucketId + " SET n = ?", i);
     });
-    final List<Result> rows = database.query("sql", "SELECT @rid AS rid FROM bucket:" + padded).stream().toList();
-    assertThat(rows).hasSize(11);
-    for (final Result row : rows)
-      assertThat(row.<RID>getProperty("rid").getBucketId()).isEqualTo(bucketId);
-
-    // the parts of a RID are decimal: #NN:010 is the record 10 of the bucket NN
     final RID tenth = single("SELECT @rid AS rid FROM #" + bucketId + ":010").getProperty("rid");
     assertThat(tenth).isEqualTo(new RID("#" + bucketId + ":10"));
+  }
+
+  /**
+   * The bucket ids a statement names, and the parts of a RID, are addresses and not numeric literals: {@code bucket:010} is the
+   * bucket 10, like {@code #10:0}, so one bucket number addresses one bucket whatever its spelling (a script that retargeted a
+   * DROP or TRUNCATE BUCKET to another bucket would be a data loss). Checked on the parsed statement, so that it does not depend
+   * on which bucket ids a database holds.
+   */
+  @Test
+  void bucketIdsAndRidPartsInStatementsAreParsedAsDecimal() {
+    assertThat(((SelectStatement) parseStatement("SELECT FROM bucket:010")).target.item.bucket.bucketNumber).isEqualTo(10);
+    assertThat(((DropBucketStatement) parseStatement("DROP BUCKET 010")).id.getValue().intValue()).isEqualTo(10);
+    assertThat(((TruncateBucketStatement) parseStatement("TRUNCATE BUCKET 010")).bucketNumber.getValue().intValue()).isEqualTo(10);
+
+    final Rid rid = ((SelectStatement) parseStatement("SELECT FROM #010:010")).target.item.rids.getFirst();
+    assertThat(rid.bucket.getValue().intValue()).isEqualTo(10);
+    assertThat(rid.position.getValue().intValue()).isEqualTo(10);
+
+    // hexadecimal was never accepted for a bucket id, and still is not
+    assertThatThrownBy(() -> parseStatement("DROP BUCKET 0x10")).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(() -> parseStatement("TRUNCATE BUCKET 0x10")).isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void negatedLongLiteralFoldsTheMagnitudeOfLongMinValueInItsOwnRadix() {
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("9223372036854775808")).isEqualTo(Long.MIN_VALUE);
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("9223372036854775808L")).isEqualTo(Long.MIN_VALUE);
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("01000000000000000000000")).isEqualTo(Long.MIN_VALUE);
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("01000000000000000000000l")).isEqualTo(Long.MIN_VALUE);
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("010")).isEqualTo(-8L);
+    assertThat(SQLASTBuilder.parseNegatedLongLiteral("0")).isEqualTo(0L);
+
+    // anything past the magnitude of Long.MIN_VALUE is an overflow, and a hexadecimal magnitude was never folded
+    assertThatThrownBy(() -> SQLASTBuilder.parseNegatedLongLiteral("9223372036854775809")).isInstanceOf(NumberFormatException.class);
+    assertThatThrownBy(() -> SQLASTBuilder.parseNegatedLongLiteral("01000000000000000000001")).isInstanceOf(NumberFormatException.class);
+    assertThatThrownBy(() -> SQLASTBuilder.parseNegatedLongLiteral("0x8000000000000000")).isInstanceOf(NumberFormatException.class);
   }
 
   @Test
@@ -167,25 +203,9 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     assertThat(single("SELECT big FROM T WHERE big = -01000000000000000000000L").<Object>getProperty("big")).isEqualTo(Long.MIN_VALUE);
   }
 
-  /**
-   * The id of a bucket whose decimal digits are all octal digits, so that {@code bucket:0NN} lexes as one token, and that is at
-   * least 8, so that reading those digits in octal would address another bucket. File ids depend on what the database holds, so
-   * single-bucket types are created until one has such an id.
-   */
-  private int bucketIdWhoseOctalReadingDiffers() {
-    for (int i = 0; i < 200; i++) {
-      final int id = database.getSchema().createDocumentType("B" + i, 1).getBuckets(false).getFirst().getFileId();
-      if (id >= 8 && isOctalSpelled(id))
-        return id;
-    }
-    throw new AssertionError("no bucket id spelled with octal digits only");
-  }
-
-  private static boolean isOctalSpelled(final int id) {
-    for (final char c : Integer.toString(id).toCharArray())
-      if (c > '7')
-        return false;
-    return true;
+  private static Statement parseStatement(final String sql) {
+    final SQLParser parser = new SQLParser(new CommonTokenStream(new SQLLexer(CharStreams.fromString(sql))));
+    return new SQLASTBuilder().visitParse(parser.parse());
   }
 
   private Result single(final String sql) {
