@@ -906,6 +906,26 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Waits until THIS node has applied everything the cluster had committed when the call was
+   * made (issue #11739): it asks the leader for its commit index and waits for the local state machine to reach it. Meant for a
+   * command this node forwarded to the leader, whose effect reaches this node only when it applies the entry the leader
+   * committed. {@link #awaitLocalApply()} is not enough there: it waits for the commit index THIS node has heard of, and a
+   * follower hears of a commit only with the leader's next append, which can be after the leader's answer to the command.
+   * <p>
+   * Best effort: it returns {@code false}, without failing, when the leader cannot be asked, when the deadline passes, or
+   * when this node is inside a snapshot resync gap that waiting cannot close. The default, for non-HA setups, has nothing to
+   * wait for.
+   * <p>
+   * Bounded as a whole by the quorum timeout ({@code arcadedb.ha.quorumTimeout}): asking the leader for its commit index (the
+   * ReadIndex round a LINEARIZABLE follower read makes) and the wait for the local apply share that one deadline.
+   *
+   * @return whether this node has applied the leader's commit index
+   */
+  default boolean awaitLeaderCommitApplied() {
+    return true;
+  }
+
+  /**
    * Holds {@code databaseName} for a restore that has claimed it on this server (issue #10974): from now until
    * {@link #releaseReplicatedWritesForRestore}, writes other nodes replicate to it through this one are refused with a
    * retryable error, and the call returns once the ones already accepted - which no local commit wait sees - are applied here,
