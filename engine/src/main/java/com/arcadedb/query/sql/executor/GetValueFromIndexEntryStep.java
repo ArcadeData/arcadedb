@@ -111,6 +111,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   static final int            MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
   // The served set of the previous key is cleared for the next one up to this size, and replaced past it
   private static final int    MAX_REUSED_SERVED_SET    = 64;
+  // The entries a SKIP asks the index step for at once, see skipUnloaded()
+  private static final int    SKIP_BATCH               = 1_000;
 
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
@@ -943,8 +945,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private static final int MAX_RECONCILE_ATTEMPTS   = 8;
   private static final int MAX_POINT_LOOKUP_ENTRIES = 256;
-  // The entries a SKIP asks the index step for at once, see skipUnloaded()
-  private static final int SKIP_BATCH               = 1_000;
 
   /**
    * Loads the rows of a point lookup - an equality or an {@code IN} - against ONE committed state (#9369). A commit puts its

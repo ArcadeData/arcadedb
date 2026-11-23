@@ -1528,14 +1528,14 @@ public class CypherExecutionPlan {
    * also hand its rows to an aggregation that consumes them in the workers of a parallel scan (issue #8797).
    */
   private final class OptimizedMatchStep extends AbstractExecutionStep implements ParallelRowSource {
-    OptimizedMatchStep(final CommandContext context) {
-      super(context);
-    }
-
     private ResultSet operatorResults = null;
     private boolean closed = false;
     // The rows of the statement's SKIP the index scan at the root passes over itself (issue #11954), see passSkipToScan()
     private int skipInScan = 0;
+
+    OptimizedMatchStep(final CommandContext context) {
+      super(context);
+    }
 
     @Override
     public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
