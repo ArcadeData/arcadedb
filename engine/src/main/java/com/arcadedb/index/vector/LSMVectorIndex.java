@@ -565,8 +565,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
   private volatile Runnable afterLiveSetReadForTest;
+  // Run by a full rebuild between parsing the pages and the cross-check of the live set against the records, so a test can commit
+  // a record the pages lack while the records already show it
+  private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+
+  /**
+   * The most records {@link #removedDuringRebuild} holds. A rebuild that outlives more removals than this stops recording them and
+   * drops what it cannot vouch for instead (see {@link #publishLocationIndex}), so what a long bulk delete costs a rebuild stays
+   * at about 16 bytes per record up to this bound (16 MB) and is never exceeded.
+   */
+  private static final int MAX_TRACKED_REMOVALS = 1 << 20;
+
+  private volatile int maxTrackedRemovals = MAX_TRACKED_REMOVALS;
+
+  /**
+   * The records a {@link #remove} replay touched since the full rebuild now running started, or null when none is running. The
+   * rebuild reads the pages and the records without the index lock, and the ids it recovers from the records alone (the minted
+   * ones, see {@link #buildGraphFromScratchExclusively}) are unknown to the location index a commit tombstones by RID, so a
+   * removal that lands after they were read can only be found by the record it removed. Guarded by {@link #lock}'s write lock.
+   */
+  private RidHashSet removedDuringRebuild;
+
+  /** Whether {@link #removedDuringRebuild} stopped recording because it reached {@link #MAX_TRACKED_REMOVALS}. */
+  private boolean removedDuringRebuildOverflowed;
 
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
@@ -1192,17 +1215,46 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries, final VectorLocationIndex replaced,
       final int idsFrom) {
+    publishLocationIndex(liveEntries, replaced, idsFrom, null);
+  }
+
+  /**
+   * {@link #publishLocationIndex(Collection, VectorLocationIndex, int)} for a live set that also holds ids no location index ever
+   * had: the ones the build minted for records it found by scanning them and nowhere else. A commit tombstones the ids its
+   * location index holds for a RID, so a delete or a SET NULL committed after the build read such a record leaves no mark on its
+   * minted id, and the id was published live for a record that has no vector: {@code countEntries()} above the number of records
+   * with one for the life of the session, and a search that answers a record that is gone (issue #13148). The id is judged by
+   * the record instead: it is left out when a removal may have touched the record since the build started (the rebuild records
+   * them, see {@link #removedDuringRebuild}), or when the location index has meanwhile been given an id of its own for it, which
+   * is the one that stands for the record from here on (the loops below carry it over).
+   *
+   * @param mintedIds the ids of {@code liveEntries} minted by the build, or null when it minted none
+   */
+  private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries, final VectorLocationIndex replaced,
+      final int idsFrom, final IntHashSet mintedIds) {
     // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
     // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
     // argument is an element-count estimate that it divides by the load factor itself (`initialCapacity +
     // (initialCapacity >>> 1) + 1`, rounded up to a power of two), unlike HashMap's, which is a bucket count.
     // Pre-adjusting on top of that provisioned ~1.33x more table than the rebuild can ever use.
     final VectorLocationIndex rebuilt = new VectorLocationIndex(Math.max(16, liveEntries.size()));
+    final boolean judgeMintedIds = replaced != null && mintedIds != null && !mintedIds.isEmpty();
+    int droppedMintedIds = 0;
     for (final VectorEntryForGraphBuild entry : liveEntries) {
+      if (judgeMintedIds && mintedIds.contains(entry.vectorId) && (mayHaveBeenRemovedDuringRebuild(entry.rid)
+          || replaced.getVectorIdsForRid(entry.rid).length > 0)) {
+        // Neither live nor tombstoned: the id was never on a page and no later reader has a use for it
+        droppedMintedIds++;
+        continue;
+      }
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
       if (replaced != null && replaced.isDeleted(entry.vectorId))
         rebuilt.markDeleted(entry.vectorId);
     }
+    if (droppedMintedIds > 0)
+      LogManager.instance().log(this, Level.FINE,
+          "Rebuild of index %s left %d vector ids out of the location index: minted from records that a commit has removed or given an id since",
+          indexName, droppedMintedIds);
     if (replaced != null)
       for (int id = Math.max(0, idsFrom); id < nextId.get(); id++)
         if (!rebuilt.isLive(id) && !rebuilt.isDeleted(id)) {
@@ -3579,8 +3631,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // follows does not hold writers up.
         compactionFileLock = compactDataFile ? lockDataFileForCompaction() : -1;
         try {
+          startTrackingRemovals();
           buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst, buildCacheCapacityCap);
         } finally {
+          stopTrackingRemovals();
           // The build cache was local to the build, so it is garbage now, whether the build succeeded or not (issue #12544)
           releaseGraphBuildCacheCharge();
           releaseCompactionFileLock();
@@ -3627,6 +3681,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new TimeoutException("Cannot compact vector index '" + indexName + "': timeout locking file " + fileId);
     return locked == LockManager.LOCK_STATUS.YES ? fileId : -1;
+  }
+
+  /**
+   * Starts recording the records a {@link #remove} replay touches, from before the full rebuild takes its snapshot to its publish.
+   * The publish asks which records were removed in between (see {@link #publishLocationIndex}).
+   */
+  private void startTrackingRemovals() {
+    lock.writeLock().lock();
+    try {
+      removedDuringRebuild = new RidHashSet();
+      removedDuringRebuildOverflowed = false;
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /** Stops the recording {@link #startTrackingRemovals()} started and gives its memory back. Safe to call without one. */
+  private void stopTrackingRemovals() {
+    lock.writeLock().lock();
+    try {
+      discardRemovalTracking();
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /** {@link #stopTrackingRemovals()} for a caller that already holds the write lock. */
+  private void discardRemovalTracking() {
+    removedDuringRebuild = null;
+    removedDuringRebuildOverflowed = false;
+  }
+
+  /** Called by a {@link #remove} replay under the write lock: a no-op unless a full rebuild is running. */
+  private void trackRemovalForRebuild(final RID rid) {
+    final RidHashSet tracked = removedDuringRebuild;
+    if (tracked == null)
+      return;
+    if (tracked.size() >= maxTrackedRemovals) {
+      // Past the bound the memory goes back and the publish treats every record as possibly removed
+      removedDuringRebuild = null;
+      removedDuringRebuildOverflowed = true;
+    } else
+      tracked.add(rid);
+  }
+
+  /**
+   * Whether a {@link #remove} replay may have touched {@code rid} since the running rebuild started. Under the write lock. Answers
+   * yes for every record once the recording overflowed, and no for every record when no rebuild is running.
+   */
+  private boolean mayHaveBeenRemovedDuringRebuild(final RID rid) {
+    final RidHashSet tracked = removedDuringRebuild;
+    return tracked != null ? tracked.contains(rid) : removedDuringRebuildOverflowed;
   }
 
   /** Lets the commits of this index in again. Idempotent: the build releases it after the rewrite and the caller on every exit. */
@@ -3778,6 +3884,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Graph build from pages: %d total entries, %d deleted, %d active for graph",
           totalEntriesRead[0], filteredDeletedVectors[0], activeVectorIds.length);
 
+    final Runnable afterPagesParsed = afterPagesParsedForTest;
+    if (afterPagesParsed != null)
+      afterPagesParsed.run();
+
+    // The ids the document scan below minted for records the index knows nothing about. Unlike every other id of the live set they
+    // are known to no location index, so no commit can tombstone them by RID: the publish has to judge them (issue #13148).
+    final IntHashSet mintedIds = new IntHashSet();
+
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
@@ -3795,11 +3909,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
           final String vectorProp =
               vectorPropertyName();
+          final VectorLocationIndex scanLocations = vectorIndex();
           database.scanBucket(bucket.getName(), record -> {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
-              // Document exists but was not found in pages - add it with a synthetic vector ID.
+              // A record the pages lack and the location index holds is a commit that replayed its vector (its location and its
+              // delta entry) before the pages were read and published its pages and record after: not a vector the index lost.
+              // It keeps the id it has. A second, minted id would be one nobody can tombstone (a delete of the record finds
+              // the first and leaves this one live for good) and would count the record twice when the publish carries the first
+              // over as well (issue #13148). The highest id wins, as everywhere else in the live set.
+              final int[] knownIds = scanLocations.getVectorIdsForRid(rid);
+              if (knownIds.length > 0) {
+                final int knownId = knownIds[knownIds.length - 1];
+                final long offsetAndFlag = scanLocations.getOffsetAndFlag(knownId);
+                // Gone since it was listed: a commit is removing the record, and there is nothing to add for it
+                if (offsetAndFlag != VectorLocationIndex.ABSENT)
+                  ridToLatestVector.put(rid, new VectorEntryForGraphBuild(knownId, rid,
+                      VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
+                return true;
+              }
+              // Document exists but was not found in pages nor in the location index - add it with a synthetic vector ID.
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
                 try {
@@ -3808,6 +3938,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   // it (issue #10938), has a NaN distance to every other vector
                   if (vector.length == metadata.dimensions && !isUnscorable(vector) && VectorUtils.isFinite(vector)) {
                     final int syntheticId = allocateVectorId();
+                    mintedIds.add(syntheticId);
                     ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
                   }
                 } catch (final IllegalArgumentException ignored) {
@@ -3915,7 +4046,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Update vectorIndex to match what we found on pages (sync it with disk state), keeping the writes committed
         // since the pages were read (issue #11099)
         if (!locationIndexAlreadyPublished)
-          publishLocationIndex(ridToLatestVector.values(), vectorIndex(), deltaSnapshotId);
+          publishLocationIndex(ridToLatestVector.values(), vectorIndex(), deltaSnapshotId, mintedIds);
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         // Build vector IDs from existing vectorIndex
@@ -3931,6 +4062,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "No live vector read from the pages of index %s (%d entries parsed): building the graph from the in-memory index instead (%d live of %d entries)",
             indexName, totalEntriesRead[0], vectorIds.length, liveLocations.size());
       }
+      // Published: every commit from here on tombstones through the ids the new location index holds, so the records need no more
+      // watching, and a build that runs on for minutes holds no memory for them
+      discardRemovalTracking();
     } finally {
       lock.writeLock().unlock();
     }
@@ -12580,6 +12714,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // a vector-indexed type O(index size), so bulk updates degraded quadratically.
         final List<Integer> deletedIds = new ArrayList<>();
         final VectorLocationIndex locations = vectorIndex();
+        // Whatever ids it finds: a record whose vector a rebuild recovered from the record alone has no id here to find (issue #13148)
+        trackRemovalForRebuild(rid);
         for (final int vectorId : locations.getVectorIdsForRid(rid)) {
           if (locations.isLocationOf(vectorId, rid)) {
             // Read the location BEFORE the tombstone releases it: un-tombstoning has to restore the exact offset,
@@ -14506,6 +14642,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     afterLiveSetReadForTest = hook;
   }
 
+  void setAfterPagesParsedForTest(final Runnable hook) {
+    afterPagesParsedForTest = hook;
+  }
+
+  /** The bound of {@link #removedDuringRebuild}, which a test cannot reach with a million removals. */
+  void setMaxTrackedRemovalsForTest(final int max) {
+    maxTrackedRemovals = max;
+  }
+
   void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
     beforeOnDiskGraphSwapForTest = hook;
   }
@@ -14713,6 +14858,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
               unknownBefore.add(id);
             }
           }
+
+          // A tombstone is the removal of the record on a node that does not replay the commit itself: a rebuild running here
+          // must know it as remove() lets it know (issue #13148)
+          if (deleted)
+            trackRemovalForRebuild(rid);
 
           // Update VectorLocationIndex with this entry's absolute file offset
           // LSM semantics: later entries override earlier ones
