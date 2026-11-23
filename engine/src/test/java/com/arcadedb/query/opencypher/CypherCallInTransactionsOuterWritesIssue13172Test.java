@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -122,7 +124,8 @@ class CypherCallInTransactionsOuterWritesIssue13172Test extends TestHelper {
 
     assertThatThrownBy(() -> database.command("opencypher",
         "CREATE (:Pre {v: 1}) WITH 1 AS one UNWIND range(1, 5) AS i "//
-            + "CALL (i) { CREATE (:Y {i: i}) } IN TRANSACTIONS OF 2 ROWS ON ERROR FAIL"));
+            + "CALL (i) { CREATE (:Y {i: i}) } IN TRANSACTIONS OF 2 ROWS ON ERROR FAIL").close())
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
 
     assertThat(count("MATCH (n:Pre) RETURN count(n) AS c")).isEqualTo(1L);
     // the prefilled i = 3 and the first batch, i = 1 and 2: the second batch (3, 4) failed, the third never ran
@@ -142,6 +145,69 @@ class CypherCallInTransactionsOuterWritesIssue13172Test extends TestHelper {
     assertThat(count("MATCH (n:Pre) RETURN count(n) AS c")).isEqualTo(1L);
     // batches (1, 2) and (5) committed, (3, 4) failed on the prefilled key
     assertThat(count("MATCH (n:Y) RETURN count(n) AS c")).isEqualTo(4L);
+  }
+
+  /**
+   * The commit of what the statement wrote before the CALL fails: the statement fails with that error whatever ON ERROR says
+   * (it governs the batches, not the statement's own writes), no batch runs, nothing of the statement is committed, and no
+   * transaction is left open behind it.
+   */
+  @Test
+  void aFailedCommitOfTheWritesBeforeTheCallFailsTheStatementAndLeavesNothing() {
+    database.command("sql", "CREATE VERTEX TYPE Y");
+    database.command("sql", "CREATE PROPERTY Y.i INTEGER");
+    database.command("sql", "CREATE INDEX ON Y (i) UNIQUE");
+    database.transaction(() -> database.command("opencypher", "CREATE (:Y {i: 3})"));
+
+    assertThatThrownBy(() -> database.command("opencypher",
+        "CREATE (:Pre {v: 1}) CREATE (:Y {i: 3}) WITH 1 AS one UNWIND range(1, 3) AS i "//
+            + "CALL (i) { CREATE (:Batch {i: i}) } IN TRANSACTIONS OF 1 ROW ON ERROR CONTINUE").close())
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(count("MATCH (n:Pre) RETURN count(n) AS c")).isZero();
+    assertThat(count("MATCH (n:Batch) RETURN count(n) AS c")).isZero();
+    assertThat(count("MATCH (n:Y) RETURN count(n) AS c")).isEqualTo(1L);
+    // The database takes the next statement as usual
+    assertSingleProbeRow(rows(RIGHT));
+  }
+
+  /** In a transaction its caller owns, the statement is still refused before anything runs: no prefix commit happens there. */
+  @Test
+  void explicitTransactionIsStillRefusedAndItsWritesAreNotCommitted() {
+    database.begin();
+    try {
+      database.command("opencypher", "CREATE (:Outer)").close();
+      assertThatThrownBy(() -> database.command("opencypher", RIGHT).close())
+          .isInstanceOf(ImplicitTransactionRequiredException.class);
+    } finally {
+      database.rollback();
+    }
+    assertThat(count("MATCH (n:Outer) RETURN count(n) AS c")).isZero();
+    assertGraphUnchanged();
+  }
+
+  /**
+   * A transaction nested inside the server-opened one belongs to whoever began it and is not implicit: the statement is refused
+   * there before anything runs, so neither its writes nor the outer transaction's are committed by a prefix commit.
+   */
+  @Test
+  void nestedTransactionIsRefusedAndTheOuterWritesAreNotCommitted() {
+    database.begin();
+    try {
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+      database.command("opencypher", "CREATE (:Outer)").close();
+      database.begin();
+      assertThat(database.getNestedTransactions()).isEqualTo(2);
+      assertThatThrownBy(() -> database.command("opencypher", "CREATE (:Pre) WITH 1 AS one UNWIND range(1, 2) AS i "//
+          + "CALL (i) { CREATE (:Batch {i: i}) } IN TRANSACTIONS OF 1 ROW").close())
+          .isInstanceOf(ImplicitTransactionRequiredException.class);
+    } finally {
+      database.rollbackAllNested();
+    }
+    assertThat(count("MATCH (n:Outer) RETURN count(n) AS c")).isZero();
+    assertThat(count("MATCH (n:Pre) RETURN count(n) AS c")).isZero();
+    assertThat(count("MATCH (n:Batch) RETURN count(n) AS c")).isZero();
   }
 
   /** A write after the CALL still runs in a transaction, which the statement commits at its end. */
