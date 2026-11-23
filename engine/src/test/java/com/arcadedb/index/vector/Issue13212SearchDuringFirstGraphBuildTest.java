@@ -22,6 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
@@ -130,7 +132,7 @@ class Issue13212SearchDuringFirstGraphBuildTest {
     }
 
     assertThat(answer.get()).as("the search answers once the graph is there").hasSize(5);
-    try (final var rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = 5")) {
+    try (final ResultSet rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = 5")) {
       assertThat(answer.get().getFirst().getFirst()).as("the exact match of the whole corpus").isEqualTo(rs.next().getProperty("@rid"));
     }
   }
@@ -142,7 +144,7 @@ class Issue13212SearchDuringFirstGraphBuildTest {
       final Database db = factory.create();
       try {
         db.transaction(() -> {
-          final var type = db.getSchema().createDocumentType("Doc");
+          final DocumentType type = db.getSchema().createDocumentType("Doc");
           type.createProperty("id", Type.INTEGER);
           type.createProperty("vector", Type.ARRAY_OF_FLOATS);
           db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
