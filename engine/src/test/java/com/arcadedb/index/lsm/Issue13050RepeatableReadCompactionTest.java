@@ -21,6 +21,10 @@ package com.arcadedb.index.lsm;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -229,6 +233,53 @@ class Issue13050RepeatableReadCompactionTest extends TestHelper {
         after.add(lookup(index, key));
 
       assertThat(after).isEqualTo(before);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void theHeaderPageIsReadAsCommittedAndNeverPinnedWhilePinnedPagesAreKept() throws Exception {
+    final TypeIndex index = createTypeAndFirstCompaction();
+    final LSMTreeIndexCompacted compacted = bucketIndex(index).getMutableIndex().getSubIndex();
+    final PageId header = new PageId(database, compacted.getFileId(), 0);
+    final int pageSize = compacted.getPageSize();
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+      // getPage keeps the page it reads first for the rest of the transaction
+      final long pinnedVersion = tx.getPage(header, pageSize).getVersion();
+      assertThat(tx.getPageForAbsoluteReadsNeverPinned(header, pageSize).getVersion()).isEqualTo(pinnedVersion);
+
+      // an incremental round rewrites the header to name its series
+      compactFromAnotherThread(index);
+
+      assertThat(tx.getPage(header, pageSize).getVersion()).as("version of the pinned header").isEqualTo(pinnedVersion);
+      assertThat(tx.getPageForAbsoluteReadsNeverPinned(header, pageSize).getVersion()).as("version of the header read as committed")
+          .isGreaterThan(pinnedVersion);
+    } finally {
+      database.rollback();
+    }
+  }
+
+  @Test
+  void aHeaderPageTheTransactionWroteIsReadAsItsOwn() throws Exception {
+    final TypeIndex index = createTypeAndFirstCompaction();
+    final LSMTreeIndexCompacted compacted = bucketIndex(index).getMutableIndex().getSubIndex();
+    final int pageSize = compacted.getPageSize();
+    final PageId header = new PageId(database, compacted.getFileId(), 0);
+    final PageId appended = new PageId(database, compacted.getFileId(), compacted.getTotalPages());
+
+    database.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+
+      final MutablePage modified = tx.getPageToModify(header, pageSize, false);
+      assertThat(tx.getPageForAbsoluteReadsNeverPinned(header, pageSize)).as("a page the transaction modified").isSameAs(modified);
+
+      final MutablePage created = tx.addPage(appended, pageSize);
+      assertThat(tx.getPageForAbsoluteReadsNeverPinned(appended, pageSize)).as("a page the transaction created").isSameAs(created);
     } finally {
       database.rollback();
     }
