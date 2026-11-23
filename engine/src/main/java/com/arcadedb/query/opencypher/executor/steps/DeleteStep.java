@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
+import com.arcadedb.query.opencypher.executor.DeletedReferences;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -44,9 +45,11 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.LongRangeList;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -144,8 +147,44 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
 
-  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
-  private String[] rowVariables;
+  /**
+   * Lines the rows this step serves up with what the statement deleted: the entity the clause deleted is the marker in its
+   * own column already, and the rest of the row - the other aliases of it, and the lists, maps and paths that hold it - is
+   * handled by {@link DeletedReferences} when the row is served (issue #12548).
+   */
+  private final DeletedReferences rowReferences = new DeletedReferences(this::isDeletedOrPending);
+
+  /**
+   * Inside a FOREACH body the DELETE runs when the iteration ends (see {@link #DEFERRED_DELETE_BATCH_VAR}), so what it will
+   * delete is noted in the {@code DeletedSoFar} of the FOREACH hierarchy ({@link ForeachStep#FOREACH_DELETED_SO_FAR_VAR}), which
+   * is also what the rows are read through here: the clauses after it in the body read the targets as deleted already, as they
+   * read the variable it deleted, and the rows are wrapped once with the check the FOREACH uses, not once per iteration.
+   * Null outside a FOREACH body.
+   */
+  private DeletedSoFar        foreachDeleted;
+  private DeletedReferences   foreachReferences;
+
+  // The lightweight edges the rows retain in collections, whose occurrence is resolved already: each collection once, by identity
+  private Set<Object> pinnedVisited;
+
+  /** @return true when the statement deleted {@code record}, or this DELETE found it connected and left it to the end */
+  private boolean isDeletedOrPending(final Document record) {
+    return deleted.isDeleted(record)
+        || (!pendingVertices.isEmpty() && record instanceof Vertex vertex && pendingVertices.contains(vertex.getIdentity()));
+  }
+
+  /** @return what lines a row up with the deletions, or null while nothing was deleted, or is about to be, that a row can hold */
+  private DeletedReferences referencesToApply() {
+    if (foreachDeleted != null)
+      return foreachDeleted.isEmpty() ? null : foreachReferences;
+    return deleted.isEmpty() && pendingVertices.isEmpty() ? null : rowReferences;
+  }
+
+  private Set<Object> getPinnedVisited() {
+    if (pinnedVisited == null)
+      pinnedVisited = Collections.newSetFromMap(new IdentityHashMap<>());
+    return pinnedVisited;
+  }
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -189,7 +228,13 @@ public class DeleteStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        return buffer.get(bufferIndex++);
+        final Result row = buffer.get(bufferIndex++);
+        // Served after every row of the batch deleted what it deletes, so a node a later row deleted is read as deleted
+        // through the aliases, lists, maps and paths this row holds (issue #12548). One check per row while nothing was deleted
+        final DeletedReferences references = referencesToApply();
+        if (references != null)
+          references.mark(row);
+        return row;
       }
 
       private boolean hasMoreInput() {
@@ -261,11 +306,6 @@ public class DeleteStep extends AbstractExecutionStep {
               }
             }
 
-            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
-            // clause names (#11688)
-            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
-              markCascadedRelationships(mutableResult, deletedVars);
-
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
           } finally {
@@ -316,6 +356,7 @@ public class DeleteStep extends AbstractExecutionStep {
           final RowTargets targets = new RowTargets(new ArrayList<>(), new ArrayList<>(), new HashSet<>());
           collectRowTargets(row, targets.edges(), targets.other(), targets.variables());
           pinOccurrences(targets.edges());
+          pinRetainedEdgeOccurrences(row, getPinnedVisited());
           pinnedTargets.put(row, targets);
         }
       }
@@ -325,23 +366,6 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
-  }
-
-  /**
-   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
-   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
-   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
-   * of the step, so their names are read once.
-   */
-  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
-    if (rowVariables == null)
-      rowVariables = row.getPropertyNames().toArray(new String[0]);
-    for (final String variable : rowVariables) {
-      if (deletedVars.contains(variable))
-        continue;
-      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
-        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
-    }
   }
 
   /**
@@ -360,6 +384,54 @@ public class DeleteStep extends AbstractExecutionStep {
           twinned = true;
       }
     return twinned;
+  }
+
+  /**
+   * Resolves and caches the occurrence of lightweight edges retained in a row's properties, collections, or paths
+   * before deleting any lightweight edge, so a surviving parallel edge does not collide with a deleted twin after
+   * the vertex's edge list shrinks (issue #10008). A row reads whether such an edge is deleted when it is served, which is
+   * after the delete renumbered its twins: left unnumbered, a survivor read as the first of its triple and collided with the
+   * twin deleted first.
+   * <p>
+   * Walked only for a row that deletes a lightweight edge that has a twin, and once per collection ({@code visited}, by
+   * identity), so the rows of a statement that share one {@code collect()} list pay for it once.
+   */
+  private static void pinRetainedEdgeOccurrences(final Object value, final Set<Object> visited) {
+    if (value == null)
+      return;
+    if (value instanceof Edge edge) {
+      if (edge.getIdentity() instanceof LightEdgeRID light)
+        light.getOccurrence();
+      return;
+    }
+    if (value instanceof TraversalPath path) {
+      if (visited != null && !visited.add(path))
+        return;
+      for (final Edge edge : path.getEdges())
+        if (edge.getIdentity() instanceof LightEdgeRID light)
+          light.getOccurrence();
+      return;
+    }
+    if (value instanceof List<?> list && !(value instanceof LongRangeList)) {
+      if (visited != null && !visited.add(list))
+        return;
+      for (final Object item : list)
+        pinRetainedEdgeOccurrences(item, visited);
+      return;
+    }
+    if (value instanceof Map<?, ?> map) {
+      if (visited != null && !visited.add(map))
+        return;
+      for (final Object item : map.values())
+        pinRetainedEdgeOccurrences(item, visited);
+      return;
+    }
+    if (value instanceof Result row) {
+      if (visited != null && !visited.add(row))
+        return;
+      for (final String prop : row.getPropertyNames())
+        pinRetainedEdgeOccurrences(row.getProperty(prop), visited);
+    }
   }
 
   /** CommandContext variable holding the deferred-delete batch within a FOREACH iteration. */
@@ -402,17 +474,35 @@ public class DeleteStep extends AbstractExecutionStep {
 
       if (deferredBatch != null) {
         final boolean detach = deleteClause.isDetach();
-        for (final Object edge : allEdges)
+        // The targets are noted as deleted for the rest of the body, which reads them before the iteration ends (see
+        // foreachDeleted). Their lightweight edges are numbered first, while the lists still hold every twin: a twin that is
+        // kept must not read as the one deleted
+        if (foreachDeleted == null && context.getVariable(ForeachStep.FOREACH_DELETED_SO_FAR_VAR) instanceof DeletedSoFar shared) {
+          foreachDeleted = shared;
+          foreachReferences = new DeletedReferences(shared);
+        }
+        if (foreachDeleted != null && pinOccurrences(allEdges))
+          pinRetainedEdgeOccurrences(result, getPinnedVisited());
+        for (final Object edge : allEdges) {
           deferredBatch.add(new DeferredDeleteTarget(edge, detach));
-        for (final Object other : allOther)
+          if (foreachDeleted != null)
+            foreachDeleted.doom(edge, detach);
+        }
+        for (final Object other : allOther) {
           deferredBatch.add(new DeferredDeleteTarget(other, detach));
+          if (foreachDeleted != null)
+            foreachDeleted.doom(other, detach);
+        }
         return;
       }
 
       // The lightweight edges of the row are numbered before anything is deleted; the first one with a twin numbers
       // the rest of the statement's too, while their lists still hold every twin (#10008)
-      if (pinOccurrences(allEdges) && pinRemainingRows != null)
-        pinRemainingRows.run();
+      if (pinOccurrences(allEdges)) {
+        pinRetainedEdgeOccurrences(result, getPinnedVisited());
+        if (pinRemainingRows != null)
+          pinRemainingRows.run();
+      }
 
       // Delete all edges first, then all other objects (vertices, documents). The `deleted` set is
       // a step-instance field shared across rows so an element bound by multiple rows is deleted once.
@@ -521,7 +611,8 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   private static void deleteObjectStatic(final Object obj, final DeletedSoFar deleted, final QueryStatistics stats) {
-    if (obj == null)
+    // A binding a row reads as deleted (an earlier iteration of the FOREACH deleted it) has nothing left to delete
+    if (obj == null || obj instanceof DeletedEntityMarker)
       return;
     if (obj instanceof Edge e) {
       if (deleted.claim(e))
@@ -826,6 +917,11 @@ public class DeleteStep extends AbstractExecutionStep {
   @Override
   public void close() {
     pendingVertices.clear();
+    rowReferences.clear();
+    if (foreachReferences != null)
+      foreachReferences.clear();
+    if (pinnedVisited != null)
+      pinnedVisited.clear();
     releaseHeap();
     super.close();
   }
@@ -867,12 +963,18 @@ public class DeleteStep extends AbstractExecutionStep {
    * The edges a DETACH reads off a vertex are read after the deletes before it, so their lightweight twins are numbered
    * anew and are never compared with the ones already deleted: they exist, so they are deleted. And an edge whose
    * endpoint the statement already deleted went with it.
+   * <p>
+   * It is also what a row asks, through {@link DeletedReferences.Deletions}, whether a node or a relationship it holds is gone.
    */
-  public static final class DeletedSoFar {
+  public static final class DeletedSoFar implements DeletedReferences.Deletions {
     // VERTICES AND DOCUMENTS: RECORDS EQUAL BY RID (SEE BaseRecord.equals), SO INSTANCES OF ONE RECORD COLLAPSE
     private final Set<Object>     records  = new HashSet<>();
     private final EdgeIdentitySet edges    = new EdgeIdentitySet();
     private final RidHashSet      vertices = new RidHashSet();
+    // WHAT THE ITERATION OF A FOREACH IN PROGRESS WILL DELETE WHEN IT ENDS, KEPT SEPARATE: THE DELETE ITSELF IS CLAIMED IN THE SETS ABOVE
+    private RidHashSet            doomedRecords;
+    private RidHashSet            doomedDetached;
+    private EdgeIdentitySet       doomedLightEdges;
 
     /**
      * @return true when {@code edge} is still to delete, recording it as deleted: neither deleted already, nor taken
@@ -912,8 +1014,72 @@ public class DeleteStep extends AbstractExecutionStep {
       }
     }
 
-    boolean hasDeletedVertices() {
-      return !vertices.isEmpty();
+    boolean isEmpty() {
+      return records.isEmpty() && edges.isEmpty() && vertices.isEmpty() && doomedRecords == null && doomedLightEdges == null;
+    }
+
+    /**
+     * Notes a target of a FOREACH iteration's DELETE, which runs when the iteration ends: the clauses after it in the body
+     * read it as deleted already, as they read the variable it deleted (issue #12548). A DETACH of a vertex dooms its
+     * relationships too, and a lightweight edge is doomed by its occurrence, so a twin that is kept is not read as deleted.
+     * The occurrence of a lightweight edge has to be numbered before this, while the edge lists hold every twin.
+     */
+    void doom(final Object target, final boolean detach) {
+      if (!(target instanceof Document record) || record.getIdentity() == null)
+        return;
+      final RID rid = record.getIdentity();
+      if (record instanceof Edge && rid instanceof LightEdgeRID) {
+        if (doomedLightEdges == null)
+          doomedLightEdges = new EdgeIdentitySet();
+        doomedLightEdges.add(rid);
+        return;
+      }
+      if (doomedRecords == null)
+        doomedRecords = new RidHashSet();
+      doomedRecords.add(rid);
+      if (detach && record instanceof Vertex) {
+        if (doomedDetached == null)
+          doomedDetached = new RidHashSet();
+        doomedDetached.add(rid);
+      }
+    }
+
+    /** Forgets the targets doomed: the iterations that queued them ran their batch, so they are deleted, or the statement failed. */
+    void clearDoomed() {
+      doomedRecords = null;
+      doomedDetached = null;
+      doomedLightEdges = null;
+    }
+
+    /**
+     * @return true when the statement deleted {@code record}, or a FOREACH iteration will when it ends: a node or a record, a
+     * relationship, or a relationship that went with an endpoint
+     */
+    @Override
+    public boolean isDeleted(final Document record) {
+      if (record instanceof Edge edge)
+        return edges.contains(edge.getIdentity()) || (!vertices.isEmpty() && wentWithDeletedVertex(edge)) || isDoomed(edge);
+      return records.contains(record)
+          || (doomedRecords != null && record.getIdentity() != null && doomedRecords.contains(record.getIdentity()));
+    }
+
+    private boolean isDoomed(final Edge edge) {
+      if (doomedRecords == null && doomedLightEdges == null)
+        return false;
+      final RID rid = edge.getIdentity();
+      if (rid instanceof LightEdgeRID) {
+        if (doomedLightEdges != null && doomedLightEdges.contains(rid))
+          return true;
+      } else if (doomedRecords != null && doomedRecords.contains(rid))
+        return true;
+      if (doomedDetached == null)
+        return false;
+      try {
+        return doomedDetached.contains(edge.getOut()) || doomedDetached.contains(edge.getIn());
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return true;
+      }
     }
 
     boolean contains(final Object record) {
