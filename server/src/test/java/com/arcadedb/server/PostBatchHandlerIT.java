@@ -18,16 +18,32 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Record;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.handler.openapi.CoreApiSpec;
+import io.swagger.v3.oas.models.Components;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.media.Schema;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
 import java.io.DataOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Iterator;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -779,6 +795,753 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     conn.setRequestProperty("Content-Length", Integer.toString(data.length));
     try (final DataOutputStream wr = new DataOutputStream(conn.getOutputStream())) {
       wr.write(data);
+    }
+  }
+
+  /*
+   * Issue #5618: a 17-million-vertex load stopped on {@code Unknown temporary ID 'co/32945720' at line 17234792}, for a
+   * vertex that was sitting in the payload thousands of lines above the edge - and the vertex was not in the database
+   * either. Nothing in the response, and nothing in the log, could tell whether the server had lost records or the
+   * payload had never carried them: the counts it reported were of records it CREATED, with nothing to compare them
+   * against. The user had to count the lines of their own file with grep to find out that two million vertices were
+   * missing, and that still did not say which side had dropped them.
+   * <p>
+   * So the loader now accounts for the payload line by line. Every answer carries {@code linesRead} and
+   * {@code linesSkipped}, which makes {@code linesRead - linesSkipped == verticesCreated + edgesCreated} something a
+   * client can check against its own file - and something the server checks itself before answering 200, so a record
+   * read and turned into nothing is reported as a failure instead of hiding inside a successful load.
+   * <p>
+   * The other half is the diagnosis. "Vertices must appear before edges that reference them" was the whole explanation
+   * an unresolvable reference got, and it was the wrong one here; the message now reports what the load actually knows,
+   * including how many vertices declared no {@code @id} at all and therefore cannot be referenced by anything.
+   */
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * The equality the user had to establish by hand: what the file holds, what the server read, what it created.
+   */
+  @Test
+  void everyLineOfASuccessfulLoadIsAccountedFor() throws Exception {
+    createEntitySchema();
+
+    final String body = """
+        {"@type":"vertex","@class":"Ent1","@id":"co/1","fid":"co/1"}
+
+        {"@type":"vertex","@class":"Ent1","@id":"co/2","fid":"co/2"}
+        {"@type":"vertex","@class":"Ent2","@id":"co/3","fid":"co/3"}
+
+        {"@type":"edge","@class":"REL","@from":"co/1","@to":"co/3"}
+        """;
+
+    final JSONObject result = loadExpectingSuccess(body, "");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(3);
+    assertThat(result.getLong("edgesCreated")).isEqualTo(1);
+    assertThat(result.getLong("linesRead")).isEqualTo(6);
+    assertThat(result.getLong("linesSkipped")).isEqualTo(2);
+    assertThat(result.getLong("linesRead") - result.getLong("linesSkipped"))
+        .as("every line read is either a record or a declared skip")
+        .isEqualTo(result.getLong("verticesCreated") + result.getLong("edgesCreated"));
+    assertThat(result.has("verticesWithoutId")).as("every vertex declared an @id").isFalse();
+  }
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * A load that fails mid-stream needs the accounting more than a successful one does: it is the only way to place
+   * the failure inside the file. The reported line was the entire diagnosis available on #5618.
+   */
+  @Test
+  void aFailedLoadStillReportsHowMuchOfThePayloadItRead() throws Exception {
+    createEntitySchema();
+
+    final String body = """
+        {"@type":"vertex","@class":"Ent1","@id":"a1","fid":"a1"}
+        {"@type":"vertex","@class":"Ent1","@id":"a2","fid":"a2"}
+        {"@type":"edge","@class":"REL","@from":"a1","@to":"a2"}
+        {"@type":"edge","@class":"REL","@from":"a1","@to":"never-declared"}
+        {"@type":"edge","@class":"REL","@from":"a2","@to":"a1"}
+        """;
+
+    final JSONObject error = loadExpecting(400, body, "");
+
+    assertThat(error.getString("error")).contains("Unknown temporary ID 'never-declared' at line 4");
+    assertThat(error.getLong("verticesCreated")).isEqualTo(2);
+    assertThat(error.getLong("edgesCreated")).isEqualTo(1);
+    assertThat(error.getLong("linesRead")).as("the failing line was read too").isEqualTo(4);
+    assertThat(error.getLong("linesSkipped")).isZero();
+  }
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * The message that sent the reporter looking in the wrong place. It asserted ordering as the cause; the payload
+   * ordering was fine. It now reports what is established - how many ids this payload declared - and names the two
+   * causes it cannot tell apart, one of which (a reference to a vertex loaded by an EARLIER request) is invisible
+   * from inside a single request and is exactly what a client splitting a large file hits.
+   */
+  @Test
+  void anUnresolvedReferenceReportsWhatTheLoadKnowsInsteadOfAssumingBadOrdering() throws Exception {
+    createEntitySchema();
+
+    final String body = """
+        {"@type":"vertex","@class":"Ent1","@id":"b1","fid":"b1"}
+        {"@type":"vertex","@class":"Ent1","@id":"b2","fid":"b2"}
+        {"@type":"edge","@class":"REL","@from":"b1","@to":"b9"}
+        """;
+
+    final JSONObject error = loadExpecting(400, body, "");
+    final String message = error.getString("error");
+
+    assertThat(message).contains("2 ids mapped so far");
+    assertThat(message).contains("each request resolves only the ids of its OWN payload");
+    assertThat(message).contains("#bucket:position");
+  }
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * A vertex with no {@code @id} is legal - nothing has to point at it - but it is also the one way a payload can
+   * hold a vertex that is loaded and unreachable. It used to be completely silent, so an edge that meant to
+   * reference one reported the same misleading "vertices must appear before edges". Both the count and the message
+   * now say so.
+   */
+  @Test
+  void verticesThatDeclareNoIdAreReportedInsteadOfDisappearing() throws Exception {
+    createEntitySchema();
+
+    final String vertexOnly = """
+        {"@type":"vertex","@class":"Ent1","@id":"c1","fid":"c1"}
+        {"@type":"vertex","@class":"Ent1","fid":"c2"}
+        {"@type":"vertex","@class":"Ent1","fid":"c3"}
+        """;
+
+    final JSONObject loaded = loadExpectingSuccess(vertexOnly, "");
+    assertThat(loaded.getLong("verticesCreated")).isEqualTo(3);
+    assertThat(loaded.getInt("verticesWithoutId"))
+        .as("two vertices are durable but no edge can ever reference them")
+        .isEqualTo(2);
+
+    final String withEdge = """
+        {"@type":"vertex","@class":"Ent1","@id":"d1","fid":"d1"}
+        {"@type":"vertex","@class":"Ent1","fid":"d2"}
+        {"@type":"edge","@class":"REL","@from":"d1","@to":"d2"}
+        """;
+
+    final JSONObject error = loadExpecting(400, withEdge, "");
+    assertThat(error.getString("error")).contains("1 vertices carried no @id at all");
+    assertThat(error.getInt("verticesWithoutId")).isEqualTo(1);
+  }
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * CSV reads more lines than it produces records - a header per section plus the {@code ---} separator - so the
+   * accounting has to name them, or a good load would look like it dropped four records.
+   */
+  @Test
+  void csvHeadersAndSeparatorsAreCountedAsSkippedNotAsLostRecords() throws Exception {
+    createEntitySchema();
+
+    final String body = """
+        @type,@class,@id,fid
+        vertex,Ent1,e1,e1
+        vertex,Ent1,e2,e2
+        ---
+        @type,@class,@from,@to
+        edge,REL,e1,e2
+        """;
+
+    final JSONObject result = loadExpectingSuccess(body, "", "text/csv");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(2);
+    assertThat(result.getLong("edgesCreated")).isEqualTo(1);
+    assertThat(result.getLong("linesRead")).isEqualTo(6);
+    assertThat(result.getLong("linesSkipped")).isEqualTo(3);
+    assertThat(result.getLong("linesRead") - result.getLong("linesSkipped"))
+        .isEqualTo(result.getLong("verticesCreated") + result.getLong("edgesCreated"));
+  }
+
+  // Regression: #5618 every payload line of a load is accounted for, and a lost reference says why
+  /**
+   * The shape of the reported payload, scaled down to something a build can run: many vertices, several types
+   * interleaved so the loader keeps flushing partial batches on the type change, and an edge for every single
+   * vertex. Every temporary id has to resolve and every vertex has to be on disk - the claim the issue makes is
+   * that one of them was not.
+   */
+  @Test
+  @Tag("slow")
+  void aLargeMultiTypeLoadLosesNoVertex() throws Exception {
+    createEntitySchema();
+
+    final int total = 200_000;
+    final StringBuilder body = new StringBuilder(total * 100);
+    for (int i = 0; i < total; i++) {
+      final String id = "co/" + (30_000_000 + i);
+      body.append("{\"@type\":\"vertex\",\"@class\":\"Ent").append(1 + (i / 997) % 3).append("\",\"@id\":\"")
+          .append(id).append("\",\"fid\":\"").append(id).append("\"}\n");
+    }
+    for (int i = 0; i < total; i++)
+      body.append("{\"@type\":\"edge\",\"@class\":\"REL\",\"@from\":\"co/").append(30_000_000 + i)
+          .append("\",\"@to\":\"co/").append(30_000_000 + (total - 1 - i)).append("\"}\n");
+
+    final JSONObject result = loadExpectingSuccess(body.toString(), "vertexBatchSize=1000&idMapping=false");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(total);
+    assertThat(result.getLong("edgesCreated")).isEqualTo(total);
+    assertThat(result.getLong("linesRead")).isEqualTo(2L * total);
+    assertThat(result.getLong("linesSkipped")).isZero();
+
+    final Database db = getServerDatabase(0, getDatabaseName());
+    assertThat(db.countType("Ent1", false) + db.countType("Ent2", false) + db.countType("Ent3", false))
+        .isEqualTo(total);
+  }
+
+  private void createEntitySchema() {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (db.getSchema().existsType("Ent1"))
+      return;
+
+    db.getSchema().createVertexType("Ent1");
+    db.getSchema().createVertexType("Ent2");
+    db.getSchema().createVertexType("Ent3");
+    db.getSchema().createEdgeType("REL");
+  }
+
+  private JSONObject loadExpectingSuccess(final String body, final String queryParams) throws Exception {
+    return loadExpectingSuccess(body, queryParams, "application/x-ndjson");
+  }
+
+  private JSONObject loadExpectingSuccess(final String body, final String queryParams, final String contentType)
+      throws Exception {
+    return postBatchExpecting(200, body, contentType, null, queryParams);
+  }
+
+  private JSONObject loadExpecting(final int status, final String body, final String queryParams)
+      throws Exception {
+    return postBatchExpecting(status, body, "application/x-ndjson", null, queryParams);
+  }
+
+  /*
+   * Issue #7570, the half that is not documentation: the reported payload
+   * <pre>{"@type":"vertex","@class":"Person","properties":{"name":"Alice"}}</pre>
+   * answered 200 with {@code verticesCreated: 1} and stored a property literally named {@code properties} holding the
+   * map. The counters were right and the data was wrong, and nothing failed until someone queried for {@code name} and
+   * found nothing.
+   * <p>
+   * The unit tests in {@code BatchControlKeyValidationTest} pin the parsers. This one proves the refusal survives the
+   * whole HTTP path - that it is reported as a 400 and not as the 408 a truncated body gets, that it carries the
+   * partial-commit accounting the other {@code /batch} failures carry, and above all that the database is left with
+   * nothing rather than with the wrong thing.
+   */
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /** The payload copied from the issue. */
+  @Test
+  void nestingPropertiesUnderAPropertiesKeyIsRefusedInsteadOfStoredVerbatim() throws Exception {
+    createVertexTypeIfAbsent("NestedProps");
+
+    final JSONObject error = postBatchExpecting(400,
+        "{\"@type\":\"vertex\",\"@class\":\"NestedProps\",\"properties\":{\"name\":\"Alice\"}}\n",
+        "application/x-ndjson");
+
+    assertThat(error.getString("error"))
+        .contains("'properties'")
+        .contains("line 1")
+        .contains("flat");
+    assertThat(error.getLong("verticesCreated")).isZero();
+
+    final Database db = getServerDatabase(0, getDatabaseName());
+    assertThat(db.countType("NestedProps", false))
+        .as("the misread line must leave nothing behind, not a vertex carrying a 'properties' map")
+        .isZero();
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /** A scalar of the same name is data, not a mistake, and still loads. */
+  @Test
+  void aScalarPropertiesValueStillLoads() throws Exception {
+    createVertexTypeIfAbsent("ScalarProps");
+
+    final JSONObject result = postBatchExpecting(200,
+        "{\"@type\":\"vertex\",\"@class\":\"ScalarProps\",\"@id\":\"s1\",\"properties\":\"public\"}\n",
+        "application/x-ndjson");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(1);
+
+    final Database db = getServerDatabase(0, getDatabaseName());
+    final List<Object> stored = new ArrayList<>();
+    final Iterator<Record> records = db.iterateType("ScalarProps", false);
+    while (records.hasNext())
+      stored.add(records.next().asVertex().get("properties"));
+
+    assertThat(stored).as("a scalar under this name is data, and has to be stored under it")
+        .containsExactly("public");
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /** An unrecognised control key used to be stored as a property whose name begins with {@code @}. */
+  @Test
+  void anUnknownAtPrefixedKeyIsRefused() throws Exception {
+    createVertexTypeIfAbsent("UnknownAtKey");
+
+    final JSONObject error = postBatchExpecting(400,
+        "{\"@type\":\"vertex\",\"@class\":\"UnknownAtKey\",\"@id\":\"u1\",\"@rid\":\"#1:0\"}\n",
+        "application/x-ndjson");
+
+    assertThat(error.getString("error")).contains("'@rid'").contains("line 1");
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /**
+   * The refusal has to land as a 400 on a body that arrived whole. {@code PostBatchHandler} answers 408 for a
+   * {@code MalformedBatchRecordException} raised on a body that ended early, which is why the reserved-key throw is
+   * a plain {@code IllegalArgumentException}: a client sent a complete, well-formed line that the server declines,
+   * and telling it to go hunting for a truncated upload would send it to the wrong place.
+   */
+  @Test
+  void theRefusalKeepsTheAccountingAndTheLinesTheLoadHadReached() throws Exception {
+    createVertexTypeIfAbsent("Accounting");
+
+    final String body = """
+        {"@type":"vertex","@class":"Accounting","@id":"a1","name":"Alice"}
+        {"@type":"vertex","@class":"Accounting","@id":"a2","name":"Bob"}
+        {"@type":"vertex","@class":"Accounting","@id":"a3","@cat":"v"}
+        """;
+
+    final JSONObject error = postBatchExpecting(400, body, "application/x-ndjson");
+
+    assertThat(error.getString("error")).contains("'@cat'").contains("line 3");
+    assertThat(error.getLong("linesRead")).as("the failing line was read too").isEqualTo(3);
+    assertThat(error.getLong("linesSkipped")).isZero();
+    assertThat(error.has("partialCommit")).isTrue();
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /**
+   * The streaming encoding answers 200 for a load that failed <em>after</em> it acknowledged a chunk, because the
+   * status line is already gone by then. A reserved key on line 1 is rejected before anything is acknowledged, so the
+   * request must still get its real 400 and the buffered error body - the guarantee the operation documents for its
+   * 400 and 408, which a refusal introduced on this path must not quietly break.
+   */
+  @Test
+  void theRefusalIsStillA400UnderTheStreamingEncoding() throws Exception {
+    createVertexTypeIfAbsent("Streaming");
+
+    final JSONObject error = postBatchExpecting(400,
+        "{\"@type\":\"vertex\",\"@class\":\"Streaming\",\"properties\":{\"name\":\"Alice\"}}\n",
+        "application/x-ndjson", "application/x-ndjson");
+
+    assertThat(error.getString("error")).contains("'properties'").contains("line 1");
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /** Same defect, CSV spelling: the control keys are column names there, so the header is where it is caught. */
+  @Test
+  void anUnknownAtPrefixedCsvColumnIsRefused() throws Exception {
+    createVertexTypeIfAbsent("CsvUnknownAtCol");
+
+    final String body = """
+        @type,@class,@id,@rid,name
+        vertex,CsvUnknownAtCol,c1,#1:0,Carol
+        """;
+
+    final JSONObject error = postBatchExpecting(400, body, "text/csv");
+
+    assertThat(error.getString("error")).contains("'@rid'").contains("line 1");
+
+    final Database db = getServerDatabase(0, getDatabaseName());
+    assertThat(db.query("sql", "SELECT FROM CsvUnknownAtCol WHERE name = 'Carol'").stream().count()).isZero();
+  }
+
+  // Regression: #7570 a reserved or unknown control key is refused with a 400, not stored verbatim
+  /** A CSV column named {@code properties} carries a scalar and is ordinary data, so it must keep working. */
+  @Test
+  void aCsvPropertiesColumnStillLoads() throws Exception {
+    createVertexTypeIfAbsent("CsvScalarProps");
+
+    final String body = """
+        @type,@class,@id,properties
+        vertex,CsvScalarProps,c2,public
+        """;
+
+    final JSONObject result = postBatchExpecting(200, body, "text/csv");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(1);
+  }
+
+  /**
+   * Every test gets its own vertex type. The server database is shared across the methods of this class and the
+   * assertions here are about what a refused load left behind, so a type another method had already written to would
+   * make them pass or fail on execution order rather than on the fix.
+   */
+  private void createVertexTypeIfAbsent(final String vertexType) {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (!db.getSchema().existsType(vertexType))
+      db.getSchema().createVertexType(vertexType);
+  }
+
+  /*
+   * Issue #7574 over the wire. {@code BatchControlKeyValidationTest} pins the two parsers; this proves the
+   * refusal reaches the client as a 400 rather than as the 408 a truncated body gets, that it carries the same
+   * partial-commit accounting every other {@code /batch} failure carries, and that the load left nothing behind.
+   * <p>
+   * The payload in the first test is the one from the issue: before the fix it answered 200 with
+   * {@code edgesCreated: 1} and the {@code @id} nowhere - neither stored nor reported.
+   *
+   * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7574">issue #7574</a>
+   */
+
+  // Regression: #7574 a control key on the wrong kind of line is refused with a 400
+  @Test
+  void anIdOnAnEdgeLineIsRefusedWithA400InsteadOfBeingDropped() throws Exception {
+    createVertexAndEdgeTypesIfAbsent("Misplaced7574A");
+
+    final String body = """
+        {"@type":"vertex","@class":"Misplaced7574A","@id":"p1","name":"Alice"}
+        {"@type":"vertex","@class":"Misplaced7574A","@id":"p2","name":"Bob"}
+        {"@type":"edge","@class":"Misplaced7574AEdge","@from":"p1","@to":"p2","@id":"e1"}
+        """;
+
+    final JSONObject error = postBatchExpecting(400, body, "application/x-ndjson");
+
+    assertThat(error.getString("error"))
+        .contains("'@id'")
+        .contains("line 3")
+        .contains("vertex line");
+    // The accounting a client needs to reconcile: the two vertices were attempted before the offending line.
+    assertThat(error.has("verticesCreated")).as("a batch failure reports what it had attempted").isTrue();
+    assertThat(error.has("partialCommit")).isTrue();
+  }
+
+  // Regression: #7574 a control key on the wrong kind of line is refused with a 400
+  @Test
+  void aFromOnAVertexLineIsRefusedAndStoresNothing() throws Exception {
+    createVertexAndEdgeTypesIfAbsent("Misplaced7574B");
+
+    final JSONObject error = postBatchExpecting(400,
+        "{\"@type\":\"vertex\",\"@class\":\"Misplaced7574B\",\"@id\":\"p1\",\"@from\":\"somewhere\"}\n",
+        "application/x-ndjson");
+
+    assertThat(error.getString("error")).contains("'@from'").contains("edge line");
+
+    final Database db = getServerDatabase(0, getDatabaseName());
+    assertThat(db.countType("Misplaced7574B", false))
+        .as("the misplaced key is refused before the record is created, not after")
+        .isZero();
+  }
+
+  // Regression: #7574 a control key on the wrong kind of line is refused with a 400
+  /**
+   * The CSV rule refuses a value, not a column, so the single-header form a client may already be sending keeps
+   * loading. This is the payload that would have broken had the refusal been keyed on the header.
+   */
+  @Test
+  void oneCsvHeaderAcrossBothSectionsStillLoadsWhenTheUnusedColumnsAreEmpty() throws Exception {
+    createVertexAndEdgeTypesIfAbsent("Misplaced7574C");
+
+    final String body = """
+        @type,@class,@id,@from,@to,name
+        vertex,Misplaced7574C,p1,,,Alice
+        vertex,Misplaced7574C,p2,,,Bob
+        edge,Misplaced7574CEdge,,p1,p2,
+        """;
+
+    final JSONObject result = postBatchExpecting(200, body, "text/csv");
+
+    assertThat(result.getLong("verticesCreated")).isEqualTo(2);
+    assertThat(result.getLong("edgesCreated")).isEqualTo(1);
+  }
+
+  // Regression: #7574 a control key on the wrong kind of line is refused with a 400
+  /** And the same header refuses a value the row's kind cannot use. */
+  @Test
+  void aCsvRowCarryingAControlValueItsKindCannotUseIsRefused() throws Exception {
+    createVertexAndEdgeTypesIfAbsent("Misplaced7574D");
+
+    final String body = """
+        @type,@class,@id,@from,@to,name
+        vertex,Misplaced7574D,p1,nowhere,,Alice
+        """;
+
+    final JSONObject error = postBatchExpecting(400, body, "text/csv");
+
+    assertThat(error.getString("error")).contains("'@from'").contains("line 2");
+  }
+
+  /**
+   * Every test gets its own types, because the server database is shared across the methods of this class and the
+   * assertions are about what a refused load left behind.
+   */
+  private void createVertexAndEdgeTypesIfAbsent(final String vertexType) {
+    final Database db = getServerDatabase(0, getDatabaseName());
+    if (!db.getSchema().existsType(vertexType))
+      db.getSchema().createVertexType(vertexType);
+    if (!db.getSchema().existsType(vertexType + "Edge"))
+      db.getSchema().createEdgeType(vertexType + "Edge");
+  }
+
+  /*
+   * Issue #7578, the half the sweeps cannot do: a {@code required} list is a claim about what a HANDLER sends, so
+   * the only way to know it is true is to make the handler send one.
+   * <p>
+   * {@code BatchError} is the schema where getting it wrong was easiest, and where this PR did get it wrong first
+   * time round (code review on PR #7749). It is bound to two statuses, not one: {@code POST /batch} answers 400
+   * for a line it refuses and 408 for a body that did not arrive whole, and the two are built by different methods.
+   * {@code exception} is unconditional on the 400 and absent on two of the three 408 paths - a body that simply
+   * ended before its announced length, and a malformed record that turned out to be a cut upload - because
+   * {@code partialPayloadResponse} writes it only when there is a class to name.
+   * <p>
+   * Both statuses are driven here and every name the schema requires is checked against what actually arrived. The
+   * expectation is read out of {@link CoreApiSpec}'s own document, so the assertion cannot drift from the thing it
+   * is checking: adding a name to the required list and not to the response fails this test.
+   *
+   * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7578">issue #7578</a>
+   */
+
+  /** The names {@code BatchError} promises, read from the document rather than written out here. */
+  private static List<String> requiredByTheDocument() {
+    final OpenAPI openAPI = new OpenAPI();
+    openAPI.setPaths(new Paths());
+    openAPI.setComponents(new Components());
+    new CoreApiSpec().contribute(openAPI);
+
+    final Schema<?> batchError = openAPI.getComponents().getSchemas().get("BatchError");
+    assertThat(batchError).as("BatchError must be registered").isNotNull();
+    assertThat(batchError.getRequired()).as("and it must declare what it always sends").isNotEmpty();
+    return batchError.getRequired();
+  }
+
+  private static void assertCarriesEveryRequiredName(final JSONObject body) {
+    for (final String required : requiredByTheDocument())
+      assertThat(body.has(required))
+          .as("BatchError promises '%s' on every failure; the response was %s", required, body)
+          .isTrue();
+  }
+
+  // Regression: #7578 every name BatchError requires is in what the handler sends, on 400 and 408
+  /** The 400: a line the parser refuses. Here `exception` IS present, which is why it reads as unconditional. */
+  @Test
+  void aRefusedLineCarriesEveryNameTheSchemaRequires() throws Exception {
+    createVertexTypeIfAbsent("Batch7578A");
+
+    final JSONObject body = postWholeBody(400,
+        "{\"@type\":\"vertex\",\"@class\":\"Batch7578A\",\"@id\":\"p1\",\"@rid\":\"#1:0\"}\n");
+
+    assertCarriesEveryRequiredName(body);
+    assertThat(body.has("exception"))
+        .as("a refused line is an IllegalArgumentException, so the 400 does name a class")
+        .isTrue();
+  }
+
+  // Regression: #7578 every name BatchError requires is in what the handler sends, on 400 and 408
+  /**
+   * The 408 that makes {@code exception} conditional, and the reason this test exists at all.
+   * <p>
+   * A line the parser cannot read is normally a 400 naming it - but when the body ALSO ended before its
+   * announced length, {@code PostBatchHandler} reports the load as truncated instead, because a cut upload hands
+   * the parser stale bytes that look like a malformed line the client never sent (issue #5470). That branch
+   * calls {@code truncatedBody} with a null exception class: nothing threw, the parser simply refused a line, so
+   * there is no class to name and {@code partialPayloadResponse} omits the member.
+   * <p>
+   * Reached by announcing more bytes than are sent and then half-closing. The parser refuses line one on its own
+   * content - it never reaches a read that could raise - and only THEN does {@code bodyEndedEarly} probe and find
+   * the peer gone. That ordering is what separates this path from the one below, where the line is valid, the
+   * parser loops for more input, and Undertow raises the I/O failure itself.
+   */
+  @Test
+  void aRefusedLineOnACutUploadCarriesNoExceptionWhichIsWhyItIsNotRequired() throws Exception {
+    createVertexTypeIfAbsent("Batch7578B");
+
+    // A JSON array, which the parser refuses on sight as a MalformedBatchRecordException.
+    final String sent = "[{\"@type\":\"vertex\",\"@class\":\"Batch7578B\"}]\n";
+    final JSONObject body = postRaw(sent, sent.length() + 512, 408, true);
+
+    assertCarriesEveryRequiredName(body);
+    assertThat(body.has("exception"))
+        .as("nothing threw - the parser refused a line and the body was short, so there is no class to name. "
+            + "This is why 'exception' must not be in BatchError's required list. The response was %s", body)
+        .isFalse();
+    assertThat(body.getString("error")).contains("truncated");
+  }
+
+  // Regression: #7578 every name BatchError requires is in what the handler sends, on 400 and 408
+  /**
+   * The other 408 path, kept as the contrast: when the line is VALID, the parser loops for the bytes that never
+   * arrive, Undertow raises an {@link java.io.IOException} itself, and the same response DOES name it.
+   * <p>
+   * So {@code exception} is not "absent on the 408" either - it is present on one of that status's three paths
+   * and absent on the other two, which is exactly the shape a {@code required} list cannot express and must
+   * therefore leave out.
+   */
+  @Test
+  void aPeerThatGoesAwayMidBodyDoesNameItsException() throws Exception {
+    createVertexTypeIfAbsent("Batch7578C");
+
+    final String sent = "{\"@type\":\"vertex\",\"@class\":\"Batch7578C\",\"@id\":\"p1\",\"name\":\"Alice\"}\n";
+    final JSONObject body = postRaw(sent, sent.length() + 512, 408, true);
+
+    assertCarriesEveryRequiredName(body);
+    assertThat(body.has("exception"))
+        .as("the peer closing mid-body IS an IOException, so this path names a class. The response was %s", body)
+        .isTrue();
+    assertThat(body.getString("error")).contains("truncated");
+  }
+
+  private String host() {
+    return "127.0.0.1";
+  }
+
+  private int port() {
+    return getServer(0).getHttpServer().getPort();
+  }
+
+  private static String authorization() {
+    return "Basic " + Base64.getEncoder()
+        .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
+  }
+
+  private JSONObject postWholeBody(final int expectedStatus, final String payload) throws Exception {
+    return postRaw(payload, payload.getBytes(StandardCharsets.UTF_8).length, expectedStatus, false);
+  }
+
+  /**
+   * @param halfClose true to shut the write side down after the body, which makes Undertow report the peer as
+   *                  gone and raise an IOException; false to leave it open, so a parser that refuses a line does
+   *                  so without anything throwing
+   */
+  private JSONObject postRaw(final String payload, final int contentLength, final int expectedStatus,
+      final boolean halfClose) throws Exception {
+    final byte[] sent = payload.getBytes(StandardCharsets.UTF_8);
+
+    try (final Socket socket = new Socket(host(), port())) {
+      socket.setSoTimeout(30_000);
+      final OutputStream out = socket.getOutputStream();
+      out.write(("POST /api/v1/batch/" + getDatabaseName() + " HTTP/1.1\r\n"
+          + "Host: " + host() + ":" + port() + "\r\n"
+          + "Authorization: " + authorization() + "\r\n"
+          + "Content-Type: application/x-ndjson\r\n"
+          + "Content-Length: " + contentLength + "\r\n"
+          + "Connection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+      out.write(sent);
+      out.flush();
+      if (halfClose)
+        // The server sees the peer go away mid-body, which Undertow reports as an IOException.
+        socket.shutdownOutput();
+
+      return readRawResponse(socket, expectedStatus);
+    }
+  }
+
+  private static JSONObject readRawResponse(final Socket socket, final int expectedStatus) throws Exception {
+    final BufferedReader reader = new BufferedReader(
+        new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+
+    final String statusLine = reader.readLine();
+    assertThat(statusLine).as("the server must answer at all").isNotNull();
+
+    String line;
+    boolean chunked = false;
+    while ((line = reader.readLine()) != null && !line.isEmpty())
+      if (line.toLowerCase().startsWith("transfer-encoding:") && line.toLowerCase().contains("chunked"))
+        chunked = true;
+
+    final StringBuilder body = new StringBuilder();
+    while ((line = reader.readLine()) != null)
+      body.append(line);
+
+    final String raw = body.toString();
+    // The JSON object is the only thing on the body, whether or not chunk sizes are interleaved around it.
+    final int start = raw.indexOf('{');
+    final int end = raw.lastIndexOf('}');
+    assertThat(start).as("response carried no JSON body: status '%s', raw '%s'", statusLine, raw).isNotNegative();
+
+    assertThat(statusLine)
+        .as("expected %d, body was %s", expectedStatus, raw)
+        .contains(" " + expectedStatus + " ");
+    assertThat(chunked || !raw.isEmpty()).isTrue();
+
+    return new JSONObject(raw.substring(start, end + 1));
+  }
+
+  /*
+   * Issue #8625: a batch loaded with {@code bidirectional=false} used to skip the incoming side of an edge type declared
+   * bidirectional, leaving edges no query could reach from their target. The load is now refused with a client error,
+   * and a unidirectional type still loads.
+   */
+
+  // Regression: #8625 a unidirectional load on a bidirectional edge type is a client error
+  @Test
+  void aUnidirectionalBatchOnABidirectionalTypeIsAClientError() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.getSchema().getOrCreateVertexType("Issue8625V");
+    database.getSchema().createEdgeType("Issue8625Both");
+
+    final JSONObject error = postBatchExpecting(400, bidirectionalBody("Issue8625Both"), "application/x-ndjson", null, "bidirectional=false");
+    assertThat(error.getString("error")).contains("Edge type 'Issue8625Both' is bidirectional");
+    assertThat(database.countType("Issue8625Both", false)).isZero();
+  }
+
+  // Regression: #8625 a unidirectional load on a bidirectional edge type is a client error
+  @Test
+  void aUnidirectionalBatchOnAUnidirectionalTypeLoads() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.getSchema().getOrCreateVertexType("Issue8625V");
+    database.getSchema().buildEdgeType().withName("Issue8625One").withBidirectional(false).create();
+
+    final JSONObject result = postBatchExpecting(200, bidirectionalBody("Issue8625One"), "application/x-ndjson", null, "bidirectional=false");
+    assertThat(result.getLong("edgesCreated")).isEqualTo(1);
+    assertThat(database.countType("Issue8625One", false)).isEqualTo(1);
+  }
+
+  private static String bidirectionalBody(final String edgeType) {
+    return "{\"@type\":\"vertex\",\"@class\":\"Issue8625V\",\"@id\":\"a\"}\n"
+        + "{\"@type\":\"vertex\",\"@class\":\"Issue8625V\",\"@id\":\"b\"}\n"
+        + "{\"@type\":\"edge\",\"@class\":\"" + edgeType + "\",\"@from\":\"a\",\"@to\":\"b\"}\n";
+  }
+
+  private JSONObject postBatchExpecting(final int expectedStatus, final String body, final String contentType)
+      throws Exception {
+    return postBatchExpecting(expectedStatus, body, contentType, null, null);
+  }
+
+  private JSONObject postBatchExpecting(final int expectedStatus, final String body, final String contentType,
+      final String accept) throws Exception {
+    return postBatchExpecting(expectedStatus, body, contentType, accept, null);
+  }
+
+  /**
+   * Posts {@code body} to {@code /api/v1/batch} of server 0, asserts the status and returns the parsed answer: the response
+   * stream below 400, the error stream from 400 on.
+   */
+  private JSONObject postBatchExpecting(final int expectedStatus, final String body, final String contentType,
+      final String accept, final String queryParams) throws Exception {
+    // Never a hardcoded 2480: the server binds the first free port of the configured range, and a port pinned to
+    // 2480 is answered by whatever else already listens there - which surfaces as a 403 rather than as a conflict.
+    String url = getServerHttpUrl("/api/v1/batch/") + getDatabaseName();
+    if (queryParams != null && !queryParams.isEmpty())
+      url += "?" + queryParams;
+
+    final HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+    conn.setRequestMethod("POST");
+    conn.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    conn.setRequestProperty("Content-Type", contentType);
+    if (accept != null)
+      conn.setRequestProperty("Accept", accept);
+    conn.setDoOutput(true);
+
+    final byte[] data = body.getBytes(StandardCharsets.UTF_8);
+    conn.setRequestProperty("Content-Length", Integer.toString(data.length));
+    try (final DataOutputStream out = new DataOutputStream(conn.getOutputStream())) {
+      out.write(data);
+    }
+    conn.connect();
+
+    try {
+      final int status = conn.getResponseCode();
+      final InputStream in = status < 400 ? conn.getInputStream() : conn.getErrorStream();
+      final String response = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+      assertThat(status).as("response: %s", response).isEqualTo(expectedStatus);
+      return new JSONObject(response);
+    } finally {
+      conn.disconnect();
     }
   }
 }

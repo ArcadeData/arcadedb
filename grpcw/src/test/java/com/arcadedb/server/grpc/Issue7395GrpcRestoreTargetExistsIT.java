@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * issue is about: {@code restore backup} consulted the server's database registry and the filesystem,
  * {@code restore database} only the filesystem.
  * <p>
- * The HTTP half lives in {@code Issue7395RestoreTargetExistsIT} in the {@code server} module. This
+ * The HTTP half lives in {@code RestoreTargetIT.TargetExists} in the {@code server} module. This
  * class drives the same states through the RPCs rather than through the shared implementation,
  * because a test that called the implementation directly would pass against a transport that never
  * wired it up.

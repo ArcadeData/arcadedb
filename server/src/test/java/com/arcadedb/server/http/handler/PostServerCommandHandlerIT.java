@@ -231,17 +231,13 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void clusterCommandsCaseSensitivity() throws Exception {
-    // ALIGN DATABASE command is only available if the database supports it
-    // We'll test it but expect it might not be supported in all configurations
-    HttpResponse<String> response = executeServerCommand("ALIGN DATABASE graph");
-    // Could be 200 (success) or 500 (not supported)
-    assertThat(response.statusCode()).isIn(200, 500);
-
-    response = executeServerCommand("align database graph");
-    assertThat(response.statusCode()).isIn(200, 500);
-
-    response = executeServerCommand("Align Database graph");
-    assertThat(response.statusCode()).isIn(200, 500);
+    // Every case variation reaches the command: no database aligns its replicas, which is refused as the caller's error
+    // naming the statement (issue #11796), never as the 500 of a bare UnsupportedOperationException
+    for (final String command : new String[] { "ALIGN DATABASE graph", "align database graph", "Align Database graph" }) {
+      final HttpResponse<String> response = executeServerCommand(command);
+      assertThat(response.statusCode()).as(command).isEqualTo(400);
+      assertThat(response.body()).as(command).contains("ALIGN DATABASE is not supported");
+    }
   }
 
   /**

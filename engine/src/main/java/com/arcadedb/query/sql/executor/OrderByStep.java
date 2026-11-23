@@ -188,6 +188,8 @@ public class OrderByStep extends AbstractExecutionStep {
     int consumed = 0;
     if (topKInParallel(context, timeoutBegin))
       return;
+    // The heap lets rows go one at a time: each row it keeps is estimated, so a row that leaves gives back what it held
+    limit.estimateEachElement();
     final Comparator<Kept> byKeyThenArrival = byKeyThenArrival(orderBy, context);
     final PriorityQueue<Kept> heap = new PriorityQueue<>(Math.min(maxResults, 1024) + 1, byKeyThenArrival.reversed());
     long arrival = 0;
@@ -285,7 +287,7 @@ public class OrderByStep extends AbstractExecutionStep {
                 return reused;
               final PartialTopK partial = new PartialTopK(types, pipeline.copyConditions(),
                   pipeline.projection() == null ? null : pipeline.projection().copy(), orderBy.copy(), workerContext, maxResults,
-                  OperationHeapLimit.of(workerContext, "ORDER BY"));
+                  OperationHeapLimit.of(workerContext, "ORDER BY").estimateEachElement());
               workerPartials.add(partial);
               return partial;
             }, (partial, row, position, ignored) -> partial.accept(row, roundPosition + position), onWait);

@@ -27,6 +27,7 @@ import com.arcadedb.engine.MergedEdgeRegistry;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
@@ -38,6 +39,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
@@ -54,10 +56,13 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FailPoints;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LockManager;
@@ -211,6 +216,8 @@ public class TransactionContext implements Transaction {
   // check addUpdatedRecord would have refused them with is made by the commit instead, under the lock, against the newest
   // committed image: the write is merged onto it when it changed only edge-list heads, refused otherwise.
   private       RidHashSet                            staleEdgeListWrites;
+  // #12472: records written to their page at once (the asynchronous executor) rather than deferred to the commit
+  private       RidHashSet                            immediateWrites;
   // #12320: the vertices whose outgoing / incoming edge-list head a traversal read off a vertex loaded from this transaction's
   // own image of its page, see trackEdgeListHeadReadFromOwnImage()
   private       RidHashSet                            outHeadsReadFromOwnImage;
@@ -408,6 +415,10 @@ public class TransactionContext implements Transaction {
    * transaction back and re-begins it.
    */
   private       long                                 commitCount           = 0;
+  // Writes of this context's blocks that another node committed: statements a replica forwarded to the leader (issue #12635). Kept
+  // apart from commitCount because the two answer different questions: both make a block unsafe to replay, but only a local commit
+  // publishes the writes buffered HERE, which the async worker's shared batch must otherwise keep tracking (see getLocalCommitCount)
+  private       long                                 writesCommittedByAnotherNode = 0;
   // The edges of unidirectional types this context's transactions created or deleted, for the queries that read their
   // incoming side (issue #8625). Created on the first such change; outlives the transaction, like the context.
   private       UnidirectionalEdgeChanges            unidirectionalEdgeChanges;
@@ -418,17 +429,23 @@ public class TransactionContext implements Transaction {
   private       long                                 unidirectionalScanEpoch = -1L;
   // #8986: the buckets of the vertices whose incoming unidirectional edges were scanned for, to ask which of them received some since
   private       IntHashSet                           scannedBuckets;
-  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the stripes of the relationships it created by a
+  // #11482: MergedEdgeRegistry.getSequence() when this transaction began, and the keys of the relationships it created by a
   // match-or-create: the ones its commit checks, and the ones it marks. Primitive arrays grown on demand, null until the first
   private       long                                 mergedEdgeEpoch;
-  private       int[]                                mergedEdgeChecked;
+  private       long[]                               mergedEdgeChecked;
   private       int                                  mergedEdgeCheckedCount;
-  private       int[]                                mergedEdgeMarked;
+  private       long[]                               mergedEdgeMarked;
   private       int                                  mergedEdgeMarkedCount;
-  // #11482: the stripes are reserved in the registry, so they have to be marked committed or released when the transaction ends
+  // #11482: the keys are reserved in the registry, so they have to be marked committed or released when the transaction ends
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
+  // #12483: whether this transaction created a relationship of a type with an exact-key index, whose keys its commit marks
+  // (markRelationshipsOfIndexedTypes), and the last type registerNewRecord asked about, so a load of one type asks once
+  private       boolean                              createdEdgeOfIndexedType;
+  private       DocumentType                         lastNewEdgeType;
+  // #12483: whether this transaction created any relationship, for an index registered on its type after the begin
+  private       boolean                              createdEdge;
   // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
   // one this transaction read alive, and its RID may hold a vertex created since
   private       long                                 vertexDeleteEpoch;
@@ -524,8 +541,16 @@ public class TransactionContext implements Transaction {
   // Issue #10687: work owed whichever way the transaction ends, by key, see addAfterCompletionCallbackIfAbsent()
   private       Map<String, Runnable>                afterCompletionCallbacks    = null;
   private       Thread                               afterCompletionOwner        = null;
+  // Issue #11937: work that reads what the transaction is about to commit, run when the commit starts, see addBeforeCommitCallbackIfAbsent()
+  private       Map<String, Runnable>                beforeCommitCallbacks       = null;
   // Read by begin() on the thread that runs the callbacks, which is the one that sets it
   private       boolean                              runningAfterCompletion      = false;
+  // Issue #12251: a commit that runs the callbacks its transaction owes somewhere else than where the transaction concludes, see
+  // deferCallbacks(). Written by the thread that drives the commit and by the one that concludes it, which is the same thread
+  // today (the apply thread only publishes the pages), but volatile like commitPointReached all the same: the phases of one commit
+  // can be driven from different threads, and a conclusion on another one must not lose the deferral or what it deferred
+  private volatile boolean                           callbacksDeferred           = false;
+  private volatile Runnable                          deferredCallbacks           = null;
   // True once the ordered after-commit callbacks were told the commit point was reached (issue #10249): from then on every
   // way out of the transaction owes each of them either its run or its abandonment, see reset(). Volatile because the phases of one
   // commit can be driven from different threads (the replication layer publishes the pages on its apply thread), and costs a read
@@ -555,7 +580,7 @@ public class TransactionContext implements Transaction {
 
   public TransactionContext(final DatabaseInternal database) {
     this.database = database;
-    this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+    this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration());
     this.configuredUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
     this.configuredGroupCommit = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL_GROUP_COMMIT);
     this.embedded = database.getEmbedded() instanceof LocalDatabase local ? local : null;
@@ -649,11 +674,30 @@ public class TransactionContext implements Transaction {
    * durable and must neither be replayed onto whatever transaction is open now nor reported as lost. A rollback
    * deliberately does NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make
    * a later commit hand back a value a stale snapshot could match.
+   * <p>
+   * It also counts the writes of the block another node committed (issue #12635, see
+   * {@link #reportWriteCommittedByAnotherNode()}): those are durable too, so the block must not be replayed either.
+   *
+   * @return the number of transactions committed under this context so far, plus the writes another node committed for it
+   */
+  public long getCommitCount() {
+    return commitCount + writesCommittedByAnotherNode;
+  }
+
+  /**
+   * As {@link #getCommitCount()}, without the writes another node committed: whether THIS context's own buffered writes were
+   * published. The async worker asks it of its shared batch (issue #12635): a forwarded write leaves the local writes the batch
+   * buffered uncommitted, so their bookkeeping must survive it, unlike a mid-statement commit's.
    *
    * @return the number of transactions committed under this context so far
    */
-  public long getCommitCount() {
+  public long getLocalCommitCount() {
     return commitCount;
+  }
+
+  /** How many writes of this context's blocks another node committed (issue #12635): see {@link #reportWriteCommittedByAnotherNode()}. */
+  public long getWritesCommittedByAnotherNode() {
+    return writesCommittedByAnotherNode;
   }
 
   /**
@@ -674,6 +718,20 @@ public class TransactionContext implements Transaction {
    */
   public void reportBatchBoundaryOfNestedTransaction() {
     ++commitCount;
+  }
+
+  /**
+   * Records on THIS context a write of the block that another node committed: a statement a replica forwarded to the leader,
+   * which answered it (issue #12635). Called once the leader's answer is in, and only then, on every transaction stacked on the
+   * thread: see {@link DatabaseContext.DatabaseContextTL#reportWriteCommittedByAnotherNode()}.
+   * <p>
+   * The same witness as {@link #reportBatchBoundaryOfNestedTransaction()}, for the same reason: a rollback here takes nothing back
+   * on the leader, so a retry loop that replays the block writes it there a second time. The replica's HTTP handler runs every
+   * request in such a loop, and a write that is not idempotent - a script creating a vertex and an edge - was executed twice by the
+   * leader whenever anything after the forward raised a conflict on the replica.
+   */
+  public void reportWriteCommittedByAnotherNode() {
+    ++writesCommittedByAnotherNode;
   }
 
   /**
@@ -719,6 +777,11 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
+  public boolean holdsExplicitLocks() {
+    return explicitLockedFiles != null;
+  }
+
   public LocalTransactionExplicitLock lock() {
     if (explicitLock == null)
       explicitLock = new LocalTransactionExplicitLock(this);
@@ -727,6 +790,17 @@ public class TransactionContext implements Transaction {
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
     return isolationLevel;
+  }
+
+  /**
+   * Whether reads on this context are {@code REPEATABLE_READ}: the level the transaction began with, and only while that transaction
+   * runs. The context is reused by the next transaction of the thread and by the reads the thread makes outside any transaction, and it
+   * keeps its level after the transaction ended (a session restarts its transaction at it), so a read outside a transaction must not
+   * pin pages or snapshots as a {@code REPEATABLE_READ} transaction does: nothing would ever release them, and every later read of the
+   * thread, the next transaction's included, would answer from them.
+   */
+  public boolean isRepeatableRead() {
+    return isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ && isActive();
   }
 
   /** #5064: see the {@code remotelyCommitted} field - HA-layer only, call after quorum commit, before phase 2. */
@@ -767,6 +841,43 @@ public class TransactionContext implements Transaction {
    */
   public boolean hasWrittenRecords() {
     return !modifiedRecordsCache.isEmpty() || (updatedRecords != null && !updatedRecords.isEmpty());
+  }
+
+  /**
+   * Whether this transaction has changed nothing so far: no record created, written at once, queued for the commit or
+   * deleted, no page touched and no index entry queued. A read made in such a transaction under READ_COMMITTED answers
+   * what the same read answers outside any transaction, so a read-only statement may keep what it read for its own
+   * duration. A handful of size reads, meant to be asked once per batch of rows and not once per row.
+   */
+  public boolean hasChangedNothing() {
+    return !hasWrittenRecords() && deletedRecordsInTx.isEmpty() && (immediateWrites == null || immediateWrites.isEmpty())
+        && !hasChanges();
+  }
+
+  /**
+   * Whether this transaction has itself written the slot of {@code rid} on its page: it created the record (an insert is written at
+   * once), or wrote it at once rather than deferring the write to the commit (the asynchronous executor). Those are the only writes
+   * of the transaction that can make the slot differ from an image of the record read earlier in it (issue #12472); a deferred
+   * update leaves the slot alone until the commit, so a slot that differs from the image is never its doing, whatever the record
+   * caches hold. Records nothing in the running statement: it answers a question and hands out no record.
+   */
+  public boolean isSlotWrittenInTransaction(final RID rid) {
+    if (immediateWrites != null && immediateWrites.contains(rid))
+      return true;
+    return isCreatedInTransaction(rid);
+  }
+
+  /**
+   * Remembers a record written to its page at once inside this transaction (the asynchronous executor), see
+   * {@link #isSlotWrittenInTransaction(RID)}. The writes of the commit itself (the flush of the deferred updates, the merges) are
+   * not remembered: they run after every delete of the transaction.
+   */
+  public void trackImmediateWrite(final RID rid) {
+    if (status != STATUS.BEGUN)
+      return;
+    if (immediateWrites == null)
+      immediateWrites = new RidHashSet();
+    immediateWrites.add(rid);
   }
 
   /**
@@ -821,6 +932,15 @@ public class TransactionContext implements Transaction {
     newRecords.add(record, !database.isReadYourWrites());
     if (newRecordRIDs != null)
       newRecordRIDs.add(record.getIdentity());
+    // #12483: a relationship a MERGE answered by an index of its type would have found; one compare for a load of one type
+    if (!createdEdgeOfIndexedType && record instanceof Edge edge) {
+      createdEdge = true;
+      final DocumentType type = edge.getType();
+      if (type != lastNewEdgeType) {
+        lastNewEdgeType = type;
+        createdEdgeOfIndexedType = hasExactKeyIndex(type);
+      }
+    }
   }
 
   /**
@@ -1510,7 +1630,7 @@ public class TransactionContext implements Transaction {
 
     if (completion != null) {
       if (completionOwner == Thread.currentThread())
-        fireAfterCompletionCallbacks(completion);
+        fireOrDefer(null, false, completion);
       else
         LogManager.instance().log(this, Level.INFO,
             "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that registered them: "
@@ -1635,6 +1755,30 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Registers, under {@code key}, work that has to read what this transaction is about to commit (issue #11937): it runs when the
+   * commit starts, on the committing thread, with the transaction still active, so a lookup answers each record as the commit will
+   * write it (an after-commit callback can only read the database once other commits may have changed it again). It runs once,
+   * whatever statements were taken back since it was registered, and is dropped with a transaction that rolls back. An exception it
+   * throws fails the commit, which the caller then rolls back.
+   *
+   * @return true if the callback was registered, false if one is registered under {@code key} already
+   */
+  public boolean addBeforeCommitCallbackIfAbsent(final String key, final Runnable callback) {
+    if (beforeCommitCallbacks == null)
+      beforeCommitCallbacks = new LinkedHashMap<>(4);
+    return beforeCommitCallbacks.putIfAbsent(key, callback) == null;
+  }
+
+  private void fireBeforeCommitCallbacks() {
+    final Map<String, Runnable> callbacks = beforeCommitCallbacks;
+    if (callbacks == null)
+      return;
+    beforeCommitCallbacks = null;
+    for (final Runnable callback : callbacks.values())
+      callback.run();
+  }
+
+  /**
    * Whether this context is running the after-completion callbacks of the transaction that just ended on it. A transaction begun
    * meanwhile must not reuse it (see {@code LocalDatabase.begin()}): the transaction ended inside a failed commit too, whose caller
    * is about to read {@link #getCommitCount()} to tell a retryable failure from a half-committed block (#7916), and a commit of the
@@ -1691,6 +1835,71 @@ public class TransactionContext implements Transaction {
         throw e;
       }
     }
+    fireOrDefer(callbacks, commitPointWasReached, completion);
+  }
+
+  /**
+   * From here until {@link #takeDeferredCallbacks()}, whatever ends this transaction, a commit or a rollback, hands back the callbacks
+   * it owes instead of running them where it concludes (issue #12251). A callback is work of its own, the refresh of a continuous
+   * aggregate or of a materialized view, with a transaction and a commit of its own. The replication layer concludes a commit inside
+   * the locks of its commit protocol, which that work must not run under: its commit waits for a schema session in progress, and the
+   * session waits for the very locks the commit it runs under holds, until the quorum timeout. The layer defers the callbacks of the
+   * commit it drives, and runs them once it has released those locks.
+   * <p>
+   * The transaction ends exactly as it does without the deferral (its records marked clean, the commit counted, the context released
+   * for its next transaction): only the run of what it owes moves. The driver ends the deferral with
+   * {@link #takeDeferredCallbacks()}, whatever the outcome of the commit.
+   */
+  public void deferCallbacks() {
+    callbacksDeferred = true;
+  }
+
+  /** Whether {@link #deferCallbacks()} is in force: the callbacks this transaction owes are kept for the one that deferred them. */
+  public boolean isDeferringCallbacks() {
+    return callbacksDeferred;
+  }
+
+  /**
+   * Ends the deferral of {@link #deferCallbacks()} and hands back what the transaction owed meanwhile: its after-commit callbacks in
+   * order, then its after-completion callbacks, as one piece of work to run once. The after-commit ones are owed by a commit only,
+   * the after-completion ones by a commit and by a rollback, and an {@link Error} escaping one leaves the others to the rules of
+   * {@link #fireCommitCallbacks}, as when they run where the transaction concludes.
+   *
+   * @return the work to run, or {@code null} when the transaction owed none
+   */
+  public Runnable takeDeferredCallbacks() {
+    callbacksDeferred = false;
+    final Runnable owed = deferredCallbacks;
+    deferredCallbacks = null;
+    return owed;
+  }
+
+  /** Runs what a concluded transaction owes where it concludes, or keeps it for {@link #takeDeferredCallbacks()} while deferring. */
+  private void fireOrDefer(final List<Runnable> callbacks, final boolean commitPointWasReached, final Map<String, Runnable> completion) {
+    if (!callbacksDeferred) {
+      fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+      return;
+    }
+    if (callbacks == null && completion == null)
+      return;
+    final Runnable owed = () -> fireCommitCallbacks(callbacks, commitPointWasReached, completion);
+    final Runnable earlier = deferredCallbacks;
+    if (earlier == null)
+      deferredCallbacks = owed;
+    else
+      // a driver can end one transaction twice, a commit whose last step failed and was rolled back: both are owed, in the order they ended
+      deferredCallbacks = () -> {
+        try {
+          earlier.run();
+        } finally {
+          owed.run();
+        }
+      };
+  }
+
+  /** Runs what a concluded commit owes: its after-commit callbacks in order, then its after-completion callbacks. */
+  private void fireCommitCallbacks(final List<Runnable> callbacks, final boolean commitPointWasReached,
+      final Map<String, Runnable> completion) {
     try {
       if (callbacks != null) {
         int next = 0;
@@ -1734,6 +1943,25 @@ public class TransactionContext implements Transaction {
           LogManager.instance().log(this, Level.WARNING, "Error taking the commit order of a post-commit callback: %s", e, e.getMessage());
         }
       }
+  }
+
+  /**
+   * Tells the ordered after-commit callbacks that this transaction's pages are published, while it still holds its locks (issue
+   * #12720, see {@link OrderedAfterCommitCallback#onPublished()}). Only once the commit point was reached: the callbacks of a
+   * transaction that never took a place have nothing to hand over before they run.
+   */
+  private void reachPublication() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    if (callbacks == null || !commitPointReached)
+      return;
+    for (final Runnable callback : callbacks)
+      if (callback instanceof OrderedAfterCommitCallback ordered)
+        try {
+          ordered.onPublished();
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error telling a post-commit callback its transaction is published: %s", e, e.getMessage());
+        }
   }
 
   /**
@@ -2079,8 +2307,8 @@ public class TransactionContext implements Transaction {
    */
   public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
     // ONLY INSIDE A TRANSACTION: THE CONTEXT OUTLIVES ITS TRANSACTION AND KEEPS ITS LEVEL, AND A COUNT BETWEEN TWO
-    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
+    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM (#12789: THE SAME PREDICATE AS THE PAGE PINS)
+    if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();
@@ -2120,29 +2348,23 @@ public class TransactionContext implements Transaction {
     // NOT FOUND, DELEGATES TO THE DATABASE
     final BasePage page = database.getPageManager().getImmutablePage(pageId, size, false, true);
 
-    if (page != null) {
-      switch (isolationLevel) {
-      case READ_COMMITTED:
-        break;
-      case REPEATABLE_READ:
-        // #5976: the component's OWN page count (bumped synchronously at commit time, see
-        // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
-        // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
-        // page until the async flush thread actually writes it. Using the physical size here made a just-
-        // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
-        // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
-        // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
-        // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
-        // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
-        // below into a hard failure on this read path instead (code review on #6013). The cast is safe
-        // because PaginatedComponent is the only direct subclass of Component in the codebase.
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getTotalPages();
-        if (!isNewPage)
-          // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
-          immutablePages.put(pageId, (ImmutablePage) page);
-        break;
-      }
+    if (page != null && isRepeatableRead()) {
+      // #5976: the component's OWN page count (bumped synchronously at commit time, see
+      // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
+      // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
+      // page until the async flush thread actually writes it. Using the physical size here made a just-
+      // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
+      // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
+      // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
+      // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
+      // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
+      // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+      // because PaginatedComponent is the only direct subclass of Component in the codebase.
+      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
+      final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
+      if (!isNewPage)
+        // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
+        immutablePages.put(pageId, (ImmutablePage) page);
     }
 
     return page;
@@ -2158,7 +2380,7 @@ public class TransactionContext implements Transaction {
    * {@code getPage}, whose caller may move its buffer position.
    */
   public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPage(pageId, size);
 
     final BasePage page = getPageHeldByTransaction(pageId);
@@ -2173,7 +2395,7 @@ public class TransactionContext implements Transaction {
    * {@code REPEATABLE_READ} reads as {@code getPageNotHeld} does, which keeps the page for the rest of the transaction.
    */
   public BasePage getPageNotHeldForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPageNotHeld(pageId, size);
     return database.getPageManager().getSharedImmutablePage(pageId, size);
   }
@@ -4309,8 +4531,18 @@ public class TransactionContext implements Transaction {
           + "began (" + begunUnderWriteRefusal + "). Retry it");
     }
 
+    // Issue #11937: still BEGUN, so a callback reads the records as the commit is about to write them
+    fireBeforeCommitCallbacks();
+
     // Issue #10588: while the transaction is still BEGUN, the one state an index queues an entry instead of writing it
     reconcileIndexesRegisteredSinceBegin();
+
+    // Issue #11751: the same state, for what was assigned to a record after the save() that queued it, since the flush below writes the
+    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
+    indexPropertiesAssignedAfterTheirSave();
+
+    // Issue #12483: the values of the relationships this transaction created are final now, the SET that followed a CREATE included
+    markRelationshipsOfIndexedTypes();
 
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
@@ -4392,7 +4624,8 @@ public class TransactionContext implements Transaction {
 
       if (!hasChanges()) {
         // #7934 review: returning without reset() does NOT strand an index replay conclusion registered earlier in
-        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes).
+        // this phase (the deferred UPDATE no longer indexes here since #8983: save() queued its index changes, and what was assigned
+        // after the save was queued by indexPropertiesAssignedAfterTheirSave before the status left BEGUN, #11751).
         // Every caller of this method concludes the transaction on the null it gets back: commit() through
         // resetAndFireCallbacks(), and the Raft path through concludeCommitWithoutPublishing() on its own read-only
         // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated one:
@@ -4432,6 +4665,15 @@ public class TransactionContext implements Transaction {
       lockLateJoiningFilesInPlace(explicitLockMode);
 
       reserveMergedEdges();
+
+      // #11921: every file lock of this commit is held from here on and no page version has been read yet, which is where an
+      // ordering authority (the Raft leader's page-version ledger) that must see the checks below and the publication as one
+      // step takes its own lock. One volatile read on a standalone database, nothing on a replica.
+      if (isLeader && database.getEmbedded() instanceof LocalDatabase localDatabase) {
+        final PageVersionReservations reservations = localDatabase.getPageVersionReservations();
+        if (reservations != null)
+          reservations.beforeVersionChecks();
+      }
 
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
@@ -4703,9 +4945,11 @@ public class TransactionContext implements Transaction {
       final boolean columnarProjected = columnar != null && groupColumnarMarks(columnar, pagesToPublish, changes.result != null);
 
       if (changes.result != null) {
+        FailPoints.hit(FailPoints.COMMIT_BEFORE_WAL);
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         final WALFile.FlushType walFlush = replicatedPublication ? WALFile.FlushType.NO : getWALFlush();
-        if (deferWALSync && walFlush != WALFile.FlushType.NO)
+        final boolean walQueued = deferWALSync && walFlush != WALFile.FlushType.NO;
+        if (walQueued)
           // the record is queued: its write and flush are owed, and paid outside the file locks before the commit returns
           // (see resetAndFireCallbacks)
           deferredWALSyncTicket = database.getTransactionManager()
@@ -4717,6 +4961,9 @@ public class TransactionContext implements Transaction {
         // before the publication below starts is then an ordinary pre-durability failure (full rollback of user-held
         // record state, no fence); one after it is not, see phase2PublicationStarted (#10768).
         phase2WalAppended = true;
+        // a queued record is written after the publication below, so only a record written here has reached the WAL at this point
+        if (!walQueued)
+          FailPoints.hit(FailPoints.COMMIT_AFTER_WAL);
       } else if (embedded != null && !pagesToPublish.isEmpty()) {
         // a no-WAL commit (final review B-I3): a columnar rebuild of this session must then not publish as if its pages were on disk.
         // One volatile read once recorded; nothing more on a database without a COLUMNAR index
@@ -4765,6 +5012,7 @@ public class TransactionContext implements Transaction {
         database.getTransactionManager().commitPublished();
         countPublicationInEnclosingTransactions();
       }
+      FailPoints.hit(FailPoints.COMMIT_AFTER_PUBLISH);
 
       // #8986: AFTER the edges are published and while their targets' files are still locked, so a delete that did not
       // see them has either taken its epoch before this bump, and fails at its commit, or after it, and saw them
@@ -4803,6 +5051,10 @@ public class TransactionContext implements Transaction {
       final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
       if (corpusDeltas != null)
         corpusDeltas.applyCommitted();
+
+      // #12720: EVERYTHING THE COMMIT PUBLISHES IS VISIBLE, AND WHILE ITS LOCKS ARE HELD NO OTHER TRANSACTION CAN HAVE COMMITTED ON TOP
+      // OF IT: WHAT AN ORDERED CALLBACK HANDS OVER HERE IS STILL THE NEWEST STATE OF THE RECORDS THIS TRANSACTION WROTE
+      reachPublication();
     } catch (final IOException | InterruptedException e) {
       // AN InterruptedException IS CARRIED AS THE CAUSE, ITS FLAG RESTORED BY WHOEVER CONCLUDES THE FAILED PHASE, ONCE THE
       // FILES IT TOUCHES ARE DONE WITH: commit2ndPhase, SEE restoreInterruptIfCause (#10416)
@@ -5384,6 +5636,7 @@ public class TransactionContext implements Transaction {
     lightEdgeEntryChanges = null;
     newRecordRIDs = null;
     staleEdgeListWrites = null;
+    immediateWrites = null;
     outHeadsReadFromOwnImage = null;
     inHeadsReadFromOwnImage = null;
     mergedEdgeListBases = null;
@@ -5402,6 +5655,7 @@ public class TransactionContext implements Transaction {
     // Reached with some only when the transaction ends neither by a commit nor by a rollback, which take them out first and run them
     afterCompletionCallbacks = null;
     afterCompletionOwner = null;
+    beforeCommitCallbacks = null;
     attachments = null;
     clientManaged = false;
     implicit = false;
@@ -5712,12 +5966,12 @@ public class TransactionContext implements Transaction {
     // Outside a transaction the read was not covered by the epoch its begin takes, and nothing would commit the relationship anyway
     if (from == null || to == null || !isActive())
       return;
-    final int own = MergedEdgeRegistry.stripeOf(from, to, type, matchedBy);
+    final long own = MergedEdgeRegistry.keyOf(from, to, type, matchedBy);
     mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, own);
     mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, own);
     if (matchedBy != null && !matchedBy.isEmpty())
       // Found by a statement that matches the pair and type alone, whatever this one matched it by: see MergedEdgeRegistry
-      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+      mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5728,7 +5982,7 @@ public class TransactionContext implements Transaction {
   public void checkMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5739,7 +5993,7 @@ public class TransactionContext implements Transaction {
   public void markMergedEdge(final RID from, final RID to, final String type) {
     if (from == null || to == null || !isActive())
       return;
-    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.stripeOf(from, to, type, null));
+    mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, MergedEdgeRegistry.keyOf(from, to, type, null));
   }
 
   /**
@@ -5757,9 +6011,181 @@ public class TransactionContext implements Transaction {
     markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
-  private static int[] append(int[] array, final int index, final int value) {
+  /**
+   * The key a MERGE that found no relationship through {@code index} checks (issue #12483): a MERGE between two bound nodes answers
+   * its existence check from an exact-key index of the relationship's type instead of a walk of an edge list, so no head read
+   * refuses its commit when a concurrent transaction gives either node a relationship, which a bulk load of relationships between
+   * shared vertices did about twice per committed batch. What that refusal protected, the same relationship created concurrently
+   * by any statement, is kept by the {@link MergedEdgeRegistry}: the commit of every relationship of a type with such an index
+   * marks the key of each index ({@link #markRelationshipsOfIndexedTypes}), which this one checks.
+   * <p>
+   * The values are read from {@code created}, the relationship the MERGE wrote, as stored: the same form the mark reads them in,
+   * whatever form the statement evaluated them to (a LONG parameter for an INTEGER property, a temporal). The MERGE answers from
+   * the index only when it holds a non-null value for every property of it, and writes each of them, so {@code created} holds them.
+   */
+  public void checkMergedEdgeByIndex(final RID from, final RID to, final TypeIndex index, final Document created) {
+    if (from == null || to == null || !isActive())
+      return;
+    final Map<String, Object> key = indexKeyOf(index, created);
+    if (key != null)
+      mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, mergedEdgeKeyOf(from, to, index, key));
+  }
+
+  /**
+   * Issue #12483: marks the keys a MERGE answered by an index checks ({@link #checkMergedEdgeByIndex}) for every relationship this
+   * transaction created of a type with an exact-key index, whatever statement created it: per index, the pair, the index and the
+   * values the relationship holds for its properties. Read at the commit, when the values are final: a relationship created by a
+   * {@code CREATE} and given its key by a {@code SET} that follows is marked with the key it is committed with.
+   * <p>
+   * Costs nothing to a transaction that created no relationship of such a type: one flag. Otherwise one pass over the records it
+   * created, a hash per index per relationship, and the registry's monitor at the commit to publish them.
+   * <p>
+   * Not marked: the relationships {@code GraphBatch} writes through its bulk path, which bypasses the registration of new records. Such
+   * a load reads nothing, so a MERGE it races is serializable before it, as with a plain CREATE that commits after the MERGE.
+   */
+  private void markRelationshipsOfIndexedTypes() {
+    // An index registered on a type since this transaction began makes a relationship it created before then one a MERGE finds
+    // through that index (the reconciliation of #10588 indexes it at this commit): the types are asked again, at the commit
+    if (!createdEdgeOfIndexedType && !(createdEdge
+        && database.getTransactionManager().getIndexRegistrationSequence() != indexRegistrationSequenceAtBegin))
+      return;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    DocumentType lastType = null;
+    TypeIndex[] lastIndexes = null;
+    // the keys marked already, the MERGE's own ones included: a relationship a MERGE created by the properties of an index is marked
+    // under that key by the MERGE, and marking it twice would only fill the registry's table of committed keys faster
+    final LongHashSet marked = new LongHashSet(Math.max(16, mergedEdgeMarkedCount * 2));
+    for (int i = 0; i < mergedEdgeMarkedCount; i++)
+      marked.add(mergedEdgeMarked[i]);
+    for (int i = 0; i < newRecords.size(); i++) {
+      final RID rid = newRecords.getIdentity(i);
+      if (rid == null || rid.getPosition() < 0 || isDeletedInTransaction(rid))
+        continue;
+      final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
+      if (!(type instanceof EdgeType))
+        continue;
+      if (type != lastType) {
+        lastType = type;
+        lastIndexes = exactKeyIndexes(type);
+      }
+      if (lastIndexes.length == 0)
+        continue;
+
+      Edge edge = currentEdge(i, rid, type);
+      if (edge == null)
+        continue;
+      final RID from = edge.getOut();
+      final RID to = edge.getIn();
+      if (from == null || to == null)
+        continue;
+      for (final TypeIndex index : lastIndexes) {
+        Map<String, Object> key = indexKeyOf(index, edge);
+        if (key != null && edge instanceof MutableDocument && !isQueued(rid, edge) && holdsContainer(key)) {
+          // a list or a map of the object can have been changed in place after the save, which assigns nothing and is not written:
+          // the key is the one the save wrote to the page
+          edge = writtenEdge(rid, type);
+          if (edge == null)
+            break;
+          key = indexKeyOf(index, edge);
+        }
+        // a relationship with a null in the key is one no MERGE finds through this index: a MERGE cannot match a null
+        if (key != null) {
+          final long mergedEdgeKey = mergedEdgeKeyOf(from, to, index, key);
+          if (marked.add(mergedEdgeKey))
+            mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, mergedEdgeKey);
+        }
+      }
+    }
+  }
+
+  /**
+   * The relationship created at {@code index} of the new records as the commit writes it: the queued update, whose values assigned
+   * after its save the commit writes and indexes ({@link #indexPropertiesAssignedAfterTheirSave}), or else the record as its last save
+   * wrote it to the transaction's page. An object of a created record changed after its save and never saved again is not what the
+   * commit writes, so its key is not the one to mark.
+   */
+  private Edge currentEdge(final int index, final RID rid, final DocumentType type) {
+    if (updatedRecords != null && updatedRecords.get(rid) instanceof Edge queued)
+      return queued;
+
+    Record record = modifiedRecordsCache.get(rid);
+    if (record == null)
+      record = newRecords.get(index);
+    if (record instanceof Edge edge && !(record instanceof MutableDocument document && document.isAssignedAfterSave()))
+      return edge;
+
+    // read-your-writes off and nobody holds it, or changed after its save: what the transaction wrote to its page
+    return writtenEdge(rid, type);
+  }
+
+  private boolean isQueued(final RID rid, final Edge edge) {
+    return updatedRecords != null && updatedRecords.get(rid) == edge;
+  }
+
+  /** Whether a value of {@code key}, which {@link #indexKeyOf} builds with no null in it, is a list, a map or an array. */
+  private static boolean holdsContainer(final Map<String, Object> key) {
+    for (final Object value : key.values())
+      if (value instanceof Collection || value instanceof Map || value.getClass().isArray())
+        return true;
+    return false;
+  }
+
+  /** The relationship at {@code rid} as the transaction wrote it to its page, or null when it is not there. */
+  private Edge writtenEdge(final RID rid, final DocumentType type) {
+    try {
+      final Binary written = ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
+      return written != null && database.getRecordFactory().newImmutableRecord(database, type, rid, written, null) instanceof Edge edge ?
+          edge :
+          null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
+  /**
+   * The key of a relationship between {@code from} and {@code to} holding {@code key} for the properties of {@code index}: the key
+   * #11482 gives a relationship of the type that declares the index matched by those properties, the one a MERGE of
+   * {@code (a)-[:T {uuid: $u}]->(b)} marks for what it creates. Every relationship of a subtype is marked under it too, which a
+   * MERGE of the declaring type finds through the index.
+   */
+  private static long mergedEdgeKeyOf(final RID from, final RID to, final TypeIndex index, final Map<String, Object> key) {
+    return MergedEdgeRegistry.keyOf(from, to, index.getTypeName(), key);
+  }
+
+  /** The values {@code record} holds for the properties of {@code index}, or null when one of them is null. */
+  private static Map<String, Object> indexKeyOf(final TypeIndex index, final Document record) {
+    final List<String> properties = index.getPropertyNames();
+    final Map<String, Object> key = new HashMap<>(properties.size() * 2);
+    for (int i = 0; i < properties.size(); i++) {
+      final String property = properties.get(i);
+      final Object value = record.get(property);
+      if (value == null)
+        return null;
+      key.put(property, value);
+    }
+    return key;
+  }
+
+  /** Whether {@code type} has an index a MERGE can answer an existence check from (issue #12483). */
+  private static boolean hasExactKeyIndex(final DocumentType type) {
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.getPropertyNamesIfExactKeyLookup() != null)
+        return true;
+    return false;
+  }
+
+  private static TypeIndex[] exactKeyIndexes(final DocumentType type) {
+    final Collection<TypeIndex> all = type.getAllIndexes(true);
+    final List<TypeIndex> exact = new ArrayList<>(all.size());
+    for (final TypeIndex index : all)
+      if (index.getPropertyNamesIfExactKeyLookup() != null)
+        exact.add(index);
+    return exact.toArray(new TypeIndex[0]);
+  }
+
+  private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
-      array = new int[4];
+      array = new long[4];
     else if (index == array.length)
       array = Arrays.copyOf(array, index * 2);
     array[index] = value;
@@ -5771,7 +6197,8 @@ public class TransactionContext implements Transaction {
    * relationship that another transaction committed after this one began, or is committing now (issue #11482).
    */
   private void reserveMergedEdges() {
-    if (mergedEdgeCheckedCount == 0)
+    // #12483: a transaction that only marks keys (it created relationships of a type a MERGE looks up by an index) publishes them
+    if (mergedEdgeCheckedCount == 0 && mergedEdgeMarkedCount == 0)
       return;
     if (!database.getTransactionManager().getMergedEdges()
         .reserve(mergedEdgeChecked, mergedEdgeCheckedCount, mergedEdgeMarked, mergedEdgeMarkedCount, mergedEdgeEpoch))
@@ -6262,6 +6689,9 @@ public class TransactionContext implements Transaction {
         registry.release(mergedEdgeMarked, mergedEdgeMarkedCount);
     }
     mergedEdgesPastCommitPoint = false;
+    createdEdgeOfIndexedType = false;
+    createdEdge = false;
+    lastNewEdgeType = null;
     mergedEdgeChecked = null;
     mergedEdgeCheckedCount = 0;
     mergedEdgeMarked = null;
@@ -6347,6 +6777,49 @@ public class TransactionContext implements Transaction {
       // would put them in the wrong transaction, and skipping them would publish records the new index does not know
       database.getSchema().getEmbedded().reconcileIndexesRegisteredSince(this, indexRegistrationSequenceAtBegin);
     } catch (final DuplicatedKeyException | NeedRetryException | TransactionException e) {
+      rollback();
+      throw e;
+    } catch (final Exception e) {
+      rollback();
+      throw new TransactionException("Transaction error on commit", e);
+    }
+  }
+
+  /**
+   * Queues the index changes of what was assigned to a record after the {@code save()} that queued it for this commit (issue #11751).
+   * <p>
+   * A save in a transaction queues the record and diffs the indexes against the values it holds then, and the write itself is deferred
+   * to the flush of {@link #commit1stPhase}, which serializes the very instance it queued, as it is by then. Whatever was assigned in
+   * between is therefore persisted with the record and unknown to the indexes: {@code WHERE k = 1} found a row whose k is 2, {@code WHERE
+   * k = 2} found nothing, and a UNIQUE index never saw the key the record ended with. The flush cannot index it, it writes in
+   * {@code COMMIT_1ST_PHASE} and an index queues only while {@code BEGUN} (#8983), so it is done here, like {@link
+   * #reconcileIndexesRegisteredSinceBegin} does, with the same code as the save: the diff is empty for a record whose assignment put back
+   * what the save left, and a UNIQUE key another record holds is refused by the replay of the queue like any other.
+   * <p>
+   * Costs a flag read per updated record: only a record a property was assigned to since its save is diffed (see {@link
+   * MutableDocument#isAssignedAfterSave}), so the common update, set and save, pays nothing. A container changed in place and not
+   * assigned is not seen, as everywhere else: it has to be saved.
+   */
+  private void indexPropertiesAssignedAfterTheirSave() {
+    if (updatedRecords == null)
+      return;
+
+    try {
+      DocumentIndexer indexer = null;
+      for (final Record rec : updatedRecords.values())
+        if (rec instanceof MutableDocument document && document.isAssignedAfterSave()) {
+          if (indexer == null) {
+            // The entries are queued on the transaction on top of the calling thread's stack, through the indexer: from underneath another
+            // transaction they would land in the wrong one
+            if (database.getTransactionIfExists() != this)
+              throw new TransactionException("Cannot commit a transaction that updated a record after saving it while another transaction "
+                  + "is open on top of it: commit or roll back the innermost one first");
+            indexer = database.getIndexer();
+          }
+          indexer.updateDocumentAssignedAfterSave(this, document);
+        }
+    } catch (final ArcadeDBException e) {
+      // a UNIQUE key another record holds (DuplicatedKeyException), a retryable conflict, a refusal of the index
       rollback();
       throw e;
     } catch (final Exception e) {

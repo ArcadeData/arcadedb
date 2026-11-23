@@ -166,7 +166,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
         @Override
         public boolean isDDL() {
-          return statement instanceof CypherDDLStatement;
+          // A CALL of a schema-changing procedure is the Cypher spelling of a SQL DDL statement (issue #11438)
+          return statement instanceof CypherDDLStatement || statement.hasSchemaProcedureCall();
+        }
+
+        /**
+         * START TRANSACTION, COMMIT and ROLLBACK (issue #12232), also behind EXPLAIN or PROFILE: command() runs a transaction
+         * control whichever prefix it carries. A level the engine cannot provide is left to the execution, which refuses it with
+         * its own words (issue #10386).
+         */
+        @Override
+        public boolean isTransactionControl() {
+          if (!(statement instanceof CypherTransactionStatement transaction))
+            return false;
+          if (transaction.getIsolationLevel() == null)
+            return true;
+          try {
+            IsolationLevels.parse(transaction.getIsolationLevel().toUpperCase(Locale.ENGLISH));
+            return true;
+          } catch (final IllegalArgumentException e) {
+            return false;
+          }
         }
 
         @Override
@@ -187,6 +207,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
             return CollectionUtils.singletonSet(OperationType.READ);
 
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
+          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
+          // below; data writes next to it keep their own types (issue #11438)
+          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
+          if (schemaProcedureCall)
+            ops.add(OperationType.SCHEMA);
           if (statement.hasCreate())
             ops.add(OperationType.CREATE);
           if (statement.hasMerge()) {
@@ -199,9 +224,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
             ops.add(OperationType.UPDATE);
           if (statement.hasRemove())
             ops.add(OperationType.UPDATE);
-          return ops.isEmpty() ? Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE) : Set.copyOf(ops);
+          if (ops.isEmpty())
+            return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
         }
       };
+    } catch (final CommandParsingException e) {
+      // The parser's own exception carries its kind (a CommandSemanticException is an undefined variable, not a syntax error) and
+      // its reason: a wrapper would hide both from every caller that analyzes before executing (an HA follower, apoc.do.when), as
+      // the execution path does not (issue #11785). GremlinQueryEngine.analyze() rethrows it the same way
+      throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error analyzing Cypher query: " + query, e);
     }
@@ -335,8 +367,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * and PROFILE, with the literals extracted otherwise), so an unaliased item is named as the rows of that execution name it,
    * and the parse is the cached one.
    * <p>
-   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN, in the order the statement
-   * binds them (the order a row of it carries them in), followed by any item written after the star; for a standalone
+   * The columns are the RETURN items; for {@code RETURN *} the variables in scope at the RETURN sorted by name, as Neo4j sorts
+   * them and as a row of it carries them (issue #11557), followed by any item written after the star; for a standalone
    * {@code CALL} the fields it yields (its YIELD items, or every output of the procedure under {@code YIELD *} or no YIELD).
    * <p>
    * A {@code RETURN *} reached through a {@code CALL { ... }} subquery that itself returns {@code *} declares the names of the
@@ -562,6 +594,25 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
+    // The resultSetLimit of the user's groups caps the rows the statement answers as a whole, a UNION included, and never the
+    // records it reads (issue #12888). Not a statement run as a part of one already capped: a subquery reads every row it matches.
+    // An EXPLAIN answers the plan and no row of data. The quota is read here once: the statement itself never asks for it
+    if (!explain) {
+      final long profiledLimit = database.getResultSetLimit();
+      if (profiledLimit > -1 && !ProfiledLimitResultSet.isRunning())
+        return ProfiledLimitResultSet.run(profiledLimit,
+            () -> executeStatement(queryString, statement, configuration, parameters, false, profile, timeExecution));
+    }
+    return executeStatement(queryString, statement, configuration, parameters, explain, profile, timeExecution);
+  }
+
+  /**
+   * {@link #execute} past the row cap of the user's quota: the statement as it runs, with every row it answers. The branch a
+   * conditional query picks runs through here too, under the cap its statement already carries.
+   */
+  private ResultSet executeStatement(final String queryString, final CypherStatement statement,
+      final ContextConfiguration configuration, final Map<String, Object> parameters, final boolean explain, final boolean profile,
+      final boolean timeExecution) {
     // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
     // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no
@@ -572,10 +623,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return execute(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
-              profile, timeExecution);
+          return executeStatement(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters,
+              explain, profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return execute(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
+        return executeStatement(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
             profile, timeExecution);
       return new InternalResultSet();
     }
@@ -1669,7 +1720,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
       case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
-          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]), database.getConfiguration());
       case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
@@ -1715,7 +1766,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     for (final String label : labels)
       metadata.add(switch (kind) {
         case VECTOR -> CypherIndexOptions.vectorMetadata(options, label, propertyNames,
-            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]));
+            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]), database.getConfiguration());
         case FULLTEXT -> CypherIndexOptions.fullTextMetadata(options, label, propertyNames);
         case RANGE -> throw new CommandParsingException("Only a vector or a full-text index can span several labels");
       });

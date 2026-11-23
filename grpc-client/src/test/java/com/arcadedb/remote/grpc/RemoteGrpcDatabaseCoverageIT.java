@@ -328,6 +328,8 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGrpcClientServerTest {
   void countAndIterateBucketWithDashInName() {
     final String bucketName = "cov-bucket-8050";
     grpc.command("sql", "CREATE BUCKET `" + bucketName + "` IF NOT EXISTS", Map.of());
+    // a record of a type is written only into a bucket of that type (#12959): attach it first
+    grpc.command("sql", "ALTER TYPE `" + DOC_TYPE + "` BUCKET +`" + bucketName + "`", Map.of());
     try {
       // The bare `BUCKET:name` target the grammar's INSERT accepts cannot take a quoted name either (same
       // restriction the production fix documents), so route the insert through an existing type instead - the
@@ -348,6 +350,9 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGrpcClientServerTest {
       }
       assertThat(count).isEqualTo(2);
     } finally {
+      // a bucket that leaves a restricted type must leave it empty
+      grpc.command("sql", "DELETE FROM `" + DOC_TYPE + "`", Map.of());
+      grpc.command("sql", "ALTER TYPE `" + DOC_TYPE + "` BUCKET -`" + bucketName + "`", Map.of());
       grpc.command("sql", "DROP BUCKET `" + bucketName + "`", Map.of());
     }
   }

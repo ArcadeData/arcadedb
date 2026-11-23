@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.grammar.SQLLexer;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.query.sql.parser.MatchStatement;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -39,6 +40,7 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ForwardedRequestIdContext;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.RequestRefusedBeforeExecutionException;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -46,6 +48,11 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
+import org.antlr.v4.runtime.BaseErrorListener;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.Token;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -58,6 +65,14 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   // Precompiled once: recompiling the line-break pattern on every command carrying an explicit LIMIT is wasteful.
   private static final Pattern LINE_BREAK = Pattern.compile("\\R");
+  /** Ends the lexing of a text the SQL lexer refuses: the parser reports it with its own message, so the text is left as it came. */
+  private static final BaseErrorListener LEXER_ERROR_LISTENER = new BaseErrorListener() {
+    @Override
+    public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol, final int line, final int charPositionInLine,
+        final String msg, final RecognitionException e) {
+      throw LexerError.INSTANCE;
+    }
+  };
 
   public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -117,6 +132,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
   }
 
+  @Override
+  protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
+    if (payload != null)
+      StandaloneTransactionControl.refuse(database, payload.getString("language", null), payload.getString("command", null));
+  }
+
   /**
    * Tells whether the given command needs an automatic trailing {@code LIMIT} pushed down, i.e. whether it is a
    * SELECT/MATCH SQL command that states no LIMIT of its own. A command that already carries one has expressed
@@ -154,7 +175,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
     if ((!isSelect && !isMatch) || command.endsWith(";"))
       return false;
 
-    if (StringUtils.containsIgnoreCase(command, " limit ") || StringUtils.containsIgnoreCase(command, "\nlimit ")) {
+    // The clauses before a trailing TIMEOUT or PARALLEL decide whether the statement has a LIMIT of its own (issue #11804)
+    final String body = withoutTrailingClauses(command);
+    if (StringUtils.containsIgnoreCase(body, " limit ") || StringUtils.containsIgnoreCase(body, "\nlimit ")) {
       // Both words in the text decide nothing on their own (a property, a literal or a subquery can carry them): only the parsed
       // statement tells a SELECT with a FACETS clause, the one shape the last-line heuristic below can get wrong.
       if (StringUtils.containsIgnoreCase(command, " facets ") || StringUtils.containsIgnoreCase(command, "\nfacets ")) {
@@ -163,7 +186,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
           return facetsQuery;
       }
       // An explicit LIMIT may already be present somewhere: only the last line decides whether to append.
-      final String[] lines = LINE_BREAK.split(command);
+      final String[] lines = LINE_BREAK.split(body);
       final String[] words = lines[lines.length - 1].toLowerCase(Locale.ENGLISH).split(" ");
       if (words.length <= 1 //
           || "limit".equals(words[words.length - 2]) //
@@ -172,6 +195,112 @@ public class PostCommandHandler extends AbstractQueryHandler {
     }
 
     return !"sqlScript".equalsIgnoreCase(language) || scriptEndsWithAQuery(command, database);
+  }
+
+  /** {@code command} without the TIMEOUT and PARALLEL clauses it ends with, or {@code command} itself when it ends with none. */
+  private static String withoutTrailingClauses(final String command) {
+    final int[] clauses = trailingClauses(command);
+    return clauses == null ? command : command.substring(0, clauses[1]);
+  }
+
+  /**
+   * {@code command} with the automatic {@code LIMIT probeLimit}: appended, or placed right before the first of the TIMEOUT and
+   * PARALLEL clauses the statement ends with, where a LIMIT has to stand (issue #11804: appended after them, the statement no longer
+   * parsed). Placed at the keyword, the LIMIT stays out of a line comment that precedes the clauses.
+   */
+  static String withAutomaticLimit(final String command, final int probeLimit) {
+    final int[] clauses = trailingClauses(command);
+    if (clauses == null)
+      return command + " limit " + probeLimit;
+    return command.substring(0, clauses[0]) + "limit " + probeLimit + " " + command.substring(clauses[0]);
+  }
+
+  /**
+   * Where the clauses a statement ends with begin, the ones that follow its LIMIT in the grammar: {@code [TIMEOUT <ms> [RETURN |
+   * EXCEPTION]] [PARALLEL]} (selectStatement of SQLParser.g4, whose last clauses a MATCH shares up to the TIMEOUT). The answer is
+   * {start of the first of them, end of the token before it}, or null when the text ends with none, or with nothing before them.
+   * <p>
+   * The text is read on the tokens of the SQL lexer itself, not on a second reading of its rules kept beside it, so the clauses are
+   * what the parser will see: whitespace and comments between their words are hidden, a word inside a string literal, a quoted
+   * identifier or a comment is no token, and a number ends where the lexer ends it ({@code 5000RETURN} is the number {@code 5000}
+   * and the keyword {@code RETURN}). A last token PARALLEL is the keyword: the identifier rule does not take the word (only a map
+   * key may be one, and a key is followed by a colon). The TIMEOUT value is a number literal, the only one the engine reads
+   * ({@code SQLASTBuilder.visitTimeout}): a clause with a parameter or an expression for value is left where it is, which is the
+   * cap that stops rewriting the statement text to fix (issue #12016).
+   * <p>
+   * A text that holds neither word is not lexed, which is nearly every statement: it pays one pass of character probes, and the
+   * probe cannot miss a clause, whose keyword is one of the words spelled out in full.
+   */
+  static int[] trailingClauses(final String command) {
+    if (!mentionsATrailingKeyword(command))
+      return null;
+
+    final SQLLexer lexer = new SQLLexer(CharStreams.fromString(command));
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(LEXER_ERROR_LISTENER);
+
+    // THE LAST EIGHT TOKENS OF THE DEFAULT CHANNEL, IN A RING INDEXED BY THE TOKEN COUNT: THE CLAUSES ARE AT MOST FOUR, AND THE ONE BEFORE
+    final int[] types = new int[8];
+    final int[] starts = new int[8];
+    final int[] stops = new int[8];
+    int tokens = 0;
+    try {
+      for (Token token = lexer.nextToken(); token.getType() != Token.EOF; token = lexer.nextToken()) {
+        if (token.getChannel() != Token.DEFAULT_CHANNEL)
+          continue;
+        types[tokens & 7] = token.getType();
+        starts[tokens & 7] = token.getStartIndex();
+        stops[tokens & 7] = token.getStopIndex();
+        ++tokens;
+      }
+    } catch (final LexerError e) {
+      return null;
+    }
+
+    // Peeled from the end: PARALLEL, then TIMEOUT <number> [RETURN | EXCEPTION]. 'rest' counts the tokens before what was peeled
+    int rest = tokens;
+    int first = -1;
+    if (rest > 0 && types[(rest - 1) & 7] == SQLLexer.PARALLEL)
+      first = --rest;
+    if (rest >= 3) {
+      final int last = types[(rest - 1) & 7];
+      final int clauseTokens = last == SQLLexer.RETURN || last == SQLLexer.EXCEPTION ? 3 : 2;
+      final int value = types[(rest - clauseTokens + 1) & 7];
+      if (rest > clauseTokens && types[(rest - clauseTokens) & 7] == SQLLexer.TIMEOUT && (value == SQLLexer.INTEGER_LITERAL
+          || value == SQLLexer.FLOATING_POINT_LITERAL)) {
+        rest -= clauseTokens;
+        first = rest;
+      }
+    }
+    if (first < 0 || rest == 0)
+      return null;
+
+    // The lexer counts code points, the text chars: they differ after a character outside the BMP (an emoji in a literal)
+    return new int[] { command.offsetByCodePoints(0, starts[first & 7]), command.offsetByCodePoints(0, stops[(rest - 1) & 7] + 1) };
+  }
+
+  /**
+   * Whether the text holds the word TIMEOUT or PARALLEL, in any case, in one pass: the lexer's keywords are the ASCII letters, so
+   * the first character settles nearly every position.
+   */
+  private static boolean mentionsATrailingKeyword(final String command) {
+    final int length = command.length();
+    for (int i = 0; i < length; i++) {
+      final char c = command.charAt(i);
+      if (((c == 't' || c == 'T') && command.regionMatches(true, i, "timeout", 0, 7)) //
+          || ((c == 'p' || c == 'P') && command.regionMatches(true, i, "parallel", 0, 8)))
+        return true;
+    }
+    return false;
+  }
+
+  /** The error of a text the SQL lexer refuses, thrown from {@link #LEXER_ERROR_LISTENER}: no stack to fill, one instance for all. */
+  private static final class LexerError extends RuntimeException {
+    private static final LexerError INSTANCE = new LexerError();
+
+    private LexerError() {
+      super(null, null, false, false);
+    }
   }
 
   /**
@@ -389,7 +518,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final String originalCommand = command;
     if (autoLimited)
       // One row above the cap: the extra row is never serialized, it only makes truncation detectable.
-      command = command + " limit " + truncationProbeLimit(autoLimit);
+      command = withAutomaticLimit(command, truncationProbeLimit(autoLimit));
 
     if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";

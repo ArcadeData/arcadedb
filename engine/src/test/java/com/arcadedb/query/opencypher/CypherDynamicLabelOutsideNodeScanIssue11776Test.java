@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Nested;
@@ -344,12 +345,17 @@ class CypherDynamicLabelOutsideNodeScanIssue11776Test extends TestHelper {
           "none")).containsExactly(true, false);
     }
 
-    /** A dynamic label that evaluates to null adds no constraint, on a node and on a relationship alike. */
+    /**
+     * A dynamic label that evaluates to null is a type error, on a node and on a relationship alike (issue #12338: it used to
+     * add no constraint); the empty list is the empty conjunction, which holds.
+     */
     @Test
-    void aNullDynamicLabelAddsNoConstraintOnNodesAndRelationships() {
+    void aNullDynamicLabelIsATypeErrorOnNodesAndRelationships() {
       create("CREATE (a:A)-[:R]->(:B)");
-      assertThat(column("MATCH (n:A) RETURN n:$(null) AS b", "b")).containsExactly(true);
-      assertThat(column("MATCH ()-[r]->() RETURN r:$(null) AS b", "b")).containsExactly(true);
+      assertThatThrownBy(() -> column("MATCH (n:A) RETURN n:$(null) AS b", "b")).isInstanceOf(TypeMismatchException.class);
+      assertThatThrownBy(() -> column("MATCH ()-[r]->() RETURN r:$(null) AS b", "b")).isInstanceOf(TypeMismatchException.class);
+      assertThat(column("MATCH (n:A) RETURN n:$([]) AS b", "b")).containsExactly(true);
+      assertThat(column("MATCH ()-[r]->() RETURN r:$([]) AS b", "b")).containsExactly(true);
     }
   }
 }

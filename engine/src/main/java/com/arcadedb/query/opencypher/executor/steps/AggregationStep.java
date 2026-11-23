@@ -24,6 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -146,7 +147,7 @@ public class AggregationStep extends AbstractExecutionStep {
     if (complexAggregations.isEmpty()) {
       final ResultInternal parallel = aggregateInParallel(context);
       if (parallel != null)
-        return resultSet(List.of(parallel));
+        return resultSet(List.of(parallel), context);
     }
 
     // Process all rows, feeding data to aggregators
@@ -225,7 +226,8 @@ public class AggregationStep extends AbstractExecutionStep {
         // Build overrides map: aggregation text -> aggregated result
         final Map<String, Object> overrides = new HashMap<>();
         for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
-          overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+          // the records collect() gathered, as the writes of every row left them (issue #12565)
+          overrides.put(funcEntry.getKey(), WrittenCopy.resolveValue(funcEntry.getValue().getAggregatedResult(), context));
 
         // Evaluate the full expression with overrides, using representative row for variable resolution
         evaluator.setAggregationOverrides(overrides);
@@ -245,7 +247,7 @@ public class AggregationStep extends AbstractExecutionStep {
     // Return single aggregated row
     final List<Result> results = new ArrayList<>();
     results.add(aggregatedResult);
-    return resultSet(results);
+    return resultSet(results, context);
   }
 
   /**
@@ -283,7 +285,9 @@ public class AggregationStep extends AbstractExecutionStep {
     }
   }
 
-  private ResultSet resultSet(final List<Result> results) {
+  private ResultSet resultSet(final List<Result> results, final CommandContext context) {
+    // Every input row has made its writes by now: the records the aggregates hold are read as those writes left them (issue #12565)
+    WrittenCopy.resolveRows(context, results);
     return new ResultSet() {
       private int index = 0;
 

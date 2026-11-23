@@ -25,6 +25,7 @@ import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.VertexProperty;
+import org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -42,8 +43,24 @@ import java.util.UUID;
 import static org.apache.tinkerpop.gremlin.util.NumberHelper.eitherAreNaN;
 
 /**
- * This implementation extends the default one in Gremlin to avoid throwing exception in case the comparison is between different types or just with a null value.
- * Throwing exceptions in Java is expensive and should be avoided for such cases.
+ * ArcadeDB's copy of TinkerPop's class of the same name, which it shadows in the shaded jar. It follows the Comparability and
+ * Orderability semantics of TinkerPop 3.8.2 (the {@code gremlin.version} of the build), with these differences only:
+ * <ul>
+ *   <li>every date/time value ({@link DateUtils#isDate}: {@link Date}, {@link java.util.Calendar} and the {@code java.time}
+ *   types the engine stores and returns) is one {@link Type#Date} type, compared by the instant it denotes, where TinkerPop knows
+ *   {@code OffsetDateTime} only (#3870);</li>
+ *   <li>{@link Type#type} tests the common types first instead of walking the enum;</li>
+ *   <li>{@code COMPARABILITY.equals()} has no hash-code shortcut: TinkerPop's skips numbers, collections and maps only, so it
+ *   tells apart two equal dates of different classes held in a {@code Map.Entry} or a {@code Property}, {@code 1} and {@code 1.0}
+ *   in a {@code Path}, and two arrays with the same contents. Here {@code eq} agrees with {@code compare() == 0} for them;</li>
+ *   <li>{@code COMPARABILITY.equals()} answers false rather than raising if a comparator still raises;</li>
+ *   <li>the contents of a {@code Set} or a {@code Map} with fewer than two elements are not copied and sorted to test them.</li>
+ * </ul>
+ * As in TinkerPop, {@link #comparable} copies and sorts the contents of a {@code Set} or a {@code Map} to test them and the
+ * comparator sorts them again, so a large one pays two sorts.
+ * <p>
+ * Keep it in step with TinkerPop's class when {@code gremlin.version} moves: {@link #comparable} decides whether
+ * {@code lt/lte/gt/gte} answer false or raise (issue #12018).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @author Mike Personick (http://github.com/mikepersonick)
@@ -105,11 +122,8 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
      */
     @Override
     public int compare(final Object f, final Object s) {
-      // For Compare, NaN always produces ERROR
-      if (eitherAreNaN(f, s))
-        throwTypeError();
-
-      // For Compare we do not cross type boundaries, including null
+      // For Compare we do not cross type boundaries, including null. comparable() is also false for NaN, so Compare's
+      // lt/lte/gt/gte, which ask it first, answer false rather than raising (issue #12018)
       if (!comparable(f, s))
         throwTypeError();
 
@@ -126,19 +140,19 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
      */
     @Override
     public boolean equals(final Object f, final Object s) {
+      // No hash-code shortcut as in TinkerPop: hash codes disagree with Comparability equality for numbers, dates of different
+      // classes (#3870) and arrays, also when they are held in a Map.Entry, a Property or a Path
+
       // shortcut a long, drawn out element by element comparison
       if (containersOfDifferentSize(f, s))
         return false;
 
-      // For Compare, NaN always produces ERROR
-      if (eitherAreNaN(f, s))
-        return false;
-
-      // For Compare we do not cross type boundaries, including null
-      if (!comparable(f, s))
-        return false;
-
       try {
+        // For Compare we do not cross type boundaries, including null, nor compare NaN. Asked inside the try because
+        // comparable() sorts the contents of a Set or a Map, and a compareTo() that raises there is reduced to false too
+        if (!comparable(f, s))
+          return false;
+
         // comparable(f, s) assures that type(f) == type(s)
         final Type type = Type.type(f);
         return comparator(type).compare(f, s) == 0;
@@ -150,7 +164,7 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
          * compare(NaN, anything) -> ERROR -> FALSE for equality
          * compare(Type1, Type2) -> ERROR -> FALSE for equality
          *
-         * Can also happen for elements nested inside of collections.
+         * Can also happen for elements nested inside of collections, and while comparable() sorts them.
          */
         return false;
       }
@@ -168,10 +182,6 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
       return false;
     }
   };
-
-  private static <T> T throwTypeError() {
-    throw new IllegalStateException();
-  }
 
   /**
    * Boolean, Date, String, UUID.
@@ -205,11 +215,11 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
   private final Comparator<Property> propertyComparator = Comparator.<Property, Object>comparing(Property::key, this).thenComparing(Property::value, this);
 
   /**
-   * Sort List, Set, Path, and Map element-by-element in the order presented by their natural iterator.
+   * Sort List, Set, Path, Map and Array element-by-element in the order presented by their natural iterator.
    */
-  private final Comparator<Iterable> iterableComparator = (f, s) -> {
-    final Iterator fi = f.iterator();
-    final Iterator si = s.iterator();
+  private final Comparator<Object> iterableComparator = (f, s) -> {
+    final Iterator fi = IteratorUtils.asIterator(f); // Use IteratorUtils as input may be Iterable or Array
+    final Iterator si = IteratorUtils.asIterator(s);
 
     while (fi.hasNext() && si.hasNext()) {
       final int i = this.compare(fi.next(), si.next());
@@ -307,6 +317,9 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
         return Map;
       if (o instanceof Map.Entry)
         return MapEntry;
+      // an array is a List, as in TinkerPop. Tested last: no type above is an array, and the scalars do not pay for it
+      if (o.getClass().isArray())
+        return List;
 
       return Unknown;
     }
@@ -324,6 +337,10 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     public int priority() {
       return ordinal();
     }
+  }
+
+  private static <T> T throwTypeError() {
+    throw new IllegalStateException();
   }
 
   /**
@@ -350,11 +367,60 @@ public abstract class GremlinValueComparator implements Comparator<Object> {
     if (f == null || s == null)
       return f == s; // true iff both in the null space
 
+    if (eitherAreNaN(f, s))
+      return false;
+
     final Type ft = Type.type(f);
     final Type st = Type.type(s);
 
-    // Check for same type. If they're both the unknown type then return true iff they are naturally Comparable
-    return ft == Type.Unknown && st == Type.Unknown ? naturallyComparable(f, s) : ft == st;
+    // different types are never comparable: decided here, so the scalars do not walk the composite cases below
+    if (ft != st)
+      return false;
+
+    // if objects are collections or composites, their contents must be mutually comparable
+    switch (ft) {
+    case List:
+      return contentsComparable(IteratorUtils.asIterator(f), IteratorUtils.asIterator(s));
+    case Path:
+      return contentsComparable(((Path) f).iterator(), ((Path) s).iterator());
+    case Set:
+      return contentsComparable(sortedIterator((Set) f), sortedIterator((Set) s));
+    case Map:
+      return contentsComparable(sortedIterator(((Map) f).entrySet()), sortedIterator(((Map) s).entrySet()));
+    case MapEntry:
+      return comparable(((Map.Entry) f).getKey(), ((Map.Entry) s).getKey()) && comparable(((Map.Entry) f).getValue(),
+          ((Map.Entry) s).getValue());
+    case Vertex:
+    case Edge:
+    case VertexProperty:
+      return comparable(((Element) f).id(), ((Element) s).id());
+    case Property:
+      return comparable(((Property) f).key(), ((Property) s).key()) && comparable(((Property) f).value(), ((Property) s).value());
+    case Unknown:
+      // both of the unknown type: comparable iff they are naturally Comparable
+      return naturallyComparable(f, s);
+    default:
+      return true;
+    }
+  }
+
+  /**
+   * Iterates the collection in Orderability order. One with fewer than two elements is already in order, so it is neither copied
+   * nor sorted.
+   */
+  private static Iterator sortedIterator(final Collection collection) {
+    if (collection.size() < 2)
+      return collection.iterator();
+    final List list = new ArrayList(collection);
+    Collections.sort(list, ORDERABILITY);
+    return list.iterator();
+  }
+
+  private static boolean contentsComparable(final Iterator fi, final Iterator si) {
+    while (fi.hasNext() && si.hasNext())
+      if (!comparable(fi.next(), si.next()))
+        return false;
+    return true;
   }
 
   private final Map<Type, Comparator> comparators = new EnumMap<Type, Comparator>(Type.class) {{

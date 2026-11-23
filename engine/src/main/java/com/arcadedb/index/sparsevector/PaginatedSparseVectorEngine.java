@@ -40,6 +40,7 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -262,6 +263,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * choice invisible without a counter.
    */
   private final AtomicLong partitionedQueries = new AtomicLong();
+
+  /**
+   * {@link #countDim} calls, i.e. the document-frequency passes the IDF modifier makes. A search over several bucket
+   * indexes is meant to resolve its weights once, not once per bucket, and only a counter can show that after the fact.
+   */
+  private final AtomicLong countDimCalls = new AtomicLong();
+
+  /** {@link #countDim} calls that walked the postings: the part of {@link #countDimCalls} the cache did not answer. */
+  private final AtomicLong countDimWalks = new AtomicLong();
+
+  /** Dims whose document frequency {@link #countDim} keeps for one state of the index; past it, further dims are counted every time. */
+  static final int DF_CACHE_MAX_DIMS = 8192;
+
+  private volatile DfCache dfCache;
 
   private final DatabaseInternal  database;
   private final String            indexName;
@@ -912,9 +927,34 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   /**
    * Number of distinct live (non-tombstone) postings under one dim across the memtable + active
    * segments, after newest-source-wins merging. Used to compute IDF document frequency.
+   * <p>
+   * The answer is a function of the live set alone, so it is kept per dim for as long as the live set is the one it was
+   * counted over (see {@link DfCache}): an IDF search counts the postings of every query dim in every bucket of the type,
+   * which is the most expensive part of a query on the frequent dims, and a read-mostly index asks for the same dims again
+   * and again.
    */
   public long countDim(final int dim) throws IOException {
-    final DimCursor c = openMergedCursor(dim, captureMemtables(), segments.get());
+    countDimCalls.incrementAndGet();
+    final MemSnapshot mt = captureMemtables();
+    final PaginatedSegmentReader[] segSnapshot = segments.get();
+
+    // The versions are read AFTER the snapshot and BEFORE the walk: a change racing the walk may be in the count and is
+    // then caught by the bumped version on the next call, whereas a count can never be filed under a version newer than
+    // the postings it read.
+    final Memtable sealed = mt.sealed();
+    final long activeVersion = mt.active().liveSetVersion();
+    final long sealedVersion = sealed != null ? sealed.liveSetVersion() : 0L;
+    DfCache cache = dfCache;
+    if (cache == null || !cache.isFor(mt.active(), sealed, segSnapshot, activeVersion, sealedVersion)) {
+      cache = new DfCache(mt.active(), sealed, segSnapshot, activeVersion, sealedVersion);
+      dfCache = cache;
+    }
+    final Long cached = cache.counts.get(dim);
+    if (cached != null)
+      return cached;
+
+    countDimWalks.incrementAndGet();
+    final DimCursor c = openMergedCursor(dim, mt, segSnapshot);
     if (c == null)
       return 0L;
     long df = 0L;
@@ -929,7 +969,50 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     } finally {
       c.close();
     }
+    if (cache.counts.size() < DF_CACHE_MAX_DIMS)
+      cache.counts.put(dim, df);
     return df;
+  }
+
+  /**
+   * Document frequencies counted over one state of the index: these two memtables, this array of segments, and the live
+   * set of each memtable as of these versions. Memtables and the segment array are replaced, never edited in place (a
+   * flush, a compaction, a follower catching up each publish new ones), and a memtable counts every change of its live set
+   * in {@link Memtable#liveSetVersion()}, so a state that matches on all five is the state the counts were made over.
+   * Anything else replaces the whole cache rather than patching it.
+   */
+  private static final class DfCache {
+    final Memtable                         active;
+    final Memtable                         sealed;
+    final PaginatedSegmentReader[]         segments;
+    final long                             activeVersion;
+    final long                             sealedVersion;
+    final ConcurrentHashMap<Integer, Long> counts = new ConcurrentHashMap<>();
+
+    DfCache(final Memtable active, final Memtable sealed, final PaginatedSegmentReader[] segments, final long activeVersion,
+        final long sealedVersion) {
+      this.active = active;
+      this.sealed = sealed;
+      this.segments = segments;
+      this.activeVersion = activeVersion;
+      this.sealedVersion = sealedVersion;
+    }
+
+    boolean isFor(final Memtable activeNow, final Memtable sealedNow, final PaginatedSegmentReader[] segmentsNow,
+        final long activeVersionNow, final long sealedVersionNow) {
+      return active == activeNow && sealed == sealedNow && segments == segmentsNow && activeVersion == activeVersionNow
+          && sealedVersion == sealedVersionNow;
+    }
+  }
+
+  /** Number of {@link #countDim} calls made on this engine, cached or not. */
+  long countDimCallCount() {
+    return countDimCalls.get();
+  }
+
+  /** Number of {@link #countDim} calls that walked the postings of the dim, i.e. were not answered from the cache. */
+  long countDimWalkCount() {
+    return countDimWalks.get();
   }
 
   // --- maintenance ----------------------------------------------------------

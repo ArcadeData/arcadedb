@@ -43,11 +43,14 @@ import java.util.NoSuchElementException;
  */
 public class FilterOperator extends AbstractPhysicalOperator {
   private final BooleanExpression predicate;
+  // The variable whose record alone decides the predicate, or null: see RecordPredicateMemo
+  private final String            memoVariable;
 
   public FilterOperator(final PhysicalOperator child, final BooleanExpression predicate,
                        final double estimatedCost, final long estimatedCardinality) {
     super(child, estimatedCost, estimatedCardinality);
     this.predicate = predicate;
+    this.memoVariable = RecordPredicateMemo.variableOf(predicate);
   }
 
   @Override
@@ -56,6 +59,7 @@ public class FilterOperator extends AbstractPhysicalOperator {
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
     final ResultSet inputResults = child.execute(context, nRecords);
+    final RecordPredicateMemo memo = RecordPredicateMemo.of(predicate, memoVariable, context);
 
     return new ResultSet() {
       private final List<Result> buffer = new ArrayList<>();
@@ -88,6 +92,9 @@ public class FilterOperator extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
+        if (memo != null)
+          memo.startBatch(context.getDatabase());
+
         // Filter input rows
         while (buffer.size() < n) {
           guard.check();
@@ -99,7 +106,9 @@ public class FilterOperator extends AbstractPhysicalOperator {
           final Result inputResult = inputResults.next();
 
           // Evaluate predicate with 3VL; null coerces to false at top level
-          final Object predicateValue = predicate.evaluateTernary(inputResult, context);
+          final Object predicateValue = memo != null ?
+              memo.evaluate(inputResult, context) :
+              predicate.evaluateTernary(inputResult, context);
 
           if (Boolean.TRUE.equals(predicateValue)) {
             buffer.add(inputResult);

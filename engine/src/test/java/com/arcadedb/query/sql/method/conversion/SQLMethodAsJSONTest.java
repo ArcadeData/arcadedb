@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.method.conversion;
 
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
@@ -59,6 +60,7 @@ class SQLMethodAsJSONTest {
   @Test
   void errorJsonParsing() {
     assertThatThrownBy(() -> method.execute("{\"name\"]", null, null, null))
-        .isInstanceOf(JSONException.class);
+        // issue #12020: a text that is no JSON is the caller's mistake, a client error carrying the parser's refusal
+        .isInstanceOf(InvalidArgumentException.class).hasCauseInstanceOf(JSONException.class);
   }
 }

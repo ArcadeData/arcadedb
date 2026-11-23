@@ -21,6 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
+import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.DurationArithmetic;
 import com.google.gson.JsonArray;
@@ -150,7 +151,8 @@ public class JSONObject implements Map<String, Object> {
     case Character character -> put(name, character);
     case JSONObject nObject -> object.add(name, nObject.getInternal());
     case JSONArray array -> put(name, array.getInternal());
-    case Document doc -> object.add(name, doc.toJSON(false).getInternal());
+    // through the same guard as a nested value, so a record held inside its own JSON is written as its RID (issue #11850)
+    case Document doc -> object.add(name, objectToElement(doc));
     case String[] string1s -> object.add(name, new JSONArray(string1s).getInternal());
     case Object[] objects -> object.add(name, new JSONArray(objects).getInternal());
     case Iterable<?> iterable -> {
@@ -721,8 +723,11 @@ public class JSONObject implements Map<String, Object> {
    * a later {@code toBigInteger()}, {@code toPlainString()} or integer conversion would expand into gigabytes, and a token of
    * thousands of digits costs superlinear time to parse: beyond these limits the token is refused (a {@link JSONException}, HTTP 400)
    * rather than stored as an {@code Infinity} that the writers turn into {@code null}.
+   * <p>
+   * Public so that a decimal arriving by another road than a JSON number token (the {@code $decimal} marker of the HTTP query
+   * parameters) is held to the same limits instead of reaching {@code new BigDecimal(text)} unchecked.
    */
-  static boolean isSafeBigNumber(final String token) {
+  public static boolean isSafeBigNumber(final String token) {
     if (token.length() > MAX_BIG_NUMBER_TOKEN_LENGTH)
       return false;
     for (int i = 0; i < token.length(); i++) {
@@ -903,7 +908,8 @@ public class JSONObject implements Map<String, Object> {
       case Object[] objects -> new JSONArray(objects).getInternal();
       case Map map -> new JSONObject(map).getInternal();
       case TraversalPath path -> new JSONObject(path.toMap()).getInternal();
-      case Document document -> document.toJSON(false).getInternal();
+      // a record holding itself is written as its RID inside its own JSON (issue #11850)
+      case Document document -> objectToElement(JsonSerializer.nestedDocumentToJSON(document, false));
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
       case Object o when o.getClass().isArray() -> primitiveArrayToElement(o);

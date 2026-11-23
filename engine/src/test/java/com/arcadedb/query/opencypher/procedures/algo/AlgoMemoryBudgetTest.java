@@ -158,8 +158,8 @@ class AlgoMemoryBudgetTest {
           .as("the working set of the call is the sum of its components, not its largest one")
           .hasStackTraceContaining(
               "the embedding matrices would need 8448 bytes (2 matrices of 4 nodes x embeddingDimension=128)")
-          // 14624 rather than 14240: since #6317 the graph itself is priced, and the 4-node fixture costs 384 bytes.
-          .hasStackTraceContaining("on top of the 14624 bytes this call already reserved")
+          // 14304 rather than 14240: since #6317 the graph itself is priced, and the 4-node fixture costs 64 bytes.
+          .hasStackTraceContaining("on top of the 14304 bytes this call already reserved")
           .hasStackTraceContaining("more than the 20000 bytes allowed");
     }
 
@@ -191,14 +191,14 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void hashGnnChargesTheRaceMatricesOnTopOfTheSampleMatrices() {
-      // 768 bytes of sample matrices and the 384 of the loaded graph fit a 2000-byte budget; the 1280 bytes of race
+      // 768 bytes of sample matrices and the 64 of the loaded graph fit a 2000-byte budget; the 1280 bytes of race
       // times on top (doubles, 2 x (4 x (32 + 16 x 8))) do not.
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 2000L);
 
       assertThatThrownBy(() -> drain("CALL algo.hashgnn({seed: 42}) YIELD node RETURN node"))
           .hasStackTraceContaining(
               "the race-time matrices would need 1280 bytes (2 matrices of 4 nodes x embeddingDensity=16)")
-          .hasStackTraceContaining("on top of the 1152 bytes this call already reserved");
+          .hasStackTraceContaining("on top of the 832 bytes this call already reserved");
     }
 
     @Test
@@ -220,8 +220,8 @@ class AlgoMemoryBudgetTest {
       assertThatThrownBy(() -> drain("CALL algo.graphsage({layers: 2, seed: 42}) YIELD node RETURN node"))
           .hasStackTraceContaining("the layer matrices would need 69760 bytes "
               + "(4 nodes x embeddingDimension=64 plus a projection of 64 x 128)")
-          // 2560 rather than 2176: the 384 bytes of the loaded graph, priced since #6317.
-          .hasStackTraceContaining("on top of the 2560 bytes this call already reserved");
+          // 2240 rather than 2176: the 64 bytes of the loaded graph, priced since #6317.
+          .hasStackTraceContaining("on top of the 2240 bytes this call already reserved");
     }
 
     // ── The square matrices, which no knob sizes at all ──────────────────────
@@ -231,9 +231,9 @@ class AlgoMemoryBudgetTest {
       // Floyd-Warshall's matrix is nodeCount x nodeCount with no parameter involved: 800 MB at 10 000 nodes. The
       // procedure documents itself as suitable "up to a few thousand vertices", which until now was advice
       // rather than a bound.
-      // 500 rather than 100: since #6317 the graph is the first thing reserved, and the 4-node fixture costs 384
-      // bytes, so a budget below that refuses the load and never reaches the matrix this test is about.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+      // Since #6317 the graph is the first thing reserved, and the 4-node fixture costs 64 bytes, so a budget below
+      // that refuses the load and never reaches the matrix this test is about.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
 
       assertThatThrownBy(() -> drain("CALL algo.apsp() YIELD source, target, distance RETURN distance"))
           .hasStackTraceContaining("the distance matrix would need 256 bytes (4 x 4 nodes)")
@@ -257,8 +257,8 @@ class AlgoMemoryBudgetTest {
     @Test
     void maxFlowRejectsAResidualNetworkLargerThanTheBudget() {
       // Since #11798 the residual network is sparse: 2 arcs per relationship (32 bytes each) and 6 ints per node, priced
-      // after the graph (384), its adjacency (144) and the unit capacities (160) - 688 bytes the budget admits.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 800L);
+      // after the graph (64), its adjacency (144) and the unit capacities (160) - 368 bytes the budget admits.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -270,8 +270,8 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void kShortestPathsRejectsTheSearchStateLargerThanTheBudget() {
-      // 400 bytes admit the loaded graph (4 x OLTP_VERTEX_BYTES = 384) and refuse what Yen's holds beside it.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 400L);
+      // 100 bytes admit the loaded graph (4 x LOADED_NODE_BYTES = 64) and refuse what Yen's holds beside it.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -291,8 +291,9 @@ class AlgoMemoryBudgetTest {
     void steinerTreeRejectsDijkstraTablesLargerThanTheBudget() {
       // `terminalNodes` is a list, so unlike every other knob in the package it has no numeric form to validate:
       // its length sizes a terminals x nodeCount pair of tables, and nothing bounds it - not even the node count,
-      // since repeating the same vertex is accepted. Two terminals over 4 nodes are 128 + 96 bytes.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
+      // since repeating the same vertex is accepted. Two terminals over 4 nodes are 128 + 96 bytes, which the 64 bytes of the
+      // loaded graph beside them take past the budget.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 200L);
 
       assertThatThrownBy(() -> drain("""
           MATCH (a:Node {name: 'A'}), (c:Node {name: 'C'}) \
@@ -587,7 +588,8 @@ class AlgoMemoryBudgetTest {
       // The walk stops when the budget runs out, so the message quotes the count reached rather than the graph's
       // total - there is no total to quote yet. That is the observable difference between bounding the walk and
       // reserving after it, and it is the whole point of the placement.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100L);
+      // 20 bytes hold one node at LOADED_NODE_BYTES = 16, so the walk is refused when it reaches the second.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 20L);
 
       assertThatThrownBy(() -> drain("CALL algo.pageRank() YIELD node RETURN node"))
           .hasStackTraceContaining("at least 2 nodes");
@@ -613,10 +615,10 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void theAdjacencyListIsRefusedWhenItDoesNotFitTheBudget() {
-      // 11 nodes cost 1056 bytes, so a budget just above that admits the graph and leaves nothing for the
+      // 11 nodes cost 176 bytes, so a budget just above that admits the graph and leaves nothing for the
       // adjacency - which is the larger of the two on any real graph. algo.wcc rather than algo.pagerank here
       // because it takes its neighbour lists through GraphData.adjacency, which is where the copy is priced.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1100L);
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 200L);
 
       assertThatThrownBy(() -> drain("CALL algo.wcc() YIELD node RETURN node"))
           .hasStackTraceContaining("the adjacency list would need")
@@ -685,11 +687,11 @@ class AlgoMemoryBudgetTest {
   @Nested
   class BitsetMatrixBudget {
     /**
-     * A budget that admits the four-node graph and its adjacency and refuses the bit matrix on top of them. The
+     * A budget that admits the four-node graph (64 bytes) and its adjacency (168) and refuses the bit matrix on top of them. The
      * matrix itself is 288 bytes at this size; what matters to the assertions below is only that it is the
      * component the refusal names.
      */
-    private static final long BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX = 700L;
+    private static final long BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX = 400L;
 
     private Database database;
 
@@ -732,10 +734,10 @@ class AlgoMemoryBudgetTest {
      * arrays: priced like the rest, and still served under the default budget and with the budget disabled.
      */
     private static final String[][] CALLS = {
-        { "algo.knn", "CALL algo.knn(2) YIELD node RETURN node" },
-        { "algo.kTruss", "CALL algo.kTruss() YIELD node RETURN node" },
+        { "algo.knn", "CALL algo.knn(2) YIELD node1 RETURN node1" },
+        { "algo.kTruss", "CALL algo.kTruss() YIELD nodeId RETURN nodeId" },
         { "algo.clique", "CALL algo.clique() YIELD clique RETURN clique" },
-        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node" } };
+        { "algo.hierarchicalClustering", "CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId" } };
 
     @Test
     void triangleCountNeedsNoMatrixAnyMore() {
@@ -754,30 +756,30 @@ class AlgoMemoryBudgetTest {
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
           BUDGET_ABOVE_THE_GRAPH_BELOW_THE_MATRIX);
 
-      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node"))
+      assertThatThrownBy(() -> drain("CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId"))
           .hasStackTraceContaining("algo.hierarchicalClustering(): the edge similarities")
           .hasStackTraceContaining("(4 nodes, 10 edge entries)")
           .hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
 
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1000L);
-      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD node RETURN node")).hasSize(4);
+      assertThat(drain("CALL algo.hierarchicalClustering(null, 2) YIELD nodeId RETURN nodeId")).hasSize(4);
     }
 
     @Test
     void kTrussPricesItsDecomposition() {
-      // 600 bytes admit the graph (384) and its adjacency (168), and refuse the edge arrays of the decomposition on top: linear in
+      // 350 bytes admit the graph (64) and its adjacency (168), and refuse the edge arrays of the decomposition on top: linear in
       // the edges since issue #12173, where it used to be two nodeCount x nodeCount bit matrices
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 600L);
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 350L);
 
-      assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD node RETURN node"))
+      assertThatThrownBy(() -> drain("CALL algo.kTruss() YIELD nodeId RETURN nodeId"))
           .hasStackTraceContaining("the truss decomposition would need 205 bytes (4 nodes, 5 edges)");
     }
 
     @Test
     void cliquePricesItsSearchStackAtThePeakDepth() {
       // The live frames hold sorted candidate and excluded sets bounded by the starting node's neighbourhood (issue #12173), priced
-      // at their peak: 700 bytes admit the graph and its adjacency (552), the degeneracy order and ranks (96) and refuse the first frame
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 700L);
+      // at their peak: 350 bytes admit the graph and its adjacency (232), the degeneracy order and ranks (96) and refuse the first frame
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 350L);
 
       assertThatThrownBy(() -> drain("CALL algo.clique() YIELD clique RETURN clique"))
           .hasStackTraceContaining("the clique search stack")
@@ -877,11 +879,11 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void theWeightedAdjacencyRowHeadersAreRefusedWhenTheyDoNotFitTheBudget() {
-      // The graph is priced first since #6317 - 11 nodes at OLTP_VERTEX_BYTES is 1056 bytes. weightedAdjacency
+      // The graph is priced first since #6317 - 11 nodes at LOADED_NODE_BYTES is 176 bytes. weightedAdjacency
       // reserves its row headers next, up front, before reading a single edge: 2 row headers per node (one for
       // neighbors[i], one for weights[i]) at MATRIX_ROW_OVERHEAD_BYTES=32 each, so 11 nodes cost 704 bytes -
-      // 1056 + 704 = 1760, over the 1156-byte budget before any edge is even looked at.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1156L);
+      // 176 + 704 = 880, over the 500-byte budget before any edge is even looked at.
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 500L);
 
       assertThatThrownBy(() -> drain("CALL algo.mst(null, 'w') YIELD source, target RETURN source, target"))
           .as("the weighted adjacency list is the dense working set of an algo.mst call and must be priced like any other")
@@ -897,9 +899,9 @@ class AlgoMemoryBudgetTest {
      * this PR's earlier review rounds, was never exercised by a budget-refusal test. {@code CSR_ACCELERATED_VAR}
      * confirms the columnar path was actually taken, not silently the OLTP one the test above already covers.
      * <p>
-     * The budget cannot reuse {@link #theWeightedAdjacencyRowHeadersAreRefusedWhenTheyDoNotFitTheBudget}'s 1156:
-     * a CSR-backed {@code GraphData} is built straight from the view's node count with no {@code loadVertices}
-     * walk, so it never pays that test's 1056-byte OLTP_VERTEX_BYTES graph-loading charge. Only the row headers
+     * The budget cannot reuse {@link #theWeightedAdjacencyRowHeadersAreRefusedWhenTheyDoNotFitTheBudget}'s: a
+     * CSR-backed {@code GraphData} is built straight from the view's node count with no {@code loadVertexIds}
+     * walk, so it never pays that test's 176-byte LOADED_NODE_BYTES graph-loading charge. Only the row headers
      * (2 x 32 bytes/node) are common to both paths - 11 nodes is 704 bytes - so the budget here is sized to that
      * alone.
      */
@@ -936,7 +938,7 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void theRefusalNamesTheActualEdgeCountOnceTheRowHeadersFit() {
-      // A budget wide enough for the graph (1056) plus the row headers (704) - 1760 - but not for the 10 edges'
+      // A budget wide enough for the graph (176) plus the row headers (704) - 880 - but not for the 10 edges'
       // entries on top of that (12 bytes each: an int neighbour id plus a double weight, 120 bytes total) fires the
       // second reservation, which quotes the edge count it actually reached.
       //
@@ -947,19 +949,19 @@ class AlgoMemoryBudgetTest {
       // path already did: with this budget only 40 bytes remain once the row headers are admitted, so the interval
       // shrinks fast and the walk is refused after just 1 more edge entry - proof the checkpoint now fires mid-walk
       // instead of only once the whole adjacency list is already built.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1800L);
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 920L);
 
       // "1 edge entries" (not the full EDGE_COUNT): the record path must refuse well before materialising all 10
       // edges, mirroring the columnar path's own capacityFor-scaled checkpoint.
       assertThatThrownBy(() -> drain("CALL algo.mst(null, 'w') YIELD source RETURN source"))
           .hasStackTraceContaining("algo.mst(): the weighted adjacency list would need")
-          .hasStackTraceContaining("more than the 1800 bytes allowed")
+          .hasStackTraceContaining("more than the 920 bytes allowed")
           .hasStackTraceContaining("1 edge entries");
     }
 
     @Test
     void aBudgetThatFitsLetsTheCallThrough() {
-      // The counterweight: the reservation must not refuse a graph it can serve. 11 nodes cost 1056 bytes and
+      // The counterweight: the reservation must not refuse a graph it can serve. 11 nodes cost 176 bytes and
       // 10 edges at 24 bytes is 240, so 4 KB is comfortable, and the MST of a path is the path itself - every
       // edge, at its own weight.
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 4096L);
@@ -1039,10 +1041,10 @@ class AlgoMemoryBudgetTest {
             nodes.get(i).newEdge("LINK", nodes.get(i + 1), true, new Object[] { "w", (double) (i + 1) }).save();
         });
 
-        // Graph load (96 bytes/node) plus weightedAdjacency's row headers (64 bytes/node) is 480 000 bytes; the
-        // checkpoint right after node 1023 adds ~1024 edges x 12 bytes = ~12 288 more. 490 000 sits between the
+        // Graph load (16 bytes/node) plus weightedAdjacency's row headers (64 bytes/node) is 240 000 bytes; the
+        // checkpoint right after node 1023 adds ~1024 edges x 12 bytes = ~12 288 more. 250 000 sits between the
         // two, so the call refuses right there - after ~1024 of 3000 nodes, not after all of them.
-        final long refusalBudget = 490_000L;
+        final long refusalBudget = 250_000L;
 
         // Warm up both call shapes (JIT, class loading) before either measurement, so neither is biased by being
         // the first invocation.
@@ -1151,12 +1153,12 @@ class AlgoMemoryBudgetTest {
 
     @Test
     void theEdgeArraysAreRefusedWhenTheyDoNotFitTheBudget() {
-      // 11 nodes at OLTP_VERTEX_BYTES=96 is 1056, weightedAdjacency's row headers (2 x 32 bytes/node) are 704, and
-      // its 10 edge entries (12 bytes each) are 120 - 1880 total, all of which fits comfortably below this budget.
+      // 11 nodes at LOADED_NODE_BYTES=16 is 176, weightedAdjacency's row headers (2 x 32 bytes/node) are 704, and
+      // its 10 edge entries (12 bytes each) are 120 - 1000 total, all of which fits below this budget.
       // What does not fit is algo.msa's own eFrom/eTo/eW copy on top: 10 edges x 16 bytes = 160, taking the total
-      // to 2040 - over a 1900-byte budget, refusing at this procedure's own reservation rather than
+      // to 1160 - over a 1100-byte budget, refusing at this procedure's own reservation rather than
       // weightedAdjacency's.
-      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1900L);
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 1100L);
 
       assertThatThrownBy(() -> drain("MATCH (r:Node {idx: 0}) CALL algo.msa(r, 'LINK', 'w') YIELD source RETURN source"))
           .as("algo.msa's own edge arrays are additional working set on top of weightedAdjacency's and must be priced too")
@@ -1174,7 +1176,7 @@ class AlgoMemoryBudgetTest {
      * confirms the columnar path was actually taken.
      * <p>
      * A CSR-backed {@code GraphData} pays none of {@link #theEdgeArraysAreRefusedWhenTheyDoNotFitTheBudget}'s
-     * 1056-byte OLTP_VERTEX_BYTES graph-loading charge, so the budget here is sized only to the row headers common
+     * 176-byte LOADED_NODE_BYTES graph-loading charge, so the budget here is sized only to the row headers common
      * to both paths - 11 nodes x 2 x 32 bytes/node = 704 bytes.
      */
     @Test
