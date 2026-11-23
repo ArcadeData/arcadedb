@@ -475,10 +475,11 @@ public final class BenchMain {
 
   /**
    * The run file: rewritten after every case with {@code complete=false} and once more at the end with {@code complete=true}, all
-   * under the same run id, so a run cut short keeps what it measured. The run id carries the commit, known only once the first
-   * server has reported its image, so it is fixed at the first write, which precedes the first case's result.
+   * under the same run id, so a run cut short keeps what it measured. The run id carries the commit: {@code --commit} when given,
+   * else the revision the first server reports. Until one of them is known the interim writes are skipped (what was measured is
+   * written by the first write after it), so the id is never frozen on "unknown"; the final write always happens.
    */
-  private static final class RunFile {
+  static final class RunFile {
     private final Path                dir;
     private final Instant             startedAt;
     private final Map<String, String> o;
@@ -534,6 +535,8 @@ public final class BenchMain {
     }
 
     void write(final List<CaseResult> results, final boolean complete) {
+      if (!complete && runId == null && imageInfo == null && !o.containsKey("commit"))
+        return;
       final String commit = o.getOrDefault("commit",
           imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
       final JSONObject arcadedb = new JSONObject().put("commit", commit).put("version", o.getOrDefault("version", "unknown"))

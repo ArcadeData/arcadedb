@@ -35,8 +35,10 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -118,8 +120,8 @@ class BenchMainTest {
     };
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     final int code = BenchMain.run(new String[] { "run", "--workload", "spy", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
-        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
-        tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
     assertThat(code).isZero();
     assertThat(seen).hasSize(1);
     assertThat(seen.getFirst().complete()).isFalse();
@@ -131,6 +133,37 @@ class BenchMainTest {
       assertThat(last.complete()).isTrue();
       assertThat(last.results()).hasSize(2);
       assertThat(last.info().runId()).isEqualTo(seen.getFirst().info().runId());
+    }
+  }
+
+  @Test
+  void runIdWaitsForTheFirstServerThatReportsAnImage() throws Exception {
+    final Map<String, String> options = java.util.Map.of();
+    final BenchMain.RunFile file = new BenchMain.RunFile(tmp, Instant.parse("2026-11-23T03:00:00Z"), options, "jvm", "img:1",
+        null, null, "manual", "local", 1, 0, 30, 30, 120, 42L, "none", "none");
+    final CaseResult failed = new CaseResult("alpha", "a1", "XS", new JSONObject(), 1, 0, List.of(), CaseResult.Status.FAILED,
+        "server start failed");
+    final List<CaseResult> results = new ArrayList<>(List.of(failed));
+
+    // the first workload's server failed to start: nothing is written and no id is frozen on "unknown"
+    file.write(results, false);
+    assertThat(file.runId).isNull();
+    try (final Stream<Path> files = Files.list(tmp)) {
+      assertThat(files.toList()).isEmpty();
+    }
+
+    // a later server reports its image: the next write carries its revision and everything gathered so far
+    file.imageInfo = new JSONObject().put("revision", "0123456789abcdef");
+    results.add(failed);
+    file.write(results, false);
+    file.write(results, true);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final List<Path> json = files.toList();
+      assertThat(json).hasSize(1);
+      final RunResult last = RunResult.read(json.getFirst());
+      assertThat(last.info().runId()).contains("0123456789").doesNotContain("unknown");
+      assertThat(last.complete()).isTrue();
+      assertThat(last.results()).hasSize(2);
     }
   }
 
