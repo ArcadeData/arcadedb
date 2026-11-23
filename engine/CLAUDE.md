@@ -95,6 +95,8 @@ So every enclosing loop of the read path must feed pages newest first, and they 
 
 **If you change any iteration order in the LSM read path, check it against this invariant.** Getting it wrong does not throw. It silently drops live records that were re-added after a tombstone, surfacing only as "the index returns fewer rows than a plain scan".
 
+**The header page of a compacted file is the one page of an LSM index a `REPEATABLE_READ` transaction must not pin (#13050).** An incremental compaction round appends its series to the SAME compacted file and rewrites page 0 to name them, in the swap that puts in a NEW, empty mutable file (never pinned: new file id). A transaction that pinned the old header read the mutable file as of now and the series as of its first read, two states that never coexisted, so a key committed before the transaction began (the entries the round moved) answered no entry, and a duplicate of it passed the unique check. `LSMTreeIndexCompacted.getHeaderPage()` reads it through `TransactionContext.getPageForAbsoluteReadsNeverPinned`; the series pages it names never change once written and stay pinned. A full compaction writes a new compacted file and never had the problem.
+
 Reproducing any tombstone-ordering bug requires the remove and the re-add to be in **separate transactions**: within one transaction `TransactionIndexContext` collapses a REMOVE followed by an ADD on the same (key, RID) into a single ADD, so no tombstone is ever written.
 
 ## `count(*)` and `count()` take different paths

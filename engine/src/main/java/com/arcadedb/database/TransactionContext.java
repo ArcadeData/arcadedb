@@ -2389,6 +2389,30 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * {@link #getPageForAbsoluteReads} for a page that is NEVER pinned, whatever the isolation level: a page the transaction wrote
+   * is answered as {@code getPageForAbsoluteReads} answers it, any other is the newest committed version of the page, and a
+   * {@code REPEATABLE_READ} transaction keeps nothing of it (issue #13050).
+   * <p>
+   * It is for the one page of a component that is rewritten in place to publish a new state of pages that do not change, as the
+   * header page of a compacted LSM-tree file is by every incremental compaction round: the series it names are written once,
+   * and the page that names them moves on. Pinned, the page ties the transaction to the state of the first read, while the rest
+   * of the index (the mutable file a compaction swaps in as a new file, never pinned) is read as of now, and the two never
+   * coexisted: an entry the round moved from the mutable file into a new series is in neither. The pages the header names stay
+   * pinned like any other.
+   */
+  public BasePage getPageForAbsoluteReadsNeverPinned(final PageId pageId, final int size) throws IOException {
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
    * {@link #getPageNotHeld(PageId, int)} for a reader that reads the page only at absolute positions, as
    * {@link #getPageForAbsoluteReads} is to {@link #getPage}: a record read that has just been told by
    * {@link #getPinnedPage(PageId)} that the transaction holds no page for {@code pageId} gets the page cache's shared view on a
