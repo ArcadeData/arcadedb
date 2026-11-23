@@ -57,9 +57,61 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
   private static final int DIMENSIONS = 8;
   private static final int RECORDS    = 30;
 
+  /** The schema is edited by hand between two opens, to the state a crash leaves: not a database the integrity check vouches for. */
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
     return false;
+  }
+
+  @Test
+  void aValidFirstWriteOnAReopenedUndecidedIndexKeepsEveryVectorItsPagesHold() {
+    final Map<RID, float[]> live = createAndFill();
+    reopenWithTheDecisionForgotten();
+
+    // the very first operation: no search, no count before it, which used to materialise nothing and hand out ids on the pages
+    database.transaction(() -> {
+      final float[] vector = vector(DIMENSIONS, 700);
+      live.put(database.newDocument("Doc").set("embedding", vector).save().getIdentity(), vector);
+    });
+
+    assertThat(typeIndex().countEntries()).isEqualTo(live.size());
+    assertIndexHoldsExactly(live);
+
+    // and what the pages hold after a clean reopen: a reused id would shadow the record it was first given to
+    database.close();
+    database = factory.open();
+    assertThat(typeIndex().countEntries()).isEqualTo(live.size());
+    assertIndexHoldsExactly(live);
+  }
+
+  @Test
+  void aWriteOfAnotherLengthIntoAnEmptyBucketIsRefusedOnAReopenedUndecidedIndex() {
+    final Map<RID, float[]> live = createAndFill(2);
+    reopenWithTheDecisionForgotten();
+
+    // the bucket that holds no vector: its own locations say nothing, its siblings' do
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.newDocument("Doc").set("embedding", vector(DIMENSIONS + 4, 800)).save("Doc_2")))
+        .hasStackTraceContaining("does not match index dimension " + DIMENSIONS);
+
+    for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+      assertThat(((LSMVectorIndex) bucketIndex).getMetadata().dimensions).isEqualTo(DIMENSIONS);
+
+    database.transaction(() -> {
+      final float[] vector = vector(DIMENSIONS, 900);
+      live.put(database.newDocument("Doc").set("embedding", vector).save("Doc_2").getIdentity(), vector);
+    });
+    assertMatchesBruteForce(live, 5);
+  }
+
+  @Test
+  void aQueryOfAnotherLengthOnAnEmptyBucketIsRefusedOnAReopenedUndecidedIndex() {
+    createAndFill(2);
+    reopenWithTheDecisionForgotten();
+
+    final LSMVectorIndex empty = bucketIndexOf("Doc_2");
+    assertThatThrownBy(() -> empty.findNeighborsFromVector(vector(DIMENSIONS + 2, 1), 3))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("does not match index dimension " + DIMENSIONS);
   }
 
   @Test
@@ -102,6 +154,11 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
   }
 
   private Map<RID, float[]> createAndFill() {
+    return createAndFill(3);
+  }
+
+  /** Fills the first {@code filledBuckets} buckets of the 3 the type has, round robin, and leaves the others empty. */
+  private Map<RID, float[]> createAndFill(final int filledBuckets) {
     database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 3");
     database.command("sql", "CREATE PROPERTY Doc.embedding ARRAY_OF_FLOATS");
     final TypeLSMVectorIndexBuilder builder = database.getSchema().buildTypeIndex("Doc", new String[] { "embedding" })
@@ -113,10 +170,18 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
     database.transaction(() -> {
       for (int i = 0; i < RECORDS; i++) {
         final float[] vector = vector(DIMENSIONS, i + 1);
-        live.put(database.newDocument("Doc").set("embedding", vector).save().getIdentity(), vector);
+        live.put(database.newDocument("Doc").set("embedding", vector).save("Doc_" + (i % filledBuckets)).getIdentity(), vector);
       }
     });
     return live;
+  }
+
+  private LSMVectorIndex bucketIndexOf(final String bucketName) {
+    final int bucketId = database.getSchema().getBucketByName(bucketName).getFileId();
+    for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+      if (bucketIndex.getAssociatedBucketId() == bucketId)
+        return (LSMVectorIndex) bucketIndex;
+    throw new IllegalStateException("No index on bucket " + bucketName);
   }
 
   /** The schema as the node that crashed before saving the decision left it, the pages as it left them. */
@@ -155,6 +220,16 @@ class VectorSizeOnFirstVectorReopenOracleTest extends TestHelper {
           .limit(k).map(Pair::getFirst).toList();
       assertThat(actual).as("probe %d", probe).containsExactlyElementsOf(expected);
     }
+  }
+
+  /** Every record is found, once, by a search that asks for more neighbours than the index holds. */
+  private void assertIndexHoldsExactly(final Map<RID, float[]> live) {
+    final List<RID> found = new ArrayList<>();
+    for (final IndexInternal bucketIndex : typeIndex().getIndexesOnBuckets())
+      for (final Pair<RID, Float> hit : ((LSMVectorIndex) bucketIndex).findNeighborsFromVector(vector(DIMENSIONS, 3000),
+          live.size() + 10, 200))
+        found.add(hit.getFirst());
+    assertThat(found).containsExactlyInAnyOrderElementsOf(live.keySet());
   }
 
   private static double cosine(final float[] a, final float[] b) {
