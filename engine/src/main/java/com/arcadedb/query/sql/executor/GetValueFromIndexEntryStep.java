@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -165,6 +165,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   // publication sequence the entries were read from
   private FetchFromIndexStep.SeekCheck loadSeekCheck;
   private long                        loadEntriesSequence;
+  // Whether the last readAndLoad() met an entry whose record it could not load
+  private boolean                     pointLookupDangling;
+  // Whether readAndLoad() logs an entry whose record it could not load as dangling
+  private boolean                     warnDangling   = true;
 
   /**
    * @param context         the execution context
@@ -706,9 +710,13 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         || check.matches(document, workerContext);
   }
 
+  /**
+   * Whether the running transaction reads at REPEATABLE_READ: the level it began with, not the database's default (#13159), since
+   * {@code begin(REPEATABLE_READ)} on a READ_COMMITTED default database pins pages all the same.
+   */
   private static boolean isRepeatableRead(final DatabaseInternal database) {
-    return database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isRepeatableRead();
   }
 
   private ResultSet physicalOrderResultSet(final CommandContext context, final int nRecords) {
@@ -910,17 +918,27 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final PageManager pageManager = database.getPageManager();
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      boolean unpinnedForDangling = false;
       for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
         // a statement cancelled or past its deadline stops between attempts (#9893)
         guard.check();
         // a commit or a replicated apply is publishing: wait for it to end instead of spending an attempt inside its window
         pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+        pointLookupDangling = false;
+        // under REPEATABLE_READ the first entry without a record is read again before it is judged dangling
+        warnDangling = unpinnedForDangling || !isRepeatableRead(database);
         final ArrayDeque<Result> rows = readAndLoad(context, indexStep, nRecords, guard);
         if (rows == null)
           return null;
         final long baseline = indexStep.entriesSequence();
-        if ((baseline & 1) == 0 && pageManager.getPublicationSequence() == baseline)
-          return rows;
+        if ((baseline & 1) == 0 && pageManager.getPublicationSequence() == baseline) {
+          // an entry without a record, in a REPEATABLE_READ transaction, may be a bucket page this transaction pinned before the
+          // record was created: the pins are released and the lookup read once more on the committed state, as the streaming path
+          // (pointLookupRow) and ConsistentKeyLookup do (#13159)
+          if (!pointLookupDangling || unpinnedForDangling || !isRepeatableRead(database))
+            return rows;
+          unpinnedForDangling = true;
+        }
         restartLookup(database, indexStep);
       }
       LogManager.instance().log(this, Level.FINE,
@@ -930,6 +948,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       guard.check();
       return ConsistentKeyLookup.readAgainstOneCommit(pageManager, () -> {
         restartLookup(database, indexStep);
+        warnDangling = true;
         return readAndLoad(context, indexStep, nRecords, guard);
       }, "Point lookup on index '" + indexStep.indexName + "'");
     } finally {
@@ -964,9 +983,15 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         readBucketIds.add(rid.getBucketId());
       // a record load each, I/O: checked on every one, or a termination waits for the whole chunk (#9893)
       guard.check();
-      final Result row = toResult(value, context);
+      final Result row = toResult(value, context, false);
       if (row != null)
         rows.add(row);
+      else if (value instanceof RID rid) {
+        pointLookupDangling = true;
+        if (warnDangling)
+          LogManager.instance()
+              .log(GetValueFromIndexEntryStep.class, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
+      }
     }
     return rows;
   }
@@ -986,7 +1011,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * pinned pages of the files involved are read again from the committed state, which is the one the lookup is repeated on.
    */
   private void unpinRepeatableReadPages(final DatabaseInternal database, final FetchFromIndexStep indexStep) {
-    if (!database.isTransactionActive() || database.getTransactionIsolationLevel() != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+    if (!isRepeatableRead(database))
       return;
     final List<Integer> files = new ArrayList<>(indexStep.indexFileIds());
     if (filterBucketIds != null)
