@@ -1412,13 +1412,11 @@ public class MathExpression extends SimpleNode {
   }
 
   /**
-   * The value {@code REMOVE <this> = <value>} takes items out of: the value of the expression, with a list stored as an array
-   * replaced by the list of its items where it is held (issue #12896, see {@link BaseExpression#executeForRemove}).
+   * Stores {@code value} where this expression reads from. Answers false, and stores nothing, when it is not the plain read of a
+   * place that can be written (issue #12896, see {@link BaseExpression#writeBack}).
    */
-  public Object executeForRemove(final ResultInternal result, final CommandContext context) {
-    if (childExpressions.size() == 1 && operators.isEmpty())
-      return childExpressions.getFirst().executeForRemove(result, context);
-    return execute(result, context);
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    return childExpressions.size() == 1 && operators.isEmpty() && childExpressions.getFirst().writeBack(result, value, context);
   }
 
   @Override

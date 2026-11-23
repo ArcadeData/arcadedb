@@ -1082,8 +1082,7 @@ class PropertyValueConversionTest {
       assertRefused("Keep9110", "link", "abc");
       assertRefused("Keep9110", "link", new ArrayList<>(List.of(1, 2)));
       assertRefused("Keep9110", "str", new byte[] { 1, 2, 3 });
-      // any other array is the text of its elements, as the same list is (issue #12896)
-      assertThat(roundTrip("Keep9110", "str", new int[] { 1, 2, 3 })).isEqualTo("[1, 2, 3]");
+      assertRefused("Keep9110", "str", new int[] { 1, 2, 3 });
     }
 
     @Test

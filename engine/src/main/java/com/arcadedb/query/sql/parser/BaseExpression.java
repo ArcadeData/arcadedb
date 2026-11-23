@@ -589,36 +589,37 @@ public class BaseExpression extends MathExpression {
       if (modifier == null) {
         identifier.applyRemove(result, context);
       } else {
-        Object val = identifier.execute(result, context);
-        // REMOVE l[0] on a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES: the array cannot lose items in place, the list of
-        // its items replaces it in the record and loses them (issue #12896)
-        if (identifier.getSuffix() != null && modifier.removesItemsOf(val))
-          val = replaceWithItems(result, val, context);
-        modifier.applyRemove(val, result, context);
+        final Object val = identifier.execute(result, context);
+        // REMOVE l[0] on a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES: the array cannot lose items in place, so the list of
+        // its items loses them and, when it lost any, is stored where the array was. It is stored after the removal and not
+        // before: a declared ARRAY_OF_* property turns the list it is given into a new array (issue #12896)
+        if (identifier.getSuffix() != null && modifier.removesItemsOf(val)) {
+          final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(val));
+          final int size = items.size();
+          modifier.applyRemove(items, result, context);
+          if (items.size() != size)
+            identifier.getSuffix().setValue(result, items, context);
+        } else
+          modifier.applyRemove(val, result, context);
       }
     }
   }
 
   /**
-   * The value {@code REMOVE <this> = <value>} takes items out of. A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a
-   * primitive array, which cannot lose items in place: the list of its items replaces it where it is held, in the record or in
-   * an embedded map, and is the value answered (issue #12896). Any other value is answered as {@link #execute} answers it.
+   * Stores {@code value} where this expression reads from: the property of the record, or the property or the item reached by
+   * the modifiers that follow it. Answers false, and stores nothing, when the expression does not name a place that can be
+   * written (a function call, a method call, a filter), so a REMOVE of an item out of an array it reads can be written back
+   * (issue #12896).
    */
   @Override
-  public Object executeForRemove(final ResultInternal result, final CommandContext context) {
-    final Object value = execute(result, context);
-    if (!MultiValue.isSequenceArray(value) || identifier == null || identifier.getSuffix() == null)
-      return value;
-    if (modifier == null)
-      return replaceWithItems(result, value, context);
-    final List<Object> items = modifier.replaceArrayWithItems(result, identifier.execute(result, context), context);
-    return items != null ? items : value;
-  }
-
-  private List<Object> replaceWithItems(final ResultInternal result, final Object array, final CommandContext context) {
-    final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(array));
-    identifier.getSuffix().setValue(result, items, context);
-    return items;
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    if (identifier == null || identifier.getSuffix() == null)
+      return false;
+    if (modifier == null) {
+      identifier.getSuffix().setValue(result, value, context);
+      return true;
+    }
+    return modifier.writeBack(result, identifier.execute(result, context), value, context);
   }
 
   @Override

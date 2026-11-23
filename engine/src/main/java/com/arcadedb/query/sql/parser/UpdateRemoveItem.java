@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -72,9 +74,10 @@ public class UpdateRemoveItem extends SimpleNode {
 
   public void applyUpdate(final ResultInternal result, final CommandContext context) {
     if (right != null) {
-      // a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES comes back as the list that replaced it, which can lose items (issue #12896)
-      final Object leftVal = left.executeForRemove(result, context);
+      final Object leftVal = left.execute(result, context);
       final Object rightVal = right.execute(result, context);
+      if (MultiValue.isSequenceArray(leftVal) && removeFromArray(leftVal, rightVal, result, context))
+        return;
       if (MultiValue.isMultiValue(leftVal)) {
         MultiValue.remove(leftVal, rightVal, false);
         // The removal mutated the embedded collection/map in place: the owning document is not aware of it, so it
@@ -87,6 +90,25 @@ public class UpdateRemoveItem extends SimpleNode {
       result.markElementDirty();
     }
   }
+
+  /**
+   * An array (a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES) cannot lose items in place: the list of its items loses them
+   * and, when it lost any, is stored where the array was read, after the removal and not before, since a declared ARRAY_OF_*
+   * property turns the list it is given into a new array (issue #12896). Answers false when the array is not read from a place
+   * that can be written: the caller then removes from it as it always did, which refuses.
+   */
+  private boolean removeFromArray(final Object array, final Object rightVal, final ResultInternal result, final CommandContext context) {
+    final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(array));
+    final int size = items.size();
+    MultiValue.remove(items, rightVal, false);
+    if (items.size() == size)
+      return true;
+    if (!left.writeBack(result, items, context))
+      return false;
+    result.markElementDirty();
+    return true;
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

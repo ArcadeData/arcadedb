@@ -303,13 +303,18 @@ public class Modifier extends SimpleNode {
 
   public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (next != null) {
-      Object val = calculateLocal(originalRecord, currentValue, context);
-      if (next.removesItemsOf(val)) {
-        final List<Object> items = replaceWithItems(originalRecord, currentValue, val, context);
-        if (items != null)
-          val = items;
-      }
-      next.applyRemove(val, originalRecord, context);
+      final Object val = calculateLocal(originalRecord, currentValue, context);
+      // an array cannot lose items in place: the list of its items loses them and, when it lost any, is stored where the array was
+      // held. After the removal and not before, a declared ARRAY_OF_* property turns the list it is given into a new array
+      // (issue #12896)
+      if (next.removesItemsOf(val) && (suffix != null || arraySingleValues != null)) {
+        final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(val));
+        final int size = items.size();
+        next.applyRemove(items, originalRecord, context);
+        if (items.size() != size)
+          doSetValue(originalRecord, currentValue, items, context);
+      } else
+        next.applyRemove(val, originalRecord, context);
     } else {
       if (arrayRange != null)
         arrayRange.applyRemove(currentValue, originalRecord, context);
@@ -330,30 +335,26 @@ public class Modifier extends SimpleNode {
   /**
    * Whether this modifier, the last of the chain, removes items by position or by value from {@code value} and {@code value} is
    * an array: a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, which the removal cannot shrink, so the
-   * caller has to replace it with the list of its items first (issue #12896).
+   * caller removes the items from the list of its items and stores that list where the array was (issue #12896).
    */
   boolean removesItemsOf(final Object value) {
     return next == null && (arrayRange != null || arraySingleValues != null) && MultiValue.isSequenceArray(value);
   }
 
   /**
-   * Replaces the array this chain reaches from {@code target} with the list of its items, where it is held, and answers that
-   * list, so a REMOVE can take items out of it (issue #12896). Answers null when the value reached is not a sequence array or
-   * when the last modifier cannot write it back (a method call, a filter): the caller then keeps the value as it was.
+   * Stores {@code value} where the chain of modifiers reads from {@code target}: the property or the item the last one reaches.
+   * Answers false, and stores nothing, when the last modifier does not name a place that can be written (a method call, a
+   * filter, a range) or an earlier one reaches nothing (issue #12896).
    */
-  List<Object> replaceArrayWithItems(final ResultInternal record, final Object target, final CommandContext context) {
-    final Object val = calculateLocal(record, target, context);
-    if (next != null)
-      return next.replaceArrayWithItems(record, val, context);
-    return MultiValue.isSequenceArray(val) ? replaceWithItems(record, target, val, context) : null;
-  }
-
-  private List<Object> replaceWithItems(final ResultInternal record, final Object holder, final Object array, final CommandContext context) {
+  boolean writeBack(final ResultInternal record, final Object target, final Object value, final CommandContext context) {
+    if (next != null) {
+      final Object reached = calculateLocal(record, target, context);
+      return reached != null && next.writeBack(record, reached, value, context);
+    }
     if (suffix == null && arraySingleValues == null)
-      return null;
-    final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(array));
-    doSetValue(record, holder, items, context);
-    return items;
+      return false;
+    doSetValue(record, target, value, context);
+    return true;
   }
 
   @Override
