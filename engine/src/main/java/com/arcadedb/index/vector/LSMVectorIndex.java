@@ -1595,13 +1595,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.buildState = BUILD_STATE.READY.name();
     }
 
-    // Only load vectors if we have valid metadata (dimensions > 0) and pages exist - and even then, only note
+    // Only load vectors if we have valid metadata (dimensions > 0, or still to be derived) and pages exist - and even then, only note
     // that there is something to read. The parse itself is deferred to the first caller that needs a location
     // (issue #6722): it is one page parse plus one map insert per indexed vector, it produces nothing the page
     // cache can amortise across opens, and a session that opens the database to write one document or to read an
     // unrelated type used to pay all of it. The graph is deferred at this very same call site for the same
     // reason, so this makes the cheap half of the pair behave like the expensive half already does.
-    if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
+    // An index that takes its dimensions from its first vector and has none yet (issue #10915) needs them too: it derives them
+    // from the vectors its records hold, through the locations, when the schema was saved before the decision (issue #13214)
+    if ((metadata.dimensions > 0 || metadata.sizeOnFirstVector) && mutable.getTotalPages() > 0) {
       this.deferredPQLoad = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
       this.locationsMaterialized = false;
       LogManager.instance()
