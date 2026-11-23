@@ -577,18 +577,14 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
-    return removeSuperType(superType, true, null, null);
+    return removeSuperType(superType, true);
   }
 
   /**
-   * @param judge      whether the indexes of the subtree are asked if they keep the property they stand on (issue #12038), which
-   *                   {@link #setSuperTypes} has done for the whole change in its first removal: the ones after it are not asked again
-   * @param endState   the super types this type is left with once the change this removal belongs to is complete, {@code null} for
-   *                   a removal that is the whole change
-   * @param change     what the change is, for the refusal; {@code null} together with {@code endState}
+   * @param checkIndexedProperties whether the indexes of the subtree are asked if they keep the property they stand on (issue #12038);
+   *                               {@code false} for a removal that belongs to a change which has asked it for the whole of it already
    */
-  private DocumentType removeSuperType(final DocumentType superType, final boolean judge, final List<LocalDocumentType> endState,
-      final String change) {
+  private DocumentType removeSuperType(final DocumentType superType, final boolean checkIndexedProperties) {
     checkForSchemaMutation();
     recordFileChanges(() -> {
       if (!superTypes.contains(superType))
@@ -599,15 +595,10 @@ public class LocalDocumentType implements DocumentType {
       // issue #12038: decided before the link is touched, as a refusal of a type left alone: a lock-free reader never finds the type
       // out of its super type for a removal that is refused, and the caches derived from the type graph are not retired for it.
       // Skipped during DROP TYPE, which detaches the dropped type from its parents and drops its indexes anyway
-      if (judge && !schema.isTypeBeingDropped()) {
-        final String refusal;
-        if (endState != null)
-          refusal = findIndexOnPropertyNoLongerInherited(change, endState);
-        else {
-          final List<LocalDocumentType> remaining = new ArrayList<>(superTypes);
-          remaining.remove(former);
-          refusal = findIndexOnPropertyNoLongerInherited(describeSuperTypeChange(List.of(former), List.of()), remaining);
-        }
+      if (checkIndexedProperties && !schema.isTypeBeingDropped()) {
+        final List<LocalDocumentType> remaining = new ArrayList<>(superTypes);
+        remaining.remove(former);
+        final String refusal = findIndexOnPropertyNoLongerInherited(describeSuperTypeChange(List.of(former), List.of()), remaining);
         if (refusal != null)
           throw new SchemaException(refusal);
       }
@@ -708,6 +699,28 @@ public class LocalDocumentType implements DocumentType {
         return inherited;
     }
     return null;
+  }
+
+  /**
+   * The question {@link #removeSuperType(DocumentType)} asks of one removal (issue #12038), asked once, before the first step, of a
+   * change that removes and adds super types together: judged against the super types the type is left with when the whole change
+   * is done, so a replacement that still provides the property is not refused for the moment the type has neither, and a refusal
+   * leaves every one of the steps unapplied.
+   *
+   * @param removed  the super types the change takes away
+   * @param added    the super types the change links
+   * @param endState this type's super types once the change is complete, in order
+   */
+  private void checkIndexedPropertiesAreKept(final List<? extends DocumentType> removed, final List<? extends DocumentType> added,
+      final List<LocalDocumentType> endState) {
+    if (removed.isEmpty() || schema.isTypeBeingDropped())
+      return;
+    recordFileChanges(() -> {
+      final String refusal = findIndexOnPropertyNoLongerInherited(describeSuperTypeChange(removed, added), endState);
+      if (refusal != null)
+        throw new SchemaException(refusal);
+      return null;
+    });
   }
 
   private static String describeDeclaration(final Property property) {
@@ -1263,25 +1276,57 @@ public class LocalDocumentType implements DocumentType {
     final List<DocumentType> toAdd = new ArrayList<>(newSuperTypes);
     toAdd.removeAll(commonSuperTypes);
 
-    if (!toRemove.isEmpty()) {
-      // issue #12038: the removals are applied before the additions, so an index of the subtree that stands on a property the removed
-      // types provide is asked against what this type is left with once the additions are in too (a replacement that still provides
-      // it is fine), and by the first removal for all of them: a refusal leaves the type as it found it
-      final List<LocalDocumentType> endState = new ArrayList<>(commonSuperTypes.size() + toAdd.size());
-      for (final DocumentType superType : commonSuperTypes)
-        endState.add((LocalDocumentType) superType);
-      for (final DocumentType superType : toAdd)
-        endState.add((LocalDocumentType) superType);
-      final String change = describeSuperTypeChange(toRemove, toAdd);
+    // issue #12038: the removals are applied before the additions, so an index of the subtree that stands on a property the removed
+    // types provide is asked against what this type is left with once the additions are in too (a replacement that still provides
+    // it is fine), and before the first of them is applied: a refusal leaves the type as it found it
+    final List<LocalDocumentType> endState = new ArrayList<>(commonSuperTypes.size() + toAdd.size());
+    for (final DocumentType superType : commonSuperTypes)
+      endState.add((LocalDocumentType) superType);
+    for (final DocumentType superType : toAdd)
+      endState.add((LocalDocumentType) superType);
+    checkIndexedPropertiesAreKept(toRemove, toAdd, endState);
 
-      boolean judge = true;
-      for (final DocumentType superType : toRemove) {
-        removeSuperType(superType, judge, endState, change);
-        judge = false;
-      }
-    }
+    for (final DocumentType superType : toRemove)
+      removeSuperType(superType, false);
 
     toAdd.forEach(this::addSuperType);
+
+    return this;
+  }
+
+  /**
+   * The super type changes of one {@code ALTER TYPE ... SUPERTYPE +A, -B} statement, applied one by one in the order they are
+   * written, as a statement with one item always has been. What it adds is the question of issue #12038: whether an index of this
+   * type or of a type below it keeps the property it stands on is asked once, before the first item is applied, about the
+   * super types the type is left with after the last one (see {@link #checkIndexedPropertiesAreKept}), so "-P, +Q" is not refused
+   * for the moment the type has neither, and a refusal leaves the type as it found it.
+   *
+   * @param changed the super types the items name
+   * @param add     for each of them, {@code true} to add it and {@code false} to remove it
+   */
+  public DocumentType changeSuperTypes(final List<DocumentType> changed, final List<Boolean> add) {
+    checkForSchemaMutation();
+
+    final List<LocalDocumentType> endState = new ArrayList<>(superTypes);
+    for (int i = 0; i < changed.size(); i++) {
+      final LocalDocumentType superType = (LocalDocumentType) changed.get(i);
+      if (add.get(i)) {
+        if (!endState.contains(superType))
+          endState.add(superType);
+      } else
+        endState.remove(superType);
+    }
+    final List<LocalDocumentType> removed = new ArrayList<>(superTypes);
+    removed.removeAll(endState);
+    final List<LocalDocumentType> added = new ArrayList<>(endState);
+    added.removeAll(superTypes);
+    checkIndexedPropertiesAreKept(removed, added, endState);
+
+    for (int i = 0; i < changed.size(); i++)
+      if (add.get(i))
+        addSuperType(changed.get(i));
+      else
+        removeSuperType(changed.get(i), false);
 
     return this;
   }

@@ -301,6 +301,55 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
+  void severalItemsAreAppliedInTheOrderTheyAreWritten() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, R");
+
+    database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q");
+    assertThat(superTypeNames("C")).containsExactly("R", "Q");
+
+    database.command("sql", "ALTER TYPE C SUPERTYPE +P, -R");
+    assertThat(superTypeNames("C")).containsExactly("Q", "P");
+
+    // a duplicate addition is the no-op addSuperType always made of a type that is already linked
+    database.command("sql", "ALTER TYPE C SUPERTYPE +R, +R");
+    assertThat(superTypeNames("C")).containsExactly("Q", "P", "R");
+  }
+
+  @Test
+  void additionRefusedInAStatementThatAlsoRemovesLeavesTheRemovalUnapplied() {
+    // written +T, -P: the addition comes first, and its refusal (a TIMESERIES type cannot be a super type) must leave P linked
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    database.command("sql", "CREATE TIMESERIES TYPE T TIMESTAMP ts FIELDS (k INTEGER)");
+    // T declares the column k as a property: the end state is fine and it is the addition that is refused
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE +T, -P"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("TIMESERIES");
+
+    assertThat(superTypeNames("C")).containsExactly("P");
+    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
+  }
+
+  @Test
+  void missingNameInAStatementLeavesTheTypeUntouched() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE +Q, -Missing"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("Missing");
+
+    assertThat(superTypeNames("C")).containsExactly("P");
+  }
+
+  @Test
   void removingTwoSuperTypesAtOnceIsRefusedBeforeTheFirstGoes() {
     // k is provided by both: the first removal alone would pass, the statement as a whole leaves C without it
     database.command("sql", "CREATE DOCUMENT TYPE P");
@@ -321,7 +370,8 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   @Test
   void refusedRemovalNeverTouchesTheLinkSoNoReaderCanSeeTheTypeOutOfItsSuperType() {
     // decided before the link is touched: the polymorphic buckets a lock-free SELECT FROM P reads are the very list it read before,
-    // not one recomputed without the buckets of C and then once more with them for a statement that changes nothing
+    // not one recomputed without the buckets of C and then once more with them for a statement that changes nothing. Every
+    // recomputation publishes a new unmodifiable list (the copy-on-write contract of issue #6678), so the instance is what tells
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
@@ -337,6 +387,55 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
+  void removeSuperTypeByNameRefusesTheRemoval() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    final DocumentType type = database.getSchema().getType("C");
+    assertThatThrownBy(() -> type.removeSuperType("P"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("'C[k]'");
+
+    assertUnchanged("C", "P", "C[k]");
+  }
+
+  @Test
+  void refusalInsideATransactionLeavesTheTypeAndItsRecordsAlone() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    final DocumentType type = database.getSchema().getType("C");
+    assertThatThrownBy(() -> database.transaction(() -> {
+      database.command("sql", "INSERT INTO C SET k = 1");
+      type.removeSuperType("P");
+    })).isInstanceOf(SchemaException.class);
+
+    assertUnchanged("C", "P", "C[k]");
+    database.transaction(() -> database.command("sql", "INSERT INTO C SET k = '2'"));
+    assertThat(database.query("sql", "SELECT FROM C WHERE k = 2").stream().count()).isEqualTo(1L);
+  }
+
+  @Test
+  void dropTypeIsNotRefusedForAnIndexOnAPropertyItInherits() {
+    // DROP TYPE detaches the type from its super types and drops its indexes itself: the refusal does not apply to it
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE D EXTENDS P");
+    database.command("sql", "CREATE INDEX ON D (k) UNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE E EXTENDS D");
+
+    database.command("sql", "DROP TYPE D");
+
+    assertThat(database.getSchema().existsType("D")).isFalse();
+    assertThat(database.getSchema().existsIndex("D[k]")).isFalse();
+    assertThat(database.getSchema().getType("E").isSubTypeOf("P")).isTrue();
+  }
+
+  @Test
   void indexOfTheSuperTypeOnlyAllowsTheRemoval() {
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
@@ -347,6 +446,10 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
 
     assertThat(database.getSchema().getType("C").isSubTypeOf("P")).isFalse();
     assertThat(database.getSchema().existsIndex("P[k]")).isTrue();
+  }
+
+  private List<String> superTypeNames(final String type) {
+    return database.getSchema().getType(type).getSuperTypes().stream().map(DocumentType::getName).toList();
   }
 
   private void assertUnchanged(final String type, final String superType, final String indexName) {

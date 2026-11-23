@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
@@ -464,27 +465,19 @@ public class AlterTypeStatement extends DDLStatement {
       superclasses.add(superclass);
     }
 
-    if (superclasses.size() == 1) {
-      if (item.identifierListAddRemove.getFirst())
-        type.addSuperType(superclasses.getFirst());
-      else
-        type.removeSuperType(superclasses.getFirst());
+    // issue #12038: the items are still applied in the order they are written, but whether an index keeps its property is asked once
+    // for all of them, about what the type is left with, before the first one is applied
+    if (superclasses.size() > 1 && type instanceof LocalDocumentType localType) {
+      localType.changeSuperTypes(superclasses, item.identifierListAddRemove);
       return;
     }
 
-    // issue #12038: several changes in one statement are one change of the super types, applied through setSuperTypes, which asks
-    // whether an index keeps its property about what the type is left with once all of them are in (so "-P, +Q" is not refused
-    // for the moment the type has neither) and before the first of them is applied
-    final List<DocumentType> superTypes = new ArrayList<>(type.getSuperTypes());
     for (int i = 0; i < superclasses.size(); i++) {
-      final DocumentType superclass = superclasses.get(i);
-      if (item.identifierListAddRemove.get(i)) {
-        if (!superTypes.contains(superclass))
-          superTypes.add(superclass);
-      } else
-        superTypes.remove(superclass);
+      if (item.identifierListAddRemove.get(i))
+        type.addSuperType(superclasses.get(i));
+      else
+        type.removeSuperType(superclasses.get(i));
     }
-    type.setSuperTypes(superTypes);
   }
 
   private void doSetAliases(final DocumentType type, final Item item) {
