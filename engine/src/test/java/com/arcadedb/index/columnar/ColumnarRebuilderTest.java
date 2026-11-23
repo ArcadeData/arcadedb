@@ -337,10 +337,14 @@ class ColumnarRebuilderTest extends TestHelper {
 
     // the passes are held until the create of the DDL has failed, so its reconcile comes after the failure
     final AutoCloseable passes = manager().suspendApply();
-    database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
-    awaitRebuildRuns(projection, scans, 1);
-    assertThat(manager().rebuildBackoffMsForTesting(bucketId)).isEqualTo(ColumnarIndexManager.REBUILD_RETRY_BASE_MS);
-    passes.close();
+    try {
+      database.command("sql", "CREATE INDEX ON Asset (color) COLUMNAR");
+      awaitRebuildRuns(projection, scans, 1);
+      assertThat(manager().rebuildBackoffMsForTesting(bucketId)).isEqualTo(ColumnarIndexManager.REBUILD_RETRY_BASE_MS);
+    } finally {
+      // released even when an assertion above failed, so the passes do not stay suspended
+      passes.close();
+    }
     // a hang detector, not a latency bound
     assertThat(columnAdded.await(WAIT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
