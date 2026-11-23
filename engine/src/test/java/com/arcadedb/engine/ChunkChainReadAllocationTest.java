@@ -35,6 +35,7 @@ import java.util.Iterator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression for issue #13244: reading a record that outgrew its page, a head chunk
@@ -78,8 +79,8 @@ class ChunkChainReadAllocationTest extends TestHelper {
 
     final int stored = storedSize(rids.getFirst());
     final long perRead = allocatedPerRead(rids);
-    // One copy of the chunks into the record, the record, the Document and its property map: 2,651 bytes for 771 stored. The
-    // walk used to copy every chunk twice and to size its trace for eight chunks: 3,774 bytes.
+    // One copy of the chunks into the record, the record, the Document and its property map: roughly 3.4 times the stored size. The
+    // walk used to copy every chunk twice and to size its trace for eight chunks: roughly 4.9 times. The bound sits between the two.
     assertThat(perRead).as("bytes allocated per read of a record of %d stored bytes", stored).isLessThan(stored * 3L + 1_024);
   }
 
@@ -88,16 +89,31 @@ class ChunkChainReadAllocationTest extends TestHelper {
   }
 
   private long allocatedPerRead(final List<RID> rids) {
+    // Thread allocation counters are a HotSpot extension, and a JVM may report them unsupported or disabled (-1): such a run
+    // would measure nothing, and a delta of two -1 samples is 0, which would pass the bound. It is skipped instead.
+    assumeTrue(ManagementFactory.getThreadMXBean() instanceof ThreadMXBean, "the extended thread bean is not available");
     final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
+    assumeTrue(threads.isThreadAllocatedMemorySupported(), "thread allocation measurement is not supported");
+    final boolean wasEnabled = threads.isThreadAllocatedMemoryEnabled();
+    if (!wasEnabled)
+      threads.setThreadAllocatedMemoryEnabled(true);
+    try {
+      final long threadId = Thread.currentThread().threadId();
 
-    for (final RID rid : rids)
-      ((Document) database.lookupByRID(rid, true)).get("embedding_model");
-
-    final long before = threads.getThreadAllocatedBytes(threadId);
-    for (int pass = 0; pass < READS; pass++)
       for (final RID rid : rids)
         ((Document) database.lookupByRID(rid, true)).get("embedding_model");
-    return (threads.getThreadAllocatedBytes(threadId) - before) / ((long) READS * rids.size());
+
+      final long before = threads.getThreadAllocatedBytes(threadId);
+      assumeTrue(before >= 0L, "thread allocation measurement is disabled");
+      for (int pass = 0; pass < READS; pass++)
+        for (final RID rid : rids)
+          ((Document) database.lookupByRID(rid, true)).get("embedding_model");
+      final long after = threads.getThreadAllocatedBytes(threadId);
+      assertThat(after).as("allocated bytes after the reads").isGreaterThan(before);
+      return (after - before) / ((long) READS * rids.size());
+    } finally {
+      if (!wasEnabled)
+        threads.setThreadAllocatedMemoryEnabled(false);
+    }
   }
 }
