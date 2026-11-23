@@ -30,7 +30,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant, BackingTypeOwner {
-  /** The keys of the range of the deletes in the definition of the aggregate in the schema, see {@link #getInvalidation}. */
+  /**
+   * The keys of the range the definition of the aggregate in the schema holds for the builds that predate #13049: the range of the
+   * deletes, see {@link #getInvalidation}, and the hull of it and of the late appends while one is pending, see {@link #toJSON}.
+   */
   public static final String INVALIDATED_FROM_KEY      = "invalidatedFromTs";
   public static final String INVALIDATED_TO_KEY        = "invalidatedToTs";
   /** The keys of the range of the late appends (issue #13049), see {@link #getLateInvalidation}. */
@@ -94,8 +97,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * bucket of the grid it reaches is recomputed, whether or not the aggregate holds a row for it yet (issue #13049: that is what tells
    * it from {@link #invalidation}).
    * <p>
-   * Persisted and compared like {@link #invalidation}, with keys of its own. The record of a late append is shipped by a schema
-   * session of its own, right after the append commits (issue #10634).
+   * Persisted like {@link #invalidation}, with keys of its own, and also inside the keys of that one as a hull, for a node on a build
+   * that predates #13049 (see {@link #toJSON}). The record of a late append is shipped by a schema session of its own, right after
+   * the append commits (issue #10634).
    */
   private final    AtomicReference<Invalidation> lateInvalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
@@ -583,11 +587,15 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     json.put("watermarkTs", currentWatermark.timestamp());
     json.put("watermarkSet", currentWatermark.set());
     final Invalidation pending = invalidation.get();
-    if (pending != null) {
-      json.put(INVALIDATED_FROM_KEY, pending.fromTs());
-      json.put(INVALIDATED_TO_KEY, pending.toTs());
-    }
     final Invalidation pendingLate = lateInvalidation.get();
+    // The keys every build reads hold ONE range, as before #13049: the hull of the two while a late append is pending. A follower on a
+    // build that predates the late keys (a rolling upgrade) loads them and loses nothing, it recomputes the hull as it always did;
+    // the late keys are the exact range of the appends, which this build reads back apart from the range of the deletes
+    final Invalidation legacy = pendingLate == null ? pending : pendingLate.merge(pending);
+    if (legacy != null) {
+      json.put(INVALIDATED_FROM_KEY, legacy.fromTs());
+      json.put(INVALIDATED_TO_KEY, legacy.toTs());
+    }
     if (pendingLate != null) {
       json.put(LATE_INVALIDATED_FROM_KEY, pendingLate.fromTs());
       json.put(LATE_INVALIDATED_TO_KEY, pendingLate.toTs());
@@ -624,11 +632,21 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
     // A schema written before #13049 holds ONE range under these keys, the hull of the deletes and of the late appends. It is read as
     // the range of the deletes, which recomputes it exactly as it always did: on the grid when it starts at a timestamp, from the rows
-    // of the backing type when it starts at the beginning of time
+    // of the backing type when it starts at the beginning of time. One written by this build holds the hull of both while a late
+    // append is pending (see toJSON): a hull is a range that is wider, never narrower, and recomputing a bucket the delete did not
+    // reach gives the rows it already had
+    Invalidation deleted = null;
     if (json.has(INVALIDATED_FROM_KEY) && json.has(INVALIDATED_TO_KEY))
-      ca.invalidation.set(new Invalidation(json.getLong(INVALIDATED_FROM_KEY), json.getLong(INVALIDATED_TO_KEY)));
+      deleted = new Invalidation(json.getLong(INVALIDATED_FROM_KEY), json.getLong(INVALIDATED_TO_KEY));
+    Invalidation late = null;
     if (json.has(LATE_INVALIDATED_FROM_KEY) && json.has(LATE_INVALIDATED_TO_KEY))
-      ca.lateInvalidation.set(new Invalidation(json.getLong(LATE_INVALIDATED_FROM_KEY), json.getLong(LATE_INVALIDATED_TO_KEY)));
+      late = new Invalidation(json.getLong(LATE_INVALIDATED_FROM_KEY), json.getLong(LATE_INVALIDATED_TO_KEY));
+    // the hull of nothing but the late range is the late range: no delete was pending, and the buckets of the range are recomputed
+    // once, on the grid, as the range of the late appends
+    if (late != null && late.equals(deleted))
+      deleted = null;
+    ca.invalidation.set(deleted);
+    ca.lateInvalidation.set(late);
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;

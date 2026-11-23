@@ -973,19 +973,22 @@ final class SchemaEntryApplier {
       final JSONObject definition = aggregates.getJSONObject(name, null);
       if (definition == null)
         continue;
-      // the range of the deletes, and the one of the late appends since #13049: an aggregate records them apart
-      final boolean deleted = definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY) && definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY);
-      final boolean late = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
+      // the keys every build reads, and the ones of the late appends since #13049: the definition holds a range under each pair
+      final boolean carriesDeleted = definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY)
+          && definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY);
+      final boolean carriesLate = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
           && definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY);
-      if (!deleted && !late)
+      if (!carriesDeleted && !carriesLate)
         continue;
       if (!schema.existsContinuousAggregate(name)
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
         return true;
-      if (deleted && differsFromRecordHeld(held.getInvalidation(), definition, ArcadeStateMachine.INVALIDATED_FROM_KEY,
+      // the record as this node would write it: compared with the leader's, key by key, so the two spell the same hull
+      final JSONObject heldDefinition = held.toJSON();
+      if (carriesDeleted && differsFromRecordHeld(heldDefinition, definition, ArcadeStateMachine.INVALIDATED_FROM_KEY,
           ArcadeStateMachine.INVALIDATED_TO_KEY))
         return true;
-      if (late && differsFromRecordHeld(held.getLateInvalidation(), definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
+      if (carriesLate && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
           ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY))
         return true;
     }
@@ -994,11 +997,12 @@ final class SchemaEntryApplier {
     return false;
   }
 
-  /** Whether the range of {@code definition} under {@code fromKey} and {@code toKey} is not {@code held}, or this node holds none. */
-  private static boolean differsFromRecordHeld(final ContinuousAggregateImpl.Invalidation held, final JSONObject definition,
-      final String fromKey, final String toKey) {
-    return held == null || held.fromTs() != definition.getLong(fromKey, Long.MIN_VALUE)
-        || held.toTs() != definition.getLong(toKey, Long.MIN_VALUE);
+  /** Whether the range {@code definition} holds under {@code fromKey} and {@code toKey} is not the one {@code heldDefinition} holds. */
+  private static boolean differsFromRecordHeld(final JSONObject heldDefinition, final JSONObject definition, final String fromKey,
+      final String toKey) {
+    return !heldDefinition.has(fromKey) || !heldDefinition.has(toKey)
+        || heldDefinition.getLong(fromKey, Long.MIN_VALUE) != definition.getLong(fromKey, Long.MIN_VALUE)
+        || heldDefinition.getLong(toKey, Long.MIN_VALUE) != definition.getLong(toKey, Long.MIN_VALUE);
   }
 
   private static boolean isEmptyMap(final Map<?, ?> map) {

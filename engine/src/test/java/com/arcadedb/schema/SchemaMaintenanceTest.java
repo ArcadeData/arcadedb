@@ -342,7 +342,7 @@ class SchemaMaintenanceTest {
       aggregate.invalidateLateSamples(1_000L, 2_000L);
 
       final JSONObject json = aggregate.toJSON();
-      assertThat(json.getLong("invalidatedFromTs")).isEqualTo(Long.MIN_VALUE);
+      assertThat(json.getLong("invalidatedFromTs")).as("the hull, for a build that predates the late keys").isEqualTo(Long.MIN_VALUE);
       assertThat(json.getLong("invalidatedToTs")).isEqualTo(Long.MAX_VALUE);
       assertThat(json.getLong("lateInvalidatedFromTs")).isEqualTo(0L);
       assertThat(json.getLong("lateInvalidatedToTs")).isEqualTo(3_599_999L);
@@ -355,7 +355,43 @@ class SchemaMaintenanceTest {
       final JSONObject lateCleared = aggregate.toJSON();
       assertThat(lateCleared.has("lateInvalidatedFromTs")).isFalse();
       assertThat(lateCleared.has("lateInvalidatedToTs")).isFalse();
-      assertThat(lateCleared.has("invalidatedFromTs")).isTrue();
+      assertThat(lateCleared.getLong("invalidatedFromTs")).isEqualTo(Long.MIN_VALUE);
+    }
+
+    /**
+     * A node on a build that predates #13049 reads the one range under the old keys. While a late append is pending they hold it, so
+     * that node, promoted to leader, still recomputes the bucket of the append, as it always did.
+     */
+    @Test
+    void theKeysOfABuildBeforeTheTwoRangesWereKeptApartHoldTheLateRangeToo() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+
+      final JSONObject json = aggregate.toJSON();
+
+      assertThat(json.getLong("invalidatedFromTs")).isEqualTo(0L);
+      assertThat(json.getLong("invalidatedToTs")).isEqualTo(3_599_999L);
+      // this build reads it back as what it is: the range of the appends, and no delete
+      final ContinuousAggregateImpl loaded = ContinuousAggregateImpl.fromJSON(database, json);
+      assertThat(loaded.getLateInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 3_599_999L));
+      assertThat(loaded.getInvalidation()).isNull();
+    }
+
+    /** A delete and a late append that are both pending: the old keys hold the hull of the two, which is wider and never narrower. */
+    @Test
+    void theHullOfADeleteAndALateAppendIsReadBackAsARangeThatCoversTheDelete() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidate(3_700_000L, 3_800_000L);
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+
+      final JSONObject json = aggregate.toJSON();
+      assertThat(json.getLong("invalidatedFromTs")).isEqualTo(0L);
+      assertThat(json.getLong("invalidatedToTs")).isEqualTo(3_800_000L);
+
+      final ContinuousAggregateImpl loaded = ContinuousAggregateImpl.fromJSON(database, json);
+      assertThat(loaded.getLateInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 3_599_999L));
+      assertThat(loaded.getInvalidation().fromTs()).isLessThanOrEqualTo(3_700_000L);
+      assertThat(loaded.getInvalidation().toTs()).isGreaterThanOrEqualTo(3_800_000L);
     }
 
     /** A schema written before #13049 has ONE range under the old keys: it is the range of the deletes, and there is no late one. */

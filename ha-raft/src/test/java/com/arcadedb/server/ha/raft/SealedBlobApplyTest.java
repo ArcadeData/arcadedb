@@ -652,7 +652,7 @@ class SealedBlobApplyTest {
       aggregateOf(leader).setWatermarkTs(3_600_000L);
       aggregateOf(leader).invalidateLateSamples(100L, 200L);
       assertThat(aggregateOf(leader).getLateInvalidation()).isNotNull();
-      assertThat(schemaOf(leader)).doesNotContain("\"" + ArcadeStateMachine.INVALIDATED_FROM_KEY + "\"");
+      assertThat(schemaOf(leader)).contains("\"" + ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY + "\"");
       assertThat(carriesAContinuousAggregateRecordNotHeldHere(follower, schemaOf(leader))).isTrue();
     }
 
