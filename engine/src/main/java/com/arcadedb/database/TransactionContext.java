@@ -39,6 +39,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
@@ -55,6 +56,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.sql.executor.QueryAdmissionGate;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalSchema;
@@ -437,6 +440,12 @@ public class TransactionContext implements Transaction {
   private       boolean                              mergedEdgesReserved;
   // #11482: nothing can refuse the commit any more, so a transaction ending without its bump publishes it all the same
   private       boolean                              mergedEdgesPastCommitPoint;
+  // #12483: whether this transaction created a relationship of a type with an exact-key index, whose keys its commit marks
+  // (markRelationshipsOfIndexedTypes), and the last type registerNewRecord asked about, so a load of one type asks once
+  private       boolean                              createdEdgeOfIndexedType;
+  private       DocumentType                         lastNewEdgeType;
+  // #12483: whether this transaction created any relationship, for an index registered on its type after the begin
+  private       boolean                              createdEdge;
   // #11592: TransactionManager.getVertexDeleteSequence() when this transaction began. A vertex deleted by a commit after it may be
   // one this transaction read alive, and its RID may hold a vertex created since
   private       long                                 vertexDeleteEpoch;
@@ -571,7 +580,7 @@ public class TransactionContext implements Transaction {
 
   public TransactionContext(final DatabaseInternal database) {
     this.database = database;
-    this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+    this.configuredWALFlush = WALFile.getWALFlushType(database.getConfiguration());
     this.configuredUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
     this.configuredGroupCommit = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL_GROUP_COMMIT);
     this.embedded = database.getEmbedded() instanceof LocalDatabase local ? local : null;
@@ -824,15 +833,14 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Whether this transaction has written nothing: no page modified or created, no index entry queued, and no record written or queued
-   * for the commit. The commit of such a transaction is a read-only one ({@link #commit1stPhase} answers null for it): it has no page
-   * delta to compute, and nothing to publish or replicate.
-   * <p>
-   * At least as strict as that test, which runs once the deferred updates have been applied to their pages: a transaction holding one
-   * has written something here, whatever the commit makes of it.
+   * Whether this transaction has changed nothing so far: no record created, written at once, queued for the commit or
+   * deleted, no page touched and no index entry queued. A read made in such a transaction under READ_COMMITTED answers
+   * what the same read answers outside any transaction, so a read-only statement may keep what it read for its own
+   * duration. A handful of size reads, meant to be asked once per batch of rows and not once per row.
    */
-  public boolean hasWrittenNothing() {
-    return !hasChanges() && !hasWrittenRecords();
+  public boolean hasChangedNothing() {
+    return !hasWrittenRecords() && deletedRecordsInTx.isEmpty() && (immediateWrites == null || immediateWrites.isEmpty())
+        && !hasChanges();
   }
 
   /**
@@ -913,6 +921,15 @@ public class TransactionContext implements Transaction {
     newRecords.add(record, !database.isReadYourWrites());
     if (newRecordRIDs != null)
       newRecordRIDs.add(record.getIdentity());
+    // #12483: a relationship a MERGE answered by an index of its type would have found; one compare for a load of one type
+    if (!createdEdgeOfIndexedType && record instanceof Edge edge) {
+      createdEdge = true;
+      final DocumentType type = edge.getType();
+      if (type != lastNewEdgeType) {
+        lastNewEdgeType = type;
+        createdEdgeOfIndexedType = hasExactKeyIndex(type);
+      }
+    }
   }
 
   /**
@@ -1915,6 +1932,25 @@ public class TransactionContext implements Transaction {
           LogManager.instance().log(this, Level.WARNING, "Error taking the commit order of a post-commit callback: %s", e, e.getMessage());
         }
       }
+  }
+
+  /**
+   * Tells the ordered after-commit callbacks that this transaction's pages are published, while it still holds its locks (issue
+   * #12720, see {@link OrderedAfterCommitCallback#onPublished()}). Only once the commit point was reached: the callbacks of a
+   * transaction that never took a place have nothing to hand over before they run.
+   */
+  private void reachPublication() {
+    final List<Runnable> callbacks = afterCommitCallbacks;
+    if (callbacks == null || !commitPointReached)
+      return;
+    for (final Runnable callback : callbacks)
+      if (callback instanceof OrderedAfterCommitCallback ordered)
+        try {
+          ordered.onPublished();
+        } catch (final Exception e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error telling a post-commit callback its transaction is published: %s", e, e.getMessage());
+        }
   }
 
   /**
@@ -4500,6 +4536,9 @@ public class TransactionContext implements Transaction {
     // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
     indexPropertiesAssignedAfterTheirSave();
 
+    // Issue #12483: the values of the relationships this transaction created are final now, the SET that followed a CREATE included
+    markRelationshipsOfIndexedTypes();
+
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
     // Without this, concurrent updateRecordNoLock calls could both load the same page
@@ -5007,6 +5046,10 @@ public class TransactionContext implements Transaction {
       final FullTextCorpusDeltas corpusDeltas = FullTextCorpusDeltas.peek(this);
       if (corpusDeltas != null)
         corpusDeltas.applyCommitted();
+
+      // #12720: EVERYTHING THE COMMIT PUBLISHES IS VISIBLE, AND WHILE ITS LOCKS ARE HELD NO OTHER TRANSACTION CAN HAVE COMMITTED ON TOP
+      // OF IT: WHAT AN ORDERED CALLBACK HANDS OVER HERE IS STILL THE NEWEST STATE OF THE RECORDS THIS TRANSACTION WROTE
+      reachPublication();
     } catch (final IOException | InterruptedException e) {
       // AN InterruptedException IS CARRIED AS THE CAUSE, ITS FLAG RESTORED BY WHOEVER CONCLUDES THE FAILED PHASE, ONCE THE
       // FILES IT TOUCHES ARE DONE WITH: commit2ndPhase, SEE restoreInterruptIfCause (#10416)
@@ -5963,6 +6006,178 @@ public class TransactionContext implements Transaction {
     markMergedEdge(to, MERGED_EDGE_EXISTING_END, type + "-");
   }
 
+  /**
+   * The key a MERGE that found no relationship through {@code index} checks (issue #12483): a MERGE between two bound nodes answers
+   * its existence check from an exact-key index of the relationship's type instead of a walk of an edge list, so no head read
+   * refuses its commit when a concurrent transaction gives either node a relationship, which a bulk load of relationships between
+   * shared vertices did about twice per committed batch. What that refusal protected, the same relationship created concurrently
+   * by any statement, is kept by the {@link MergedEdgeRegistry}: the commit of every relationship of a type with such an index
+   * marks the key of each index ({@link #markRelationshipsOfIndexedTypes}), which this one checks.
+   * <p>
+   * The values are read from {@code created}, the relationship the MERGE wrote, as stored: the same form the mark reads them in,
+   * whatever form the statement evaluated them to (a LONG parameter for an INTEGER property, a temporal). The MERGE answers from
+   * the index only when it holds a non-null value for every property of it, and writes each of them, so {@code created} holds them.
+   */
+  public void checkMergedEdgeByIndex(final RID from, final RID to, final TypeIndex index, final Document created) {
+    if (from == null || to == null || !isActive())
+      return;
+    final Map<String, Object> key = indexKeyOf(index, created);
+    if (key != null)
+      mergedEdgeChecked = append(mergedEdgeChecked, mergedEdgeCheckedCount++, mergedEdgeKeyOf(from, to, index, key));
+  }
+
+  /**
+   * Issue #12483: marks the keys a MERGE answered by an index checks ({@link #checkMergedEdgeByIndex}) for every relationship this
+   * transaction created of a type with an exact-key index, whatever statement created it: per index, the pair, the index and the
+   * values the relationship holds for its properties. Read at the commit, when the values are final: a relationship created by a
+   * {@code CREATE} and given its key by a {@code SET} that follows is marked with the key it is committed with.
+   * <p>
+   * Costs nothing to a transaction that created no relationship of such a type: one flag. Otherwise one pass over the records it
+   * created, a hash per index per relationship, and the registry's monitor at the commit to publish them.
+   * <p>
+   * Not marked: the relationships {@code GraphBatch} writes through its bulk path, which bypasses the registration of new records. Such
+   * a load reads nothing, so a MERGE it races is serializable before it, as with a plain CREATE that commits after the MERGE.
+   */
+  private void markRelationshipsOfIndexedTypes() {
+    // An index registered on a type since this transaction began makes a relationship it created before then one a MERGE finds
+    // through that index (the reconciliation of #10588 indexes it at this commit): the types are asked again, at the commit
+    if (!createdEdgeOfIndexedType && !(createdEdge
+        && database.getTransactionManager().getIndexRegistrationSequence() != indexRegistrationSequenceAtBegin))
+      return;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    DocumentType lastType = null;
+    TypeIndex[] lastIndexes = null;
+    // the keys marked already, the MERGE's own ones included: a relationship a MERGE created by the properties of an index is marked
+    // under that key by the MERGE, and marking it twice would only fill the registry's table of committed keys faster
+    final LongHashSet marked = new LongHashSet(Math.max(16, mergedEdgeMarkedCount * 2));
+    for (int i = 0; i < mergedEdgeMarkedCount; i++)
+      marked.add(mergedEdgeMarked[i]);
+    for (int i = 0; i < newRecords.size(); i++) {
+      final RID rid = newRecords.getIdentity(i);
+      if (rid == null || rid.getPosition() < 0 || isDeletedInTransaction(rid))
+        continue;
+      final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
+      if (!(type instanceof EdgeType))
+        continue;
+      if (type != lastType) {
+        lastType = type;
+        lastIndexes = exactKeyIndexes(type);
+      }
+      if (lastIndexes.length == 0)
+        continue;
+
+      Edge edge = currentEdge(i, rid, type);
+      if (edge == null)
+        continue;
+      final RID from = edge.getOut();
+      final RID to = edge.getIn();
+      if (from == null || to == null)
+        continue;
+      for (final TypeIndex index : lastIndexes) {
+        Map<String, Object> key = indexKeyOf(index, edge);
+        if (key != null && edge instanceof MutableDocument && !isQueued(rid, edge) && holdsContainer(key)) {
+          // a list or a map of the object can have been changed in place after the save, which assigns nothing and is not written:
+          // the key is the one the save wrote to the page
+          edge = writtenEdge(rid, type);
+          if (edge == null)
+            break;
+          key = indexKeyOf(index, edge);
+        }
+        // a relationship with a null in the key is one no MERGE finds through this index: a MERGE cannot match a null
+        if (key != null) {
+          final long mergedEdgeKey = mergedEdgeKeyOf(from, to, index, key);
+          if (marked.add(mergedEdgeKey))
+            mergedEdgeMarked = append(mergedEdgeMarked, mergedEdgeMarkedCount++, mergedEdgeKey);
+        }
+      }
+    }
+  }
+
+  /**
+   * The relationship created at {@code index} of the new records as the commit writes it: the queued update, whose values assigned
+   * after its save the commit writes and indexes ({@link #indexPropertiesAssignedAfterTheirSave}), or else the record as its last save
+   * wrote it to the transaction's page. An object of a created record changed after its save and never saved again is not what the
+   * commit writes, so its key is not the one to mark.
+   */
+  private Edge currentEdge(final int index, final RID rid, final DocumentType type) {
+    if (updatedRecords != null && updatedRecords.get(rid) instanceof Edge queued)
+      return queued;
+
+    Record record = modifiedRecordsCache.get(rid);
+    if (record == null)
+      record = newRecords.get(index);
+    if (record instanceof Edge edge && !(record instanceof MutableDocument document && document.isAssignedAfterSave()))
+      return edge;
+
+    // read-your-writes off and nobody holds it, or changed after its save: what the transaction wrote to its page
+    return writtenEdge(rid, type);
+  }
+
+  private boolean isQueued(final RID rid, final Edge edge) {
+    return updatedRecords != null && updatedRecords.get(rid) == edge;
+  }
+
+  /** Whether a value of {@code key}, which {@link #indexKeyOf} builds with no null in it, is a list, a map or an array. */
+  private static boolean holdsContainer(final Map<String, Object> key) {
+    for (final Object value : key.values())
+      if (value instanceof Collection || value instanceof Map || value.getClass().isArray())
+        return true;
+    return false;
+  }
+
+  /** The relationship at {@code rid} as the transaction wrote it to its page, or null when it is not there. */
+  private Edge writtenEdge(final RID rid, final DocumentType type) {
+    try {
+      final Binary written = ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getRecord(rid);
+      return written != null && database.getRecordFactory().newImmutableRecord(database, type, rid, written, null) instanceof Edge edge ?
+          edge :
+          null;
+    } catch (final RecordNotFoundException e) {
+      return null;
+    }
+  }
+
+  /**
+   * The key of a relationship between {@code from} and {@code to} holding {@code key} for the properties of {@code index}: the key
+   * #11482 gives a relationship of the type that declares the index matched by those properties, the one a MERGE of
+   * {@code (a)-[:T {uuid: $u}]->(b)} marks for what it creates. Every relationship of a subtype is marked under it too, which a
+   * MERGE of the declaring type finds through the index.
+   */
+  private static long mergedEdgeKeyOf(final RID from, final RID to, final TypeIndex index, final Map<String, Object> key) {
+    return MergedEdgeRegistry.keyOf(from, to, index.getTypeName(), key);
+  }
+
+  /** The values {@code record} holds for the properties of {@code index}, or null when one of them is null. */
+  private static Map<String, Object> indexKeyOf(final TypeIndex index, final Document record) {
+    final List<String> properties = index.getPropertyNames();
+    final Map<String, Object> key = new HashMap<>(properties.size() * 2);
+    for (int i = 0; i < properties.size(); i++) {
+      final String property = properties.get(i);
+      final Object value = record.get(property);
+      if (value == null)
+        return null;
+      key.put(property, value);
+    }
+    return key;
+  }
+
+  /** Whether {@code type} has an index a MERGE can answer an existence check from (issue #12483). */
+  private static boolean hasExactKeyIndex(final DocumentType type) {
+    for (final TypeIndex index : type.getAllIndexes(true))
+      if (index.getPropertyNamesIfExactKeyLookup() != null)
+        return true;
+    return false;
+  }
+
+  private static TypeIndex[] exactKeyIndexes(final DocumentType type) {
+    final Collection<TypeIndex> all = type.getAllIndexes(true);
+    final List<TypeIndex> exact = new ArrayList<>(all.size());
+    for (final TypeIndex index : all)
+      if (index.getPropertyNamesIfExactKeyLookup() != null)
+        exact.add(index);
+    return exact.toArray(new TypeIndex[0]);
+  }
+
   private static long[] append(long[] array, final int index, final long value) {
     if (array == null)
       array = new long[4];
@@ -5977,7 +6192,8 @@ public class TransactionContext implements Transaction {
    * relationship that another transaction committed after this one began, or is committing now (issue #11482).
    */
   private void reserveMergedEdges() {
-    if (mergedEdgeCheckedCount == 0)
+    // #12483: a transaction that only marks keys (it created relationships of a type a MERGE looks up by an index) publishes them
+    if (mergedEdgeCheckedCount == 0 && mergedEdgeMarkedCount == 0)
       return;
     if (!database.getTransactionManager().getMergedEdges()
         .reserve(mergedEdgeChecked, mergedEdgeCheckedCount, mergedEdgeMarked, mergedEdgeMarkedCount, mergedEdgeEpoch))
@@ -6468,6 +6684,9 @@ public class TransactionContext implements Transaction {
         registry.release(mergedEdgeMarked, mergedEdgeMarkedCount);
     }
     mergedEdgesPastCommitPoint = false;
+    createdEdgeOfIndexedType = false;
+    createdEdge = false;
+    lastNewEdgeType = null;
     mergedEdgeChecked = null;
     mergedEdgeCheckedCount = 0;
     mergedEdgeMarked = null;

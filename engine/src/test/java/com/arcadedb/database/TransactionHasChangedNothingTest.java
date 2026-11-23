@@ -25,13 +25,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #12889: {@link TransactionContext#hasWrittenNothing()}, the one definition of "this transaction has no write" a layer above
+ * Issue #12889: {@link TransactionContext#hasChangedNothing()}, the one definition of "this transaction has no write" a layer above
  * the engine asks before it decides that committing it needs nothing of the database's files (the HA commit gates exempt the empty
- * transaction an HTTP request holds around a write it forwarded to the leader).
+ * transaction an HTTP request holds around a write it forwarded to the leader). Every kind of write has to make it false, or a
+ * transaction that wrote would be let through a gate that exists to refuse it.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
-class TransactionHasWrittenNothingTest extends TestHelper {
+class TransactionHasChangedNothingTest extends TestHelper {
 
   @Override
   protected void beginTest() {
@@ -48,12 +49,12 @@ class TransactionHasWrittenNothingTest extends TestHelper {
   }
 
   @Test
-  void aTransactionThatOnlyReadsHasWrittenNothing() {
+  void aTransactionThatOnlyReadsHasChangedNothing() {
     database.begin();
     try {
-      assertThat(transaction().hasWrittenNothing()).as("just begun").isTrue();
+      assertThat(transaction().hasChangedNothing()).as("just begun").isTrue();
       database.query("sql", "SELECT FROM T").close();
-      assertThat(transaction().hasWrittenNothing()).as("after a read").isTrue();
+      assertThat(transaction().hasChangedNothing()).as("after a read").isTrue();
     } finally {
       database.rollback();
     }
@@ -64,7 +65,7 @@ class TransactionHasWrittenNothingTest extends TestHelper {
     database.begin();
     try {
       database.newDocument("T").set("id", 10).save();
-      assertThat(transaction().hasWrittenNothing()).isFalse();
+      assertThat(transaction().hasChangedNothing()).isFalse();
     } finally {
       database.rollback();
     }
@@ -80,7 +81,7 @@ class TransactionHasWrittenNothingTest extends TestHelper {
         document = result.next().getRecord().get().asDocument().modify();
       }
       document.set("id", 100).save();
-      assertThat(transaction().hasWrittenNothing()).isFalse();
+      assertThat(transaction().hasChangedNothing()).isFalse();
     } finally {
       database.rollback();
     }
@@ -91,7 +92,7 @@ class TransactionHasWrittenNothingTest extends TestHelper {
     database.begin();
     try {
       database.command("sql", "DELETE FROM T WHERE id = 2").close();
-      assertThat(transaction().hasWrittenNothing()).isFalse();
+      assertThat(transaction().hasChangedNothing()).isFalse();
     } finally {
       database.rollback();
     }

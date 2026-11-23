@@ -792,8 +792,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Whether the transaction this thread would commit is the empty one that closes a write this node forwarded to the leader (issue
    * #12889): the leader answered it ({@link TransactionContext#getWritesCommittedByAnotherNode()}, set on every transaction of the
-   * thread by {@link #forwardCommandToLeaderViaRaft}) and the transaction has written nothing
-   * ({@link TransactionContext#hasWrittenNothing()}), so its commit is a read-only one that publishes and replicates nothing.
+   * thread by {@link #forwardCommandToLeaderViaRaft}) and the transaction has changed nothing
+   * ({@link TransactionContext#hasChangedNothing()}), so its commit is a read-only one that publishes and replicates nothing.
    * <p>
    * Both parts matter. An empty transaction that forwarded nothing is a client transaction that began before the replacement, and the
    * gates keep refusing it. One that forwarded a write and wrote on its own account as well has pages computed against the copy being
@@ -806,7 +806,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private boolean commitsOnlyAWriteForwardedToTheLeader() {
     final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(proxied.getDatabasePath());
     final TransactionContext tx = context != null ? context.getLastTransaction() : null;
-    return tx != null && tx.isActive() && tx.getWritesCommittedByAnotherNode() > 0 && tx.hasWrittenNothing();
+    return tx != null && tx.isActive() && tx.getWritesCommittedByAnotherNode() > 0 && tx.hasChangedNothing();
   }
 
   /**

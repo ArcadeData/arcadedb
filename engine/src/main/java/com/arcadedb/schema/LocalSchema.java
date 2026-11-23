@@ -2449,6 +2449,13 @@ public class LocalSchema implements Schema {
     final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
+      // Again under the write lock, which the check above does not hold (issue #12715): a type rename claims the names it moves
+      // its buckets to under this lock, and so does a concurrent creation of the same name, so the one that comes second is
+      // refused here instead of registering a second bucket under a name the first one holds
+      if (lookupBucket(bucketName) != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot create bucket '" + bucketName + "' because already exists");
+
       try {
         final File parent = new File(dir);
         if (!parent.exists() && !parent.mkdirs())

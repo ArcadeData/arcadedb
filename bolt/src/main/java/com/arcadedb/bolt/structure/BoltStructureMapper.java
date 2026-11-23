@@ -595,9 +595,11 @@ public class BoltStructureMapper {
         return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
 
       case SIG_DATE_TIME_OFFSET_LEGACY: {
-        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
+        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset. Decoded as a
+        // ZonedDateTime whose zone is the offset (#12778), like Cypher datetime('...+05:30'), so a schemaless property
+        // stores a ZONED DATETIME and keeps the offset instead of the UTC wall clock of an OffsetDateTime.
         final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
-        return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+        return ZonedDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_LEGACY: {
@@ -606,9 +608,9 @@ public class BoltStructureMapper {
       }
 
       case SIG_DATE_TIME_OFFSET_UTC: {
-        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
+        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second. ZonedDateTime at the offset, see the legacy case.
         final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
-        return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+        return ZonedDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_UTC: {
