@@ -67,9 +67,12 @@ public final class ExistingRecordsCheck {
     if (propertyNames.length == 0)
       return;
     if (type instanceof LocalTimeSeriesType tsType) {
+      // null when neither flag is being declared: nothing is required of the samples then
+      final ValidationException.Kind requiredBy = mandatory ? ValidationException.Kind.MANDATORY :
+          notNull ? ValidationException.Kind.NOT_NULL : null;
+      final String what = mandatory ? "MANDATORY" : "NOTNULL";
       for (final String propertyName : propertyNames)
-        requireSamples(db, tsType, propertyName, mandatory || notNull, mandatory ? ValidationException.Kind.MANDATORY :
-            ValidationException.Kind.NOT_NULL, null, null, null, mandatory ? "MANDATORY" : "NOTNULL");
+        requireSamples(db, tsType, propertyName, requiredBy, null, null, null, what);
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -95,7 +98,7 @@ public final class ExistingRecordsCheck {
   public static void requireValues(final Database db, final DocumentType type, final Property property,
       final DocumentValidator.StoredValueConstraints constraints, final String what) {
     if (type instanceof LocalTimeSeriesType tsType) {
-      requireSamples(db, tsType, property.getName(), false, null, constraints.min(), constraints.max(), constraints.regexp(), what);
+      requireSamples(db, tsType, property.getName(), null, constraints.min(), constraints.max(), constraints.regexp(), what);
       return;
     }
     final Iterator<Record> records = db.iterateType(type.getName(), true);
@@ -147,10 +150,14 @@ public final class ExistingRecordsCheck {
    * reads back as missing, and MANDATORY / NOTNULL find nothing to refuse there. The write path still holds every new sample to them.
    * MIN and REGEXP judge that empty text here and on the write path alike (issue #10336), so their outcome does not depend on whether
    * the constraint or the sample came first.
+   *
+   * @param requiredBy the existence constraint being declared (MANDATORY or NOTNULL), or null for a MIN, a MAX or a REGEXP; when it is
+   *                   set, {@code what} is the keyword of that constraint, which the column check names in its reason
+   * @param what       what is being declared, for the message
    */
   private static void requireSamples(final Database db, final LocalTimeSeriesType type, final String propertyName,
-      final boolean required, final ValidationException.Kind requiredBy, final String min, final String max, final String regexp,
-      final String what) {
+      final ValidationException.Kind requiredBy, final String min, final String max, final String regexp, final String what) {
+    final boolean required = requiredBy != null;
     final TimeSeriesEngine engine = type.getEngine();
     final Property property = type.getPolymorphicPropertyIfExists(propertyName);
     if (engine == null || property == null)
@@ -173,7 +180,7 @@ public final class ExistingRecordsCheck {
     final int index = column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP ? 0 : position + 1;
 
     final TimeSeriesColumnConstraints.ColumnCheck check = TimeSeriesColumnConstraints.columnCheck(db, column, property.getType(),
-        required, !required ? null : requiredBy == ValidationException.Kind.MANDATORY ? "MANDATORY" : "NOTNULL", min, max, regexp);
+        required, required ? what : null, min, max, regexp);
     if (check == null)
       return;
 
