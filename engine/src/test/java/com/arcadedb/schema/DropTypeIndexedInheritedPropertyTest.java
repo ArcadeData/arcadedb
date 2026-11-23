@@ -112,6 +112,51 @@ class DropTypeIndexedInheritedPropertyTest extends TestHelper {
   }
 
   /**
+   * The most ordinary drop: the dropped type indexes its own property and its sub types inherit both. The index is the dropped
+   * type's, not the sub types', so nothing is refused, whether the schema was just built or was loaded from its file.
+   */
+  @Test
+  void indexOfTheDroppedTypeOnItsOwnPropertyAllowsTheDrop() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE DOCUMENT TYPE X EXTENDS C");
+    database.command("sql", "CREATE INDEX ON P (k) UNIQUE");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO C SET k = 1");
+      database.command("sql", "INSERT INTO X SET k = 2");
+    });
+
+    reopenDatabase();
+    database.command("sql", "DROP TYPE P");
+
+    final Schema schema = database.getSchema();
+    assertThat(schema.existsType("P")).isFalse();
+    assertThat(schema.existsIndex("P[k]")).isFalse();
+    assertThat(schema.getType("C").getSuperTypes()).isEmpty();
+    assertThat(schema.getType("X").getSuperTypes()).extracting(DocumentType::getName).containsExactly("C");
+    assertThat(database.countType("C", true)).isEqualTo(2);
+  }
+
+  /** The refusal does not depend on the schema having been built in this session: a loaded schema answers the same. */
+  @Test
+  void theRefusalHoldsOnALoadedSchema() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    database.transaction(() -> database.command("sql", "INSERT INTO C SET k = 1"));
+
+    reopenDatabase();
+
+    assertThatThrownBy(() -> database.command("sql", "DROP TYPE P"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("Cannot drop the type 'P'")//
+        .hasMessageContaining("'C[k]'");
+    assertUnchanged();
+  }
+
+  /**
    * DROP MATERIALIZED VIEW drops the backing type after unregistering the view: the refusal comes before, so the view stays. A sub
    * type linked to the backing type before #11204 is the only way an index can stand below one.
    */
