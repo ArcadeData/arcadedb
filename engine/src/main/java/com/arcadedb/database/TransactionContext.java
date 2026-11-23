@@ -2876,7 +2876,7 @@ public class TransactionContext implements Transaction {
       // vertex these relationships
       final RID appendsOwner = entry.getValue().owner;
       if (appendsOwner != null)
-        refuseVertexDeletedSinceBegin(appendsOwner, true);
+        refuseVertexChangedSinceBegin(appendsOwner, true);
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
@@ -6253,7 +6253,7 @@ public class TransactionContext implements Transaction {
       // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
       // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
       // this transaction created on a RID freed since it began is its own and keeps its relationships
-      refuseVertexDeletedSinceBegin(rid, isLeader);
+      refuseVertexChangedSinceBegin(rid, isLeader);
 
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
@@ -6302,7 +6302,7 @@ public class TransactionContext implements Transaction {
    * {@link #refuseVertexPageApplyDuringChecks}: a follower's commit cannot rebase onto a page an apply moved, its version check
    * refuses it.
    */
-  private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
+  private void refuseVertexChangedSinceBegin(final RID rid, final boolean isLeader) {
     final VertexChange change = database.getTransactionManager().vertexChangeSince(rid, vertexDeleteEpoch);
     if (change != VertexChange.NONE) {
       if (!isCreatedInTransaction(rid))
@@ -6312,14 +6312,14 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * The refusal of {@link #refuseVertexDeletedSinceBegin}, worded for its cause (#12123): a follower whose peers only updated the
+   * The refusal of {@link #refuseVertexChangedSinceBegin}, worded for its cause (#12123): a follower whose peers only updated the
    * vertex is refused because a replicated apply wrote its page, and telling it the vertex "was deleted" points at a delete that
    * never happened. The exception and its retry are the same for every cause.
    */
   static String vertexChangedSinceBeginMessage(final RID rid, final VertexChange change) {
     return switch (change) {
       case DELETED -> "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation";
-      case BUCKET_DROPPED -> "The bucket of record " + rid + " was dropped by a concurrent transaction. Please retry the operation";
+      case BUCKET_DROPPED -> "The bucket of record " + rid + " was dropped after this transaction began. Please retry the operation";
       case PAGE_REPLICATED -> "The page of record " + rid
           + " was written by a replicated transaction after this transaction began. Please retry the operation";
       case NONE -> throw new IllegalArgumentException("Record " + rid + " did not change since this transaction began");
@@ -6430,7 +6430,7 @@ public class TransactionContext implements Transaction {
         // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
         // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
         // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
-        refuseVertexDeletedSinceBegin(owner, isLeader);
+        refuseVertexChangedSinceBegin(owner, isLeader);
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());

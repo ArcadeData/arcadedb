@@ -49,7 +49,7 @@ class Issue12123VertexChangedSinceBeginMessageTest {
   @Test
   void aDroppedBucketIsReportedAsDropped() {
     assertThat(TransactionContext.vertexChangedSinceBeginMessage(RID, VertexChange.BUCKET_DROPPED))
-        .isEqualTo("The bucket of record #1:0 was dropped by a concurrent transaction. Please retry the operation");
+        .isEqualTo("The bucket of record #1:0 was dropped after this transaction began. Please retry the operation");
   }
 
   @Test
