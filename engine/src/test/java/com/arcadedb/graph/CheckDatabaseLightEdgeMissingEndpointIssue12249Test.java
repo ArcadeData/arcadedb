@@ -84,7 +84,9 @@ class CheckDatabaseLightEdgeMissingEndpointIssue12249Test extends TestHelper {
     final Result before = check(false);
     final Collection<String> warnings = before.getProperty("warnings");
     assertThat(warnings).anyMatch(w -> w.contains("lightweight edge") && w.contains("not found"));
-    // per B vertex: F out + F in (record edges) and L out + L in + LU out (lightweight entries) on a
+    // per B vertex, on A: F out + F in (record edges) and L out + L in + LU out (lightweight entries). A lower bound, because the
+    // edge scan reports the missing endpoint of the two record-backed edges as well: how often that finding is counted is not
+    // what this test is about. The exact counts of the lightweight entries alone are pinned by the lightweight-only graphs below.
     assertThat(before.<Long>getProperty("invalidLinks")).isGreaterThanOrEqualTo(5L * bVertices);
 
     final Result fix = check(true);
@@ -112,6 +114,73 @@ class CheckDatabaseLightEdgeMissingEndpointIssue12249Test extends TestHelper {
   void lightEdgesOfAPromotedSuperNodeAreReportedAndPruned() {
     database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 16);
     dropAndRepair(40);
+  }
+
+  /**
+   * The far vertices are deleted on their own, through the bucket, so nothing disconnects them from the lightweight entries that
+   * name them: the shape does not depend on DROP TYPE. Only lightweight edges are involved, which makes the counts exact (L out,
+   * L in and LU out per deleted vertex, each counted once, reported and pruned once) and means nothing may be flagged corrupt:
+   * the entry names no record, and a flagged vertex or edge bucket would drop and rebuild its indexes for a RID that is just not
+   * there.
+   */
+  private void deleteVerticesWithoutDisconnectingThemAndRepair(final int bVertices) {
+    database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("B");
+    database.getSchema().buildEdgeType().withName("L").withLightweight(true).create();
+    database.getSchema().buildEdgeType().withName("LU").withLightweight(true).withBidirectional(false).create();
+    final List<RID> deleted = new ArrayList<>();
+    final RID[] survivors = new RID[2];
+    database.transaction(() -> {
+      final MutableVertex va = database.newVertex("A").save();
+      final MutableVertex keep = database.newVertex("A").save();
+      survivors[0] = va.getIdentity();
+      survivors[1] = keep.getIdentity();
+      for (int i = 0; i < bVertices; i++) {
+        final MutableVertex b = database.newVertex("B").save();
+        va.newEdge("L", b);
+        b.newEdge("L", va);
+        va.newEdge("LU", b);
+        deleted.add(b.getIdentity());
+      }
+      va.newEdge("L", keep);
+    });
+    a = survivors[0];
+    database.transaction(() -> {
+      for (final RID b : deleted)
+        TestHelper.deleteRecordAtLowLevel(database, b);
+    });
+
+    final Result before = check(false);
+    final Collection<String> warnings = before.getProperty("warnings");
+    assertThat(warnings).anyMatch(w -> w.contains("lightweight edge") && w.contains(deleted.get(0).toString()) && w.contains("not found"));
+    assertThat(before.<Long>getProperty("invalidLinks")).isEqualTo(3L * bVertices);
+    assertThat(before.<Long>getProperty("totalCorruptedRecords")).isZero();
+    // reporting must not repair
+    assertThat(before.<Long>getProperty("prunedDanglingEntries")).isZero();
+    assertThat(neighbours(Vertex.DIRECTION.OUT, "L")).hasSize(bVertices + 1);
+
+    final Result fix = check(true);
+    assertThat(fix.<Long>getProperty("prunedDanglingEntries")).isEqualTo(3L * bVertices);
+    assertThat(fix.<Long>getProperty("totalCorruptedRecords")).isZero();
+
+    final Result after = check(false);
+    assertThat(after.<Long>getProperty("totalWarnings")).isZero();
+    assertThat(after.<Long>getProperty("invalidLinks")).isZero();
+
+    assertThat(neighbours(Vertex.DIRECTION.OUT, "L")).containsExactly(survivors[1]);
+    assertThat(neighbours(Vertex.DIRECTION.IN, "L")).isEmpty();
+    assertThat(neighbours(Vertex.DIRECTION.OUT, "LU")).isEmpty();
+  }
+
+  @Test
+  void aVertexDeletedWithoutDisconnectingItLeavesLightEntriesThatArePruned() {
+    deleteVerticesWithoutDisconnectingThemAndRepair(1);
+  }
+
+  @Test
+  void lightEntriesOfAPromotedSuperNodeToDeletedVerticesArePruned() {
+    database.getConfiguration().setValue(GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD, 16);
+    deleteVerticesWithoutDisconnectingThemAndRepair(40);
   }
 
   @Test
