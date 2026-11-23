@@ -44,6 +44,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -109,10 +110,14 @@ public final class CypherVariableUsage {
     for (final MatchClause match : statement.getMatchClauses()) {
       if (match.hasPathPatterns()) {
         for (final PathPattern path : match.getPathPatterns()) {
-          for (final NodePattern node : path.getNodes())
+          for (final NodePattern node : path.getNodes()) {
             if (node.hasWhereExpression()
                 && expressionReferencesVariable(node.getWhereExpression(), variable))
               return true;
+            // An inline property map reads the row as well: (y {k: r.w}) (issue #13139)
+            if (propertiesReferenceVariable(node.getProperties(), variable))
+              return true;
+          }
           for (int i = 0; i < path.getRelationshipCount(); i++) {
             final RelationshipPattern rel = path.getRelationship(i);
             if (variable.equals(rel.getVariable()))
@@ -123,6 +128,9 @@ public final class CypherVariableUsage {
             // evaluated against an unbound variable and silently filtered out every row (issue #5464).
             if (rel.hasWhereExpression()
                 && expressionReferencesVariable(rel.getWhereExpression(), variable))
+              return true;
+            // So does the inline property map of a relationship pattern: -[e2:E {w: r.w}]-> (issue #13139)
+            if (propertiesReferenceVariable(rel.getProperties(), variable))
               return true;
           }
         }
@@ -153,14 +161,8 @@ public final class CypherVariableUsage {
         if (expressionReferencesVariable(match.getWhereClause().getConditionExpression(), variable))
           return true;
 
-    if (statement.getOrderByClause() != null)
-      for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems())
-        // The AST is preferred over getExpression()'s text for the same reason as everywhere else in
-        // this method; fall back to the legacy text scan only for the rare item that kept no AST.
-        if (item.getExpressionAST() != null
-            ? expressionReferencesVariable(item.getExpressionAST(), variable)
-            : expressionReferencesVariable(item.getExpression(), variable))
-          return true;
+    if (orderByReadsVariable(statement.getOrderByClause(), variable))
+      return true;
 
     // 4. Check RETURN clause (may not be in clausesInOrder for simple queries)
     if (statement.getReturnClause() != null)
@@ -252,8 +254,10 @@ public final class CypherVariableUsage {
     case RETURN -> returnItemsReadVariable(((ReturnClause) entry.getTypedClause()).getReturnItems(), variable);
     case WITH -> {
       final WithClause wc = entry.getTypedClause();
+      // The ORDER BY of a WITH sorts the rows before the projection, so it reads the row's variables (issue #13139)
       yield returnItemsReadVariable(wc.getItems(), variable)
-          || wc.getWhereClause() != null && expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable);
+          || wc.getWhereClause() != null && expressionReferencesVariable(wc.getWhereClause().getConditionExpression(), variable)
+          || orderByReadsVariable(wc.getOrderByClause(), variable);
     }
     case UNWIND -> expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression(), variable);
     // The edge variable can be the assignment target (SET r.prop = ...) or appear inside the value/target
@@ -290,6 +294,29 @@ public final class CypherVariableUsage {
     // edge (the class of bug this method exists to prevent - issue #6573).
     case CREATE, MERGE -> true;
     };
+  }
+
+  private static boolean orderByReadsVariable(final OrderByClause orderBy, final String variable) {
+    if (orderBy == null)
+      return false;
+    for (final OrderByClause.OrderByItem item : orderBy.getItems())
+      // The AST is preferred over getExpression()'s text for the same reason as everywhere else in
+      // this method; fall back to the legacy text scan only for the rare item that kept no AST.
+      if (item.getExpressionAST() != null
+          ? expressionReferencesVariable(item.getExpressionAST(), variable)
+          : expressionReferencesVariable(item.getExpression(), variable))
+        return true;
+    return false;
+  }
+
+  /** Whether an inline property map of a pattern holds an expression that reads {@code variable}. */
+  private static boolean propertiesReferenceVariable(final Map<String, Object> properties, final String variable) {
+    if (properties == null || properties.isEmpty())
+      return false;
+    for (final Object value : properties.values())
+      if (value instanceof Expression expression && expressionReferencesVariable(expression, variable))
+        return true;
+    return false;
   }
 
   private static boolean returnItemsReadVariable(final List<ReturnClause.ReturnItem> items, final String variable) {
