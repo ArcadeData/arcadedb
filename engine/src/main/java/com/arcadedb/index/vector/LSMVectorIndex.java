@@ -60,6 +60,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -16271,6 +16272,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
   }
 }
