@@ -710,6 +710,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     }
 
     for (final String field : key.keySet()) {
+      // the property the plugin keeps the key of a unique index in is not a field a client indexes (issue #12073)
+      MongoKeys.checkNotKey(field);
       final Object direction = key.get(field);
       if (!(direction instanceof Number number) || number.doubleValue() == 0D || Double.isNaN(number.doubleValue()))
         throw new MongoServerError(67, "CannotCreateIndex",
@@ -724,6 +726,25 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final DocumentType type = database.getSchema().getType(collectionName);
     final String[] propertyNames = key.keySet().toArray(new String[0]);
 
+    if (Utils.isTrue(index.get("unique"))) {
+      // a unique index is built on the derived key of its fields (issue #12073): an index on the fields themselves converts every
+      // value to one key type, so 1 and "1" would be one key. The documents already stored get their keys first, under the
+      // collection's exclusive lock so no write of the plugin goes in between
+      final String property = MongoKeys.propertyOf(propertyNames);
+      final Lock lock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).writeLock();
+      lock.lock();
+      try {
+        // the unique index of the _id is the one every collection has, built on its own key
+        if (MongoKeys.ID_KEY.equals(property))
+          MongoDBCollectionWrapper.ensureIdIndex(database, collectionName);
+        else
+          MongoDBCollectionWrapper.ensureUniqueKeyIndex(database, collectionName, property, propertyNames);
+      } finally {
+        lock.unlock();
+      }
+      return;
+    }
+
     // Schemaless collections: keep undeclared properties free-form and let the index serialise
     // their keys as STRING. Declared properties (null entry) keep their own type.
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
@@ -735,11 +756,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       anyUndeclared = true;
     }
 
-    final boolean unique = Utils.isTrue(index.get("unique"));
-
     final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, propertyNames);
     builder.withType(Schema.INDEX_TYPE.LSM_TREE);
-    builder.withUnique(unique);
     builder.withIgnoreIfExists(true);
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
@@ -1332,7 +1350,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
       }
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      prepareUpsertIdIndex(collectionName, updates, budget);
+      prepareUpsertIdIndex(collectionName, updates);
 
       // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
       final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
@@ -1502,68 +1520,16 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   /**
-   * A schema change cannot happen inside the transaction, so an upsert creates the collection and makes the {@code _id} index
-   * able to hold the key the upsert is about to store, up front: the {@code _id} the filter seeds (see {@link #upsertSeed}), or the
-   * generated ObjectId (a string kind) of an upsert without one. Only an upsert that matches nothing inserts, so the others leave
-   * the index alone (a rebuild is a full copy of it).
+   * A schema change cannot happen inside the transaction, so an upsert creates the collection and its {@code _id} index up front.
    */
-  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates, final MongoFilter.RegexBudget budget) {
-    List<Object> samples = null;
-    for (final Document upd : updates) {
-      if (!Utils.isTrue(upd.get("upsert")))
-        continue;
-
-      final Document q = upd.get("q") instanceof Document filter ? filter : new Document();
-      final Document seed;
-      try {
-        seed = upsertSeed(q);
-      } catch (final MongoServerError e) {
-        // a filter mongod cannot infer a document from is the refusal of an insert only: a document that matches is updated, and one
-        // that does not is refused when the statement runs, reported there at its index with the statements before it kept. Nothing
-        // is inserted, so the collection and its index are left alone
-        continue;
+  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+    for (final Document upd : updates)
+      if (Utils.isTrue(upd.get("upsert"))) {
+        database.getSchema().getOrCreateDocumentType(collectionName);
+        if (!MongoDBCollectionWrapper.idIndexReady(database, collectionName))
+          MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName);
+        return;
       }
-      Object id = seed.get("_id");
-      boolean hasId = seed.containsKey("_id");
-      // the stored _id can also come from the update itself: a replacement's, or $set's
-      final Document u = upd.get("u") instanceof Document update ? update : new Document();
-      final Document setter = isReplacement(u) ? u : u.get("$set") instanceof Document set ? set : null;
-      if (setter != null && setter.containsKey("_id")) {
-        id = setter.get("_id");
-        hasId = true;
-      }
-
-      database.getSchema().getOrCreateDocumentType(collectionName);
-      final Object sample = hasId && id != null ? id : new ObjectId();
-      // nothing to do when the index already holds this kind of key: no need to look for a match either
-      // a key other than the _id is looked up through its index when it is a declared scalar field (see MongoFilter), else it is a scan
-      if (MongoDBCollectionWrapper.idIndexSatisfies(database, collectionName, List.of(sample)))
-        continue;
-      try {
-        if (matchesAny(collectionName, q, budget))
-          continue;
-      } catch (final RuntimeException e) {
-        // a filter refused on its own (an unknown operator) is the statement's error: it is refused again when the statement runs, and
-        // reported there at its index with the statements before it kept, instead of failing the whole command here (issue #11444)
-        if (statementErrorCode(e) == null)
-          throw e;
-        continue;
-      }
-
-      if (samples == null)
-        samples = new ArrayList<>();
-      samples.add(sample);
-    }
-
-    if (samples != null)
-      MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName, samples);
-  }
-
-  /**
-   * Advisory: it only decides whether to touch the index ahead of the transaction, the match can change before it starts.
-   */
-  private boolean matchesAny(final String collectionName, final Document q, final MongoFilter.RegexBudget budget) {
-    return !new MongoFilter(database, q, budget).select(database, collectionName, 1).isEmpty();
   }
 
   /**
@@ -1612,6 +1578,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
                 + op + ": " + entry.getValue() + "}");
       for (final Map.Entry<String, Object> field : operand.entrySet()) {
         final String path = field.getKey();
+        // a key property is the plugin's, not the client's (issue #12073)
+        MongoKeys.checkNotKey(path);
         if ("$inc".equals(op) && !(field.getValue() instanceof Number))
           throw new MongoServerError(TYPE_MISMATCH, "TypeMismatch", "Cannot increment with non-numeric argument: {" + path + ": " + field.getValue() + "}");
 
@@ -1666,20 +1634,24 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     // in turn: only identities are held on the heap, not every matching document. An update of one record selects again, a few times,
     // when its candidate stopped matching since the selection while another record still matches. A candidate that still matched
     // but whose update a listener vetoed is not retried: selecting again would find it again and ask the listener again
+    final List<String[]> unique = MongoKeys.uniquePaths(database.getSchema().getType(collectionName));
     UpdateCount count = UpdateCount.NONE;
     for (int attempt = 0; attempt < (multi ? 1 : SINGLE_RECORD_ATTEMPTS); attempt++) {
       final List<RID> rids = filter.select(database, collectionName, multi ? 0 : 1);
-      count = updateRecords(rids, filter, u);
+      count = updateRecords(rids, filter, u, unique);
       if (count.matched() > 0 || rids.isEmpty())
         break;
     }
     return count;
   }
 
-  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u) {
+  private UpdateCount updateRecords(final List<RID> rids, final MongoFilter filter, final Document u, final List<String[]> unique) {
     final boolean replacement = isReplacement(u);
     // the top-level properties the operators touch: only their values can change
     final String[] touched = replacement ? null : touchedProperties(u);
+    // an operator never changes the _id, so only the keys of the createIndexes unique indexes can change, and only when the update
+    // writes a field they are made of (issue #12073): any other update skips converting the document
+    final boolean keysAffected = !replacement && !unique.isEmpty() && MongoKeys.affects(unique, touched);
     int vanished = 0;
     int modified = 0;
     for (final RID rid : rids) {
@@ -1700,6 +1672,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (replacement) {
         final Map<String, Object> before = record.toMap(false);
         replaceContent(record, u);
+        // the replacement removed the derived keys with every other property: they follow the new fields (issue #12073)
+        MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), unique);
         changed = !sameValue(before, record.propertiesAsMap());
       } else {
         checkIdUntouched(record, u);
@@ -1714,8 +1688,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       // matched, but modified only when the update changed the document, as on mongod (issue #11445): a document left as it was is not
       // written at all. And only if the engine applied it: an update a BeforeRecordUpdateListener vetoed is not (issue #9974)
-      if (changed && record.saveReportingVeto())
-        ++modified;
+      if (changed) {
+        // the derived keys follow the fields they are made of
+        if (keysAffected)
+          MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), unique);
+        if (record.saveReportingVeto())
+          ++modified;
+      }
     }
     return new UpdateCount(rids.size() - vanished, modified);
   }
@@ -1787,8 +1766,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (newId != null)
       record.set("_id", newId);
     for (final Map.Entry<String, Object> entry : replacement.entrySet())
-      if (!"_id".equals(entry.getKey()))
+      if (!"_id".equals(entry.getKey())) {
+        MongoKeys.checkNotKey(entry.getKey());
         record.set(entry.getKey(), toMapValue(entry.getValue()));
+      }
   }
 
   /**
@@ -1813,8 +1794,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     if (replacement) {
       // last write wins, matching record.set() itself: a replacement re-specifying "_id" overrides what the filter seeded
-      for (final Map.Entry<String, Object> entry : u.entrySet())
+      for (final Map.Entry<String, Object> entry : u.entrySet()) {
+        MongoKeys.checkNotKey(entry.getKey());
         record.set(entry.getKey(), MongoBsonValues.toStored(entry.getKey(), entry.getValue()));
+      }
     } else
       applyOperatorsToDocument(record, u);
 
@@ -1823,6 +1806,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     if (!record.has("_id"))
       record.set("_id", MongoBsonValues.toStored("_id", new ObjectId()));
     moveIdFirst(record);
+    MongoKeys.setKeys(record, MongoDBToSqlTranslator.convertDocumentToMongoDB(record), MongoKeys.uniquePaths(record.getType()));
 
     if (!record.saveReportingVeto())
       return UPSERT_VETOED;
