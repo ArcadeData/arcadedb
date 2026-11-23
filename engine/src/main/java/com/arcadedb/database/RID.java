@@ -41,12 +41,27 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
   protected final int  bucketId;
   protected final long offset;
 
+  private static final int MAX_BUCKET_DIGITS   = 9;
+  private static final int MAX_POSITION_DIGITS = 18;
+
   public RID(final int bucketId, final long offset) {
     this.bucketId = bucketId;
     this.offset = offset;
   }
 
   public RID(final String value) {
+    // THE CANONICAL FORM, #<bucket>:<position> WITH PLAIN ASCII DIGITS, IS READ IN PLACE: NO SUBSTRING, NO LIST, NO BOXED PARTS (A FILTER OF
+    // THOUSANDS OF RID STRINGS PAID ABOUT 370 BYTES PER RID FOR THE GENERAL PATH BELOW, TWICE). ANYTHING ELSE TAKES THE GENERAL PATH, SO
+    // THE SIGNS, THE NON-ASCII DIGITS, THE EXTRA PARTS AND EVERY WAY A STRING CAN BE MALFORMED KEEP THEIR RESULT AND THEIR EXCEPTION
+    final int colon = value.indexOf(':');
+    final long bucket = colon > 1 && colon <= 1 + MAX_BUCKET_DIGITS && value.charAt(0) == '#' ? plainDigits(value, 1, colon) : -1;
+    final long position = bucket >= 0 ? plainDigits(value, colon + 1, value.length()) : -1;
+    if (position >= 0) {
+      this.bucketId = (int) bucket;
+      this.offset = position;
+      return;
+    }
+
     if (!value.startsWith("#"))
       throw new IllegalArgumentException("The RID '" + value + "' is not valid");
 
@@ -54,6 +69,22 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
     final List<String> parts = CodeUtils.split(stripped, ':', 2);
     this.bucketId = Integer.parseInt(parts.getFirst());
     this.offset = Long.parseLong(parts.get(1));
+  }
+
+  /**
+   * The value of {@code text[from, to)} when it is one to 18 plain ASCII digits (so it fits a long, and 9 of them fit an int), else -1.
+   */
+  private static long plainDigits(final String text, final int from, final int to) {
+    if (to <= from || to - from > MAX_POSITION_DIGITS)
+      return -1;
+    long value = 0;
+    for (int i = from; i < to; i++) {
+      final int digit = text.charAt(i) - '0';
+      if (digit < 0 || digit > 9)
+        return -1;
+      value = value * 10 + digit;
+    }
+    return value;
   }
 
   /**
@@ -82,6 +113,10 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
 
   public static boolean is(final String valueAsString) {
     if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
+      final int colon = valueAsString.indexOf(':');
+      if (colon > 1 && colon <= 1 + MAX_BUCKET_DIGITS && plainDigits(valueAsString, 1, colon) >= 0
+          && plainDigits(valueAsString, colon + 1, valueAsString.length()) >= 0)
+        return true;
       final List<String> parts = CodeUtils.split(valueAsString.substring(1), ':', 3);
       return parts.size() == 2 && NumberUtils.isIntegerNumber(parts.getFirst()) && NumberUtils.isIntegerNumber(parts.get(1));
     }
