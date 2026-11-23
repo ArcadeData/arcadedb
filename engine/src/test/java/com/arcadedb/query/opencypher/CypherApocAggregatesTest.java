@@ -18,8 +18,13 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -162,6 +167,105 @@ class CypherApocAggregatesTest {
       try (final ResultSet rs = database.query("sql", "SELECT agg.median([1, 2, 3]) AS r")) {
         assertThat(rs.next().<Double>getProperty("r")).isEqualTo(2.0);
       }
+    }
+
+    /**
+     * The end of the slice is {@code from + length}: a huge length or a huge offset used to overflow the long and answer an empty
+     * list (or, for a negative offset and a negative length, everything).
+     */
+    @Test
+    void sliceBoundsDoNotOverflow() {
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, 1, 9223372036854775807) AS r")).isEqualTo(
+          List.of(2L, 3L, 4L));
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, 0, 9223372036854775807) AS r")).isEqualTo(
+          List.of(1L, 2L, 3L, 4L));
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, 9223372036854775807, 2) AS r")).isEqualTo(List.of());
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, -9223372036854775807 - 1, 2) AS r")).isEqualTo(List.of());
+      // a negative length other than -1 holds nothing, whatever the offset
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, -9223372036854775807 - 1, -2) AS r")).isEqualTo(
+          List.of());
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.slice(x, 1, -9223372036854775807 - 1) AS r")).isEqualTo(List.of());
+    }
+
+    /**
+     * Min and max follow the order the percentiles are sorted by, where NaN is the greatest value, so a NaN met first does not pin
+     * both of them to NaN.
+     */
+    @Test
+    void statisticsOrderNaNAsTheGreatestValue() {
+      final Map<String, Object> stats = map("UNWIND [0.0 / 0.0, 1.0, 2.0] AS x RETURN apoc.agg.statistics(x, [1.0]) AS r");
+      assertThat(stats).containsEntry("total", 3L).containsEntry("min", 1.0).containsEntry("max", Double.NaN)
+          .containsEntry("1.0", Double.NaN);
+      assertThat(single("UNWIND [0.0 / 0.0, 1.0, 2.0] AS x RETURN apoc.agg.median(x) AS r")).isEqualTo(2.0);
+    }
+
+    /** A percentile below 0, above 1 or NaN is clamped to the first and to the last value, as HdrHistogram's rank is. */
+    @Test
+    void percentilesOutOfRangeAreClamped() {
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.percentiles(x, [-1, 2, 0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0]) AS r"))
+          .isEqualTo(List.of(1L, 4L, 1L, 4L, 1L));
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.percentiles(x, []) AS r")).isEqualTo(List.of());
+    }
+
+    @Test
+    void distinctFoldsOnlyTheDistinctValues() {
+      assertThat(single("UNWIND [1, 1, 2, 2, 3] AS x RETURN apoc.agg.median(DISTINCT x) AS r")).isEqualTo(2.0);
+      assertThat(single("UNWIND [3, 3, 1, 2, 2] AS x RETURN apoc.agg.slice(DISTINCT x, 1, 2) AS r")).isEqualTo(List.of(1L, 2L));
+      assertThat(single("UNWIND [5, 5, 6, 6, 7] AS x RETURN apoc.agg.nth(DISTINCT x, 1) AS r")).isEqualTo(6L);
+      assertThat(single("UNWIND [2, 2, 3] AS x RETURN apoc.agg.product(DISTINCT x) AS r")).isEqualTo(6L);
+    }
+
+    @Test
+    void usableInsideWithAndInsideAnExpression() {
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x WITH apoc.agg.median(x) AS m RETURN m * 2 AS r")).isEqualTo(5.0);
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.median(x) * 2 AS r")).isEqualTo(5.0);
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.first(x) + apoc.agg.last(x) AS r")).isEqualTo(5L);
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN size(apoc.agg.slice(x, 1, 2)) AS r")).isEqualTo(2L);
+    }
+
+    @Test
+    void aFunctionRegisteredOverTheNameStillWins() {
+      final StatelessFunction original = CypherFunctionRegistry.get("agg.median");
+      assertThat(original).isNotNull();
+      try {
+        CypherFunctionRegistry.registerOrReplace(new StatelessFunction() {
+          @Override
+          public String getName() {
+            return "agg.median";
+          }
+
+          @Override
+          public Object execute(final Object[] args, final CommandContext context) {
+            return "mine";
+          }
+        });
+        try (final ResultSet rs = database.query("opencypher", "UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.median(x) AS r")) {
+          final List<Result> rows = rs.stream().toList();
+          assertThat(rows).hasSize(4);
+          assertThat(rows.getFirst().<String>getProperty("r")).isEqualTo("mine");
+        }
+      } finally {
+        CypherFunctionRegistry.registerOrReplace(original);
+      }
+      assertThat(single("UNWIND [1, 2, 3, 4] AS x RETURN apoc.agg.median(x) AS r")).isEqualTo(2.5);
+    }
+
+    /** What a group holds is charged to the elements cap of the query, as collect() does. */
+    @Test
+    void theValuesAGroupHoldsAreBounded() {
+      database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 5L);
+      for (final String call : List.of("apoc.agg.median(x)", "apoc.agg.slice(x)", "apoc.agg.percentiles(x)", "apoc.agg.statistics(x)",
+          "apoc.agg.maxItems(x, 1)", "apoc.agg.minItems(x, 1)", "apoc.agg.median(DISTINCT x)"))
+        assertThatThrownBy(() -> single("UNWIND range(1, 20) AS x RETURN " + call + " AS r")).as(call)
+            .isInstanceOf(CommandExecutionException.class).hasMessageContaining(
+                GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+
+      // the cap is a count of what is held at once: a group within it, and a group that holds no more than a few values, run
+      assertThat(single("UNWIND range(1, 5) AS x RETURN apoc.agg.median(x) AS r")).isEqualTo(3.0);
+      assertThat(single("UNWIND range(1, 20) AS x RETURN apoc.agg.slice(x, 0, 5) AS r")).isEqualTo(List.of(1L, 2L, 3L, 4L, 5L));
+      assertThat(single("UNWIND range(1, 20) AS x RETURN apoc.agg.product(x % 2 + 1) AS r")).isEqualTo(1024L);
+      assertThat(single("UNWIND range(1, 20) AS x RETURN apoc.agg.maxItems(x, x) AS r")).isEqualTo(
+          Map.of("items", List.of(20L), "value", 20L));
     }
 
     @SuppressWarnings("unchecked")

@@ -55,6 +55,10 @@ public final class ApocAggregates {
 
   private static final String NUMBER = "an INTEGER or a FLOAT";
 
+  private static final int      MIN_CAPACITY = 4;
+  private static final double[] NO_DOUBLES   = new double[0];
+  private static final long[]   NO_LONGS     = new long[0];
+
   private static final Map<String, Supplier<StatelessFunction>> FACTORIES = Map.of(//
       PREFIX + "first", First::new, //
       PREFIX + "last", Last::new, //
@@ -269,7 +273,8 @@ public final class ApocAggregates {
       final long length = args.length > 2 ? wholeNumber(args[2], "to") : -1L;
       if (args[0] == null)
         return;
-      if (index >= from && (length == -1 || index < from + length)) {
+      // THE END IS CLAMPED, NOT WRAPPED: A HUGE LENGTH OR OFFSET WOULD OTHERWISE OVERFLOW THE LONG AND SLICE NOTHING
+      if (index >= from && (length == -1 || index < saturatedAdd(from, length))) {
         values.add(args[0]);
         hold(args[0], context);
       }
@@ -285,7 +290,8 @@ public final class ApocAggregates {
 
   /** {@code apoc.agg.median(value)}: the median of the numbers of the group as a FLOAT; a value that is no number is skipped. */
   private static final class Median extends ApocAggregate {
-    private double[] values = new double[16];
+    // ALLOCATED WHEN THE FIRST NUMBER ARRIVES: A GROUP THAT NEVER GETS ONE (HIGH-CARDINALITY GROUP BY) COSTS NO ARRAY
+    private double[] values = NO_DOUBLES;
     private int      size;
 
     Median() {
@@ -296,10 +302,11 @@ public final class ApocAggregates {
     void accumulate(final Object[] args, final CommandContext context) {
       if (!(args[0] instanceof Number n))
         return;
-      if (size == values.length)
-        values = Arrays.copyOf(values, size * 2);
-      values[size++] = n.doubleValue();
+      // CHARGED FIRST, SO THAT A GROUP OVER THE CAP FAILS BEFORE ITS ARRAY GROWS
       hold(n, context);
+      if (size == values.length)
+        values = Arrays.copyOf(values, Math.max(MIN_CAPACITY, size << 1));
+      values[size++] = n.doubleValue();
     }
 
     @Override
@@ -361,7 +368,8 @@ public final class ApocAggregates {
    * percentile is answered as the INTEGER it is, as APOC does.
    */
   private abstract static class NumbersOfGroup extends ApocAggregate {
-    long[]   longs   = new long[16];
+    // ALLOCATED WHEN THE FIRST NUMBER ARRIVES: A GROUP THAT NEVER GETS ONE (HIGH-CARDINALITY GROUP BY) COSTS NO ARRAY
+    long[]   longs = NO_LONGS;
     double[] doubles;
     int      size;
 
@@ -370,22 +378,23 @@ public final class ApocAggregates {
     }
 
     void add(final Number n, final CommandContext context) {
+      // CHARGED FIRST, SO THAT A GROUP OVER THE CAP FAILS BEFORE ITS ARRAY GROWS
+      hold(n, context);
       if (doubles == null && !isIntegral(n)) {
-        doubles = new double[Math.max(16, longs.length)];
+        doubles = new double[Math.max(MIN_CAPACITY, size << 1)];
         for (int i = 0; i < size; i++)
           doubles[i] = longs[i];
         longs = null;
       }
       if (doubles == null) {
         if (size == longs.length)
-          longs = Arrays.copyOf(longs, size * 2);
+          longs = Arrays.copyOf(longs, Math.max(MIN_CAPACITY, size << 1));
         longs[size++] = n.longValue();
       } else {
         if (size == doubles.length)
-          doubles = Arrays.copyOf(doubles, size * 2);
+          doubles = Arrays.copyOf(doubles, Math.max(MIN_CAPACITY, size << 1));
         doubles[size++] = n.doubleValue();
       }
-      hold(n, context);
     }
 
     void sort() {
@@ -401,7 +410,8 @@ public final class ApocAggregates {
 
     /**
      * The percentile of the sorted numbers by APOC's rank, HdrHistogram's {@code valueAtPercentile}: the value at the rank
-     * {@code p * count} rounded half up, at least the first and at most the last ({@code [1, 2, 3]} answers 2 for 0.75). APOC reads
+     * {@code p * count} rounded half up, at least the first and at most the last ({@code [1, 2, 3]} answers 2 for 0.75). The clamp is
+     * deliberate and what the histogram does: a percentile below 0 or NaN answers the first value, one above 1 the last. APOC reads
      * it from the histogram's buckets, whose FLOAT values are approximations ({@code 2.5000076} for 2.5); this answers the value
      * itself.
      */
@@ -448,7 +458,8 @@ public final class ApocAggregates {
    * {@code apoc.agg.statistics(value, percentiles = [0.5, 0.75, 0.9, 0.95, 0.99])}: APOC's map of {@code total}, {@code min},
    * {@code minNonZero}, {@code max}, {@code mean}, {@code stdev} (of the population) and one entry per percentile, keyed by the
    * percentile as text ({@code "0.5"}). As in APOC, {@code minNonZero} is {@code Long.MAX_VALUE} as a FLOAT when no number is
-   * other than 0, and an empty group has no percentile entry.
+   * other than 0, and an empty group has no percentile entry. NaN is the greatest value, as in the percentiles: it is the {@code max}
+   * of a group that holds one, and a NaN does not hide the smallest number as {@code min}.
    */
   private static final class Statistics extends NumbersOfGroup {
     private double[] percentiles;
@@ -466,9 +477,10 @@ public final class ApocAggregates {
       if (args[0] == null)
         return;
       final Number n = number(args[0]);
-      if (min == null || n.doubleValue() < min.doubleValue())
+      // THE ORDER THE PERCENTILES ARE SORTED BY (NaN GREATEST): A NaN MET FIRST MUST NOT PIN MIN AND MAX TO NaN
+      if (min == null || lessThan(n.doubleValue(), min.doubleValue()))
         min = n;
-      if (max == null || n.doubleValue() > max.doubleValue())
+      if (max == null || lessThan(max.doubleValue(), n.doubleValue()))
         max = n;
       add(n, context);
     }
@@ -552,5 +564,19 @@ public final class ApocAggregates {
 
   private static boolean isIntegral(final Number n) {
     return n instanceof Long || n instanceof Integer || n instanceof Short || n instanceof Byte;
+  }
+
+  /** {@code a < b} with NaN the greatest value, the order {@link Arrays#sort(double[])} gives the percentiles. */
+  private static boolean lessThan(final double a, final double b) {
+    return a < b || (Double.isNaN(b) && !Double.isNaN(a));
+  }
+
+  /** {@code a + b} clamped to the long range instead of wrapping around. */
+  private static long saturatedAdd(final long a, final long b) {
+    final long sum = a + b;
+    // OVERFLOW: BOTH OPERANDS HAVE A SIGN THE SUM DOES NOT
+    if (((a ^ sum) & (b ^ sum)) < 0)
+      return a < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+    return sum;
   }
 }
