@@ -178,6 +178,26 @@ class Issue13052MongoFindCursorQuotaTest {
     assertThat(ProfiledLimitScope.isActive()).as("nothing is left on the thread").isFalse();
   }
 
+  /**
+   * A cursor parked between two requests pins nothing a close needs: the database closes with the cursor open, and the instance that
+   * replaces it (what the backend binds the wrapper to on the next request) takes the cursors of the one before with it.
+   */
+  @Test
+  void aCursorParkedOnADatabaseDoesNotHoldItsCloseAndIsReleasedWhenTheInstanceIsReplaced() {
+    bindUser(user(-1L, -1L));
+    final long id = cursorId(find(new Document("find", "Item").append("batchSize", 10)));
+    assertThat(id).isNotZero();
+    assertThat(wrapper.openCursors()).isEqualTo(1);
+
+    database.close();
+    assertThat(database.isOpen()).as("the close did not wait for the cursor").isFalse();
+    database = factory.open();
+    wrapper.bind(database);
+
+    assertThat(wrapper.openCursors()).as("the cursors of the instance replaced are closed").isZero();
+    assertThat(wrapper.getMore(new Document("getMore", id).append("collection", "Item"))).as("the library answers CursorNotFound").isNull();
+  }
+
   private Document find(final Document command) {
     return wrapper.handleCommand(null, "find", command, null, null);
   }
