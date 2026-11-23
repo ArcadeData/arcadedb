@@ -22,7 +22,11 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,6 +63,27 @@ class Issue12084TraverseFromVariableTest extends TestHelper {
   void parentCurrentLinkListInLetSubquery() {
     assertThat(letSize("SELECT FROM $parent.$current.children")).isEqualTo(1);
     assertThat(letSize("TRAVERSE out() FROM $parent.$current.children")).isEqualTo(2);
+  }
+
+  /**
+   * The variable is read again for every outer row: with two outer rows, each one gets the traversal of its own
+   * {@code $parent.$current}, not the one of the row that happened to be planned first.
+   */
+  @Test
+  void parentCurrentIsResolvedPerOuterRow() {
+    final Map<String, List<String>> reachedByRow = new HashMap<>();
+    try (final ResultSet rs = database.query("sql",
+        "SELECT name, $c.name AS reached FROM N LET $c = (TRAVERSE out() FROM $parent.$current) WHERE name = 'A' OR name = 'C'")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final List<String> reached = new ArrayList<>(row.<Collection<String>>getProperty("reached"));
+        Collections.sort(reached);
+        reachedByRow.put(row.getProperty("name"), reached);
+      }
+    }
+    assertThat(reachedByRow).containsOnlyKeys("A", "C");
+    assertThat(reachedByRow.get("A")).containsExactly("A", "B");
+    assertThat(reachedByRow.get("C")).containsExactly("C", "D");
   }
 
   @Test
