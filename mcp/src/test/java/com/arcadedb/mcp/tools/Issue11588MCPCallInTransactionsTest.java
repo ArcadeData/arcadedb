@@ -22,9 +22,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.mcp.MCPConfiguration;
 import com.arcadedb.mcp.MCPPlugin;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.BeforeEach;
@@ -75,6 +75,7 @@ class Issue11588MCPCallInTransactionsTest extends BaseGraphServerTest {
     assertThat(getServerDatabase(0, getDatabaseName()).query("opencypher", "MATCH (x:" + LABEL + ") RETURN count(x) AS c").next()
         .<Number>getProperty("c").longValue()).isEqualTo(25);
   }
+
   /**
    * Issue #13223: the tool call runs in {@code database.transaction()}, which retries on a conflict, and the batches were committed
    * in transactions nested in it that the retry loop could not see. A unique key the write after the CALL breaks fails the final
