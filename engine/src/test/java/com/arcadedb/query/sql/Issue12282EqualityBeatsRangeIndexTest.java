@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +100,44 @@ class Issue12282EqualityBeatsRangeIndexTest extends TestHelper {
       assertServedBy(type, "SELECT FROM " + type + " WHERE cat IN ['rare', 'c7'] AND score < 30", Map.of(), "cat",
           d -> ("rare".equals(d.getString("cat")) || "c7".equals(d.getString("cat"))) && d.getDouble("score") != null
               && d.getDouble("score") < 30);
+  }
+
+  @Test
+  void aContainsOnAnItemIndexAndAContainsKeyOnAKeyIndexBeatARange() {
+    // Bag1 creates the indexes of the lookups first, Bag2 the index of the range first: the answer cannot come from the creation order
+    for (final String type : List.of("Bag1", "Bag2")) {
+      database.command("sql", "CREATE DOCUMENT TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + ".name STRING");
+      database.command("sql", "CREATE PROPERTY " + type + ".tags LIST OF STRING");
+      database.command("sql", "CREATE PROPERTY " + type + ".attrs MAP OF STRING");
+      database.command("sql", "CREATE PROPERTY " + type + ".score DOUBLE");
+      final List<String> indexes = type.equals("Bag1") ? List.of("tags BY ITEM", "attrs BY KEY", "score")
+          : List.of("score", "attrs BY KEY", "tags BY ITEM");
+      for (final String index : indexes)
+        database.command("sql", "CREATE INDEX ON " + type + " (" + index + ") NOTUNIQUE");
+
+      database.transaction(() -> {
+        for (int i = 0; i < RECORDS; i++) {
+          final List<String> tags = new ArrayList<>(List.of("t" + (i % 50)));
+          final Map<String, String> attrs = new HashMap<>(Map.of("k" + (i % 50), "v"));
+          if (i % 100 == 0) {
+            tags.add("rare");
+            attrs.put("rare", "v");
+          }
+          database.newDocument(type).set("name", "n" + i).set("tags", tags).set("attrs", attrs)
+              .set("score", 2.0 + (i * 7919 % 1000) / 10.0).save();
+        }
+      });
+
+      assertServedBy(type, "SELECT FROM " + type + " WHERE tags CONTAINS 'rare' AND score > 1", Map.of(), "tagsbyitem",
+          d -> d.getList("tags").contains("rare") && greater(d, 1));
+      assertServedBy(type, "SELECT FROM " + type + " WHERE score > 1 AND tags CONTAINS 'rare'", Map.of(), "tagsbyitem",
+          d -> d.getList("tags").contains("rare") && greater(d, 1));
+      assertServedBy(type, "SELECT FROM " + type + " WHERE attrs CONTAINSKEY 'rare' AND score > 1", Map.of(), "attrsbykey",
+          d -> d.getMap("attrs").containsKey("rare") && greater(d, 1));
+      assertServedBy(type, "SELECT FROM " + type + " WHERE score > 1 AND attrs CONTAINSKEY 'rare'", Map.of(), "attrsbykey",
+          d -> d.getMap("attrs").containsKey("rare") && greater(d, 1));
+    }
   }
 
   @Test
