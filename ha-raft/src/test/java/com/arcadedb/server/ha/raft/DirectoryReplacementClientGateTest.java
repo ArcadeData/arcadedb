@@ -477,6 +477,44 @@ class DirectoryReplacementClientGateTest {
   }
 
   /**
+   * The gates let the empty transaction of a forwarded write through because it publishes nothing, and a before-commit callback runs
+   * only in the commit's first phase, after they were asked: one that writes makes this commit publish an entry, so the closed state
+   * machine refuses it after all, and nothing of it is left.
+   */
+  @Test
+  void aBeforeCommitCallbackThatWritesOnAForwardedWritesCommitIsRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    theLeaderAnsweredAForwardedWrite();
+    replicated.getTransaction().addBeforeCommitCallbackIfAbsent("write", () -> localDb.newDocument("Seed").set("k", 2).save());
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("state machine is closed");
+    watch.assertGaveUpWithin(5_000, "a refusal before the entry is dispatched from a commit that waits out the quorum timeout (#9411)");
+
+    assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /** The same for the directory being replaced: the write the callback made is computed against the copy the cluster discards. */
+  @Test
+  void aBeforeCommitCallbackThatWritesOnAForwardedWritesCommitIsRefusedWhileTheDirectoryIsReplaced() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      theLeaderAnsweredAForwardedWrite();
+      replicated.getTransaction().addBeforeCommitCallbackIfAbsent("write", () -> localDb.newDocument("Seed").set("k", 2).save());
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("being replaced");
+      assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /**
    * What the forward of a write does to the transactions on the thread once the leader has answered it (issue #12635): the write is
    * durable there, and the transaction around the forward carries the mark.
    */

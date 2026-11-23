@@ -285,6 +285,16 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
     }
 
     /**
+     * What the error mapping answers decides, not what the cause chain holds: a security refusal that wraps a retryable one is a 403
+     * there, and turning it into a 200 would hide that the request was refused.
+     */
+    @Test
+    void aSecurityRefusalWrappingARetryableOneIsRaised() {
+      failure = new SecurityException("denied", new NeedRetryException("Database 'ha' is being replaced from the leader"));
+      assertThatThrownBy(() -> run("ha", null)).isSameAs(failure);
+    }
+
+    /**
      * Issue #12889, the partial success: a forward the leader answered, and then one it did not (refused at the entry gate, a
      * snapshot-install 503, a refused connection). The first answer is the answer to a part of the request, and the 200 it would give
      * hides that the second write never ran, which the client will not retry.

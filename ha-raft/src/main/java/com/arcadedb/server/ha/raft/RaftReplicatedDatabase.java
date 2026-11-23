@@ -976,6 +976,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(leader);
 
         if (phase1 != null) {
+          // The gates of commit() let the empty transaction that closes a forwarded write through, because it publishes nothing. A
+          // before-commit callback runs in the phase above, after they were asked: if it wrote, this commit does publish an entry, and
+          // the gates are asked again. Refused like any commit they refuse, before anything is registered or replicated
+          if (tx.getWritesCommittedByAnotherNode() > 0) {
+            refuseClientWhileDirectoryIsReplaced();
+            refuseCommitWhileStateMachineIsClosed();
+          }
           final byte[] walData = phase1.result.toByteArray();
           final Map<Integer, Integer> bucketDeltas = new HashMap<>(tx.getBucketRecordDelta());
           // Read before the commit concludes: the accumulator is released with the transaction

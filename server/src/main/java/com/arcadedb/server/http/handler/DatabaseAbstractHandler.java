@@ -24,7 +24,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -320,7 +319,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // A write this request forwarded to the leader is durable there: a refusal the client is told to retry, raised by what this
       // node does afterwards (its copy of the database replaced by an HA resync under the request, a commit gate refusing the empty
       // transaction around the forward), must not be answered as one, because the retry would run the write a second time. Any
-      // other failure (a security or serialization error, a timeout, a cancel) is not a statement about the write and is raised
+      // other failure (a security or serialization error, a timeout, a cancel) is not a statement about the write and is raised.
+      // The error mapping decides what is a refusal to retry, so a failure it answers otherwise keeps its answer
       if (!keepsTheLeadersAnswer || !isRetryableRefusal(failure) || !answerWithTheLeadersAnswer(response, failure))
         throw failure;
     } finally {
@@ -368,13 +368,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
-   * Whether a failure is one the client is told to retry: a {@link NeedRetryException} or a {@link DatabaseIsReopeningException},
-   * which {@link AbstractServerHttpHandler#classifyError} answers 503 wherever they sit in the cause chain, so the engine's wrapper
-   * around them (a transaction or command failure) does not change what the client does with them. Package-private for direct unit
-   * testing.
+   * Whether a failure is one the client is told to retry: the error mapping ({@link #classifyError}) answers it 503 because of a
+   * {@link NeedRetryException} or a {@link DatabaseIsReopeningException}. Asked of the mapping itself rather than of the cause chain,
+   * so the two cannot disagree: an engine wrapper around the refusal (a transaction or command failure) is looked through exactly as
+   * the mapping looks through it, and a failure the mapping answers otherwise (a security refusal wrapping a retryable one is a 403)
+   * is not turned into a success.
    */
-  static boolean isRetryableRefusal(final Throwable failure) {
-    return CauseChain.contains(failure, NeedRetryException.class) || CauseChain.contains(failure, DatabaseIsReopeningException.class);
+  boolean isRetryableRefusal(final Throwable failure) {
+    final ErrorClassification classification = classifyError(failure);
+    return classification.status() == 503
+        && (classification.reported() instanceof NeedRetryException || classification.reported() instanceof DatabaseIsReopeningException);
   }
 
   /**
