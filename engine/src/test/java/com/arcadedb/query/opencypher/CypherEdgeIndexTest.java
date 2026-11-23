@@ -765,6 +765,8 @@ class CypherEdgeIndexTest {
     void everyEdgeIsBoundInBothOrdersAndASelfLoopOnce() {
       final String plan = plan("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e3'] RETURN e.uuid AS u");
       assertThat(plan).contains("MATCH EDGE BY INDEX");
+      // the step describes the hop as written: no arrow head
+      assertThat(plan).contains("(n:Entity)-[e:RELATES_TO]-(m:Entity)").doesNotContain("]->");
       assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e3'] RETURN e.uuid + ':' + n.name + m.name AS r"))
           .containsExactlyInAnyOrder("e1:ab", "e1:ba", "e3:cc");
     }
