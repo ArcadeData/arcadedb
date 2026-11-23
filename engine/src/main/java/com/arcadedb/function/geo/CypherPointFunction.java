@@ -113,10 +113,10 @@ public class CypherPointFunction implements StatelessFunction {
     if (map.containsKey("x") || map.containsKey("y"))
       return fromXY(map);
     if (map.containsKey("longitude") || map.containsKey("latitude")) {
-      final Object lon = requireKey(map, "longitude");
-      final Object lat = requireKey(map, "latitude");
+      final Object lon = map.get("longitude");
+      final Object lat = map.get("latitude");
       if (lon == null || lat == null)
-        return null;
+        return nullPointOrInvalid(map, "longitude", lon, "latitude", lat);
       return geographic(coerceCoordinate("longitude", lon), coerceCoordinate("latitude", lat), optionalZ(map));
     }
     // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
@@ -124,10 +124,10 @@ public class CypherPointFunction implements StatelessFunction {
   }
 
   private static Map<String, Object> fromXY(final Map<?, ?> map) {
-    final Object xv = requireKey(map, "x");
-    final Object yv = requireKey(map, "y");
+    final Object xv = map.get("x");
+    final Object yv = map.get("y");
     if (xv == null || yv == null)
-      return null;
+      return nullPointOrInvalid(map, "x", xv, "y", yv);
     final double x = coerceCoordinate("x", xv);
     final double y = coerceCoordinate("y", yv);
     final Double z = optionalZ(map);
@@ -198,11 +198,16 @@ public class CypherPointFunction implements StatelessFunction {
     return result;
   }
 
-  /** The value of a coordinate key the map must have: a missing key is a client error, as in Neo4j (issue #12276). */
-  private static Object requireKey(final Map<?, ?> map, final String key) {
-    if (!map.containsKey(key))
-      throw invalidPoint(map);
-    return map.get(key);
+  /**
+   * The answer for a coordinate pair with a null in it. A coordinate that is present with a null value gives a null point,
+   * whether or not the other key is there, as {@code point({x: null, y: 2})} always did. A coordinate the map does not have
+   * is a client error, as in Neo4j (issue #12276).
+   */
+  private static Map<String, Object> nullPointOrInvalid(final Map<?, ?> map, final String key1, final Object value1,
+      final String key2, final Object value2) {
+    if (value1 == null && map.containsKey(key1) || value2 == null && map.containsKey(key2))
+      return null;
+    throw invalidPoint(map);
   }
 
   /** Names the keys of the map, a capped and cleaned list of them: the message travels to the client and into the log. */
@@ -227,7 +232,15 @@ public class CypherPointFunction implements StatelessFunction {
   static double wrapLongitude(final double longitude) {
     if (longitude <= 180 && longitude >= -180 || !Double.isFinite(longitude))
       return longitude;
-    return longitude > 180 ? longitude - 360 * Math.ceil((longitude - 180) / 360) : longitude + 360 * Math.ceil((-180 - longitude) / 360);
+    // The remainder of whole turns is exact for a double. Subtracting 360 times a rounded quotient is not: a longitude
+    // beyond 2^53 or so lost every digit of itself (1e20 became 0.0, it is -80.0)
+    final double remainder = longitude % 360;
+    if (remainder > 180)
+      return remainder - 360;
+    if (remainder < -180)
+      return remainder + 360;
+    // Never -0.0: a whole number of turns has always given 0.0
+    return remainder + 0.0;
   }
 
   /**

@@ -84,6 +84,20 @@ class CypherPointConstructionIssue12276Test extends TestHelper {
     assertRefused("point({x: 1, y: 91, srid: 4326})", "invalid latitude");
   }
 
+  // A longitude far outside the range wraps by the exact remainder of whole turns: dividing by 360 and multiplying back lost
+  // every digit of it (1e20 became 0.0)
+  @Test
+  void aHugeLongitudeWrapsByTheRemainderOfWholeTurns() {
+    assertThat(value("point({x: 1e20, y: 2, srid: 4326}).longitude")).isEqualTo(-80.0);
+    assertThat(value("point({longitude: 1e20, latitude: 2}).longitude")).isEqualTo(-80.0);
+    assertThat(value("point({longitude: -1e20, latitude: 2}).longitude")).isEqualTo(80.0);
+    assertThat(value("point({longitude: 540, latitude: 2}).longitude")).isEqualTo(180.0);
+    assertThat(value("point({longitude: -540, latitude: 2}).longitude")).isEqualTo(-180.0);
+    assertThat(value("point({longitude: 360, latitude: 2}).longitude")).isEqualTo(0.0);
+    assertThat(value("point({longitude: -360, latitude: 2}).longitude")).isEqualTo(0.0);
+    assertThat(value("point({longitude: -181, latitude: 2}).longitude")).isEqualTo(179.0);
+  }
+
   @Test
   void geographicSridKeepsTheDimensionCheck() {
     assertRefused("point({x: 1, y: 2, z: 3, srid: 4326})", "do not match the dimension of srid 4326");
@@ -144,9 +158,15 @@ class CypherPointConstructionIssue12276Test extends TestHelper {
     assertRefused("point({latitude: 1})", "is not describing a valid point");
     assertRefused("point({longitude: 1})", "is not describing a valid point");
     assertRefused("point({x: 1, longitude: 2, latitude: 3})", "is not describing a valid point");
-    // a key that is present with a null is still a null point, as before
+    // a key that is present with a null is still a null point, as before, whether or not its partner is there: only a
+    // key the map lacks makes it invalid
     assertThat(value("point({x: null, y: 2})")).isNull();
     assertThat(value("point({longitude: 1, latitude: null})")).isNull();
+    assertThat(value("point({x: null})")).isNull();
+    assertThat(value("point({y: null})")).isNull();
+    assertThat(value("point({longitude: null})")).isNull();
+    assertThat(value("point({latitude: null})")).isNull();
+    assertThat(value("point({x: 1, y: null, srid: 4326})")).isNull();
   }
 
   // The refusal names the keys, a capped and cleaned list of them: a wide map or a key with a line break must not reach the log
