@@ -18,7 +18,11 @@
  */
 package com.arcadedb.server.http;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -80,6 +84,38 @@ class CallInTransactionsHttpIssue11588Test extends BaseGraphServerTest {
         connection.disconnect();
       }
       assertThat(count(serverIndex, label)).isEqualTo(2);
+    });
+  }
+
+  /**
+   * Issue #13223: the command handler retries the request on a conflict, and the batches were committed in transactions nested in
+   * its own, which the retry loop could not see. A unique key the write after the CALL breaks fails the handler's final commit: the
+   * request fails once, and the batches stand once instead of being applied a second time by the retry.
+   */
+  @Test
+  void aConflictAfterTheBatchesDoesNotReplayThem() throws Exception {
+    testEachServer(serverIndex -> {
+      final String unique = "U13223_" + serverIndex;
+      final String batch = "B13223_" + serverIndex;
+      final Database database = getServerDatabase(serverIndex, "graph");
+      database.transaction(() -> {
+        database.getSchema().createVertexType(unique).createProperty("k", Type.INTEGER);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, unique, "k");
+        database.getSchema().createVertexType(batch);
+        database.command("opencypher", "CREATE (:" + unique + " {k: 1})");
+      });
+
+      final HttpURLConnection connection = post(serverIndex, "command", null, cypher(("UNWIND range(1, 2) AS i "
+          + "CALL { WITH i CREATE (:%s {i: i}) } IN TRANSACTIONS OF 1 ROWS "
+          + "WITH count(*) AS c CREATE (:%s {k: 1})").formatted(batch, unique)));
+      try {
+        assertThat(connection.getResponseCode()).isNotEqualTo(200);
+        assertThat(readError(connection)).contains(DuplicatedKeyException.class.getSimpleName());
+      } finally {
+        connection.disconnect();
+      }
+      assertThat(count(serverIndex, batch)).isEqualTo(2);
+      assertThat(count(serverIndex, unique)).isEqualTo(1);
     });
   }
 

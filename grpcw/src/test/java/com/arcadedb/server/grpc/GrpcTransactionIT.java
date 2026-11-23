@@ -19,6 +19,9 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerPlugin;
@@ -982,6 +985,31 @@ public class GrpcTransactionIT extends BaseGrpcServerTest {
 
       stub.rollbackTransaction(RollbackTransactionRequest.newBuilder().setTransaction(tx).setCredentials(credentials()).build());
       assertThat(count(label)).isZero();
+    }
+
+    /**
+     * Issue #13223: ExecuteCommand retries the auto-commit transaction on a conflict, and the batches were committed in transactions
+     * nested in it that the retry loop could not see. A unique key the write after the CALL breaks fails the final commit: the call
+     * fails once, and the batches stand once instead of being applied a second time by the retry.
+     */
+    @Test
+    void aConflictAfterTheBatchesDoesNotReplayThem() {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.transaction(() -> {
+        database.getSchema().createVertexType("GrpcU13223").createProperty("k", Type.INTEGER);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "GrpcU13223", "k");
+        database.getSchema().createVertexType("GrpcB13223");
+        database.command("opencypher", "CREATE (:GrpcU13223 {k: 1})");
+      });
+
+      assertThatThrownBy(() -> stub.executeCommand(request("UNWIND range(1, 2) AS i "
+          + "CALL { WITH i CREATE (:GrpcB13223 {i: i}) } IN TRANSACTIONS OF 1 ROWS "
+          + "WITH count(*) AS c CREATE (:GrpcU13223 {k: 1})").build()))
+          .isInstanceOf(StatusRuntimeException.class)
+          .hasMessageContaining("ALREADY_EXISTS");
+
+      assertThat(count("GrpcB13223")).isEqualTo(2);
+      assertThat(count("GrpcU13223")).isEqualTo(1);
     }
 
     private long count(final String label) {

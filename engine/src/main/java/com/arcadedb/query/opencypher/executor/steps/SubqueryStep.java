@@ -463,7 +463,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               tx.collectWrittenRecordIds(committedWrites);
             }
           }
-          database.commit();
+          commitBatch();
         } catch (final TimeoutException e) {
           // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
@@ -532,6 +532,28 @@ public class SubqueryStep extends AbstractExecutionStep {
   }
 
   /**
+   * Commits the transaction of one batch, and records the commit on the transaction it was nested in (issue #13223).
+   * <p>
+   * The batch runs in a transaction nested in the statement's implicit one, so its commit pops a context that dies with the commit,
+   * and the transaction a retry loop sampled before the statement never sees that part of its block is already durable. The server
+   * wrappers (HTTP command handler, gRPC ExecuteCommand, MCP execute_command) run the statement in such a loop, and a conflict
+   * after the batches (on the wrapper's commit of the writes that follow the CALL) replayed the whole statement and applied the
+   * committed batches twice. Reported to the surviving transaction as a {@code BATCH n} boundary is (#8188), the loop refuses the
+   * replay ({@code TransactionContext.isPartiallyCommitted}, #7916) and hands the conflict to the caller. The commit of the
+   * statement's own writes before a batch ({@link #commitStatementWrites}) lands on that implicit transaction itself, which counts
+   * it already.
+   */
+  private void commitBatch() {
+    final TransactionContext committed = database.getTransactionIfExists();
+
+    database.commit();
+
+    final TransactionContext survivor = database.getTransactionIfExists();
+    if (survivor != null && survivor != committed)
+      survivor.reportBatchBoundaryOfNestedTransaction();
+  }
+
+  /**
    * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS}, then begins its transaction again
    * for the clauses that follow (issue #13172). The batch's own transaction does not see the statement's uncommitted writes, so a
    * label written before the CALL left the body pointed at a record it could not find. IN TRANSACTIONS already gives up the
@@ -544,9 +566,9 @@ public class SubqueryStep extends AbstractExecutionStep {
    * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
    * <p>
    * Known gaps, tracked on their own: a record the prefix left provisional under a deferred existence check is committed here, so
-   * the check at the end of the statement cannot remove it although its message says so (#13221); in a Postgres pipeline's implicit
-   * block this also commits the earlier statements of the block (#13222); and a server wrapper that retries the request replays
-   * the writes committed here (#13223).
+   * the check at the end of the statement cannot remove it although its message says so (#13221); and in a Postgres pipeline's
+   * implicit block this also commits the earlier statements of the block (#13222). This commit lands on the implicit transaction
+   * itself and moves its commit count, so a server wrapper that retries the request refuses to replay it (#13223).
    *
    * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
    */

@@ -18,9 +18,13 @@
  */
 package com.arcadedb.mcp.tools;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.mcp.MCPConfiguration;
 import com.arcadedb.mcp.MCPPlugin;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #11588 over MCP: {@code execute_command} runs its statement in the transaction
@@ -69,5 +74,34 @@ class Issue11588MCPCallInTransactionsTest extends BaseGraphServerTest {
     assertThat(result.getInt("count")).isZero();
     assertThat(getServerDatabase(0, getDatabaseName()).query("opencypher", "MATCH (x:" + LABEL + ") RETURN count(x) AS c").next()
         .<Number>getProperty("c").longValue()).isEqualTo(25);
+  }
+  /**
+   * Issue #13223: the tool call runs in {@code database.transaction()}, which retries on a conflict, and the batches were committed
+   * in transactions nested in it that the retry loop could not see. A unique key the write after the CALL breaks fails the final
+   * commit: the call fails once, and the batches stand once instead of being applied a second time by the retry.
+   */
+  @Test
+  void aConflictAfterTheBatchesDoesNotReplayThem() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.transaction(() -> {
+      database.getSchema().createVertexType("McpU13223").createProperty("k", Type.INTEGER);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "McpU13223", "k");
+      database.getSchema().createVertexType("McpB13223");
+      database.command("opencypher", "CREATE (:McpU13223 {k: 1})");
+    });
+
+    assertThatThrownBy(() -> ExecuteCommandTool.execute(getServer(0), user, new JSONObject()
+        .put("database", getDatabaseName())
+        .put("language", "opencypher")
+        .put("command", "UNWIND range(1, 2) AS i CALL { WITH i CREATE (:McpB13223 {i: i}) } IN TRANSACTIONS OF 1 ROWS "
+            + "WITH count(*) AS c CREATE (:McpU13223 {k: 1})"), config)).isInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(count("McpB13223")).isEqualTo(2);
+    assertThat(count("McpU13223")).isEqualTo(1);
+  }
+
+  private long count(final String label) {
+    return getServerDatabase(0, getDatabaseName()).query("opencypher", "MATCH (x:" + label + ") RETURN count(x) AS c").next()
+        .<Number>getProperty("c").longValue();
   }
 }
