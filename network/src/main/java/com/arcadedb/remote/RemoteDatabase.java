@@ -1318,7 +1318,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    */
   private ResultSet queryAllRows(final String query, final Map<String, Object> params) {
     checkDatabaseIsOpen();
-    return (ResultSet) httpCommandWithRowLimit("POST", databaseName, "query", "sql", query, params, false, true,
+    return (ResultSet) httpQueryWithRowLimit(databaseName, "sql", query, params,
         (connection, response) -> createResultSet(response), UNLIMITED_ROWS);
   }
 

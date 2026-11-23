@@ -449,25 +449,21 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   /**
-   * As {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean, Callback)}, sending
-   * {@code rowLimit} as the {@code limit} of the request instead of {@link #getMaxResultRows()}. For the driver's own
-   * reads whose contract is the whole result rather than a page of it ({@code iterateType()}, {@code iterateBucket()}):
-   * {@link #UNLIMITED_ROWS} asks for every row, and the server refuses (HTTP 413) a result above its hard ceiling instead
-   * of truncating it, so the read never ends short without saying so (issue #12185).
+   * Runs a query on {@code extendedURL} as {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean,
+   * Callback)} runs one ({@code POST}, {@code query} route, any replica, reconnecting), sending {@code rowLimit} as the
+   * {@code limit} of the request instead of {@link #getMaxResultRows()}. For the driver's own reads whose contract is the
+   * whole result rather than a page of it ({@code iterateType()}, {@code iterateBucket()}): {@link #UNLIMITED_ROWS} asks
+   * for every row, and the server refuses (HTTP 413) a result above its hard ceiling instead of truncating it, so the read
+   * never ends short without saying so (issue #12185).
    */
-  Object httpCommandWithRowLimit(final String method,
-      final String extendedURL,
-      final String operation,
+  Object httpQueryWithRowLimit(final String extendedURL,
       final String language,
-      final String payloadCommand,
+      final String query,
       final Map<String, Object> params,
-      final boolean leaderIsPreferable,
-      final boolean autoReconnect,
       final Callback callback,
       final int rowLimit) {
-    final String errorOperation = payloadCommand != null ? payloadCommand : operation;
-    return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
-        callback, errorOperation, isReplayable(method, operation), null, rowLimit);
+    return httpCommand("POST", extendedURL, "query", language, query, params, false, true, callback, query,
+        isReplayable("POST", "query"), null, rowLimit);
   }
 
   /**
