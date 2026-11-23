@@ -661,7 +661,7 @@ class MaterializedViewRegressionTest {
         database.command("sql", "INSERT INTO sensor SET ts = ?, host = 'h0', v = 1", H0 + h * HOUR).close();
       database.command("sql", "REFRESH CONTINUOUS AGGREGATE hourly").close();
       assertThat(aggregate().getWatermarkTs()).isEqualTo(H0 + 2 * HOUR);
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().getLateInvalidation()).isNull();
     }
 
     @Test
@@ -669,8 +669,8 @@ class MaterializedViewRegressionTest {
       servedAsReplicated(session -> { }, () -> {
         appendAt(H0 + 60_000L);
         assertThat(samplesAtEachSession).as("one session, before the commit of the 4th sample").containsExactly(3L);
-        assertThat(aggregate().getInvalidation()).isNotNull();
-        assertThat(aggregate().getInvalidation().fromTs()).isEqualTo(H0);
+        assertThat(aggregate().getLateInvalidation()).isNotNull();
+        assertThat(aggregate().getLateInvalidation().fromTs()).isEqualTo(H0);
 
         // a stream of late samples into a bucket already recorded ships nothing more, before or after the commit
         appendAt(H0 + 120_000L);
@@ -689,7 +689,7 @@ class MaterializedViewRegressionTest {
         // the append is not reported as failed
         appendAt(H0 + 60_000L);
         assertThat(samplesAtEachSession).as("the failed session before the commit, then the one after it").containsExactly(3L, 4L);
-        assertThat(aggregate().getInvalidation()).isNotNull();
+        assertThat(aggregate().getLateInvalidation()).isNotNull();
       });
     }
 
@@ -698,15 +698,15 @@ class MaterializedViewRegressionTest {
       servedAsReplicated(session -> {
         if (session == 0) {
           // what a refresh that read the source before the commit does once it has recomputed the buckets: it clears the record
-          final ContinuousAggregateImpl.Invalidation read = aggregate().getInvalidation();
+          final ContinuousAggregateImpl.Invalidation read = aggregate().getLateInvalidation();
           assertThat(read).isNotNull();
-          aggregate().clearInvalidation(read);
+          aggregate().clearLateInvalidation(read);
         }
       }, () -> {
         appendAt(H0 + 60_000L);
         assertThat(samplesAtEachSession).as("shipped before the commit, then again after it").containsExactly(3L, 4L);
-        assertThat(aggregate().getInvalidation()).as("recorded again once the sample committed").isNotNull();
-        assertThat(aggregate().getInvalidation().fromTs()).isEqualTo(H0);
+        assertThat(aggregate().getLateInvalidation()).as("recorded again once the sample committed").isNotNull();
+        assertThat(aggregate().getLateInvalidation().fromTs()).isEqualTo(H0);
       });
     }
 
@@ -1083,7 +1083,7 @@ class MaterializedViewRegressionTest {
 
       assertThat(watermarkAfterRefresh.get()).as("kept at the bucket of the sample in flight").isEqualTo(H0 + 2 * HOUR);
       assertThat(samplesAtEachSession).as("the sample is not late, nothing ships after its commit").isEmpty();
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().getLateInvalidation()).isNull();
       assertThat(engine().oldestInFlightAppendTs()).as("the append is in flight no more").isEqualTo(Long.MAX_VALUE);
 
       refresh();
@@ -1126,13 +1126,13 @@ class MaterializedViewRegressionTest {
 
       assertThat(watermarkAfterRefresh.get()).as("the refresh did not find the append, nothing clips it").isEqualTo(H0 + 3 * HOUR);
       assertThat(samplesAtEachSession).as("one session, before the commit, and none after it").containsExactly(4L);
-      assertThat(aggregate().getInvalidation()).as("the record of the sample survives the refresh").isNotNull();
+      assertThat(aggregate().getLateInvalidation()).as("the record of the sample survives the refresh").isNotNull();
       assertThat(engine().oldestInFlightAppendTs()).isEqualTo(Long.MAX_VALUE);
 
       refresh();
       assertThat(buckets()).containsExactly(new Bucket(H0, 1), new Bucket(H0 + HOUR, 1), new Bucket(H0 + 2 * HOUR, 2),
           new Bucket(H0 + 3 * HOUR, 1));
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().getLateInvalidation()).isNull();
     }
 
     /**
@@ -1142,7 +1142,7 @@ class MaterializedViewRegressionTest {
      */
     @Test
     void aRefreshDuringTheCommitKeepsTheRecordOfALateSample() throws Exception {
-      servedAsReplicated(() -> assertThat(aggregate().getInvalidation()).as("kept by the refresh").isNotNull(),
+      servedAsReplicated(() -> assertThat(aggregate().getLateInvalidation()).as("kept by the refresh").isNotNull(),
           () -> engine().appendSamplesWithoutRefresh(new long[] { H0 + HOUR + 60_000 }, new Object[] { "h0" },
               new Object[] { 1.0 }));
 
@@ -1151,7 +1151,7 @@ class MaterializedViewRegressionTest {
       refresh();
       assertThat(buckets()).containsExactly(new Bucket(H0, 1), new Bucket(H0 + HOUR, 2), new Bucket(H0 + 2 * HOUR, 1),
           new Bucket(H0 + 3 * HOUR, 1));
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().getLateInvalidation()).isNull();
     }
 
     @Test
@@ -1161,6 +1161,17 @@ class MaterializedViewRegressionTest {
       assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(range, H0 + HOUR)).isFalse();
       assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(range, H0 + HOUR - 1)).isTrue();
       assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(range, H0 - HOUR)).isTrue();
+    }
+
+    // Regression for #13049: the end of the range of a delete of the whole type is the value that means "no append in flight", so the
+    // range was never cleared
+    @Test
+    void theRangeOfAWholeTypeDeleteIsClearedWhenNoAppendIsInFlight() {
+      final ContinuousAggregateImpl.Invalidation wholeType = new ContinuousAggregateImpl.Invalidation(Long.MIN_VALUE, Long.MAX_VALUE);
+      assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(wholeType, Long.MAX_VALUE)).as("no append in flight").isFalse();
+      // and it is kept for an append that is: its samples may be anywhere in the range
+      assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(wholeType, H0)).isTrue();
+      assertThat(ContinuousAggregateRefresher.mayHoldInFlightSamples(wholeType, Long.MAX_VALUE - 1)).isTrue();
     }
 
     @Test
@@ -1391,7 +1402,7 @@ class MaterializedViewRegressionTest {
       assertThat(samplesAtEachSession).as("the sample is not late, nothing ships after its commit").isEmpty();
       assertThat(inFlightWhileCommitting.get()).as("in flight although no aggregate read the type")
           .isEqualTo(H0 + 2 * HOUR + 60_000);
-      assertThat(aggregate().getInvalidation()).isNull();
+      assertThat(aggregate().getLateInvalidation()).isNull();
       assertThat(engine().oldestInFlightAppendTs()).as("the append is in flight no more").isEqualTo(Long.MAX_VALUE);
 
       refresh();

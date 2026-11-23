@@ -961,7 +961,8 @@ final class SchemaEntryApplier {
    * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
    */
   static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
-    if (schemaJson == null || !schemaJson.contains(ArcadeStateMachine.INVALIDATED_FROM_KEY))
+    if (schemaJson == null || !(schemaJson.contains(ArcadeStateMachine.INVALIDATED_FROM_KEY)
+        || schemaJson.contains(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)))
       return false;
     final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
     // the key elsewhere in the document (a property or type named after it) is no record: the entry stays a compaction's
@@ -970,19 +971,34 @@ final class SchemaEntryApplier {
     final Schema schema = db.getSchema();
     for (final String name : aggregates.keySet()) {
       final JSONObject definition = aggregates.getJSONObject(name, null);
-      if (definition == null || !definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY) || !definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY))
+      if (definition == null)
+        continue;
+      // the range of the deletes, and the one of the late appends since #13049: an aggregate records them apart
+      final boolean deleted = definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY) && definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY);
+      final boolean late = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY);
+      if (!deleted && !late)
         continue;
       if (!schema.existsContinuousAggregate(name)
           || !(schema.getContinuousAggregate(name) instanceof ContinuousAggregateImpl held))
         return true;
-      final ContinuousAggregateImpl.Invalidation record = held.getInvalidation();
-      if (record == null || record.fromTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_FROM_KEY, Long.MIN_VALUE)
-          || record.toTs() != definition.getLong(ArcadeStateMachine.INVALIDATED_TO_KEY, Long.MIN_VALUE))
+      if (deleted && differsFromRecordHeld(held.getInvalidation(), definition, ArcadeStateMachine.INVALIDATED_FROM_KEY,
+          ArcadeStateMachine.INVALIDATED_TO_KEY))
+        return true;
+      if (late && differsFromRecordHeld(held.getLateInvalidation(), definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY))
         return true;
     }
     // A record this node holds and the document does not is left alone: the leader cleared it with a refresh, whose plain schema save
     // is not shipped (issue #10634), and a promoted leader holding it only recomputes those buckets once more
     return false;
+  }
+
+  /** Whether the range of {@code definition} under {@code fromKey} and {@code toKey} is not {@code held}, or this node holds none. */
+  private static boolean differsFromRecordHeld(final ContinuousAggregateImpl.Invalidation held, final JSONObject definition,
+      final String fromKey, final String toKey) {
+    return held == null || held.fromTs() != definition.getLong(fromKey, Long.MIN_VALUE)
+        || held.toTs() != definition.getLong(toKey, Long.MIN_VALUE);
   }
 
   private static boolean isEmptyMap(final Map<?, ?> map) {

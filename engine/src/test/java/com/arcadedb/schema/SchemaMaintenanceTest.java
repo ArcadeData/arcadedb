@@ -241,6 +241,140 @@ class SchemaMaintenanceTest {
       assertThat(cleared.has("invalidatedFromTs")).isFalse();
       assertThat(ContinuousAggregateImpl.fromJSON(database, cleared).getInvalidation()).isNull();
     }
+
+    // Issue #13049: the range of the late appends is kept apart from the range of the deletes, which a delete of the whole type makes
+    // the whole time range: merged into it, the buckets of a late append were read as "the rows the aggregate holds"
+
+    /** An aggregate whose watermark is at the second hour: a sample before it is late. */
+    private ContinuousAggregateImpl newAggregateWithAWatermark() {
+      final ContinuousAggregateImpl aggregate = newAggregate();
+      aggregate.setWatermarkTs(7_200_000L);
+      return aggregate;
+    }
+
+    @Test
+    void aLateAppendIsNotMergedIntoTheRangeOfAWholeTypeDelete() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidate(Long.MIN_VALUE, Long.MAX_VALUE);
+
+      assertThat(aggregate.invalidateLateSamples(1_000L, 2_000L)).isTrue();
+
+      assertThat(aggregate.getInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(Long.MIN_VALUE, Long.MAX_VALUE));
+      assertThat(aggregate.getLateInvalidation()).as("the whole bucket the sample reached")
+          .isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 3_599_999L));
+    }
+
+    @Test
+    void aDeleteIsNotMergedIntoTheRangeOfLateAppends() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+
+      assertThat(aggregate.invalidate(Long.MIN_VALUE, Long.MAX_VALUE)).isTrue();
+
+      assertThat(aggregate.getLateInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 3_599_999L));
+      assertThat(aggregate.getInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(Long.MIN_VALUE, Long.MAX_VALUE));
+    }
+
+    @Test
+    void hasInvalidationIsTrueWhileEitherRangeIsPending() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      assertThat(aggregate.hasInvalidation()).isFalse();
+
+      aggregate.invalidate(100, 200);
+      assertThat(aggregate.hasInvalidation()).isTrue();
+      aggregate.clearInvalidation(aggregate.getInvalidation());
+      assertThat(aggregate.hasInvalidation()).isFalse();
+
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+      assertThat(aggregate.hasInvalidation()).isTrue();
+      aggregate.clearLateInvalidation(aggregate.getLateInvalidation());
+      assertThat(aggregate.hasInvalidation()).isFalse();
+    }
+
+    @Test
+    void theRefreshThatRecomputedOneRangeLeavesTheOtherOne() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidate(100, 200);
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+
+      aggregate.clearInvalidation(aggregate.getInvalidation());
+      assertThat(aggregate.getInvalidation()).isNull();
+      assertThat(aggregate.getLateInvalidation()).isNotNull();
+
+      aggregate.invalidate(100, 200);
+      aggregate.clearLateInvalidation(aggregate.getLateInvalidation());
+      assertThat(aggregate.getLateInvalidation()).isNull();
+      assertThat(aggregate.getInvalidation()).isNotNull();
+    }
+
+    @Test
+    void aLateAppendRecordedAfterTheRefreshReadTheRangeSurvivesTheClearing() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+      final ContinuousAggregateImpl.Invalidation readByTheRefresh = aggregate.getLateInvalidation();
+
+      // a sample of the same bucket that lands while the refresh recomputes: the range does not change, the record does
+      aggregate.invalidateLateSamples(3_000L, 4_000L);
+      assertThat(aggregate.getLateInvalidation()).isEqualTo(readByTheRefresh).isNotSameAs(readByTheRefresh);
+
+      aggregate.clearLateInvalidation(readByTheRefresh);
+
+      assertThat(aggregate.getLateInvalidation()).as("recomputed by the next refresh").isNotNull();
+    }
+
+    @Test
+    void aLateRangeWhoseClearingCouldNotBePersistedComesBackWithWhatWasRecordedSince() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+      final ContinuousAggregateImpl.Invalidation readByTheRefresh = aggregate.getLateInvalidation();
+      aggregate.clearLateInvalidation(readByTheRefresh);
+      aggregate.invalidateLateSamples(3_700_000L, 3_800_000L);
+
+      aggregate.restoreLateInvalidation(readByTheRefresh);
+
+      assertThat(aggregate.getLateInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 7_199_999L));
+    }
+
+    @Test
+    void bothRangesSurviveTheDefinitionBeingWrittenAndReadApart() {
+      final ContinuousAggregateImpl aggregate = newAggregateWithAWatermark();
+      aggregate.invalidate(Long.MIN_VALUE, Long.MAX_VALUE);
+      aggregate.invalidateLateSamples(1_000L, 2_000L);
+
+      final JSONObject json = aggregate.toJSON();
+      assertThat(json.getLong("invalidatedFromTs")).isEqualTo(Long.MIN_VALUE);
+      assertThat(json.getLong("invalidatedToTs")).isEqualTo(Long.MAX_VALUE);
+      assertThat(json.getLong("lateInvalidatedFromTs")).isEqualTo(0L);
+      assertThat(json.getLong("lateInvalidatedToTs")).isEqualTo(3_599_999L);
+
+      final ContinuousAggregateImpl loaded = ContinuousAggregateImpl.fromJSON(database, json);
+      assertThat(loaded.getInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(Long.MIN_VALUE, Long.MAX_VALUE));
+      assertThat(loaded.getLateInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(0L, 3_599_999L));
+
+      aggregate.clearLateInvalidation(aggregate.getLateInvalidation());
+      final JSONObject lateCleared = aggregate.toJSON();
+      assertThat(lateCleared.has("lateInvalidatedFromTs")).isFalse();
+      assertThat(lateCleared.has("lateInvalidatedToTs")).isFalse();
+      assertThat(lateCleared.has("invalidatedFromTs")).isTrue();
+    }
+
+    /** A schema written before #13049 has ONE range under the old keys: it is the range of the deletes, and there is no late one. */
+    @Test
+    void aSchemaWrittenBeforeTheTwoRangesWereKeptApartLoadsItsRangeAsTheOneOfTheDeletes() {
+      final JSONObject json = newAggregate().toJSON();
+      json.put("invalidatedFromTs", 3_600_000L);
+      json.put("invalidatedToTs", 7_199_999L);
+      assertThat(json.has("lateInvalidatedFromTs")).isFalse();
+
+      final ContinuousAggregateImpl loaded = ContinuousAggregateImpl.fromJSON(database, json);
+
+      assertThat(loaded.getInvalidation()).isEqualTo(new ContinuousAggregateImpl.Invalidation(3_600_000L, 7_199_999L));
+      assertThat(loaded.getLateInvalidation()).isNull();
+      assertThat(loaded.hasInvalidation()).isTrue();
+      // and it is written back as it was read
+      assertThat(loaded.toJSON().getLong("invalidatedFromTs")).isEqualTo(3_600_000L);
+      assertThat(loaded.toJSON().has("lateInvalidatedFromTs")).isFalse();
+    }
   }
 
   /**
