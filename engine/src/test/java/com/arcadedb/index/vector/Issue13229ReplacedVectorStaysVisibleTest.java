@@ -60,6 +60,11 @@ class Issue13229ReplacedVectorStaysVisibleTest {
   private static final int    RECORDS    = 1200;
   /** Rounds of the reader: each is a filtered search and an exhaustive one, while the writer commits without pause. */
   private static final int    ROUNDS     = 400;
+  /**
+   * Commits the writer must have made before the reader stops, whatever the number of rounds: on a loaded host the writer can be
+   * scheduled less than the reader, and the rounds have to overlap commits for the test to say anything.
+   */
+  private static final int    MIN_COMMITS = ROUNDS / 4;
 
   @BeforeEach
   void setUp() {
@@ -120,7 +125,7 @@ class Issue13229ReplacedVectorStaysVisibleTest {
       final String rid = target[0].toString();
       final Random random = new Random(13229);
       int filtered = 0, filteredMissing = 0, exhaustive = 0, exhaustiveMissing = 0;
-      for (int round = 0; round < ROUNDS && !done.get(); round++) {
+      for (int round = 0; (round < ROUNDS || commits.get() < MIN_COMMITS) && !done.get(); round++) {
         final float[] query = vector(random.nextInt(100_000));
         int rows = 0;
         try (final ResultSet resultSet = db.query("sql", "SELECT @rid AS rid FROM (SELECT expand(vector.neighbors('Chunk[embedding]', :query, 1, {filter: :rids})))",
@@ -149,8 +154,8 @@ class Issue13229ReplacedVectorStaysVisibleTest {
       writer.join();
 
       assertThat(writerFailure.get()).as("the writer").isNull();
-      assertThat(filtered).as("rounds that ran").isEqualTo(ROUNDS);
-      assertThat(commits.get()).as("commits that replaced the vector while the rounds ran").isGreaterThan(ROUNDS / 4);
+      assertThat(filtered).as("rounds that ran").isGreaterThanOrEqualTo(ROUNDS);
+      assertThat(commits.get()).as("commits that replaced the vector while the rounds ran").isGreaterThanOrEqualTo(MIN_COMMITS);
       assertThat(filteredMissing).as("of " + filtered + " searches by a filter naming only the record, the ones that found no row").isZero();
       assertThat(exhaustiveMissing).as("of " + exhaustive + " exhaustive searches, the ones that did not find the record").isZero();
     }
