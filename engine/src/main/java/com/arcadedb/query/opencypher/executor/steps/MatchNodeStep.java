@@ -662,8 +662,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // Without this optimization, MATCH (a),(b) WHERE ID(a) = x AND ID(b) = y
     // would create a Cartesian product of ALL vertices before filtering
     if (effectiveIdFilter != null && !effectiveIdFilter.isEmpty()) {
+      // A scan of the type only meets records of the type, but a lookup by id reaches a record of ANY type: it answers for the node
+      // only when its type carries the labels of the pattern, as (n:Chunk) WHERE id(n) = <id of an Entity> matches nothing (the
+      // type is read from the bucket of the id, so a record of another type is not loaded)
+      final List<String> idLabels = resolveEffectiveLabels(currentInputResult);
       try {
         final RID rid = context.getDatabase().newRID(effectiveIdFilter);
+        if (!Labels.matches(context.getDatabase().getSchema().getTypeByBucketId(rid.getBucketId()), idLabels,
+            pattern.isLabelDisjunction()))
+          return List.<Identifiable>of().iterator();
         final Identifiable vertex = context.getDatabase().lookupByRID(rid, true);
         return List.of(vertex).iterator();
       } catch (final Exception e) {
