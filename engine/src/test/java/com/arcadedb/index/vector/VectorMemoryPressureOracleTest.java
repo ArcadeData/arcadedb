@@ -27,6 +27,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
@@ -37,6 +40,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
@@ -44,18 +48,22 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Oracle tests for the heap admission of graph builds that the vector tests of the memory budget leave unexecuted: the
@@ -70,6 +78,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * vectors.
  */
 @Tag("vector")
+@Timeout(180)
 class VectorMemoryPressureOracleTest {
   private static final String DB_ROOT     = "target/test-databases/VectorMemoryPressureOracleTest";
   private static final int    DIMENSIONS  = 16;
@@ -77,23 +86,20 @@ class VectorMemoryPressureOracleTest {
   private static final int    BUILD_CACHE = 64;
   private static final long   MB          = 1024L * 1024L;
 
-  private String                                dbPath;
-  private final Map<GlobalConfiguration, Object> savedGlobals = new HashMap<>();
+  private String dbPath;
 
+  /**
+   * Every setting these tests change is read through the configuration of the database ({@code db.getConfiguration()}), and is set
+   * there: it dies with the database, so no process-wide setting is touched and nothing has to be restored.
+   */
   @BeforeEach
   void setUp(final TestInfo testInfo) {
     dbPath = DB_ROOT + "-" + testInfo.getTestMethod().orElseThrow().getName();
     FileUtils.deleteRecursively(new File(dbPath));
-    for (final GlobalConfiguration configuration : List.of(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE,
-        GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT, GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS,
-        GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS))
-      savedGlobals.put(configuration, configuration.getValue());
-    GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(BUILD_CACHE);
   }
 
   @AfterEach
   void tearDown() {
-    savedGlobals.forEach(GlobalConfiguration::setValue);
     FileUtils.deleteRecursively(new File(dbPath));
   }
 
@@ -102,7 +108,7 @@ class VectorMemoryPressureOracleTest {
   @Test
   void anExplicitGraphBuildCacheSizeIsTheCapacityWhateverTheHeapReads() {
     withIndex((db, index, vectors) -> {
-      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(123);
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE, 123);
 
       assertThat(index.computeGraphBuildCacheCapacity(1_000_000)).as("the explicit size of the one-argument form").isEqualTo(123);
       assertThat(index.computeGraphBuildCacheCapacity(1_000_000, 8L * 1024 * MB, 0L))
@@ -164,10 +170,32 @@ class VectorMemoryPressureOracleTest {
   }
 
   @Test
-  void theRebuildPermitsAreTheOneSemaphoreOfTheJvm() {
-    assertThat(LSMVectorIndex.rebuildSemaphoreForTesting()).isNotNull();
-    assertThat(LSMVectorIndex.rebuildSemaphoreForTesting().availablePermits())
-        .isEqualTo(GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getValueAsInteger());
+  void anAsyncRebuildWaitsForThePermitAnotherHolderTookFromTheJvmWideSemaphoreAndRunsOnceItIsReleased() {
+    withIndex((db, index, vectors) -> {
+      final Semaphore permits = LSMVectorIndex.rebuildSemaphoreForTesting();
+      assertThat(permits.availablePermits()).as("precondition: no other test holds a rebuild permit").isPositive();
+      final long deferredBefore = index.getStats().get("rebuildsDeferredForMemory");
+
+      LSMVectorIndex.acquireAllRebuildPermitsForTest();
+      try {
+        assertThat(permits.availablePermits()).as("the accessor is the semaphore the permit hooks take").isZero();
+        Internals.startAsyncGraphRebuild(index);
+        assertThat(index.getStats().get("asyncRebuildInProgress")).as("the rebuild was started").isEqualTo(1L);
+
+        // A rebuild that took a permit of its own would run to its end in this window and clear the flag; this one cannot get past
+        // the held permit. The window only observes: it can make the test pass wrongly, never fail it
+        for (int i = 0; i < 20; i++)
+          sleepMillis(10);
+        assertThat(index.getStats().get("asyncRebuildInProgress")).as("still waiting for the permit of the other holder").isEqualTo(1L);
+      } finally {
+        LSMVectorIndex.releaseAllRebuildPermitsForTest();
+      }
+
+      waitUntil(() -> index.getStats().get("asyncRebuildInProgress") == 0L, "the rebuild that got the released permit finishes");
+      assertThat(permits.availablePermits()).as("and hands the permit back").isPositive();
+      assertThat(index.getStats().get("rebuildsDeferredForMemory")).as("it was admitted, not deferred").isEqualTo(deferredBefore);
+      assertEveryVectorIsItsOwnNearestNeighbour(index, vectors);
+    });
   }
 
   // ---------------------------------------------------------------- the online gate reclaims the page cache for real
@@ -181,7 +209,7 @@ class VectorMemoryPressureOracleTest {
       assertThat(cached).as("precondition: reading the records left pages in the read cache").isPositive();
 
       final Sizes sizes = sizesOf(index);
-      final long shortfall = Math.max(1L, cached / 2);
+      final long shortfall = sizes.boundedShortfall(sizes.estimateKeepingOnHeap(), cached / 2);
       final long availableHeap = sizes.availableLeavingShort(sizes.estimateKeepingOnHeap(), shortfall);
 
       assertThat(index.admitOnlineRebuild(availableHeap, cached, true))
@@ -228,23 +256,28 @@ class VectorMemoryPressureOracleTest {
       final Sizes sizes = sizesOf(index);
       final long claimed = Math.max(2L, sizes.onHeapBytes());
       final long cached = pageManager.getReadCacheRAM();
-      assertThat(cached).as("precondition: the cache holds what the demotion will ask of it").isGreaterThanOrEqualTo(claimed / 2);
 
-      // The on-heap shape does not fit even with all the claimed cache (so the first stage declines), and the demoted shape
-      // fits with the on-heap graph's bytes credited plus half of the claimed cache given up
-      final long availableHeap = sizes.availableLeavingShort(sizes.estimateKeepingOnDisk(), sizes.onHeapBytes() + claimed / 2);
-      assertThat(VectorHeapBudget.reclaimNeededFor(sizes.estimateKeepingOnHeap(), sizes.percent(),
-          availableHeap - index.searchCachesPlannedBytes(), claimed)).as("precondition: the first stage declines")
-          .isEqualTo(-1L);
+      // The on-heap shape does not fit even with all the claimed cache (so the first stage declines), and the demoted shape fits
+      // with the on-heap graph's bytes credited and some of the claimed cache given up. The net heap reading is exactly zero, not clamped
+      // from below; the reclaim asserted below is the one the gate computes for the demoted shape, not a figure of the test's own
+      final long estimateDemoted = sizes.estimateKeepingOnDisk();
+      final long availableHeap = sizes.availableLeavingShort(estimateDemoted, sizes.neededAvailable(estimateDemoted));
+      final long netAvailable = availableHeap - index.searchCachesPlannedBytes();
+      assertThat(VectorHeapBudget.reclaimNeededFor(sizes.estimateKeepingOnHeap(), sizes.percent(), netAvailable, claimed))
+          .as("precondition: the first stage declines").isEqualTo(-1L);
+      final long reclaimedByTheGate = VectorHeapBudget.reclaimNeededFor(estimateDemoted, sizes.percent(),
+          Math.min(netAvailable + sizes.onHeapBytes(), VectorHeapBudget.maxHeapBytes()), claimed);
+      assertThat(reclaimedByTheGate).as("precondition: the demoted shape needs page cache, and the claim covers it").isPositive();
+      assertThat(cached).as("precondition: the cache holds what the demotion will ask of it").isGreaterThanOrEqualTo(reclaimedByTheGate);
 
       assertThat(index.admitOnlineRebuild(availableHeap, claimed, true))
-          .as("the demoted shape fits after reclaiming half of the claimed cache, which the cache holds").isTrue();
+          .as("the demoted shape fits after reclaiming part of the claimed cache, which the cache holds").isTrue();
 
       assertThat(index.getGraphIndex()).isInstanceOf(OnDiskGraphIndex.class);
       assertThat(index.getStats().get("residentGraphDemotions")).isEqualTo(1L);
       assertThat(pageManager.getReadCacheRAM())
-          .as("the demotion was admitted on page cache it was told it could have, so it must have been given up")
-          .isLessThan(cached);
+          .as("the demotion was admitted on page cache it was told it could have, so at least what it asked for must have been given up")
+          .isLessThanOrEqualTo(cached - reclaimedByTheGate);
       assertEveryVectorIsItsOwnNearestNeighbour(index, vectors);
     });
   }
@@ -254,7 +287,7 @@ class VectorMemoryPressureOracleTest {
     withIndex((db, index, vectors) -> {
       final PageManager pageManager = ((DatabaseInternal) db).getPageManager();
       // A build cache this large makes the build need more heap than any page cache of a test holds
-      GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000_000);
+      db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE, 10_000_000);
       final Sizes sizes = sizesOf(index);
       // Claims far more cache than the database has, against no heap at all: both stages ask for bytes the cache cannot give
       final long claimed = 64L * 1024 * MB;
@@ -276,7 +309,7 @@ class VectorMemoryPressureOracleTest {
   void aPersistedGraphThatCannotBeReadBackIsNotDemotedToAndTheRebuildIsDeferred() {
     withIndex((db, index, vectors) -> {
       // A recorded length that outlived the pages it described: the load answers no graph at all
-      setLastWrittenGraphBytes(index, 1L << 40);
+      Internals.writeLong(index.getGraphFile(), "lastWrittenGraphBytes", 1L << 40);
 
       assertThat(index.admitOnlineRebuild(0L, 0L, true)).as("no certified twin to swap in: deferred").isFalse();
 
@@ -291,7 +324,7 @@ class VectorMemoryPressureOracleTest {
   void aPersistedGraphWhoseLoadFailsIsNotDemotedToAndTheRebuildIsDeferred() {
     withIndex((db, index, vectors) -> {
       // A recorded length shorter than the payload: the footer of the graph is not where the load looks for it
-      setLastWrittenGraphBytes(index, 100L);
+      Internals.writeLong(index.getGraphFile(), "lastWrittenGraphBytes", 100L);
 
       assertThat(index.admitOnlineRebuild(0L, 0L, true)).as("the twin cannot be loaded: deferred, not an exception").isFalse();
       assertThat(index.admitOnlineRebuild(0L, 0L, true)).as("and again on the next trigger").isFalse();
@@ -316,18 +349,15 @@ class VectorMemoryPressureOracleTest {
       }
       assertThat(other).isNotNull();
 
-      final ReentrantReadWriteLock lock = lockOf(index);
+      final ReentrantReadWriteLock lock = Internals.lockOf(index);
       final AtomicReference<Boolean> admitted = new AtomicReference<>();
       final Thread admitter = new Thread(() -> admitted.set(index.admitOnlineRebuild(availableHeap, 0L, true)));
       lock.writeLock().lock();
       try {
         admitter.start();
-        final long deadline = System.currentTimeMillis() + 20_000;
-        while (!lock.hasQueuedThreads() && System.currentTimeMillis() < deadline)
-          Thread.onSpinWait();
-        assertThat(lock.hasQueuedThreads()).as("the demotion decided and is waiting to swap").isTrue();
+        waitUntil(lock::hasQueuedThreads, "the demotion decided and is waiting to swap");
         // The build publishes its graph in the window between the decision and the swap
-        setGraphIndex(index, other);
+        Internals.write(index, "graphIndex", other);
       } finally {
         lock.writeLock().unlock();
       }
@@ -344,8 +374,9 @@ class VectorMemoryPressureOracleTest {
   void aResidentGraphWhoseMemoryCannotBeMeasuredIsChargedTheFlatPerNodeEstimate() {
     withIndex((db, index, vectors) -> {
       final int nodes = index.getGraphIndex().getIdUpperBound();
-      setGraphIndex(index, graphWhoseMemoryCannotBeMeasured(nodes));
-      final int percent = Math.min(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getValueAsInteger(), 90);
+      Internals.write(index, "graphIndex", graphWhoseMemoryCannotBeMeasured(nodes));
+      final int percent = Math.min(
+          db.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT), 90);
       final long cache = index.computeGraphBuildCacheCapacity(nodes);
       final float overflow = index.metadata.neighborOverflowFactor;
       final long flat = VectorHeapBudget.estimateGraphBytes(nodes);
@@ -380,12 +411,12 @@ class VectorMemoryPressureOracleTest {
 
         assertThat(index.graphNotYetMaterialisedForTest())
             .as("the gate refused before the build settled anything: the question stays open for the next search").isTrue();
-        assertThat(searchBuildThreadOf(index)).as("the refused build handed its thread slot back").isNull();
+        assertThat(Internals.read(index, "searchBuildThread")).as("the refused build handed its thread slot back").isNull();
 
         index.pinSearchBuildHeapReadingForTest(-1L, -1L);
         assertThat(index.findNeighborsFromVector(vectors.get(7), 5, 64).getFirst().getFirst()).isEqualTo(ridOf(db, 7));
         assertThat(index.graphNotYetMaterialisedForTest()).isFalse();
-        assertThat(searchBuildThreadOf(index)).as("and so did the build that ran").isNull();
+        assertThat(Internals.read(index, "searchBuildThread")).as("and so did the build that ran").isNull();
       } finally {
         db.drop();
       }
@@ -395,27 +426,26 @@ class VectorMemoryPressureOracleTest {
   // ---------------------------------------------------------------- the cooldown after a deferral ends
 
   @Test
-  void aDeferredRebuildIsRetriedOnceTheCooldownHasElapsed() {
+  void aDeferredRebuildIsSkippedWhileTheCooldownRunsAndRetriedOnceItHasElapsed() {
     withIndex((db, index, vectors) -> {
-      GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS.setValue(5L);
+      final ContextConfiguration configuration = db.getConfiguration();
+      // An hour: no clock of a test can run it out by itself, so the outcome does not depend on how long a step takes
+      configuration.setValue(GlobalConfiguration.VECTOR_INDEX_REBUILD_DEFERRAL_COOLDOWN_MS, 3_600_000L);
+      // A build cache this large makes the real gate decline whatever the heap reads
+      configuration.setValue(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE, Integer.MAX_VALUE / 2);
       assertThat(index.admitOnlineRebuild(0L, 0L, true)).as("precondition: a deferral starts the cooldown").isFalse();
       assertThat(index.getStats().get("rebuildsDeferredForMemory")).isEqualTo(1L);
 
-      // The cooldown is over once its few milliseconds have passed: the trigger then runs the gate again
-      final long deadline = System.currentTimeMillis() + 30_000;
-      long deferred = 1L;
-      while (deferred < 2L && System.currentTimeMillis() < deadline) {
-        sleepMillis(20);
-        GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(Integer.MAX_VALUE / 2);
-        startAsyncGraphRebuild(index);
-        final long inner = System.currentTimeMillis() + 10_000;
-        while (index.getStats().get("asyncRebuildInProgress") != 0 && System.currentTimeMillis() < inner)
-          Thread.onSpinWait();
-        deferred = index.getStats().get("rebuildsDeferredForMemory");
-      }
+      Internals.startAsyncGraphRebuild(index);
+      assertThat(index.getStats().get("asyncRebuildInProgress")).as("inside the cooldown no thread is started").isZero();
+      assertThat(index.getStats().get("rebuildsDeferredForMemory")).as("and the gate is not asked again").isEqualTo(1L);
 
-      assertThat(deferred).as("the retry after the cooldown reached the gate (and was deferred again: nothing fits)")
-          .isGreaterThanOrEqualTo(2L);
+      // The cooldown is over once the deferral is older than it: the same trigger now reaches the gate
+      Internals.writeLong(index, "lastRebuildDeferralMs", System.currentTimeMillis() - 7_200_000L);
+      Internals.startAsyncGraphRebuild(index);
+      waitUntil(() -> index.getStats().get("asyncRebuildInProgress") == 0L, "the retried rebuild reaches the gate and ends");
+
+      assertThat(index.getStats().get("rebuildsDeferredForMemory")).as("the retry reached the gate, which declined again").isEqualTo(2L);
       assertThat(index.getGraphIndex()).isInstanceOf(OnHeapGraphIndex.class);
     });
   }
@@ -491,35 +521,35 @@ class VectorMemoryPressureOracleTest {
         });
         final AtomicReference<Throwable> failure = new AtomicReference<>();
         final AtomicBoolean interruptKept = new AtomicBoolean();
-        final Thread searcher = new Thread(() -> {
-          try {
-            index.findNeighborsFromVector(vectors.get(9), 5, 64);
-          } catch (final Throwable t) {
-            failure.set(t);
-            interruptKept.set(Thread.currentThread().isInterrupted());
-          }
-        });
-        searcher.start();
         try {
-          assertThat(entered.await(30, TimeUnit.SECONDS)).as("the build the search started is running").isTrue();
-          searcher.interrupt();
-          searcher.join(30_000);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new RuntimeException(e);
+          final Thread searcher = new Thread(() -> {
+            try {
+              index.findNeighborsFromVector(vectors.get(9), 5, 64);
+            } catch (final Throwable t) {
+              failure.set(t);
+              interruptKept.set(Thread.currentThread().isInterrupted());
+            }
+          });
+          searcher.start();
+          try {
+            assertThat(entered.await(30, TimeUnit.SECONDS)).as("the build the search started is running").isTrue();
+            searcher.interrupt();
+            searcher.join(30_000);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+          }
+
+          assertThat(failure.get()).as("the interrupted search is told so").isInstanceOf(IndexException.class)
+              .hasMessageContaining("Interrupted while waiting for the graph of vector index");
+          assertThat(interruptKept.get()).as("and the thread keeps its interrupt for whoever owns it").isTrue();
+        } finally {
+          // The paused build goes on whatever the assertions above found: the database is not dropped under it
+          index.setAfterLiveSetReadForTest(null);
+          release.countDown();
         }
 
-        assertThat(failure.get()).as("the interrupted search is told so").isInstanceOf(IndexException.class)
-            .hasMessageContaining("Interrupted while waiting for the graph of vector index");
-        assertThat(interruptKept.get()).as("and the thread keeps its interrupt for whoever owns it").isTrue();
-
-        index.setAfterLiveSetReadForTest(null);
-        release.countDown();
-        final long deadline = System.currentTimeMillis() + 60_000;
-        while (index.getStats().get("graphNodeCount") != count && System.currentTimeMillis() < deadline)
-          sleepMillis(10);
-        assertThat(index.getStats().get("graphNodeCount")).as("the build the search left behind goes on and publishes")
-            .isEqualTo((long) count);
+        waitUntil(() -> index.getStats().get("graphNodeCount") == count, "the build the search left behind goes on and publishes");
         assertThat(index.findNeighborsFromVector(vectors.get(9), 5, 64).getFirst().getFirst()).isEqualTo(ridOf(db, 9));
         assertThat(index.getStats().get("graphNodeCount")).isEqualTo((long) count);
       } finally {
@@ -542,7 +572,15 @@ class VectorMemoryPressureOracleTest {
           entered.countDown();
           awaitQuietly(release);
         });
-        final Thread first = new Thread(() -> index.findNeighborsFromVector(vectors.get(2), 5, 64));
+        final AtomicReference<List<Pair<RID, Float>>> firstAnswer = new AtomicReference<>();
+        final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        final Thread first = new Thread(() -> {
+          try {
+            firstAnswer.set(index.findNeighborsFromVector(vectors.get(2), 5, 64));
+          } catch (final Throwable t) {
+            firstFailure.set(t);
+          }
+        });
         first.start();
         final AtomicReference<Throwable> failure = new AtomicReference<>();
         final AtomicBoolean interruptKept = new AtomicBoolean();
@@ -558,9 +596,7 @@ class VectorMemoryPressureOracleTest {
             }
           });
           second.start();
-          final long deadline = System.currentTimeMillis() + 30_000;
-          while (second.getState() != Thread.State.TIMED_WAITING && System.currentTimeMillis() < deadline)
-            sleepMillis(5);
+          waitUntil(() -> second.getState() == Thread.State.TIMED_WAITING, "the second search parks on the graph build lock");
           second.interrupt();
           second.join(30_000);
         } catch (final InterruptedException e) {
@@ -574,12 +610,11 @@ class VectorMemoryPressureOracleTest {
         assertThat(failure.get()).as("the second search gave up its wait for the lock").isInstanceOf(IndexException.class)
             .hasMessageContaining("graph build lock");
         assertThat(interruptKept.get()).isTrue();
-        try {
-          first.join(60_000);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          throw new RuntimeException(e);
-        }
+        joinQuietly(first);
+        assertThat(first.isAlive()).as("the first search finished once its build was released").isFalse();
+        assertThat(firstFailure.get()).as("and the interrupt of the second one did not fail it").isNull();
+        assertThat(firstAnswer.get()).as("it answered from the graph it built").hasSize(5);
+        assertThat(firstAnswer.get().getFirst().getFirst()).isEqualTo(ridOf(db, 2));
         assertThat(index.findNeighborsFromVector(vectors.get(4), 5, 64).getFirst().getFirst()).isEqualTo(ridOf(db, 4));
       } finally {
         db.drop();
@@ -594,11 +629,12 @@ class VectorMemoryPressureOracleTest {
       warmPageCache(db);
       final long cached = pageManager.getReadCacheRAM();
       assertThat(cached).isPositive();
-      final int percent = GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getValueAsInteger();
+      final int percent = db.getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
       final long estimate = VectorHeapBudget.estimateRebuildHeapBytes(NUM_VECTORS, DIMENSIONS, BUILD_CACHE, false);
-      final long shortfall = Math.max(1L, cached / 2);
       final long needed = (estimate * 100 + Math.min(percent, 90) - 1) / Math.min(percent, 90);
-      final long availableHeap = Math.max(0L, needed - shortfall) + index.searchCachesPlannedBytes();
+      // At most half of what the build needs, so that the heap reading is never clamped at zero and the gate asks for exactly this
+      final long shortfall = Math.max(1L, Math.min(cached / 2, needed / 2));
+      final long availableHeap = needed - shortfall + index.searchCachesPlannedBytes();
 
       assertThat(index.fitSearchBuildToHeap(NUM_VECTORS, availableHeap, cached))
           .as("the full build fits once the cache gives back the shortfall: no cap on the build cache").isZero();
@@ -634,6 +670,7 @@ class VectorMemoryPressureOracleTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.create();
       try {
+        db.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE, BUILD_CACHE);
         final List<float[]> vectors = populate(db);
         final LSMVectorIndex index = vectorIndex(db);
         assertThat(index.findNeighborsFromVector(vectors.get(0), 5, 64)).hasSize(5);
@@ -649,7 +686,7 @@ class VectorMemoryPressureOracleTest {
     final Random random = new Random(0x5EEDL);
     final List<float[]> vectors = new ArrayList<>();
     db.transaction(() -> {
-      final var type = db.getSchema().createDocumentType("Doc");
+      final DocumentType type = db.getSchema().createDocumentType("Doc");
       type.createProperty("id", Type.INTEGER);
       type.createProperty("vector", Type.ARRAY_OF_FLOATS);
       db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
@@ -673,7 +710,7 @@ class VectorMemoryPressureOracleTest {
       final Database db = factory.create();
       try {
         db.transaction(() -> {
-          final var type = db.getSchema().createDocumentType("Doc");
+          final DocumentType type = db.getSchema().createDocumentType("Doc");
           type.createProperty("id", Type.INTEGER);
           type.createProperty("vector", Type.ARRAY_OF_FLOATS);
           db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
@@ -712,7 +749,7 @@ class VectorMemoryPressureOracleTest {
   }
 
   private static RID ridOf(final Database db, final int id) {
-    try (final var rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = ?", id)) {
+    try (final ResultSet rs = db.query("sql", "SELECT @rid FROM Doc WHERE id = ?", id)) {
       assertThat(rs.hasNext()).as("record %d must exist", id).isTrue();
       return rs.next().getProperty("@rid");
     }
@@ -720,7 +757,7 @@ class VectorMemoryPressureOracleTest {
 
   /** Reads every record back so the pages of the type and of the index sit in the process-wide read cache. */
   private static void warmPageCache(final Database db) {
-    try (final var rs = db.query("sql", "SELECT id, vector FROM Doc")) {
+    try (final ResultSet rs = db.query("sql", "SELECT id, vector FROM Doc")) {
       while (rs.hasNext())
         rs.next();
     }
@@ -731,17 +768,45 @@ class VectorMemoryPressureOracleTest {
     assertThat(pageManager.getReadCacheRAM()).as("precondition: the read cache is empty").isZero();
   }
 
-  /** Exact kNN oracle: every stored vector, asked for as the query, comes back first, at a COSINE distance of 0. */
+  /**
+   * Exact kNN oracle: for sampled stored vectors asked for as the query, the ordered top three RIDs equal the brute-force cosine
+   * ranking over every stored vector (the query itself first), and the distances are the cosine distances (1 - cosine), within a
+   * two-sided tolerance. The beam is as wide as the corpus, so the graph search is exhaustive and the ranking is exact.
+   */
   private static void assertEveryVectorIsItsOwnNearestNeighbour(final LSMVectorIndex index, final List<float[]> vectors) {
     final Random random = new Random(42);
     final RidToId ridToId = new RidToId(index);
     for (int n = 0; n < 12; n++) {
       final int id = random.nextInt(vectors.size());
-      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(vectors.get(id), 3, 64);
-      assertThat(results).as("kNN of the stored vector %d", id).isNotEmpty();
-      assertThat(ridToId.idOf(results.getFirst().getFirst())).as("the exact match of vector %d ranks first", id).isEqualTo(id);
-      assertThat(results.getFirst().getSecond()).as("a distance of zero to itself").isLessThan(1e-3f);
+      final float[] query = vectors.get(id);
+      final double[] cosine = new double[vectors.size()];
+      final Integer[] rank = new Integer[vectors.size()];
+      for (int i = 0; i < cosine.length; i++) {
+        cosine[i] = cosine(query, vectors.get(i));
+        rank[i] = i;
+      }
+      Arrays.sort(rank, (x, y) -> Double.compare(cosine[y], cosine[x]));
+
+      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(query, 3, vectors.size());
+      assertThat(results).as("kNN of the stored vector %d", id).hasSize(3);
+      for (int r = 0; r < 3; r++) {
+        assertThat(ridToId.idOf(results.get(r).getFirst())).as("rank %d of the query of vector %d", r, id).isEqualTo(rank[r]);
+        assertThat((double) results.get(r).getSecond()).as("distance of rank %d of vector %d", r, id)
+            .isCloseTo(1d - cosine[rank[r]], within(1e-4d));
+      }
     }
+  }
+
+  private static double cosine(final float[] a, final float[] b) {
+    double dot = 0d;
+    double na = 0d;
+    double nb = 0d;
+    for (int d = 0; d < a.length; d++) {
+      dot += (double) a[d] * b[d];
+      na += (double) a[d] * a[d];
+      nb += (double) b[d] * b[d];
+    }
+    return dot / Math.sqrt(na * nb);
   }
 
   /** RID to id of the documents of the index's database. */
@@ -750,9 +815,9 @@ class VectorMemoryPressureOracleTest {
 
     RidToId(final LSMVectorIndex index) {
       final Database db = index.getDatabase();
-      try (final var rs = db.query("sql", "SELECT @rid AS rid, id FROM Doc")) {
+      try (final ResultSet rs = db.query("sql", "SELECT @rid AS rid, id FROM Doc")) {
         while (rs.hasNext()) {
-          final var row = rs.next();
+          final Result row = rs.next();
           ids.put(row.<RID>getProperty("rid"), ((Number) row.getProperty("id")).intValue());
         }
       }
@@ -783,7 +848,21 @@ class VectorMemoryPressureOracleTest {
     long availableLeavingShort(final long estimate, final long shortfall) {
       final int p = Math.min(percent, 90);
       final long needed = (estimate * 100 + p - 1) / p;
+      assertThat(shortfall).as("a shortfall past what the estimate needs would be clamped: the gate would ask for less").isLessThanOrEqualTo(needed);
       return Math.max(0L, needed - shortfall) + index.searchCachesPlannedBytes();
+    }
+
+    /** The available heap at which {@code estimate} fits {@code percent} of it: the largest shortfall that is not clamped. */
+    long neededAvailable(final long estimate) {
+      final int p = Math.min(percent, 90);
+      return (estimate * 100 + p - 1) / p;
+    }
+
+    /** {@code wanted} bytes of shortfall, cut to half of what the estimate needs and to at least one byte. */
+    long boundedShortfall(final long estimate, final long wanted) {
+      final int p = Math.min(percent, 90);
+      final long needed = (estimate * 100 + p - 1) / p;
+      return Math.max(1L, Math.min(wanted, needed / 2));
     }
   }
 
@@ -800,49 +879,63 @@ class VectorMemoryPressureOracleTest {
     }
     final long nodes = resident.getIdUpperBound();
     final Sizes sizes = new Sizes(index, onHeap, onDisk, nodes, index.computeGraphBuildCacheCapacity((int) nodes),
-        index.metadata.neighborOverflowFactor, GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getValueAsInteger());
+        index.metadata.neighborOverflowFactor,
+        index.getDatabase().getConfiguration().getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT));
     assertThat(sizes.estimateKeepingOnDisk()).as("the premise of the fallback: the twin is cheaper to keep")
         .isLessThan(sizes.estimateKeepingOnHeap());
     return sizes;
   }
 
-  private static void startAsyncGraphRebuild(final LSMVectorIndex index) {
-    try {
-      final Method start = LSMVectorIndex.class.getDeclaredMethod("startAsyncGraphRebuild");
-      start.setAccessible(true);
-      start.invoke(index);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+  /** Every reach into a private member, in one place: a rename fails the test with a message that says what to update. */
+  private static final class Internals {
+    private static Field field(final Class<?> owner, final String name) {
+      try {
+        final Field field = owner.getDeclaredField(name);
+        field.setAccessible(true);
+        return field;
+      } catch (final NoSuchFieldException e) {
+        throw new AssertionError(owner.getSimpleName() + "." + name + " was renamed or removed: update VectorMemoryPressureOracleTest.Internals", e);
+      }
     }
-  }
 
-  private static void setLastWrittenGraphBytes(final LSMVectorIndex index, final long bytes) {
-    try {
-      final Field field = LSMVectorIndexGraphFile.class.getDeclaredField("lastWrittenGraphBytes");
-      field.setAccessible(true);
-      field.setLong(index.getGraphFile(), bytes);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+    static Object read(final Object target, final String name) {
+      try {
+        return field(target.getClass(), name).get(target);
+      } catch (final IllegalAccessException e) {
+        throw new AssertionError("cannot read " + name, e);
+      }
     }
-  }
 
-  private static ReentrantReadWriteLock lockOf(final LSMVectorIndex index) {
-    try {
-      final Field field = LSMVectorIndex.class.getDeclaredField("lock");
-      field.setAccessible(true);
-      return (ReentrantReadWriteLock) field.get(index);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+    static void write(final Object target, final String name, final Object value) {
+      try {
+        field(target.getClass(), name).set(target, value);
+      } catch (final IllegalAccessException e) {
+        throw new AssertionError("cannot write " + name, e);
+      }
     }
-  }
 
-  private static Thread searchBuildThreadOf(final LSMVectorIndex index) {
-    try {
-      final Field field = LSMVectorIndex.class.getDeclaredField("searchBuildThread");
-      field.setAccessible(true);
-      return (Thread) field.get(index);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+    static void writeLong(final Object target, final String name, final long value) {
+      try {
+        field(target.getClass(), name).setLong(target, value);
+      } catch (final IllegalAccessException e) {
+        throw new AssertionError("cannot write " + name, e);
+      }
+    }
+
+    static ReentrantReadWriteLock lockOf(final LSMVectorIndex index) {
+      return (ReentrantReadWriteLock) read(index, "lock");
+    }
+
+    static void startAsyncGraphRebuild(final LSMVectorIndex index) {
+      try {
+        final Method start = LSMVectorIndex.class.getDeclaredMethod("startAsyncGraphRebuild");
+        start.setAccessible(true);
+        start.invoke(index);
+      } catch (final NoSuchMethodException e) {
+        throw new AssertionError("LSMVectorIndex.startAsyncGraphRebuild was renamed or removed: update VectorMemoryPressureOracleTest.Internals", e);
+      } catch (final ReflectiveOperationException e) {
+        throw new AssertionError("startAsyncGraphRebuild failed", e);
+      }
     }
   }
 
@@ -876,13 +969,13 @@ class VectorMemoryPressureOracleTest {
         });
   }
 
-  private static void setGraphIndex(final LSMVectorIndex index, final ImmutableGraphIndex graph) {
-    try {
-      final Field field = LSMVectorIndex.class.getDeclaredField("graphIndex");
-      field.setAccessible(true);
-      field.set(index, graph);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+  /** Polls {@code condition} with a short sleep; the deadline only detects a hang, no outcome depends on how long it takes. */
+  private static void waitUntil(final BooleanSupplier condition, final String what) {
+    final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+    while (!condition.getAsBoolean()) {
+      if (System.nanoTime() > deadline)
+        throw new AssertionError("timed out waiting for: " + what);
+      sleepMillis(2);
     }
   }
 
