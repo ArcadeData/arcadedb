@@ -123,7 +123,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final float[] weights = parseWeights(opts.getList("weights"), sourceCount);
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
-    final int limit = opts.getInt("limit", -1);
+    // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused, as the count of vector.neighbors is
+    final int targetSize = opts.get("limit") == null ? Integer.MAX_VALUE : opts.getNonNegativeInt("limit", 0);
 
     if (groupSize < 1)
       throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
@@ -163,7 +164,6 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final GroupAdmissionState groups = groupBy != null
         ? new GroupAdmissionState(Integer.MAX_VALUE, groupSize)
         : null;
-    final int targetSize = limit > 0 ? limit : Integer.MAX_VALUE;
     final ArrayList<Object> result = new ArrayList<>(Math.min(targetSize, ranked.size()));
     final BasicDatabase db = context.getDatabase();
 

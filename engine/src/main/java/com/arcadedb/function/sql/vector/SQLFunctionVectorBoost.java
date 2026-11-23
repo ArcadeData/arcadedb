@@ -90,14 +90,15 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     final List<?> rawBoosts = opts.getList("boosts");
     if (rawBoosts == null || rawBoosts.isEmpty())
       throw new CommandSQLParsingException(NAME + " 'boosts' option is required and must be non-empty");
-    final int limit = opts.getInt("limit", -1);
+    // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused
+    final int limit = opts.get("limit") == null ? Integer.MAX_VALUE : opts.getNonNegativeInt("limit", 0);
 
     final Boost[] boosts = parseBoosts(rawBoosts);
 
     final List<Scored> scored = materialize(source, boosts);
     scored.sort((a, b) -> Float.compare(b.boostedScore(), a.boostedScore()));
 
-    final int targetSize = limit > 0 ? Math.min(limit, scored.size()) : scored.size();
+    final int targetSize = Math.min(limit, scored.size());
     final ArrayList<Object> out = new ArrayList<>(targetSize);
     for (int i = 0; i < targetSize; i++) {
       final Scored s = scored.get(i);
