@@ -18,24 +18,12 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.exception.TypeMismatchException;
-import com.arcadedb.function.cypher.CypherFunctionHelper;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
-import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
-import com.arcadedb.query.opencypher.temporal.TemporalUtil;
-import com.arcadedb.query.opencypher.traversal.TraversalPath;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.LinkedHashMap;
 
 import org.antlr.v4.runtime.CharStreams;
@@ -47,7 +35,6 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.logging.Level;
 
 /**
  * Handles expression parsing for the Cypher AST builder.
@@ -58,6 +45,7 @@ import java.util.logging.Level;
 class CypherExpressionBuilder {
 
   private final ExpressionTypeDetector detector = new ExpressionTypeDetector(this);
+  final ExpressionPatternParser patterns = new ExpressionPatternParser(this);
   // Set only while the comparison-form WHEN predicates of an extended CASE are being parsed
   private CaseOperandExpression activeCaseOperand;
 
@@ -161,29 +149,29 @@ class CypherExpressionBuilder {
     // Check for TOP-LEVEL arithmetic expressions using spine walks.
     // Must be checked BEFORE list/map literals because [1,10,100]+[4,5] should be
     // arithmetic (list concatenation), not just [1,10,100] (ignoring +[4,5])
-    final Cypher25Parser.Expression6Context topArith6 = findTopLevelExpression6(ctx);
+    final Cypher25Parser.Expression6Context topArith6 = ParseTreeSearch.findTopLevelExpression6(ctx);
     if (topArith6 != null)
       return parseArithmeticExpression6(topArith6);
 
     // Check for TOP-LEVEL multiplicative (*, /, %) using spine walk
-    final Cypher25Parser.Expression5Context topArith5 = findTopLevelExpression5(ctx);
+    final Cypher25Parser.Expression5Context topArith5 = ParseTreeSearch.findTopLevelExpression5(ctx);
     if (topArith5 != null)
       return parseArithmeticExpression5(topArith5);
 
     // Check for TOP-LEVEL exponentiation (^) using spine walk
-    final Cypher25Parser.Expression4Context topArith4 = findTopLevelExpression4(ctx);
+    final Cypher25Parser.Expression4Context topArith4 = ParseTreeSearch.findTopLevelExpression4(ctx);
     if (topArith4 != null)
       return parseArithmeticExpression4(topArith4);
 
     // Check for TOP-LEVEL unary operator (-, +) using spine walk
-    final Cypher25Parser.Expression3Context topExpr3 = findTopLevelExpression3(ctx);
+    final Cypher25Parser.Expression3Context topExpr3 = ParseTreeSearch.findTopLevelExpression3(ctx);
     if (topExpr3 != null)
       return parseArithmeticExpression3(topExpr3);
 
     // Check for TOP-LEVEL postfix expressions (property access, list indexing, slicing)
     // using spine walk. Must be before list/map literals because [1,2,3][0] should be
     // postfix indexing, not just [1,2,3]
-    final Cypher25Parser.Expression2Context topExpr2 = findTopLevelExpression2(ctx);
+    final Cypher25Parser.Expression2Context topExpr2 = ParseTreeSearch.findTopLevelExpression2(ctx);
     if (topExpr2 != null && !topExpr2.postFix().isEmpty())
       return parseExpression2WithPostfix(topExpr2);
 
@@ -192,7 +180,7 @@ class CypherExpressionBuilder {
     // function call because findFunctionInvocationRecursive finds date() inside the list.
     // For cases like tail([1,2,3]), the function invocation is at the top level and will
     // be caught by the postfix/expression2 checks above.
-    final Cypher25Parser.ListLiteralContext listCtx = findListLiteralRecursive(ctx);
+    final Cypher25Parser.ListLiteralContext listCtx = ParseTreeSearch.findListLiteralRecursive(ctx);
     if (listCtx != null) {
       // Only use list literal if it's at the top level (i.e. the list text covers most of the expression)
       final String listText = listCtx.getText();
@@ -201,25 +189,25 @@ class CypherExpressionBuilder {
     }
 
     // Check for trim function with extended syntax (LEADING/TRAILING/BOTH ... FROM ...)
-    final Cypher25Parser.TrimFunctionContext trimCtx = findTrimFunctionRecursive(ctx);
+    final Cypher25Parser.TrimFunctionContext trimCtx = ParseTreeSearch.findTrimFunctionRecursive(ctx);
     if (trimCtx != null)
       return parseTrimFunction(trimCtx);
 
     // Check for function invocations (after top-level list check)
     // (tail([1,2,3]) should be parsed as a function call, not as a list literal)
-    final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(ctx);
+    final Cypher25Parser.FunctionInvocationContext funcCtx = ParseTreeSearch.findFunctionInvocationRecursive(ctx);
     if (funcCtx != null) {
       return parseFunctionInvocation(funcCtx);
     }
 
     // Check for map projections (before list fallback to avoid nested list taking priority over maps)
-    final Cypher25Parser.MapProjectionContext mapProjCtx = findMapProjectionRecursive(ctx);
+    final Cypher25Parser.MapProjectionContext mapProjCtx = ParseTreeSearch.findMapProjectionRecursive(ctx);
     if (mapProjCtx != null) {
       return parseMapProjection(mapProjCtx);
     }
 
     // Check for map literals (before list fallback)
-    final Cypher25Parser.MapContext mapCtx = findMapRecursive(ctx);
+    final Cypher25Parser.MapContext mapCtx = ParseTreeSearch.findMapRecursive(ctx);
     if (mapCtx != null) {
       return parseMapLiteralExpression(mapCtx);
     }
@@ -233,24 +221,24 @@ class CypherExpressionBuilder {
     }
 
     // Fallback: recursive arithmetic expression checks
-    final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(ctx);
+    final Cypher25Parser.Expression6Context arith6Ctx = ParseTreeSearch.findArithmeticExpression6Recursive(ctx);
     if (arith6Ctx != null) {
       return parseArithmeticExpression6(arith6Ctx);
     }
-    final Cypher25Parser.Expression5Context arith5Ctx = findArithmeticExpression5Recursive(ctx);
+    final Cypher25Parser.Expression5Context arith5Ctx = ParseTreeSearch.findArithmeticExpression5Recursive(ctx);
     if (arith5Ctx != null) {
       return parseArithmeticExpression5(arith5Ctx);
     }
 
     // Fallback: recursive postfix expression check
-    final Cypher25Parser.Expression2Context expr2Ctx = findExpression2Recursive(ctx);
+    final Cypher25Parser.Expression2Context expr2Ctx = ParseTreeSearch.findExpression2Recursive(ctx);
     if (expr2Ctx != null && !expr2Ctx.postFix().isEmpty()) {
       return parseExpression2WithPostfix(expr2Ctx);
     }
 
     // Check for parenthesized expressions that may contain logical operators
     // e.g., (true AND null), (a OR b), (NOT x)
-    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(ctx);
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = ParseTreeSearch.findParenthesizedExpressionRecursive(ctx);
     if (parenCtx != null)
       return parseExpression(parenCtx.expression());
 
@@ -332,9 +320,12 @@ class CypherExpressionBuilder {
    *                          parent is absent from the child (issue #8132)
    */
   private Expression parseExpressionFromText(final ParseTree node, final boolean noBlockConstructs) {
-    // The five block constructs below use a length guard: only match when the found context covers (almost) the
-    // full node text, preventing mis-parsing of func(CASE ...) as just the inner CASE. The - 2 allows for
-    // whitespace.
+    // The five block constructs below use a length guard: only match when the found context IS the whole node,
+    // preventing mis-parsing of func(CASE ...) as just the inner CASE. getText() carries no whitespace, so the two
+    // texts are equal exactly when nothing else is in the node: the slack of two characters this guard used to allow
+    // took `COUNT { ... } > 0` for the bare COUNT and dropped the comparison, which only the truthiness of a
+    // non-Boolean under AND/OR hid (issue #11760). Anything else - a construct in parentheses included - is reached by
+    // the descent of the grammar below, which handles every one of the five at the atom level.
     //
     // Found in ONE traversal, skipped outright once a level above has ruled them out, and the node's own text
     // materialised only if one of them turned up (issue #8132). This method walks the grammar's expression
@@ -347,23 +338,23 @@ class CypherExpressionBuilder {
     final boolean noBlocksBelow = blocks.isEmpty();
     final int nodeTextLength = noBlocksBelow ? 0 : node.getText().length();
 
-    if (blocks.caseExpression != null && blocks.caseExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.caseExpression != null && blocks.caseExpression.getText().length() == nodeTextLength)
       return parseCaseExpression(blocks.caseExpression);
 
-    if (blocks.extendedCaseExpression != null && blocks.extendedCaseExpression.getText().length() >= nodeTextLength - 2)
+    if (blocks.extendedCaseExpression != null && blocks.extendedCaseExpression.getText().length() == nodeTextLength)
       return parseExtendedCaseExpression(blocks.extendedCaseExpression);
 
     // Check for EXISTS expressions
-    if (blocks.existsExpression != null && blocks.existsExpression.getText().length() >= nodeTextLength - 2)
-      return parseExistsExpression(blocks.existsExpression);
+    if (blocks.existsExpression != null && blocks.existsExpression.getText().length() == nodeTextLength)
+      return SubqueryExpressionParser.parseExistsExpression(blocks.existsExpression);
 
     // Check for COLLECT { ... } subqueries
-    if (blocks.collectExpression != null && blocks.collectExpression.getText().length() >= nodeTextLength - 2)
-      return parseCollectExpression(blocks.collectExpression);
+    if (blocks.collectExpression != null && blocks.collectExpression.getText().length() == nodeTextLength)
+      return SubqueryExpressionParser.parseCollectExpression(blocks.collectExpression);
 
     // Check for COUNT { ... } subqueries
-    if (blocks.countExpression != null && blocks.countExpression.getText().length() >= nodeTextLength - 2)
-      return parseCountExpression(blocks.countExpression);
+    if (blocks.countExpression != null && blocks.countExpression.getText().length() == nodeTextLength)
+      return SubqueryExpressionParser.parseCountExpression(blocks.countExpression);
 
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree
     // This handles cases like (a AND b) appearing as children of comparisons
@@ -482,11 +473,11 @@ class CypherExpressionBuilder {
       if (e1.allReduceExpression() != null)
         return parseAllReduceExpression(e1.allReduceExpression());
       if (e1.existsExpression() != null)
-        return parseExistsExpression(e1.existsExpression());
+        return SubqueryExpressionParser.parseExistsExpression(e1.existsExpression());
       if (e1.collectExpression() != null)
-        return parseCollectExpression(e1.collectExpression());
+        return SubqueryExpressionParser.parseCollectExpression(e1.collectExpression());
       if (e1.countExpression() != null)
-        return parseCountExpression(e1.countExpression());
+        return SubqueryExpressionParser.parseCountExpression(e1.countExpression());
       if (e1.countStar() != null) {
         final List<Expression> e1Args = new ArrayList<>();
         e1Args.add(new StarExpression());
@@ -495,7 +486,9 @@ class CypherExpressionBuilder {
       if (e1.parenthesizedExpression() != null)
         return parseExpression(e1.parenthesizedExpression().expression());
       if (e1.shortestPathExpression() != null)
-        return parseShortestPathExpression(e1.shortestPathExpression());
+        return patterns.parseShortestPathExpression(e1.shortestPathExpression());
+      if (e1.patternExpression() != null)
+        return parsePatternPredicate(e1.patternExpression());
       if (e1.vectorFunction() != null)
         return parseVectorFunction(e1.vectorFunction());
       if (e1.vectorNormFunction() != null)
@@ -507,7 +500,7 @@ class CypherExpressionBuilder {
       if (e1.normalizeFunction() != null)
         return parseNormalizeFunction(e1.normalizeFunction());
       // Check for map literal
-      final Cypher25Parser.MapContext e1MapCtx = findMapRecursive(e1);
+      final Cypher25Parser.MapContext e1MapCtx = ParseTreeSearch.findMapRecursive(e1);
       if (e1MapCtx != null)
         return parseMapLiteralExpression(e1MapCtx);
       // Fallback: parse as variable or literal
@@ -516,62 +509,62 @@ class CypherExpressionBuilder {
 
     // Check for IS NULL / IS NOT NULL expressions BEFORE parenthesized expressions
     // because (a AND b) IS NULL should be parsed as IS_NULL(a AND b), not just (a AND b)
-    final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
+    final Cypher25Parser.NullComparisonContext nullCtx = ParseTreeSearch.findNullComparisonRecursive(node);
     if (nullCtx != null)
       return parseIsNullExpression(nullCtx);
 
     // Check for IS [NOT] TYPED / :: type expressions before parenthesized expressions for the
     // same reason (issue #3365 section 3.3).
-    final Cypher25Parser.TypeComparisonContext typeCtx = findTypeComparisonRecursive(node);
+    final Cypher25Parser.TypeComparisonContext typeCtx = ParseTreeSearch.findTypeComparisonRecursive(node);
     if (typeCtx != null)
       return parseIsTypedExpression(typeCtx);
 
     // Check for parenthesized expressions containing logical operators
-    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(node);
+    final Cypher25Parser.ParenthesizedExpressionContext parenCtx = ParseTreeSearch.findParenthesizedExpressionRecursive(node);
     if (parenCtx != null)
       return parseExpression(parenCtx.expression());
 
     // Check for arithmetic expressions (+ - * / % ^)
-    final Cypher25Parser.Expression6Context arith6Ctx = findArithmeticExpression6Recursive(node);
+    final Cypher25Parser.Expression6Context arith6Ctx = ParseTreeSearch.findArithmeticExpression6Recursive(node);
     if (arith6Ctx != null)
       return parseArithmeticExpression6(arith6Ctx);
 
-    final Cypher25Parser.Expression5Context arith5Ctx = findArithmeticExpression5Recursive(node);
+    final Cypher25Parser.Expression5Context arith5Ctx = ParseTreeSearch.findArithmeticExpression5Recursive(node);
     if (arith5Ctx != null)
       return parseArithmeticExpression5(arith5Ctx);
 
     // Check for list predicates (all/any/none/single) BEFORE function invocations
     // to avoid misinterpreting them as regular function calls
-    final Cypher25Parser.ListItemsPredicateContext listPredCtx = findListItemsPredicateRecursive(node);
+    final Cypher25Parser.ListItemsPredicateContext listPredCtx = ParseTreeSearch.findListItemsPredicateRecursive(node);
     if (listPredCtx != null)
       return parseListItemsPredicate(listPredCtx);
 
     // Check for reduce expressions
-    final Cypher25Parser.ReduceExpressionContext reduceCtx = findReduceExpressionRecursive(node);
+    final Cypher25Parser.ReduceExpressionContext reduceCtx = ParseTreeSearch.findReduceExpressionRecursive(node);
     if (reduceCtx != null)
       return parseReduceExpression(reduceCtx);
 
     // Check for allReduce expressions
-    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = findAllReduceExpressionRecursive(node);
+    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = ParseTreeSearch.findAllReduceExpressionRecursive(node);
     if (allReduceCtx != null)
       return parseAllReduceExpression(allReduceCtx);
 
     // Check for list comprehensions [x IN list | expr]
-    final Cypher25Parser.ListComprehensionContext listCompCtx = findListComprehensionRecursive(node);
+    final Cypher25Parser.ListComprehensionContext listCompCtx = ParseTreeSearch.findListComprehensionRecursive(node);
     if (listCompCtx != null)
       return parseListComprehension(listCompCtx);
 
     // Check for function invocations
-    final Cypher25Parser.FunctionInvocationContext funcCtx = findFunctionInvocationRecursive(node);
+    final Cypher25Parser.FunctionInvocationContext funcCtx = ParseTreeSearch.findFunctionInvocationRecursive(node);
     if (funcCtx != null)
       return parseFunctionInvocation(funcCtx);
 
     // Check for list/map literals
-    final Cypher25Parser.ListLiteralContext listLitCtx = findListLiteralRecursive(node);
+    final Cypher25Parser.ListLiteralContext listLitCtx = ParseTreeSearch.findListLiteralRecursive(node);
     if (listLitCtx != null)
       return parseListLiteral(listLitCtx);
 
-    final Cypher25Parser.MapContext mapCtx = findMapRecursive(node);
+    final Cypher25Parser.MapContext mapCtx = ParseTreeSearch.findMapRecursive(node);
     if (mapCtx != null)
       return parseMapLiteralExpression(mapCtx);
 
@@ -598,7 +591,7 @@ class CypherExpressionBuilder {
 
     // Try to parse as literal FIRST (before checking for dots)
     // This prevents string literals like 'A.*' from being parsed as property access
-    final Object literalValue = tryParseLiteral(text);
+    final Object literalValue = LiteralParser.tryParseLiteral(text);
     if (literalValue != null) {
       return new LiteralExpression(literalValue, text);
     }
@@ -670,7 +663,7 @@ class CypherExpressionBuilder {
     final List<Expression> items = new ArrayList<>();
 
     // Try to find a listLiteral context
-    final Cypher25Parser.ListLiteralContext listCtx = findListLiteral(node);
+    final Cypher25Parser.ListLiteralContext listCtx = ParseTreeSearch.findListLiteral(node);
     if (listCtx != null) {
       // Parse each expression in the list
       for (final Cypher25Parser.ExpressionContext exprCtx : listCtx.expression()) {
@@ -810,110 +803,6 @@ class CypherExpressionBuilder {
   // ============================================================================
 
   /**
-   * Recursively find ParenthesizedExpressionContext in the parse tree.
-   */
-  Cypher25Parser.ParenthesizedExpressionContext findParenthesizedExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.ParenthesizedExpressionContext)
-      return (Cypher25Parser.ParenthesizedExpressionContext) node;
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ParenthesizedExpressionContext found = findParenthesizedExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
-   * Recursively find list literal context in the parse tree.
-   */
-  Cypher25Parser.ListLiteralContext findListLiteralRecursive(final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    // Check if this node is a list literal
-    if (node instanceof Cypher25Parser.ListLiteralContext) {
-      return (Cypher25Parser.ListLiteralContext) node;
-    }
-
-    // Recursively search all children
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ListLiteralContext found = findListLiteralRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find a ListLiteralContext in the parse tree.
-   */
-  Cypher25Parser.ListLiteralContext findListLiteral(final ParseTree node) {
-    if (node instanceof Cypher25Parser.ListLiteralContext) {
-      return (Cypher25Parser.ListLiteralContext) node;
-    }
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ListLiteralContext found = findListLiteral(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Recursively find function invocation in the parse tree using depth-first search.
-   * Does NOT recurse into MapContext to avoid matching nested function calls inside map literals.
-   * This ensures that {typeR: type(r)} is recognized as a map, not as the type() function call.
-   */
-  Cypher25Parser.FunctionInvocationContext findFunctionInvocationRecursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.FunctionInvocationContext) {
-      return (Cypher25Parser.FunctionInvocationContext) node;
-    }
-
-    // Do NOT recurse into map literals or map projections - they should be recognized
-    // separately and their internal expressions (including function calls) parsed later.
-    // Otherwise a computed field like {upperName: toUpper(p.name)} would be parsed as
-    // a bare function call and the surrounding projection would be lost.
-    if (node instanceof Cypher25Parser.MapContext
-        || node instanceof Cypher25Parser.MapProjectionContext) {
-      return null;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.FunctionInvocationContext found = findFunctionInvocationRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find trimFunction in the parse tree.
-   */
-  private Cypher25Parser.TrimFunctionContext findTrimFunctionRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-    if (node instanceof Cypher25Parser.TrimFunctionContext)
-      return (Cypher25Parser.TrimFunctionContext) node;
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.TrimFunctionContext found = findTrimFunctionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
    * Parse a trimFunction context into a FunctionCallExpression.
    * Handles both simple trim(source) and extended trim(LEADING/TRAILING/BOTH trimChar FROM source).
    */
@@ -958,607 +847,6 @@ class CypherExpressionBuilder {
     if (ctx.normalForm() != null)
       args.add(new LiteralExpression(ctx.normalForm().getText(), ctx.normalForm().getText()));
     return new FunctionCallExpression("normalize", args, false);
-  }
-
-  /**
-   * Recursively find EXISTS expression in the parse tree.
-   */
-  Cypher25Parser.ExistsExpressionContext findExistsExpressionRecursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.ExistsExpressionContext) {
-      return (Cypher25Parser.ExistsExpressionContext) node;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ExistsExpressionContext found = findExistsExpressionRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find Expression8 context (handles comparison operators).
-   */
-  Cypher25Parser.Expression8Context findExpression8Recursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.Expression8Context) {
-      // Only return if it contains a comparison operator
-      final Cypher25Parser.Expression8Context expr8 = (Cypher25Parser.Expression8Context) node;
-      if (expr8.expression7().size() > 1) {
-        return expr8;
-      }
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression8Context found = findExpression8Recursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine to find the top-level Expression8 with comparison operators.
-   * Returns the Expression8 only when it has multiple expression7 children (i.e., has = < > etc.)
-   * and there are no higher-level operators (OR, AND, NOT) above it.
-   */
-  Cypher25Parser.Expression8Context findTopLevelExpression8(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 != null && e8.expression7().size() > 1)
-      return e8;
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine (non-recursive) to find the top-level Expression7.
-   * Returns the Expression7 only when there's a single child at each level
-   * (no OR, AND, NOT, or comparison operators at higher levels).
-   * This prevents matching comparisons inside nested expressions like function arguments
-   * or quantifier WHERE clauses.
-   */
-  Cypher25Parser.Expression7Context findTopLevelExpression7(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return e7;
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine (non-recursive) to find the top-level Expression6
-   * that has arithmetic operators (+, -, ||).
-   * Returns null if there's no top-level arithmetic at the Expression6 level.
-   */
-  Cypher25Parser.Expression6Context findTopLevelExpression6(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return null; // Has IN/STARTS WITH comparison, not arithmetic
-
-    final Cypher25Parser.Expression6Context e6 = e7.expression6();
-    if (e6 != null && e6.expression5().size() > 1)
-      return e6; // Has arithmetic operators
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine to find the top-level Expression5 with multiplicative operators (* / %).
-   * Continues from where findTopLevelExpression6 leaves off.
-   */
-  Cypher25Parser.Expression5Context findTopLevelExpression5(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return null;
-
-    final Cypher25Parser.Expression6Context e6 = e7.expression6();
-    if (e6 == null || e6.expression5().size() != 1)
-      return null; // Has +/- operators at expression6 level
-
-    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
-    if (e5 != null && e5.expression4().size() > 1)
-      return e5; // Has * / % operators
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine to find the top-level Expression4 with exponentiation (^).
-   */
-  Cypher25Parser.Expression4Context findTopLevelExpression4(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return null;
-
-    final Cypher25Parser.Expression6Context e6 = e7.expression6();
-    if (e6 == null || e6.expression5().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
-    if (e5 == null || e5.expression4().size() != 1)
-      return null; // Has * / % operators
-
-    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
-    if (e4 != null && e4.expression3().size() > 1)
-      return e4; // Has ^ operator
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine to find top-level unary operator (expression3 level).
-   * Returns the Expression3Context if it has a unary PLUS or MINUS prefix.
-   */
-  Cypher25Parser.Expression3Context findTopLevelExpression3(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return null;
-
-    final Cypher25Parser.Expression6Context e6 = e7.expression6();
-    if (e6 == null || e6.expression5().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
-    if (e5 == null || e5.expression4().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
-    if (e4 == null || e4.expression3().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression3Context e3 = e4.expression3().get(0);
-    // Check if this expression3 has a unary operator (MINUS or PLUS prefix)
-    if (e3.getChildCount() > 1 && e3.getChild(0) instanceof TerminalNode)
-      return e3;
-
-    return null;
-  }
-
-  /**
-   * Walk the expression tree spine (non-recursive) to find the top-level Expression2
-   * that has postfix operations (property access, indexing, slicing).
-   */
-  Cypher25Parser.Expression2Context findTopLevelExpression2(final Cypher25Parser.ExpressionContext ctx) {
-    final List<Cypher25Parser.Expression11Context> e11List = ctx.expression11();
-    if (e11List == null || e11List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression10Context> e10List = e11List.get(0).expression10();
-    if (e10List == null || e10List.size() != 1)
-      return null;
-
-    final List<Cypher25Parser.Expression9Context> e9List = e10List.get(0).expression9();
-    if (e9List == null || e9List.size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression9Context e9 = e9List.get(0);
-    if (e9.NOT() != null && !e9.NOT().isEmpty())
-      return null;
-
-    final Cypher25Parser.Expression8Context e8 = e9.expression8();
-    if (e8 == null || e8.expression7().size() != 1)
-      return null;
-
-    final Cypher25Parser.Expression7Context e7 = e8.expression7().get(0);
-    if (e7.comparisonExpression6() != null)
-      return null;
-
-    final Cypher25Parser.Expression6Context e6 = e7.expression6();
-    if (e6 == null || e6.expression5().size() != 1)
-      return null; // Has arithmetic at this level
-
-    final Cypher25Parser.Expression5Context e5 = e6.expression5().get(0);
-    if (e5 == null || e5.expression4().size() != 1)
-      return null; // Has * / % operators
-
-    final Cypher25Parser.Expression4Context e4 = e5.expression4().get(0);
-    if (e4 == null || e4.expression3().size() != 1)
-      return null; // Has ^ operator
-
-    // expression3 → (MINUS | PLUS)? expression2
-    final Cypher25Parser.Expression3Context e3 = e4.expression3().get(0);
-    final Cypher25Parser.Expression2Context e2 = e3.expression2();
-    if (e2 != null && !e2.postFix().isEmpty())
-      return e2;
-
-    return null;
-  }
-
-  /**
-   * Recursively find Expression7Context that has a comparisonExpression6 child
-   * (STARTS WITH, ENDS WITH, CONTAINS, =~, IN, label check).
-   */
-  Cypher25Parser.Expression7Context findExpression7WithComparisonRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.Expression7Context) {
-      final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) node;
-      if (expr7.comparisonExpression6() != null)
-        return expr7;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression7Context found = findExpression7WithComparisonRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find NullComparison context (IS NULL / IS NOT NULL).
-   */
-  Cypher25Parser.NullComparisonContext findNullComparisonRecursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.NullComparisonContext) {
-      return (Cypher25Parser.NullComparisonContext) node;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.NullComparisonContext found = findNullComparisonRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find TypeComparison context (IS [NOT] TYPED type / :: type).
-   */
-  Cypher25Parser.TypeComparisonContext findTypeComparisonRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-    if (node instanceof Cypher25Parser.TypeComparisonContext)
-      return (Cypher25Parser.TypeComparisonContext) node;
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.TypeComparisonContext found = findTypeComparisonRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
-   * Recursively find Expression6Context with arithmetic operators (+ - ||)
-   */
-  Cypher25Parser.Expression6Context findArithmeticExpression6Recursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.Expression6Context) {
-      final Cypher25Parser.Expression6Context ctx = (Cypher25Parser.Expression6Context) node;
-      // Only return if it has multiple expression5 children (i.e., has operators)
-      if (ctx.expression5().size() > 1)
-        return ctx;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression6Context found = findArithmeticExpression6Recursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find Expression5Context with arithmetic operators (* / %)
-   */
-  Cypher25Parser.Expression5Context findArithmeticExpression5Recursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.Expression5Context) {
-      final Cypher25Parser.Expression5Context ctx = (Cypher25Parser.Expression5Context) node;
-      // Only return if it has multiple expression4 children (i.e., has operators)
-      if (ctx.expression4().size() > 1)
-        return ctx;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression5Context found = findArithmeticExpression5Recursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find MapContext in the parse tree (for map literals like {name: 'Alice'})
-   * Does NOT recurse into FunctionInvocationContext to avoid matching map literals inside function arguments.
-   * This ensures that func({a: 1}) is recognized as a function call, not as the map literal.
-   * <p>
-   * Does NOT recurse into a map projection either: a map literal inside one ({@code n { c: { e: 1 } }}) is the value of
-   * one of its entries, and the projection is what the expression is (issue #11112). {@link #findMapProjectionRecursive}
-   * stops at a map literal for the same reason, so between the two the OUTERMOST of them is the one found.
-   */
-  Cypher25Parser.MapContext findMapRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.MapContext)
-      return (Cypher25Parser.MapContext) node;
-
-    // Do NOT recurse into function invocations - they should be recognized separately
-    // and their internal arguments (including map literals) parsed later
-    if (node instanceof Cypher25Parser.FunctionInvocationContext || node instanceof Cypher25Parser.MapProjectionContext)
-      return null;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.MapContext found = findMapRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find ListComprehensionContext in the parse tree.
-   */
-  Cypher25Parser.ListComprehensionContext findListComprehensionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.ListComprehensionContext)
-      return (Cypher25Parser.ListComprehensionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ListComprehensionContext found = findListComprehensionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find ListItemsPredicateContext in the parse tree.
-   */
-  Cypher25Parser.ListItemsPredicateContext findListItemsPredicateRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.ListItemsPredicateContext)
-      return (Cypher25Parser.ListItemsPredicateContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ListItemsPredicateContext found = findListItemsPredicateRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find ReduceExpressionContext in the parse tree.
-   */
-  Cypher25Parser.ReduceExpressionContext findReduceExpressionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.ReduceExpressionContext)
-      return (Cypher25Parser.ReduceExpressionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ReduceExpressionContext found = findReduceExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find AllReduceExpressionContext in the parse tree.
-   */
-  Cypher25Parser.AllReduceExpressionContext findAllReduceExpressionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.AllReduceExpressionContext)
-      return (Cypher25Parser.AllReduceExpressionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.AllReduceExpressionContext found = findAllReduceExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find MapProjectionContext in the parse tree.
-   * <p>
-   * Does NOT recurse into a map literal: a projection inside one ({@code { a: n { .k }, b: 1 }}) is the value of one of
-   * its entries, and answering it for the whole expression dropped the literal's keys and every other entry (issue
-   * #11112). {@link #findMapRecursive} stops at a projection for the same reason.
-   */
-  Cypher25Parser.MapProjectionContext findMapProjectionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.MapProjectionContext)
-      return (Cypher25Parser.MapProjectionContext) node;
-
-    if (node instanceof Cypher25Parser.MapContext)
-      return null;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.MapProjectionContext found = findMapProjectionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find Expression2 context (which may have postfix operations).
-   */
-  Cypher25Parser.Expression2Context findExpression2Recursive(final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.Expression2Context) {
-      return (Cypher25Parser.Expression2Context) node;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.Expression2Context found = findExpression2Recursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
   }
 
   // ============================================================================
@@ -1652,13 +940,9 @@ class CypherExpressionBuilder {
     // Function-style pattern predicate: exists((a)-[:R]->(b)) -> pattern existence check.
     if (!distinct && "exists".equalsIgnoreCase(functionName) && ctx.functionArgument().size() == 1) {
       final Cypher25Parser.ExpressionContext argExpr = ctx.functionArgument(0).expression();
-      final Cypher25Parser.PatternExpressionContext patternExpr = findPatternExpressionRecursive(argExpr);
-      if (patternExpr != null) {
-        final PathPattern pathPattern = parsePathPatternNonEmpty(patternExpr.pathPatternNonEmpty());
-        final PatternPredicateExpression predicate = new PatternPredicateExpression(pathPattern, false,
-            CypherASTBuilder.getOriginalText(patternExpr));
-        return new BooleanWrapperExpression(predicate);
-      }
+      final Cypher25Parser.PatternExpressionContext patternExpr = ParseTreeSearch.findPatternExpressionRecursive(argExpr);
+      if (patternExpr != null)
+        return parsePatternPredicate(patternExpr);
     }
 
     // Parse arguments
@@ -1677,211 +961,13 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Recursively find a {@link Cypher25Parser.PatternExpressionContext} within the given parse tree,
-   * used to detect a graph pattern passed to the function-style {@code exists(pattern)} predicate.
+   * A pattern expression where a boolean is expected (a CASE WHEN condition, the WHERE of a comprehension or of a list
+   * predicate, the argument of {@code exists()}): true when the pattern has a match. The parser refuses a pattern expression
+   * of a WHERE in a position that is not a boolean (issue #11888).
    */
-  private Cypher25Parser.PatternExpressionContext findPatternExpressionRecursive(final ParseTree node) {
-    if (node instanceof Cypher25Parser.PatternExpressionContext)
-      return (Cypher25Parser.PatternExpressionContext) node;
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.PatternExpressionContext found = findPatternExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-    return null;
-  }
-
-  /**
-   * Parse an EXISTS expression.
-   * Examples: EXISTS { MATCH (n)-[:KNOWS]->(m) }, EXISTS { (n)-[:KNOWS]->() WHERE n.age > 18 }
-   */
-  ExistsExpression parseExistsExpression(final Cypher25Parser.ExistsExpressionContext ctx) {
-    // Use original text (with whitespace preserved) to avoid mangled subqueries
-    final String originalText = CypherASTBuilder.getOriginalText(ctx);
-    final String text = originalText;
-
-    // Find the opening { and closing } to extract the subquery body
-    final int openBrace = originalText.indexOf('{');
-    final int closeBrace = originalText.lastIndexOf('}');
-    String subquery;
-    if (openBrace >= 0 && closeBrace > openBrace)
-      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
-    else
-      subquery = originalText.substring(7, originalText.length() - 1).trim(); // fallback
-
-    CypherASTBuilder.checkMatchMode(ctx.matchMode());
-    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
-        ctx.whereClause());
-
-    // Check for update clauses inside EXISTS (not allowed)
-    if (containsUpdateClause(parsedBody, subquery))
-      throw new CommandParsingException(
-          "InvalidClauseComposition: Existential subquery cannot contain update clauses");
-
-    // If it's a pattern without MATCH, add MATCH prefix
-    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
-      subquery = "MATCH " + subquery + " RETURN true";
-    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
-      // Full subquery without RETURN — add RETURN true
-      subquery = subquery + " RETURN true";
-    }
-
-    return new ExistsExpression(subquery, text, parsedBody);
-  }
-
-  /**
-   * Tells whether a subquery body writes, which the three read-only subquery expressions must reject.
-   * <p>
-   * Answered from the parse tree when there is one: a clause is a clause because of where it sits, which is what the
-   * statement already recorded in {@link CypherStatement#isReadOnly()}. The text scan it replaces had to guess from
-   * spelling alone and got two cases wrong by construction - an update keyword inside a comment was read as a clause,
-   * and {@code WITH 1 AS set RETURN set} is lexically indistinguishable from {@code SET n.x = 1} (issue #5541 fixed
-   * the third, {@code WHERE n.name = 'SET x'}, by teaching the scan about string literals). It stays as the fallback
-   * for a body the statement builder declined, where there is nothing else to answer from.
-   */
-  private static boolean containsUpdateClause(final CypherStatement parsedBody, final String bodyText) {
-    if (parsedBody != null)
-      return !parsedBody.isReadOnly();
-    return CorrelatedSubqueryRewriter.containsUpdateClause(bodyText);
-  }
-
-  /**
-   * Builds the AST of a subquery body from the parse tree ANTLR already produced for it, so that the parse-time
-   * checks of {@link CypherSemanticValidator} can walk inside it (issue #5626).
-   * <p>
-   * The three subquery expressions keep their body as text and re-parse it once per outer row - what runs is the
-   * text after {@link CorrelatedSubqueryRewriter} has correlated it to that row, so the text has to stay. This
-   * builds the body <i>as written</i> alongside it, off the existing sub-tree rather than by re-lexing the text.
-   * <p>
-   * What that costs is a full statement build over an existing sub-tree, not a bare tree walk: the visit goes through
-   * the same {@link CypherASTBuilder} pipeline any statement does, rewriters included. A reader sizing it should read
-   * it as "one more statement built", not "one traversal".
-   * <p>
-   * Two things bound it. It is paid once per distinct query text, because {@code CypherStatementCache} keys the whole
-   * parse - this AST included, since it hangs off the statement - on the query string itself. And nesting adds rather
-   * than multiplies: a body reached from here is built by its own visit, and the enclosing statement holds the
-   * subquery only as an expression, so a subquery inside a subquery is built once as part of its parent's body, not
-   * again for every level above it. The total is linear in the text.
-   * <p>
-   * A body written as a bare pattern - {@code EXISTS { (n)-[:KNOWS]->(m) }} - has no {@code queryWithLocalDefinitions}
-   * of its own and is wrapped into the {@code MATCH} the executor synthesizes for it anyway.
-   * <p>
-   * <b>A body this cannot build is not a query this rejects.</b> Building the AST here puts the statement builder on
-   * the parse path of a body that used to be carried as text and only re-parsed at execution, so a construct ANTLR
-   * accepts but the builder cannot assemble would turn a query that used to run into a parse failure - a regression,
-   * and one this issue has no business causing. The build is therefore best-effort: on failure the body stays text
-   * only, the walk treats the expression as a leaf exactly as it did before #5626, and execution re-parses the text
-   * as it always has. Logged at {@code FINE} so the gap is still discoverable rather than permanent, since a body
-   * with no AST is a body the parse-time checks do not see.
-   *
-   * @param queryCtx   the body when it is a full query, or null when it is a bare pattern
-   * @param patternCtx the pattern list of a bare-pattern body, or null
-   * @param whereCtx   the trailing WHERE of a bare-pattern body, or null
-   */
-  private static CypherStatement parseSubqueryBody(final Cypher25Parser.QueryWithLocalDefinitionsContext queryCtx,
-      final Cypher25Parser.PatternListContext patternCtx, final Cypher25Parser.WhereClauseContext whereCtx) {
-    if (queryCtx == null && patternCtx == null)
-      return null;
-
-    try {
-      // A fresh builder: CypherASTBuilder holds no state across a visit, and the expression builder it owns is the one
-      // running right now, so it cannot be reused re-entrantly.
-      final CypherASTBuilder astBuilder = new CypherASTBuilder();
-
-      if (queryCtx != null)
-        return astBuilder.visitQueryWithLocalDefinitions(queryCtx);
-
-      final StatementBuilder builder = new StatementBuilder();
-      builder.addMatch(CypherASTBuilder.newMatchClause(astBuilder.visitPatternList(patternCtx), false,
-          whereCtx != null ? astBuilder.visitWhereClause(whereCtx) : null));
-      return builder.build();
-    } catch (final FeatureNotImplementedException e) {
-      // A construct the engine refuses by name is refused in a body too. Falling back to the text deferred it to the first
-      // row, where the body is rewritten before it is parsed again, and the refusal came out as an unrelated syntax error
-      // (issue #9940)
-      throw e;
-    } catch (final CommandParsingException e) {
-      // The builder refusing a body it does not support is the case this fallback is for, and it is not news.
-      LogManager.instance().log(CypherExpressionBuilder.class, Level.FINE,
-          "Cannot build the AST of subquery body '%s': it keeps its text and escapes the parse-time checks", e,
-          CypherASTBuilder.getOriginalText(queryCtx != null ? queryCtx : patternCtx));
-      return null;
-    } catch (final RuntimeException e) {
-      // Anything else is a defect in the builder rather than a body it declines, and the cost of it is invisible -
-      // the query still runs, the checks just stop seeing inside that body. WARNING so a degraded body shows up in
-      // an ordinary log instead of only under FINE, which is the difference between discoverable and theoretical.
-      LogManager.instance().log(CypherExpressionBuilder.class, Level.WARNING,
-          "Unexpected failure building the AST of subquery body '%s': it keeps its text and escapes the parse-time "
-              + "checks", e, CypherASTBuilder.getOriginalText(queryCtx != null ? queryCtx : patternCtx));
-      return null;
-    }
-  }
-
-  /**
-   * Parse a COLLECT { ... } subquery expression.
-   * Example: COLLECT { MATCH (p)-[:KNOWS]->(f:Person) RETURN f.name }
-   */
-  CollectExpression parseCollectExpression(final Cypher25Parser.CollectExpressionContext ctx) {
-    final String originalText = CypherASTBuilder.getOriginalText(ctx);
-    final String text = originalText;
-
-    final int openBrace = originalText.indexOf('{');
-    final int closeBrace = originalText.lastIndexOf('}');
-    String subquery;
-    if (openBrace >= 0 && closeBrace > openBrace)
-      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
-    else
-      subquery = originalText.substring(8, originalText.length() - 1).trim(); // fallback "COLLECT{" prefix
-
-    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), null, null);
-
-    // Update clauses are not allowed inside a COLLECT subquery
-    if (containsUpdateClause(parsedBody, subquery))
-      throw new CommandParsingException(
-          "InvalidClauseComposition: COLLECT subquery cannot contain update clauses");
-
-    // No pattern/where context to pass, and none to miss: the grammar gives COLLECT one alternative where EXISTS and
-    // COUNT have two - "collectExpression: COLLECT LCURLY queryWithLocalDefinitions RCURLY" against
-    // "... (queryWithLocalDefinitions | matchMode? patternList whereClause?) ..." - because a COLLECT body has to
-    // RETURN the value being collected. So queryWithLocalDefinitions() is never null here, and a COLLECT body can
-    // never end up without an AST and quietly skip the checks this issue exists to reach it with.
-    return new CollectExpression(subquery, text, parsedBody);
-  }
-
-  /**
-   * Parse a COUNT { ... } pattern / subquery expression.
-   * Examples:
-   * - COUNT { (a)-[:KNOWS]->(b) }
-   * - COUNT { MATCH (a)-[:KNOWS]->(b) WHERE b.age > 18 }
-   */
-  CountExpression parseCountExpression(final Cypher25Parser.CountExpressionContext ctx) {
-    final String originalText = CypherASTBuilder.getOriginalText(ctx);
-    final String text = originalText;
-
-    final int openBrace = originalText.indexOf('{');
-    final int closeBrace = originalText.lastIndexOf('}');
-    String subquery;
-    if (openBrace >= 0 && closeBrace > openBrace)
-      subquery = originalText.substring(openBrace + 1, closeBrace).trim();
-    else
-      subquery = originalText.substring(6, originalText.length() - 1).trim(); // fallback "COUNT{" prefix
-
-    CypherASTBuilder.checkMatchMode(ctx.matchMode());
-    final CypherStatement parsedBody = parseSubqueryBody(ctx.queryWithLocalDefinitions(), ctx.patternList(),
-        ctx.whereClause());
-
-    if (containsUpdateClause(parsedBody, subquery))
-      throw new CommandParsingException(
-          "InvalidClauseComposition: COUNT subquery cannot contain update clauses");
-
-    // Pattern-only form: wrap with MATCH and add RETURN 1 so the outer evaluator can count rows.
-    if (!CorrelatedSubqueryRewriter.startsWithClauseKeyword(subquery)) {
-      subquery = "MATCH " + subquery + " RETURN 1";
-    } else if (!subquery.toUpperCase(Locale.ROOT).contains("RETURN ")) {
-      subquery = subquery + " RETURN 1";
-    }
-
-    return new CountExpression(subquery, text, parsedBody);
+  Expression parsePatternPredicate(final Cypher25Parser.PatternExpressionContext ctx) {
+    final PathPattern pathPattern = patterns.parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
+    return new BooleanWrapperExpression(new PatternPredicateExpression(pathPattern, false, CypherASTBuilder.getOriginalText(ctx)));
   }
 
   /**
@@ -2050,7 +1136,7 @@ class CypherExpressionBuilder {
   /**
    * Parse {@code IS [NOT] TYPED type} or {@code :: type} expression and wrap it for use in
    * Expression contexts (issue #3365 section 3.3). The type-spec extraction is shared with
-   * {@link CypherASTBuilder#buildIsTypedExpression}.
+   * {@link TypePredicateBuilder#buildIsTypedExpression}.
    */
   Expression parseIsTypedExpression(final Cypher25Parser.TypeComparisonContext ctx) {
     ParseTree parent = ctx.getParent();
@@ -2060,19 +1146,19 @@ class CypherExpressionBuilder {
     if (parent instanceof Cypher25Parser.Expression7Context) {
       final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) parent;
       final Expression leftExpr = parseExpressionFromText(expr7.expression6());
-      return new BooleanWrapperExpression(CypherASTBuilder.buildIsTypedExpression(leftExpr, ctx));
+      return new BooleanWrapperExpression(TypePredicateBuilder.buildIsTypedExpression(leftExpr, ctx));
     }
     return parseExpressionText(ctx.getText());
   }
 
   /**
    * Parse {@code IS [NOT] [form] NORMALIZED} and wrap it for use in Expression contexts (issue #9940). The predicate itself is
-   * built by {@link CypherASTBuilder#buildIsNormalizedExpression}, shared with the boolean path.
+   * built by {@link TypePredicateBuilder#buildIsNormalizedExpression}, shared with the boolean path.
    */
   Expression parseIsNormalizedExpression(final Cypher25Parser.NormalFormComparisonContext ctx) {
     final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) ctx.getParent();
     return new BooleanWrapperExpression(
-        CypherASTBuilder.buildIsNormalizedExpression(parseExpressionFromText(expr7.expression6()), ctx));
+        TypePredicateBuilder.buildIsNormalizedExpression(parseExpressionFromText(expr7.expression6()), ctx));
   }
 
   /**
@@ -2130,10 +1216,10 @@ class CypherExpressionBuilder {
     final Expression leftExpr = parseExpressionFromText(ctx.expression6());
     final Cypher25Parser.LabelComparisonContext labelCtx = (Cypher25Parser.LabelComparisonContext) ctx.comparisonExpression6();
     final Cypher25Parser.LabelExpressionContext labelExprCtx = labelCtx.labelExpression();
-    CypherASTBuilder.rejectDirectedPredicate(labelExprCtx);
+    TypePredicateBuilder.rejectDirectedPredicate(labelExprCtx);
 
     // A negation, the wildcard or a mix of '&' and '|' is evaluated as the tree it is (issue #8992).
-    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx);
+    final LabelPredicate predicate = ParserUtils.buildLabelPredicate(labelExprCtx, this::parseExpression);
     if (predicate != null)
       return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, predicate, ctx.getText()));
 
@@ -2145,7 +1231,9 @@ class CypherExpressionBuilder {
         LabelCheckExpression.LabelOperator.OR :
         LabelCheckExpression.LabelOperator.AND;
 
-    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels, operator, ctx.getText()));
+    // The dynamic $(expr) labels are evaluated per row with the static ones; dropped, the check was always true (issue #11776)
+    return new BooleanWrapperExpression(new LabelCheckExpression(leftExpr, labels,
+        ParserUtils.parseDynamicLabels(labelExprCtx, this::parseExpression), operator, ctx.getText()));
   }
 
   // ============================================================================
@@ -2302,7 +1390,7 @@ class CypherExpressionBuilder {
    * Examples: [x IN [1,2,3] | x * 2], [x IN list WHERE x > 5 | x.name]
    */
   ListComprehensionExpression parseListComprehension(final Cypher25Parser.ListComprehensionContext ctx) {
-    final String variable = ctx.variable().getText();
+    final String variable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
 
     // The main expression after IN - it's the first expression in the list
     final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
@@ -2334,10 +1422,10 @@ class CypherExpressionBuilder {
     // Optional path variable
     String pathVariable = null;
     if (ctx.variable() != null)
-      pathVariable = ctx.variable().getText();
+      pathVariable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
 
     // Parse the path pattern
-    final PathPattern pathPattern = parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
+    final PathPattern pathPattern = patterns.parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
 
     // Optional WHERE clause
     Expression whereExpression = null;
@@ -2348,26 +1436,6 @@ class CypherExpressionBuilder {
     final Expression mapExpression = parseExpression(ctx.barExp);
 
     return new PatternComprehensionExpression(pathVariable, pathPattern, whereExpression, mapExpression, ctx.getText());
-  }
-
-  /**
-   * Parse a pathPatternNonEmpty into a PathPattern.
-   * Grammar: nodePattern (relationshipPattern nodePattern)+
-   */
-  private PathPattern parsePathPatternNonEmpty(final Cypher25Parser.PathPatternNonEmptyContext ctx) {
-    final List<NodePattern> nodes = new ArrayList<>();
-    final List<RelationshipPattern> relationships = new ArrayList<>();
-
-    // First node
-    nodes.add(parseNodePattern(ctx.nodePattern(0)));
-
-    // Relationships and subsequent nodes
-    for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
-      relationships.add(parseRelationshipPattern(ctx.relationshipPattern(i)));
-      nodes.add(parseNodePattern(ctx.nodePattern(i + 1)));
-    }
-
-    return new PathPattern(nodes, relationships);
   }
 
   // ============================================================================
@@ -2392,7 +1460,7 @@ class CypherExpressionBuilder {
     else
       throw new IllegalStateException("Unknown list predicate type: " + ctx.getText());
 
-    final String variable = ctx.variable().getText();
+    final String variable = CypherASTBuilder.stripBackticks(ctx.variable().getText());
     final Expression listExpression = parseExpression(ctx.inExp);
 
     Expression whereExpression = null;
@@ -2417,10 +1485,10 @@ class CypherExpressionBuilder {
     final List<Cypher25Parser.VariableContext> variables = ctx.variable();
     final List<Cypher25Parser.ExpressionContext> expressions = ctx.expression();
 
-    final String accumulatorVariable = variables.get(0).getText();
+    final String accumulatorVariable = CypherASTBuilder.stripBackticks(variables.get(0).getText());
     final Expression initialValue = parseExpression(expressions.get(0));
 
-    final String iteratorVariable = variables.get(1).getText();
+    final String iteratorVariable = CypherASTBuilder.stripBackticks(variables.get(1).getText());
     final Expression listExpression = parseExpression(expressions.get(1));
 
     final Expression reduceExpression = parseExpression(expressions.get(2));
@@ -2439,10 +1507,10 @@ class CypherExpressionBuilder {
       final List<Cypher25Parser.VariableContext> variables = validCtx.variable();
       final List<Cypher25Parser.ExpressionContext> expressions = validCtx.expression();
 
-      final String accumulatorVariable = variables.get(0).getText();
+      final String accumulatorVariable = CypherASTBuilder.stripBackticks(variables.get(0).getText());
       final Expression initialValue = parseExpression(expressions.get(0));
 
-      final String iteratorVariable = variables.get(1).getText();
+      final String iteratorVariable = CypherASTBuilder.stripBackticks(variables.get(1).getText());
       final Expression listExpression = parseExpression(expressions.get(1));
 
       final Expression reduceExpression = parseExpression(expressions.get(2));
@@ -2459,203 +1527,6 @@ class CypherExpressionBuilder {
   // Shortest Path Expression Parsing
   // ============================================================================
 
-  /**
-   * Parse a shortestPath or allShortestPaths expression.
-   * Syntax: shortestPath((a)-[:KNOWS*]-(b)) or allShortestPaths((a)-[:KNOWS*]-(b))
-   */
-  ShortestPathExpression parseShortestPathExpression(final Cypher25Parser.ShortestPathExpressionContext ctx) {
-    // Grammar: shortestPathExpression : shortestPathPattern ;
-    // shortestPathPattern : (SHORTEST_PATH | ALL_SHORTEST_PATHS) LPAREN patternElement RPAREN ;
-    final Cypher25Parser.ShortestPathPatternContext patternCtx = ctx.shortestPathPattern();
-    final boolean isAllPaths = patternCtx.ALL_SHORTEST_PATHS() != null;
-
-    // Parse the inner pattern element
-    final PathPattern innerPattern = parsePatternElement(patternCtx.patternElement());
-
-    return new ShortestPathExpression(innerPattern, isAllPaths, ctx.getText());
-  }
-
-  /**
-   * Parse a patternElement into a PathPattern.
-   * This is used for shortestPath patterns which contain a patternElement.
-   */
-  private PathPattern parsePatternElement(final Cypher25Parser.PatternElementContext ctx) {
-    final List<NodePattern> nodes = new ArrayList<>();
-    final List<RelationshipPattern> relationships = new ArrayList<>();
-
-    // First node
-    if (!ctx.nodePattern().isEmpty()) {
-      nodes.add(parseNodePattern(ctx.nodePattern(0)));
-
-      // Relationships and subsequent nodes
-      for (int i = 0; i < ctx.relationshipPattern().size(); i++) {
-        relationships.add(parseRelationshipPattern(ctx.relationshipPattern(i)));
-        if (i + 1 < ctx.nodePattern().size()) {
-          nodes.add(parseNodePattern(ctx.nodePattern(i + 1)));
-        }
-      }
-    }
-
-    if (relationships.isEmpty()) {
-      return new PathPattern(nodes.get(0));
-    } else {
-      return new PathPattern(nodes, relationships);
-    }
-  }
-
-  /**
-   * Parse a nodePattern into a NodePattern.
-   */
-  private NodePattern parseNodePattern(final Cypher25Parser.NodePatternContext ctx) {
-    String variable = null;
-    List<String> labels = null;
-    Map<String, Object> properties = null;
-    // A node pattern in expression position - a pattern comprehension, a pattern predicate - used to be built with
-    // the disjunction flag hardcoded to false, so (y:A|B) arrived at the executor looking exactly like (y:A:B) and
-    // matched only what carries BOTH labels. Read off the grammar here, the same way the MATCH-side builder does,
-    // rather than left for the executor to guess (issue #6338).
-    boolean labelDisjunction = false;
-
-    if (ctx.variable() != null) {
-      variable = ParserUtils.stripBackticks(ctx.variable().getText());
-    }
-
-    // A negation, the wildcard or a mix of '&' and '|' is checked as a predicate on the node, the way the MATCH-side
-    // builder does it (issue #8992).
-    BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
-    if (labelPredicate != null) {
-      labels = labelPredicate.requiredLabels();
-      if (variable == null)
-        variable = ParserUtils.newLabelExpressionVariable();
-      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
-    } else if (ctx.labelExpression() != null) {
-      labels = extractLabels(ctx.labelExpression());
-      labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
-    }
-
-    String propertiesParameterName = null;
-    if (ctx.properties() != null) {
-      if (ctx.properties().parameter() != null)
-        propertiesParameterName = CypherASTBuilder.stripBackticks(ctx.properties().parameter().parameterName().getText());
-      else if (ctx.properties().map() != null)
-        properties = parseMapProperties(ctx.properties().map());
-    }
-
-    // Inline WHERE predicate, e.g. the WHERE x.v = 2 in [(a)-[:E]->(x:A WHERE x.v = 2) | x]. Parsed
-    // as a generic expression and coerced to a predicate, mirroring the relationship form below, so
-    // comparisons, AND/OR/NOT and boolean-typed properties are all covered.
-    BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
-      whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
-    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
-
-    return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
-  }
-
-  /**
-   * Parse a relationshipPattern into a RelationshipPattern.
-   */
-  private RelationshipPattern parseRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {
-    String variable = null;
-    List<String> types = null;
-    Map<String, Object> properties = null;
-    Integer minHops = null;
-    Integer maxHops = null;
-
-    if (ctx.variable() != null) {
-      variable = ParserUtils.stripBackticks(ctx.variable().getText());
-    }
-
-    BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
-    if (labelPredicate != null) {
-      // Evaluated per hop on a variable-length relationship too, through the inline WHERE it is ANDed into (#9117).
-      final List<String> required = labelPredicate.requiredLabels();
-      types = required.isEmpty() ? null : required;
-      if (variable == null)
-        variable = ParserUtils.newLabelExpressionVariable();
-      labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
-    } else if (ctx.labelExpression() != null) {
-      types = extractLabels(ctx.labelExpression());
-    }
-
-    String propertiesParameterName = null;
-    if (ctx.properties() != null) {
-      if (ctx.properties().parameter() != null)
-        propertiesParameterName = CypherASTBuilder.stripBackticks(ctx.properties().parameter().parameterName().getText());
-      else if (ctx.properties().map() != null)
-        properties = parseMapProperties(ctx.properties().map());
-    }
-
-    // Path length (variable-length relationships), read through the one place that knows what [*] means.
-    // Written as its own copy of the MATCH-side block, this is where [*] lost its normalization to [*1..] and a
-    // pattern comprehension planned it as a single fixed hop (issue #6370).
-    if (ctx.pathLength() != null) {
-      final ParserUtils.PathLength pathLength = ParserUtils.parsePathLength(ctx.pathLength());
-      minHops = pathLength.minHops();
-      maxHops = pathLength.maxHops();
-    }
-
-    // Direction
-    final Direction direction;
-    if (ctx.leftArrow() != null && ctx.rightArrow() != null) {
-      direction = Direction.BOTH;
-    } else if (ctx.leftArrow() != null) {
-      direction = Direction.IN;
-    } else if (ctx.rightArrow() != null) {
-      direction = Direction.OUT;
-    } else {
-      direction = Direction.BOTH;
-    }
-
-    // Inline WHERE predicate, e.g. the WHERE r.tag = 'ok' in -[r:E WHERE r.tag = 'ok']->. Parsed as
-    // a generic expression and coerced to a predicate so comparisons, AND/OR/NOT and boolean-typed
-    // properties are all covered without duplicating the boolean-parsing hierarchy.
-    BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
-      whereExpression = new BooleanCoercionExpression(parseExpression(ctx.expression()));
-    whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
-
-    return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,
-        whereExpression);
-  }
-
-  /**
-   * Extract labels from a labelExpression context, through the same grammar-based walk the MATCH-side builder uses.
-   * <p>
-   * This used to split the raw text on {@code :}, {@code &} and {@code |}, which is a different answer from the one
-   * {@code MATCH} gives for the same pattern: a backtick-quoted label containing a separator was chopped into
-   * pieces, the backticks were kept on every name, and a dynamic {@code $(expression)} label was turned into a
-   * literal label named after its own source text. The two blocks were meant to be copies of each other, and every
-   * way they were not is a way an expression-position pattern answered differently from the identical MATCH
-   * pattern (issues #6370, #6363).
-   */
-  private List<String> extractLabels(final Cypher25Parser.LabelExpressionContext ctx) {
-    return ParserUtils.extractLabels(ctx);
-  }
-
-  /**
-   * Parse map properties from a MapContext.
-   */
-  private Map<String, Object> parseMapProperties(final Cypher25Parser.MapContext ctx) {
-    final Map<String, Object> map = new LinkedHashMap<>();
-    final List<Cypher25Parser.PropertyKeyNameContext> keys = ctx.propertyKeyName();
-    final List<Cypher25Parser.ExpressionContext> values = ctx.expression();
-
-    for (int i = 0; i < keys.size() && i < values.size(); i++) {
-      final String key = CypherASTBuilder.stripBackticks(keys.get(i).getText());
-      final Expression expr = parseExpression(values.get(i));
-      if (expr instanceof LiteralExpression) {
-        map.put(key, ((LiteralExpression) expr).getValue());
-      } else {
-        map.put(key, expr);
-      }
-    }
-
-    return map;
-  }
-
   // ============================================================================
   // Map Projection Parsing
   // ============================================================================
@@ -2666,7 +1537,7 @@ class CypherExpressionBuilder {
    * Examples: n{.name, .age}, n{.*, totalAge: n.age * 2}
    */
   MapProjectionExpression parseMapProjection(final Cypher25Parser.MapProjectionContext ctx) {
-    final String variableName = ctx.variable().getText();
+    final String variableName = CypherASTBuilder.stripBackticks(ctx.variable().getText());
     final List<MapProjectionExpression.ProjectionElement> elements = new ArrayList<>();
 
     for (final Cypher25Parser.MapProjectionElementContext elemCtx : ctx.mapProjectionElement()) {
@@ -2681,7 +1552,7 @@ class CypherExpressionBuilder {
         elements.add(new MapProjectionExpression.ProjectionElement(propName));
       } else if (elemCtx.variable() != null) {
         // variable (include another variable's value)
-        final String varName = elemCtx.variable().getText();
+        final String varName = CypherASTBuilder.stripBackticks(elemCtx.variable().getText());
         elements.add(new MapProjectionExpression.ProjectionElement(varName, new VariableExpression(varName)));
       } else if (elemCtx.DOT() != null && elemCtx.TIMES() != null) {
         // .* (all properties)
@@ -2702,101 +1573,6 @@ class CypherExpressionBuilder {
    */
   int findOperatorOutsideParentheses(final String text, final String op) {
     return ParserUtils.findOperatorOutsideParentheses(text, op);
-  }
-
-  /**
-   * Try to parse text as a literal value (number, string, boolean, null).
-   */
-  static Object tryParseLiteral(final String text) {
-    // Null
-    if ("null".equalsIgnoreCase(text)) {
-      return null; // Return null as a marker that we found a literal
-    }
-
-    // Boolean
-    if ("true".equalsIgnoreCase(text)) {
-      return Boolean.TRUE;
-    }
-    if ("false".equalsIgnoreCase(text)) {
-      return Boolean.FALSE;
-    }
-
-    // String (quoted) - strip quotes and decode escape sequences
-    if (text.startsWith("'") && text.endsWith("'") && text.length() >= 2) {
-      return CypherASTBuilder.decodeStringLiteral(text.substring(1, text.length() - 1));
-    }
-    if (text.startsWith("\"") && text.endsWith("\"") && text.length() >= 2) {
-      return CypherASTBuilder.decodeStringLiteral(text.substring(1, text.length() - 1));
-    }
-
-    // Number
-    try {
-      // Handle floats without integer part (.1, .5e-3, etc.)
-      if (text.startsWith(".") && text.length() > 1 && Character.isDigit(text.charAt(1)))
-        return parseDoubleChecked(text);
-      if (text.startsWith("-.") && text.length() > 2 && Character.isDigit(text.charAt(2)))
-        return parseDoubleChecked(text);
-
-      // Handle negative numbers
-      if (text.startsWith("-") || text.startsWith("+") || Character.isDigit(text.charAt(0))) {
-        // Check hex/octal BEFORE float detection because hex digits can contain 'e'/'E'
-        if (text.startsWith("0x") || text.startsWith("0X") ||
-            text.startsWith("-0x") || text.startsWith("-0X")) {
-          final String hexPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
-          return parseSignedHexOrOctal(hexPart, 16, text.startsWith("-"), text);
-        } else if (text.startsWith("0o") || text.startsWith("0O") ||
-            text.startsWith("-0o") || text.startsWith("-0O")) {
-          final String octPart = text.startsWith("-") ? text.substring(3) : text.substring(2);
-          return parseSignedHexOrOctal(octPart, 8, text.startsWith("-"), text);
-        } else if (text.contains(".") || text.contains("e") || text.contains("E")) {
-          return parseDoubleChecked(text);
-        } else {
-          return Long.parseLong(text);
-        }
-      }
-    } catch (final NumberFormatException e) {
-      // Check if it looks like a number but overflowed or is invalid
-      final String numText = text.startsWith("-") || text.startsWith("+") ? text.substring(1) : text;
-      if (numText.startsWith("0x") || numText.startsWith("0X") ||
-          numText.startsWith("0o") || numText.startsWith("0O"))
-        throw new CommandParsingException("InvalidNumberLiteral: Invalid number literal: " + text);
-      if (!numText.isEmpty() && Character.isDigit(numText.charAt(0))) {
-        if (numText.chars().allMatch(c -> Character.isDigit(c)))
-          throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + text);
-        throw new CommandParsingException("InvalidNumberLiteral: Invalid number literal: " + text);
-      }
-    }
-
-    return null; // Not a literal
-  }
-
-  private static double parseDoubleChecked(final String text) {
-    final double d = Double.parseDouble(text);
-    if (Double.isInfinite(d))
-      throw new CommandParsingException("FloatingPointOverflow: Floating point number is too large: " + text);
-    return d;
-  }
-
-  private static long parseSignedHexOrOctal(final String digits, final int radix,
-      final boolean negative, final String originalText) {
-    final long val;
-    try {
-      val = Long.parseUnsignedLong(digits, radix);
-    } catch (final NumberFormatException e) {
-      throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
-    }
-    if (negative) {
-      // -0x8000000000000000 is Long.MIN_VALUE, anything more negative overflows
-      if (val == Long.MIN_VALUE)
-        return Long.MIN_VALUE; // -(-2^63) would overflow, but -val wraps correctly for MIN_VALUE
-      if (val < 0) // unsigned value > Long.MAX_VALUE (bit 63 set), so magnitude > 2^63
-        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
-      return -val;
-    } else {
-      if (val < 0) // unsigned value > Long.MAX_VALUE (bit 63 set)
-        throw new CommandParsingException("IntegerOverflow: Integer literal is too large: " + originalText);
-      return val;
-    }
   }
 
   /**

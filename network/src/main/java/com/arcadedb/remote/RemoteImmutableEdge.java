@@ -38,8 +38,18 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   public RemoteImmutableEdge(final RemoteDatabase database, final Map<String, Object> properties) {
     super(database, properties);
-    this.out = remoteDatabase.newRID((String) properties.get(RemoteProperty.OUT_PROPERTY));
-    this.in = remoteDatabase.newRID((String) properties.get(RemoteProperty.IN_PROPERTY));
+    this.out = endpoint(properties.get(RemoteProperty.OUT_PROPERTY));
+    this.in = endpoint(properties.get(RemoteProperty.IN_PROPERTY));
+  }
+
+  /**
+   * An endpoint as the transport delivered it: the rid text over HTTP, a {@link RID} over gRPC, which decodes a link as one
+   * (issue #12195).
+   */
+  private RID endpoint(final Object value) {
+    if (value instanceof RID rid)
+      return rid;
+    return remoteDatabase.newRID((String) value);
   }
 
   @Override

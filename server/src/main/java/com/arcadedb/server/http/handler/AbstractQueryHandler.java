@@ -48,9 +48,14 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -130,8 +135,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * <li>the {@code limit} field of the request, when present: the caller stated the size of the page it
    * wants, and that statement wins over everything else (a value {@code <= 0} means unlimited);</li>
    * <li>otherwise the configured default, raised to the LIMIT the query itself carries when the engine
-   * exposes it on the execution plan: honoring it is what keeps the HTTP surface from silently returning
-   * fewer rows than the query asked for (issue #5711).</li>
+   * exposes it ({@link ResultSet#getStatementLimit()}: SQL from its execution plan, openCypher from its statement):
+   * honoring it is what keeps the HTTP surface from silently returning fewer rows than the query asked for (issues
+   * #5711, #12154).</li>
    * </ol>
    * The plan LIMIT can only raise the cap, never lower it. A LIMIT smaller than the default is already
    * enforced by the engine, so capping at it would be redundant - and the plan of a query whose LIMIT is a
@@ -167,10 +173,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * LIMIT carried by the execution plan of the given result set, or 0 when unavailable. SQL exposes it for
-   * both single statements and single-statement scripts; languages that do not build an
-   * {@link com.arcadedb.query.sql.executor.ExecutionPlan} (e.g. Cypher on the non-EXPLAIN path) return 0, and
-   * their results are capped by the configured default with {@code truncated} reported when it bites.
+   * LIMIT the statement of the given result set declares ({@link ResultSet#getStatementLimit()}), or 0 when
+   * unavailable. SQL exposes it on its execution plan for both single statements and single-statement scripts, and
+   * openCypher from the LIMIT of its RETURN (the sum of its branches' for a UNION, issue #12154); a language that
+   * exposes none returns 0, and its results are capped by the configured default with {@code truncated} reported when
+   * it bites.
    * <p>
    * A multi-statement script reports 0 today, but a value belonging to one of its statements would be
    * harmless anyway: {@link #resolveLimit} only ever raises the cap with it, so a wrong value can widen the
@@ -180,7 +187,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (qResult == null)
       return 0;
     try {
-      return qResult.getExecutionPlan().map(ExecutionPlan::getLimit).orElse(0);
+      return qResult.getStatementLimit();
     } catch (final Exception e) {
       // A language whose plan computes the limit lazily may fail here: fall back to "no limit exposed".
       LogManager.instance().log(this, Level.FINE, "Cannot read the LIMIT from the execution plan", e);
@@ -234,14 +241,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     if (!outcome.truncated() || requestLimit != null || planLimit >= limit)
       return;
 
-    // The advice deliberately leads with the request field: a LIMIT in the query text raises the cap only for a
-    // language that exposes it on the execution plan, so telling a Cypher caller to add one - it may well have
-    // one already - would send it after a fix that cannot work.
+    // The advice leads with the request field, which every language honors. A LIMIT in the query raises the cap for SQL
+    // and openCypher (issue #12154), which read it back from the statement; Gremlin, GraphQL and the other languages do
+    // not expose one.
     LogManager.instance().log(this, Level.WARNING,
         "Query on database '%s' returned more rows than the default HTTP limit of %d: the response has been truncated to %d rows. "
-            + "Set 'limit' in the request or raise '%s'; a LIMIT written in the query raises the cap only for a language that "
-            + "exposes it on the execution plan, which SQL does and Cypher does not. Query: %s", databaseName, limit,
-        outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(), abbreviateForLog(command));
+            + "Set 'limit' in the request, write a LIMIT in the query (honored for SQL and openCypher) or raise '%s'. Query: %s",
+        databaseName, limit, outcome.returned(), GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey(),
+        abbreviateForLog(command));
   }
 
   /**
@@ -808,13 +815,23 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   private static final int MAX_TYPED_MARKER_DEPTH = 32;
 
   /**
-   * Decodes typed JSON markers ({@code $bytes}, {@code $int8}, {@code $date}) in {@code paramMap} into
-   * {@code byte[]} so HTTP/JSON clients can route int8 query vectors through the encoding-aware
-   * vector path (#4135). Returns the original map reference when nothing was rewritten.
-   * <p>
-   * {@code $bytes} accepts standard or URL-safe base64 (RFC 4648 sections 4 and 5); {@code $int8}
-   * accepts a {@link List} of {@link Number}, {@code float[]}, {@code double[]}, {@code int[]}, or
-   * {@code long[]} of values in {@code [-128, 127]}.
+   * Decodes typed JSON markers in {@code paramMap} into the Java value JSON cannot carry, so a parameter sent over HTTP
+   * is bound with the type the embedded API binds it with. Returns the original map reference when nothing was rewritten.
+   * <ul>
+   * <li>{@code $bytes}: standard or URL-safe base64 (RFC 4648 sections 4 and 5) to {@code byte[]}</li>
+   * <li>{@code $int8}: a {@link List} of {@link Number}, {@code float[]}, {@code double[]}, {@code int[]}, or
+   * {@code long[]} of values in {@code [-128, 127]} to {@code byte[]}, to route int8 query vectors through the
+   * encoding-aware vector path (#4135)</li>
+   * <li>{@code $date}: an ISO-8601 date to {@link LocalDate} (issue #10908)</li>
+   * <li>{@code $rid}: a record id ({@code #12:0}) to a {@link RID}, so it is bound as a link rather than as text</li>
+   * <li>{@code $decimal}: the decimal text of a {@link BigDecimal}, scale included, rather than a JSON number a parser reads
+   * as a double</li>
+   * <li>{@code $datetime}: epoch milliseconds to a {@link Date}</li>
+   * <li>{@code $localDateTime}, {@code $instant}, {@code $zonedDateTime}: ISO-8601 text to {@link LocalDateTime},
+   * {@link Instant} and {@link ZonedDateTime}, nanoseconds and zone kept</li>
+   * </ul>
+   * The last five are what the Java remote client sends for those types (issue #12187): as plain JSON they reached the engine
+   * as a STRING, a DOUBLE and LONG epoch milliseconds.
    * <p>
    * A marker that does not decode is refused with a {@link RequestRefusedBeforeExecutionException}: it is read from the request
    * alone, so it fails before a statement reaches the engine and must leave the session's transaction as it was (issue #9852).
@@ -847,6 +864,18 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return decodeInt8Marker(only.getValue());
       if ("$date".equals(only.getKey()))
         return decodeDateMarker(only.getValue());
+      if ("$rid".equals(only.getKey()))
+        return decodeRidMarker(only.getValue());
+      if ("$decimal".equals(only.getKey()))
+        return decodeDecimalMarker(only.getValue());
+      if ("$datetime".equals(only.getKey()))
+        return decodeDateTimeMarker(only.getValue());
+      if ("$localDateTime".equals(only.getKey()))
+        return decodeTemporalMarker("$localDateTime", only.getValue(), LocalDateTime::parse);
+      if ("$instant".equals(only.getKey()))
+        return decodeTemporalMarker("$instant", only.getValue(), Instant::parse);
+      if ("$zonedDateTime".equals(only.getKey()))
+        return decodeTemporalMarker("$zonedDateTime", only.getValue(), ZonedDateTime::parse);
     }
     if (value instanceof Map<?, ?> m) {
       Map<String, Object> rewritten = null;
@@ -906,6 +935,64 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     } catch (final DateTimeParseException e) {
       throw new RequestRefusedBeforeExecutionException("Parameter '$date' is not a valid ISO-8601 date: " + e.getMessage(), e);
     }
+  }
+
+  private static RID decodeRidMarker(final Object payload) {
+    if (!(payload instanceof String text) || !RID.is(text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$rid' value must be a record id such as '#12:0', found " + describeMarkerPayload(payload));
+    try {
+      return new RID(text);
+    } catch (final NumberFormatException e) {
+      // RID.is() only checks for digit runs: a bucket id beyond an int or a position beyond a long gets here
+      throw new RequestRefusedBeforeExecutionException("Parameter '$rid' is not a valid record id: " + abbreviateMarkerText(text), e);
+    }
+  }
+
+  /**
+   * The decimal goes through the same limits as a JSON number token ({@link JSONObject#isSafeBigNumber(String)}): {@code 1E+999999999}
+   * is a few bytes that {@code :p + 1} would expand into a billion digits, and a request has no other way to say it.
+   */
+  private static BigDecimal decodeDecimalMarker(final Object payload) {
+    if (!(payload instanceof String text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$decimal' value must be the decimal number as a string, found " + describeMarkerPayload(payload));
+    if (!JSONObject.isSafeBigNumber(text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$decimal' is too large: " + text.length() + " characters or an exponent beyond 1000");
+    try {
+      return new BigDecimal(text);
+    } catch (final NumberFormatException e) {
+      throw new RequestRefusedBeforeExecutionException("Parameter '$decimal' is not a valid decimal number: " + abbreviateMarkerText(text), e);
+    }
+  }
+
+  private static Date decodeDateTimeMarker(final Object payload) {
+    // A JSON integer beyond the long range is a BigDecimal, whose longValue() would keep only the low 64 bits
+    if (!(payload instanceof Integer || payload instanceof Long))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '$datetime' value must be epoch milliseconds as an integer, found " + describeMarkerPayload(payload));
+    return new Date(((Number) payload).longValue());
+  }
+
+  private static Object decodeTemporalMarker(final String marker, final Object payload, final Function<String, Object> parser) {
+    if (!(payload instanceof String text))
+      throw new RequestRefusedBeforeExecutionException(
+          "Parameter '" + marker + "' value must be an ISO-8601 string, found " + describeMarkerPayload(payload));
+    try {
+      return parser.apply(text);
+    } catch (final DateTimeParseException e) {
+      throw new RequestRefusedBeforeExecutionException("Parameter '" + marker + "' is not valid ISO-8601: " + e.getMessage(), e);
+    }
+  }
+
+  private static String describeMarkerPayload(final Object payload) {
+    return payload == null ? "null" : payload.getClass().getSimpleName();
+  }
+
+  /** A marker text as it goes into an error message: the request is bounded, but the answer need not repeat all of it. */
+  private static String abbreviateMarkerText(final String text) {
+    return text.length() <= 64 ? text : text.substring(0, 64) + "... (" + text.length() + " characters)";
   }
 
   private static byte[] decodeBytesMarker(final Object payload) {

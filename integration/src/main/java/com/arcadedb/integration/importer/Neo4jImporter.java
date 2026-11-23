@@ -71,9 +71,9 @@ import java.util.zip.GZIPInputStream;
  * Uses {@link GraphBatch} for high-performance bulk import: vertices are created with pre-allocated edge segments,
  * and edges are buffered in flat primitive arrays then flushed sorted by vertex for sequential I/O.
  * <br>
- * ID mapping uses a primitive {@link LongLongMap} when Neo4j IDs are numeric (the common case with APOC exports),
- * falling back to a {@code HashMap<String, Long>} for non-numeric IDs. The primitive map uses ~24 bytes/entry
- * vs ~156 bytes/entry for a {@code HashMap<String, RID>}, saving ~85% RAM on large imports.
+ * ID mapping uses a primitive {@link LongLongMap} when Neo4j IDs are canonical decimal numbers (the common case with APOC
+ * exports), falling back to a {@code HashMap<String, Long>} for any other ID, {@code "01"} included. The primitive map
+ * uses ~24 bytes/entry vs ~156 bytes/entry for a {@code HashMap<String, RID>}, saving ~85% RAM on large imports.
  * <br>
  * Neo4j is a registered mark of Neo4j, Inc.
  *
@@ -125,6 +125,13 @@ public class Neo4jImporter {
   // this root exists for while making it invisible to labels() the same way it already is for Cypher's own
   // unlabelled nodes.
   private final static String                         ROOT_NODE_TYPE           = Labels.NO_LABEL_TYPE;
+
+  // The property every imported vertex carries its Neo4j id in, unique on ROOT_NODE_TYPE. A node of the export can have
+  // a property of that name of its own (a business key, a UUID): that value is kept under DISPLACED_ID_PROPERTY instead of
+  // being overwritten by the Neo4j id (issue #12045).
+  private static final String                         NEO4J_ID_PROPERTY        = "id";
+  private static final String                         DISPLACED_ID_PROPERTY    = "_id";
+  private              boolean                        displacedIdReported      = false;
 
   // Neo4j ID -> packed ArcadeDB RID mapping, populated during vertex pass.
   // Uses primitive LongLongMap for numeric IDs (common case), falls back to HashMap for non-numeric IDs.
@@ -428,7 +435,9 @@ public class Neo4jImporter {
                 props = setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName));
               else
                 props = new HashMap<>();
-              props.put("id", id);
+              final Object ownId = props.put(NEO4J_ID_PROPERTY, id);
+              if (ownId != null)
+                keepDisplacedId(props, ownId, id);
 
               final MutableVertex vertex = batch.createVertex(typeName, props);
               final long packedRID = packRID(vertex.getIdentity());
@@ -660,24 +669,48 @@ public class Neo4jImporter {
         elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
   }
 
+  /**
+   * Keeps the node's own {@code id} property, which the Neo4j id has just replaced in {@code props}, under
+   * {@link #DISPLACED_ID_PROPERTY}, and says so once per import in the report. A node that already has a
+   * {@code DISPLACED_ID_PROPERTY} of its own has nowhere to keep it: the vertex is refused (counted as an error) rather than
+   * stored without one of the two values.
+   */
+  private void keepDisplacedId(final Map<String, Object> props, final Object ownId, final String neo4jId) {
+    if (props.containsKey(DISPLACED_ID_PROPERTY))
+      throw new ImportException(
+          "Node " + neo4jId + " has both an '" + NEO4J_ID_PROPERTY + "' and an '" + DISPLACED_ID_PROPERTY + "' property: '"
+              + NEO4J_ID_PROPERTY + "' holds the Neo4j id after the import, so its own value would be lost");
+
+    props.put(DISPLACED_ID_PROPERTY, ownId);
+    if (!displacedIdReported) {
+      displacedIdReported = true;
+      context.addWarning("Node properties named '" + NEO4J_ID_PROPERTY + "' (first on node " + neo4jId + ") are kept as '"
+          + DISPLACED_ID_PROPERTY + "': '" + NEO4J_ID_PROPERTY + "' holds the Neo4j id of every imported vertex");
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  ID mapping: numeric (primitive) or string (HashMap) mode
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Stores a Neo4j ID -> packed RID mapping. Tries numeric mode first; on the first non-numeric ID,
-   * migrates all existing entries to the string HashMap and switches permanently.
+   * Stores a Neo4j ID -> packed RID mapping. Tries numeric mode first; on the first ID that is not the canonical decimal
+   * form of a long, migrates all existing entries to the string HashMap and switches permanently.
+   * <p>
+   * Canonical only: {@code "01"}, {@code "+1"} and {@code "-0"} parse to the same long as another id, so taking them on the
+   * numeric path made two nodes share one entry - the second replaced the first, and the relationships of the first were
+   * attached to the second - and the migration, which re-keys every entry with {@code Long.toString}, then lost the
+   * spelling the relationships use (issue #12046). {@link CanonicalNumber#parseLong} decides, and it also refuses
+   * {@code Long.MIN_VALUE}, the empty marker of {@link LongLongMap}, which could not be stored as a key.
    */
   private void putId(final String id, final long packedRID) {
     if (useNumericIds) {
-      try {
-        final long numericId = Long.parseLong(id);
+      final long numericId = CanonicalNumber.parseLong(id);
+      if (numericId != CanonicalNumber.NOT_CANONICAL_LONG) {
         numericIdMap.put(numericId, packedRID);
         return;
-      } catch (final NumberFormatException e) {
-        // Non-numeric ID detected, migrate to string mode
-        migrateToStringMode();
       }
+      migrateToStringMode();
     }
     stringIdMap.put(id, packedRID);
   }
@@ -687,21 +720,20 @@ public class Neo4jImporter {
    */
   private long getId(final String id) {
     if (useNumericIds) {
-      try {
-        return numericIdMap.get(Long.parseLong(id));
-      } catch (final NumberFormatException e) {
-        return LongLongMap.EMPTY;
-      }
+      // WHILE IN NUMERIC MODE EVERY STORED ID IS CANONICAL: ANY OTHER SPELLING NAMES A NODE THAT IS NOT THERE
+      final long numericId = CanonicalNumber.parseLong(id);
+      return numericId == CanonicalNumber.NOT_CANONICAL_LONG ? LongLongMap.EMPTY : numericIdMap.get(numericId);
     }
     final Long packed = stringIdMap.get(id);
     return packed != null ? packed : LongLongMap.EMPTY;
   }
 
   /**
-   * Migrates from primitive LongLongMap to HashMap when a non-numeric ID is encountered.
+   * Migrates from primitive LongLongMap to HashMap when an ID that is not the canonical decimal form of a long is
+   * encountered.
    */
   private void migrateToStringMode() {
-    log("- Non-numeric Neo4j ID detected, switching to string-based ID mapping");
+    log("- Neo4j ID that is not the canonical form of a number detected, switching to string-based ID mapping");
     useNumericIds = false;
     stringIdMap = new HashMap<>(numericIdMap.size() * 2);
     numericIdMap.forEach((key, value) -> stringIdMap.put(Long.toString(key), value));

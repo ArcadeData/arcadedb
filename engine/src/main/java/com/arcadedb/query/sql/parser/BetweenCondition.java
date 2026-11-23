@@ -105,13 +105,16 @@ public class BetweenCondition extends BooleanExpression {
    * {@code k BETWEEN a AND b} agrees with {@code k >= a AND k <= b} and with the index serving either, which a scan
    * of the type relies on when it stands in for that index (issue #8333). {@code sign} is 1 for "at least" (the lower bound)
    * and -1 for "at most" (the upper bound). A value with no defined ordering against the bound is not between, as LeOperator
-   * and GeOperator report it (#5900).
+   * and GeOperator report it (#5900). Two values of one class that has no order, such as two rows, are refused as a type
+   * mismatch, as those operators refuse them (issue #11893).
    */
   private static boolean isOnTheRightSide(final Object value, final Object bound, final int sign) {
     try {
       return Integer.signum(BinaryComparator.compareTo(value, bound)) != -sign;
     } catch (final IllegalArgumentException | IndexOutOfBoundsException e) {
       return false;
+    } catch (final ClassCastException e) {
+      throw BinaryCondition.noOrder(value, bound, "BETWEEN", e);
     }
   }
 

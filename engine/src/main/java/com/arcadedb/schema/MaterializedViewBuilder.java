@@ -25,6 +25,8 @@ import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
+import com.arcadedb.event.BeforeRecordUpdateListener;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
@@ -362,7 +364,9 @@ public class MaterializedViewBuilder {
   /**
    * Registers the view's listener on the polymorphic registry of every source type, the one triggers use too: a record of a
    * subtype fires it, including a subtype created after the view, the way {@code SELECT FROM <source>} returns that record
-   * (issue #10205). Registered once per view: a second registration of the same view is a no-op.
+   * (issue #10205). Registered once per view: a second registration of the same view is a no-op. A grouped view maintained by delta
+   * (issue #11937) also listens before updates and deletes, for the state a record had before; no other view does, as a
+   * before-update listener on a vertex type costs every edge append the merge of edge lists (see {@code LocalDatabase.updateRecord}).
    */
   static void registerListeners(final LocalSchema schema, final MaterializedViewImpl view,
       final List<String> sourceTypeNames) {
@@ -372,11 +376,16 @@ public class MaterializedViewBuilder {
         new MaterializedViewChangeListener((DatabaseInternal) schema.getDatabase(), view);
     view.setChangeListener(listener);
     schema.polymorphicListenerRegistered();
+    final boolean grouped = view.isGroupedDelta();
     for (final String srcType : sourceTypeNames) {
       final RecordEventsRegistry events = ((LocalDocumentType) schema.getType(srcType)).getTriggerEvents();
       events.registerListener((AfterRecordCreateListener) listener);
       events.registerListener((AfterRecordUpdateListener) listener);
       events.registerListener((AfterRecordDeleteListener) listener);
+      if (grouped) {
+        events.registerListener((BeforeRecordUpdateListener) listener);
+        events.registerListener((BeforeRecordDeleteListener) listener);
+      }
     }
   }
 
@@ -391,6 +400,8 @@ public class MaterializedViewBuilder {
       events.unregisterListener((AfterRecordCreateListener) listener);
       events.unregisterListener((AfterRecordUpdateListener) listener);
       events.unregisterListener((AfterRecordDeleteListener) listener);
+      events.unregisterListener((BeforeRecordUpdateListener) listener);
+      events.unregisterListener((BeforeRecordDeleteListener) listener);
     }
     view.setChangeListener(null);
     schema.polymorphicListenerUnregistered();

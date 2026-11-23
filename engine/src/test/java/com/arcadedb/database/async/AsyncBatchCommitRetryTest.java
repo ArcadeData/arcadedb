@@ -20,6 +20,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -1023,6 +1024,57 @@ class AsyncBatchCommitRetryTest {
 
       database.transaction(() -> assertThat(database.countType(TYPE, true))
           .as("and nothing of the rolled-back batch survived").isZero());
+    }
+
+    /**
+     * Issue #12635: a task whose write another node committed - a statement a replica forwarded to the leader - leaves the writes
+     * the shared batch buffered before it uncommitted, so their submitters must still be told when the batch is abandoned. The
+     * forward is reported the way the HA layer reports it, on every transaction stacked on the thread; it used to move the same
+     * counter a mid-statement commit moves, and the worker dropped those writes' bookkeeping in silence.
+     */
+    @Test
+    void aWriteForwardedToTheLeaderIsNotMistakenForAMidStatementCommit() throws Exception {
+      final int buffered = 3;
+
+      database.async().setParallelLevel(1);
+      database.async().setCommitEvery(1000); // no periodic boundary: the abandon below is the only outcome
+
+      final ConcurrentLinkedQueue<Exception> errors = new ConcurrentLinkedQueue<>();
+      for (int i = 0; i < buffered; i++)
+        database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", new AsyncResultsetCallback() {
+          @Override
+          public void onComplete(final ResultSet rs) {
+          }
+
+          @Override
+          public void onError(final Exception e) {
+            errors.add(e);
+          }
+        }, i);
+
+      final CountDownLatch done = new CountDownLatch(1);
+      ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(0, new DatabaseAsyncTask() {
+        @Override
+        public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+          DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()).reportWriteCommittedByAnotherNode();
+          database.rollback();
+          database.begin();
+          async.notifyPendingBatchCommandsAndAbandon(new RuntimeException("the batch these writes were in was rolled back"));
+          done.countDown();
+        }
+
+        @Override
+        public boolean requiresActiveTx() {
+          return false;
+        }
+      }, true, 0);
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+      database.async().waitCompletion();
+
+      assertThat(errors)
+          .as("the buffered writes were never committed here, and a write forwarded to the leader does not commit them")
+          .hasSize(buffered);
     }
 
     private static AsyncResultsetCallback countingCallback(final AtomicInteger completions) {

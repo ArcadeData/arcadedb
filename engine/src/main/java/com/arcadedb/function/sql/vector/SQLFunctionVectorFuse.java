@@ -92,10 +92,19 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 1;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return Integer.MAX_VALUE;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length == 0)
-      throw new CommandSQLParsingException(getSyntax());
+    checkArity(params);
 
     // Detect the trailing options map.
     int sourceCount = params.length;

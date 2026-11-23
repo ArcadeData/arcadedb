@@ -21,11 +21,15 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
-import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.shape.Shape;
 
 /**
- * SQL function geo.area: returns the area of a geometry in square degrees.
+ * SQL function geo.area: returns the area of a geometry in square degrees, measured on the longitude/latitude plane the
+ * predicates read a shape on (OGC WKT, PostGIS {@code geometry}, Shapely): a 10 x 10 degree square is 100 wherever it lies.
+ * <p>
+ * It used to return Spatial4j's geodetic estimate, the spherical area of the bounding box scaled by the planar fraction of
+ * the box the shape fills, which is neither unit: two triangles mirrored north/south got the same answer although one is six
+ * times larger on the sphere, and a MULTIPOLYGON was not the sum of its parts (issue #12272).
  *
  * <p>Usage: {@code geo.area(<geometry>)}</p>
  * <p>Returns: Double area value in square degrees</p>
@@ -47,8 +51,9 @@ public class SQLFunctionGeoArea extends SQLFunctionAbstract {
     if (shape == null)
       return null;
 
-    final SpatialContext ctx = GeoUtils.getSpatialContext();
-    return shape.getArea(ctx);
+    // a null context is Spatial4j's planar area: JTS's for a geometry, width x height for a rectangle (the width taken
+    // across the antimeridian when it crosses it), pi r^2 for a circle
+    return shape.getArea(null);
   }
 
   @Override

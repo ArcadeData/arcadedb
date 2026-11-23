@@ -19,10 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
@@ -73,9 +69,6 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
   /** The keys the config map may hold: any other is refused, so a misspelt one cannot fall back to its default (issue #11145). */
   private static final Set<String> CONFIG_KEYS = Set.of("dampingFactor", "direction", "maxIterations", "tolerance", "weightProperty");
-
-  /** Starting size of the per-node adjacency buffer the OLTP fallback reuses; it doubles on demand. */
-  private static final int INITIAL_ADJACENCY_CAPACITY = 16;
 
   @Override
   public String getName() {
@@ -158,12 +151,10 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
       final int maxIterations, final double tolerance, final String weightProperty,
       final Vertex.DIRECTION direction, final WorkGuard guard, final CommandContext context) {
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    if (vertices.isEmpty())
+    final GraphData graph = loadGraphFromRecords(db, null, context);
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
-
-    final int n = vertices.size();
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
     // Build adjacency once: for each node, the dense ids it pushes rank to, and the matching weights.
     //
@@ -171,68 +162,32 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
     // which to report: OUT pushes along stored edges, IN pushes along their reverse, and BOTH pushes both ways,
     // which is what makes it undirected. Before PR #6956 the OUT walk was unconditional and only BOTH added
     // the reverse one, so an IN request was answered with OUT's adjacency.
-    final int[][] outNeighbors = new int[n][];
-    final double[][] outWeights = weightProperty != null ? new double[n][] : null;
-    final Vertex.DIRECTION[] walks = direction == Vertex.DIRECTION.BOTH ?
-        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
-        new Vertex.DIRECTION[] { direction };
-    // One growable primitive buffer, reused across every node and copied out at its exact size, rather than a
-    // List<int[]> whose every entry was a one-element array and a List<Double> that boxed every weight: that is
-    // two allocations per EDGE on a path that walks the whole graph.
-    int[] nbrBuf = new int[INITIAL_ADJACENCY_CAPACITY];
-    double[] wtBuf = weightProperty != null ? new double[INITIAL_ADJACENCY_CAPACITY] : null;
-    int edgeStep = 0;
-    for (int i = 0; i < n; i++) {
-      final Vertex v = vertices.get(i);
-      int count = 0;
-
-      for (final Vertex.DIRECTION walk : walks) {
-        // the incoming side of a unidirectional edge type is on the other end only (issue #8629)
-        for (final Edge edge : edgesOf(context, v, walk)) {
-          // This build walks and deserialises every edge in the graph and had no checkpoint at all: the first
-          // one a call reached was the iteration loop below, so a deadline could not be seen until the whole
-          // adjacency was already materialised. Throttled by EDGE rather than by vertex for the reason
-          // AbstractAlgoProcedure.RecordRowReader gives for the same walk - one supernode can hold millions of
-          // them, and a per-vertex checkpoint would leave that whole node unabortable.
-          guard.checkPeriodically(edgeStep++);
-          try {
-            final Integer neighborIdx = ridToIdx.get(
-                walk == Vertex.DIRECTION.OUT ? edge.getInVertex().getIdentity() : edge.getOutVertex().getIdentity());
-            if (neighborIdx == null)
-              continue;
-            if (count == nbrBuf.length) {
-              nbrBuf = Arrays.copyOf(nbrBuf, count << 1);
-              if (wtBuf != null)
-                wtBuf = Arrays.copyOf(wtBuf, count << 1);
-            }
-            nbrBuf[count] = neighborIdx;
-            if (wtBuf != null) {
-              final Object w = edge.get(weightProperty);
-              wtBuf[count] = w instanceof Number num ? num.doubleValue() : 1.0;
-            }
-            count++;
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-      }
-
-      outNeighbors[i] = Arrays.copyOf(nbrBuf, count);
-      if (outWeights != null)
-        outWeights[i] = Arrays.copyOf(wtBuf, count);
+    //
+    // The unweighted rows are read from the edge lists without loading an edge, and the weighted ones from the edge records, which
+    // carry the weight: both are priced against the call's budget as they are built (issue #12554). The heap this method used to
+    // take for them, a record object per vertex and a boxed map beside them, was not priced at all.
+    final int[][] outNeighbors;
+    final double[][] outWeights;
+    if (weightProperty != null) {
+      final GraphData.WeightedAdjacency weighted = graph.weightedAdjacency(guard, direction, weightProperty);
+      outNeighbors = weighted.neighbors();
+      outWeights = weighted.weights();
+    } else {
+      outNeighbors = graph.adjacency(guard, direction);
+      outWeights = null;
     }
 
-    // Iterate purely in-memory
+    // The scores, which the rows are read from, and the vector the next iteration is summed in
+    graph.memory().reserve(saturatingProduct(n, 2L * DOUBLE_BYTES), "the rank vectors", n + " nodes");
     final double[] scores = new double[n];
-    final double initialScore = 1.0 / n;
-    for (int i = 0; i < n; i++)
-      scores[i] = initialScore;
+    final double[] newScores = new double[n];
+    Arrays.fill(scores, 1.0 / n);
 
     for (int iter = 0; iter < maxIterations; iter++) {
       // maxIterations is a caller-supplied knob and the tolerance break only fires if the graph converges, so the
       // outer loop carries the checkpoint. One iteration is O(n + m), which swallows a flag test whole.
       guard.check();
-      final double[] newScores = new double[n];
+      Arrays.fill(newScores, 0.0);
       double dangling = 0.0;
 
       for (int i = 0; i < n; i++) {
@@ -275,7 +230,7 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal result = new ResultInternal();
-      result.setProperty("node", vertices.get(i).getIdentity());
+      result.setProperty("node", graph.getRID(i));
       result.setProperty("score", scores[i]);
       return (Result) result;
     });

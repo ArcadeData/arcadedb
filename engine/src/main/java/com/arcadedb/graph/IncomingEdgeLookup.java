@@ -714,9 +714,8 @@ public final class IncomingEdgeLookup {
             "incoming-edge lookup over the unidirectional edge type " + typeName));
         builders.put(typeName, builder);
 
-        // OWN BUCKETS ONLY: THE SUBTYPES ARE IN THE SET ON THEIR OWN. SCANNED RATHER THAN ITERATED: THE ITERATORS APPLY
-        // THE USER'S resultSetLimit, AND A SCAN CUT SHORT WOULD ANSWER PART OF THE EDGES WITH NO ERROR. A BUCKET THE
-        // CALLER CANNOT READ IS LEFT OUT, AS IN THE LIGHTWEIGHT WALK BELOW
+        // OWN BUCKETS ONLY: THE SUBTYPES ARE IN THE SET ON THEIR OWN. A BUCKET THE CALLER CANNOT READ IS LEFT OUT, AS IN THE
+        // LIGHTWEIGHT WALK BELOW
         for (final Bucket bucket : schema.getType(typeName).getBuckets(false))
           if (isReadable(database, bucket, unchecked))
             scan(database, bucket, guard, record -> {
