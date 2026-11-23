@@ -50,13 +50,16 @@ import com.arcadedb.query.opencypher.executor.steps.UniqueKeyAnchor;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -78,6 +81,9 @@ import java.util.function.Predicate;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 final class MatchStepBuilder {
+  /** The entries of an index read to estimate how many one key has (issue #13267). */
+  private static final int KEY_SAMPLE_ENTRIES = 256;
+
   private final CypherExecutionPlan     plan;
   private final DatabaseInternal        database;
   private final CypherStatement         statement;
@@ -829,12 +835,16 @@ final class MatchStepBuilder {
   }
 
   /**
-   * Whether a pattern of one fixed-length hop is better started from its target (issue #12149): the source is unlabelled and
-   * unconstrained, so starting from it scans every vertex of every type, while the target is pinned by an equality on every
-   * column of a UNIQUE index of its label, through its inline map or through the {@code WHERE} clause (equalities or
-   * {@code IN}-lists), whose values are literals, parameters or variables an earlier clause bound (an UNWIND or WITH row). The
-   * step that starts the pattern then finds the target through that index, once per row, and the hop walks its relationships
-   * backwards.
+   * Whether a pattern of one fixed-length hop is better started from its target (issues #12149, #13267): the source is
+   * unconstrained, so starting from it scans every vertex of every type, or every vertex of its label when it has one, while the
+   * target is pinned by an equality on every column of an index of its label, through its inline map or through the {@code WHERE}
+   * clause (equalities or {@code IN}-lists), whose values are literals, parameters or variables an earlier clause bound (an UNWIND
+   * or WITH row). The step that starts the pattern then finds the target through that index, once per row, and the hop walks its
+   * relationships backwards.
+   * <p>
+   * An unlabelled source starts from a target a UNIQUE index pins. A labelled source does when the seek finds fewer vertices than
+   * the label has: one for a UNIQUE index, the sampled entries per key of another ({@link #indexedTargetEntriesPerKey}), so
+   * that the label scan, repeated for every row, is not the cheaper side.
    * <p>
    * Not over a relationship of no type or of a unidirectional type, whose incoming side no vertex stores, and not for an OPTIONAL
    * MATCH or a path variable, which bind the pattern in the order written. Not when the {@code WHERE} clause pins the source
@@ -852,9 +862,10 @@ final class MatchStepBuilder {
       if (!(database.getSchema().getTypeOrNull(type) instanceof EdgeType edgeType) || !edgeType.isBidirectional())
         return false;
 
-    // the source is a scan of every vertex: no label, no property, no inline predicate, no id, no equality or IN-list of the WHERE
+    // the source is a scan: no property, no inline predicate, no id, no equality or IN-list of the WHERE. Without a label it scans every
+    // vertex of every type; with one the scan is weighed against the seek of the target below
     final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
-    if (sourceNode.hasLabels() || sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
+    if (sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
         || boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar) || plan.extractIdFilter(whereClause, sourceVar) != null
         || !wherePinnedProperties(sourceVar, where, value -> true).isEmpty())
       return false;
@@ -865,9 +876,65 @@ final class MatchStepBuilder {
       return false;
     if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
       return false;
-    if (isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
-      return true;
-    return targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
+    final boolean uniquelyKeyed = isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
+        || targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
+    if (!sourceNode.hasLabels())
+      return uniquelyKeyed;
+
+    // a labelled source is a scan of its label, repeated for every row an UNWIND or a WITH hands over: the seek of the target finds
+    // fewer vertices than that scan reads (issue #13267)
+    final long scanned = new StatisticsProvider(database).getMatchingVertexCardinality(sourceNode.getLabels(),
+        sourceNode.isLabelDisjunction());
+    final long found = uniquelyKeyed ? 1L : indexedTargetEntriesPerKey(target, targetVar, where, boundVariables);
+    return found >= 0L && found < scanned;
+  }
+
+  /**
+   * How many vertices the seek of a node pattern's label finds for one key, when an index of that one label has every column
+   * pinned by an equality or an {@code IN}-list the node's property map or the {@code WHERE} clause gives, with values an earlier
+   * clause decides (issue #13267), or -1 when there is no such index. A UNIQUE index finds one; the others are sampled: the
+   * entries a prefix of the index holds per distinct key, at least one. The sample is the first {@value #KEY_SAMPLE_ENTRIES}
+   * entries in key order, whole groups of a key but for the last, which is as good as the sampling of the statistics provider is
+   * for a cost estimate; an index the keys of which are all different, such as one on a uuid, reads as one.
+   */
+  private long indexedTargetEntriesPerKey(final NodePattern target, final String targetVar, final BooleanExpression where,
+      final Set<String> boundVariables) {
+    if (!target.hasLabels() || target.getLabels().size() != 1 || !database.getSchema().existsType(target.getLabels().getFirst()))
+      return -1L;
+    final Set<String> pinned = new HashSet<>();
+    if (target.hasProperties() && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+      pinned.addAll(target.getProperties().keySet());
+    if (targetVar != null)
+      pinned.addAll(wherePinnedProperties(targetVar, where, value -> valueReadsOnlyEarlierClauses(value, boundVariables)));
+    if (pinned.isEmpty())
+      return -1L;
+
+    long best = -1L;
+    for (final TypeIndex index : database.getSchema().getType(target.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys == null || !pinned.containsAll(keys))
+        continue;
+      final long entries = index.isUnique() ? 1L : sampledEntriesPerKey(index);
+      if (best < 0L || entries < best)
+        best = entries;
+    }
+    return best;
+  }
+
+  private static long sampledEntriesPerKey(final TypeIndex index) {
+    final Set<List<Object>> keys = new HashSet<>();
+    long entries = 0L;
+    final IndexCursor cursor = index.iterator(true);
+    try {
+      while (entries < KEY_SAMPLE_ENTRIES && cursor.hasNext()) {
+        cursor.next();
+        keys.add(Arrays.asList(cursor.getKeys()));
+        ++entries;
+      }
+    } finally {
+      cursor.close();
+    }
+    return keys.isEmpty() ? 1L : Math.max(1L, (entries + keys.size() - 1L) / keys.size());
   }
 
   /**
