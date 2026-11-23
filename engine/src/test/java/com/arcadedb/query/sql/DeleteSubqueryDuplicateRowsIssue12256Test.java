@@ -19,12 +19,17 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -125,6 +130,85 @@ class DeleteSubqueryDuplicateRowsIssue12256Test extends TestHelper {
   void duplicatesStraddlingAPullBoundaryAreDeletedOnce() {
     createGraph();
     final int parallel = AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL * 2 + 50;
+    addParallelEdgesToTheFirstNeighbour(parallel);
+    final String source = "(SELECT FROM (SELECT expand(out()) FROM V WHERE k = 0) ORDER BY k)";
+    assertThat(count("SELECT count(*) AS n FROM " + source)).isGreaterThan(AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL * 2L);
+    assertThat(deleted("DELETE VERTEX FROM " + source)).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM F")).isZero();
+    assertCheckDatabaseClean();
+  }
+
+  /**
+   * {@code BATCH n} commits every n rows and the transaction forgets what it deleted at each commit: the statement must not, or a
+   * neighbour named again after a commit boundary fails as it did before the fix.
+   */
+  @Test
+  void duplicatesStraddlingABatchCommitAreDeletedOnce() {
+    createGraph();
+    addParallelEdgesToTheFirstNeighbour(10);
+    final String source = "(SELECT FROM (SELECT expand(out()) FROM V WHERE k = 0) ORDER BY k)";
+    assertThat(count("SELECT count(*) AS n FROM " + source)).isEqualTo(13L);
+    assertThat(deleted("DELETE VERTEX FROM " + source + " BATCH 1")).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM F")).isZero();
+    assertCheckDatabaseClean();
+  }
+
+  /** A list of RIDs can name a record twice. */
+  @Test
+  void ridListNamingARecordTwiceDeletesItOnce() {
+    createGraph();
+    final RID rid = ridOfVertex(1);
+    assertThat(deleted("DELETE VERTEX FROM [" + rid + ", " + rid + "]")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM F")).isEqualTo(1L);
+    assertCheckDatabaseClean();
+  }
+
+  /** A list of parameters can name a record twice. */
+  @Test
+  void parametersNamingARecordTwiceDeleteItOnce() {
+    createGraph();
+    final RID rid = ridOfVertex(1);
+    final long[] answered = { -1 };
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("sql", "DELETE VERTEX FROM [?, ?]", rid, rid)) {
+        answered[0] = rs.next().<Long>getProperty("count");
+      }
+    });
+    assertThat(answered[0]).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(2L);
+    assertCheckDatabaseClean();
+  }
+
+  /**
+   * A scan of a type does not keep the records it deleted, so it must never be handed one twice: an index lookup that several
+   * conditions of an IN or an OR can reach one record through answers it once.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "k IN [1, 1, 2]", "k = 1 OR k = 1 OR k = 2", "k = 1 OR k > 0", "k IN [1, 2] OR k = 2" })
+  void indexedScanOfATypeDeletesEachRecordOnce(final String where) {
+    createGraph();
+    database.getSchema().getType("V").createProperty("k", Type.INTEGER);
+    database.getSchema().getType("V").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "k");
+    assertThat(deleted("DELETE VERTEX FROM V WHERE " + where)).isEqualTo(2L);
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
+    assertCheckDatabaseClean();
+  }
+
+  /** The same guard for a scan of one bucket. */
+  @Test
+  void scanOfABucketDeletesEachRecordOnce() {
+    createGraph();
+    final String bucket = database.getSchema().getBucketById(ridOfVertex(1).getBucketId()).getName();
+    assertThat(deleted("DELETE VERTEX FROM bucket:" + bucket + " WHERE k = 1")).isEqualTo(1L);
+    assertThat(count("SELECT count(*) AS n FROM V WHERE k = 1")).isZero();
+    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(2L);
+    assertCheckDatabaseClean();
+  }
+
+  private void addParallelEdgesToTheFirstNeighbour(final int parallel) {
     database.transaction(() -> {
       try (final ResultSet rs = database.query("sql", "SELECT FROM V WHERE k = 0")) {
         final MutableVertex v0 = rs.next().getVertex().orElseThrow().modify();
@@ -135,12 +219,12 @@ class DeleteSubqueryDuplicateRowsIssue12256Test extends TestHelper {
         }
       }
     });
-    final String source = "(SELECT FROM (SELECT expand(out()) FROM V WHERE k = 0) ORDER BY k)";
-    assertThat(count("SELECT count(*) AS n FROM " + source)).isGreaterThan(AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL * 2L);
-    assertThat(deleted("DELETE VERTEX FROM " + source)).isEqualTo(2L);
-    assertThat(count("SELECT count(*) AS n FROM V")).isEqualTo(1L);
-    assertThat(count("SELECT count(*) AS n FROM F")).isZero();
-    assertCheckDatabaseClean();
+  }
+
+  private RID ridOfVertex(final int k) {
+    try (final ResultSet rs = database.query("sql", "SELECT FROM V WHERE k = " + k)) {
+      return rs.next().getIdentity().orElseThrow();
+    }
   }
 
   /** A projection carrying the @rid of a record deletes that record: one named twice is deleted once. */

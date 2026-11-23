@@ -45,29 +45,51 @@ public class DeleteStep extends AbstractExecutionStep {
   private final boolean    returnsRecords;
   // DELETE VERTEX (issue #11620): a record that is not a vertex is refused, before anything is deleted for it
   private final boolean    vertexOnly;
-  // THE RECORDS THIS STATEMENT DELETED (issue #12256). A FIELD, NOT A LOCAL OF syncPull: THE STEP IS PULLED ONCE PER BATCH, AND
-  // TWO ROWS NAMING ONE RECORD CAN FALL IN DIFFERENT BATCHES. THE PLAN IS BUILT PER EXECUTION, SO THE STEP LIVES AS LONG AS THE
-  // STATEMENT. ITS COST IS ONE PRIMITIVE ENTRY PER DELETED RECORD, WHICH THE TRANSACTION ALREADY PAYS FOR THE SAME RECORDS IN
-  // TransactionContext.deletedRecordsInTx (ALSO A RidHashSet), NEXT TO THE PAGE IMAGES IT HOLDS FOR THEM
+  // Whether two rows of the source can name one record, so that a record an earlier row deleted must be skipped (issue #12256)
+  private final boolean    sourceMayRepeatARecord;
+  // The records this statement deleted (issue #12256), allocated by the first row that needs it, and never when the source cannot
+  // repeat a record. A field, not a local of syncPull: the step is pulled once per batch, and two rows naming one record can fall
+  // in different batches. The plan is built per execution, so the step lives as long as the statement. Its cost is one primitive
+  // entry per deleted record, and it is NOT bounded by the transaction: DELETE ... BATCH n commits every n rows and the transaction
+  // forgets what it deleted at each commit, while this set keeps growing until the statement ends
   private       RidHashSet deleted;
 
   public DeleteStep(final CommandContext context) {
     this(context, null, false, false);
   }
 
-  /**
-   * @param returning      the projection of a {@code DELETE ... RETURNING}, computed on each record BEFORE it is deleted - a value
-   *                       the record reads lazily, such as an EXTERNAL property, is gone once its storage is - and answered only
-   *                       for a record the delete removed, never for one a listener vetoed
-   * @param returnsRecords whether the deleted records are answered ({@code RETURN BEFORE}, {@code RETURNING}): a record answered
-   *                       whole, whose type has EXTERNAL properties, is then answered as a copy taken before the delete
-   * @param vertexOnly     whether the statement is a {@code DELETE VERTEX}: a record that is not a vertex is then refused
-   */
   public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly) {
+    this(context, returning, returnsRecords, vertexOnly, true);
+  }
+
+  /**
+   * @param returning              the projection of a {@code DELETE ... RETURNING}, computed on each record BEFORE it is deleted - a
+   *                               value the record reads lazily, such as an EXTERNAL property, is gone once its storage is - and
+   *                               answered only for a record the delete removed, never for one a listener vetoed
+   * @param returnsRecords         whether the deleted records are answered ({@code RETURN BEFORE}, {@code RETURNING}): a record
+   *                               answered whole, whose type has EXTERNAL properties, is then answered as a copy taken before the delete
+   * @param vertexOnly             whether the statement is a {@code DELETE VERTEX}: a record that is not a vertex is then refused
+   * @param sourceMayRepeatARecord whether two rows of the source can name one record (a subquery, a list of RIDs, a parameter):
+   *                               the step then deletes each record once. A scan of a type or of one bucket cannot, and skips the
+   *                               bookkeeping
+   */
+  public DeleteStep(final CommandContext context, final Projection returning, final boolean returnsRecords, final boolean vertexOnly,
+      final boolean sourceMayRepeatARecord) {
     super(context);
     this.returning = returning;
     this.returnsRecords = returnsRecords;
     this.vertexOnly = vertexOnly;
+    this.sourceMayRepeatARecord = sourceMayRepeatARecord;
+  }
+
+  /** Whether this step skips a record an earlier row of the statement already deleted. */
+  boolean dropsRepeatedRecords() {
+    return sourceMayRepeatARecord;
+  }
+
+  @Override
+  public void reset() {
+    deleted = null;
   }
 
   @Override
@@ -127,6 +149,8 @@ public class DeleteStep extends AbstractExecutionStep {
    * veto stands for the whole statement, as the same listener would veto it again, and the skipped row is not counted either.
    */
   private boolean deletedByAnEarlierRow(final Identifiable record) {
+    if (!sourceMayRepeatARecord)
+      return false;
     final RID rid = record.getIdentity();
     if (rid == null || rid.getPosition() < 0)
       return false;
