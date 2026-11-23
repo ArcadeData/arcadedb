@@ -67,14 +67,8 @@ public class EdgeIndexSeek extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
-    // A user who may not read a type the seek reads, or an endpoint it binds, is refused whatever the keys are, as the walk of
-    // its buckets does (issue #11904)
-    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
-      requireReadable(context, seek.edgeType());
-    for (final String label : sourceFilter.labels())
-      requireReadable(context, label);
-    for (final String label : targetFilter.labels())
-      requireReadable(context, label);
+    // The step refuses a user who may not read a type the seek reads, or an endpoint it binds, whatever the keys are, as the walk of
+    // its buckets does (issues #11904, #12663): the plan is not always built for the user who runs it
     // The result set closes the step, and with it the index cursor it holds
     return newStep(context).syncPull(context, nRecords > 0 ? nRecords : 100);
   }
