@@ -584,12 +584,13 @@ public class LocalDocumentType implements DocumentType {
       final LocalDocumentType former = (LocalDocumentType) superType;
       final int position = superTypes.indexOf(former);
       final int subPosition = former.subTypes.indexOf(this);
-      // issue #12038: what the subtree inherits before the link goes, to tell which of its indexed properties it loses
-      final Map<LocalDocumentType, Set<String>> inheritedBefore =
-          schema.isTypeBeingDropped() ? null : polymorphicPropertyNamesOfSubtree();
+      // issue #12038: the properties the indexes of the subtree stand on, as the subtree inherits them before the link goes, to tell
+      // which ones it loses or gets from elsewhere as another type
+      final Map<LocalDocumentType, Map<String, Property>> indexedBefore =
+          schema.isTypeBeingDropped() ? null : indexedPropertiesOfSubtree();
       unlinkSuperType(former);
-      if (inheritedBefore != null) {
-        final String refusal = findIndexOnPropertyNoLongerInherited(former, inheritedBefore);
+      if (indexedBefore != null) {
+        final String refusal = findIndexOnPropertyNoLongerInherited(former, indexedBefore);
         if (refusal != null) {
           relinkSuperType(former, position, subPosition);
           throw new SchemaException(refusal);
@@ -619,15 +620,35 @@ public class LocalDocumentType implements DocumentType {
     schema.typesChanged();
   }
 
-  /** The polymorphic property names of this type and of every type below it, keyed by type. */
-  private Map<LocalDocumentType, Set<String>> polymorphicPropertyNamesOfSubtree() {
-    final Map<LocalDocumentType, Set<String>> result = new IdentityHashMap<>();
+  /**
+   * What this type and every type below it resolve each property an index of their own stands on to, keyed by type (issue
+   * #12038). A type with no index of its own has no entry, so the walk of a type without indexes allocates nothing per type.
+   */
+  private Map<LocalDocumentType, Map<String, Property>> indexedPropertiesOfSubtree() {
+    final Map<LocalDocumentType, Map<String, Property>> result = new IdentityHashMap<>();
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     final List<LocalDocumentType> toVisit = new ArrayList<>();
     toVisit.add(this);
     while (!toVisit.isEmpty()) {
       final LocalDocumentType type = toVisit.removeLast();
-      if (result.putIfAbsent(type, type.getPolymorphicPropertyNames()) == null)
-        toVisit.addAll(type.subTypes);
+      // A DIAMOND REACHES THE SAME SUB TYPE THROUGH MORE THAN ONE PATH
+      if (!visited.add(type))
+        continue;
+      toVisit.addAll(type.subTypes);
+
+      Map<String, Property> indexed = null;
+      for (final TypeIndex index : type.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          final Property resolved = type.getPolymorphicPropertyIfExists(property);
+          if (resolved != null) {
+            if (indexed == null)
+              indexed = new HashMap<>();
+            indexed.put(property, resolved);
+          }
+        }
+      if (indexed != null)
+        result.put(type, indexed);
     }
     return result;
   }
@@ -636,23 +657,41 @@ public class LocalDocumentType implements DocumentType {
    * The refusal of {@link #removeSuperType(DocumentType)} when an index of this type or of a type below it stands on a property
    * that type stops inheriting with the link just severed, the rule {@link #dropProperty} applies to the same declaration (issue
    * #12038): the index would be left keyed on a property its type no longer declares. A property the type still has, declared by
-   * itself or reached through another super type, does not count. {@code null} when nothing is lost.
+   * itself or reached through another super type, does not count, unless it now resolves to a declaration of another type: the
+   * index is keyed on the type it was built for, and the property would convert every later write to the other one. {@code null}
+   * when nothing is lost.
    */
   private String findIndexOnPropertyNoLongerInherited(final LocalDocumentType formerSuperType,
-      final Map<LocalDocumentType, Set<String>> inheritedBefore) {
-    for (final Map.Entry<LocalDocumentType, Set<String>> entry : inheritedBefore.entrySet()) {
+      final Map<LocalDocumentType, Map<String, Property>> indexedBefore) {
+    for (final Map.Entry<LocalDocumentType, Map<String, Property>> entry : indexedBefore.entrySet()) {
       final LocalDocumentType type = entry.getKey();
-      final Set<String> stillInherited = type.getPolymorphicPropertyNames();
       for (final TypeIndex index : type.getAllIndexes(false))
         for (final String indexProperty : index.getPropertyNames()) {
           final String property = Index.basePropertyName(indexProperty);
-          if (entry.getValue().contains(property) && !stillInherited.contains(property))
-            return "Cannot remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "' because the property '"
-                + property + "' that type '" + type.getName() + "' would no longer inherit is used by index '" + index.getName()
-                + "'. Drop the index first, or declare the property on '" + type.getName() + "'";
+          final Property before = entry.getValue().get(property);
+          if (before == null)
+            continue;
+
+          final Property after = type.getPolymorphicPropertyIfExists(property);
+          final String consequence;
+          if (after == null)
+            consequence = "would no longer inherit";
+          else if (after != before && (after.getType() != before.getType() || !Objects.equals(after.getOfType(), before.getOfType())))
+            consequence = "would inherit as " + describeDeclaration(after) + " instead of " + describeDeclaration(before)
+                + " from another super type";
+          else
+            continue;
+
+          return "Cannot remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "' because the property '"
+              + property + "' that type '" + type.getName() + "' " + consequence + " is used by index '" + index.getName()
+              + "'. Drop the index first, or declare the property on '" + type.getName() + "'";
         }
     }
     return null;
+  }
+
+  private static String describeDeclaration(final Property property) {
+    return property.getOfType() == null ? property.getType().name() : property.getType().name() + " OF " + property.getOfType();
   }
 
   /**
