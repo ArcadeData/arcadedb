@@ -347,9 +347,9 @@ class CypherSetShapesOracleTest extends TestHelper {
 
   @Test
   void aBooleanAndStringConditionalSetOnlyWritesWhereTheConditionHolds() {
-    run("CREATE (:Chunk {external_id:'c1', embedding_model:'m1'}), (:Chunk {external_id:'c2', embedding_model:'m2'}), (:Chunk {external_id:'c3'})");
-    assertThat(run("UNWIND $rows AS row MATCH (c:Chunk {external_id: row.eid}) WHERE c.embedding IS NULL OR c.embedding_model IS NULL OR c.embedding_model <> row.model SET c.external_id = c.external_id RETURN c.external_id AS id ORDER BY id", map("rows", list(map("eid", "c1", "model", "m1"), map("eid", "c2", "model", "m1"), map("eid", "c3", "model", "m1"))))).containsExactly("id=c1", "id=c2", "id=c3");
-    assertStats(3, 0, 0, 0);
+    run("CREATE (:Chunk {external_id:'c1', embedding_model:'m1', embedding:[0.5,0.25]}), (:Chunk {external_id:'c2', embedding_model:'m2', embedding:[0.5,0.25]}), (:Chunk {external_id:'c3'})");
+    assertThat(run("UNWIND $rows AS row MATCH (c:Chunk {external_id: row.eid}) WHERE c.embedding IS NULL OR c.embedding_model IS NULL OR c.embedding_model <> row.model SET c.external_id = c.external_id RETURN c.external_id AS id ORDER BY id", map("rows", list(map("eid", "c1", "model", "m1"), map("eid", "c2", "model", "m1"), map("eid", "c3", "model", "m1"))))).containsExactly("id=c2", "id=c3");
+    assertStats(2, 0, 0, 0);
   }
 
   @Test
