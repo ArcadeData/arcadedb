@@ -44,8 +44,10 @@ class TransactionIndexContextJournalRetentionTest extends TestHelper {
     // one statement that queues thousands of index entries, in a transaction the caller keeps
     database.command("opencypher", "UNWIND range(1, 3000) AS i CREATE (:V {a: 'a' + i, b: 'b' + i})").close();
 
-    assertThat(indexChanges.recordUndoHolders()).as("holders kept after the statement").isLessThanOrEqualTo(256);
+    assertThat(indexChanges.recordUndoHolders()).as("holders kept after the statement")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
     database.commit();
-    assertThat(indexChanges.recordUndoHolders()).as("holders kept after the commit").isLessThanOrEqualTo(256);
+    assertThat(indexChanges.recordUndoHolders()).as("holders kept after the commit")
+        .isLessThanOrEqualTo(TransactionIndexContext.RECORD_UNDO_RETAINED);
   }
 }
