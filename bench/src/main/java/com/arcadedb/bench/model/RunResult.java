@@ -33,8 +33,17 @@ import java.util.List;
 /**
  * One benchmark run: the {@link RunInfo} plus every {@link CaseResult}, serialized as the versioned results JSON.
  */
-public record RunResult(RunInfo info, List<CaseResult> results) {
-  public static final int SCHEMA_VERSION = 1;
+public record RunResult(RunInfo info, List<CaseResult> results, boolean complete, JSONObject diagnostics) {
+  public static final int SCHEMA_VERSION = 2;
+
+  public RunResult(final RunInfo info, final List<CaseResult> results) {
+    this(info, results, true, new JSONObject());
+  }
+
+  public RunResult {
+    if (diagnostics == null)
+      diagnostics = new JSONObject();
+  }
 
   public JSONObject toJSON() {
     final JSONArray array = new JSONArray();
@@ -43,13 +52,14 @@ public record RunResult(RunInfo info, List<CaseResult> results) {
     return new JSONObject().put("schemaVersion", SCHEMA_VERSION).put("runId", info.runId())
         .put("startedAt", info.startedAt().toString()).put("finishedAt", info.finishedAt().toString())
         .put("trigger", info.trigger()).put("source", info.source()).put("arcadedb", info.arcadedb())
-        .put("machine", info.machine()).put("config", info.config()).put("results", array);
+        .put("machine", info.machine()).put("config", info.config()).put("complete", complete).put("diagnostics", diagnostics)
+        .put("results", array);
   }
 
   public static RunResult fromJSON(final JSONObject json) {
     final int version = json.getInt("schemaVersion", -1);
-    if (version != SCHEMA_VERSION)
-      throw new IllegalArgumentException("Unsupported results schemaVersion " + version + ", expected " + SCHEMA_VERSION);
+    if (version != 1 && version != SCHEMA_VERSION)
+      throw new IllegalArgumentException("Unsupported results schemaVersion " + version + ", expected 1 or " + SCHEMA_VERSION);
     final RunInfo info = new RunInfo(json.getString("runId"), Instant.parse(json.getString("startedAt")),
         Instant.parse(json.getString("finishedAt")), json.getString("trigger"), json.getString("source"),
         json.getJSONObject("arcadedb", new JSONObject()), json.getJSONObject("machine", new JSONObject()),
@@ -58,7 +68,7 @@ public record RunResult(RunInfo info, List<CaseResult> results) {
     final List<CaseResult> results = new ArrayList<>(array.length());
     for (int i = 0; i < array.length(); i++)
       results.add(CaseResult.fromJSON(array.getJSONObject(i)));
-    return new RunResult(info, results);
+    return new RunResult(info, results, json.getBoolean("complete", true), json.getJSONObject("diagnostics", new JSONObject()));
   }
 
   /**
