@@ -21,10 +21,13 @@ package com.arcadedb.index.vector;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Level;
 
@@ -59,8 +63,7 @@ class VectorCloseForReopenDefersBuildTest {
       @Override
       public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context,
           final Object... args) {
-        if (level == Level.SEVERE && requester instanceof LSMVectorIndex)
-          severe.add(message);
+        capture(requester, level, message);
         delegate.log(requester, level, message, exception, context, args);
       }
 
@@ -69,13 +72,26 @@ class VectorCloseForReopenDefersBuildTest {
           final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7,
           final Object arg8, final Object arg9, final Object arg10, final Object arg11, final Object arg12, final Object arg13,
           final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
-        log(requester, level, message, exception, context,
-            new Object[] { arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17 });
+        capture(requester, level, message);
+        // Forwarded to the delegate's fixed-arity form, not re-wrapped into an array: the two forms differ on what makes a message
+        // a format string (see Logger), and a re-wrapped call would hand the delegate 17 slots of null padding as arguments
+        delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+            arg13, arg14, arg15, arg16, arg17);
+      }
+
+      @Override
+      public boolean isLoggable(final Object requester, final Level level) {
+        return delegate.isLoggable(requester, level);
       }
 
       @Override
       public void flush() {
         delegate.flush();
+      }
+
+      private void capture(final Object requester, final Level level, final String message) {
+        if (level == Level.SEVERE && requester instanceof LSMVectorIndex)
+          severe.add(message);
       }
     });
   }
@@ -93,7 +109,10 @@ class VectorCloseForReopenDefersBuildTest {
       populate(db);
       final LSMVectorIndex index = vectorIndex(db);
       assertThat(index.findNeighborsFromVector(queryVector(), 5, 64)).hasSize(5);
-      db.transaction(() -> db.newDocument("Doc").set("id", NUM_VECTORS).set("vector", randomVector(new Random(5))).save());
+      final float[] dirtyingVector = randomVector(new Random(5));
+      final MutableDocument dirtying = db.newDocument("Doc").set("id", NUM_VECTORS).set("vector", dirtyingVector);
+      db.transaction(() -> dirtying.save());
+      final RID dirtyingRid = dirtying.getIdentity();
       assertThat(index.getStats().get("graphState")).as("precondition: a dirty (MUTABLE) graph").isEqualTo(2L);
 
       ((DatabaseInternal) db).closeForReopen();
@@ -103,8 +122,15 @@ class VectorCloseForReopenDefersBuildTest {
 
       final Database reopened = factory.open();
       try {
-        assertThat(vectorIndex(reopened).findNeighborsFromVector(queryVector(), 5, 64)).hasSize(5);
+        final LSMVectorIndex reopenedIndex = vectorIndex(reopened);
+        assertThat(reopenedIndex.getStats().get("closeTimeRebuildPending")).as("the deferral survives the reopen, before the first search")
+            .isEqualTo(1L);
+        assertThat(reopenedIndex.findNeighborsFromVector(queryVector(), 5, 64)).hasSize(5);
         assertThat(reopened.countType("Doc", false)).isEqualTo(NUM_VECTORS + 1);
+
+        // The vector written just before the close is the one the deferred build owes to the graph: it must be searchable
+        final List<Pair<RID, Float>> hits = reopenedIndex.findNeighborsFromVector(dirtyingVector, 1, 64, Set.of(dirtyingRid));
+        assertThat(hits).extracting(Pair::getFirst).containsExactly(dirtyingRid);
       } finally {
         reopened.drop();
       }

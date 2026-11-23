@@ -26,8 +26,8 @@ import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.Record;
@@ -405,8 +405,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private       boolean       searchRebuildPending   = false;
   private final Condition     searchRebuildPublished = graphBuildLock.newCondition();
 
-  // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
-  // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
+  // Set only inside flush()'s three SKIP branches (issue #6657: released resources and a large index; issue #12120: a close
+  // for reopen) - never by the branch that actually attempts a synchronous build, successfully or not - so
+  // releaseBackgroundResources()'s recheck of the same flag (see
   // there) can tell "flush() chose not to pay for a rebuild" apart from "flush() tried and either failed or got
   // re-mutated mid-build", which also leaves graphState at MUTABLE but is a different story the recheck must not
   // relabel as a deferral. Reset at the top of every flush(), so a stale true from an earlier close on this same
@@ -13051,7 +13052,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // closeDeferredRebuild=false via markUnusable()) or because new mutations arrived mid-build. Neither of those
     // is "flush() chose to defer", and rechecking unconditionally would overwrite that correct false with a
     // misleading true - mislabeling "close attempted a rebuild and it failed" as "close skipped the rebuild for
-    // performance". flushDeferredRebuild is set only inside flush()'s two skip branches and reset at the top of
+    // performance". flushDeferredRebuild is set only inside flush()'s three skip branches and reset at the top of
     // every flush(), so it answers exactly the question this recheck needs: did THIS close's flush() skip, not
     // just "is a rebuild still owed for some reason". As a side effect this also keeps the recheck from ever
     // firing on a path that never called flush() at all - LocalDatabase.closeInternal(true) (whole-database
