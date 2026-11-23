@@ -125,7 +125,8 @@ public class ContinuousAggregateRefresher {
   private static void refreshOnce(final Database database, final ContinuousAggregateImpl ca) {
     // #11019: a refresh that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
     final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(ca.getStatus());
-    ca.setStatus(MaterializedViewStatus.BUILDING);
+    // #12252: reported, never saved: a schema save while the refresh runs keeps the status it started from
+    ca.markRefreshRunning();
     final long startNs = System.nanoTime();
     // the scope is what lets the writes below through: nothing else writes a backing type (issue #11020)
     try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(ca)) {

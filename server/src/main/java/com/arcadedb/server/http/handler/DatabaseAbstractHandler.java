@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -149,6 +151,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       }
 
       activeSession = setTransactionInThreadLocal(exchange, database, user);
+      if (activeSession == null)
+        // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
+        refuseOutsideSession(database, payload);
 
       // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
       // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
@@ -228,7 +233,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     QueryAdmissionGate.Ticket admission = null;
     RunningQuery runningQuery = null;
     HttpClientDisconnectWatch disconnectWatch = null;
+    boolean keepsTheLeadersAnswer = false;
     try {
+      // A write forwarded to the leader leaves its answer here (ForwardedRequestIdContext), for the catch below. Only an HA
+      // request outside a session forwards: a session's statements run on this node. And only a route whose body is one command: the
+      // leader's answer to the write it forwarded is the answer to that command, and to nothing else a request could ask for
+      keepsTheLeadersAnswer = haDbForRead != null && activeSession == null && commandForwardIsWholeRequest();
+      if (keepsTheLeadersAnswer)
+        ForwardedRequestIdContext.armCommittedWriteAnswer();
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
       if (haDbForRead != null) {
@@ -303,11 +315,28 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // Emit bookmark header for read-your-writes consistency
       emitCommitIndexBookmark(exchange, haDbForRead);
 
+    } catch (final RuntimeException failure) {
+      // A write this request forwarded to the leader is durable there: a refusal the client is told to retry, raised by what this
+      // node does afterwards (its copy of the database replaced by an HA resync under the request, a commit gate refusing the empty
+      // transaction around the forward), must not be answered as one, because the retry would run the write a second time. Any
+      // other failure (a security or serialization error, a timeout, a cancel) is not a statement about the write and is raised.
+      // The error mapping decides what is a refusal to retry, so a failure it answers otherwise keeps its answer
+      if (!keepsTheLeadersAnswer || !isRetryableRefusal(failure) || !answerWithTheLeadersAnswer(response, failure))
+        throw failure;
     } finally {
+      // Whatever way the request ends, a pooled worker thread keeps no answer of this request (handleRequest clears the rest)
+      if (keepsTheLeadersAnswer)
+        ForwardedRequestIdContext.disarmCommittedWriteAnswer();
       try {
-        // Clear read consistency context
-        if (haDbForRead != null)
+        if (haDbForRead != null) {
+          // A request that left the try through an exception skipped the emit above and is answered after this block, by
+          // handleRequest's error mapping: the response-commit listener would then read the bookmark with the writes this
+          // request forwarded to the leader already cleared below (issue #11740), so it is set here, while they are known
+          if (!exchange.isResponseStarted())
+            emitCommitIndexBookmarkIfAbsent(exchange, haDbForRead);
+          // Clear read consistency context
           haDbForRead.clearReadConsistencyContext();
+        }
 
         if (activeSession != null)
           // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
@@ -336,6 +365,44 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     return response.get();
+  }
+
+  /**
+   * Whether a failure is one the client is told to retry: the error mapping ({@link #classifyError}) answers it 503 because of a
+   * {@link NeedRetryException} or a {@link DatabaseIsReopeningException}. Asked of the mapping itself rather than of the cause chain,
+   * so the two cannot disagree: an engine wrapper around the refusal (a transaction or command failure) is looked through exactly as
+   * the mapping looks through it, and a failure the mapping answers otherwise (a security refusal wrapping a retryable one is a 403)
+   * is not turned into a success.
+   */
+  boolean isRetryableRefusal(final Throwable failure) {
+    final ErrorClassification classification = classifyError(failure);
+    return classification.status() == 503
+        && (classification.reported() instanceof NeedRetryException || classification.reported() instanceof DatabaseIsReopeningException);
+  }
+
+  /**
+   * Settles a request that failed with a retryable refusal ({@link #isRetryableRefusal}) after the leader answered the write it
+   * forwarded: the answer of the request becomes the leader's own, unless the handler had rendered one already. Such a refusal can
+   * only be of what this node does with a write the leader has committed, so it says nothing about the write, and the 503 it maps to
+   * invites the replay that applies it twice.
+   * <p>
+   * Only when the leader's answer can stand for the whole request ({@link ForwardedRequestIdContext#takeCommittedWriteAnswer()}):
+   * one write forwarded, no forward that failed after it, no command executed on this node. The body is the leader's rendering of
+   * the forwarded statement, which is the client's own only when that forward was the client's whole request with its key relayed.
+   * Package-private for direct unit testing.
+   *
+   * @return true when the request has an answer now, false when the failure has to be raised as it is
+   */
+  static boolean answerWithTheLeadersAnswer(final AtomicReference<ExecutionResponse> response, final RuntimeException failure) {
+    final String leaderAnswer = ForwardedRequestIdContext.takeCommittedWriteAnswer();
+    if (leaderAnswer == null)
+      return false;
+    LogManager.instance().log(DatabaseAbstractHandler.class, Level.WARNING,
+        "Request failed with %s (%s) after the leader committed the write it forwarded: answering with the leader's answer",
+        failure.getClass().getSimpleName(), failure.getMessage());
+    if (response.get() == null)
+      response.set(new ExecutionResponse(200, leaderAnswer));
+    return true;
   }
 
   /**
@@ -408,6 +475,8 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final DatabaseInternal database, final JSONObject payload, final AtomicReference<ExecutionResponse> response,
       final int retries) {
     database.transaction(() -> {
+      // Opened by this server around one request: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs (issue #11588)
+      database.getTransaction().setImplicit(true);
       // Each attempt forwards to the leader under the same request ids as the first, so a retried write is
       // deduplicated there against the attempt that may already have applied it (issue #8323).
       ForwardedRequestIdContext.restartOrdinals();
@@ -602,6 +671,15 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    */
   protected boolean managesItsOwnTransactions(final DatabaseInternal database, final JSONObject payload) {
     return false;
+  }
+
+  /**
+   * Refuses, with an exception, a request that cannot run outside a session: a SQL {@code BEGIN}, {@code COMMIT} or
+   * {@code ROLLBACK} sent as a command of its own would act on the transaction of this one request and end with it (issue
+   * #12202). Called only for a request that runs in no session. Refuses nothing by default.
+   */
+  protected void refuseOutsideSession(final DatabaseInternal database, final JSONObject payload) {
+    // NOTHING TO REFUSE BY DEFAULT: ONLY THE HANDLERS THAT RUN A COMMAND OVERRIDE THIS
   }
 
   /**

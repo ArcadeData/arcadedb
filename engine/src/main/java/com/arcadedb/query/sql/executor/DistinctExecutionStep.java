@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
@@ -140,7 +141,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       return;
     }
     // Store only the property values, not the full Result object
-    final DistinctKey key = new DistinctKey(nextValue);
+    final DistinctKey key = new DistinctKey(nextValue, identityKeyOf(nextValue));
     pastItems.add(key);
     try {
       heapLimit.add(pastItems.size(), key.properties, DISTINCT_KEY_OVERHEAD_BYTES);
@@ -160,7 +161,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     if (canUseRidFastPath(nextValue))
       return pastRids.contains(nextValue.getElement().get().getIdentity());
     // Check using only the property values
-    return pastItems.contains(new DistinctKey(nextValue));
+    return pastItems.contains(new DistinctKey(nextValue, identityKeyOf(nextValue)));
   }
 
   /**
@@ -172,14 +173,36 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
    * same output and must be compared by value, so we fall back to the property-based {@link DistinctKey}.
    */
   private boolean canUseRidFastPath(final Result value) {
-    if (!value.isElement())
+    if (!keysByIdentity(value))
       return false;
     final RID identity = value.getElement().get().getIdentity();
-    if (identity.getBucketId() < 0 || identity.getPosition() < 0)
+    return identity.getBucketId() >= 0 && identity.getPosition() >= 0;
+  }
+
+  /** Whether the identity of the row's element still determines the output (see {@link #canUseRidFastPath}). */
+  private static boolean keysByIdentity(final Result value) {
+    if (!value.isElement())
       return false;
     if (value instanceof ResultInternal ri && ri.hasProjectedProperties())
-      return value.getPropertyNames().contains(RID_PROPERTY);
+      return value.listsProperty(RID_PROPERTY);
     return true;
+  }
+
+  /**
+   * The identity a row the RID fast path cannot take is told apart by, null when its properties alone are the key. A
+   * lightweight edge has no record address and no properties: without its identity, every lightweight edge would be one row
+   * (issue #12132). Its twins are told apart as openCypher tells them, by {@link LightEdgeRID#distinctKey()}.
+   * <p>
+   * Any other row, including one whose element has a record-less RID that is not a lightweight edge's, keeps the properties as
+   * its only key, as it always had. The cheap checks come first: this runs on every row the RID fast path does not take, and
+   * almost none of them is a lightweight edge.
+   */
+  private static Object identityKeyOf(final Result value) {
+    if (!value.isElement())
+      return null;
+    if (!(value.getElement().get().getIdentity() instanceof LightEdgeRID light))
+      return null;
+    return keysByIdentity(value) ? light.distinctKey() : null;
   }
 
   @Override
@@ -205,12 +228,16 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   /**
    * Lightweight wrapper that stores only the property values from a Result for DISTINCT comparison.
    * This dramatically reduces memory usage compared to storing full Result objects.
+   * <p>
+   * {@code identity} is non-null for an element row whose identity determines the output but is no record address (a
+   * lightweight edge, see {@link #identityKeyOf(Result)}): its properties, none, cannot tell it from another one.
    */
   private static class DistinctKey {
     private final Map<String, Object> properties;
-    private final int hashCode;
+    private final Object              identity;
+    private final int                 hashCode;
 
-    DistinctKey(final Result result) {
+    DistinctKey(final Result result, final Object identity) {
       // Extract only the properties (not the element reference, metadata, etc.), normalising numeric values to a
       // canonical form so that the same logical number represented with different boxed numeric types (e.g.
       // Integer(1) vs Long(1)) is deduplicated as one value instead of splitting into separate rows (issue #6676),
@@ -220,17 +247,18 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       for (final String propName : propertyNames) {
         this.properties.put(propName, Type.normalizeForKey(result.getProperty(propName)));
       }
+      this.identity = identity;
       // Pre-compute hashCode for performance
-      this.hashCode = properties.hashCode();
+      this.hashCode = properties.hashCode() * 31 + Objects.hashCode(identity);
     }
 
     @Override
     public boolean equals(final Object other) {
       if (this == other)
         return true;
-      if (!(other instanceof DistinctKey))
+      if (!(other instanceof DistinctKey key))
         return false;
-      return this.properties.equals(((DistinctKey) other).properties);
+      return this.properties.equals(key.properties) && Objects.equals(identity, key.identity);
     }
 
     @Override

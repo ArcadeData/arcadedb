@@ -25,6 +25,7 @@ import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -58,6 +59,8 @@ public class CypherDuration implements CypherTemporalValue {
   private static final BigInteger SECONDS_PER_DAY           = BigInteger.valueOf(86_400L);
   private static final BigInteger NANOS_PER_SECOND_BIG      = BigInteger.valueOf(NANOS_PER_SECOND);
   private static final String[] WHOLE_UNIT_KEYS = { "years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds" };
+  private static final Set<String> DURATION_KEYS = Set.of("years", "quarters", "months", "weeks", "days", "hours", "minutes", "seconds",
+      "milliseconds", "microseconds", "nanoseconds");
 
   private final long months;
   private final long days;
@@ -200,6 +203,19 @@ public class CypherDuration implements CypherTemporalValue {
   }
 
   private static CypherDuration fromMapInternal(final Map<String, Object> map) {
+    // Every field is a number, as Neo4j requires: a null or a String used to read as 0 seconds or be parsed (issue #12297),
+    // and an unknown field was dropped
+    if (map.isEmpty())
+      throw new IllegalArgumentException("At least one temporal unit must be specified.");
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      if (!DURATION_KEYS.contains(entry.getKey()))
+        throw new IllegalArgumentException("Unknown field: " + entry.getKey());
+      final Object value = entry.getValue();
+      if (!(value instanceof Number))
+        throw new IllegalArgumentException(
+            entry.getKey() + " must be a number value, but was " + (value == null ? "null" : "a " + value.getClass().getSimpleName()));
+    }
+
     // Fast path for single-field durations with integral values (common in bulk operations)
     if (map.size() == 1) {
       final Map.Entry<String, Object> entry = map.entrySet().iterator().next();

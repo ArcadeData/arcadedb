@@ -27,8 +27,9 @@ import java.util.List;
 
 /**
  * The strategy set every {@link ArcadeGraph} traversal source starts from. It differs from TinkerPop's default only in
- * refusing to drop {@link ArcadeIoRegistrationStrategy}, the strategy that enforces the permission to use the
- * {@code io()} step.
+ * refusing to drop the strategies that enforce what the caller is allowed: {@link ArcadeIoRegistrationStrategy}, the
+ * permission to use the {@code io()} step, and {@link ArcadeResultSetLimitStrategy}, the cap of the rows a traversal answers
+ * for a user whose security groups set a {@code resultSetLimit} (issue #13087).
  * <p>
  * {@code withoutStrategies(...)} is a source instruction the CALLER controls: it is part of a bytecode request, of a
  * gremlin-lang string and of the fluent API alike, and every one of those routes ends in
@@ -40,7 +41,7 @@ import java.util.List;
  * runtime class. Should a TinkerPop upgrade rebuild a plain {@code DefaultTraversalStrategies} there instead, nothing
  * would fail to compile: {@code Issue8295IoStrategyCannotBeRemovedTest} is the guard that turns red.
  * <p>
- * Naming the pinned strategy is not an error, it is simply not honoured - the same outcome as naming a strategy that
+ * Naming a pinned strategy is not an error, it is simply not honoured - the same outcome as naming a strategy that
  * is not registered at all.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -69,6 +70,7 @@ public class ArcadeTraversalStrategies extends DefaultTraversalStrategies {
    * refusing it too keeps the rule obvious.
    */
   public static boolean isPinned(final Class<? extends TraversalStrategy> strategyClass) {
-    return strategyClass != null && ArcadeIoRegistrationStrategy.class.isAssignableFrom(strategyClass);
+    return strategyClass != null && (ArcadeIoRegistrationStrategy.class.isAssignableFrom(strategyClass)
+        || ArcadeResultSetLimitStrategy.class.isAssignableFrom(strategyClass));
   }
 }

@@ -308,6 +308,42 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   }
 
   /**
+   * Whether a record a range entry names, loaded after a commit overlapped the scan, still belongs to the range (issue #11790):
+   * it is still indexed under the entry's key, or, where the index keys are the plain property values ({@link #canVerifyKeys}),
+   * it still satisfies the condition of the seek. A record a commit moved out of the range is not a row of the statement; one it
+   * moved to another key of the range stays a row. Where the keys cannot be checked on the record (a case-insensitive or a
+   * by-item index) the record is served as loaded, as before.
+   */
+  boolean isStillInRange(final Document record, final Object entryKey) {
+    if (isKeyOf(record, entryKey) || !canVerifyKeys())
+      return true;
+    return new SeekCheck(condition, additionalRangeCondition).matches(record, context);
+  }
+
+  /**
+   * The check of {@link #isStillInRange} without an entry key, for the records of a range loaded in physical order (issue #11790):
+   * the entries are read before any record, and only their RIDs are kept. A copy of the condition of the seek, which a worker of a
+   * parallel load evaluates through its own context; null where the keys cannot be checked on the record, whose records are served
+   * as loaded.
+   */
+  SeekCheck seekCheck() {
+    return canVerifyKeys() ? new SeekCheck(condition, additionalRangeCondition).copy() : null;
+  }
+
+  /** The condition of a seek, evaluated on a record. */
+  record SeekCheck(BooleanExpression condition, BinaryCondition additionalRangeCondition) {
+    boolean matches(final Document record, final CommandContext context) {
+      if (!Boolean.TRUE.equals(condition.evaluate(record, context)))
+        return false;
+      return additionalRangeCondition == null || Boolean.TRUE.equals(additionalRangeCondition.evaluate(record, context));
+    }
+
+    SeekCheck copy() {
+      return new SeekCheck(condition.copy(), additionalRangeCondition != null ? additionalRangeCondition.copy() : null);
+    }
+  }
+
+  /**
    * The key of the lookup an entry of a point lookup was found by (#9902). A lookup of a prefix of a composite key reads a range
    * whose entries each carry their whole key ({@code a = 'p'} on {@code (a, b)} returns {@code [p, 0]}, {@code [p, 1]}, ...), so
    * the entry key is cut to the slots the lookup fills: what the entries of one lookup share, and what reads them all again.
@@ -1242,7 +1278,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
+  static Object[] normaliseToIndexKey(final DatabaseInternal database, final Object[] bound,
       final byte[] keyTypes, final IndexMetadata metadata) {
     final Object[] key = new Object[bound.length];
     for (int i = 0; i < bound.length; i++) {

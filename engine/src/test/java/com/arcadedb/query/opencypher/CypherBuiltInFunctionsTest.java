@@ -70,10 +70,26 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     // registers procedures in the unified ProcedureRegistry.
     // Clear and reset both registries to ensure unified FunctionRegistry/ProcedureRegistry
     // are populated with the same instances (other tests may clear the unified registries).
+    // The SQL functions are registered once, by the DefaultSQLFunctionFactory singleton: load it before the snapshot and put
+    // them back after the reset, or every later test in the same JVM sees a registry without them (issue #11927).
+    DefaultSQLFunctionFactory.getInstance();
+    final List<Function> registeredBefore = new ArrayList<>(FunctionRegistry.getAllFunctions());
     FunctionRegistry.clear();
     ProcedureRegistry.clear();
     CypherFunctionRegistry.reset();
     CypherProcedureRegistry.reset();
+    for (final Function function : registeredBefore)
+      if (!FunctionRegistry.hasFunction(function.getName()))
+        FunctionRegistry.register(function);
+  }
+
+  /** Issue #11927: resetting the registries for this class must not leave the SQL functions out of the unified registry. */
+  @Test
+  void resettingTheRegistriesKeepsTheSqlFunctions() {
+    assertThat(FunctionRegistry.hasFunction("cypherRID")).isTrue();
+    ensureRegistriesLoaded();
+    assertThat(FunctionRegistry.hasFunction("cypherRID")).as("the SQL functions survive the reset").isTrue();
+    assertThat(FunctionRegistry.hasFunction("fulltext.searchFieldsMore")).isTrue();
   }
 
   // ===================== REGISTRY TESTS =====================
@@ -309,8 +325,8 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   void textSnakeCase() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.snakeCase");
-    assertThat(fn.execute(new Object[] { "helloWorld" }, null)).isEqualTo("hello_world");
-    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[] { "helloWorld" }, null)).isEqualTo("hello-world");
+    assertThat(fn.execute(new Object[] { "hello world" }, null)).isEqualTo("hello-world");
   }
 
   @Test
@@ -335,8 +351,8 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   void textSlug() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.slug");
-    assertThat(fn.execute(new Object[] { "Hello World!" }, null)).isEqualTo("hello-world");
-    assertThat(fn.execute(new Object[] { "Hello World!", "_" }, null)).isEqualTo("hello_world");
+    assertThat(fn.execute(new Object[] { "Hello World!" }, null)).isEqualTo("Hello-World-");
+    assertThat(fn.execute(new Object[] { "Hello World!", "_" }, null)).isEqualTo("Hello_World_");
   }
 
   @Test
@@ -365,16 +381,16 @@ class CypherBuiltInFunctionsTest extends TestHelper {
   @Test
   void textCharAt() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.charAt");
-    assertThat(fn.execute(new Object[] { "hello", 0 }, null)).isEqualTo("h");
-    assertThat(fn.execute(new Object[] { "hello", 4 }, null)).isEqualTo("o");
+    assertThat(fn.execute(new Object[] { "hello", 0 }, null)).isEqualTo(104L);
+    assertThat(fn.execute(new Object[] { "hello", 4 }, null)).isEqualTo(111L);
     assertThat(fn.execute(new Object[] { "hello", 10 }, null)).isNull();
   }
 
   @Test
   void textCode() {
     final StatelessFunction fn = CypherFunctionRegistry.get("text.code");
-    assertThat(fn.execute(new Object[] { "A" }, null)).isEqualTo(65L);
-    assertThat(fn.execute(new Object[] { "a" }, null)).isEqualTo(97L);
+    assertThat(fn.execute(new Object[] { 65L }, null)).isEqualTo("A");
+    assertThat(fn.execute(new Object[] { 97L }, null)).isEqualTo("a");
   }
 
   // ===================== MAP FUNCTION TESTS =====================

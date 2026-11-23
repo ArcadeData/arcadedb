@@ -31,7 +31,6 @@ import com.arcadedb.exception.ValueOutOfRangeException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
@@ -602,7 +601,13 @@ public enum Type {
   private static boolean isDateTimeTarget(final Class<?> targetClass) {
     return targetClass.equals(Date.class) || targetClass.equals(Calendar.class) || targetClass.equals(LocalDate.class)
         || targetClass.equals(LocalDateTime.class) || targetClass.equals(ZonedDateTime.class)
-        || targetClass.equals(Instant.class);
+        || targetClass.equals(Instant.class) || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class)
+        || targetClass.equals(CypherDuration.class);
+  }
+
+  /** The time of day {@code time} names, read on the UTC clock: the reading a LOCAL_TIME gives a time that carries an offset. */
+  private static LocalTime utcWallClock(final OffsetTime time) {
+    return time.withOffsetSameInstant(ZoneOffset.UTC).toLocalTime();
   }
 
   /**
@@ -724,6 +729,52 @@ public enum Type {
   }
 
   /**
+   * The index key of a list or an array on a property that is not declared (key type STRING): the text of its elements, with
+   * each floating point or decimal number spelled as {@link #canonicalNumberKey} spells a single one, nested lists and arrays
+   * too. [1.0], [1] and a double[] or long[] of 1 are equal for Cypher, so they are one key: an equality seek finds them all.
+   */
+  public static String canonicalListKey(final Object arrayOrCollection) {
+    return elementsText(arrayOrCollection, true);
+  }
+
+  /**
+   * The text of an array's or a collection's elements, as {@code List.toString()} writes the list of the same elements, with
+   * nested arrays and collections written the same way: an array is stored as a list, so an array inside one comes back from
+   * a reload as an array inside a list, and both have to give the text the value was keyed under.
+   */
+  private static String elementsText(final Object arrayOrCollection, final boolean canonicalNumbers) {
+    final StringBuilder text = new StringBuilder().append('[');
+    if (arrayOrCollection instanceof Collection<?> collection) {
+      boolean first = true;
+      for (final Object element : collection) {
+        if (!first)
+          text.append(", ");
+        first = false;
+        appendElement(text, element, canonicalNumbers);
+      }
+    } else {
+      final int length = Array.getLength(arrayOrCollection);
+      for (int i = 0; i < length; i++) {
+        if (i > 0)
+          text.append(", ");
+        appendElement(text, Array.get(arrayOrCollection, i), canonicalNumbers);
+      }
+    }
+    return text.append(']').toString();
+  }
+
+  private static void appendElement(final StringBuilder text, final Object element, final boolean canonicalNumbers) {
+    if (element == null)
+      text.append("null");
+    else if (element instanceof Collection || element.getClass().isArray())
+      text.append(elementsText(element, canonicalNumbers));
+    else if (canonicalNumbers && (element instanceof Double || element instanceof Float || element instanceof BigDecimal))
+      text.append(canonicalNumberKey(element));
+    else
+      text.append(element);
+  }
+
+  /**
    * Note for anyone adding a branch to the body below: the {@code catch (DateTimeException)} at the end covers the
    * WHOLE of it, not only the date branches, which are scattered through it. What keeps that honest is the target -
    * a DATE/TIME target refuses, everything else keeps the {@code null} it would have had - so a new branch throwing
@@ -768,10 +819,17 @@ public enum Type {
 
     try {
       if (targetClass.equals(String.class)) {
-        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
-        // not reversible. Refuse it rather than store that (issue #9041).
-        if (property != null && valueClass.isArray())
+        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
+        // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
+        // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
+        // "[1, 2]", the text the same list has (issue #12896)
+        if (property != null && valueClass.isArray() && valueClass != long[].class && valueClass != double[].class)
           throw inconvertible(value, "STRING", property);
+        // Without a property - an index key of an undeclared property, whose key type is STRING - the identity text was a key no
+        // seek found and no update or delete removed: the text of the content is the key (issue #11578). A collection is written
+        // the same way, so an array nested in it is its content too.
+        if (valueClass.isArray() || property == null && value instanceof Collection)
+          return elementsText(value, false);
         // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)
         if (value instanceof ZonedDateTime zoned)
           return new CypherDateTime(zoned).toString();
@@ -1045,14 +1103,82 @@ public enum Type {
               "Cannot convert object of type '" + value.getClass().getName() + "' into an EmbeddedDocument");
 
       } else if (targetClass.equals(OffsetTime.class)) {
-        if (value instanceof String text)
+        // A time of day keeps its offset; one without (a local time, a local datetime, the text with no offset) is at UTC, and a
+        // datetime keeps its time of day, as a DATE keeps the date of one. Anything else is refused below, never kept as it came
+        // (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case OffsetTime time -> {
+          return time;
+        }
+        case String text -> {
           return CypherTime.parse(text).getValue();
+        }
+        case LocalTime time -> {
+          return time.atOffset(ZoneOffset.UTC);
+        }
+        case OffsetDateTime offset -> {
+          return offset.toOffsetTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.toOffsetDateTime().toOffsetTime();
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime().atOffset(ZoneOffset.UTC);
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toOffsetTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(LocalTime.class)) {
-        if (value instanceof String text)
-          return CypherLocalTime.parse(text).getValue();
+        // The UTC wall clock of a value that carries an offset, as a DATETIME reads one (issue #10489); a datetime keeps its time
+        // of day. Anything else is refused below, never kept as it came (issue #12296)
+        final Object temporal = TemporalUtil.toCoreJavaType(value);
+        switch (temporal) {
+        case LocalTime time -> {
+          return time;
+        }
+        case String text -> {
+          return utcWallClock(CypherTime.parse(text).getValue());
+        }
+        case OffsetTime time -> {
+          return utcWallClock(time);
+        }
+        case LocalDateTime local -> {
+          return local.toLocalTime();
+        }
+        case OffsetDateTime offset -> {
+          return offset.atZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case ZonedDateTime zoned -> {
+          return zoned.withZoneSameInstant(ZoneOffset.UTC).toLocalTime();
+        }
+        case Instant instant -> {
+          return instant.atOffset(ZoneOffset.UTC).toLocalTime();
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(CypherDuration.class)) {
-        if (value instanceof String text)
+        // Only an amount of time is a duration: a point in time or a time of day is refused below (issue #12296)
+        switch (value) {
+        case CypherDuration duration -> {
+          return duration;
+        }
+        case String text -> {
           return CypherDuration.parse(text);
+        }
+        case Duration duration -> {
+          return new CypherDuration(0, 0, duration.getSeconds(), duration.getNano());
+        }
+        case Period period -> {
+          return new CypherDuration(period.toTotalMonths(), period.getDays(), 0, 0);
+        }
+        default -> {
+        }
+        }
       } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, value, property);
       } else if (targetClass.equals(Calendar.class)) {
@@ -1172,11 +1298,22 @@ public enum Type {
               // The declared type keeps the zone the text names, a region included (issue #8572)
               try {
                 return CypherDateTime.parse(valueAsString).getValue();
+              } catch (final TemporalUtil.InvalidTemporalTextException e) {
+                // An offset the zone does not have there: the general parse would keep the zone and replace the offset,
+                // storing another instant than the text states (issue #12298)
+                throw new IllegalArgumentException(e.getMessage(), e);
               } catch (final RuntimeException e) {
                 // not Cypher datetime text: the general parse below decides
               }
             }
-            return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
+            try {
+              // The general parse keeps the zone of a text that names one and treats its offset as a preference: a
+              // contradiction is refused here too (issue #12298)
+              return truncateToPropertyPrecision(
+                  TemporalUtil.requireOffsetMatchesZone(valueAsString, DateUtils.parseZonedDateTime(database, valueAsString)), property);
+            } catch (final TemporalUtil.InvalidTemporalTextException e) {
+              throw new IllegalArgumentException(e.getMessage(), e);
+            }
         }
       } else if (targetClass.equals(Instant.class)) {
         switch (value) {
@@ -1374,6 +1511,7 @@ public enum Type {
   private static boolean mustBeInstanceOfTarget(final Class<?> targetClass) {
     return targetClass.equals(BigDecimal.class) || targetClass.equals(LocalDate.class) || targetClass.equals(LocalDateTime.class)
         || targetClass.equals(ZonedDateTime.class) || targetClass.equals(Instant.class) || targetClass.equals(byte[].class)
+        || targetClass.equals(OffsetTime.class) || targetClass.equals(LocalTime.class) || targetClass.equals(CypherDuration.class)
         || isArrayOfNumbers(targetClass);
   }
 

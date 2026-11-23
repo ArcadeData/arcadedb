@@ -33,11 +33,16 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class OrBlock extends BooleanExpression {
-  private static final boolean[] NO_SCORING_ARM = new boolean[0];
+  private static final byte[] NO_SCORING_ARM = new byte[0];
+  private static final byte SETS_SCORE = 1;
+  private static final byte SETS_SIMILARITY = 2;
 
   public List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
-  // Which arms set $score, worked out on the first evaluation
-  private boolean[] scoringArms;
+  /**
+   * What each arm sets, {@link #SETS_SCORE} and {@link #SETS_SIMILARITY} bits, followed by the union of all of them: one array,
+   * so a concurrent execution sees either nothing or all of it.
+   */
+  private byte[] scoringArms;
 
   public OrBlock() {
   }
@@ -61,14 +66,19 @@ public class OrBlock extends BooleanExpression {
    * record gets the best score of the arms it matched, or 0 when it matched none of them. That is the score
    * {@code MergeByScoreStep} serves a record matching several branches with, and the plan must not change it (issue
    * #11618): stopping at the first match gave the first matching arm's score, or left the previous record's.
+   * <p>
+   * {@code $similarity}, which the more-like-this arms set beside {@code $score}, follows the same rule (issue #11773): the
+   * best of the arms that set it and matched, 0 when none of them matched, so an arm that does not match cannot reset the
+   * similarity of one evaluated before it.
    */
   private Boolean evaluate(final Function<BooleanExpression, Boolean> arm, final CommandContext context) {
-    final boolean[] scoring = scoringArms(context);
+    final byte[] scoring = scoringArms(context);
     boolean hasNull = false;
     boolean matched = false;
     float best = 0f;
+    float bestSimilarity = 0f;
     for (int i = 0; i < subBlocks.size(); i++) {
-      if (matched && !scoring[i])
+      if (matched && scoring[i] == 0)
         continue;
       final Boolean result = arm.apply(subBlocks.get(i));
       if (result == null)
@@ -77,27 +87,38 @@ public class OrBlock extends BooleanExpression {
         if (scoring == NO_SCORING_ARM)
           return true;
         matched = true;
-        if (scoring[i] && context.getVariable("$score") instanceof Number score)
+        if ((scoring[i] & SETS_SCORE) != 0 && context.getVariable("$score") instanceof Number score)
           best = Math.max(best, score.floatValue());
+        if ((scoring[i] & SETS_SIMILARITY) != 0 && context.getVariable("$similarity") instanceof Number similarity)
+          bestSimilarity = Math.max(bestSimilarity, similarity.floatValue());
       }
     }
     if (matched) {
       context.setVariable("$score", best);
+      if ((scoring[scoring.length - 1] & SETS_SIMILARITY) != 0)
+        context.setVariable("$similarity", bestSimilarity);
       return true;
     }
     // If any operand was null and none were true, return null (SQL three-valued logic)
     return hasNull ? null : false;
   }
 
-  /** Which arms set {@code $score}, worked out once: {@link #NO_SCORING_ARM} when none does. */
-  private boolean[] scoringArms(final CommandContext context) {
-    boolean[] arms = scoringArms;
+  /** What each arm sets, worked out once: {@link #NO_SCORING_ARM} when no arm sets {@code $score}. */
+  private byte[] scoringArms(final CommandContext context) {
+    byte[] arms = scoringArms;
     if (arms == null) {
-      arms = new boolean[subBlocks.size()];
-      boolean any = false;
-      for (int i = 0; i < arms.length; i++)
-        any |= arms[i] = subBlocks.get(i).setsScore(context);
-      scoringArms = arms = any ? arms : NO_SCORING_ARM;
+      final int count = subBlocks.size();
+      arms = new byte[count + 1];
+      byte all = 0;
+      for (int i = 0; i < count; i++) {
+        final BooleanExpression block = subBlocks.get(i);
+        if (block.setsScore(context))
+          arms[i] = (byte) (SETS_SCORE | (block.setsSimilarity(context) ? SETS_SIMILARITY : 0));
+        all |= arms[i];
+      }
+      arms[count] = all;
+      // benign race: a concurrent execution computes the same value
+      scoringArms = arms = all != 0 ? arms : NO_SCORING_ARM;
     }
     return arms;
   }
@@ -105,6 +126,12 @@ public class OrBlock extends BooleanExpression {
   @Override
   public boolean setsScore(final CommandContext context) {
     return scoringArms(context) != NO_SCORING_ARM;
+  }
+
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    final byte[] arms = scoringArms(context);
+    return arms != NO_SCORING_ARM && (arms[arms.length - 1] & SETS_SIMILARITY) != 0;
   }
 
   public Boolean evaluate(final Object currentRecord, final CommandContext context) {

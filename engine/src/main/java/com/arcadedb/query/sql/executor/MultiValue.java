@@ -19,6 +19,8 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.DistinctNumericKey;
+import com.arcadedb.function.DistinctValueSet;
 import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.Callable;
@@ -554,7 +556,8 @@ public class MultiValue {
    * Utility function that remove a value from the main object. It takes care about collections/array and single values.
    *
    * @param iObject         MultiValue where to add value(s)
-   * @param iToRemove       Single value, array of values or collections of values. Map are not supported.
+   * @param iToRemove       Single value, array of values or collections of values. A Map is a single value: it is removed
+   *                        as one element of a collection (equal by content) and as one key of a map.
    * @param iAllOccurrences True if the all occurrences must be removed or false of only the first one (Like
    *                        java.util.Collection.remove())
    *
@@ -598,10 +601,6 @@ public class MultiValue {
               removeFromCollection(iObject, coll, o, iAllOccurrences);
           }
 
-        } else if (iToRemove instanceof Map<?, ?>) {
-          // MAP
-          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) iToRemove).entrySet())
-            coll.remove(entry.getKey());
         } else if (iToRemove instanceof Iterator<?>) {
           // ITERATOR
           if (iToRemove instanceof MultiIterator<?>)
@@ -619,25 +618,25 @@ public class MultiValue {
             }
           }
         } else
+          // A single value, a Map included: a map in a list of maps (or embedded documents) is one element of it, never the
+          // list of its keys, which is how a Map to remove was read before (issue #12085)
           removeFromCollection(iObject, coll, iToRemove, iAllOccurrences);
 
       } else if (iObject.getClass().isArray()) {
         // ARRAY - ?
 
         final Object[] copy;
-        if (iToRemove instanceof Collection<?>) {
-          // ARRAY - COLLECTION
+        if (iToRemove instanceof Collection<?> toRemoveItems) {
+          // ARRAY - COLLECTION. The copy is sized by what is kept, not by the source length minus the items asked for: an item
+          // the array does not hold, or holds twice, used to leave trailing nulls or overflow the copy
           final int sourceTot = Array.getLength(iObject);
-          final int tot = sourceTot - ((Collection<Object>) iToRemove).size();
-          copy = new Object[tot];
-
-          int k = 0;
+          final List<Object> kept = new ArrayList<>(sourceTot);
           for (int i = 0; i < sourceTot; ++i) {
             final Object o = Array.get(iObject, i);
             if (o != null) {
               boolean found = false;
-              for (final Object toRemove : (Collection<Object>) iToRemove) {
-                if (o.equals(toRemove)) {
+              for (final Object toRemove : toRemoveItems) {
+                if (sameItem(toRemove, o)) {
                   // SKIP
                   found = true;
                   break;
@@ -645,9 +644,10 @@ public class MultiValue {
               }
 
               if (!found)
-                copy[k++] = o;
+                kept.add(o);
             }
           }
+          copy = kept.toArray();
 
         } else if (iToRemove != null && iToRemove.getClass().isArray()) {
           throw new UnsupportedOperationException("Cannot execute remove() against an array");
@@ -668,17 +668,54 @@ public class MultiValue {
 
   protected static void removeFromCollection(final Object iObject, final Collection<Object> coll, final Object iToRemove,
       final boolean iAllOccurrences) {
-    if (iAllOccurrences && !(iObject instanceof Set)) {
-      // BROWSE THE COLLECTION ONE BY ONE TO REMOVE ALL THE OCCURRENCES. Objects.equals and not iToRemove::equals:
-      // binding a method reference on a null receiver throws from Objects.requireNonNull before the first element is
-      // even looked at, so removeAll(null) used to be an NPE where remove(null) - which lands on the plain
-      // coll.remove(null) below - was always harmless (issue #7889). The ARGUMENT stays the receiver of the
-      // comparison, which is both what the method reference did and what Collection.remove(Object) specifies, so an
-      // asymmetric equals() keeps answering what it answered before.
-      coll.removeIf(element -> Objects.equals(iToRemove, element));
-    } else
-      coll.remove(iToRemove);
+    // An item is the one asked for under the membership key set() uses (DistinctNumericKey), not under Java equals(): a list written
+    // by openCypher holds Longs, one written by SQL holds Integers, and remove(2) has to find the 2 in both, as =, IN and CONTAINS
+    // do (issue #11774). The key unifies the number classes only, it converts nothing else, so remove('2') never takes a 2
+    if (!DistinctNumericKey.needsKey(iToRemove)) {
+      // A string, a boolean, null: Java equals() is the key. Objects.equals and not iToRemove::equals: binding a method reference
+      // on a null receiver throws before the first element is looked at, so removeAll(null) was an NPE (issue #7889)
+      if (iAllOccurrences && !(iObject instanceof Set))
+        coll.removeIf(element -> Objects.equals(iToRemove, element));
+      else
+        coll.remove(iToRemove);
+      return;
+    }
 
+    if (coll instanceof DistinctValueSet) {
+      coll.remove(iToRemove);
+      return;
+    }
+
+    final Object key = DistinctNumericKey.canonicalize(iToRemove);
+    if (iAllOccurrences || iObject instanceof Set)
+      // A set built by Java equals() can hold 1 and 1L both: both are the item asked for
+      coll.removeIf(element -> sameItemAsKey(key, iToRemove, element));
+    else
+      for (final Iterator<Object> it = coll.iterator(); it.hasNext(); )
+        if (sameItemAsKey(key, iToRemove, it.next())) {
+          it.remove();
+          break;
+        }
+  }
+
+  /**
+   * Whether two items of a collection are one item under the membership key of the SQL collection functions
+   * ({@link DistinctNumericKey}): numbers equal across their Java classes, records by identity, everything else by Java equals().
+   */
+  public static boolean sameItem(final Object item, final Object element) {
+    if (!DistinctNumericKey.needsKey(item))
+      return Objects.equals(item, element);
+    return sameItemAsKey(DistinctNumericKey.canonicalize(item), item, element);
+  }
+
+  private static boolean sameItemAsKey(final Object key, final Object item, final Object element) {
+    if (element == null)
+      return false;
+    // The commonest case, two numbers or two records of one class equal by equals(), needs no key of the element: two equal values
+    // always share their key
+    if (element.getClass() == item.getClass() && element.equals(item))
+      return true;
+    return DistinctNumericKey.needsKey(element) && key.equals(DistinctNumericKey.canonicalize(element));
   }
 
   private static void batchRemove(final Collection<Object> coll, final Iterator<?> it) {

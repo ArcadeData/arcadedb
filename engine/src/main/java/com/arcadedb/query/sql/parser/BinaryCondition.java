@@ -22,12 +22,14 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.schema.DocumentType;
 
 import java.lang.reflect.Array;
@@ -57,11 +59,40 @@ public class BinaryCondition extends BooleanExpression {
   /**
    * A comparison with a null operand is unknown (null), not false, so {@code NOT (k = 5)} and {@code k <> 5} leave out a record
    * with no {@code k}, as {@code k NOT IN [5]} does (issue #8979).
+   * <p>
+   * Two values of one class that has no order, such as two rows compared with {@code <}, make an ordering operator throw
+   * ClassCastException (the contract the operator tests pin). That is the statement's mistake, so it is reported as a type
+   * mismatch, a client error, rather than a server fault (issue #11893). A ClassCastException from any other operator is not
+   * that mistake, it is a fault, and keeps its type.
    */
   private Boolean compare(final CommandContext context, final Object leftVal, final Object rightVal) {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
-    return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    try {
+      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    } catch (final ClassCastException e) {
+      if (!operator.isRangeOperator())
+        throw e;
+      throw noOrder(leftVal, rightVal, operator.toString(), e);
+    }
+  }
+
+  /**
+   * The refusal of an ordering comparison between two values that have no order. Shared with {@code BETWEEN}, which compares as
+   * {@code >=} and {@code <=} do (issue #11893).
+   */
+  static TypeMismatchException noOrder(final Object leftVal, final Object rightVal, final String operator,
+      final ClassCastException cause) {
+    return new TypeMismatchException(
+        "Cannot compare " + kindOf(leftVal) + " with " + kindOf(rightVal) + " using '" + operator + "': the values have no order", cause);
+  }
+
+  private static String kindOf(final Object value) {
+    if (value == null)
+      return "null";
+    if (value instanceof Result || value instanceof Identifiable)
+      return "a record";
+    return value.getClass().getSimpleName();
   }
 
   /**
@@ -148,27 +179,39 @@ public class BinaryCondition extends BooleanExpression {
     return function != null && function.answersByScore();
   }
 
-  /** A bare call of a function that answers by score on either side sets {@code $score}, as evaluating it runs both sides. */
+  /**
+   * A bare call of a function that sets {@code $score} on either side sets it, as evaluating the condition runs both sides:
+   * the full-text searches, and the more-like-this functions that answer from no index (issue #11773).
+   */
   @Override
   public boolean setsScore(final CommandContext context) {
-    return answersByScore(indexableFunction(left, context)) || answersByScore(indexableFunction(right, context));
+    final SQLFunction leftFunction = function(left, context);
+    if (leftFunction != null && leftFunction.setsScore())
+      return true;
+    final SQLFunction rightFunction = function(right, context);
+    return rightFunction != null && rightFunction.setsScore();
   }
 
-  private static boolean answersByScore(final IndexableSQLFunction function) {
-    return function != null && function.answersByScore();
+  @Override
+  public boolean setsSimilarity(final CommandContext context) {
+    final SQLFunction leftFunction = function(left, context);
+    if (leftFunction != null && leftFunction.setsSimilarity())
+      return true;
+    final SQLFunction rightFunction = function(right, context);
+    return rightFunction != null && rightFunction.setsSimilarity();
   }
 
   /** The function of a bare call on the left-hand side, the path {@link #executeIndexedFunction} delegates down. */
   private IndexableSQLFunction indexableFunction(final CommandContext context) {
-    return indexableFunction(left, context);
+    return function(left, context) instanceof final IndexableSQLFunction indexable ? indexable : null;
   }
 
   /** The function of {@code operand} when it is a bare call of one, otherwise null. */
-  private static IndexableSQLFunction indexableFunction(final Expression operand, final CommandContext context) {
+  private static SQLFunction function(final Expression operand, final CommandContext context) {
     if (operand == null || !(operand.getMathExpression() instanceof final BaseExpression base) || base.identifier == null
         || base.identifier.levelZero == null || base.identifier.levelZero.functionCall == null)
       return null;
-    return base.identifier.levelZero.functionCall.getIndexableFunction(context);
+    return base.identifier.levelZero.functionCall.getSQLFunction(context);
   }
 
   /**

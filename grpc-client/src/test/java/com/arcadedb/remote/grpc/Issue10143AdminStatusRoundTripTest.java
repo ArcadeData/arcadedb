@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.NeedRetryException;
@@ -82,6 +83,9 @@ class Issue10143AdminStatusRoundTripTest {
     types.put(new DatabaseOperationInProgressException("A backup of database 'shop' is already running"),
         ConcurrentModificationException.class);
     types.put(new IllegalArgumentException("Database name is empty"), RemoteException.class);
+    // A statement the admin service ran for the caller, refused by the database (issue #12464): INVALID_ARGUMENT with no
+    // class-name trailer, so a caller's mistake like the IllegalArgumentException arm above, not a server fault
+    types.put(new CommandParsingException("ALIGN DATABASE is not available on this server"), RemoteException.class);
     types.put(new ServerControlPlane.OperationNotAvailableException("HA is not enabled on this server"), RemoteException.class);
     // The arms this issue is about: retryable, never "may already have been applied"
     types.put(new NeedRetryException("Resync in progress"), NeedRetryException.class);
