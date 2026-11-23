@@ -188,6 +188,8 @@ class CypherMergeConcurrentShapesTest extends TestHelper {
    */
   private int commitBatch(final String statement, final List<Map<String, Object>> rows, final boolean edges) {
     for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
+      if (Thread.currentThread().isInterrupted())
+        throw new IllegalStateException("cancelled");
       database.begin();
       try {
         int created;
@@ -228,7 +230,9 @@ class CypherMergeConcurrentShapesTest extends TestHelper {
       for (final Future<?> future : futures)
         future.get(120, TimeUnit.SECONDS);
     } finally {
+      // Interrupt the workers still running after a failure or a timeout and wait for them, so the teardown never drops the database under a write
       executor.shutdownNow();
+      executor.awaitTermination(30, TimeUnit.SECONDS);
     }
   }
 

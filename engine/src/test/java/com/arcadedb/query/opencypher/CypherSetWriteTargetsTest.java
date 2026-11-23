@@ -133,7 +133,7 @@ class CypherSetWriteTargetsTest extends TestHelper {
         futures.add(executor.submit(() -> {
           start.await();
           int committed = 0;
-          for (int i = 0; i < perThread; i++) {
+          for (int i = 0; i < perThread && !Thread.currentThread().isInterrupted(); i++) {
             database.transaction(() -> database.command("opencypher", increment).close(), false, 200);
             committed++;
           }
@@ -146,7 +146,9 @@ class CypherSetWriteTargetsTest extends TestHelper {
 
       assertThat(numbers("MATCH (c:Cnt {id: 1}) RETURN c.n AS n", "n", Map.of())).containsExactly((long) total);
     } finally {
+      // Interrupt the workers still running after a failure or a timeout and wait for them, so the teardown never drops the database under a write
       executor.shutdownNow();
+      executor.awaitTermination(30, TimeUnit.SECONDS);
     }
   }
 }

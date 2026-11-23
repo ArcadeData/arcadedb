@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * of nothing at all (an empty collect, a null from OPTIONAL MATCH) and the refusal of a connected node.
  */
 class CypherDeleteShapesOracleTest extends TestHelper {
+  private QueryStatistics lastStatistics;
 
   private List<Map<String, Object>> run(final String statement) {
     final List<Map<String, Object>> rows = new ArrayList<>();
@@ -53,8 +54,6 @@ class CypherDeleteShapesOracleTest extends TestHelper {
     });
     return rows;
   }
-
-  private QueryStatistics lastStatistics;
 
   private long count(final String statement) {
     try (final ResultSet rs = database.query("opencypher", statement)) {
