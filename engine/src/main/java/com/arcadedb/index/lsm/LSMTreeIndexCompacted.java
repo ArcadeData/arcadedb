@@ -172,12 +172,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return Collections.emptySet();
 
     try {
-      final Set<IndexCursorEntry> set = new HashSet<>();
+      final EntryCollector sink = resultSetSink(keys, convertedKeys, limit);
 
       // SEARCH IN COMPACTED INDEX
-      searchInCompactedIndex(convertedKeys, resultSetSink(keys, convertedKeys, limit, set));
+      searchInCompactedIndex(convertedKeys, sink);
 
-      return set;
+      return sink.entries();
 
     } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot lookup key '" + Arrays.toString(keys) + "' in index '" + componentName + "'", e);

@@ -1218,15 +1218,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     boolean onPage(BasePage page, Binary pageBuffer, int count);
   }
 
-  /** The sink of a {@code get()}: the live entries of the key, as {@link IndexCursorEntry} objects. */
-  protected KeyLookupSink resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set) {
-    final Set<TransactionIndexContext.ComparableKey> removedKeys = new HashSet<>();
-    final RidHashSet deletedRIDs = new RidHashSet();
-    return (page, pageBuffer, count) -> lookupInPageAndAddInResultset(page, pageBuffer, count, originalKeys, convertedKeys, limit,
-        set, removedKeys, deletedRIDs);
-  }
-
   /**
    * The sink of {@link LSMTreeIndex#getPostings}: every value of the key, decoded into primitives in the order the walk meets them,
    * deletion markers included, for {@link LSMTreeIndexPostings#resolve()} to apply them (issue #12458). It stops at a key-wide
@@ -1256,10 +1247,44 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     };
   }
 
+  /**
+   * The sink of a {@code get()}: the live entries of the key, as {@link IndexCursorEntry} objects. Its three collections are created
+   * when a page holds the key (issue #13243): the lookup of a type with many buckets probes the index of every bucket and
+   * all but one of them miss, so a collection built per probe was most of what a lookup allocated.
+   */
+  protected final class EntryCollector implements KeyLookupSink {
+    private final Object[]                                      originalKeys;
+    private final Object[]                                      convertedKeys;
+    private final int                                           limit;
+    private       Set<IndexCursorEntry>                         entries;
+    private       Set<TransactionIndexContext.ComparableKey>    removedKeys;
+    private       RidHashSet                                    deletedRIDs;
+
+    private EntryCollector(final Object[] originalKeys, final Object[] convertedKeys, final int limit) {
+      this.originalKeys = originalKeys;
+      this.convertedKeys = convertedKeys;
+      this.limit = limit;
+    }
+
+    @Override
+    public boolean onPage(final BasePage page, final Binary pageBuffer, final int count) {
+      return lookupInPageAndAddInResultset(page, pageBuffer, count, this);
+    }
+
+    /** The live entries found, an empty set when no page held the key. */
+    public Set<IndexCursorEntry> entries() {
+      return entries != null ? entries : Collections.emptySet();
+    }
+  }
+
+  protected EntryCollector resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit) {
+    return new EntryCollector(originalKeys, convertedKeys, limit);
+  }
+
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
-      final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) {
-    final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer, convertedKeys, 1);
+      final EntryCollector collector) {
+    final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer,
+        collector.convertedKeys, 1);
     if (result.found) {
       // REAL ALL THE ENTRIES
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
@@ -1267,7 +1292,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       // #4945: deletedRIDs is threaded from the caller across pages and the compacted sub-index, exactly like
       // removedKeys. For a non-unique index a per-RID tombstone and its ADD frequently live in different pages,
       // so a page-local deletedRIDs set resurrected the deleted RID once the walk reached the older page.
-      final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
+      final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(collector.convertedKeys);
 
       // START FROM THE LAST ENTRY
       for (int i = allValues.size() - 1; i > -1; --i) {
@@ -1283,29 +1308,35 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           //     deletedRIDs-only check would then be a no-op for it.
           //   - anything else: a PER-RID tombstone, which only removes that one RID.
           if (rid.getBucketId() == -1 && rid.getPosition() == -1) {
-            removedKeys.add(keys);
+            if (collector.removedKeys == null)
+              collector.removedKeys = new HashSet<>();
+            collector.removedKeys.add(keys);
           } else {
-            deletedRIDs.add(getOriginalRID(rid));
+            if (collector.deletedRIDs == null)
+              collector.deletedRIDs = new RidHashSet();
+            collector.deletedRIDs.add(getOriginalRID(rid));
           }
           continue;
         }
 
         // The walk is newest-to-oldest, so a key-wide tombstone already seen suppresses only the older entries
         // still to come - a newer INSERT at the same key, visited earlier in this loop, is unaffected.
-        if (removedKeys.contains(keys)) {
+        if (collector.removedKeys != null && collector.removedKeys.contains(keys)) {
           // Skipping rid because key is in removedKeys
           continue;
         }
 
         // For all indexes, check if this specific RID has been deleted
-        if (deletedRIDs.contains(rid)) {
+        if (collector.deletedRIDs != null && collector.deletedRIDs.contains(rid)) {
           // Skipping rid because it is in deletedRIDs
           continue;
         }
 
-        set.add(new IndexCursorEntry(originalKeys, rid, 1));
+        if (collector.entries == null)
+          collector.entries = new HashSet<>();
+        collector.entries.add(new IndexCursorEntry(collector.originalKeys, rid, 1));
 
-        if (limit > -1 && set.size() >= limit) {
+        if (collector.limit > -1 && collector.entries.size() >= collector.limit) {
           return false;
         }
       }

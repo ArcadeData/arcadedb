@@ -31,6 +31,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
@@ -51,6 +52,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public static final int                   CURRENT_VERSION     = 1;
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
+  private static final IndexCursor          EMPTY_CURSOR        = new EmptyIndexCursor();
   private             LSMTreeIndexCompacted subIndex            = null;
   private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
@@ -356,12 +358,14 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
       return new TempIndexCursor(Collections.emptyList());
 
-    final Set<IndexCursorEntry> set = new HashSet<>();
+    final EntryCollector sink = resultSetSink(keys, convertedKeys, limit);
 
     // NON COMPACTED INDEX, SEARCH IN ALL THE PAGES
-    searchInNonCompactedIndex(convertedKeys, resultSetSink(keys, convertedKeys, limit, set));
+    searchInNonCompactedIndex(convertedKeys, sink);
 
-    return new TempIndexCursor(set);
+    final Set<IndexCursorEntry> entries = sink.entries();
+    // A probe that found nothing answers with the shared empty cursor: a type with many buckets probes them all and all but one miss
+    return entries.isEmpty() ? EMPTY_CURSOR : new TempIndexCursor(entries);
   }
 
   /**
