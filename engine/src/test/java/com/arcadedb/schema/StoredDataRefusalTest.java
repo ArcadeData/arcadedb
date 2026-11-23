@@ -90,7 +90,7 @@ class StoredDataRefusalTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "UPDATE T SET k = 2")))
         .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("Cannot modify primary key when the bucket selection is partitioned");
+        .hasMessageContaining("Cannot modify the partition key");
   }
 
   private void createPartitionedType() {

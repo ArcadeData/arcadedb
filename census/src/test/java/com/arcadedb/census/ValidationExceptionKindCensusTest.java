@@ -48,8 +48,6 @@ class ValidationExceptionKindCensusTest {
 
   /** The reviewed constructions with no kind, as {@code class#method} relative to {@code com/arcadedb}, each with why. */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
-      Map.entry("database/DocumentIndexer#updateDocument",
-          "a change of the partition key of a partitioned type: the bucket selection fixes it, no constraint declared on the property"),
       Map.entry("exception/RecordVetoedException#<init>", "a listener's veto of the whole record, not a declared constraint on a value"),
       Map.entry("database/ExistingRecordsCheck#requireSamples",
           "a MIN, MAX or REGEXP of a TIMESERIES column that stored samples break: TimeSeriesColumnConstraints answers its reason as "
@@ -59,6 +57,8 @@ class ValidationExceptionKindCensusTest {
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),
       Map.entry("query/sql/executor/SaveElementStep#refuseViolation",
           "a TIMESERIES column constraint: TimeSeriesColumnConstraints answers its reason as one sentence for every constraint"),
+      Map.entry("database/DocumentIndexer#checkPartitionKeyUnchanged",
+          "a change of the partition key of a partitioned type (issue #12961): the bucket selection fixes it, no constraint is declared on the property"),
       Map.entry("serializer/BinarySerializer#checkLinkTarget",
           "a record linking itself before it has a position (issue #11850): a limit of record creation, no constraint declared"),
       Map.entry("remote/RemoteExceptionRebuilder#<clinit>",

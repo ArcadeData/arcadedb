@@ -453,7 +453,7 @@ class HttpErrorStatusServerTest extends BaseGraphServerTest {
       database.command("sql", "ALTER TYPE " + P + " BUCKETSELECTIONSTRATEGY `partitioned('k')`");
       database.transaction(() -> database.command("sql", "INSERT INTO " + P + " SET k = 1, n = 1"));
 
-      final String refusal = "Cannot modify primary key when the bucket selection is partitioned";
+      final String refusal = "Cannot modify the partition key";
       final JSONObject sql = post("sql", "UPDATE " + P + " SET k = 100 WHERE n = 1", 400);
       assertThat(sql.getString("exception", "")).isEqualTo(ValidationException.class.getName());
       assertThat(sql.getString("detail", "")).contains(refusal);
