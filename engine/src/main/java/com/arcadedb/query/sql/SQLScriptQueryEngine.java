@@ -25,6 +25,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
@@ -61,6 +62,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database);
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
@@ -70,11 +73,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database);
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
@@ -84,11 +89,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
     Statement.checkParametersBound(statements, parameters);
 
@@ -96,11 +103,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
     Statement.checkPositionalParameterCount(statements, parameters == null ? 0 : parameters.length);
 
@@ -108,7 +117,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
@@ -229,7 +238,12 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return new ArrayList<>();
   }
 
-  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
+  /**
+   * @param rowCap the rows the caller reads at most (see {@link ResultRowCapScope}), {@code 0} for none. The caller reads what the last
+   *               statement of the script answers, so that statement is the only one it bounds: a statement before it feeds the
+   *               script and is not an answer to the caller
+   */
+  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext, final int rowCap) {
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
     plan.setStatements(statements);
@@ -248,6 +262,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
       if (nestedTxLevel <= 0) {
         final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
+        if (rowCap > 0 && stm == statements.getLast() && (stm instanceof SelectStatement || stm instanceof MatchStatement))
+          sub.applyRowCap(rowCap);
         plan.chain(sub);
       } else
         lastRetryBlock.add(stm);

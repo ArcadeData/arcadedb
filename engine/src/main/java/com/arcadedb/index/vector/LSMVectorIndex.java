@@ -28,6 +28,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.Record;
@@ -425,8 +426,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private       boolean       searchRebuildPending   = false;
   private final Condition     searchRebuildPublished = graphBuildLock.newCondition();
 
-  // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
-  // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
+  // Set only inside flush()'s three SKIP branches (issue #6657: released resources and a large index; issue #12120: a close
+  // for reopen) - never by the branch that actually attempts a synchronous build, successfully or not - so
+  // releaseBackgroundResources()'s recheck of the same flag (see
   // there) can tell "flush() chose not to pay for a rebuild" apart from "flush() tried and either failed or got
   // re-mutated mid-build", which also leaves graphState at MUTABLE but is a different story the recheck must not
   // relabel as a deferral. Reset at the top of every flush(), so a stale true from an earlier close on this same
@@ -563,8 +565,31 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Run by a full rebuild between reading the live set from the pages and publishing it, so a test can commit in between
   private volatile Runnable afterLiveSetReadForTest;
+  // Run by a full rebuild between parsing the pages and the cross-check of the live set against the records, so a test can commit
+  // a record the pages lack while the records already show it
+  private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+
+  /**
+   * The most records {@link #removedDuringRebuild} holds. A rebuild that outlives more removals than this stops recording them and
+   * drops what it cannot vouch for instead (see {@link #publishLocationIndex}), so what a long bulk delete costs a rebuild stays
+   * at about 16 bytes per record up to this bound (16 MB) and is never exceeded.
+   */
+  private static final int MAX_TRACKED_REMOVALS = 1 << 20;
+
+  private volatile int maxTrackedRemovals = MAX_TRACKED_REMOVALS;
+
+  /**
+   * The records a {@link #remove} replay touched since the full rebuild now running started, or null when none is running. The
+   * rebuild reads the pages and the records without the index lock, and the ids it recovers from the records alone (the minted
+   * ones, see {@link #buildGraphFromScratchExclusively}) are unknown to the location index a commit tombstones by RID, so a
+   * removal that lands after they were read can only be found by the record it removed. Guarded by {@link #lock}'s write lock.
+   */
+  private RidHashSet removedDuringRebuild;
+
+  /** Whether {@link #removedDuringRebuild} stopped recording because it reached {@link #MAX_TRACKED_REMOVALS}. */
+  private boolean removedDuringRebuildOverflowed;
 
   /**
    * How many entries of {@link #deltaVectors} are currently holding their payload, i.e. what the buffer costs the
@@ -1190,17 +1215,46 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries, final VectorLocationIndex replaced,
       final int idsFrom) {
+    publishLocationIndex(liveEntries, replaced, idsFrom, null);
+  }
+
+  /**
+   * {@link #publishLocationIndex(Collection, VectorLocationIndex, int)} for a live set that also holds ids no location index ever
+   * had: the ones the build minted for records it found by scanning them and nowhere else. A commit tombstones the ids its
+   * location index holds for a RID, so a delete or a SET NULL committed after the build read such a record leaves no mark on its
+   * minted id, and the id was published live for a record that has no vector: {@code countEntries()} above the number of records
+   * with one for the life of the session, and a search that answers a record that is gone (issue #13148). The id is judged by
+   * the record instead: it is left out when a removal may have touched the record since the build started (the rebuild records
+   * them, see {@link #removedDuringRebuild}), or when the location index has meanwhile been given an id of its own for it, which
+   * is the one that stands for the record from here on (the loops below carry it over).
+   *
+   * @param mintedIds the ids of {@code liveEntries} minted by the build, or null when it minted none
+   */
+  private void publishLocationIndex(final Collection<VectorEntryForGraphBuild> liveEntries, final VectorLocationIndex replaced,
+      final int idsFrom, final IntHashSet mintedIds) {
     // The location index never evicts, so it will hold every live entry and is sized for exactly that: the hint is
     // the live count itself, NOT the classic size*4/3 load-factor pre-adjustment. ConcurrentHashMap's constructor
     // argument is an element-count estimate that it divides by the load factor itself (`initialCapacity +
     // (initialCapacity >>> 1) + 1`, rounded up to a power of two), unlike HashMap's, which is a bucket count.
     // Pre-adjusting on top of that provisioned ~1.33x more table than the rebuild can ever use.
     final VectorLocationIndex rebuilt = new VectorLocationIndex(Math.max(16, liveEntries.size()));
+    final boolean judgeMintedIds = replaced != null && mintedIds != null && !mintedIds.isEmpty();
+    int droppedMintedIds = 0;
     for (final VectorEntryForGraphBuild entry : liveEntries) {
+      if (judgeMintedIds && mintedIds.contains(entry.vectorId) && (mayHaveBeenRemovedDuringRebuild(entry.rid)
+          || replaced.getVectorIdsForRid(entry.rid).length > 0)) {
+        // Neither live nor tombstoned: the id was never on a page and no later reader has a use for it
+        droppedMintedIds++;
+        continue;
+      }
       rebuilt.addOrUpdate(entry.vectorId, entry.isCompacted, entry.absoluteFileOffset, entry.rid, false);
       if (replaced != null && replaced.isDeleted(entry.vectorId))
         rebuilt.markDeleted(entry.vectorId);
     }
+    if (droppedMintedIds > 0)
+      LogManager.instance().log(this, Level.FINE,
+          "Rebuild of index %s left %d vector ids out of the location index: minted from records that a commit has removed or given an id since",
+          indexName, droppedMintedIds);
     if (replaced != null)
       for (int id = Math.max(0, idsFrom); id < nextId.get(); id++)
         if (!rebuilt.isLive(id) && !rebuilt.isDeleted(id)) {
@@ -3577,8 +3631,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // follows does not hold writers up.
         compactionFileLock = compactDataFile ? lockDataFileForCompaction() : -1;
         try {
+          startTrackingRemovals();
           buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst, buildCacheCapacityCap);
         } finally {
+          stopTrackingRemovals();
           // The build cache was local to the build, so it is garbage now, whether the build succeeded or not (issue #12544)
           releaseGraphBuildCacheCharge();
           releaseCompactionFileLock();
@@ -3625,6 +3681,58 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (locked == LockManager.LOCK_STATUS.NO)
       throw new TimeoutException("Cannot compact vector index '" + indexName + "': timeout locking file " + fileId);
     return locked == LockManager.LOCK_STATUS.YES ? fileId : -1;
+  }
+
+  /**
+   * Starts recording the records a {@link #remove} replay touches, from before the full rebuild takes its snapshot to its publish.
+   * The publish asks which records were removed in between (see {@link #publishLocationIndex}).
+   */
+  private void startTrackingRemovals() {
+    lock.writeLock().lock();
+    try {
+      removedDuringRebuild = new RidHashSet();
+      removedDuringRebuildOverflowed = false;
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /** Stops the recording {@link #startTrackingRemovals()} started and gives its memory back. Safe to call without one. */
+  private void stopTrackingRemovals() {
+    lock.writeLock().lock();
+    try {
+      discardRemovalTracking();
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
+  /** {@link #stopTrackingRemovals()} for a caller that already holds the write lock. */
+  private void discardRemovalTracking() {
+    removedDuringRebuild = null;
+    removedDuringRebuildOverflowed = false;
+  }
+
+  /** Called by a {@link #remove} replay under the write lock: a no-op unless a full rebuild is running. */
+  private void trackRemovalForRebuild(final RID rid) {
+    final RidHashSet tracked = removedDuringRebuild;
+    if (tracked == null)
+      return;
+    if (tracked.size() >= maxTrackedRemovals) {
+      // Past the bound the memory goes back and the publish treats every record as possibly removed
+      removedDuringRebuild = null;
+      removedDuringRebuildOverflowed = true;
+    } else
+      tracked.add(rid);
+  }
+
+  /**
+   * Whether a {@link #remove} replay may have touched {@code rid} since the running rebuild started. Under the write lock. Answers
+   * yes for every record once the recording overflowed, and no for every record when no rebuild is running.
+   */
+  private boolean mayHaveBeenRemovedDuringRebuild(final RID rid) {
+    final RidHashSet tracked = removedDuringRebuild;
+    return tracked != null ? tracked.contains(rid) : removedDuringRebuildOverflowed;
   }
 
   /** Lets the commits of this index in again. Idempotent: the build releases it after the rewrite and the caller on every exit. */
@@ -3776,6 +3884,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
           "Graph build from pages: %d total entries, %d deleted, %d active for graph",
           totalEntriesRead[0], filteredDeletedVectors[0], activeVectorIds.length);
 
+    final Runnable afterPagesParsed = afterPagesParsedForTest;
+    if (afterPagesParsed != null)
+      afterPagesParsed.run();
+
+    // The ids the document scan below minted for records the index knows nothing about. Unlike every other id of the live set they
+    // are known to no location index, so no commit can tombstone them by RID: the publish has to judge them (issue #13148).
+    final IntHashSet mintedIds = new IntHashSet();
+
     // SECONDARY DEFENSE (issue #3722): Cross-check page-parsed vectors against actual document count.
     // If pages have corrupted entries (e.g., old-format tombstones), the parser may miss many vectors.
     // In that case, fall back to scanning documents directly to rebuild the vector list.
@@ -3793,11 +3909,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
           final String vectorProp =
               vectorPropertyName();
+          final VectorLocationIndex scanLocations = vectorIndex();
           database.scanBucket(bucket.getName(), record -> {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
-              // Document exists but was not found in pages - add it with a synthetic vector ID.
+              // A record the pages lack and the location index holds is a commit that replayed its vector (its location and its
+              // delta entry) before the pages were read and published its pages and record after: not a vector the index lost.
+              // It keeps the id it has. A second, minted id would be one nobody can tombstone (a delete of the record finds
+              // the first and leaves this one live for good) and would count the record twice when the publish carries the first
+              // over as well (issue #13148). The highest id wins, as everywhere else in the live set.
+              final int[] knownIds = scanLocations.getVectorIdsForRid(rid);
+              if (knownIds.length > 0) {
+                final int knownId = knownIds[knownIds.length - 1];
+                final long offsetAndFlag = scanLocations.getOffsetAndFlag(knownId);
+                // Gone since it was listed: a commit is removing the record, and there is nothing to add for it
+                if (offsetAndFlag != VectorLocationIndex.ABSENT)
+                  ridToLatestVector.put(rid, new VectorEntryForGraphBuild(knownId, rid,
+                      VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag)));
+                return true;
+              }
+              // Document exists but was not found in pages nor in the location index - add it with a synthetic vector ID.
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
                 try {
@@ -3806,6 +3938,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   // it (issue #10938), has a NaN distance to every other vector
                   if (vector.length == metadata.dimensions && !isUnscorable(vector) && VectorUtils.isFinite(vector)) {
                     final int syntheticId = allocateVectorId();
+                    mintedIds.add(syntheticId);
                     ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
                   }
                 } catch (final IllegalArgumentException ignored) {
@@ -3913,7 +4046,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Update vectorIndex to match what we found on pages (sync it with disk state), keeping the writes committed
         // since the pages were read (issue #11099)
         if (!locationIndexAlreadyPublished)
-          publishLocationIndex(ridToLatestVector.values(), vectorIndex(), deltaSnapshotId);
+          publishLocationIndex(ridToLatestVector.values(), vectorIndex(), deltaSnapshotId, mintedIds);
         vectorIds = finalActiveVectorIdsFromPages; // Use vector IDs from pages (may include doc-scan fallback)
       } else {
         // Build vector IDs from existing vectorIndex
@@ -3929,6 +4062,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             "No live vector read from the pages of index %s (%d entries parsed): building the graph from the in-memory index instead (%d live of %d entries)",
             indexName, totalEntriesRead[0], vectorIds.length, liveLocations.size());
       }
+      // Published: every commit from here on tombstones through the ids the new location index holds, so the records need no more
+      // watching, and a build that runs on for minutes holds no memory for them
+      discardRemovalTracking();
     } finally {
       lock.writeLock().unlock();
     }
@@ -5883,7 +6019,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *       {@link #ensureGraphAvailable()} runs immediately before this on every search path, so by the time this
    *       test is made a null graph really does mean "nothing was persisted either" - it no longer also means
    *       "a graph is on disk but this session wrote before it searched, so it was never loaded" (issue #6772).</li>
-   *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough).</li>
+   *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough). Not
+   *       before: a resident small graph is searched through the delta buffer until then, so one write does not
+   *       cost the next search a build under {@link #graphBuildLock} (issue #12342).</li>
    *   <li>If threshold reached and graph is large (&ge; 1000 vectors): async rebuild + search the current graph
    *       (valid but excludes the newest vectors not yet incorporated into the graph topology).</li>
    *   <li>Below threshold: no rebuild — search uses current graph.</li>
@@ -6151,8 +6289,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * reason to build is routinely gone by the time this thread is let through.
    */
   private boolean smallGraphRebuildIsDue() {
-    return graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
-        && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE);
+    if (graphState != GraphState.MUTABLE)
+      return false;
+    final int mutations = mutationsSinceSerialize.get();
+    if (mutations <= 0)
+      return false;
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null)
+      return true; // nothing to search yet: the first build cannot wait for a threshold
+    // A resident graph is rebuilt on the calling thread only once the mutation threshold is reached, like a large one is in the
+    // background. Before that the vectors written since the graph was built are searched through the delta buffer, exactly,
+    // so a rebuild per search after every write bought nothing but a build under graphBuildLock that every other search of this
+    // bucket queued behind. The size is that of the graph of ONE bucket, so a type with many buckets has many such graphs.
+    return graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE && mutations >= getEffectiveMutationsBeforeRebuild();
   }
 
   /**
@@ -10139,8 +10288,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
         }
 
-        // Merge with delta vectors inserted since last graph rebuild
-        mergeWithDeltaScan(scorer, k, allowedRIDs, results, overlay, guard);
+        // Merge with delta vectors inserted since last graph rebuild. The buffer is taken once: the shortfall check below
+        // counts its rows again, and has to count the ones this merge saw
+        final List<DeltaVectorEntry> deltaView = mergedDelta(overlay);
+        mergeWithDeltaScan(scorer, k, allowedRIDs, results, deltaView, guard);
 
         // Issue #3722: if graph search + delta merge could not fill the request, fall back to a brute-force scan.
         // This handles degraded graph quality after rebuilds with corrupted pages.
@@ -10152,29 +10303,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // does. On a bounded backend it is a lower bound, so this would under-estimate the budget and could leave the
         // fallback unfired when it should run - acceptable, since an evicting location map already makes the whole
         // index approximate, and the same assumption is what the auto-compaction ratio rests on.
-        // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
-        // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
-        // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
         //
         // Issue #8057: the rows the calling transaction removed or rewrote are still in vectorIndex().size() - the
         // tombstones are written only when commit() replays the queued REMOVEs - but the walk, the loop above and the
         // scan below all exclude them, so counting them expected rows no search can return, and every search of the
         // transaction paid a full scan that found nothing and logged a WARNING about a healthy graph. They are netted
-        // out only once a shortfall is seen, so a search that is not short never pays for resolving them.
-        int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
-        int expectedResults = Math.min(k, availableVectors);
+        // out only once a shortfall is seen, so a search that is not short never pays for resolving them. The rows the
+        // transaction wrote are added to the budget in the same step: the merge above returns them, so leaving them out
+        // lets each one hide a row of the graph the walk did not reach.
+        //
+        // Issue #13128: the live count also holds the vectors still in the delta buffer that no graph build has absorbed
+        // (no ordinal), which the scan below cannot reach - it walks graph ordinals, and the merge above has already
+        // covered the buffer. The budget used to be capped by the number of ordinals to keep a search left short only by
+        // delta vectors from paying for a scan that finds nothing new, but the cap also let each delta-only row, which the
+        // answer does count, hide a node of the graph the walk had not reached: an exhaustive search answered one record
+        // short after one insert. The cap is now the ordinals plus the delta-only rows the search can return, which is
+        // what the answer can hold when the graph is complete, and it is worked out only once the answer is short of
+        // the live count, so a search that is not short pays nothing for it.
+        final int live = vectorIndex().size();
+        final int pending = pendingCount(overlay);
+        int availableVectors = live + pending;
+        int requested = Math.min(k, availableVectors);
+        int expectedResults = capByAllowList(requested, allowedRIDs);
         if (results.size() < expectedResults && overlay != null) {
           // Counting stops at the rows the answer is short of: past that the netted budget can no longer exceed it
-          final int live = vectorIndex().size();
-          availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
-          expectedResults = Math.min(k, availableVectors);
+          availableVectors = live + pending - countSupersededLive(overlay, live + pending - results.size());
+          requested = Math.min(k, availableVectors);
+          expectedResults = capByAllowList(requested, allowedRIDs);
         }
-        // A plain allow-list answers with no more rows than it holds (issue #11765). The search narrowed it to the members in
-        // this bucket (allowListShare), so a filter spread over a type's buckets no longer leaves every sub-index short of the
-        // rows that are in the other buckets, with a scan of every bucket after its walk and a WARNING about a healthy graph
-        final int requested = expectedResults;
-        if (allowedRIDs != null && !allowedRIDs.isEmpty() && !(allowedRIDs instanceof PredicateRidSet))
-          expectedResults = Math.min(expectedResults, allowedRIDs.size());
+        if (results.size() < expectedResults) {
+          // Still short of the rows the index holds: the scan can complete only the nodes of the graph, so the budget
+          // is what the graph and the buffer can hold between them
+          availableVectors = Math.min(availableVectors, ordinalMap.length + countDeltaOnlyRows(deltaView, ordinalMap, guard));
+          requested = Math.min(k, availableVectors);
+          expectedResults = capByAllowList(requested, allowedRIDs);
+        }
         if (results.size() < expectedResults) {
           logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs, requested);
           metrics.incrementBruteForceScans();
@@ -11732,6 +11895,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return count;
   }
 
+  /**
+   * Issue #13128: how many rows of {@code delta}, the buffer as a search merged it, the search can return although the graph
+   * {@code ordinalMap} describes has no node for them - the rows the delta merge contributes and the brute-force completion
+   * cannot, because it walks graph ordinals only. Together with the ordinals they are the most the graph and the buffer can
+   * answer between them, which is the budget the shortfall fallback has to be judged against.
+   * <p>
+   * Not counted: a row with an ordinal (a node of the graph, which a build left unreachable queued again in the buffer), a row
+   * tombstoned since it was queued, and a row whose vector the similarity cannot score (the all-zero one under COSINE), which no
+   * search returns, so the answer is not short of it. A row whose payload the buffer declined is counted: reading it back to ask
+   * would cost a page per row. A pending row of the calling transaction has no id and no ordinal, and counts like any other.
+   * <p>
+   * Linear in the buffer, with a binary search per row, so the caller asks only once the answer is short of the live count.
+   *
+   * @param guard the bound of the search, or {@code null}
+   */
+  int countDeltaOnlyRows(final List<DeltaVectorEntry> delta, final int[] ordinalMap, final WorkGuard guard) {
+    final VectorLocationIndex locations = vectorIndex();
+    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    final boolean anyDeleted = locations.getDeletedCount() > 0;
+    int count = 0;
+    int scanned = 0;
+    for (final DeltaVectorEntry entry : delta) {
+      if (guard != null)
+        guard.checkPeriodically(++scanned);
+      if (entry.vectorId != TransactionVectorOverlay.PENDING_VECTOR_ID && ((anyDeleted && locations.isDeleted(entry.vectorId))
+          || ordinalMapHolds(ordinalMap, lookup, entry.vectorId)))
+        continue;
+      if (entry.vector != null && isUnscorable(entry.vector))
+        continue;
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * A plain allow-list answers with no more rows than it holds (issue #11765). The search narrowed it to the members in this
+   * bucket (allowListShare), so a filter spread over a type's buckets no longer leaves every sub-index short of the rows that are
+   * in the other buckets, with a scan of every bucket after its walk and a WARNING about a healthy graph. A predicate says
+   * nothing about how many rows it accepts, so it caps nothing.
+   */
+  private static int capByAllowList(final int expectedResults, final Set<RID> allowedRIDs) {
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !(allowedRIDs instanceof PredicateRidSet))
+      return Math.min(expectedResults, allowedRIDs.size());
+    return expectedResults;
+  }
+
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
   private static Set<RID> supersededRIDs(final TransactionVectorOverlay overlay) {
     return overlay == null ? null : overlay.supersededRIDs();
@@ -12505,6 +12714,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // a vector-indexed type O(index size), so bulk updates degraded quadratically.
         final List<Integer> deletedIds = new ArrayList<>();
         final VectorLocationIndex locations = vectorIndex();
+        // Whatever ids it finds: a record whose vector a rebuild recovered from the record alone has no id here to find (issue #13148)
+        trackRemovalForRebuild(rid);
         for (final int vectorId : locations.getVectorIdsForRid(rid)) {
           if (locations.isLocationOf(vectorId, rid)) {
             // Read the location BEFORE the tombstone releases it: un-tombstoning has to restore the exact offset,
@@ -13169,6 +13380,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             indexName, vectorIndex().size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
         flushDeferredRebuild = true;
         markCloseTimeRebuildDeferred(gf);
+      } else if (needsBuild && getDatabase().getEmbedded() instanceof LocalDatabase local && local.isClosedForReopen()) {
+        // A close for reopen (HA snapshot install, idle close) refuses begin(), which the from-scratch build needs: the
+        // build would burn its whole CPU cost and then fail with DatabaseIsReopeningException, logging two SEVERE traces
+        // and persisting nothing. Defer to the next search on the reopened index instead, as the large-index arm does.
+        LogManager.instance().log(this, Level.FINE,
+            "Deferring graph build on close for index %s: the database is closing for reopen and refuses the build's transaction",
+            indexName);
+        flushDeferredRebuild = true;
+        markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
         try {
           LogManager.instance()
@@ -13414,7 +13634,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // closeDeferredRebuild=false via markUnusable()) or because new mutations arrived mid-build. Neither of those
     // is "flush() chose to defer", and rechecking unconditionally would overwrite that correct false with a
     // misleading true - mislabeling "close attempted a rebuild and it failed" as "close skipped the rebuild for
-    // performance". flushDeferredRebuild is set only inside flush()'s two skip branches and reset at the top of
+    // performance". flushDeferredRebuild is set only inside flush()'s three skip branches and reset at the top of
     // every flush(), so it answers exactly the question this recheck needs: did THIS close's flush() skip, not
     // just "is a rebuild still owed for some reason". As a side effect this also keeps the recheck from ever
     // firing on a path that never called flush() at all - LocalDatabase.closeInternal(true) (whole-database
@@ -14422,6 +14642,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     afterLiveSetReadForTest = hook;
   }
 
+  void setAfterPagesParsedForTest(final Runnable hook) {
+    afterPagesParsedForTest = hook;
+  }
+
+  /** The bound of {@link #removedDuringRebuild}, which a test cannot reach with a million removals. */
+  void setMaxTrackedRemovalsForTest(final int max) {
+    maxTrackedRemovals = max;
+  }
+
   void setBeforeOnDiskGraphSwapForTest(final Runnable hook) {
     beforeOnDiskGraphSwapForTest = hook;
   }
@@ -14429,10 +14658,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Whether the resident graph has a node for {@code vectorId}. */
   private boolean graphHolds(final int vectorId) {
     final int[] ordinalMap = ordinalToVectorId;
-    if (ordinalMap == null)
-      return false;
-    // A map a renumbering compaction translated holds -1 entries and is not sorted (issue #9241)
-    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    return ordinalMap != null && ordinalMapHolds(ordinalMap, renumberedLookups.get(ordinalMap), vectorId);
+  }
+
+  /**
+   * Whether {@code ordinalMap} has an ordinal for {@code vectorId}. {@code lookup} is the one of {@code ordinalMap} when a
+   * renumbering compaction translated it, {@code null} otherwise: such a map holds -1 entries and is not sorted, so it cannot be
+   * binary searched (issue #9241).
+   */
+  private static boolean ordinalMapHolds(final int[] ordinalMap, final OrdinalLookup lookup, final int vectorId) {
     return (lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId)) >= 0;
   }
 
@@ -14624,6 +14858,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
               unknownBefore.add(id);
             }
           }
+
+          // A tombstone is the removal of the record on a node that does not replay the commit itself: a rebuild running here
+          // must know it as remove() lets it know (issue #13148)
+          if (deleted)
+            trackRemovalForRebuild(rid);
 
           // Update VectorLocationIndex with this entry's absolute file offset
           // LSM semantics: later entries override earlier ones
@@ -15535,15 +15774,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Decide whether the inactivity rebuild timer should actually rebuild the graph.
    * <p>
    * A rebuild is only expensive - O(current graph size) - once the graph has grown past
-   * {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}; below that, {@link #rebuildGraphBeforeSearch()} itself
-   * rebuilds synchronously on every threshold check with no threshold gate at all, because doing so
-   * is already fast enough not to matter. The timer used to mirror only the top half of that: it
-   * rebuilt on {@code pending > 0} alone regardless of graph size, so a single insert into a large
-   * settled index cost a full O(N) rebuild on the next quiet period (issue #6496). The fix is not to
-   * gate small graphs too - that would defer a rebuild that was never expensive to begin with, taking
-   * away the guarantee that a handful of buffered vectors get flushed out of the linear-scan delta
-   * buffer promptly - but to apply the same threshold the search path uses, and only where the search
-   * path would also apply it: once the graph is large enough that a rebuild is no longer free.
+   * {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}. The timer used to rebuild on {@code pending > 0} alone regardless
+   * of graph size, so a single insert into a large settled index cost a full O(N) rebuild on the next quiet
+   * period (issue #6496). The fix is not to gate small graphs too - that would defer a rebuild that was never
+   * expensive to begin with, taking away the guarantee that a handful of buffered vectors get flushed out of
+   * the linear-scan delta buffer promptly - but to apply the same threshold the search path uses, and only
+   * where it is a matter of cost: once the graph is large enough that a rebuild is no longer free.
+   * <p>
+   * The two paths now deliberately differ on a small graph (issue #12342). The timer rebuilds it on any pending
+   * mutation, because it runs after a quiet period and off the search thread, so the build delays no query. The
+   * search path does not: {@link #rebuildGraphBeforeSearch()} rebuilds a resident small graph only once the
+   * mutation threshold is reached ({@link #smallGraphRebuildIsDue()}), because the build runs on the calling
+   * thread under {@link #graphBuildLock} and a rebuild per search after every write made every other search of
+   * the bucket queue behind it, while the new vectors are searched exactly through the delta buffer anyway.
    * <p>
    * "How large is the graph" is asked through {@link #inactivityRebuildScopeSize()} rather than off
    * {@link #graphIndex} directly, because on this path a null graph does not mean what it means on the search
@@ -15561,9 +15804,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return false;
 
     if (inactivityRebuildScopeSize() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
-      // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are
-      // pending, same as rebuildGraphBeforeSearch()'s unconditional synchronous rebuild for this
-      // case. Any pending mutation is worth flushing promptly.
+      // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are pending, and it runs
+      // here, after a quiet period, not on a search thread (the search path waits for the mutation threshold,
+      // see smallGraphRebuildIsDue()). Any pending mutation is worth flushing promptly.
       return true;
 
     final int threshold = getEffectiveMutationsBeforeRebuild();

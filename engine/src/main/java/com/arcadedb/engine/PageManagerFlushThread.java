@@ -97,6 +97,10 @@ public class PageManagerFlushThread extends Thread {
   // deferred entry the snapshot did not capture (a genuine "newDeferred") instead of racing thread scheduling to
   // land one there by chance. No-op (null) outside tests.
   volatile              Runnable                                                testHookAfterDeferredBacklogSnapshot;
+  // Test-only: runs on the flush thread while it defers a batch, after it resolved the backlog the batch joins and
+  // before the batch is in it, so a test can hold that moment open and run the resume's detach inside it. No-op (null)
+  // outside tests.
+  volatile              Runnable                                                testHookWhileABatchIsBeingDeferred;
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
   /** Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} - see {@link #flushWaitPollMillis}. */
   private final static long                                                     DEFAULT_FLUSH_WAIT_POLL_MILLIS = 10;
@@ -818,8 +822,26 @@ public class PageManagerFlushThread extends Thread {
                 }
 
                 if (isSuspended(db)) {
-                  deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
+                  // The charge goes in BEFORE the batch becomes visible to the resume: a resume that took the batch out
+                  // and released its bytes first would find nothing charged to release, and a charge made after it
+                  // would then outlive the backlog.
                   addDeferredRAM(db, batchRAM(pagesToFlush));
+                  // ONE ATOMIC STEP ON THE MAP, not computeIfAbsent(...).offer(...): the resume's Phase 1 detaches this
+                  // database's backlog with deferredByDatabase.remove() WITHOUT suspendLock (it writes the batches for as
+                  // long as the backlog takes, and the flush thread needs that monitor to decide), so a remove landing
+                  // between the lookup and the offer left the batch in a queue nothing referenced any more: Phase 1 had
+                  // already walked it and Phase 2 finds no entry, so the batch was never written, its pages stayed in
+                  // pageIndex and pinned the database's pending count above zero until close() gave up on it. compute()
+                  // runs the offer inside the map's own section for the key, so the detach sees the batch or is followed
+                  // by an entry of its own, which Phase 2 re-enqueues.
+                  deferredByDatabase.compute(db, (key, backlog) -> {
+                    final ConcurrentLinkedQueue<PagesToFlush> deferred = backlog != null ? backlog : new ConcurrentLinkedQueue<>();
+                    final Runnable hook = testHookWhileABatchIsBeingDeferred;
+                    if (hook != null)
+                      hook.run();
+                    deferred.offer(pagesToFlush);
+                    return deferred;
+                  });
                   return;
                 }
               }
@@ -1474,7 +1496,8 @@ public class PageManagerFlushThread extends Thread {
     return suspendLocks.computeIfAbsent(database, k -> new Object());
   }
 
-  private Object replayDrainLock(final Database database) {
+  /** Package-private so a white-box test can hold the monitor the resume's Phase 1 starts with. */
+  Object replayDrainLock(final Database database) {
     return replayDrainLocks.computeIfAbsent(database, k -> new Object());
   }
 
@@ -2001,7 +2024,7 @@ public class PageManagerFlushThread extends Thread {
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     //
     // The suspension flag and the deferred batches are dropped UNDER the database's own suspend monitor - the same
-    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.offer, and the
+    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.compute defer, and the
     // same argument Phase 2 of the resume rests on. Without it the flush thread could observe "suspended" just
     // before this method runs and offer its batch just after, re-creating a deferred queue for a database this
     // method has already forgotten: nothing would ever resume it, so the batch, the map entry pinning the closed

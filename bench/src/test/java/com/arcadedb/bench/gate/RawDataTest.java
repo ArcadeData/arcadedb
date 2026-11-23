@@ -102,6 +102,15 @@ class RawDataTest {
   }
 
   @Test
+  void incompleteFileIsReadLikeAnyOther() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)).replaceFirst("\\{", "{\"complete\":false,"));
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir);
+
+    assertThat(lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m")).get(0).median()).isEqualTo(1.0);
+  }
+
+  @Test
   void emitsAStatusLineAndOneLinePerMetric() throws IOException {
     write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m1", 1) + "," + metric("m2", 2)));
 
@@ -117,6 +126,25 @@ class RawDataTest {
     assertThat(status.id()).isEqualTo("perf-01/jvm/S/w/c/_status");
     assertThat(lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m2")).get(0).median()).isEqualTo(2.0);
     assertThat(lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m2")).get(0).benchCommit()).isEqualTo("bc1");
+  }
+
+  @Test
+  void notesHostNotQuietMarksThePoint() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)).replace("\"status\":\"ok\",",
+        "\"status\":\"ok\",\"notes\":{\"hostNotQuiet\":\"wall clock ran 1500 ms ahead of the monotonic clock\"},"));
+    write("b.json", run("r-b", "nightly", "def456", null, null, "2026-11-21T03:00:00Z", metric("m", 2)).replace("\"status\":\"ok\",",
+        "\"status\":\"ok\",\"notes\":{\"serverRestarted\":true},"));
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir);
+
+    final List<Point> metric = lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m"));
+    final List<Point> status = lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", LineKey.STATUS));
+    assertThat(metric).extracting(Point::runId).containsExactly("r-a", "r-b");
+    assertThat(metric).extracting(Point::hostNotQuiet).containsExactly(true, false);
+    assertThat(status).extracting(Point::hostNotQuiet).containsExactly(true, false);
+    assertThat(metric.get(0).status()).isEqualTo("ok");
+    assertThat(metric.get(0).valid()).isFalse();
+    assertThat(metric.get(1).valid()).isTrue();
   }
 
   @Test

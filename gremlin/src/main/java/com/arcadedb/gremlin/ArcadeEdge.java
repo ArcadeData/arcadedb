@@ -115,8 +115,9 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
           props.add(new ArcadeProperty<>(this, p, value));
       }
     } else {
-      props = new ArrayList<>(propertyKeys.length);
-      for (final String p : propertyKeys) {
+      final String[] keys = distinctKeys(propertyKeys);
+      props = new ArrayList<>(keys.length);
+      for (final String p : keys) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeProperty<>(this, p, value));

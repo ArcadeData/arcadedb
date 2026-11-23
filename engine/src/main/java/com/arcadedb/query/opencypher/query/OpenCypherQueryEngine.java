@@ -40,6 +40,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -109,6 +110,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -903,7 +905,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     type.dropProperty(propName);
     try {
-      final Property created = type.createProperty(propName, retyped);
+      // since #12040 the schema itself refuses a literal DEFAULT the new type cannot hold: that refusal is reported as the
+      // DEFAULT not carried over, as requireDefaultReadableAs reports a default that evaluates to no value of the new type
+      final Property created = type.createProperty(propName, retyped, (attribute, e) -> {
+        if ("default".equals(attribute))
+          throw refuseRetype(typeName, existing, newType, List.of(defaultNotCarried(existing.getDefaultValueDefinition(), newType)), e);
+        throw e;
+      });
       requireDefaultReadableAs(database, typeName, existing, created, newType);
       ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
@@ -911,7 +919,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       try {
         if (type.existsProperty(propName))
           type.dropProperty(propName);
-        type.createProperty(propName, previous);
+        // Every attribute that can be put back is. One the schema refuses now - a DEFAULT an earlier release accepted and the schema
+        // refuses at DDL time since #12040 (#6134 before it) - is left off: stopping at it would also drop every attribute applied
+        // after it (MANDATORY, READONLY, NOTNULL, the bounds, the pattern, the custom values), and the default was failing every
+        // record create of the type already.
+        type.createProperty(propName, previous, (attribute, refusal) -> LogManager.instance().log(this, Level.WARNING,
+            "The %s of property '%s.%s' was not put back after the refused change of its type, because the schema refuses it: %s",
+            attribute, typeName, propName, refusal.getMessage()));
       } catch (final Throwable restoreFailure) {
         e.addSuppressed(restoreFailure);
       }
@@ -1003,7 +1017,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (definition == null)
       return;
 
-    final String notCarried = "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
+    final String notCarried = defaultNotCarried(definition, newType);
     Object value;
     try {
       value = created.getDefaultValue();
@@ -1024,6 +1038,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
         && new BigDecimal(original.toString()).compareTo(new BigDecimal(converted.toString())) != 0)
       throw refuseRetype(typeName, existing, newType,
           List.of("DEFAULT `" + definition + "` (" + original + " becomes " + converted + " as a " + newType + ")"), null);
+  }
+
+  private static String defaultNotCarried(final Object definition, final Type newType) {
+    return "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
   }
 
   private static final String NUMERIC_MEASURE = DocumentValidator.boundMeasure(Type.LONG);

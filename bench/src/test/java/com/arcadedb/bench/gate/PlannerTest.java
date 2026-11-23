@@ -26,6 +26,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -151,7 +152,7 @@ class PlannerTest {
     assertThat(plan.getString("label")).isEqualTo("performance-regression");
     assertThat(ops(plan)).containsExactly("create");
     final JSONObject create = action(plan, "create");
-    assertThat(create.getString("key")).isEqualTo("nightly:" + B);
+    assertThat(create.getString("key")).isEqualTo("nightly:" + B + ":M");
     assertThat(create.getString("title")).isEqualTo("Performance regression: 2 lines worse between aaaaaaa..bbbbbbb");
     assertThat(create.getString("body")).contains("<!-- perf-regression {").contains("compare/" + A + "..." + B);
     final Marker marker = markerOf(create);
@@ -193,8 +194,8 @@ class PlannerTest {
     assertThat(update.getInt("issue")).isEqualTo(7);
     assertThat(update.getString("title")).isEqualTo("Performance regression: 3 lines worse between aaaaaaa..bbbbbbb");
     final JSONObject comment = action(second, "comment");
-    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + B);
-    assertThat(comment.getString("body")).startsWith("<!-- perf-regression-run nightly:" + B + " -->").contains(NATIVE.id())
+    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + B + ":M");
+    assertThat(comment.getString("body")).startsWith("<!-- perf-regression-run nightly:" + B + ":M -->").contains(NATIVE.id())
         .doesNotContain(TIME.id());
 
     final JSONObject third = plan(withNative, open(7, markerOf(update)));
@@ -216,7 +217,7 @@ class PlannerTest {
     final JSONObject nativeFile = plan(data(TIME, time, NATIVE, nat), open(7, markerOf(action(jvmFile, "update"))));
     assertThat(ops(nativeFile)).containsExactly("comment", "update");
     final JSONObject comment = action(nativeFile, "comment");
-    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + C);
+    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + C + ":M");
     assertThat(comment.getString("body")).contains(TIME.id()).contains(NATIVE.id());
 
     assertThat(ops(plan(data(TIME, time, NATIVE, nat), open(7, markerOf(action(nativeFile, "update")))))).isEmpty();
@@ -234,7 +235,7 @@ class PlannerTest {
     assertThat(line.getInt("streak")).isEqualTo(0);
     assertThat(line.getString("baseRef")).isEqualTo(A);
     final JSONObject comment = action(second, "comment");
-    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + C);
+    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + C + ":M");
     assertThat(comment.getString("body")).contains("still worse");
   }
 
@@ -254,7 +255,7 @@ class PlannerTest {
     assertThat(ops(third)).containsExactly("close");
     final JSONObject close = action(third, "close");
     assertThat(close.getInt("issue")).isEqualTo(7);
-    assertThat(close.getString("body")).startsWith("<!-- perf-regression-run nightly:" + D + " -->").contains("recovered");
+    assertThat(close.getString("body")).startsWith("<!-- perf-regression-run nightly:" + D + ":M -->").contains("recovered");
     // the marker that completes the streaks is written by the close itself: never a closed issue with a stale marker
     final Marker closed = closedMarkerOf(third);
     assertThat(closed.line(TIME.id()).getInt("streak")).isEqualTo(2);
@@ -294,7 +295,7 @@ class PlannerTest {
     final JSONObject plan = plan(data(TIME, points), open(7, marker));
 
     assertThat(ops(plan)).containsExactly("comment", "update");
-    assertThat(action(plan, "comment").getString("runKey")).isEqualTo("nightly:" + E);
+    assertThat(action(plan, "comment").getString("runKey")).isEqualTo("nightly:" + E + ":M");
     final JSONObject entry = markerOf(action(plan, "update")).line(TIME.id());
     assertThat(entry.getString("lastRun")).isEqualTo(E);
     assertThat(entry.getInt("streak")).isEqualTo(1);
@@ -310,7 +311,7 @@ class PlannerTest {
     final JSONObject plan = plan(data(TIME, points), open(7, marker));
 
     assertThat(ops(plan)).containsExactly("close");
-    assertThat(action(plan, "close").getString("body")).startsWith("<!-- perf-regression-run nightly:" + E + " -->").contains("recovered (2 of 2)");
+    assertThat(action(plan, "close").getString("body")).startsWith("<!-- perf-regression-run nightly:" + E + ":M -->").contains("recovered (2 of 2)");
   }
 
   @Test
@@ -347,7 +348,7 @@ class PlannerTest {
     final JSONObject plan = plan(data(TIME, points), new TrackedIssue(7, false, true, accepted));
 
     assertThat(ops(plan)).containsExactly("create");
-    assertThat(action(plan, "create").getString("key")).isEqualTo("nightly:" + D);
+    assertThat(action(plan, "create").getString("key")).isEqualTo("nightly:" + D + ":M");
     assertThat(markerOf(action(plan, "create")).line(TIME.id()).getString("baseRef")).isEqualTo(C);
   }
 
@@ -369,7 +370,7 @@ class PlannerTest {
     points.add(n(E, 5, 125));
     final JSONObject next = plan(data(TIME, points), new TrackedIssue(7, false, false, closed));
     assertThat(ops(next)).containsExactly("create");
-    assertThat(action(next, "create").getString("key")).isEqualTo("nightly:" + E);
+    assertThat(action(next, "create").getString("key")).isEqualTo("nightly:" + E + ":M");
   }
 
   @Test
@@ -585,7 +586,7 @@ class PlannerTest {
     assertThat(markerOf(create).lineIds()).hasSize(1000);
     assertThat(create.getInt("oversized")).isEqualTo(body.length());
     assertThat(Planner.oversized(plan)).singleElement().asString()
-        .isEqualTo("create nightly:" + b + ": body is " + body.length() + " characters, over GitHub's limit of 65536: the workflow will refuse it");
+        .isEqualTo("create nightly:" + b + ":L: body is " + body.length() + " characters, over GitHub's limit of 65536: the workflow will refuse it");
   }
 
   @Test
@@ -695,5 +696,97 @@ class PlannerTest {
     assertThat(improvements.lines().filter(l -> l.startsWith("- ")).toList()).hasSize(20);
     assertThat(improvements).contains("case-00").contains("case-19").doesNotContain("case-20");
     assertThat(improvements.indexOf("case-00")).isLessThan(improvements.indexOf("case-01"));
+  }
+
+  /** A line measured at scale S, the weeknight lane. */
+  private static final LineKey TIME_S = new LineKey("perf-01", "jvm", "S", "vector", "search", "time");
+
+  @Test
+  void sameCommitSAndMNightlyAreTwoEvents() {
+    // Friday's S run and Saturday's M run measure the same commit B; both are worse than A
+    final List<Point> s = new ArrayList<>(List.of(n(A, 1, 100), n(B, 5, 150)));
+    final List<Point> m = new ArrayList<>(List.of(n(A, 0, 100), n(B, 6, 150)));
+    final JSONObject friday = plan(data(TIME_S, s));
+    assertThat(ops(friday)).containsExactly("create");
+    assertThat(action(friday, "create").getString("key")).isEqualTo("nightly:" + B + ":S");
+    assertThat(action(friday, "create").getString("title")).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb (scale S)");
+    final Marker sMarker = markerOf(action(friday, "create"));
+    assertThat(sMarker.getScale()).isEqualTo("S");
+
+    // the M results of the same commit are their own event, not lines added to the S issue
+    final JSONObject saturday = plan(data(TIME_S, s, TIME, m), open(1, sMarker));
+    assertThat(ops(saturday)).containsExactly("create");
+    assertThat(action(saturday, "create").getString("key")).isEqualTo("nightly:" + B + ":M");
+    assertThat(action(saturday, "create").getString("title")).isEqualTo("Performance regression: 1 line worse between aaaaaaa..bbbbbbb");
+    final Marker mMarker = markerOf(action(saturday, "create"));
+    assertThat(mMarker.getScale()).isEqualTo("M");
+    assertThat(mMarker.lineIds()).containsExactly(TIME.id());
+
+    // the next runs of both scales: one comment per issue, each keyed by its own scale
+    s.add(n(C, 8, 150));
+    m.add(n(C, 13, 150));
+    final LineKey improvedS = new LineKey("perf-01", "jvm", "S", "vector", "build", "time");
+    final List<Point> improved = List.of(n(A, 1, 100), n(B, 5, 100), n(C, 8, 50));
+    final JSONObject next = plan(data(TIME_S, s, TIME, m, improvedS, improved), open(1, sMarker), open(2, mMarker));
+    assertThat(ops(next)).containsExactly("comment", "update", "comment", "update");
+    assertThat(action(next, "comment", 1).getString("runKey")).isEqualTo("nightly:" + C + ":S");
+    assertThat(action(next, "comment", 1).getString("body")).startsWith("<!-- perf-regression-run nightly:" + C + ":S -->")
+        .contains("`" + C.substring(0, 7) + "`").contains(TIME_S.id()).doesNotContain(TIME.id()).contains("Improvements");
+    assertThat(action(next, "comment", 2).getString("runKey")).isEqualTo("nightly:" + C + ":M");
+    // an S line that improved at the commit is an improvement of the S issue only
+    assertThat(action(next, "comment", 2).getString("body")).contains(TIME.id()).doesNotContain(TIME_S.id()).doesNotContain("Improvements");
+  }
+
+  @Test
+  void ldbcLinesJoinTheMEventOfTheirCommit() {
+    // LDBC runs only with the Saturday M run, at a dataset scale of its own
+    final LineKey ldbc = new LineKey("perf-01", "jvm", "datagen-7_5-fb", "graph-analytics", "olap-bfs", "processing_s");
+    final Map<LineKey, List<Point>> lines = data(TIME, List.of(n(A, 1, 100), n(B, 2, 150)), ldbc, List.of(n(A, 1, 100), n(B, 2, 150)));
+
+    final JSONObject plan = plan(lines);
+
+    assertThat(ops(plan)).containsExactly("create");
+    assertThat(action(plan, "create").getString("key")).isEqualTo("nightly:" + B + ":M");
+    final Marker marker = markerOf(action(plan, "create"));
+    assertThat(marker.getScale()).isEqualTo("M");
+    assertThat(marker.lineIds()).containsExactlyInAnyOrder(TIME.id(), ldbc.id());
+    assertThat(Planner.eventScale(ldbc)).isEqualTo("M");
+    assertThat(Planner.eventScale(new LineKey("perf-01", "jvm", "XS", "w", "c", "m"))).isEqualTo("XS");
+  }
+
+  /** The marker of #13093 as the phase 3 gate wrote it, copied from the issue: a nightly marker without a scale. */
+  private static String legacyBody() throws IOException, URISyntaxException {
+    return "Lines worse in the nightly run of `6a1f81a`...\n\n" + Files.readString(
+        Path.of(PlannerTest.class.getResource("/gate/legacy-marker-13093.txt").toURI()), StandardCharsets.UTF_8);
+  }
+
+  @Test
+  void legacyMarkerWithoutScaleStillMatchesItsMRun() throws IOException, URISyntaxException {
+    final String r0 = "0f8f74e80352166a1557b3d3f0342fdf1e4b4cf3";
+    final String r1 = "6a1f81ae232b81ffe5268f55bfe06c00d29947e0";
+    final String r2 = "d6b48767cb84c05f9b03e52fbb23345b4fd42288";
+    final Marker legacy = Marker.parse(legacyBody());
+    assertThat(legacy).isNotNull();
+    assertThat(legacy.getScale()).isEqualTo("M");
+
+    // a tracked line already followed to its newest run, and an M line of the issue's own run that nobody tracks yet
+    final LineKey tracked = new LineKey("perf-01", "jvm", "M", "facet", "facet-query-after-load", "latency_p50_ms");
+    final LineKey joining = new LineKey("perf-01", "jvm", "M", "ingestion", "tx-insert-1t", "latency_p50_ms");
+    final Map<LineKey, List<Point>> lines = data(tracked, List.of(real(r0, 21, "jvm", 141.368585), real(r1, 22, "jvm", 157.632112),
+        real(r2, 23, "jvm", 161.891162)), joining, List.of(real(r0, 21, "jvm", 100), real(r1, 22, "jvm", 150)));
+
+    final JSONObject plan = plan(lines, open(13093, legacy));
+
+    // no new issue: the line joins the open issue of its run, and the comment is keyed by the M run
+    assertThat(ops(plan)).containsExactly("comment", "update");
+    final JSONObject comment = action(plan, "comment", 13093);
+    assertThat(comment.getString("runKey")).isEqualTo("nightly:" + r1 + ":M");
+    assertThat(comment.getString("body")).contains(joining.id()).doesNotContain(tracked.id());
+    final Marker updated = markerOf(action(plan, "update", 13093));
+    assertThat(updated.line(joining.id()).getBoolean("added", false)).isTrue();
+    assertThat(updated.getScale()).isEqualTo("M");
+
+    // no second comment once the update landed
+    assertThat(ops(plan(lines, open(13093, updated)))).isEmpty();
   }
 }

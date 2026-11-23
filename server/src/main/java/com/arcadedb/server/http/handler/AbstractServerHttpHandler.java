@@ -783,9 +783,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       if (user == null) {
         if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
+          // The 401 names its cause like every other 401 of this API, so a client has something to log (issue #12408). The
+          // WWW-Authenticate challenge stays on this arm and on no other: a request with no credentials is the one a browser
+          // sends when a person opens a page that needs authentication and has no login form of its own (the Swagger UI page at
+          // /api/v1/docs), and the challenge is what makes it ask for them. RFC 9110 15.5.2 asks a 401 to carry one, and a
+          // client that authenticates by answering a challenge (the JDK's Authenticator, curl --anyauth) reads the scheme from
+          // it. The branches below answer credentials that WERE sent and send none: every request of Studio carries credentials,
+          // so a challenge there would open the native login dialog over Studio's own login form.
           exchange.setStatusCode(401);
           exchange.getResponseHeaders().put(Headers.WWW_AUTHENTICATE, "Basic");
-          sendErrorResponse(exchange, 401, "", null, null);
+          sendErrorResponse(exchange, 401, "Authentication failed", null, null);
           return;
         }
 

@@ -44,6 +44,8 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.spy;
 
@@ -244,10 +246,15 @@ class RecoveryHousekeepingTest extends TestHelper {
         .contains("Recovery of database '%s' did not complete");
   }
 
-  /** The arguments of every log call {@code action} makes: requester, level, message format, exception, context, args. */
+  /**
+   * The arguments of every log call {@code action} makes: requester, level, message format, exception, context, args. The spy
+   * accepts every level: LogManager hands a logger only the messages it says it would publish (#12357), and the test profile
+   * holds com.arcadedb at SEVERE, under the WARNING lines asserted here.
+   */
   private static List<Object[]> captureLogs(final Runnable action) {
     final Logger previous = LogManager.instance().getLogger();
     final Logger capture = spy(previous);
+    doReturn(true).when(capture).isLoggable(any(), any());
     LogManager.instance().setLogger(capture);
     try {
       action.run();

@@ -1955,6 +1955,10 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Every inline property of the MERGE pattern, node or relationship, is evaluated through here before anything is matched
    * or created with it, so a null that arrives at run time is refused here, as the validator refuses a literal one (#10191).
+   * <p>
+   * A value that is neither an {@link Expression} nor a {@link CypherASTBuilder.ParameterReference} is a literal the parser kept as
+   * its Java value, and stays what it is: a string is never read as the name of a variable or as {@code variable.property}
+   * (issue #13133).
    */
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result,
       final boolean keepTemporalWrapper) {
@@ -1973,37 +1977,6 @@ public class MergeStep extends AbstractExecutionStep {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         if (context.getInputParameters() != null)
           value = storageOrWrapper(context.getInputParameters().get(paramName), keepTemporalWrapper);
-      }
-      // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
-      // try to evaluate it against the current result context
-      else if (value instanceof String) {
-        final String strValue = (String) value;
-
-        // Check if it's a property access pattern: variable.property
-        if (strValue.contains(".") && !strValue.startsWith("'") && !strValue.startsWith("\"")) {
-          final String[] parts = strValue.split("\\.", 2);
-          if (parts.length == 2) {
-            final String variable = parts[0];
-            final String property = parts[1];
-
-            // Try to get the variable from the result
-            final Object obj = result.getProperty(variable);
-            if (obj != null) {
-              // If it's a map (like unwound data), get the property
-              if (obj instanceof Map) {
-                value = ((Map<?, ?>) obj).get(property);
-              } else if (obj instanceof Document) {
-                value = ((Document) obj).get(property);
-              }
-            }
-          }
-        } else if (!strValue.startsWith("'") && !strValue.startsWith("\"")) {
-          // It might be a simple variable reference
-          final Object obj = result.getProperty(strValue);
-          if (obj != null) {
-            value = obj;
-          }
-        }
       }
 
       WritePatternChecks.checkMergePropertyNotNull(key, value);

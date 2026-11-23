@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.ProtocolContext;
@@ -30,6 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -360,5 +362,163 @@ class DirectoryReplacementClientGateTest {
     assertThat(realStateMachine.isBootstrapInstallInFlight(DB_NAME))
         .as("a client is still refused after the retry failed as well: the copy on disk is still the rejected one")
         .isTrue();
+  }
+
+  // Regression for #12889: the empty transaction closing a write a follower forwarded is not refused at its commit
+  /**
+   * The HTTP handler of a write a follower forwards to the leader holds an empty transaction around the forward. By the time it
+   * commits, the leader has applied the write: refusing that commit answers "retry" for what is already done, and the client's
+   * replay applies it twice. The transaction has no page delta to compute against the discarded copy and replicates nothing, so the
+   * gate has nothing to protect there.
+   */
+  @Test
+  void theEmptyCommitClosingAForwardedWriteIsNotRefused() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      assertThat(replicated.isTransactionActive()).isTrue();
+      theLeaderAnsweredAForwardedWrite();
+
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatNoException().as("the commit of an empty transaction while the directory is replaced").isThrownBy(replicated::commit);
+      assertThat(replicated.isTransactionActive()).isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+  }
+
+  /**
+   * The exemption is the forwarded write's, not every empty transaction's: one that forwarded nothing is a client transaction that
+   * began before the replacement, and #8363 refuses its commit and rolls it back as it always did.
+   */
+  @Test
+  void anEmptyCommitThatForwardedNothingIsStillRefusedWhileTheDirectoryIsReplaced() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("being replaced");
+      assertThat(replicated.isTransactionActive()).as("the refused transaction is rolled back").isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+  }
+
+  /** A transaction that forwarded a write and wrote on its own account as well has a page delta against the discarded copy. */
+  @Test
+  void aCommitThatForwardedAWriteAndWroteIsStillRefusedWhileTheDirectoryIsReplaced() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      replicated.newDocument("Seed").set("k", 2).save();
+      theLeaderAnsweredAForwardedWrite();
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("being replaced");
+      assertThat(replicated.isTransactionActive()).as("the refused transaction is rolled back").isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused transaction was published").isEqualTo(1);
+  }
+
+  /**
+   * Issue #9411 and the forwarded write: with the Raft state machine closed, the commit of the transaction that wrote nothing, around
+   * a write the leader committed, publishes no entry, so it neither waits for the quorum timeout nor is refused.
+   */
+  @Test
+  void theEmptyCommitClosingAForwardedWriteIsNotRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    assertThat(replicated.isTransactionActive()).isTrue();
+    theLeaderAnsweredAForwardedWrite();
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThatNoException().as("the commit of an empty transaction on a closed state machine").isThrownBy(replicated::commit);
+    watch.assertGaveUpWithin(5_000, "a commit that publishes nothing from one that waits out the quorum timeout (#9411)");
+
+    assertThat(replicated.isTransactionActive()).isFalse();
+  }
+
+  /** The other side of the line: a transaction that wrote is still refused retryably, and rolled back, as #9411 requires. */
+  @Test
+  void aCommitOfATransactionThatWroteIsStillRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    replicated.newDocument("Seed").set("k", 2).save();
+
+    assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("state machine is closed");
+    assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /** Neither is the empty commit of a transaction that forwarded nothing exempt: #9411 refuses it as it always did. */
+  @Test
+  void anEmptyCommitThatForwardedNothingIsStillRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+
+    assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("state machine is closed");
+    assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+  }
+
+  /** A closed machine is not what refuses the empty commit of a forwarded write once it is open again: both states, same answer. */
+  @Test
+  void theEmptyCommitClosingAForwardedWriteIsTheSameWhetherTheStateMachineIsClosedOrNot() {
+    for (final boolean closed : new boolean[] { false, true, false }) {
+      stateMachine.closed(closed);
+      replicated.begin();
+      theLeaderAnsweredAForwardedWrite();
+      assertThatNoException().as("closed=%s", closed).isThrownBy(replicated::commit);
+      assertThat(replicated.isTransactionActive()).isFalse();
+    }
+  }
+
+  /**
+   * The gates let the empty transaction of a forwarded write through because it publishes nothing, and a before-commit callback runs
+   * only in the commit's first phase, after they were asked: one that writes makes this commit publish an entry, so the closed state
+   * machine refuses it after all, and nothing of it is left.
+   */
+  @Test
+  void aBeforeCommitCallbackThatWritesOnAForwardedWritesCommitIsRefusedWhileTheStateMachineIsClosed() {
+    stateMachine.closed(true);
+    replicated.begin();
+    theLeaderAnsweredAForwardedWrite();
+    replicated.getTransaction().addBeforeCommitCallbackIfAbsent("write", () -> localDb.newDocument("Seed").set("k", 2).save());
+
+    final StallAwareStopwatch watch = StallAwareStopwatch.start();
+    assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("state machine is closed");
+    watch.assertGaveUpWithin(5_000, "a refusal before the entry is dispatched from a commit that waits out the quorum timeout (#9411)");
+
+    assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /** The same for the directory being replaced: the write the callback made is computed against the copy the cluster discards. */
+  @Test
+  void aBeforeCommitCallbackThatWritesOnAForwardedWritesCommitIsRefusedWhileTheDirectoryIsReplaced() {
+    ProtocolContext.set("http");
+    try {
+      replicated.begin();
+      theLeaderAnsweredAForwardedWrite();
+      replicated.getTransaction().addBeforeCommitCallbackIfAbsent("write", () -> localDb.newDocument("Seed").set("k", 2).save());
+      SnapshotInstaller.markInstallInFlightForTesting(Path.of(DB_PATH));
+
+      assertThatThrownBy(replicated::commit).isInstanceOf(NeedRetryException.class).hasMessageContaining("being replaced");
+      assertThat(replicated.isTransactionActive()).as("the refused commit is rolled back").isFalse();
+    } finally {
+      ProtocolContext.clear();
+    }
+    assertThat(localDb.countType("Seed", true)).as("nothing of the refused write is left").isEqualTo(1);
+  }
+
+  /**
+   * What the forward of a write does to the transactions on the thread once the leader has answered it (issue #12635): the write is
+   * durable there, and the transaction around the forward carries the mark.
+   */
+  private void theLeaderAnsweredAForwardedWrite() {
+    DatabaseContext.INSTANCE.getContextIfExists(localDb.getDatabasePath()).reportWriteCommittedByAnotherNode();
   }
 }

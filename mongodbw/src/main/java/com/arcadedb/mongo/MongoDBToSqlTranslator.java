@@ -42,7 +42,6 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -470,27 +469,6 @@ public class MongoDBToSqlTranslator {
       start = i + 1;
     }
     return buffer.append('.').append(Identifier.quote(field.substring(start))).toString();
-  }
-
-  protected static void fillResultSet(final int numberToSkip, final int numberToReturn, final List<Document> result, final Iterator it) {
-    for (int i = 0; it.hasNext(); ++i) {
-      // consume the element before deciding whether to skip it - a "continue" that never calls next() burns loop
-      // counter iterations without advancing the iterator, so skip has no effect for any numberToSkip >= 1
-      final Object next = it.next();
-
-      if (numberToSkip > 0 && i < numberToSkip)
-        continue;
-
-      if (next instanceof com.arcadedb.database.Document document)
-        result.add(convertDocumentToMongoDB(document));
-      else if (next instanceof Result result1)
-        result.add(convertDocumentToMongoDB(result1));
-      else
-        throw new IllegalArgumentException("Object not supported");
-
-      if (numberToReturn > 0 && result.size() >= numberToReturn)
-        break;
-    }
   }
 
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {

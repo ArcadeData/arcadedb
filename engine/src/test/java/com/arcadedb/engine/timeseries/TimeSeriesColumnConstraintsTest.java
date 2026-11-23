@@ -294,13 +294,13 @@ class TimeSeriesColumnConstraintsTest extends TestHelper {
     database.command("sql", "INSERT INTO E SET ts = 1, host = 'a', i = 5, s = 'ok', v = 1.0");
     database.command("sql", "INSERT INTO E SET ts = 2, host = 'a', i = 50");
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.i MAX 10")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.i MAX 10")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot set MAX 10").hasMessageContaining("timestamp 2");
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.s REGEXP '[0-9]+'")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.s REGEXP '[0-9]+'")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("timestamp 1");
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.v MANDATORY true")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.v MANDATORY true")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot set MANDATORY").hasMessageContaining("timestamp 2");
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.v NOTNULL true")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY E.v NOTNULL true")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot set NOTNULL");
     final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().getType("E");
     assertThat(type.getProperty("i").getMax()).isNull();
@@ -331,9 +331,9 @@ class TimeSeriesColumnConstraintsTest extends TestHelper {
     database.command("sql", "INSERT INTO W SET ts = 2, day = '2023-11-15', at = '2023-11-14 22:13:21', n = 2");
 
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.at MAX '2023-11-14 22:13:20'"))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 2").hasMessageContaining("after the MAX");
+        .isInstanceOf(ValidationException.class).hasMessageContaining("timestamp 2").hasMessageContaining("after the MAX");
     assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W.day REGEXP '2023-11-14'"))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 2");
+        .isInstanceOf(ValidationException.class).hasMessageContaining("timestamp 2");
     database.command("sql", "ALTER PROPERTY W.at MAX '2023-11-14 22:13:21'");
     database.command("sql", "ALTER PROPERTY W.day MIN '2023-11-14'");
     database.command("sql", "ALTER PROPERTY W.day REGEXP '2023-11-1[45]'");
@@ -352,11 +352,11 @@ class TimeSeriesColumnConstraintsTest extends TestHelper {
     database.command("sql", "INSERT INTO O SET ts = 1, host = 'a', port = 80, v = 1.0");
     database.command("sql", "INSERT INTO O SET ts = 2, host = 'b', port = 8080, v = 2.0");
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.port MAX 100")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.port MAX 100")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("timestamp 2");
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.v MAX 1.5")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.v MAX 1.5")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("timestamp 2");
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.host REGEXP 'a'")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY O.host REGEXP 'a'")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("timestamp 2");
     database.command("sql", "ALTER PROPERTY O.port MAX 8080");
     database.command("sql", "ALTER PROPERTY O.v MAX 2.0");
@@ -866,7 +866,7 @@ class TimeSeriesColumnConstraintsTest extends TestHelper {
     void theAlterRefusalNamesARemedyThatWorks() {
       database.command("sql", "INSERT INTO D1 SET ts = 3000, t = 'h', s = 'x', i = 3");
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY D1.s MIN 2").close())
-          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("timestamp 3000")
+          .isInstanceOf(ValidationException.class).hasMessageContaining("timestamp 3000")
           .hasMessageContaining("Delete the non-conforming samples first").hasMessageContaining("DELETE FROM D1 WHERE ts = 3000");
 
       // THE REMEDY THE MESSAGE NAMES (issue #10342): THE SAMPLE IS DELETED BY ITS TIME, AND THE CONSTRAINT CAN BE DECLARED
@@ -893,9 +893,9 @@ class TimeSeriesColumnConstraintsTest extends TestHelper {
       database.command("sql", "CREATE TIMESERIES TYPE W1 TIMESTAMP ts TAGS (t STRING) FIELDS (s STRING, i INTEGER)");
       database.command("sql", "INSERT INTO W1 SET ts = 1000, t = 'h', i = 1");
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W1.s MIN 2").close())
-          .isInstanceOf(CommandExecutionException.class).hasMessageContaining("empty text");
+          .isInstanceOf(ValidationException.class).hasMessageContaining("empty text");
       assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY W1.s REGEXP '[a-z]+'").close())
-          .isInstanceOf(CommandExecutionException.class);
+          .isInstanceOf(ValidationException.class);
 
       // THE OTHER ORDER: THE CONSTRAINT FIRST, THEN THE SAME SAMPLE, NOW REFUSED THE SAME WAY
       database.command("sql", "CREATE TIMESERIES TYPE A1 TIMESTAMP ts TAGS (t STRING) FIELDS (s STRING, i INTEGER)");

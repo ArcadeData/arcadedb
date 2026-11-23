@@ -304,7 +304,17 @@ public class Modifier extends SimpleNode {
   public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext context) {
     if (next != null) {
       final Object val = calculateLocal(originalRecord, currentValue, context);
-      next.applyRemove(val, originalRecord, context);
+      // an array cannot lose items in place: the list of its items loses them and, when it lost any, is stored where the array was
+      // held. After the removal and not before, a declared ARRAY_OF_* property turns the list it is given into a new array
+      // (issue #12896)
+      if (next.removesItemsOf(val) && (suffix != null || arraySingleValues != null)) {
+        final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(val));
+        final int size = items.size();
+        next.applyRemove(items, originalRecord, context);
+        if (items.size() != size)
+          doSetValue(originalRecord, currentValue, items, context);
+      } else
+        next.applyRemove(val, originalRecord, context);
     } else {
       if (arrayRange != null)
         arrayRange.applyRemove(currentValue, originalRecord, context);
@@ -321,6 +331,32 @@ public class Modifier extends SimpleNode {
         throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
   }
+
+  /**
+   * Whether this modifier, the last of the chain, removes items by position or by value from {@code value} and {@code value} is
+   * an array: a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, which the removal cannot shrink, so the
+   * caller removes the items from the list of its items and stores that list where the array was (issue #12896).
+   */
+  boolean removesItemsOf(final Object value) {
+    return next == null && (arrayRange != null || arraySingleValues != null) && MultiValue.isSequenceArray(value);
+  }
+
+  /**
+   * Stores {@code value} where the chain of modifiers reads from {@code target}: the property or the item the last one reaches.
+   * Answers false, and stores nothing, when the last modifier does not name a place that can be written (a method call, a
+   * filter, a range) or an earlier one reaches nothing (issue #12896).
+   */
+  boolean writeBack(final ResultInternal record, final Object target, final Object value, final CommandContext context) {
+    if (next != null) {
+      final Object reached = calculateLocal(record, target, context);
+      return reached != null && next.writeBack(record, reached, value, context);
+    }
+    if (suffix == null && arraySingleValues == null)
+      return false;
+    doSetValue(record, target, value, context);
+    return true;
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

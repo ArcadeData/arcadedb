@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -39,6 +40,105 @@ public class MaterializedViewRefresher {
     if (view.tracksPendingDelta())
       view.requestFullPass(false);
     refresh(database, view, false);
+  }
+
+  /**
+   * Brings every REFRESH INCREMENTAL view that reads {@code superType}, or a type above it, in line with its query after
+   * {@code subType} was linked below {@code superType} or unlinked from it (issue #12031). The view's listeners follow the change by
+   * themselves, because a write reaches them through the lineage of the written record's type at the time of the write (issue
+   * #10205), but the records already stored in the attached or detached subtree were never written through them: the view lacked
+   * the attached ones and kept the detached ones, while reporting VALID.
+   * <p>
+   * What moved into or out of the views' reach is the records of {@code subType} and the types below it, and nothing else:
+   * <ul>
+   * <li>a subtree that holds no record (every {@code CREATE TYPE ... EXTENDS}) changes the rows of no view, so nothing is done;</li>
+   * <li>a per-record view re-evaluates just those records, through its pending delta like the commit of a change to them would, so
+   * the cost is the size of the subtree and not of the view. A subtree beyond the cap of a delta pass, or one that cannot be read,
+   * makes it a full pass instead;</li>
+   * <li>a whole-view view rewrites itself, as it does after every commit.</li>
+   * </ul>
+   * The plan caches are flushed first: the schema frame that called flushes them only when it ends, after this pass, and a plan of
+   * a view's query cached by an earlier refresh carries the buckets of the former hierarchy.
+   * <p>
+   * Nothing to do while the schema is read from file or a {@code dropType} cascade re-parents sub types: both re-establish a
+   * linkage that already held. A failed pass does not fail the schema change, which has already happened: the view is left STALE,
+   * as a failed incremental refresh leaves it, and the next refresh repairs it.
+   */
+  static void refreshViewsOverHierarchyChange(final LocalSchema schema, final DocumentType subType, final DocumentType superType) {
+    if (schema.isReadingFromFile() || schema.isTypeBeingDropped())
+      return;
+
+    final List<MaterializedViewImpl> affected = new ArrayList<>();
+    synchronized (schema) {
+      for (final MaterializedViewImpl view : schema.materializedViews.values())
+        if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL && readsTypeOrAbove(view, superType))
+          affected.add(view);
+    }
+    if (affected.isEmpty())
+      return;
+
+    final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+
+    // A whole-view view only needs to know whether there is anything: one record is enough
+    int cap = 1;
+    for (final MaterializedViewImpl view : affected)
+      if (view.isPerRecord()) {
+        cap = view.maxPerRecordDelta();
+        break;
+      }
+
+    final RecordIdentities moved = recordsOfSubtree(database, subType, cap);
+    if (moved != null && moved.size() == 0)
+      return;
+
+    database.getExecutionPlanCache().invalidate();
+
+    for (final MaterializedViewImpl view : affected) {
+      try {
+        if (view.isPerRecord()) {
+          if (moved == null)
+            view.requestFullPass(false);
+          else
+            view.appendPendingDelta(moved);
+        }
+        refresh(database, view, false);
+      } catch (final RuntimeException e) {
+        view.setStatus(MaterializedViewStatus.STALE);
+        persistStatus(database, view.getName(), view.getStatus());
+        LogManager.instance().log(MaterializedViewRefresher.class, Level.WARNING,
+            "Error refreshing materialized view '%s' after the subtypes of '%s' changed, marking as STALE: %s", e, view.getName(),
+            superType.getName(), e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * The records of {@code type} and the types below it, up to {@code cap}; {@code null} when there are more, or when they cannot be
+   * read (the caller then owes a full pass, which makes no assumption about what moved).
+   */
+  private static RecordIdentities recordsOfSubtree(final Database database, final DocumentType type, final int cap) {
+    final RecordIdentities records = new RecordIdentities(Math.min(cap, 16));
+    try {
+      // The scan needs a transaction: the caller's when it has one, a read-only one of its own otherwise
+      database.transaction(() -> database.scanType(type.getName(), true, record -> {
+        records.add(record.getIdentity());
+        return records.size() <= cap;
+      }));
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(MaterializedViewRefresher.class, Level.FINE,
+          "Cannot read the records of type '%s' to find what its super types moved: the views get a full pass: %s", e, type.getName(),
+          e.getMessage());
+      return null;
+    }
+    return records.size() > cap ? null : records;
+  }
+
+  /** Whether {@code SELECT FROM} one of the view's source types reaches the records of {@code type}'s subtypes. */
+  private static boolean readsTypeOrAbove(final MaterializedViewImpl view, final DocumentType type) {
+    for (final String sourceType : view.getSourceTypeNames())
+      if (type.instanceOf(sourceType))
+        return true;
+    return false;
   }
 
   /**

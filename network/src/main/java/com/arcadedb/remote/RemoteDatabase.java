@@ -44,8 +44,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.engine.timeseries.LineProtocolWriter;
 import com.arcadedb.remote.timeseries.TimeSeriesBucket;
@@ -217,6 +220,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
+    // Issue #12190: as the embedded API, a vertex or edge type is refused here. Not checked, save() ran INSERT INTO <type>,
+    // which on a vertex type created a vertex. The kind is the one of the cached schema: the server stays the authority for a
+    // type another client recreated as a different kind since
+    final DocumentType type = getSchema().getType(typeName);
+    if (type instanceof VertexType || type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
+
     return new RemoteMutableDocument(this, typeName);
   }
 
@@ -232,6 +242,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
+
+    // Issue #12190: the embedded API's refusal, instead of the ClassCastException of RemoteMutableVertex's cast
+    if (!(getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
     return new RemoteMutableVertex(this, typeName);
   }
