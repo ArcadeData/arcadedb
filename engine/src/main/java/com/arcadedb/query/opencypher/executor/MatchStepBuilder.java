@@ -626,9 +626,9 @@ final class MatchStepBuilder {
         || rel.getPropertiesParameterName() != null || !rel.hasTypes())
       return null;
 
-    // Only a directed hop maps unambiguously to the edge's out/in endpoints; BOTH is skipped.
+    // A directed hop maps to the edge's out/in endpoints, an undirected one to both orders of them (the step emits both)
     final Direction dir = rel.getDirection();
-    if (dir != Direction.OUT && dir != Direction.IN)
+    if (dir != Direction.OUT && dir != Direction.IN && dir != Direction.BOTH)
       return null;
 
     // A named relationship must still be free; an anonymous one can be pinned by its inline map alone

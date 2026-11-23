@@ -924,8 +924,9 @@ public class CypherOptimizer {
   }
 
   /**
-   * The cheapest relationship of a component its type's index can answer, or null (issue #11481): a fixed-length, directed, named
-   * relationship whose key, or a leading prefix of it, the {@code WHERE} clause pins with row-independent equalities or
+   * The cheapest relationship of a component its type's index can answer, or null (issue #11481): a fixed-length, named
+   * relationship, directed or not (an undirected hop binds each edge in both orders of its endpoints, issue #13268), whose
+   * key, or a leading prefix of it, the {@code WHERE} clause pins with row-independent equalities or
    * {@code IN}-lists, over every type it names (see {@link EdgeIndexSeedPlanner}). The seek binds both endpoints and checks their
    * labels; the whole {@code WHERE} clause still filters above it, inline node maps included, which the logical plan lowered into it.
    * <p>
@@ -944,7 +945,7 @@ public class CypherOptimizer {
       final String relVar = rel.getVariable();
       if (rel.isVariableLength() || !rel.hasTypes() || relVar == null || relVar.isEmpty() || relVar.startsWith("  "))
         continue;
-      if (rel.getDirection() != Direction.OUT && rel.getDirection() != Direction.IN)
+      if (rel.getDirection() != Direction.OUT && rel.getDirection() != Direction.IN && rel.getDirection() != Direction.BOTH)
         continue;
       final RelationshipPattern pattern = rel.getPattern();
       if (pattern != null && (pattern instanceof QuantifiedPathPattern || pattern.hasProperties() || pattern.hasWhereExpression()))
@@ -970,7 +971,8 @@ public class CypherOptimizer {
       if (!wholeKeys && !statement.isReadOnly())
         continue;
 
-      final long rows = EdgeIndexSeedPlanner.estimateRows(seeks, edgeCount);
+      // an undirected hop answers every edge in both orders of its endpoints
+      final long rows = EdgeIndexSeedPlanner.estimateRows(seeks, edgeCount) * (rel.getDirection() == Direction.BOTH ? 2 : 1);
       // Each key is an index lookup; each edge found is read with its two endpoints, the work of an expansion step
       final double cost = keys * CostModel.INDEX_SEEK_COST
           + rows * (CostModel.INDEX_LOOKUP_COST_PER_ROW + CostModel.EXPAND_COST_PER_ROW);

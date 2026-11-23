@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -738,6 +739,150 @@ class CypherEdgeIndexTest {
       try (final ResultSet rs = database.query("opencypher", query)) {
         return ((Number) rs.next().getProperty("c")).longValue();
       }
+    }
+  }
+
+  /**
+   * Issue #13268: an undirected pattern seeks the relationship index like the directed one, and answers what the expansion of the
+   * pattern answers: every edge once in each order of its endpoints, a self-loop once.
+   */
+  @Nested
+  class Issue13268UndirectedEdgeIndexSeek extends TestHelper {
+    @Override
+    protected void beginTest() {
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE INDEX relates_uuid IF NOT EXISTS FOR ()-[e:RELATES_TO]-() ON (e.uuid)");
+        database.command("opencypher", "CREATE (:Entity {name: 'a'}), (:Entity {name: 'b'}), (:Entity:Person {name: 'c'}), (:Other {name: 'o'})");
+        database.command("opencypher",
+            "MATCH (a {name: 'a'}), (b {name: 'b'}), (c {name: 'c'}), (o {name: 'o'}) "
+                + "CREATE (a)-[:RELATES_TO {uuid: 'e1'}]->(b), (b)-[:RELATES_TO {uuid: 'e2'}]->(a), (c)-[:RELATES_TO {uuid: 'e3'}]->(c), "
+                + "(a)-[:RELATES_TO {uuid: 'e4'}]->(c), (o)-[:RELATES_TO {uuid: 'e5'}]->(a), "
+                + "(a)-[:RELATES_TO {uuid: 'e6'}]->(b), (a)-[:RELATES_TO {uuid: 'e6'}]->(b)");
+      });
+    }
+
+    @Test
+    void everyEdgeIsBoundInBothOrdersAndASelfLoopOnce() {
+      final String plan = plan("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e3'] RETURN e.uuid AS u");
+      assertThat(plan).contains("MATCH EDGE BY INDEX");
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e3'] RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactlyInAnyOrder("e1:ab", "e1:ba", "e3:cc");
+    }
+
+    @Test
+    void theSeekAnswersWhatTheExpansionAnswers() {
+      // 'e.uuid + ""' keeps the predicate away from the index: the label scan and expansion is the oracle
+      final String seek = "MATCH (n:Entity)-[e:RELATES_TO]-(m) WHERE e.uuid IN ['e1', 'e2', 'e3', 'e4', 'e5'] RETURN e.uuid + ':' + n.name + m.name AS r";
+      final String scan = "MATCH (n:Entity)-[e:RELATES_TO]-(m) WHERE e.uuid + '' IN ['e1', 'e2', 'e3', 'e4', 'e5'] RETURN e.uuid + ':' + n.name + m.name AS r";
+      assertThat(plan(seek)).contains("MATCH EDGE BY INDEX");
+      assertThat(plan(scan)).doesNotContain("MATCH EDGE BY INDEX");
+      assertThat(rows(seek)).containsExactlyInAnyOrderElementsOf(rows(scan));
+    }
+
+    @Test
+    void theEndpointLabelsFilterEachOrder() {
+      // e5 joins an Other vertex and an Entity: only the order that puts the Entity first matches (n:Entity)-[e]-(m:Other)
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Other) WHERE e.uuid = 'e5' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactly("e5:ao");
+      assertThat(rows("MATCH (n:Person)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid = 'e4' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactly("e4:ca");
+    }
+
+    @Test
+    void aRepeatedEndpointVariableStillMeansASelfLoop() {
+      assertThat(rows("MATCH (n)-[e:RELATES_TO]-(n) WHERE e.uuid IN ['e1', 'e3'] RETURN e.uuid AS r")).containsExactly("e3");
+    }
+
+    @Test
+    void parallelEdgesAreEachBoundInBothOrders() {
+      // e6 names two parallel edges between a and b: four rows of the pattern, two edges, one distinct uuid
+      final String match = "MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid = 'e6' ";
+      assertThat(plan(match + "RETURN 1 AS r")).contains("MATCH EDGE BY INDEX");
+      assertThat(rows(match + "RETURN n.name + m.name AS r")).containsExactlyInAnyOrder("ab", "ab", "ba", "ba");
+      assertThat(rows(match + "RETURN count(*) AS r")).containsExactly("4");
+      assertThat(rows(match + "RETURN count(e) + ':' + count(DISTINCT e) AS r")).containsExactly("4:2");
+      assertThat(rows(match + "RETURN DISTINCT e.uuid AS r")).containsExactly("e6");
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e3'] WITH e.uuid AS u, count(*) AS c RETURN u + ':' + c AS r"))
+          .containsExactlyInAnyOrder("e1:2", "e3:1");
+    }
+
+    @Test
+    void everyFormOfTheKeyValueSeeksAndAnswersTheSame() {
+      final String parameterList = "MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN $l RETURN e.uuid + ':' + n.name + m.name AS r";
+      final String parameter = "MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid = $u RETURN e.uuid + ':' + n.name + m.name AS r";
+      final String inline = "MATCH (n:Entity)-[e:RELATES_TO {uuid: 'e1'}]-(m:Entity) RETURN e.uuid + ':' + n.name + m.name AS r";
+      assertThat(plan(parameterList, Map.of("l", List.of("e1")))).contains("MATCH EDGE BY INDEX");
+      assertThat(plan(parameter, Map.of("u", "e1"))).contains("MATCH EDGE BY INDEX");
+      assertThat(plan(inline)).contains("MATCH EDGE BY INDEX");
+      assertThat(rows(parameterList, Map.of("l", List.of("e1", "e3", "missing")))).containsExactlyInAnyOrder("e1:ab", "e1:ba", "e3:cc");
+      assertThat(rows(parameter, Map.of("u", "e1"))).containsExactlyInAnyOrder("e1:ab", "e1:ba");
+      assertThat(rows(inline)).containsExactlyInAnyOrder("e1:ab", "e1:ba");
+    }
+
+    @Test
+    void anEmptyOrNullKeyListFindsNothing() {
+      final String in = "MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN $l RETURN e.uuid AS r";
+      assertThat(rows(in, Map.of("l", List.of()))).isEmpty();
+      assertThat(rows(in, Map.of("l", Collections.singletonList(null)))).isEmpty();
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid = null RETURN e.uuid AS r")).isEmpty();
+    }
+
+    @Test
+    void thePredicatesBesideTheKeyStillFilterEachOrder() {
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e4'] AND n.name = 'a' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactlyInAnyOrder("e1:ab", "e4:ac");
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e4'] AND (n.name = 'a' OR m.name = 'a') "
+          + "RETURN e.uuid + ':' + n.name + m.name AS r")).containsExactlyInAnyOrder("e1:ab", "e1:ba", "e4:ac", "e4:ca");
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m:Entity) WHERE e.uuid IN ['e1', 'e6'] AND NOT m.name = 'b' "
+          + "RETURN e.uuid + ':' + n.name + m.name AS r")).containsExactlyInAnyOrder("e1:ba", "e6:ba", "e6:ba");
+      // an OR of two keys is not one key list: the seek may serve it, and must answer what the scan does
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]-(m) WHERE e.uuid = 'e1' OR e.uuid = 'e5' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactlyInAnyOrder("e1:ab", "e1:ba", "e5:ao");
+    }
+
+    @Test
+    void theDirectedFormsKeepTheirOneOrder() {
+      assertThat(rows("MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity) WHERE e.uuid = 'e1' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactly("e1:ab");
+      assertThat(rows("MATCH (n:Entity)<-[e:RELATES_TO]-(m:Entity) WHERE e.uuid = 'e1' RETURN e.uuid + ':' + n.name + m.name AS r"))
+          .containsExactly("e1:ba");
+    }
+
+    @Test
+    void anEdgeTypeDeclaredUnidirectionalAnswersBothOrdersToo() {
+      database.command("sql", "CREATE EDGE TYPE ONEWAY13268 UNIDIRECTIONAL");
+      database.command("opencypher", "CREATE INDEX FOR ()-[e:ONEWAY13268]-() ON (e.uuid)");
+      database.transaction(() -> database.command("opencypher",
+          "MATCH (a:Entity {name: 'a'}), (b:Entity {name: 'b'}) CREATE (a)-[:ONEWAY13268 {uuid: 'u1'}]->(b)"));
+      final String seek = "MATCH (n:Entity)-[e:ONEWAY13268]-(m:Entity) WHERE e.uuid = 'u1' RETURN n.name + m.name AS r";
+      final String scan = "MATCH (n:Entity)-[e:ONEWAY13268]-(m:Entity) WHERE e.uuid + '' = 'u1' RETURN n.name + m.name AS r";
+      assertThat(plan(seek)).contains("MATCH EDGE BY INDEX");
+      assertThat(rows(seek)).containsExactlyInAnyOrderElementsOf(rows(scan)).hasSize(2);
+    }
+
+    private String plan(final String query) {
+      return plan(query, Map.of());
+    }
+
+    private String plan(final String query, final Map<String, Object> params) {
+      try (final ResultSet rs = database.query("opencypher", "PROFILE " + query, params)) {
+        while (rs.hasNext())
+          rs.next();
+        return rs.getExecutionPlan().get().prettyPrint(0, 2);
+      }
+    }
+
+    private List<String> rows(final String query) {
+      return rows(query, Map.of());
+    }
+
+    private List<String> rows(final String query, final Map<String, Object> params) {
+      final List<String> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("opencypher", query, params)) {
+        while (rs.hasNext())
+          rows.add(String.valueOf(rs.next().<Object>getProperty("r")));
+      }
+      return rows;
     }
   }
 }
