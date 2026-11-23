@@ -39,6 +39,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.EquivalentIndexException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.exception.ImplicitTransactionRequiredException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -860,7 +861,7 @@ public class PostgresNetworkExecutor extends Thread {
    * returned by the query" rather than yielding an empty result. Only two things reach here with no column
    * to name - a command with nothing to return ({@code {cypher} CREATE (n)}) and a query whose rows simply
    * did not match, an unmodelled catalog relation included (issue #6412, pinned by
-   * {@code Issue6412CatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
+   * {@code PostgresCatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
    * language this server does not parse, nothing distinguishes them: the row count cannot, since both come
    * back empty, and the query text cannot without a parser per language. Announcing an empty result set is
    * the answer that is merely uninformative for the first and correct for the second; {@code NoData} would
@@ -1838,10 +1839,29 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private Set<String> columnNamesOf(final Result row) {
     final Set<String> names = new LinkedHashSet<>();
-    if (row.isElement())
-      names.addAll(row.getElement().get().getPropertyNames());
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
+      for (final String name : row.getElement().get().getPropertyNames())
+        if (excludes == null || !excludes.contains(name))
+          names.add(name);
+    }
     names.addAll(row.getPropertyNames());
     return names;
+  }
+
+  /**
+   * The aliases a {@code SELECT *, !name} projection excluded from the row's backing element, or null. The element still holds
+   * them, so every read this surface makes straight off the element has to skip them, or the excluded column is announced and
+   * its stored value sent (issue #11941). The row's own content still answers: a later item of the projection may write the
+   * same alias.
+   */
+  private static Set<String> projectionExcludes(final Result row) {
+    return row instanceof ResultInternal internal ? internal.getProjectionExcludes() : null;
+  }
+
+  private static boolean isExcludedFromElement(final Result row, final String name) {
+    final Set<String> excludes = projectionExcludes(row);
+    return excludes != null && excludes.contains(name);
   }
 
   /**
@@ -1956,9 +1976,26 @@ public class PostgresNetworkExecutor extends Thread {
     final Map<String, Class<?>> lastScalarClass = new HashMap<>();
 
     boolean atLeastOneElement = false;
+    // the system columns every element row's projection excluded (SELECT *, !@rid): not announced (issue #11941)
+    Set<String> excludedSystemColumns = null;
     for (final Result row : resultSet) {
-      if (row.isElement())
+      if (row.isElement()) {
+        final Set<String> excludes = projectionExcludes(row);
+        if (!atLeastOneElement)
+          excludedSystemColumns = excludes != null ? new HashSet<>(excludes) : null;
+        else if (excludedSystemColumns != null) {
+          if (excludes == null)
+            excludedSystemColumns = null;
+          else
+            excludedSystemColumns.retainAll(excludes);
+        }
         atLeastOneElement = true;
+      }
+
+      // The row's properties are read once, not once per column: a row backed by a stored record answers a name by walking
+      // the record header from its first byte until it meets the name, so a row of P columns cost P walks of the same record.
+      // The columns are typed from every row (issue #9009), so the walk was paid once per row per column (#12558).
+      final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
 
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
@@ -1968,7 +2005,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = row.getProperty(p);
+        final Object value = propertyOf(row, p, rowProperties);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -2022,9 +2059,12 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (atLeastOneElement) {
-      columns.put(RID_PROPERTY, PostgresType.VARCHAR);
-      columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
-      columns.put(CAT_PROPERTY, PostgresType.CHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(RID_PROPERTY))
+        columns.put(RID_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(TYPE_PROPERTY))
+        columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
+      if (excludedSystemColumns == null || !excludedSystemColumns.contains(CAT_PROPERTY))
+        columns.put(CAT_PROPERTY, PostgresType.CHAR);
     }
 
     return columns;
@@ -3036,9 +3076,10 @@ public class PostgresNetworkExecutor extends Thread {
     bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
     int colIndex = 0;
+    final Map<String, Object> properties = ResultInternal.propertiesOf(row);
     for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
       final String propertyName = postgresTypeEntry.getKey();
-      final Object value = columnValue(row, propertyName);
+      final Object value = columnValue(row, propertyName, properties);
 
       final PostgresType columnType = postgresTypeEntry.getValue();
       if (resolveResultFormat(resultFormats, colIndex++) == 1)
@@ -3070,9 +3111,14 @@ public class PostgresNetworkExecutor extends Thread {
    * The value a row carries for a column: the property of that name, or for the metadata columns ({@code @rid},
    * {@code @type}, {@code @cat}, {@code @in}, {@code @out}) what the row's element answers. Shared by the
    * {@code DataRow} writer and by {@code COPY ... TO STDOUT} (issue #7188), so the two encode the same value for
-   * the same column.
+   * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
+   * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
-  private static Object columnValue(final Result row, final String propertyName) {
+  // Package-private, not private, only so PostgresOnePassRowReadTest can call it: visible for testing
+  static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
+    // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
+    if (row.isElement() && isExcludedFromElement(row, propertyName))
+      return propertyOf(row, propertyName);
     return switch (propertyName) {
       case RID_PROPERTY -> row.isElement() ? row.getElement().get().getIdentity() : row.getProperty(propertyName);
       case TYPE_PROPERTY -> row.isElement() ? row.getElement().get().getTypeName() : row.getProperty(propertyName);
@@ -3109,14 +3155,41 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = row.getProperty(propertyName);
+        Object v = propertyOf(row, propertyName, properties);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
-        if (v == null && row.isElement())
+        // ...but only for a name the row does not list: a null the row wrote itself (a projection that set the column to
+        // null) is the row's answer and must not be replaced by the element's value. Before #12558 the fallback fired on
+        // any null, which answered such a column with the element's property instead.
+        if (v == null && row.isElement() && !properties.containsKey(propertyName))
           v = row.getElement().get().get(propertyName);
         yield v;
       }
     };
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   */
+  private static Object propertyOf(final Result row, final String name) {
+    return propertyOf(row, name, null);
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   *
+   * @param properties the row's properties already read, or null to read the one property the name asks for
+   */
+  private static Object propertyOf(final Result row, final String name, final Map<String, Object> properties) {
+    final Object value = properties != null && properties.containsKey(name) ? properties.get(name) : row.getProperty(name);
+    final Object list = PostgresType.materializeLazyMultiValue(value);
+    if (list != value && !row.isElement() && row instanceof ResultInternal internal)
+      internal.setProperty(name, list);
+    return list;
   }
 
   // ---- COPY ... TO STDOUT (issue #7188) ----
@@ -3255,14 +3328,15 @@ public class PostgresNetworkExecutor extends Thread {
 
       checkRowFitsAnnouncedColumns(row, columns);
 
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
       if (binary) {
         payload.putShort((short) names.length);
         for (int i = 0; i < names.length; i++)
-          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i], properties));
         appendCopyData(out, payload);
       } else {
         for (int i = 0; i < names.length; i++)
-          texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+          texts[i] = types[i].toText(types[i], columnValue(row, names[i], properties));
         copy.appendRow(line, texts, names);
         encoded = appendCopyData(out, line, encoder, encoded);
       }
@@ -3304,10 +3378,12 @@ public class PostgresNetworkExecutor extends Thread {
    * unioned through that method because this runs per row on the bulk path and the union allocates a set.
    */
   private static void checkRowFitsAnnouncedColumns(final Result row, final Map<String, PostgresType> columns) {
-    if (row.isElement())
+    if (row.isElement()) {
+      final Set<String> excludes = projectionExcludes(row);
       for (final String name : row.getElement().get().getPropertyNames())
-        if (!columns.containsKey(name))
+        if (!columns.containsKey(name) && (excludes == null || !excludes.contains(name)))
           throw unannouncedCopyColumn(name, columns);
+    }
     for (final String name : row.getPropertyNames())
       if (!columns.containsKey(name))
         throw unannouncedCopyColumn(name, columns);
@@ -4180,7 +4256,7 @@ public class PostgresNetworkExecutor extends Thread {
    * 34000} (portal missing) before it ever reaches this method. Inside an explicit block, the refusal aborts the
    * block and {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846), so nothing can recover the block and retry
    * the same portal either. Static and package-private so {@code PostgresApplyPendingSettingTest} pins the ordering
-   * directly; {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
+   * directly; {@code PostgresSessionSettingsIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
    * that a replay is answered as an error and never as {@code CommandComplete SET}.
    * <p>
    * Recorded in this connection's own settings (issue #8217), never in the database: a {@code SET datestyle} used to
@@ -4739,6 +4815,8 @@ public class PostgresNetworkExecutor extends Thread {
       return "42804";                              // datatype_mismatch
     if (CauseChain.contains(error, ObjectInUseException.class))
       return "55006";                              // object_in_use: a non-empty type, an indexed property (issue #11803)
+    if (CauseChain.contains(error, ImplicitTransactionRequiredException.class))
+      return "25001";                              // active_sql_transaction: CALL { ... } IN TRANSACTIONS in a transaction (#12161)
     return "22023";                                // invalid_parameter_value
   }
 

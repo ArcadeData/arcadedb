@@ -27,12 +27,14 @@ import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Map;
 
 /**
@@ -78,13 +80,21 @@ public class DateConstructorFunction implements StatelessFunction {
         }
       }
     }
-    if (args[0] instanceof Map)
+    if (args[0] instanceof Map) {
+      final Map<String, Object> map = (Map<String, Object>) args[0];
+      // A map holding only a timezone is the current date in that zone (issue #12297): it used to read as a map
+      // with no year, which defaulted to January 1 of the current year
       try {
-        return CypherDate.fromMap((Map<String, Object>) args[0]);
-      } catch (final DateTimeException e) {
+        if (map.size() == 1 && map.containsKey("timezone") && map.get("timezone") != null) {
+          final ZonedDateTime now = CypherFunctionHelper.getStatementTime(context, TemporalUtil.parseZone(map.get("timezone").toString()));
+          return new CypherDate(now.toLocalDate());
+        }
+        return CypherDate.fromMap(map);
+      } catch (final DateTimeException | IllegalArgumentException e) {
         // A field outside its range (month 13, week 54 of any year, February 30) is the caller's error, not an internal one
         throw new CommandSemanticException("date() " + e.getMessage());
       }
+    }
     if (args[0] instanceof CypherDate)
       return args[0];
     if (args[0] instanceof CypherLocalDateTime)

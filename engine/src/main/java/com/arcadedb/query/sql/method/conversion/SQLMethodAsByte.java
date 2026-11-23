@@ -40,7 +40,6 @@ public class SQLMethodAsByte extends AbstractSQLMethod {
       final Object[] params) {
     if (value instanceof Number number)
       return number.byteValue();
-    final String text = numericTextOrNull(value);
-    return text != null ? Byte.valueOf(text) : null;
+    return parseNumberOrNull(value, Byte::valueOf);
   }
 }
