@@ -405,6 +405,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index fetch before this step left $current on the index entry it emitted ({key, rid}), and hasNext() reads ahead to
+        // the next one: the row handed on becomes $current here, as in every other fetch step, so a LET subquery reads its outer
+        // record through $parent.$current (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
 
@@ -805,6 +809,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index entries were read before the first record was loaded, so $current still names the last entry (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
     };
