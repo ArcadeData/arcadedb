@@ -47,8 +47,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class Issue12544BuildCacheChargedToSearchCachesTest extends TestHelper {
   private static final int DIMENSIONS = 32;
   private static final int VECTORS    = 500;
-  /** The floor of the first cache, and the smallest cache worth publishing after it (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
+  /** The floor of the first cache (LSMVectorIndex.MIN_SEARCH_CACHE_SIZE). */
   private static final int FLOOR      = 8_192;
+  /** The smallest plan of an index, which the index of the build, with no search cache yet, is owed (LSMVectorIndex.MIN_SEARCH_CACHE_SLOTS). */
+  private static final int SLOTS      = 1_024;
 
   @Test
   void aSearchCacheSizedDuringABuildIsChargedTheBuildCache() {
@@ -91,8 +93,10 @@ class Issue12544BuildCacheChargedToSearchCachesTest extends TestHelper {
     assertThat(observed.get()).as("precondition: the build reported progress while its cache was alive").isTrue();
     assertThat(plannedDuringBuild.get()).as("the build publishes what its cache plans on: one float vector per vector walked")
         .isEqualTo(buildPlan);
+    // The build's cache, and the smallest plan the building index is owed, are charged (a percent of the rest is kept for the fall of
+    // the heap reading the cache sized causes once it is filled)
     assertThat(entriesDuringBuild.get()).as("a search cache sized during the build is charged the build's cache")
-        .isEqualTo(FLOOR + 30).isLessThan(withNoBuild);
+        .isLessThanOrEqualTo(FLOOR + 30 - SLOTS).isGreaterThan((FLOOR + 30 - SLOTS) * 98 / 100).isLessThan(withNoBuild);
     assertThat(entriesWhenTight.get()).as("a budget the build's cache takes whole leaves no search cache, not the floor").isZero();
     assertThat(searchedHeapForABuild.get()).as("a build sized on another index is charged the running build's cache")
         .isEqualTo(available - buildPlan);

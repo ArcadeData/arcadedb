@@ -120,8 +120,8 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   void theBucketIndexesOfATypeAreHandedNoMoreThanOneBudgetBetweenThem() {
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", 4, null);
     final long bytesPerEntry = FlatVectorCache.bytesPerVector(DIMENSIONS);
-    // two caches of an empty index (the smallest ones) and a remainder one entry short of the smallest useful cache
-    final long budget = (2L * SLOTS + FLOOR - 1) * bytesPerEntry;
+    // two caches of an empty index (the smallest ones) and a remainder one entry short of the plan of a third
+    final long budget = (3L * SLOTS - 1) * bytesPerEntry;
     final long available = availableFor(budget);
 
     final FlatVectorCache first = buckets[0].getSearchVectorCache(() -> available);
@@ -132,7 +132,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
     assertThat(second.capacity()).isEqualTo(SLOTS);
 
     assertThat(buckets[2].getSearchVectorCache(() -> available))
-        .as("what is left is under the smallest useful cache: none, not the floor and not a sliver").isNull();
+        .as("what is left is under the plan of the index: none, not the floor and not a sliver").isNull();
     assertThat(buckets[3].getSearchVectorCache(() -> available)).as("and nothing for the one after").isNull();
 
     long planned = 0L;
@@ -205,8 +205,8 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   void bucketIndexesGrowingAtOnceDoNotTakeTheSameRoom() throws Exception {
     final int threads = 16;
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", threads, null);
-    // room for three caches of an empty index and a remainder one entry short of the smallest useful cache after them
-    final long budget = (3L * SLOTS + FLOOR - 1) * FlatVectorCache.bytesPerVector(DIMENSIONS);
+    // room for three caches of an empty index and a remainder one entry short of the plan of a fourth
+    final long budget = (4L * SLOTS - 1) * FlatVectorCache.bytesPerVector(DIMENSIONS);
     final long available = availableFor(budget);
 
     final ExecutorService pool = Executors.newFixedThreadPool(threads);
@@ -245,7 +245,7 @@ class Issue12391SearchCacheSharedBudgetTest extends TestHelper {
   @Test
   void anIndexWithNoRoomDoesNotPayForTheBudgetOnEverySearch() {
     final LSMVectorIndex[] buckets = createBucketIndexes(database, "Doc", 2, null);
-    final long available = availableFor(FLOOR * FlatVectorCache.bytesPerVector(DIMENSIONS));
+    final long available = availableFor(SLOTS * FlatVectorCache.bytesPerVector(DIMENSIONS));
     assertThat(buckets[0].getSearchVectorCache(() -> available)).as("precondition: the first index takes the budget").isNotNull();
 
     final AtomicInteger readings = new AtomicInteger();

@@ -15186,7 +15186,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The corpus is the vector ID range rather than the live count: both caches are direct-mapped by id (issues #10968 and
    * #11003), so a capacity at least the range is what keeps every vector in a slot of its own, and a deleted id keeps its
-   * place in the range. See {@link #searchCacheCapacity(long, long, int)} for the rule.
+   * place in the range (the plan on the live count was measured and left: with the range 1.4 times the live count, 30% of the
+   * lookups missed whatever the budget, issue #13260). See {@link #searchCacheCapacity(long, long, int)} for the rule.
    * <p>
    * This runs on every search, and the heap reading polls every memory pool of the JVM. A cache that already has a slot for
    * every vector id cannot grow, so it is answered without the reading, and so is one the budget refused less than a second
@@ -15258,12 +15259,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * therefore has no "first cache" either: the floor below applies only when nothing else plans on the budget.
    * <p>
    * {@code MIN_SEARCH_CACHE_SIZE} is the room the database's first cache is always granted by the budget, so that a small
-   * index is still fully resident from its first query on a small heap, and the smallest remainder worth handing to a later
-   * one: past the first, an index gets what the shared budget leaves, and none when it leaves less than that many entries:
-   * its searches read the vectors from the pages. It is a budget figure and no longer what an index plans on (issue #13242):
-   * the capacity an index is given is the range of its own vector ids rounded up to a power of two ({@code MIN_SEARCH_CACHE_SLOTS}
-   * at least, 1,024), cut to that room. A small index therefore plans on a small cache, even as the first of the database, and a
-   * type of small bucket indexes no longer spends the budget on the floor.
+   * index is still fully resident from its first query on a small heap. It is a budget figure and no longer what an index plans
+   * on (issue #13242): the capacity an index is given is the range of its own vector ids rounded up to a power of two
+   * ({@code MIN_SEARCH_CACHE_SLOTS} at least, 1,024), cut to that room. A small index therefore plans on a small cache, even as
+   * the first of the database, and a type of small bucket indexes no longer spends the budget on the floor. Past the first, an
+   * index gets what the shared budget leaves, and none when it leaves less than {@code MIN_SEARCH_CACHE_SLOTS} entries: its
+   * searches read the vectors from the pages.
+   * <p>
+   * <b>The fair share (issue #13260).</b> The caches are sized one by one, in the order their indexes are first searched, so
+   * the first ones used to take their whole plan and the last ones found the budget gone: with two types of 16 bucket indexes
+   * (modelhub's Chunk and Entity) the 16 caches of the first type planned on the budget and all 16 indexes of the second
+   * type had no cache. A cache is therefore never planned past its level of the water-filling of the budget over all the
+   * caches the database's indexes would plan on ({@link #fairShareBytes}): an index that wants less than the level gets all
+   * it wants, every other gets the level, so the plans scale down together and none that holds vectors is left with none,
+   * unless the budget is under {@code MIN_SEARCH_CACHE_SLOTS} entries each. The index whose locations are not loaded yet
+   * counts as wanting the whole budget, as the loading is not worth a search, so a database that has just been opened
+   * splits the budget evenly until the indexes have been searched. The indexes that have no cache yet are also owed the smallest
+   * plan before an index takes more than that of what is left, as the heap reading falls while the caches fill.
    * <p>
    * The share is the database's, and only the database's: the walk sees the caches of this schema, while the heap reading is
    * the JVM's. The caches of another database in the same JVM reach this budget only once they are filled and a collection
@@ -15275,35 +15287,126 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param sizingCodes   whether the cache sized is this index's BINARY codes rather than its vectors: only that one cache
    *                      is left out of the charge, since it is the one being replaced
    *
-   * @return the entries the cache may hold: at least {@code MIN_SEARCH_CACHE_SIZE}, or 0 when the budget leaves no useful
-   * cache after the caches the database already has
+   * @return the entries the cache may hold: at least {@code MIN_SEARCH_CACHE_SIZE} for the first cache of the database, at
+   * least {@code MIN_SEARCH_CACHE_SLOTS} for the others, or 0 when the budget leaves no useful cache after the caches the
+   * database already has
    */
   long affordableSearchCacheEntries(final int heapPercent, final long bytesPerEntry, final long availableHeap,
       final boolean sizingCodes) {
+    final Index[] indexes = getDatabase().getSchema().getIndexes();
+    // What every cache of the database would plan on if nothing limited it, the other caches' own plan at least: one item per
+    // cache, and the one this method sizes is one of them
+    final long[] wants = new long[indexes.length * 2];
+    int items = 0;
     long othersPlan = 0L;
-    for (final Index index : getDatabase().getSchema().getIndexes()) {
+    long pendingMinimum = 0L;
+    for (final Index index : indexes) {
       if (!(index instanceof LSMVectorIndex owner))
         continue;
+      final long wantEntries = owner == this ? searchCacheWantEntries(true) : owner.searchCacheWantEntries(false);
       final FlatVectorCache vectors = owner.searchVectorCache;
-      if (vectors != null && (owner != this || sizingCodes))
-        othersPlan += vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions());
-      final BinaryCodeCache codes = owner.searchBinaryCodes;
-      if (codes != null && (owner != this || !sizingCodes))
-        othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
+      final long bytesPerVector = FlatVectorCache.bytesPerVector(owner.metadata.dimensions);
+      final long vectorsPlan = vectors != null ? vectors.capacity() * FlatVectorCache.bytesPerVector(vectors.dimensions()) : 0L;
+      if (vectorsPlan > 0L && (owner != this || sizingCodes))
+        othersPlan += vectorsPlan;
+      else if (vectorsPlan == 0L && (owner != this || sizingCodes))
+        pendingMinimum += MIN_SEARCH_CACHE_SLOTS * bytesPerVector;
+      wants[items++] = wantBytes(wantEntries, bytesPerVector, vectorsPlan);
+
+      if (owner.metadata.quantizationType == VectorQuantizationType.BINARY) {
+        final BinaryCodeCache codes = owner.searchBinaryCodes;
+        final long bytesPerCode = BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
+        final long codesPlan = codes != null ? codes.capacity() * bytesPerCode : 0L;
+        if (codesPlan > 0L && (owner != this || !sizingCodes))
+          othersPlan += codesPlan;
+        else if (codesPlan == 0L && (owner != this || !sizingCodes))
+          pendingMinimum += MIN_SEARCH_CACHE_SLOTS * bytesPerCode;
+        wants[items++] = wantBytes(wantEntries, bytesPerCode, codesPlan);
+      }
     }
     // The graph builds running on any index of the database, this one included: a build's cache is preloaded as soon as it
     // is sized, before any collection can show it in the available-heap reading (issue #12544). Read from the database's
     // ledger rather than from the indexes walked above, which no longer list an index a schema reload has replaced while its
     // build still runs
-    othersPlan += graphBuildCachesPlannedBytes(true);
+    final long builds = graphBuildCachesPlannedBytes(true);
+    othersPlan += builds;
     final long budget = VectorHeapBudget.budgetBytes(heapPercent, availableHeap);
-    if (othersPlan == 0L)
-      return Math.max(MIN_SEARCH_CACHE_SIZE, budget / bytesPerEntry);
 
-    final long entries = Math.max(0L, budget - othersPlan) / bytesPerEntry;
+    // The level of the budget over every cache, in entries of this one. An index never gets less than the smallest cache:
+    // below that the budget is simply too small for the number of indexes, and the first to ask are served first
+    final long level = fairShareBytes(wants, items, Math.max(0L, budget - builds));
+    final long fair = level == Long.MAX_VALUE ? Long.MAX_VALUE : Math.max(level / bytesPerEntry, MIN_SEARCH_CACHE_SLOTS);
+    final long left = Math.max(0L, budget - othersPlan) / bytesPerEntry;
+    // The first cache of the database: nothing is planned beside it, so it takes its fair share of the percent, and the floor at
+    // least
+    if (othersPlan == 0L)
+      return left < MIN_SEARCH_CACHE_SIZE ? MIN_SEARCH_CACHE_SIZE : Math.min(left, fair);
+
+    // The caches the indexes that have none yet will ask for are owed their smallest plan before this one takes more than its
+    // own: the available-heap reading falls with the caches already planned as they fill, and the others' plans are charged
+    // whole against it, so what is left for the last indexes of a type may be none however fairly the first were cut. This
+    // cache lowers the reading too once it is filled, and with it the budget, by the percent of what it plans: the smallest
+    // plans of the others are kept out of what is left after that
+    final long room = Math.max(0L, budget - othersPlan - pendingMinimum);
+    final long spare = (pendingMinimum > 0L ? room * 100 / (100 + Math.min(heapPercent, 90)) : room) / bytesPerEntry;
+    final long entries = Math.max(spare, Math.min(left, MIN_SEARCH_CACHE_SLOTS));
     // A few slots are no cache: direct-mapped by id, each id of a range far larger than them evicts the one it shares its slot
-    // with on every search, which costs a write per miss and saves next to no page read
-    return entries < MIN_SEARCH_CACHE_SIZE ? 0L : entries;
+    // with on every search, which costs a write per miss. The smallest cache is the smallest plan of an index
+    if (entries < MIN_SEARCH_CACHE_SLOTS)
+      return 0L;
+    return Math.min(entries, fair);
+  }
+
+  /**
+   * The entries a search cache of this index plans on when nothing limits it: the range of its vector ids rounded up to a
+   * power of two, {@code MIN_SEARCH_CACHE_SLOTS} at least. The range and not the live count (issue #13260): the cache is
+   * direct-mapped by id, an id past the capacity takes the slot of the id its remainder names, and a plan on the live count of
+   * an index whose vectors were re-embedded leaves live vectors sharing slots (30% of the searches' lookups missed at a range
+   * 1.4 times the live count, however large the budget). The overshoot of the plan is the share's to cut, see
+   * {@link #affordableSearchCacheEntries}.
+   *
+   * @param loadLocations whether the location index may be loaded to read the range: it is for this index, whose search is
+   *                      under way, and not for the other indexes of the database, whose first search is not worth the load
+   *
+   * @return the entries, or -1 when the locations are not loaded and the index holds vectors
+   */
+  private long searchCacheWantEntries(final boolean loadLocations) {
+    final long range;
+    if (loadLocations || locationsMaterialized)
+      range = Math.max(nextId.get(), vectorIndex().size());
+    else if (hasAnyVectors())
+      return -1L;
+    else
+      range = 0L;
+    return roundUpToPowerOfTwo(Math.max(MIN_SEARCH_CACHE_SLOTS, range));
+  }
+
+  private static long roundUpToPowerOfTwo(final long value) {
+    return value <= 1L ? 1L : Long.highestOneBit(value - 1L) << 1;
+  }
+
+  /** The heap a cache planned on {@code wantEntries} costs, {@code plan} at least: the whole budget when the index is not loaded. */
+  private static long wantBytes(final long wantEntries, final long bytesPerEntry, final long plan) {
+    return wantEntries < 0L ? Long.MAX_VALUE : Math.max(plan, wantEntries * bytesPerEntry);
+  }
+
+  /**
+   * The water-filling of {@code budget} over the caches that want {@code wants[0 .. count)} bytes: the level at which a cache
+   * that wants more is cut, those that want less keeping all of it, and the cuts adding up to the budget.
+   *
+   * @return the level in bytes, or {@code Long.MAX_VALUE} when every cache gets all it wants
+   */
+  static long fairShareBytes(final long[] wants, final int count, final long budget) {
+    Arrays.sort(wants, 0, count);
+    long left = budget;
+    for (int i = 0; i < count; i++) {
+      final long remaining = count - i;
+      // wants[i] * remaining > left, without the overflow of a cache that wants the whole budget
+      if (wants[i] > left / remaining)
+        return left / remaining;
+      left -= wants[i];
+    }
+    return Long.MAX_VALUE;
   }
 
   /**
@@ -15376,8 +15479,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the range uncovered while the budget covers it.
    *
    * @param idRange         the vector ids to hold, at least {@code MIN_SEARCH_CACHE_SLOTS}
-   * @param affordable      the entries the budget affords, 0 when it affords none (issue #12391) and otherwise at least
-   *                        {@code MIN_SEARCH_CACHE_SIZE}, and at most what the cache can hold
+   * @param affordable      the entries the budget affords this cache, 0 when it affords none (issue #12391): at least
+   *                        {@code MIN_SEARCH_CACHE_SLOTS} (for the first cache of the database {@code MIN_SEARCH_CACHE_SIZE}),
+   *                        at most its fair share ({@link #fairShareBytes}), and at most what the cache can hold
    * @param currentCapacity capacity of the cache the index holds, 0 for none
    *
    * @return the number of entries to hold
@@ -15385,7 +15489,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   static int searchCacheCapacity(final long idRange, final long affordable, final int currentCapacity) {
     if (currentCapacity >= idRange)
       return currentCapacity;
-    final long roundUp = Long.highestOneBit(idRange - 1) << 1;
+    final long roundUp = roundUpToPowerOfTwo(idRange);
     final long wanted = Math.min(Math.min(roundUp, affordable), Integer.MAX_VALUE / 2);
     if (currentCapacity > 0 && wanted < currentCapacity + (currentCapacity >>> 3) && wanted < idRange)
       return currentCapacity;
