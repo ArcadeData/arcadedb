@@ -404,6 +404,16 @@ class Issue10220GremlinWriteWithoutTransactionTest {
    */
   @Test
   void aReadDoesNotEndATransactionTheCallerBeganAfterCommittingTheOneTheReadOpened() throws Exception {
+    callerTransactionSurvivesTheEndOfTheResult(true);
+  }
+
+  /** The same, for a result closed before its rows are exhausted: the end that comes from close(). */
+  @Test
+  void aReadClosedHalfReadDoesNotEndATransactionTheCallerBeganAfterCommittingTheOneTheReadOpened() throws Exception {
+    callerTransactionSurvivesTheEndOfTheResult(false);
+  }
+
+  private void callerTransactionSurvivesTheEndOfTheResult(final boolean exhaustFirst) throws Exception {
     final ResultSet rs = database.command("gremlin", "g.V().limit(1)");
     try {
       assertThat(rs.hasNext()).isTrue();
@@ -413,8 +423,9 @@ class Issue10220GremlinWriteWithoutTransactionTest {
       database.begin();
       database.newVertex("N").set("k", "callers").save();
 
-      while (rs.hasNext())
-        rs.next();
+      if (exhaustFirst)
+        while (rs.hasNext())
+          rs.next();
       rs.close();
 
       assertThat(database.isTransactionActive()).as("the caller's transaction is still there").isTrue();
