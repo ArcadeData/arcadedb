@@ -252,7 +252,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
    * {@link FlatVectorCache}, with no vector materialized; one that is not is read as {@link #getVector} reads it, cached, and
    * scored by the same kernel, so the walk ranks every node on the same numbers wherever its vector came from.
    */
-  float similarity(final int ordinal, final VectorFloat<?> query, final VectorSimilarityFunction function) {
+  float similarity(final int ordinal, final FlatVectorCache.Query query, final VectorSimilarityFunction function) {
     if (ordinal < 0 || ordinalToVectorId == null || ordinal >= ordinalToVectorId.length)
       return Float.NaN;
 
@@ -265,7 +265,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
     }
 
     final VectorFloat<?> vector = getVector(ordinal);
-    return vector == deletedSentinelVector ? Float.NaN : function.compare(query, vector);
+    return vector == deletedSentinelVector ? Float.NaN : function.compare(query.vector, vector);
   }
 
   /** Reads the vector of {@code vectorId} from where it is stored, and caches it. {@link #getVector} after its cache missed. */

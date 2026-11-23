@@ -65,7 +65,7 @@ class FlatVectorCacheTest {
       for (int q = 0; q < 8; q++) {
         final VectorFloat<?> query = randomVector(random, dimensions);
         for (int id = 0; id < stored.size(); id++)
-          assertThat(cache.similarity(id, query, function)).as("%s, id %d", function, id)
+          assertThat(cache.similarity(id, FlatVectorCache.Query.of(query), function)).as("%s, id %d", function, id)
               .isCloseTo(function.compare(query, stored.get(id)), within(1e-6f));
       }
   }
@@ -75,8 +75,8 @@ class FlatVectorCacheTest {
     final FlatVectorCache cache = new FlatVectorCache(4, 16);
     final VectorFloat<?> query = vector(1f, 0f, 0f, 0f);
 
-    assertThat(cache.similarity(3, query, VectorSimilarityFunction.EUCLIDEAN)).isNaN();
-    assertThat(cache.similarity(-1, query, VectorSimilarityFunction.EUCLIDEAN)).isNaN();
+    assertThat(cache.similarity(3, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN)).isNaN();
+    assertThat(cache.similarity(-1, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN)).isNaN();
     assertThat(cache.get(3)).isNull();
 
     final VectorFloat<?> stored = vector(1f, 2f, 3f, 4f);
@@ -171,7 +171,7 @@ class FlatVectorCacheTest {
     assertThat(cache.get(15).get(5)).isEqualTo(15f);
     assertThat(cache.get(16).get(0)).isEqualTo(16f);
     final VectorFloat<?> query = vector(0f, 0f, 0f, 0f, 0f, 0f);
-    assertThat(cache.similarity(63, query, VectorSimilarityFunction.EUCLIDEAN))
+    assertThat(cache.similarity(63, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN))
         .isCloseTo(VectorSimilarityFunction.EUCLIDEAN.compare(query, vector(-1f, -2f, -3f, -4f, -5f, -6f)), within(1e-6f));
 
     // At the default chunk size a small index of wide vectors claims one small chunk, not its whole capacity floor
@@ -227,13 +227,13 @@ class FlatVectorCacheTest {
       threads.add(new Thread(() -> {
         started.countDown();
         while (!stop.get() && failure.get() == null) {
-          final float scoreA = cache.similarity(a, query, VectorSimilarityFunction.EUCLIDEAN);
+          final float scoreA = cache.similarity(a, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN);
           if (!Float.isNaN(scoreA)) {
             ++hits[reader];
             if (scoreA != expectedA)
               failure.compareAndSet(null, "id " + a + " scored " + scoreA + ", expected " + expectedA);
           }
-          final float scoreB = cache.similarity(b, query, VectorSimilarityFunction.EUCLIDEAN);
+          final float scoreB = cache.similarity(b, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN);
           if (!Float.isNaN(scoreB)) {
             ++hits[reader];
             if (scoreB != expectedB)

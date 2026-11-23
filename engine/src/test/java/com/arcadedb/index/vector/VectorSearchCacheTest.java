@@ -282,7 +282,7 @@ class VectorSearchCacheTest {
       assertThat(cache.allocatedBytes()).isEqualTo((long) capacity * 4 * Float.BYTES);
 
       final VectorFloat<?> query = vector(0f, 0f, 0f, 0f);
-      assertThat(cache.similarity(99, query, VectorSimilarityFunction.EUCLIDEAN))
+      assertThat(cache.similarity(99, FlatVectorCache.Query.of(query), VectorSimilarityFunction.EUCLIDEAN))
           .isEqualTo(VectorSimilarityFunction.EUCLIDEAN.compare(query, vector(99f, 1f, 2f, 3f)));
 
       // Past the capacity an id takes the slot of the remainder: 105 that of 5
