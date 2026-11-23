@@ -44,6 +44,13 @@ class JudgeTest {
         isStatus ? new double[0] : new double[] { median, median }, "ms", "lower");
   }
 
+  /** A nightly point of a case during which the host was not quiet (it slept or was suspended). */
+  private static Point notQuiet(final String ref, final int day, final String status, final double median) {
+    final Point p = nightly(ref, day, status, median);
+    return new Point(p.trigger(), p.ref(), p.commit(), p.tag(), p.t(), p.runAt(), p.runId(), p.benchCommit(), p.status(), p.median(),
+        p.values(), p.unit(), p.better(), true);
+  }
+
   private static Point nightly(final String ref, final int day, final String status, final double median) {
     return at("nightly", ref, day, status, median);
   }
@@ -71,6 +78,39 @@ class JudgeTest {
         List.of(nightly("a", 1, "ok", 100), nightly("b", 2, "failed", 100)), RECALL, List.of(nightly("a", 1, "ok", 1), nightly("b", 2, "failed", 1))));
     assertThat(v.stream().filter(x -> x.kind() == Verdict.Kind.WORSE).toList()).hasSize(1);
     assertThat(only(v, STATUS).kind()).isEqualTo(Verdict.Kind.WORSE);
+  }
+
+  @Test
+  void hostNotQuietNewestIsNotJudged() {
+    final List<Verdict> v = Judge.judge(lines(TIME, List.of(nightly("a", 1, "ok", 100), nightly("b", 2, "ok", 100), notQuiet("c", 3, "ok", 300)),
+        STATUS, List.of(nightly("a", 1, "ok", Double.NaN), nightly("b", 2, "ok", Double.NaN), notQuiet("c", 3, "timeout", Double.NaN)),
+        RECALL, List.of(nightly("a", 1, "ok", 1), notQuiet("c", 3, "ok", 0.2))));
+
+    // the line is judged on its newest quiet point
+    assertThat(only(v, TIME).newest().ref()).isEqualTo("b");
+    assertThat(only(v, TIME).kind()).isEqualTo(Verdict.Kind.SAME);
+    assertThat(only(v, STATUS).newest().ref()).isEqualTo("b");
+    assertThat(only(v, STATUS).kind()).isEqualTo(Verdict.Kind.SAME);
+    // its only quiet point has no baseline: nothing is judged
+    assertThat(only(v, RECALL).newest().ref()).isEqualTo("a");
+    assertThat(only(v, RECALL).kind()).isEqualTo(Verdict.Kind.NOT_JUDGED);
+    // a line whose every point is not quiet has no verdict at all
+    assertThat(Judge.judge(lines(TIME, List.of(notQuiet("a", 1, "ok", 100), notQuiet("b", 2, "ok", 300))))).isEmpty();
+  }
+
+  @Test
+  void hostNotQuietIsNeverABaseline() {
+    final List<Verdict> v = Judge.judge(lines(TIME, List.of(nightly("a", 1, "ok", 100), notQuiet("b", 2, "ok", 300), nightly("c", 3, "ok", 150)),
+        STATUS, List.of(nightly("a", 1, "ok", Double.NaN), notQuiet("b", 2, "timeout", Double.NaN), nightly("c", 3, "ok", Double.NaN))));
+
+    assertThat(only(v, TIME).baseline().ref()).isEqualTo("a");
+    assertThat(only(v, TIME).kind()).isEqualTo(Verdict.Kind.WORSE);
+    assertThat(only(v, STATUS).baseline().ref()).isEqualTo("a");
+    assertThat(only(v, STATUS).kind()).isEqualTo(Verdict.Kind.SAME);
+    // a tracked line is not followed to a run during which the host was not quiet
+    assertThat(Judge.runsAfter(List.of(nightly("a", 1, "ok", 100), notQuiet("b", 2, "ok", 300)), "nightly", "a")).isEmpty();
+    assertThat(Judge.runsAfter(List.of(nightly("a", 1, "ok", 100), notQuiet("b", 2, "ok", 300)), "nightly", "z")).extracting(Point::ref)
+        .containsExactly("a");
   }
 
   @Test

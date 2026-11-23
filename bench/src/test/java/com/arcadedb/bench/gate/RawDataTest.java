@@ -129,6 +129,25 @@ class RawDataTest {
   }
 
   @Test
+  void notesHostNotQuietMarksThePoint() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)).replace("\"status\":\"ok\",",
+        "\"status\":\"ok\",\"notes\":{\"hostNotQuiet\":\"wall clock ran 1500 ms ahead of the monotonic clock\"},"));
+    write("b.json", run("r-b", "nightly", "def456", null, null, "2026-11-21T03:00:00Z", metric("m", 2)).replace("\"status\":\"ok\",",
+        "\"status\":\"ok\",\"notes\":{\"serverRestarted\":true},"));
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir);
+
+    final List<Point> metric = lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m"));
+    final List<Point> status = lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", LineKey.STATUS));
+    assertThat(metric).extracting(Point::runId).containsExactly("r-a", "r-b");
+    assertThat(metric).extracting(Point::hostNotQuiet).containsExactly(true, false);
+    assertThat(status).extracting(Point::hostNotQuiet).containsExactly(true, false);
+    assertThat(metric.get(0).status()).isEqualTo("ok");
+    assertThat(metric.get(0).valid()).isFalse();
+    assertThat(metric.get(1).valid()).isTrue();
+  }
+
+  @Test
   void nightlyRefIsCommitReleaseRefIsTag() throws IOException {
     write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)));
     write("b.json", run("r-b", "release", "def456", "26.11.1", null, "2026-11-20T04:00:00Z", metric("m", 2)));

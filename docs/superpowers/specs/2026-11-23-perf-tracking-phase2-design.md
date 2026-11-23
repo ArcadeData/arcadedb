@@ -200,7 +200,7 @@ inside 240 minutes; if it does not, the slowest cases move to Saturday only, and
 - Runner tests: a server that dies mid-case is restarted, the dying case is `failed` with the Docker reason, a second death
   stops the workload; the run file is rewritten after each case and readable when cut short; the clock check marks a
   simulated jump; the watchdog takes at most 3 dumps.
-- Gate tests: a `hostNotQuiet` point is neither baseline nor judged; an S and an M nightly at different commits make two
+- Gate tests: a `hostNotQuiet` point is neither baseline nor judged; an S and an M nightly of the same commit make two
   events with their own ranges.
 - Workflow: one dispatched run at S and one at M per project before its schedule entry is enabled; actionlint on every
   workflow change.
