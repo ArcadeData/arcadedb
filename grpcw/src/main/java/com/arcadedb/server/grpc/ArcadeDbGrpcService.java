@@ -5286,7 +5286,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
           // A concurrent stream inserted this key after our check; the unique index proves it exists
           // now, so retry as an update instead of losing the row. Not exercised by
-          // Issue4656InsertStreamConflictUpdateIT: the race needs two concurrent streams hitting the
+          // GrpcInsertStreamConflictIT: the race needs two concurrent streams hitting the
           // same new key, which is not deterministically reproducible single-threaded.
           case CONFLICT_UPDATE -> {
             try {
