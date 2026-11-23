@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -120,7 +122,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
       int i = 0;
       for (final RID rid : docs.keySet())
         others.put(rid, vector(100_000 + i++));
-      assertSelfLookups(lsm("Doc", "other"), others, true, 7);
+      assertSelfLookups(lsm("Doc", "other"), others, 7);
     }
     assertExact(lsm("Keep", "embedding"), kept);
 
@@ -159,7 +161,8 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     for (final String file : files)
       assertThat(after).as("the dropped index leaves no file: %s", file).doesNotContain(file);
     assertThat(after).as("only the files of the index went").containsAll(before.stream().filter(f -> !files.contains(f)).toList());
-    // the schema still lists the index it was told nothing about: open the files again for the teardown
+    // Not part of the oracle: the schema of the database still lists the index (it was dropped behind its back, with the database
+    // closed), so the test opens the database again only because the TestHelper teardown drops it through its handle
     database = factory.open();
   }
 
@@ -238,7 +241,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     assertThat(index.getName()).isEqualTo(nameBefore);
     assertThat(new HashSet<>(Arrays.asList(new File(database.getDatabasePath()).list()))).anyMatch(f -> f.startsWith(nameBefore + "."));
     // the records the build recovered from the bucket answer, with the ones the index held
-    assertSelfLookups(index, live, false, RECORDS);
+    assertSelfLookups(index, live, RECORDS);
     assertThat(index.scheduleCompaction()).as("the slot is handed back").isTrue();
   }
 
@@ -253,7 +256,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     final LockHoldingThread holder = new LockHoldingThread((DatabaseInternal) database, List.of(fileBefore), 60_000);
     try {
       holder.start();
-      assertThat(holder.lockAcquired.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+      assertThat(holder.lockAcquired.await(10, TimeUnit.SECONDS)).isTrue();
 
       assertThat(index.scheduleCompaction()).isTrue();
       assertThat(index.compact()).as("the commits of the index did not leave the file free").isFalse();
@@ -324,11 +327,12 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     });
     assertThat(index.getFileId()).isEqualTo(fileBefore);
 
-    withBloatFactor(0, () -> {
+    // the minimum of pages is open here, as in the positive control below, so that only the bloat factor decides
+    withMinPages(2, () -> withBloatFactor(0, () -> {
       index.onAfterCommit();
       database.async().waitCompletion(30_000);
       assertThat(index.getFileId()).as("a bloat factor of 0 leaves the compaction to COMPACT INDEX").isEqualTo(fileBefore);
-    });
+    }));
 
     // the same index and the same garbage, the gates open: the commit hook compacts it
     withMinPages(2, () -> {
@@ -337,7 +341,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     });
     assertThat(index.getFileId()).as("a bloated index is compacted").isNotEqualTo(fileBefore);
     assertThat(index.countEntries()).isEqualTo(live.size());
-    assertSelfLookups(index, live, true, 11);
+    assertSelfLookups(index, live, 11);
   }
 
   @Test
@@ -454,7 +458,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
     corruptRecordTypeByte((DatabaseInternal) database, broken);
 
     assertThatThrownBy(() -> index.reconcileWithBucket(100, null)).isNotNull().satisfies(e -> {
-      assertThat(e).isNotInstanceOf(com.arcadedb.index.IndexException.class);
+      assertThat(e).isNotInstanceOf(IndexException.class);
       assertThat(e.getMessage()).doesNotContain("while rebuilding index");
     });
     assertThat(database.isTransactionActive()).as("the rebuild's transaction is rolled back").isFalse();
@@ -538,7 +542,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
   private void verify(final LSMVectorIndex index, final Map<RID, float[]> live, final Set<RID> deleted, final boolean exact) {
     if (exact)
       assertExact(index, live);
-    assertSelfLookups(index, live, !exact, 13);
+    assertSelfLookups(index, live, 13);
     for (final RID rid : deleted)
       assertThat(index.hasLiveVector(rid)).as("deleted %s", rid).isFalse();
     final Set<RID> found = new HashSet<>();
@@ -548,7 +552,7 @@ class VectorDropCompactionDimensionsOracleTest extends TestHelper {
   }
 
   /** The record of each of every {@code step}th vector is its own nearest neighbour. */
-  private void assertSelfLookups(final LSMVectorIndex index, final Map<RID, float[]> live, final boolean quantized, final int step) {
+  private void assertSelfLookups(final LSMVectorIndex index, final Map<RID, float[]> live, final int step) {
     int i = 0;
     for (final Map.Entry<RID, float[]> entry : live.entrySet()) {
       if (i++ % step != 0)

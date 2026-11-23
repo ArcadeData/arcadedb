@@ -226,7 +226,6 @@ class VectorGraphReuseDirectPutOracleTest extends VectorReuseOracleFixture {
     assertThat(stat("graphRebuildCount")).as("the graph was built over a record that is not there any more").isEqualTo(1L);
   }
 
-
   private List<RID> deleteRows(final int count) {
     final List<RID> gone = new ArrayList<>(count);
     final List<RID> live = new ArrayList<>(model.keySet());

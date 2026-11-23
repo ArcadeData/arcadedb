@@ -185,7 +185,16 @@ class VectorSizeOnFirstVectorOracleTest extends TestHelper {
     // asked twice: the second look is answered from what the first one found, and neither decides anything
     final LSMVectorIndex first = bucketIndexes().getFirst();
     for (int round = 0; round < 2; round++) {
-      assertThat(first.findNeighborsFromVector(vector(DIMENSIONS, 1), 3)).hasSizeLessThanOrEqualTo(3);
+      // The records are gone but the entries still hold their vectors: the search answers from them, exactly, and is not what sizes the
+      // index (the dimensions stay undecided below)
+      final float[] query = vector(DIMENSIONS, 1);
+      final int bucketId = first.getAssociatedBucketId();
+      final List<RID> expected = live.entrySet().stream().filter(e -> e.getKey().getBucketId() == bucketId)
+          .sorted(Comparator.comparingDouble((Map.Entry<RID, float[]> e) -> -cosine(query, e.getValue()))).limit(3)
+          .map(Map.Entry::getKey).toList();
+      final List<RID> actual = first.findNeighborsFromVector(query, 3, 100).stream()
+          .sorted(Comparator.comparingDouble((Pair<RID, Float> p) -> p.getSecond())).map(Pair::getFirst).toList();
+      assertThat(actual).as("round %d: the exact ranking of the entries of the bucket", round).containsExactlyElementsOf(expected);
       assertThat(first.getMetadata().dimensions).isZero();
       assertThat(first.getMetadata().sizeOnFirstVector).isTrue();
     }
