@@ -539,7 +539,9 @@ public class SubqueryStep extends AbstractExecutionStep {
    * batch are produced after the earlier batches committed.
    * <p>
    * Only the implicit transaction at the first level is committed: a caller's transaction is refused with IN TRANSACTIONS before
-   * anything runs (issue #11588), and a deeper level belongs to someone else.
+   * anything runs (issue #11588), and a deeper level belongs to someone else. A transaction a server shares between several
+   * statements stops being implicit once an earlier one wrote into it, so it is refused there too: the Postgres implicit block of
+   * a pipeline does so (issue #13222), and the multi-statement simple query declares its block the client's.
    * <p>
    * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
    * <p>
@@ -547,9 +549,8 @@ public class SubqueryStep extends AbstractExecutionStep {
    * the HTTP, gRPC and MCP auto-commit wrappers, {@code Database.transaction()} and the asynchronous executor do not replay a request
    * whose writes before the CALL are durable, the conflict reaches the caller instead (issue #13223).
    * <p>
-   * Known gaps, tracked on their own: a record the prefix left provisional under a deferred existence check is committed here, so
-   * the check at the end of the statement cannot remove it although its message says so (#13221); and in a Postgres pipeline's
-   * implicit block this also commits the earlier statements of the block (#13222).
+   * Known gap, tracked on its own: a record the prefix left provisional under a deferred existence check is committed here, so
+   * the check at the end of the statement cannot remove it although its message says so (#13221).
    *
    * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
    */
