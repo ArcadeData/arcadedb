@@ -302,6 +302,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // the question. Cleared at PUBLISH time, not at decision time: see ensureGraphAvailable()'s finally for why the
   // prefix-reuse branch hands ownership of this flag to reuseStalePrefixGraph() instead of clearing it itself.
   private volatile boolean                       persistedGraphUnresolved = true;
+  // True while a from-scratch build runs with no graph resident (issue #13212). The build promotes graphState past LOADING and
+  // has already cleared persistedGraphUnresolved, so without this a search arriving mid-build would find nothing left for
+  // ensureGraphAvailable() to do and answer from the delta buffer alone: no rows for a persisted corpus. Set and cleared under
+  // graphBuildLock, so a search that queues behind the build finds the graph published when it gets the lock.
+  private volatile boolean                       firstGraphBuildRunning;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
   // The lookups of the ordinal maps a renumbering compaction translated while the old graph was resident: such a map holds -1 for
@@ -2121,9 +2126,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #ensureGraphAvailable()} to do, and this is what keeps a publish path that forgets to clear the latch
    * (the chunked initial build reaches one through {@link #buildGraphFromScratchWithRetry}, but nothing forces a
    * future one to) from making every search reload and re-validate a graph that is already resident.
+   * <p>
+   * The third disjunct, {@link #firstGraphBuildRunning}, covers a from-scratch build that runs with no graph resident
+   * (issue #13212): that build clears the latch and promotes the state past LOADING before it publishes the graph, so
+   * without it a search arriving mid-build would answer from the delta buffer alone. It is read AFTER the latch on
+   * purpose: {@link #buildGraphFromScratchWithRetry} raises the flag before it clears the latch, so a read that finds
+   * the latch cleared is guaranteed to find the flag raised (or the build finished and the flag lowered).
    */
   private boolean graphNotYetMaterialised() {
-    return graphState == GraphState.LOADING || (persistedGraphUnresolved && graphIndex == null);
+    return graphState == GraphState.LOADING || (persistedGraphUnresolved && graphIndex == null) || firstGraphBuildRunning;
   }
 
   /**
@@ -3605,13 +3616,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // could interleave their vectorIndex re-sync and their ordinal-map publication and leave a searcher with an
     // ordinal map pointing at locations another build had just cleared. Builders wait on this mutex; searches
     // and inserts never touch it, so it does not reintroduce the stall.
+    boolean ownsFirstGraphBuildFlag = false;
     graphBuildLock.lock();
     try {
       // Whatever is on disk is about to be superseded by this build, so there is nothing left for
-      // ensureGraphAvailable() to resolve (issue #6772). Set before the build rather than after it so a search
-      // that arrives mid-build and finds graphState already promoted to MUTABLE does not queue behind this mutex
-      // to re-validate a graph file this build is replacing; a build that fails leaves graphState at LOADING,
-      // which graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
+      // ensureGraphAvailable() to resolve (issue #6772): a search that arrives mid-build does not re-validate a graph file this
+      // build is replacing. Set before the build rather than after it; a build that fails leaves graphState at LOADING, which
+      // graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
+      //
+      // With no graph resident, a search arriving mid-build has nothing to answer from but this build, whatever graphState the
+      // build has promoted to by then: it queues behind graphBuildLock like one that arrived before the build (issue #13212).
+      // The flag is raised BEFORE the latch is cleared, and graphNotYetMaterialised() reads the latch before the flag: a
+      // lock-free search that reads the latch already cleared is then guaranteed to read the flag raised, so there is no
+      // instant at which it can read both false while graphIndex is still null (an index written to before its first search
+      // has graphState already MUTABLE, so the LOADING term does not cover that instant).
+      ownsFirstGraphBuildFlag = graphIndex == null && !firstGraphBuildRunning;
+      if (ownsFirstGraphBuildFlag)
+        firstGraphBuildRunning = true;
       persistedGraphUnresolved = false;
 
       // The graph is derived state: it describes the database as the last COMMITTED transaction left it, it is
@@ -3653,6 +3674,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // never late - which is the same tolerance graphWalkVisited is documented to have. Closing it would mean
       // holding a lock across the whole build to bracket a counter that only feeds a heuristic.
       deltaScanWorkSinceRebuild.set(0L);
+      // Before the unlock, so a search queued behind this build finds the flag clear and the graph published (or the build failed)
+      if (ownsFirstGraphBuildFlag)
+        firstGraphBuildRunning = false;
       graphBuildLock.unlock();
     }
   }
