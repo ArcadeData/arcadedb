@@ -20,11 +20,13 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.Transaction;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.VertexType;
@@ -135,12 +137,16 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   private void recordHeadRead(final int bit) {
-    final com.arcadedb.database.TransactionContext tx = ((com.arcadedb.database.DatabaseInternal) database).getTransactionIfExists();
-    if (tx != null && tx.isReadsExcused())
-      // a MERGE existence probe: recorded, or dropped, when the probe ends
-      tx.deferProbeRead(() -> edgeListHeadsRead |= bit);
-    else
-      edgeListHeadsRead |= bit;
+    // one volatile read outside a MERGE probe, the common case: the transaction is looked up only while some probe is open
+    if (TransactionContext.isAnyMergeProbeOpen()) {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      if (tx != null && tx.isReadsExcused()) {
+        // a MERGE existence probe: recorded, or dropped, when the probe ends
+        tx.deferProbeRead(() -> edgeListHeadsRead |= bit);
+        return;
+      }
+    }
+    edgeListHeadsRead |= bit;
   }
 
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */

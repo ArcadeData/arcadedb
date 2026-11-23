@@ -483,6 +483,29 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
+   * {@link #findAllMatchingPaths} for the existence probe of a MERGE, with the reads of its walk dropped when that is sound (issue #13225).
+   */
+  private List<Result> findAllMatchingPathsDroppingReads(final PathPattern pathPattern, final ResultInternal baseResult) {
+    // Only a single relationship with an endpoint the row already binds: its creation is either between two existing nodes or from
+    // one to a node it creates, which the merged-edge registry checks. A path that creates every node, or a longer one, has no such
+    // check once the probe's reads are dropped (the nodes it scans are read from pages the registry knows nothing of)
+    final TransactionContext tx = pathPattern.getRelationshipCount() == 1 && findBoundAnchorIndex(pathPattern, baseResult) >= 0 ?
+        ((DatabaseInternal) context.getDatabase()).getTransactionIfExists() : null;
+    if (tx == null)
+      return findAllMatchingPaths(pathPattern, baseResult);
+    tx.beginMergeProbe();
+    List<Result> found = null;
+    try {
+      found = findAllMatchingPaths(pathPattern, baseResult);
+      return found;
+    } finally {
+      // dropped whatever the probe found: a hit decides nothing that a later write rests on (READ_COMMITTED), and a miss is
+      // followed by a creation the merged-edge registry checks. An error keeps the reads
+      tx.endMergeProbe(found == null);
+    }
+  }
+
+  /**
    * Finds all complete existing paths that match {@code pathPattern}.
    * Traversal starts from any already-bound anchor node and follows edges to
    * discover the remaining pattern; unbound intermediate and endpoint nodes are
@@ -502,23 +525,6 @@ public class MergeStep extends AbstractExecutionStep {
    * of children over time and the anchor walk became O(parent.degree) per
    * MERGE).
    */
-  private List<Result> findAllMatchingPathsDroppingReads(final PathPattern pathPattern, final ResultInternal baseResult) {
-    final TransactionContext tx = pathPattern.getRelationshipCount() > 0 ?
-        ((DatabaseInternal) context.getDatabase()).getTransactionIfExists() : null;
-    if (tx == null)
-      return findAllMatchingPaths(pathPattern, baseResult);
-    tx.beginMergeProbe();
-    List<Result> found = null;
-    try {
-      found = findAllMatchingPaths(pathPattern, baseResult);
-      return found;
-    } finally {
-      // dropped whatever the probe found: a hit decides nothing that a later write rests on (READ_COMMITTED), and a miss is
-      // followed by a creation the merged-edge registry checks. An error keeps the reads
-      tx.endMergeProbe(found == null);
-    }
-  }
-
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
     existenceIndex = null;

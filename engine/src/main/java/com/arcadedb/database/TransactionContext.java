@@ -74,6 +74,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
@@ -245,6 +246,8 @@ public class TransactionContext implements Transaction {
   // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
   // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
   private       int                                  edgeAppendDepth;
+  private static final int                         SUSPENDED_PROBE_SHIFT = 16;
+  private static final int                         SUSPENDED_DEPTH_MASK  = (1 << SUSPENDED_PROBE_SHIFT) - 1;
   private       int                                  probeDepth;
   private       List<Runnable>                       probeReads;
   private       MutablePage[]                        deferredReadPages;
@@ -3701,13 +3704,14 @@ public class TransactionContext implements Transaction {
     return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
   }
 
-  /**
-   * Records that a record read was served from {@code page} at slot {@code slot}, so a commit-time merge of the page can tell a
-   * decision taken on the transaction's own image of it (#11590). Under {@code READ_COMMITTED} a page this transaction holds
-   * modified is that image, taken at its first write: it misses what others committed to the page since, and the merges must
-   * not replay this transaction's writes onto the newer page when they may rest on such a read. Only a page the transaction
-   * holds modified is recorded, while it runs: nothing is allocated for any other read.
-   */
+  /** Probes open on any transaction of the process: the one volatile read that keeps the vertex head reads free outside a probe. */
+  private static final AtomicInteger OPEN_MERGE_PROBES = new AtomicInteger();
+
+  /** Whether some transaction has a MERGE probe open: false in the common case, and then no transaction needs to be looked up. */
+  public static boolean isAnyMergeProbeOpen() {
+    return OPEN_MERGE_PROBES.get() > 0;
+  }
+
   /** True while a MERGE existence probe runs: the reads it makes are held back, see {@link #beginMergeProbe()}. */
   public boolean isReadsExcused() {
     return probeDepth > 0;
@@ -3722,7 +3726,8 @@ public class TransactionContext implements Transaction {
    * and head merges from refusing every transaction that probed a hot list.
    */
   public void beginMergeProbe() {
-    ++probeDepth;
+    if (probeDepth++ == 0)
+      OPEN_MERGE_PROBES.incrementAndGet();
   }
 
   /** Defers {@code read} to the end of the probe window, where it is recorded or dropped. */
@@ -3732,11 +3737,13 @@ public class TransactionContext implements Transaction {
     probeReads.add(read);
   }
 
+  /** Closes the window {@link #beginMergeProbe()} opened: the reads it held back are recorded when {@code keepReads}, else dropped. */
   public void endMergeProbe(final boolean keepReads) {
     if (probeDepth == 0)
       return;
     if (--probeDepth > 0)
       return;
+    OPEN_MERGE_PROBES.decrementAndGet();
     final List<Runnable> reads = probeReads;
     probeReads = null;
     if (keepReads && reads != null)
@@ -3744,6 +3751,13 @@ public class TransactionContext implements Transaction {
         r.run();
   }
 
+  /**
+   * Records that a record read was served from {@code page} at slot {@code slot}, so a commit-time merge of the page can tell a
+   * decision taken on the transaction's own image of it (#11590). Under {@code READ_COMMITTED} a page this transaction holds
+   * modified is that image, taken at its first write: it misses what others committed to the page since, and the merges must
+   * not replay this transaction's writes onto the newer page when they may rest on such a read. Only a page the transaction
+   * holds modified is recorded, while it runs: nothing is allocated for any other read.
+   */
   public void trackReadFromPage(final BasePage page, final int slot) {
     if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage()) {
       ++ownImageReads;
@@ -3852,17 +3866,21 @@ public class TransactionContext implements Transaction {
    * {@link #resumeEdgeAppend(int)} in a {@code finally}. A listener the append's own loads and saves fire is the application: what it
    * reads, the chunk being appended to included, is recorded as a read of the application, as it is outside any append. An append
    * the listener makes opens a window of its own and, closing it, records the reads the suspended window deferred so far: that only
-   * gives up the edge-append merge, never a read.
+   * gives up the edge-append merge, never a read. The window of a MERGE probe is suspended with it ({@link #beginMergeProbe()}).
+   * The returned value packs both depths: the edge-append one in the low 16 bits, the probe one above them, non-zero when either was open.
    */
   public int suspendEdgeAppend() {
-    final int depth = edgeAppendDepth;
+    final int depth = edgeAppendDepth | probeDepth << SUSPENDED_PROBE_SHIFT;
     edgeAppendDepth = 0;
+    // a listener's reads are the application's, also inside a MERGE probe: recorded now, never held back to be dropped
+    probeDepth = 0;
     return depth;
   }
 
-  /** Gives back the window {@link #suspendEdgeAppend()} suspended (#11590). */
+  /** Gives back the windows {@link #suspendEdgeAppend()} suspended (#11590). */
   public void resumeEdgeAppend(final int depth) {
-    edgeAppendDepth = depth;
+    edgeAppendDepth = depth & SUSPENDED_DEPTH_MASK;
+    probeDepth = depth >>> SUSPENDED_PROBE_SHIFT;
   }
 
   /** Closes the window {@link #beginEdgeAppend()} opened (#11590). */
@@ -3895,6 +3913,10 @@ public class TransactionContext implements Transaction {
 
   private void resetEdgeAppendReads() {
     edgeAppendDepth = 0;
+    if (probeDepth > 0)
+      OPEN_MERGE_PROBES.decrementAndGet();
+    probeDepth = 0;
+    probeReads = null;
     deferredReadPages = null;
     deferredReadSlots = null;
     deferredReads = 0;

@@ -20,12 +20,17 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.event.AfterRecordReadListener;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -53,6 +58,8 @@ class MergeProbeOfHotListTest {
     database = new DatabaseFactory("./target/databases/MergeProbeOfHotListTest").create();
     database.getSchema().createVertexType("Hub");
     database.getSchema().createVertexType("Leaf");
+    database.getSchema().createVertexType("P");
+    database.getSchema().createVertexType("Q");
     database.getSchema().createEdgeType("R");
     database.getSchema().createEdgeType("Z");
     database.transaction(() -> {
@@ -112,6 +119,119 @@ class MergeProbeOfHotListTest {
     race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
     try (final ResultSet rs = database.query("opencypher", "MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")) {
       assertThat(((Number) rs.next().getProperty("c")).intValue()).isBetween(0, 1);
+    }
+  }
+
+  /** MERGE matched a relationship, ON MATCH SET wrote it, a concurrent DELETE removed it: the write must not resurrect or half-keep it. */
+  @Test
+  void aMergeThatMatchedAndSetARelationshipAConcurrentDeleteRemovedKeepsNoWrittenRelationship() throws Exception {
+    final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
+    final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[r:R {k: 3}]->(l) ON MATCH SET r.m = 1";
+    final String delete = "MATCH (:Hub {id: 'h'})-[r:R {k: 3}]->(:Leaf {id: 'l3'}) DELETE r";
+    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    final int recreated = scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c");
+    // DELETE then MERGE: the relationship is created anew, without the ON MATCH write; MERGE then DELETE: none. Never the written one
+    assertThat(recreated).isBetween(0, 1);
+    assertThat(scalar("MATCH ()-[r:R]->() WHERE r.m = 1 RETURN count(r) AS c")).isZero();
+    assertThat(count()).isEqualTo(HUB_DEGREE + 1 - 1 + recreated);
+  }
+
+  /** MERGE matched a relationship and SET a property of its end, a concurrent DELETE removed the relationship: the end keeps its write. */
+  @Test
+  void aMergeThatMatchedARelationshipAndSetItsEndKeepsTheWriteWhenAConcurrentDeleteRemovedTheRelationship() throws Exception {
+    final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
+    final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[r:R {k: 3}]->(l) SET l.touched = true, h.touched = true";
+    final String delete = "MATCH (:Hub {id: 'h'})-[r:R {k: 3}]->(:Leaf {id: 'l3'}) DELETE r";
+    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    assertThat(scalar("MATCH (l:Leaf {id: 'l3'}) WHERE l.touched = true RETURN count(l) AS c")).isEqualTo(1);
+    assertThat(scalar("MATCH (h:Hub {id: 'h'}) WHERE h.touched = true RETURN count(h) AS c")).isEqualTo(1);
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")).isBetween(0, 1);
+  }
+
+  /** MERGE found nothing and so did a concurrent MERGE of the same relationship: exactly one is left (the merged-edge registry). */
+  @Test
+  void twoMergesOfTheSameMissingRelationshipLeaveOne() throws Exception {
+    final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
+    final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) MERGE (h)-[:R {k: 7}]->(l)";
+    final Map<String, Object> leaf = Map.of("leaf", "l" + HUB_DEGREE);
+    race(own, Map.of("leaf", "l" + (HUB_DEGREE + 1)), merge, leaf, merge, leaf);
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 7}]->(:Leaf {id: 'l" + HUB_DEGREE + "'}) RETURN count(r) AS c")).isEqualTo(1);
+  }
+
+  /** The same for a MERGE that creates the far node too: the registry's key covers the existing end and the created one's pattern. */
+  @Test
+  void twoMergesOfTheSameMissingRelationshipToANewNodeLeaveOne() throws Exception {
+    final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
+    final String merge = "MATCH (h:Hub {id: 'h'}) MERGE (h)-[:R {k: 8}]->(:Leaf {id: 'fresh'})";
+    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 8}]->(:Leaf {id: 'fresh'}) RETURN count(r) AS c")).isEqualTo(1);
+    assertThat(scalar("MATCH (l:Leaf {id: 'fresh'}) RETURN count(l) AS c")).isEqualTo(1);
+  }
+
+  /** A path that binds no endpoint creates both nodes: no registry key covers it, so its probe keeps its reads and one path is left. */
+  @Test
+  void twoMergesOfTheSameUnanchoredMissingPathLeaveOne() throws Exception {
+    final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
+    final String merge = "MERGE (a:P {id: 'a'})-[:R {k: 9}]->(b:Q {id: 'b'})";
+    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    assertThat(scalar("MATCH (:P {id: 'a'})-[r:R {k: 9}]->(:Q {id: 'b'}) RETURN count(r) AS c")).isEqualTo(1);
+    assertThat(scalar("MATCH (a:P {id: 'a'}) RETURN count(a) AS c")).isEqualTo(1);
+  }
+
+  /** A read listener fired while the probe runs is the application: its reads are recorded at once, the probe's own stay held back. */
+  @Test
+  void aReadListenerFiredDuringTheProbeIsNotInsideTheProbeWindow() {
+    final List<Boolean> excusedInListener = new ArrayList<>();
+    final AfterRecordReadListener listener = record -> {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      excusedInListener.add(tx != null && tx.isReadsExcused());
+      return record;
+    };
+    database.getSchema().getType("R").getEvents().registerListener(listener);
+    try {
+      database.begin();
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l" + HUB_DEGREE + "'}) CREATE (h)-[:R {k: 5000}]->(l)");
+      excusedInListener.clear();
+      database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[:R {k: 3}]->(l)");
+      assertThat(excusedInListener).as("the probe read relationships, so the listener ran").isNotEmpty();
+      assertThat(excusedInListener).doesNotContain(true);
+      assertThat(tx.isReadsExcused()).isFalse();
+      database.rollback();
+    } finally {
+      database.getSchema().getType("R").getEvents().unregisterListener(listener);
+    }
+  }
+
+  /** The window of the probe is suspended with the edge-append one, and given back whole. */
+  @Test
+  void suspendingTheEdgeAppendWindowSuspendsTheProbeWindowAndResumeGivesItBack() {
+    database.begin();
+    try {
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+      tx.beginMergeProbe();
+      tx.beginMergeProbe();
+      assertThat(TransactionContext.isAnyMergeProbeOpen()).isTrue();
+      assertThat(tx.isReadsExcused()).isTrue();
+      final int suspended = tx.suspendEdgeAppend();
+      assertThat(suspended).isNotZero();
+      assertThat(tx.isReadsExcused()).isFalse();
+      tx.resumeEdgeAppend(suspended);
+      assertThat(tx.isReadsExcused()).isTrue();
+      tx.endMergeProbe(false);
+      assertThat(tx.isReadsExcused()).isTrue();
+      tx.endMergeProbe(false);
+      assertThat(tx.isReadsExcused()).isFalse();
+      assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+    } finally {
+      database.rollback();
+    }
+  }
+
+  private int scalar(final String query) {
+    try (final ResultSet rs = database.query("opencypher", query)) {
+      return ((Number) rs.next().getProperty("c")).intValue();
     }
   }
 
