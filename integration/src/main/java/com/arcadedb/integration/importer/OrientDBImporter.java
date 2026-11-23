@@ -434,6 +434,9 @@ public class OrientDBImporter {
     reader.beginArray();
 
     final AtomicLong processedItems = new AtomicLong();
+    // THE COUNTER MEANS TWO THINGS: THE RECORD PASS COUNTS THE EDGE RECORDS IT LEAVES FOR THE EDGE PASS (createRecords()), THE
+    // EDGE PASS COUNTS THE EDGES IT DROPS FOR A MISSING VERTEX (createEdges()). THE RESET HERE IS WHAT MAKES THE REPORT CARRY
+    // THE SECOND ONLY (ISSUE #12047)
     context.skippedEdges.set(0);
     // Kept even though Importer.loadFromSource() now zeroes this counter on entry to every phase (issue #7342):
     // this importer is also a standalone CLI of its own (see main()), and that entry point never goes through
@@ -953,6 +956,8 @@ public class OrientDBImporter {
     final RID newOut = compressedRecordsRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
@@ -970,6 +975,8 @@ public class OrientDBImporter {
     final RID newIn = compressedRecordsRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;
+      // IN THE REPORT TOO, NOT ONLY IN THE LOG (ISSUE #12047)
+      context.skippedEdges.incrementAndGet();
       ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
