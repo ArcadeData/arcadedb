@@ -1849,6 +1849,7 @@ public class BoltNetworkExecutor extends Thread {
    * For element results (e.g., RETURN n where n is a vertex), the whole element
    * is returned as a single value, converted to BoltNode/BoltRelationship.
    */
+  // Package-private and static for Issue12582BoltOnePassPropertiesTest: it reads no state of the executor
   static List<Object> extractRecordValues(final Result result, final List<String> fields) {
     final List<Object> values = new ArrayList<>(fields.size());
 
@@ -1859,9 +1860,13 @@ public class BoltNetworkExecutor extends Thread {
       values.add(BoltStructureMapper.toPackStreamValue(result.getElement().orElse(null)));
     } else if (result.isElement()) {
       // A row backed by a record: its properties are read in one pass, not one walk of the record per field (issue #12582)
+      // A field the map does not hold that names an attribute (@in, @out of an edge) is not a property the record stores:
+      // the row answers it as it always did
       final Map<String, Object> properties = ResultInternal.propertiesOf(result);
-      for (final String field : fields)
-        values.add(BoltStructureMapper.toPackStreamValue(properties.get(field)));
+      for (final String field : fields) {
+        final Object value = properties.containsKey(field) || !field.startsWith("@") ? properties.get(field) : result.getProperty(field);
+        values.add(BoltStructureMapper.toPackStreamValue(value));
+      }
     } else {
       // Standard projection result - extract each field
       for (final String field : fields) {

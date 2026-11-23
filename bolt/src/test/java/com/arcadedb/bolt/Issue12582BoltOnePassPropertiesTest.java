@@ -169,6 +169,16 @@ class Issue12582BoltOnePassPropertiesTest {
     });
   }
 
+  // A field naming an attribute of the record (not a stored property) is answered as the row answers it
+  @Test
+  void anAttributeFieldOfARecordRowIsStillAnswered() {
+    db.transaction(() -> {
+      final MutableEdge edge = db.lookupByRID(edgeRid, true).asEdge().modify();
+      final List<Object> values = BoltNetworkExecutor.extractRecordValues(new ResultInternal(edge), List.of("@in", "@out", "p0", "@missing"));
+      assertThat(values).containsExactly(edge.getIn().toString(), edge.getOut().toString(), "value-0", null);
+    });
+  }
+
   // A projection row holds its values: they are answered as they are, in the order the row lists them
   @Test
   void aProjectionRowKeepsItsValuesAndOrder() {
@@ -207,6 +217,8 @@ class Issue12582BoltOnePassPropertiesTest {
 
   private static void assertOnePass(final Counter counter) {
     assertThat(counter.gets).as("reads by name, each a walk over the record header").isZero();
+    // at most the name list (a row lists its names before reading them) and the single read of the values: P = 40 reads
+    // by name would make it 40 or more
     assertThat(counter.headerWalks()).as("passes over the record header, once for the element and not once per property")
         .isLessThanOrEqualTo(2);
   }
