@@ -538,7 +538,7 @@ final class FullTextFunctionSearch {
       complete = null;
       trustedPrefix = -1;
       // pop() leaves the rows it served behind the heap, in the tail of its array
-      final Set<RID> done = new HashSet<>(Math.max(16, (int) (served / 0.75f) + 1));
+      final Set<RID> done = HashSet.newHashSet(Math.max(12, served));
       for (int i = size; i < size + served; i++)
         done.add(rids[i]);
       buildHeap(search.get(), continuationFilter, done);
