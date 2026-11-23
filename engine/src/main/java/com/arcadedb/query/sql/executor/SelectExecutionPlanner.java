@@ -5075,13 +5075,8 @@ public class SelectExecutionPlanner {
     if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION) {
       if (!isOrderByScoreDescending(info))
         return -1;
-      // The fetch order replaces the sort, so a per-record LET that scores, evaluated on every row after the fetch, would leave
-      // $score at a value the rows are not in the order of. A subquery of a LET runs in a context of its own, which $score never
-      // leaves.
-      if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null)
-        for (final LetItem item : info.perRecordLetClause.getItems())
-          if (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context))
-            return -1;
+      if (mayRescoreRows(info, context))
+        return -1;
     }
 
     try {
@@ -5109,7 +5104,28 @@ public class SelectExecutionPlanner {
 
   /** Whether evaluating {@code condition} on a row may set {@code $score}, see {@link #mayRunScoringCall}. */
   private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
-    return condition.setsScore(context) || mayRunScoringCall(condition, context);
+    return condition.setsScore(context) || mayRunScoringCall(condition, context, true);
+  }
+
+  /**
+   * Whether the per-record LET items or the projection, evaluated on every row after the fetch, may leave {@code $score} at
+   * another value than the one the function gave the row: a LET that assigns {@code $score} itself, whatever its expression, or an
+   * expression that may run a scoring call ({@link #mayRunScoringCall}). It matters when the fetch order replaces the sort: the
+   * rows would then not be in the order of the {@code $score} the statement reads. A subquery of a LET or of the projection runs in
+   * a context of its own, which {@code $score} never leaves, so it does not count as such (a scoring call inside it still does:
+   * the walk cannot skip it, and the answer only costs the limit).
+   */
+  private static boolean mayRescoreRows(final QueryPlanningInfo info, final CommandContext context) {
+    if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null)
+      for (final LetItem item : info.perRecordLetClause.getItems())
+        if (withoutSigil(SCORE_VARIABLE).equals(withoutSigil(item.getVarName().getStringValue()))
+            || (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context, false)))
+          return true;
+    if (info.projection != null && info.projection.getItems() != null)
+      for (final ProjectionItem projected : info.projection.getItems())
+        if (!projected.isAll() && projected.getExpression() != null && mayRunScoringCall(projected.getExpression(), context, false))
+          return true;
+    return false;
   }
 
   /**
@@ -5117,12 +5133,13 @@ public class SelectExecutionPlanner {
    * under it, not only at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), or one the planner cannot
    * tell does not: a function or method the engine does not ship, {@code eval()}, whose condition is parsed only at run time,
    * {@code transform()}, which resolves the method it applies from its arguments at run time (so an application's method is
-   * reached through it), or a nested statement. Answering "may" costs the limit, never a row, so every doubt is one.
+   * reached through it), or a nested statement ({@code statementsMayScore}). Answering "may" costs the limit, never a row, so every
+   * doubt is one.
    */
-  private static boolean mayRunScoringCall(final Object root, final CommandContext context) {
+  private static boolean mayRunScoringCall(final Object root, final CommandContext context, final boolean statementsMayScore) {
     return !SqlAstInspector.allNodesMatch(root, node -> {
       if (node instanceof Statement)
-        return false;
+        return !statementsMayScore;
       if (node instanceof MethodCall call)
         return CorrelatedSubQueryCache.isTrustedMethod(call);
       if (!(node instanceof FunctionCall call))

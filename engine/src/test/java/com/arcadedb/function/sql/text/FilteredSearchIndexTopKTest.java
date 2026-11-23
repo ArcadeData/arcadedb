@@ -186,25 +186,85 @@ class FilteredSearchIndexTopKTest extends TestHelper {
     }
   }
 
+  /**
+   * What runs on every row after the fetch and leaves {@code $score} at a value of its own: the order the fetch answers in is not the
+   * order of the {@code $score} the statement reads, so the sort must stay.
+   */
+  private void assertLimitKeepsTheOrderOf(final String projection, final String let) {
+    for (final String filter : new String[] { "", " AND n % 2 = 0", " AND n % 100 <> 0" }) {
+      final String sql = "SELECT @rid AS rid, " + projection + "$score AS score, n FROM Doc " + let
+          + " WHERE SEARCH_INDEX('Doc[body]', :q) = true" + filter + " ORDER BY $score DESC";
+      final String what = projection + let + filter;
+      final List<Row> all = rows(sql, "w0 w1");
+      assertThat(all).as(what).isNotEmpty();
+      for (final int limit : new int[] { 1, 3, 10, 50 })
+        assertThat(rows(sql + " LIMIT " + limit, "w0 w1")).as("%s LIMIT %d", what, limit)
+            .isEqualTo(all.subList(0, Math.min(limit, all.size())));
+    }
+  }
+
   @Test
-  void aPerRecordLetThatScoresKeepsTheSortItsScoreNeeds() {
+  void aLetThatScoresKeepsTheSortItsScoreNeeds() {
     createCorpus(new Random(21), 4, 1500, "mixed");
-    // the LET runs a search on every row and sets $score after the fetch, so its ranking, not the fetch's, decides the order
-    for (final String let : new String[] { "SEARCH_INDEX('Doc[body]', 'w2 w5')", "ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), n)" })
-      for (final String filter : new String[] { "", " AND n % 2 = 0", " AND n % 100 <> 0" }) {
-        final String sql = "SELECT @rid AS rid, $score AS score, n FROM Doc LET $other = " + let
-            + " WHERE SEARCH_INDEX('Doc[body]', :q) = true" + filter + " ORDER BY $score DESC";
-        final List<Row> all = rows(sql, "w0 w1");
-        assertThat(all).as(let + filter).isNotEmpty();
-        for (final int limit : new int[] { 1, 3, 10, 50 })
-          assertThat(rows(sql + " LIMIT " + limit, "w0 w1")).as("%s%s LIMIT %d", let, filter, limit)
-              .isEqualTo(all.subList(0, Math.min(limit, all.size())));
-      }
-    // a LET that sets no score keeps the limit
-    final String plain = "SELECT @rid AS rid, $score AS score, n FROM Doc LET $c = n % 7 WHERE SEARCH_INDEX('Doc[body]', :q) = true"
-        + " AND n % 100 <> 0 ORDER BY $score DESC LIMIT 10";
-    assertThat(database.query("sql", "EXPLAIN " + plain, Map.of("q", "w0 w1")).getExecutionPlan().orElseThrow().prettyPrint(0, 2))
-        .contains("(best 10 needed)").doesNotContain("ORDER BY");
+    // a search nested in a call, evaluated per record, and the variable assigned outright whatever the expression
+    assertLimitKeepsTheOrderOf("", "LET $other = ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), n)");
+    assertLimitKeepsTheOrderOf("", "LET $score = n");
+    assertLimitKeepsTheOrderOf("", "LET score = n");
+  }
+
+  @Test
+  void aProjectionThatScoresKeepsTheSortItsScoreNeeds() {
+    createCorpus(new Random(22), 4, 1500, "mixed");
+    // a projection item that runs a search sets $score before the item that reads it
+    assertLimitKeepsTheOrderOf("ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), false) AS hit, ", "");
+    assertLimitKeepsTheOrderOf("SEARCH_FIELDS(['body'], 'w2 w5') AS hit, ", "");
+  }
+
+  @Test
+  void whatSetsNoScoreAfterTheFetchKeepsTheLimit() {
+    createCorpus(new Random(26), 4, 1500, "mixed");
+    // a LET of another name, a call of no consequence, a subquery (it runs in a context of its own)
+    for (final String[] shape : new String[][] { //
+        { "", "LET $c = n % 7" }, //
+        { "ifnull(n, 0) AS m, ", "" }, //
+        { "(SELECT count(*) AS c FROM Doc WHERE n = 1) AS subquery, ", "" } }) {
+      final String sql = "SELECT @rid AS rid, " + shape[0] + "$score AS score, n FROM Doc " + shape[1]
+          + " WHERE SEARCH_INDEX('Doc[body]', :q) = true AND n % 100 <> 0 ORDER BY $score DESC";
+      assertThat(database.query("sql", "EXPLAIN " + sql + " LIMIT 10", Map.of("q", "w0 w1")).getExecutionPlan().orElseThrow()
+          .prettyPrint(0, 2)).as(shape[0] + shape[1]).contains("(best 10 needed)").doesNotContain("ORDER BY");
+      assertThat(rows(sql + " LIMIT 10", "w0 w1")).as(shape[0] + shape[1])
+          .isEqualTo(rows(sql, "w0 w1").subList(0, 10));
+    }
+  }
+
+  @Test
+  void theContinuationAnswersEachRowOnceWhateverTheQueryShapeAndTheCommitsBetween() {
+    createCorpus(new Random(31), 4, 1500, "mixed");
+    // a phrase is no disjunction of terms: the complete search that continues the limited one reads the postings and the corpus
+    // statistics again, and a commit between the two can order the rest differently than the first rows were served
+    final String phrase = "\"w0 w1\"";
+    final int matches = rows(SCORED, phrase).size();
+    assertThat(matches).isGreaterThan(40);
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Doc[body]");
+    final FromClause target = ((SelectStatement) ((DatabaseInternal) database).getStatementCache().get("SELECT FROM Doc"))
+        .getTarget();
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final Iterator<Record> answer = new FullTextFunctionSearch(index, phrase, null).search(target, context,
+        new IndexedFunctionPushdown(10, null, IndexedFunctionPushdown.Order.FUNCTION, true)).iterator();
+    final List<RID> pulled = new ArrayList<>();
+    for (int i = 0; i < 10; i++)
+      pulled.add(answer.next().getIdentity());
+
+    database.transaction(() -> {
+      for (int i = 0; i < 3000; i++)
+        database.newDocument("Doc").set("n", 100000 + i).set("body", "filler ".repeat(120)).save();
+    });
+    while (answer.hasNext())
+      pulled.add(answer.next().getIdentity());
+
+    // every match once: none repeated and none dropped, whatever order the corpus the commit left ranks the rest in
+    assertThat(pulled).doesNotHaveDuplicates().hasSize(matches);
   }
 
   @Test

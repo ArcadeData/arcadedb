@@ -43,10 +43,12 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
@@ -450,8 +452,9 @@ final class FullTextFunctionSearch {
    * costs a logarithmic pop, and a match is held as one reference and, best first, one primitive.
    * <p>
    * When the matches are only the best ones of a search with a limit, the first {@code trustedPrefix} of them are the first
-   * of the complete order. Past that point the iteration switches to the complete search and skips the rows already served,
-   * which the shared order (score, then RID) makes exactly the same rows.
+   * of the complete order. Past that point the iteration switches to the complete search and leaves out the rows already served
+   * (by RID, see {@link #continueWithCompleteSearch}), which the shared order (score, then RID) makes the rows it would have
+   * skipped by count, and keeps each row answered once when it is not.
    */
   private static final class MatchingRecords implements Iterator<Record> {
     private final DatabaseInternal              database;
@@ -483,7 +486,7 @@ final class FullTextFunctionSearch {
       this.complete = complete;
       this.continuationFilter = continuationFilter;
       this.recordFilter = recordFilter;
-      buildHeap(matches, filter);
+      buildHeap(matches, filter, null);
     }
 
     @Override
@@ -524,22 +527,24 @@ final class FullTextFunctionSearch {
     }
 
     /**
-     * The best matches are used up and more rows are pulled: continue in the order of the complete search. Skipping the
-     * {@code served} first rows of it is exact only because the order is total - equal scores are broken by RID - so the
-     * best matches' heap and the complete one put every shared row in the same position.
+     * The best matches are used up and more rows are pulled: continue in the order of the complete search, without the rows
+     * already served. Those are skipped by RID, not by count: when the complete search puts the rest in the order the best matches
+     * would have given it (equal scores are broken by RID, so the order is total) both are the same rows, but a commit between the
+     * two searches, or a query shape the complete search reads again, can order the rest differently, and a count would then repeat
+     * some rows and drop others.
      */
     private void continueWithCompleteSearch() {
       final Supplier<Map<RID, Float>> search = complete;
       complete = null;
       trustedPrefix = -1;
-      buildHeap(search.get(), continuationFilter);
-      for (int i = 0; i < served && size > 0; i++) {
-        guard.checkPeriodically(++ticks);
-        pop();
-      }
+      // pop() leaves the rows it served behind the heap, in the tail of its array
+      final Set<RID> done = new HashSet<>(Math.max(16, (int) (served / 0.75f) + 1));
+      for (int i = size; i < size + served; i++)
+        done.add(rids[i]);
+      buildHeap(search.get(), continuationFilter, done);
     }
 
-    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter) {
+    private void buildHeap(final Map<RID, Float> matches, final RIDFilter filter, final Set<RID> skip) {
       final boolean byScore = order == IndexedFunctionPushdown.Order.FUNCTION;
       rids = new RID[matches.size()];
       scores = byScore ? new float[rids.length] : null;
@@ -547,7 +552,7 @@ final class FullTextFunctionSearch {
       for (final Map.Entry<RID, Float> entry : matches.entrySet()) {
         guard.checkPeriodically(++ticks);
         final RID rid = entry.getKey();
-        if (filter != null && !filter.accepts(rid))
+        if (filter != null && !filter.accepts(rid) || skip != null && skip.contains(rid))
           continue;
         rids[size] = rid;
         if (byScore)
@@ -564,7 +569,8 @@ final class FullTextFunctionSearch {
       final RID first = rids[0];
       --size;
       rids[0] = rids[size];
-      rids[size] = null;
+      // the row served stays behind the heap, where the continuation reads which rows it must not answer again
+      rids[size] = first;
       if (scores != null)
         scores[0] = scores[size];
       if (size > 1)
