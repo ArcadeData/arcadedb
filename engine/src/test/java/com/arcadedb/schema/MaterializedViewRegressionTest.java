@@ -3199,8 +3199,8 @@ class MaterializedViewRegressionTest {
       database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(QUERY)
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create());
 
-      // What a node that just took the leadership asks: the per-record view only, the manual one is not maintained on commit
-      assertThat(((LocalSchema) database.getSchema()).recoverPerRecordMaterializedViews()).isEqualTo(1);
+      // What a node that just took the leadership asks: the INCREMENTAL view only, the manual one is not maintained on commit
+      assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
 
       Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
           .until(() -> MaterializedViewStatus.VALID.name().equals(view().getStatus()) && !view().owesRecoveryPass());
@@ -3238,6 +3238,183 @@ class MaterializedViewRegressionTest {
         while (rs.hasNext()) {
           final Result row = rs.next();
           rows.add(row.getProperty("name") + "/" + row.getProperty("age"));
+        }
+      }
+      return rows;
+    }
+  }
+
+  /**
+   * Regression for #12220: an INCREMENTAL view refreshed as a whole is brought up to date by an after-commit callback that runs once
+   * the source commit is durable. A process that died between the two left the view without the commit, reported VALID, until the
+   * next commit on a source type. The open that replays the WAL now hands every INCREMENTAL view the recovery full pass, as #11550
+   * does for per-record views, and a view says STALE until that pass ends.
+   * <p>
+   * The views here must be ones the schema refreshes as a whole: a GROUP BY the grouped delta plan accepts (issue #11937) is
+   * recovered by the per-record path already, and a test over one would pass without the fix. {@link #WHOLE_QUERY} has an ORDER BY,
+   * which the plan refuses, and {@link #DELTA_QUERY} is the control that keeps the recovery of the delta views.
+   */
+  @Nested
+  class WholeViewSelfHeal extends TestHelper {
+    /** The ORDER BY decides the order the rows are written in, which a delta cannot keep: no delta plan, so every commit reruns the query */
+    private static final String WHOLE_QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n ORDER BY n";
+    /** The same groups without the ORDER BY: maintained by delta in a standalone database */
+    private static final String DELTA_QUERY = "SELECT n, count(*) AS c FROM B GROUP BY n";
+
+    @Test
+    void aCommitWhoseRefreshDiedWithTheProcessReachesTheViewAfterTheReopen() {
+      createView(WHOLE_QUERY);
+      assertThat(view("V").tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
+      commitWhoseRefreshDiesWithTheProcessThenReopen(WHOLE_QUERY);
+    }
+
+    /** The control: a view maintained by delta (issue #11937) keeps the recovery it had, through the same open */
+    @Test
+    void aGroupedViewMaintainedByDeltaIsRecoveredAfterTheReopenToo() {
+      createView(DELTA_QUERY);
+      assertThat(view("V").isGroupedDelta()).as("the view is maintained by delta").isTrue();
+      commitWhoseRefreshDiesWithTheProcessThenReopen(DELTA_QUERY);
+    }
+
+    private void commitWhoseRefreshDiesWithTheProcessThenReopen(final String query) {
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("Manual").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.MANUAL).create());
+      final MaterializedViewImpl view = view("V");
+      assertThat(view.isPerRecord()).isFalse();
+
+      // Own the refresh, as a pass still running would: the commit's after-commit refresh only asks the owner for a further pass,
+      // which the crash takes down with it. The same state as a process killed after the commit and before its callback ran
+      assertThat(view.tryBeginRefresh()).isTrue();
+      database.transaction(() -> {
+        database.command("sql", "UPDATE B SET n = 10 WHERE k = 3");
+        database.newDocument("B").set("k", 1000).set("n", 11).save();
+      });
+      assertThat(groups("V")).as("the refresh of the commit has not run").doesNotContain("10/1", "11/1");
+      assertThat(view.getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+
+      ((DatabaseInternal) database).kill();
+      database.close();
+      database = factory.open();
+
+      // Never VALID while the pass is owed: whenever the status reads VALID, the rows read after it are the query's
+      final String status = view("V").getStatus();
+      final List<String> rows = groups("V");
+      if (MaterializedViewStatus.VALID.name().equals(status))
+        assertThat(rows).containsExactlyInAnyOrderElementsOf(groups(query));
+
+      // No source commit and no REFRESH: the open handed the view its recovery full pass
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("11/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(query));
+      assertThat(view("V").owesRecoveryPass()).isFalse();
+      assertThat(view("Manual").getRefreshCount()).as("a MANUAL view is not maintained on commit, nor recovered").isZero();
+
+      // And it keeps its maintenance on commit afterwards
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 12 WHERE k = 4"));
+      assertThat(groups("V")).contains("12/1").containsExactlyInAnyOrderElementsOf(groups(query));
+    }
+
+    /** A whole-view refresh that a close dropped (issue #11464) or that failed leaves the view STALE, persisted: a clean open recovers it. */
+    @Test
+    void aViewPersistedStaleConvergesAtACleanReopenWithoutATrigger() {
+      createView(WHOLE_QUERY);
+      final MaterializedViewImpl view = view("V");
+      assertThat(view.tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
+      assertThat(view.tryBeginRefresh()).isTrue();
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+      view.setStatus(MaterializedViewStatus.STALE);
+      MaterializedViewRefresher.persistStatus(database, view.getName(), view.getStatus());
+      view.endRefresh();
+      assertThat(groups("V")).doesNotContain("10/1");
+
+      reopenDatabase();
+
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(WHOLE_QUERY));
+
+      // The VALID the recovery pass ended in was persisted
+      reopenDatabase();
+      assertThat(view("V").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+    }
+
+    @Test
+    void aCleanReopenOfAValidViewRunsNoPass() {
+      createView(WHOLE_QUERY);
+      reopenDatabase();
+      assertThat(view("V").getStatus()).isEqualTo(MaterializedViewStatus.VALID.name());
+      assertThat(view("V").owesRecoveryPass()).isFalse();
+      assertThat(view("V").getRefreshCount()).isZero();
+    }
+
+    @Test
+    void theLeaderRecoveryAsksTheViewsRefreshedAsAWholeToo() {
+      createView(WHOLE_QUERY);
+      assertThat(view("V").tracksPendingDelta()).as("the view is refreshed as a whole").isFalse();
+      assertThat(view("V").tryBeginRefresh()).isTrue();
+      database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+      view("V").endRefresh();
+
+      // What a node that just took the leadership asks, the previous leader having died before its after-commit refresh
+      assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+          .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+      assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(WHOLE_QUERY));
+    }
+
+    /**
+     * A node of an HA cluster applies no delta (the delta of a commit lives in the memory of the node that made it), so there every
+     * GROUP BY view is refreshed as a whole, the ones the delta plan accepts included: the leader recovery has to reach them too.
+     */
+    @Test
+    void theLeaderRecoveryAsksAGroupedViewOfAReplicatedNodeToo() {
+      createView(DELTA_QUERY);
+      factory.setReplicatedNode(true);
+      try {
+        reopenDatabase();
+        final MaterializedViewImpl view = view("V");
+        assertThat(view.isGroupedDelta()).as("a replicated node keeps the full pass").isFalse();
+        assertThat(view.tracksPendingDelta()).isFalse();
+
+        assertThat(view.tryBeginRefresh()).isTrue();
+        database.transaction(() -> database.command("sql", "UPDATE B SET n = 10 WHERE k = 3"));
+        view.endRefresh();
+        assertThat(groups("V")).doesNotContain("10/1");
+
+        assertThat(((LocalSchema) database.getSchema()).recoverIncrementalMaterializedViews()).isEqualTo(1);
+        Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(50, TimeUnit.MILLISECONDS)
+            .until(() -> MaterializedViewStatus.VALID.name().equals(view("V").getStatus()) && groups("V").contains("10/1"));
+        assertThat(groups("V")).containsExactlyInAnyOrderElementsOf(groups(DELTA_QUERY));
+      } finally {
+        factory.setReplicatedNode(false);
+      }
+    }
+
+    private void createView(final String query) {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("B");
+        type.createProperty("k", Type.INTEGER);
+        type.createProperty("n", Type.INTEGER);
+      });
+      database.transaction(() -> {
+        for (int k = 0; k < 100; k++)
+          database.newDocument("B").set("k", k).set("n", k % 10).save();
+      });
+      database.transaction(() -> database.getSchema().buildMaterializedView().withName("V").withQuery(query)
+          .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL).create());
+    }
+
+    private MaterializedViewImpl view(final String name) {
+      return (MaterializedViewImpl) database.getSchema().getMaterializedView(name);
+    }
+
+    private List<String> groups(final String viewOrQuery) {
+      final String sql = viewOrQuery.startsWith("SELECT") ? viewOrQuery : "SELECT n, c FROM " + viewOrQuery;
+      final List<String> rows = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", sql)) {
+        while (rs.hasNext()) {
+          final Result row = rs.next();
+          rows.add(row.getProperty("n") + "/" + row.getProperty("c"));
         }
       }
       return rows;
