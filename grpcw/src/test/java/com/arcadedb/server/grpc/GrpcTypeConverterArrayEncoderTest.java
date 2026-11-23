@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.sun.management.ThreadMXBean;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
@@ -213,8 +214,9 @@ class GrpcTypeConverterArrayEncoderTest {
   // Regression: #13257
   @Test
   void encodingAVectorAllocatesLittlePerElement() {
-    final com.sun.management.ThreadMXBean threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
-    assumeThat(threads.isThreadAllocatedMemorySupported()).isTrue();
+    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+    // supported and enabled are two answers: a disabled counter reads -1 twice, and the difference of the two would pass the bound
+    assumeThat(threads.isThreadAllocatedMemorySupported() && threads.isThreadAllocatedMemoryEnabled()).isTrue();
     final int dims = 1024;
     final float[] vector = new float[dims];
     for (int i = 0; i < dims; i++)
@@ -228,7 +230,10 @@ class GrpcTypeConverterArrayEncoderTest {
     final long before = threads.getThreadAllocatedBytes(thread);
     for (int i = 0; i < rounds; i++)
       sink += GrpcTypeConverter.toGrpcValue(vector).getListValue().getValuesCount();
-    final long perElement = (threads.getThreadAllocatedBytes(thread) - before) / rounds / dims;
+    final long after = threads.getThreadAllocatedBytes(thread);
+    assertThat(before).as("allocation counter before").isNotNegative();
+    assertThat(after).as("allocation counter after").isGreaterThanOrEqualTo(before);
+    final long perElement = (after - before) / rounds / dims;
 
     assertThat(sink).isEqualTo(dims * (3_000 + rounds));
     // one message per element is the wire's shape (157 bytes per element before: the message, a builder, the boxed float read
