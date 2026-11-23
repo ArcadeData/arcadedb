@@ -95,6 +95,72 @@ class GavEdgePropertyDeclarationTest extends TestHelper {
     assertNoView();
   }
 
+  /** Every property the filter names is reported at once, sorted, so a second round trip does not find the next one. */
+  @Test
+  void everyUndeclaredEdgePropertyIsNamedInOneRefusal() {
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE TYPES (R) EDGE PROPERTIES (w, a)"))
+        .hasMessageContaining("edge properties 'a', 'w' are not declared on R").hasMessageContaining("CREATE PROPERTY R.a");
+    assertNoView();
+  }
+
+  /** One declared property does not carry another one the schema does not declare along with it. */
+  @Test
+  void onlyTheUndeclaredEdgePropertyIsNamed() {
+    database.command("sql", "CREATE PROPERTY R.w INTEGER");
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE TYPES (R) EDGE PROPERTIES (w, cost)"))
+        .hasMessageContaining("edge property 'cost' is not declared on R").hasMessageNotContaining("'w'");
+    assertNoView();
+  }
+
+  /** The weight of a contraction hierarchy is an edge property of the view too: without a column it reads the edge records. */
+  @Test
+  void aContractionHierarchyWeightThatIsNotDeclaredIsRefused() {
+    assertThatThrownBy(() -> database.command("sql",
+        "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE TYPES (R) UPDATE MODE SYNCHRONOUS CCH (w)"))
+        .hasMessageContaining("edge property 'w' is not declared on R").hasMessageContaining("CREATE PROPERTY R.w");
+    assertNoView();
+
+    assertThatThrownBy(() -> GraphAnalyticalView.builder(database).withName("gv").withVertexTypes("N").withEdgeTypes("R")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS).withContractionHierarchy("w").build())
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("edge property 'w' is not declared on R");
+    assertNoView();
+  }
+
+  @Test
+  void aDeclaredContractionHierarchyWeightIsAccepted() throws Exception {
+    database.command("sql", "CREATE PROPERTY R.w DOUBLE");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE TYPES (R) UPDATE MODE SYNCHRONOUS CCH (w)");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "gv");
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.getEdgePropertyFilter()).containsExactly("w");
+    assertThat(view.hasEdgeProperty("R", "w")).isTrue();
+  }
+
+  /** A view that names no edge type covers every one of them, and is refused when none of them declares the property. */
+  @Test
+  void aViewOverEveryEdgeTypeNeedsOneEdgeTypeToDeclareTheProperty() throws Exception {
+    assertThatThrownBy(() -> database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE PROPERTIES (w)"))
+        .hasMessageContaining("edge property 'w' is not declared on any edge type").hasMessageContaining("CREATE PROPERTY <EdgeType>.w");
+    assertNoView();
+
+    database.command("sql", "CREATE PROPERTY S.w DOUBLE");
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW gv VERTEX TYPES (N) EDGE PROPERTIES (w)");
+    final GraphAnalyticalView view = GraphAnalyticalViewRegistry.get(database, "gv");
+    assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
+    assertThat(view.hasEdgeProperty("S", "w")).isTrue();
+  }
+
+  /** The Cypher procedure goes through the same builder as the statement. */
+  @Test
+  void anUndeclaredEdgePropertyIsRefusedByTheCypherProcedure() {
+    assertThatThrownBy(() -> database.command("opencypher",
+        "CALL db.analyticalView.create('gv', ['N'], ['R'], {edgeProperties: ['w']})").close())
+        .hasMessageContaining("edge property 'w' is not declared on R");
+    assertNoView();
+  }
+
   /** The fix the issue measured: once declared, the view holds the column the weighted calls read. */
   @Test
   void aDeclaredEdgePropertyGetsItsColumn() throws Exception {
@@ -104,6 +170,7 @@ class GavEdgePropertyDeclarationTest extends TestHelper {
     assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
     assertThat(view.hasEdgeProperties()).isTrue();
     assertThat(view.getEdgePropertyFilter()).containsExactly("w");
+    assertThat(view.hasEdgeProperty("R", "w")).as("the column the weighted calls read").isTrue();
   }
 
   /**

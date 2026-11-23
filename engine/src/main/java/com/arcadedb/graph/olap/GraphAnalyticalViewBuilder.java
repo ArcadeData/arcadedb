@@ -303,18 +303,31 @@ public class GraphAnalyticalViewBuilder {
     if (withoutColumn.isEmpty())
       return;
 
-    final String typeNames = edgeTypes == null || edgeTypes.length == 0 ? "any edge type" : String.join(", ", edgeTypes);
-    final String exampleType = edgeTypes != null && edgeTypes.length > 0 ? edgeTypes[0] : "<EdgeType>";
-    final String names = withoutColumn.stream().map(n -> "'" + n + "'").collect(Collectors.joining(", "));
-    final String message = "Graph Analytical View" + (name != null ? " '" + name + "'" : "") + ": edge propert"
-        + (withoutColumn.size() == 1 ? "y " + names + " is" : "ies " + names + " are")
-        + " not declared on " + typeNames + " with a type a column can hold (INTEGER, SHORT, BYTE, LONG, FLOAT, DOUBLE or STRING,"
-        + " the same on every edge type), so the view would hold no value of it and every call weighted by it would read the edge"
-        + " records. Declare it before creating the view, for example CREATE PROPERTY " + exampleType + "." + withoutColumn.getFirst()
-        + " DOUBLE";
+    final String message = withoutColumnMessage(withoutColumn);
     if (!fromDefinition)
       throw new IllegalArgumentException(message);
     LogManager.instance().log(this, Level.WARNING, message);
+  }
+
+  private String withoutColumnMessage(final List<String> withoutColumn) {
+    final boolean anyEdgeType = edgeTypes == null || edgeTypes.length == 0;
+    final String names = withoutColumn.stream().map(n -> "'" + n + "'").collect(Collectors.joining(", "));
+    final String declaration = "CREATE PROPERTY " + (anyEdgeType ? "<EdgeType>" : edgeTypes[0]) + "." + withoutColumn.getFirst()
+        + " DOUBLE";
+
+    final StringBuilder message = new StringBuilder("Graph Analytical View");
+    if (name != null)
+      message.append(" '").append(name).append('\'');
+    message.append(": edge propert").append(withoutColumn.size() == 1 ? "y " + names + " is" : "ies " + names + " are")
+        .append(" not declared on ").append(anyEdgeType ? "any edge type" : String.join(", ", edgeTypes))
+        .append(" with a type a column can hold (INTEGER, SHORT, BYTE, LONG, FLOAT, DOUBLE or STRING, the same on every edge type),")
+        .append(" so the view would hold no value of it and every call weighted by it would read the edge records. ");
+    if (fromDefinition)
+      message.append("The view is restored as it was defined: declare it, for example ").append(declaration)
+          .append(", then REBUILD GRAPH ANALYTICAL VIEW ").append(name);
+    else
+      message.append("Declare it before creating the view, for example ").append(declaration);
+    return message.toString();
   }
 
   /** The edge properties to materialize, with every hierarchy's weight among them. */
