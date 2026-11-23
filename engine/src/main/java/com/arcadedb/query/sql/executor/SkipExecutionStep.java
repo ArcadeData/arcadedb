@@ -30,7 +30,9 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private final Skip    skip;
   private       int     skipped = 0;
   private       boolean finished;
-  // The rows of the SKIP the step that reads the index passed over without loading their records, see skipUnloaded()
+  // The rows of the SKIP the step that reads the index passed over without loading their records, see skipUnloaded(). -1 until the
+  // first pull. Like skipped and finished it is not reset: a plan with a SKIP runs once, this step has no reset() and no copy(), and
+  // neither has the LIMIT step that goes with it, so the plan is never cached nor executed again
   private       int     skippedUnloaded = -1;
 
   /**

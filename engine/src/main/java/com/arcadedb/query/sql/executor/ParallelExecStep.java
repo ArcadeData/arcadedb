@@ -109,6 +109,8 @@ public class ParallelExecStep extends AbstractExecutionStep {
     int skipped = 0;
     while (skipped < n && currentResultSet == null && current < subExecutionPlans.size()) {
       final List<ExecutionStep> steps = subExecutionPlans.get(current).getSteps();
+      // The exact class, on purpose: a subclass or another step that reads the entries may serve its rows another way than the plain
+      // index read the hand-off knows, and then the rows are read and discarded below
       if (!steps.isEmpty() && steps.getLast().getClass() == GetValueFromIndexEntryStep.class) {
         final GetValueFromIndexEntryStep values = (GetValueFromIndexEntryStep) steps.getLast();
         skipped += values.skipUnloaded(context, n - skipped, typeName);
