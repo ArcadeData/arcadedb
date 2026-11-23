@@ -697,8 +697,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
   /** Guards the decision of the dimensions of an index that takes them from its first vector (issue #10915). */
   private final Object                     dimensionsDecision = new Object();
-  /** The id counter at the last look for the dimensions in the records that found no vector, or -1 (issue #10915). */
-  private volatile int                     derivationMissedAtId = -1;
+  /** The last look for the dimensions in the records of the type that found no vector, or null (issues #10915, #13214). */
+  private volatile DerivationMiss          derivationMiss;
   // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
   // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
   // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
@@ -1653,13 +1653,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.buildState = BUILD_STATE.READY.name();
     }
 
-    // Only load vectors if we have valid metadata (dimensions > 0) and pages exist - and even then, only note
+    // Only load vectors if we have valid metadata (dimensions > 0, or still to be derived) and pages exist - and even then, only note
     // that there is something to read. The parse itself is deferred to the first caller that needs a location
     // (issue #6722): it is one page parse plus one map insert per indexed vector, it produces nothing the page
     // cache can amortise across opens, and a session that opens the database to write one document or to read an
     // unrelated type used to pay all of it. The graph is deferred at this very same call site for the same
     // reason, so this makes the cheap half of the pair behave like the expensive half already does.
-    if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
+    // An index that takes its dimensions from its first vector and has none yet (issue #10915) needs them too: it derives them
+    // from the vectors its records hold, through the locations, when the schema was saved before the decision (issue #13214)
+    if ((metadata.dimensions > 0 || metadata.sizeOnFirstVector) && mutable.getTotalPages() > 0) {
       this.deferredPQLoad = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
       this.locationsMaterialized = false;
       LogManager.instance()
@@ -12266,24 +12268,93 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Takes the dimensions of an index still waiting for them from the first vector its records hold, and returns them, or 0
-   * when it holds none. A node that did not run the put (a follower applying replicated pages, a database reopened after a crash
-   * before the schema was saved) sees entries for vectors that lie in records, and needs the size to search or to build.
+   * Takes the dimensions of an index still waiting for them from the first vector its records hold, or the records of its
+   * siblings on the other buckets of the type, and returns them, or 0 when none of them holds one. A node that did not run the
+   * put (a follower applying replicated pages, a database reopened after a crash before the schema was saved) sees entries for
+   * vectors that lie in records, and needs the size to search or to build.
    */
   private int deriveDimensionsFromData() {
     if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
       return metadata.dimensions;
 
+    // The size is one for the whole type, and the vectors that fix it may all lie in the buckets of the siblings: a bucket that
+    // holds none (empty, or only tombstones) must take it from them, or the first vector written into it sizes every sibling,
+    // the ones whose records hold vectors of another length included (issue #13214). This materialises the locations of every
+    // bucket index of the type, which the deferral of issue #6722 otherwise leaves to the first use of each: it is paid only
+    // while the size is undecided, once per bucket index, and it is what knowing whether the type holds a vector costs
+    final TypeIndex typeIndex = getTypeIndex();
+    final IndexInternal[] lookedAt = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { this };
+    for (final IndexInternal index : lookedAt)
+      if (index != this && index instanceof LSMVectorIndex other && other.metadata.dimensions > 0)
+        return takeDimensions(other.metadata.dimensions);
+
     // Nothing was added since the last look that found no vector: the answer is the same, and a search must not read the records
-    // again to be told so
+    // again to be told so. One id counter per index, not their sum: a compaction hands the ids of an index out again from 0
     // Materialised first: the id counter is only meaningful once the deferred load has run
-    final VectorLocationIndex locations = vectorIndex();
-    final int idsAtThisLook = nextId.get();
-    if (derivationMissedAtId == idsAtThisLook)
+    final int[] idsAtThisLook = new int[lookedAt.length];
+    boolean anyId = false;
+    for (int i = 0; i < lookedAt.length; i++)
+      if (lookedAt[i] instanceof LSMVectorIndex index) {
+        idsAtThisLook[i] = index.idsSeenByTheDerivation();
+        anyId |= idsAtThisLook[i] > 0;
+      }
+    final DerivationMiss lastMiss = derivationMiss;
+    if (lastMiss != null && lastMiss.isSameLook(lookedAt, idsAtThisLook))
       return 0;
 
     // Read BEFORE the decision lock is taken, and decided under it alone: the records are read through the location index and
     // the database, which a thread holding the lock of this index may be waiting on while it waits for the decision (putBatch)
+    int length = lengthOfAHeldVector();
+    for (int i = 0; length < 1 && i < lookedAt.length; i++)
+      if (lookedAt[i] != this && lookedAt[i] instanceof LSMVectorIndex other)
+        length = other.lengthOfAHeldVector();
+
+    if (length < 1) {
+      // said once: a search against an index that holds entries but no vector to size it on answers as an empty one
+      if (lastMiss == null && anyId)
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' waits for its dimensions and none of the first %d entries of its buckets leads to a vector: "
+                + "searches return no result until a vector is written", indexName, DIMENSIONS_DERIVATION_LIMIT);
+      derivationMiss = new DerivationMiss(lookedAt, idsAtThisLook);
+      return 0;
+    }
+
+    return takeDimensions(length);
+  }
+
+  /** The bucket indexes a look for the dimensions that found no vector read, and the id counter of each at that look. */
+  private record DerivationMiss(IndexInternal[] indexes, int[] ids) {
+    boolean isSameLook(final IndexInternal[] otherIndexes, final int[] otherIds) {
+      if (indexes.length != otherIndexes.length)
+        return false;
+      for (int i = 0; i < indexes.length; i++)
+        if (indexes[i] != otherIndexes[i] || ids[i] != otherIds[i])
+          return false;
+      return true;
+    }
+  }
+
+  /** Decides {@code length} unless a put decided in the meantime, whose answer wins, and returns the dimensions. */
+  private int takeDimensions(final int length) {
+    synchronized (dimensionsDecisionLock()) {
+      if (metadata.dimensions < 1 && metadata.sizeOnFirstVector)
+        decideDimensions(length);
+      return metadata.dimensions;
+    }
+  }
+
+  /** The vector ids this index handed out so far, once its locations are materialised: what a derivation that found nothing saw. */
+  private int idsSeenByTheDerivation() {
+    vectorIndex();
+    return nextId.get();
+  }
+
+  /**
+   * The length of the first vector a record of this index holds, among its first {@link #DIMENSIONS_DERIVATION_LIMIT} live
+   * entries, or 0. Decides nothing, and takes no lock but the one that materialises the locations.
+   */
+  private int lengthOfAHeldVector() {
+    final VectorLocationIndex locations = vectorIndex();
     final String vectorProperty = vectorPropertyName();
     final PrimitiveIterator.OfInt ids = locations.getAllVectorIds().filter(locations::isLive).iterator();
     int length = 0;
@@ -12301,23 +12372,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             e.getMessage());
       }
     }
-
-    if (length < 1) {
-      // said once: a search against an index that holds entries but no vector to size it on answers as an empty one
-      if (derivationMissedAtId == -1 && idsAtThisLook > 0)
-        LogManager.instance().log(this, Level.WARNING,
-            "Vector index '%s' waits for its dimensions and none of its first %d entries leads to a vector: searches return no "
-                + "result until a vector is written", indexName, DIMENSIONS_DERIVATION_LIMIT);
-      derivationMissedAtId = idsAtThisLook;
-      return 0;
-    }
-
-    synchronized (dimensionsDecisionLock()) {
-      // a put may have decided in the meantime, and its answer wins
-      if (metadata.dimensions < 1 && metadata.sizeOnFirstVector)
-        decideDimensions(length);
-      return metadata.dimensions;
-    }
+    return length;
   }
 
   /**
