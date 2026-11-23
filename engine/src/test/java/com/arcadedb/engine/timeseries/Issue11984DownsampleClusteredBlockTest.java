@@ -19,17 +19,23 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Regression test for issue #11984: a downsampling tier skipped every raw sealed block whose AVERAGE sample spacing was at least the
@@ -39,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A block is downsampled when that reduces it, that is when two of its samples share a (tag values, bucket); the tests below pin that
  * from both sides, and what it means for the replication: every rewrite leaves fewer samples, so the shipping decision of the engine,
  * which reads the counts, sees every one of them.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue11984DownsampleClusteredBlockTest extends TestHelper {
 
@@ -185,6 +193,65 @@ class Issue11984DownsampleClusteredBlockTest extends TestHelper {
       assertThat(shipped.get()).isEqualTo(1);
     } finally {
       local.setWrappedDatabaseInstance(wrapped);
+      engine.close();
+    }
+  }
+
+  /**
+   * What a restart costs the first pass of a tier is a read of the old history to prove its blocks irreducible, and that read must not
+   * run inside the rewrite window of the shard ({@link TimeSeriesShard#runSealedRewrite}): that window holds the compaction WRITE lock,
+   * so no append and no query of the shard goes by for as long as the history takes to read. A query holds the compaction read lock
+   * here, which parks the rewrite of the pass at the write lock, and by the time it is parked the blocks have to be proved already.
+   */
+  @Test
+  @Timeout(120)
+  void theProofThatABlockCannotBeReducedIsNotReadInsideTheRewriteWindowOfTheShard() throws Exception {
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ds_11984_window", columns(), 1);
+    engine.appendSamples(new long[] { 30 * 60_000L, H + 10 * 60_000L, 2 * H + 20 * 60_000L }, new Object[] { "a", "a", "a" },
+        new Object[] { 1.0, 2.0, 3.0 });
+    database.commit();
+
+    try {
+      database.begin();
+      engine.compactAll();
+      database.commit();
+
+      final TimeSeriesShard shard = engine.getShard(0);
+      final TimeSeriesSealedStore.DownsampleGrid grid = new TimeSeriesSealedStore.DownsampleGrid(H, 0L);
+      assertThat(shard.getSealedStore().snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks()).as("a block nobody has read")
+          .extracting(block -> block.isIrreducibleOn(grid)).containsExactly(false);
+
+      final List<DownsamplingTier> tiers = List.of(new DownsamplingTier(1L, H));
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final Thread pass = new Thread(() -> {
+        DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+        try {
+          engine.applyDownsampling(tiers, 10 * H);
+        } catch (final Throwable e) {
+          failure.set(e);
+        } finally {
+          DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+        }
+      }, "downsampling-pass-11984");
+
+      final ReentrantReadWriteLock compactionLock = (ReentrantReadWriteLock) shard.getCompactionLock();
+      compactionLock.readLock().lock();
+      try {
+        pass.start();
+        // the pass is parked at the write lock of the shard: the one point of its rewrite window that a reader holds back
+        await().atMost(Duration.ofSeconds(60)).until(compactionLock::hasQueuedThreads);
+
+        assertThat(shard.getSealedStore().snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
+            .as("the blocks were proved before the pass asked for the write lock of the shard")
+            .extracting(block -> block.isIrreducibleOn(grid)).containsExactly(true);
+      } finally {
+        compactionLock.readLock().unlock();
+      }
+      pass.join();
+      assertThat(failure.get()).isNull();
+      assertThat(shard.getSealedStore().getDownsampleRewriteCount()).isZero();
+    } finally {
       engine.close();
     }
   }

@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -304,6 +305,63 @@ class Issue11984DownsampleReducibilityTest {
 
       assertThat(store.getDownsampleRewriteCount()).isZero();
       assertThat(readAll(store)).containsExactlyElementsOf(rows);
+    }
+  }
+
+  /**
+   * A block that cannot be read (its CRC does not match) is left as it is, and the pass goes on with the others. The density test this
+   * issue replaced never read a block it skipped, so one bad block among sparse ones never stopped a pass; reading every old block to
+   * see what it holds must not turn that into a pass that throws, for every tier, every cycle, until retention drops the block.
+   */
+  @Test
+  void aBlockThatCannotBeReadDoesNotStopThePassFromDownsamplingTheOthers() throws Exception {
+    writeStoreWithAFirstBlockThatCannotBeRead(
+        List.of(new Sample(5 * MINUTE, "a", "x", 1), new Sample(10 * MINUTE, "a", "x", 3), new Sample(15 * MINUTE, "a", "x", 5)),
+        List.of(new Sample(5 * H + 5 * MINUTE, "a", "x", 2), new Sample(5 * H + 10 * MINUTE, "a", "x", 4)));
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+      assertThat(store.getDownsampleRewriteCount()).as("the block that can be read was folded").isEqualTo(1L);
+      assertThat(store.getBlockCount()).isEqualTo(2);
+      assertThat(store.getTotalSampleCount()).as("three samples of the block left as it was, one row of the folded one").isEqualTo(4L);
+    }
+  }
+
+  /** The same when nothing else is to be folded: the block is not remembered as irreducible, which nobody found out, and every pass meets it again. */
+  @Test
+  void aBlockThatCannotBeReadIsNotTakenForAnIrreducibleOne() throws Exception {
+    writeStoreWithAFirstBlockThatCannotBeRead(
+        List.of(new Sample(5 * MINUTE, "a", "x", 1), new Sample(10 * MINUTE, "a", "x", 3), new Sample(15 * MINUTE, "a", "x", 5)),
+        List.of(new Sample(5 * H + 5 * MINUTE, "a", "x", 2), new Sample(6 * H + 10 * MINUTE, "a", "x", 4)));
+
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      for (int pass = 0; pass < 2; pass++) {
+        store.downsampleBlocks(Long.MAX_VALUE, H, 0L, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+        assertThat(store.getDownsampleRewriteCount()).isZero();
+        assertThat(store.getTotalSampleCount()).isEqualTo(5L);
+        assertThat(store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
+            .extracting(block -> block.isIrreducibleOn(new TimeSeriesSealedStore.DownsampleGrid(H, 0L)))
+            .as("the block nobody could read, then the one with a sample per bucket").containsExactly(false, true);
+      }
+    }
+  }
+
+  /** Writes two blocks and flips a byte in the data of the first, so its CRC no longer matches once the store is opened again. */
+  private static void writeStoreWithAFirstBlockThatCannotBeRead(final List<Sample> first, final List<Sample> second) throws IOException {
+    final long corruptAt;
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, COLUMNS)) {
+      appendBlock(store, first);
+      appendBlock(store, second);
+      final TimeSeriesSealedStore.BlockEntry entry = store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks().get(0);
+      corruptAt = entry.columnOffsets[entry.columnOffsets.length - 1];
+    }
+    try (final RandomAccessFile file = new RandomAccessFile(STORE_PATH + TimeSeriesSealedStore.FILE_EXTENSION, "rw")) {
+      file.seek(corruptAt);
+      final int original = file.read();
+      file.seek(corruptAt);
+      file.write(original ^ 0xFF);
     }
   }
 

@@ -1515,9 +1515,17 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     for (final DownsamplingTier tier : orderedTiers) {
       final long cutoffTs = nowMs - tier.afterMs();
+      final long gridOffsetMs = TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs());
+
+      // After a restart no block has been proved irreducible, and proving one reads it. That read is the history of the shard, so it
+      // is done here, before runSealedRewrite: inside it the compaction WRITE lock of the shard is held, and every append and every
+      // query of the shard would wait for it. The proof takes the directory read lock of the store a block at a time, as a walk
+      // does, and the rewrite below then reads only what landed since and what it is going to fold (issue #11984).
+      for (final TimeSeriesShard shard : shards)
+        shard.getSealedStore().proveBlocksIrreducible(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices);
+
       runSealedMaintenanceReplicated(
-          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(),
-              TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs()), tsColIdx, tagColIndices,
+          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices,
               numericColIndices));
     }
   }

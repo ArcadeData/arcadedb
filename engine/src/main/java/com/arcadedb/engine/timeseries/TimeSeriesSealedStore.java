@@ -500,9 +500,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // of a type has a grid of its own and a single verdict would be overwritten by each in turn, which reads the block again
     // on every pass for all of them but one. In-memory only, like the marker above: a restart, or an install of the file,
     // loses them, and the next pass proves it again by reading the timestamps and tags of the block, which costs a read and
-    // never a rewrite. Replaced as a whole, never changed in place. Written by the one downsampling pass of the store at a time
-    // (the shard's rewrite mutex), under the directory READ lock while it proves blocks and the WRITE lock while it selects them,
-    // and read by whichever rewrite copies the block, hence volatile.
+    // never a rewrite. Replaced as a whole, never changed in place. Written by proveBlocksIrreducible, under the directory READ
+    // lock and before the rewrite window of the shard opens, and by the selection of downsampleBlocks, under the WRITE lock, and read
+    // by whichever rewrite copies the block, hence volatile. Two proofs at once (nothing but the maintenance thread runs one) could
+    // lose a verdict of each other, which costs the block one more read and nothing else.
     volatile DownsampleGrid[] irreducibleOn = NO_GRIDS;
 
     /**
@@ -3133,19 +3134,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
-    final int[] tagCols = new int[tagColIndices.size()];
-    for (int t = 0; t < tagCols.length; t++)
-      tagCols[t] = tagColIndices.get(t);
-
-    // Reading the blocks to see which cannot be reduced is the one cost a restart adds (every verdict is lost with the process), and
-    // it is paid here, a block at a time under the READ lock like a walk does, so queries and compactions go on between two blocks;
-    // under the write lock below it would keep them all waiting for as long as the whole history takes to read
-    proveBlocksIrreducible(cutoffTs, grid, tsColIdx, tagCols);
+    final int[] tagCols = toIntArray(tagColIndices);
 
     directoryLock.writeLock().lock();
     try {
       final List<BlockEntry> toDownsample = new ArrayList<>();
       final List<BlockEntry> toKeep = new ArrayList<>();
+      int unreadable = 0;
+      IOException firstUnreadable = null;
 
       for (final BlockEntry entry : blockDirectory) {
         if (entry.maxTimestamp >= cutoffTs) {
@@ -3168,15 +3164,35 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // that reason in either direction: it left a block whose samples share a bucket raw forever as soon as ONE of them was
         // far from the others, and the marker alone, which a restart resets, would have rewritten every old block once again,
         // an already coarse one onto a bucket of the next finer tier that is not nested in its own. A block this proves
-        // irreducible is remembered, so a pass reads it once. The blocks proveBlocksIrreducible has just read are not read again
-        // but for the reducible ones, which the rewrite reads anyway, and a block that landed since.
-        if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
+        // irreducible is remembered, so a pass reads it once.
+        // The caller that wants a restart not to keep the shard waiting for the history has had proveBlocksIrreducible read it
+        // before the write locks were taken (TimeSeriesEngine.applyDownsampling), and then what is read here is the blocks that
+        // landed since and the reducible ones, which the sweep below reads for good anyway. Any other caller pays the whole read here.
+        final boolean reducible;
+        try {
+          reducible = hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols);
+        } catch (final IOException e) {
+          // A block that cannot be read cannot be said to be reducible, nor irreducible: it is left as it is, with no verdict, and
+          // the pass goes on. A density test that never read a block it skipped let one bad block among sparse ones alone, and the
+          // rest of the history must not stop being downsampled because one of its blocks is damaged
+          if (firstUnreadable == null)
+            firstUnreadable = e;
+          unreadable++;
+          toKeep.add(entry);
+          continue;
+        }
+        if (!reducible) {
           entry.markIrreducibleOn(grid);
           toKeep.add(entry);
           continue;
         }
         toDownsample.add(entry);
       }
+
+      if (unreadable > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Downsampling of sealed store '%s' left %d block(s) as they are because they could not be read, the first: %s",
+            getSealedFileName(), unreadable, firstUnreadable.getMessage());
 
       if (toDownsample.isEmpty())
         return;
@@ -3209,14 +3225,24 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Reads, a block at a time, every block older than {@code cutoffTs} that {@link #downsampleBlocks} would have to read to decide
-   * about, and remembers on the ones that cannot be reduced on {@code grid} that they cannot. Nothing is rewritten and no block is
-   * kept from the directory for more than its own read: the directory is looked at once to name the candidates, and each of them is
-   * then found again in the live directory, as a walk does, under the read lock it is read with. A block a rewrite replaced since
-   * is skipped (the pass that follows reads whatever is live), and the verdict of one that was only copied travels with the copy
-   * ({@link #writeRetainedBlock}).
+   * about, and remembers on the ones that cannot be reduced on the grid ({@code granularityMs} and {@code gridOffsetMs}, as
+   * {@link #downsampleBlocks} takes them) that they cannot. It is the one cost a restart adds to downsampling, since every verdict
+   * is lost with the process, and it is meant to be paid BEFORE the locks of a rewrite are taken: it needs only the directory READ
+   * lock, a block at a time, like a walk, so queries, appends and compactions go on between two blocks, where under the compaction
+   * write lock of the shard the whole history it reads would keep every one of them waiting ({@code TimeSeriesEngine.applyDownsampling}
+   * calls it so). It changes nothing a reader can see, and a pass that was not preceded by it decides every block itself, only later
+   * and under the write lock.
+   * <p>
+   * Nothing is rewritten and no block is kept from the directory for more than its own read: the directory is looked at once to name
+   * the candidates, and each of them is then found again in the live directory, as a walk does, under the read lock it is read with.
+   * A block a rewrite replaced since is skipped (the pass that follows reads whatever is live), and the verdict of one that was only
+   * copied travels with the copy ({@link #writeRetainedBlock}). A block that cannot be read is skipped too and gets no verdict: the
+   * pass that follows meets it and reports it.
    */
-  private void proveBlocksIrreducible(final long cutoffTs, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols)
-      throws IOException {
+  void proveBlocksIrreducible(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
+      final List<Integer> tagColIndices) {
+    final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
+    final int[] tagCols = toIntArray(tagColIndices);
     final List<BlockEntry> candidates = new ArrayList<>();
     directoryLock.readLock().lock();
     try {
@@ -3234,10 +3260,19 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final BlockEntry live = resolveLiveBlock(candidate, Integer.MAX_VALUE);
         if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols))
           live.markIrreducibleOn(grid);
+      } catch (final IOException e) {
+        // no verdict for a block that cannot be read: downsampleBlocks meets it, leaves it as it is and says so
       } finally {
         directoryLock.readLock().unlock();
       }
     }
+  }
+
+  private static int[] toIntArray(final List<Integer> values) {
+    final int[] array = new int[values.size()];
+    for (int i = 0; i < array.length; i++)
+      array[i] = values.get(i);
+    return array;
   }
 
   /**
