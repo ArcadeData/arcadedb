@@ -51,6 +51,10 @@ class Issue11932VectorIndexBuildDoesNotWaitForASyncPassTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE E BUCKETS 1");
     database.command("sql", "CREATE PROPERTY E.emb ARRAY_OF_FLOATS");
 
+    // The flush thread writes one page at a time, in order: a page of the other bucket still queued when this test holds
+    // its channel lock would park that thread on the lock and keep the pages of the index being built queued behind it
+    assertThat(db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db)).as("pages of the schema steps flushed").isTrue();
+
     final PaginatedComponentFile otherBucket = (PaginatedComponentFile) db.getFileManager()
         .getFile(db.getSchema().getType("W").getBuckets(false).getFirst().getFileId());
     final ReentrantReadWriteLock channelLock = channelLock(otherBucket);
