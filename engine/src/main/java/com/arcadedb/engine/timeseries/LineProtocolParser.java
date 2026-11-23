@@ -57,6 +57,11 @@ public class LineProtocolParser {
       return Math.multiplyExact(value / divisor, multiplier);
     }
 
+    /**
+     * @throws IllegalArgumentException for a precision that is none of ns, us (u), ms and s in any case. Read as nanoseconds, as it
+     *                                  used to be after a WARNING, it stored a timestamp in seconds as one in 1970 behind a 204
+     *                                  (issue #11875). An absent or empty precision is nanoseconds, as InfluxDB reads it
+     */
     public static Precision fromString(final String s) {
       if (s == null || s.isEmpty())
         return NANOSECONDS;
@@ -65,11 +70,7 @@ public class LineProtocolParser {
         case "us", "u" -> MICROSECONDS;
         case "ms" -> MILLISECONDS;
         case "s" -> SECONDS;
-        default -> {
-          LogManager.instance().log(Precision.class, Level.WARNING,
-              "Unrecognized precision '%s'; defaulting to nanoseconds", null, s);
-          yield NANOSECONDS;
-        }
+        default -> throw new IllegalArgumentException("Unsupported precision '" + s + "': use ns, us (or u), ms or s");
       };
     }
   }
