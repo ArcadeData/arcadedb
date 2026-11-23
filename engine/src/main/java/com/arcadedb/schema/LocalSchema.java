@@ -3893,19 +3893,20 @@ public class LocalSchema implements Schema {
     // DELETE ALL ASSOCIATED BUCKETS
     final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
     for (final Bucket b : buckets) {
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET OF A PRIMARY ONE GOES WITH IT, ITS FILE AND THE RECORDS OF EVERY EXTERNAL VALUE: IT IS NO
+      // BUCKET OF THE TYPE, SO THIS LOOP LEFT IT IN THE SCHEMA AND ON DISK, AND A TYPE CREATED LATER UNDER THE SAME NAME ADOPTED IT WITH
+      // THE RECORDS OF THE ONE DROPPED (issue #12995). Only the pair of a bucket the type OWNS: a bucket detached from the type earlier
+      // stays in the schema, and its records still point into its pair
+      final Integer externalBucketId = type.externalBucketIdByPrimaryBucketId.remove(b.getFileId());
       type.removeBucket(b);
       dropBucket(b.getName());
-    }
 
-    // THE PAIRED EXTERNAL-PROPERTY BUCKETS GO WITH THE PRIMARY ONES, THEIR FILES AND THE RECORDS OF EVERY EXTERNAL VALUE: THEY ARE NO BUCKET
-    // OF THE TYPE, SO THE LOOP ABOVE LEFT THEM IN THE SCHEMA AND ON DISK, AND A TYPE CREATED LATER UNDER THE SAME NAME ADOPTED THEM WITH THE
-    // RECORDS OF THE ONE DROPPED (issue #12995)
-    for (final Integer externalBucketId : new ArrayList<>(type.externalBucketIdByPrimaryBucketId.values())) {
-      final LocalBucket external = getBucketByIdIfExists(externalBucketId);
-      if (external != null)
-        dropBucket(external.getName());
+      if (externalBucketId != null) {
+        final LocalBucket external = getBucketByIdIfExists(externalBucketId);
+        if (external != null)
+          dropBucket(external.getName());
+      }
     }
-    type.externalBucketIdByPrimaryBucketId.clear();
 
     if (type instanceof LocalTimeSeriesType tsType)
       tsType.drop();
@@ -3984,10 +3985,12 @@ public class LocalSchema implements Schema {
             InternalBucketNaming.inEdgesBucketName(bucket.getName())))
           if (existsBucket(edgeBucketName))
             files.add(getBucketByName(edgeBucketName).getFileId());
-    }
 
-    // THE PAIRED EXTERNAL-PROPERTY BUCKETS ARE NO BUCKET OF THE TYPE, THEY BELONG TO ITS PRIMARY ONES (issue #12995)
-    files.addAll(type.externalBucketIdByPrimaryBucketId.values());
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET IS NO BUCKET OF THE TYPE, IT BELONGS TO ITS PRIMARY ONE (issue #12995)
+      final Integer externalBucketId = type.getExternalBucketIdFor(bucket.getFileId());
+      if (externalBucketId != null)
+        files.add(externalBucketId);
+    }
   }
 
   /**

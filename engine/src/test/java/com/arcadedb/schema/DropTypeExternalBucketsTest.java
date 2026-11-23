@@ -19,15 +19,23 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * DROP TYPE takes the paired external-property buckets of the type with its primary ones: the files, every record of an EXTERNAL value,
@@ -121,5 +129,100 @@ class DropTypeExternalBucketsTest extends TestHelper {
 
     reopenDatabase();
     assertThat(database.countBucket("Doc_0_ext") + database.countBucket("Doc_1_ext")).isEqualTo(3L);
+  }
+
+  @Test
+  void dropTypeOfAVertexTypeDropsItsExternalBucketsAndItsEdgeBuckets() {
+    database.command("sql", "CREATE VERTEX TYPE V BUCKETS 2").close();
+    database.command("sql", "CREATE PROPERTY V.body STRING").close();
+    database.command("sql", "ALTER PROPERTY V.body EXTERNAL true").close();
+    database.command("sql", "CREATE EDGE TYPE E").close();
+    database.transaction(() -> {
+      final MutableVertex previous = database.newVertex("V").set("body", "x".repeat(2000)).save();
+      for (int i = 0; i < 6; i++) {
+        final MutableVertex vertex = database.newVertex("V").set("body", "payload-" + i + "-" + "x".repeat(2000)).save();
+        previous.newEdge("E", vertex);
+      }
+    });
+    assertThat(externalBucketNames()).containsExactly("V_0_ext", "V_1_ext");
+
+    database.command("sql", "DROP TYPE V UNSAFE").close();
+    // the edges of the type go too: a dangling one is what CHECK DATABASE reports at the end of the test
+    database.command("sql", "DROP TYPE E UNSAFE").close();
+
+    assertThat(externalBucketNames()).isEmpty();
+    assertThat(externalBucketFiles()).isEmpty();
+    assertThat(database.getSchema().getBuckets()).extracting(Bucket::getName).noneMatch(name -> name.startsWith("V_"));
+
+    reopenDatabase();
+    assertThat(externalBucketNames()).isEmpty();
+    assertThat(externalBucketFiles()).isEmpty();
+  }
+
+  /**
+   * A bucket detached from its type stays in the schema with the records of its EXTERNAL values, which point into its pair: the pair
+   * lives as long as the primary bucket does, so the drop of the type takes the pairs of the buckets the type OWNS, not the pair of a
+   * bucket it let go earlier.
+   */
+  @Test
+  void aBucketDetachedBeforeTheDropKeepsItsExternalBucketAndItsValues() {
+    createDoc("Doc", null);
+    insert("Doc", 10);
+    database.command("sql", "ALTER TYPE Doc BUCKET -Doc_1").close();
+    final long detachedRecords = database.countBucket("Doc_1");
+    assertThat(detachedRecords).isGreaterThan(0L);
+    assertThat(externalBucketNames()).containsExactly("Doc_0_ext", "Doc_1_ext");
+
+    database.command("sql", "DROP TYPE Doc").close();
+
+    assertThat(database.getSchema().existsBucket("Doc_0")).isFalse();
+    assertThat(database.getSchema().existsBucket("Doc_1")).isTrue();
+    assertThat(externalBucketNames()).containsExactly("Doc_1_ext");
+    assertThat(externalBucketFiles()).hasSize(1);
+
+    reopenDatabase();
+    assertThat(externalBucketNames()).containsExactly("Doc_1_ext");
+
+    // the bucket is attached to a type that declares the property: the values of its records are still there
+    database.command("sql", "CREATE DOCUMENT TYPE Other BUCKETS 1").close();
+    database.command("sql", "CREATE PROPERTY Other.body STRING").close();
+    database.command("sql", "ALTER PROPERTY Other.body EXTERNAL true").close();
+    database.command("sql", "ALTER TYPE Other BUCKET +Doc_1").close();
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS n FROM Other WHERE body.length() > 2000")) {
+      assertThat(rs.next().<Long>getProperty("n")).isEqualTo(detachedRecords);
+    }
+  }
+
+  /** The probe of the files a drop is going to delete (#10421) names the paired buckets: one that cannot be deleted refuses the drop. */
+  @Test
+  void aDropTypeThatCannotDeleteAnExternalBucketFileIsRefusedBeforeItChangesAnything() throws IOException {
+    assumeFalse(System.getProperty("os.name", "").toLowerCase().contains("win"), "an open file cannot be moved on Windows");
+    createDoc("Doc", null);
+    insert("Doc", 10);
+
+    // a directory with something in it where the file of the pair is: it cannot be deleted
+    final Path file = Path.of(((DatabaseInternal) database).getFileManager()
+        .getFile(database.getSchema().getBucketByName("Doc_1_ext").getFileId()).getFilePath());
+    final Path aside = file.resolveSibling(file.getFileName() + ".aside");
+    Files.move(file, aside);
+    Files.createDirectory(file);
+    Files.writeString(file.resolve("blocker"), "x");
+    try {
+      assertThatThrownBy(() -> database.command("sql", "DROP TYPE Doc")).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("Doc_1_ext").hasMessageContaining("Nothing was changed");
+
+      assertThat(database.getSchema().existsType("Doc")).isTrue();
+      assertThat(database.getSchema().getType("Doc").getBuckets(false)).hasSize(2);
+      assertThat(externalBucketNames()).containsExactly("Doc_0_ext", "Doc_1_ext");
+    } finally {
+      Files.deleteIfExists(file.resolve("blocker"));
+      Files.deleteIfExists(file);
+      Files.move(aside, file);
+    }
+
+    // and the statement completes once nothing refuses it
+    database.command("sql", "DROP TYPE Doc").close();
+    assertThat(externalBucketNames()).isEmpty();
+    assertThat(externalBucketFiles()).isEmpty();
   }
 }
