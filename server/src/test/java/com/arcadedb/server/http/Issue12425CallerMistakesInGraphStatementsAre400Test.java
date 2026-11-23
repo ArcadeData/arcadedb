@@ -41,19 +41,33 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
 
   @Test
   void anEndpointThatIsADocumentIsRefusedWithAMessageAndNothingIsWritten() throws Exception {
-    final String documentRid = setUp();
+    final String documentRid = createFixtures();
 
     final Response response = command("sql", "CREATE EDGE Link12425 FROM " + documentRid + " TO " + vertexRid);
 
     assertThat(response.status).as(response.body).isEqualTo(400);
     assertThat(response.body).as("the answer names the cause").contains("Invalid vertex for edge creation");
+    assertThat(response.body).as("the answer names the record").contains(documentRid);
     assertThat(response.body).as("no Java class name reaches the client").doesNotContain("java.lang.ClassCastException");
     assertThat(edgeCount()).as("nothing is written").isZero();
   }
 
   @Test
+  void anEndpointThatIsADocumentRidGivenAsAStringIsRefusedNotAnsweredAsMissing() throws Exception {
+    final String documentRid = createFixtures();
+
+    final Response response = command("sql", "CREATE EDGE Link12425 FROM :from TO :to",
+        new JSONObject().put("from", documentRid).put("to", vertexRid));
+
+    assertThat(response.status).as("the record exists, so 404 would be a wrong answer: " + response.body).isEqualTo(400);
+    assertThat(response.body).contains("Invalid vertex for edge creation");
+    assertThat(response.body).contains(documentRid);
+    assertThat(edgeCount()).as("nothing is written").isZero();
+  }
+
+  @Test
   void aQueryThatReturnsADocumentAsAnEndpointIsRefusedWithAMessageAndNothingIsWritten() throws Exception {
-    setUp();
+    createFixtures();
 
     final Response from = command("sql", "CREATE EDGE Link12425 FROM (SELECT FROM Doc12425) TO (SELECT FROM V12425)");
     assertThat(from.status).as(from.body).isEqualTo(400);
@@ -68,7 +82,7 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
 
   @Test
   void aRidThatIsNotARidIsRefusedWithAMessage() throws Exception {
-    setUp();
+    createFixtures();
 
     final Response response = command("sql", "MATCH {rid: 'garbage', as: p} RETURN p");
 
@@ -78,7 +92,7 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
 
   @Test
   void aBareRidOrderByOnTheRowsOfAMatchIsRefusedWithAMessage() throws Exception {
-    setUp();
+    createFixtures();
 
     final Response response = command("sql", "MATCH {type: V12425, as: p} RETURN p.k AS k ORDER BY @rid");
 
@@ -88,7 +102,7 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
 
   @Test
   void aValidEdgeBetweenTwoVerticesIsStillCreated() throws Exception {
-    setUp();
+    createFixtures();
 
     final Response response = command("sql", "CREATE EDGE Link12425 FROM " + vertexRid + " TO " + vertexRid);
 
@@ -99,7 +113,7 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
   private String vertexRid;
 
   /** Creates the types and one record of each kind; answers the RID of the document and keeps the RID of the vertex. */
-  private String setUp() throws Exception {
+  private String createFixtures() throws Exception {
     for (final String sql : new String[] { "CREATE VERTEX TYPE V12425", "CREATE PROPERTY V12425.k STRING",
         "CREATE EDGE TYPE Link12425", "CREATE DOCUMENT TYPE Doc12425" })
       assertThat(command("sql", sql).status).as(sql).isEqualTo(200);
@@ -120,6 +134,10 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
   }
 
   private Response command(final String language, final String command) throws Exception {
+    return command(language, command, null);
+  }
+
+  private Response command(final String language, final String command, final JSONObject params) throws Exception {
     final HttpURLConnection connection =
         (HttpURLConnection) new URI(getServerHttpUrl("/api/v1/command/" + getDatabaseName())).toURL().openConnection();
     connection.setRequestMethod("POST");
@@ -128,7 +146,10 @@ class Issue12425CallerMistakesInGraphStatementsAre400Test extends BaseGraphServe
         Base64.getEncoder().encodeToString(("root:" + StaticBaseServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
     connection.setRequestProperty("Authorization", "Basic " + credentials);
     connection.setDoOutput(true);
-    final byte[] payload = new JSONObject().put("language", language).put("command", command).toString().getBytes(StandardCharsets.UTF_8);
+    final JSONObject request = new JSONObject().put("language", language).put("command", command);
+    if (params != null)
+      request.put("params", params);
+    final byte[] payload = request.toString().getBytes(StandardCharsets.UTF_8);
     try (final OutputStream out = connection.getOutputStream()) {
       out.write(payload);
     }
