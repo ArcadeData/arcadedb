@@ -23,9 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -36,7 +36,9 @@ import java.util.stream.Stream;
  * Computes the Adamic-Adar link prediction index between the given source node and every
  * other reachable vertex in the graph. The score between two vertices u and v is:
  * {@code sum over common neighbors w: 1 / log(degree(w))}.
- * Only pairs with score &gt; cutoff (default 0.0) are returned, sorted by score descending.
+ * Only pairs with score &gt; cutoff (default 0.0) are returned, sorted by score descending, equal
+ * scores in RID order. Only the nodes two hops away can share a neighbour with the source, so only
+ * their rows are read (issue #12176).
  * </p>
  * <p>
  * Example:
@@ -88,45 +90,37 @@ public class AlgoAdamicAdar extends AbstractAlgoProcedure {
     final double cutoff        = optionalNumberArg(args, 3, "cutoff", 0.0).doubleValue();
 
     final Database db = context.getDatabase();
-    final GraphData graph = loadGraph(db, null, relTypes, context);
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
+    final WorkGuard guard = newWorkGuard(context);
 
-    final int[][] adj = graph.adjacency(dir, relTypes);
+    // Only the nodes two hops away can score, so only those are read: no view, no loading of the whole graph (issue #12176)
+    final Neighbourhood graph = openNeighbourhood(db, relTypes, context, sourceVertex.getIdentity());
 
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    final int srcIdx = graph.nodeOf(sourceVertex.getIdentity());
     if (srcIdx < 0)
       return Stream.empty();
 
-    // Build BitSet of source's neighbors for fast membership checks
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
+    // score = the sum of 1 / log(degree(w)) over the common neighbours w of the source and v, in the direction asked; a
+    // neighbour of degree 1 has log(1) = 0 and adds nothing
+    final NodeScores aaScores = scoresThroughNeighbours(graph, srcIdx, dir, w -> {
+      final int degree = graph.distinctDegree(w, dir);
+      return degree > 1 ? 1.0 / Math.log(degree) : 0.0;
+    }, guard);
 
-    // Accumulate Adamic-Adar contributions into a primitive double array (no boxing)
-    final double[] aaScores = new double[n];
-
-    for (final int w : adj[srcIdx]) {
-      final int degree = adj[w].length;
-      if (degree <= 1)
-        continue;  // log(1) = 0, skip to avoid division by zero / zero contribution
-      final double contribution = 1.0 / Math.log(degree);
-      for (final int v : adj[w]) {
-        if (v != srcIdx)
-          aaScores[v] += contribution;
-      }
-    }
-
-    // Collect results above cutoff, sorted by score descending
+    // Collect results above cutoff, sorted by score descending. A node no walk reached scores 0, and is listed only when the
+    // cutoff admits 0 (a negative one)
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx || aaScores[v] <= cutoff)
+    int candidate = 0;
+    for (final int v : candidateNodes(db, graph, aaScores, srcIdx, cutoff < 0.0 || Double.isNaN(cutoff))) {
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
+      final int slot = aaScores.slotOf(v);
+      final double score = slot >= 0 ? aaScores.score(slot) : 0.0;
+      if (score <= cutoff)
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex.getIdentity());
-      r.setProperty("node2", graph.getRID(v));
-      r.setProperty("score", aaScores[v]);
+      r.setProperty("node2", graph.ridOf(v));
+      r.setProperty("score", score);
       results.add(r);
     }
     results.sort(Comparator.comparingDouble((Result r) -> (double) r.getProperty("score")).reversed());

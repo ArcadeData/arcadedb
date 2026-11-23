@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * caller of the public async {@code appendSamples}, which converts on the calling thread. A new endpoint calling the storage
  * with a grid of its own fails here and is sent to the converting entry points. Each path is exercised with a text value for a
  * typed column by its own test: {@code LineProtocolParserTest},
- * {@code Issue9972PrometheusTypedTagIT}, {@code Issue10107JsonlTimeSeriesUnstorableValueTest} and
+ * {@code PrometheusRemoteWriteEdgeCasesIT.TypedTag}, {@code Issue10107JsonlTimeSeriesUnstorableValueTest} and
  * {@code TimeSeriesPrimitiveIngestTest}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

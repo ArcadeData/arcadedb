@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -33,6 +34,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.CoarseClock;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 import com.arcadedb.utility.FileUtils;
@@ -250,6 +252,9 @@ public class PageManager extends LockContext {
    * genuinely wrong rather than merely busy.
    */
   private static final long SNAPSHOT_BARRIER_MAX_MILLIS = 5_000;
+
+  /** One eviction pass per window while the read cache is over its RAM cap. Read from the coarse clock, see {@link #checkForPageDisposal()}. */
+  private static final long EVICTION_THROTTLE_MS = 100;
 
   /**
    * Fraction of the space still usable on the spill volume that the automatically sized shadow cap may claim
@@ -680,7 +685,13 @@ public class PageManager extends LockContext {
     final PageManagerFlushThread thread = flushThread;
     if (thread != null && !waitPagesPendingNowOfDatabaseAreFlushed(database, thread.isSuspended(database) ? 0L : maxWaitMillis))
       return false;
-    return database.getFileManager().syncFiles();
+    if (!database.getFileManager().syncFiles())
+      return false;
+    // #12025: an earlier instance of this path that closed without forcing its pages is answered for now: this instance
+    // opened after it, so its open ran the recovery, which leaves every file to be forced by the first sync
+    if (database instanceof LocalDatabase local)
+      DatabaseFactory.releasePagesLeftToRecoveryByEarlierInstances(local);
+    return true;
   }
 
   /**
@@ -2498,6 +2509,11 @@ public class PageManager extends LockContext {
    * <p>
    * The callable must be short (it delays every commit and apply of the JVM while it runs), must not publish, and must not wait for
    * anything a publication holds: it can load pages, which takes neither the page-manager lock nor a publication.
+   * <p>
+   * The caller takes the database lock BEFORE it asks for the hold, never inside the callable: a commit holds the database read lock
+   * while it waits for the holds to be released, so a callable that takes that lock (a record load by RID) waits for a lock the fair
+   * lock refuses it once a schema change queued behind the commit, while the commit waits for this hold (#13112).
+   * {@code ConsistentKeyLookup.readAgainstOneCommit} does it for the readers of records.
    *
    * @return what {@code callable} returned, or {@code null} without running it when the publications did not end within
    * {@code maxWaitNanos}, or when the waiting thread is interrupted (its interrupt is kept)
@@ -2937,17 +2953,29 @@ public class PageManager extends LockContext {
   }
 
   private void checkForPageDisposal() {
-    final long now = System.currentTimeMillis();
-    if (now - lastCheckForRAM < 100)
+    // Runs on every page access, so no clock is read below the cap (#12971). Above it the coarse clock is enough for the 100 ms window
+    if (totalReadCacheRAM.get() < maxRAM)
       return;
 
+    if (CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
+      return;
+
+    evictIfStillDue();
+  }
+
+  /**
+   * Runs the throttled eviction pass, unless one that ran while this thread waited for the monitor already did the job. Every
+   * thread that passes the throttle while a pass is running queues here, and the pass re-arms the throttle only when it ends:
+   * without this second look each of them ran a full sort of the cache of its own right after, one per thread and per window,
+   * freeing that many times what a window is meant to (measured with 8 reader threads over a 16 MB cap: 36-48 passes in the 5
+   * windows of the run).
+   */
+  private synchronized void evictIfStillDue() {
     final long totalRAM = totalReadCacheRAM.get();
-    if (totalRAM < maxRAM)
+    if (totalRAM < maxRAM || CoarseClock.currentTimeMillis() - lastCheckForRAM < EVICTION_THROTTLE_MS)
       return;
 
-    final long ramToFree = totalRAM * freePageRAM / 100;
-
-    evictOldestPages(ramToFree, totalRAM);
+    evictOldestPages(totalRAM * freePageRAM / 100, totalRAM);
   }
 
   /** A cached page with the eviction keys it had when an eviction run read them. */
@@ -3017,7 +3045,7 @@ public class PageManager extends LockContext {
       LogManager.instance().log(this, Level.WARNING, "Cannot free pages in RAM (current=%s > max=%s threadId=%d)", null,
           FileUtils.getSizeAsString(newTotalRAM), FileUtils.getSizeAsString(maxRAM), Thread.currentThread().threadId());
 
-    lastCheckForRAM = System.currentTimeMillis();
+    lastCheckForRAM = CoarseClock.currentTimeMillis();
   }
 
   // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
@@ -3039,6 +3067,15 @@ public class PageManager extends LockContext {
   };
 
   void putPageInReadCache(final CachedPage page) {
+    // #12244: a PageId compares its database by PATH, so a page cached for a CLOSED instance is a hit for the next
+    // instance opened on the same directory. The close purges the instance's pages, but a reader of it that loaded a
+    // page before that purge caches it only after (loadPage puts once the I/O lock is released). When the files under
+    // the path were replaced meanwhile (a Raft follower's snapshot install: close, swap, reopen), that image answered
+    // for the page instead of the newer file: the next replicated entry on it was refused with a WAL version gap.
+    final BasicDatabase database = page.getPageId().getDatabase();
+    if (!database.isOpen())
+      return;
+
     // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
     // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
     // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
@@ -3051,7 +3088,25 @@ public class PageManager extends LockContext {
     if (ramDelta[0] != 0)
       totalReadCacheRAM.addAndGet(ramDelta[0]);
 
+    // #12244: checked again AFTER the put. The close marks the instance closed (a volatile write) before it purges its
+    // pages, so either the purge sees this page, or this read sees the instance closed and takes the page back itself
+    if (!database.isOpen())
+      removeOwnPageFromCache(page);
+
     checkForPageDisposal();
+  }
+
+  /** Removes {@code page} from the read cache only if the cache still holds that very instance (#12244). */
+  private void removeOwnPageFromCache(final CachedPage page) {
+    final boolean[] removed = new boolean[1];
+    readCache.computeIfPresent(page.getPageId(), (id, cached) -> {
+      if (cached != page)
+        return cached;
+      removed[0] = true;
+      return null;
+    });
+    if (removed[0])
+      totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
   }
 
   /**

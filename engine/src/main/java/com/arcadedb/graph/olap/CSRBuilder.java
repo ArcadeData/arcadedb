@@ -708,6 +708,29 @@ public class CSRBuilder {
         name -> edgePropertyFilterSet == null || edgePropertyFilterSet.contains(name), new HashSet<>(), "Edge property", "edge");
   }
 
+  /**
+   * The names of the edge property filter a build over {@code edgeTypes} stores no column for, sorted: declared on none of the
+   * edge types it covers, declared only with a type no column holds, or declared with types that differ across them. A view
+   * holds no value of such a property, and every weighted read of it falls back to the edge records (issue #12177). Edge types
+   * the schema does not hold are left out.
+   */
+  List<String> edgePropertiesWithoutColumn(final String[] edgeTypes) {
+    if (edgePropertyFilterSet == null)
+      return List.of();
+    final boolean allTypes = edgeTypes == null || edgeTypes.length == 0;
+    final String[] existing = allTypes ? null :
+        Arrays.stream(edgeTypes).filter(database.getSchema()::existsType).toArray(String[]::new);
+    if (!allTypes && existing.length == 0)
+      return List.of();
+    final Map<String, Column.Type> stored = detectEdgePropertyTypesFromSchema(existing);
+    final List<String> missing = new ArrayList<>();
+    for (final String name : edgePropertyFilterSet)
+      if (!stored.containsKey(name))
+        missing.add(name);
+    Collections.sort(missing);
+    return missing;
+  }
+
   private void fillEdgeProperties(final Document edgeDoc, final ColumnStore store, final int edgeIdx,
       final Map<String, Column.Type> detectedTypes) {
     for (final Map.Entry<String, Column.Type> entry : detectedTypes.entrySet()) {

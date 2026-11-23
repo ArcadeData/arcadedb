@@ -435,6 +435,112 @@ class StatisticsProviderTest {
   }
 
   @Test
+  void aSupertypeIsCountedWithTheRecordsOfItsSubtypes() {
+    // V and E hold nothing themselves, everything lives in their subtypes: MATCH (n:V) and [:E] read the subtypes, so the
+    // planner must not cost either label as empty (issue #12280)
+    createSupertypeHierarchy();
+    database.transaction(() -> {
+      final MutableVertex[] vertices = new MutableVertex[6];
+      for (int i = 0; i < vertices.length; i++)
+        vertices[i] = database.newVertex(i < 4 ? "A" : "B").save();
+      for (int i = 0; i < 9; i++)
+        vertices[i % 6].newEdge(i % 2 == 0 ? "E1" : "E2", vertices[(i + 1) % 6], true, (Object[]) null);
+    });
+
+    statisticsProvider.collectStatistics(Arrays.asList("V", "A", "B", "E", "E1", "E2"));
+
+    assertThat(statisticsProvider.getCardinality("V")).isEqualTo(6);
+    assertThat(statisticsProvider.getCardinality("A")).isEqualTo(4);
+    assertThat(statisticsProvider.getCardinality("B")).isEqualTo(2);
+    assertThat(statisticsProvider.getCardinality("E")).isEqualTo(9);
+    assertThat(statisticsProvider.getCardinality("E1")).isEqualTo(5);
+    assertThat(statisticsProvider.getCardinality("E2")).isEqualTo(4);
+    // a union of types is the sum of the types it names, counted once each: V lists its subtypes already
+    assertThat(statisticsProvider.getMatchingVertexCardinality(List.of("V"), false)).isEqualTo(6);
+  }
+
+  @Test
+  void averageDegreeOfASupertypeUsesTheEdgesAndVerticesOfItsSubtypes() {
+    createSupertypeHierarchy();
+    database.transaction(() -> {
+      final MutableVertex[] vertices = new MutableVertex[8];
+      for (int i = 0; i < vertices.length; i++)
+        vertices[i] = database.newVertex(i % 2 == 0 ? "A" : "B").save();
+      for (int i = 0; i < 40; i++)
+        vertices[i % 8].newEdge(i % 2 == 0 ? "E1" : "E2", vertices[(i + 1) % 8], true, (Object[]) null);
+    });
+    statisticsProvider.collectStatistics(Arrays.asList("V", "E"));
+
+    // 2*40 edges / (8+8) vertices = 5.0; the supertypes' own buckets are empty, which used to answer 0.0 edges
+    assertThat(statisticsProvider.getAverageDegree("E", "V", "V")).isEqualTo(5.0);
+
+    // 8 more vertices in one subtype, no new edge: the stamp of the shared cache must see the subtype's growth
+    database.transaction(() -> {
+      for (int i = 0; i < 8; i++)
+        database.newVertex("A").save();
+    });
+    final StatisticsProvider afterGrowth = new StatisticsProvider((DatabaseInternal) database);
+    afterGrowth.collectStatistics(Arrays.asList("V", "E"));
+    // 2*40 edges / (16+16) vertices = 2.5, not the stale 5.0
+    assertThat(afterGrowth.getAverageDegree("E", "V", "V")).isEqualTo(2.5);
+  }
+
+  @Test
+  void getMeanEdgesPerConnectedPairSamplesTheSubtypesOfAnEdgeSupertype() {
+    // One pair joined by 5 parallel E1 edges, another by 1 E2 edge, none in E itself: mean = 6 edges / 2 pairs = 3.0. An empty
+    // sample of E's own buckets answered 1.0, a simple graph, for a type whose edge count says otherwise (issue #12280)
+    createSupertypeHierarchy();
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("A").save();
+      final MutableVertex b = database.newVertex("B").save();
+      for (int i = 0; i < 5; i++)
+        a.newEdge("E1", b, true, (Object[]) null);
+
+      final MutableVertex c = database.newVertex("A").save();
+      final MutableVertex d = database.newVertex("B").save();
+      c.newEdge("E2", d, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("E")).isEqualTo(3.0);
+  }
+
+  @Test
+  void meanEdgesPerConnectedPairResamplesAfterEdgesAreAddedToASubtype() {
+    createSupertypeHierarchy();
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("A").save();
+      final MutableVertex b = database.newVertex("B").save();
+      for (int i = 0; i < 5; i++)
+        a.newEdge("E1", b, true, (Object[]) null);
+    });
+
+    assertThat(statisticsProvider.getMeanEdgesPerConnectedPair("E")).isEqualTo(5.0);
+
+    // The edge lands in a subtype, E's own buckets are untouched: the stamp of the shared cache is the polymorphic count, so the
+    // entry cached above is stale and a fresh provider resamples
+    database.transaction(() -> {
+      final MutableVertex c = database.newVertex("A").save();
+      final MutableVertex d = database.newVertex("B").save();
+      c.newEdge("E2", d, true, (Object[]) null);
+    });
+
+    final StatisticsProvider secondProvider = new StatisticsProvider((DatabaseInternal) database);
+    assertThat(secondProvider.getMeanEdgesPerConnectedPair("E")).isEqualTo(3.0);
+  }
+
+  /**
+   * V and E are empty supertypes: A and B extend V, E1 and E2 extend E.
+   */
+  private void createSupertypeHierarchy() {
+    database.getSchema().createVertexType("V");
+    database.command("sql", "CREATE VERTEX TYPE A EXTENDS V");
+    database.command("sql", "CREATE VERTEX TYPE B EXTENDS V");
+    database.getSchema().createEdgeType("E");
+    database.command("sql", "CREATE EDGE TYPE E1 EXTENDS E");
+    database.command("sql", "CREATE EDGE TYPE E2 EXTENDS E");
+  }
+
+  @Test
   void preferUniqueIndexOverNonUnique() {
     // Create type with unique and non-unique indexes on different properties
     final var personType = database.getSchema().getOrCreateVertexType("Person");

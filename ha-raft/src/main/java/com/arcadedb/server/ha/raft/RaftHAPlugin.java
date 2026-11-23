@@ -1060,6 +1060,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public String getReplicationFailureReason() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getReplicationFailureReason() : null;
+  }
+
+  @Override
   public String getClusterToken() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getClusterToken() : stoppedClusterToken;

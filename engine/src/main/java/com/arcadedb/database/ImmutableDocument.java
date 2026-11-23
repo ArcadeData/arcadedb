@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Interruptions;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -102,6 +103,7 @@ public class ImmutableDocument extends BaseDocument {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
     }
@@ -122,6 +124,7 @@ public class ImmutableDocument extends BaseDocument {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
       // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
       // NOT null, IS STILL THE RIGHT ANSWER IF IT EVER DOES FIRE: null WOULD SILENTLY BREAK THE "TELL ABSENT FROM
@@ -323,6 +326,53 @@ public class ImmutableDocument extends BaseDocument {
    */
   static int readTransactionId(final long transactionBeginSequence) {
     return transactionBeginSequence < 0 ? -1 : (int) (transactionBeginSequence & 0x3FFFFFFF);
+  }
+
+  /**
+   * Whether this record's content was read by the current transaction, stale or not (issue #8610's marker), checked before
+   * {@link #prepareForModify} reloads it. A record stamped but not loaded ({@code lookupByRID(rid, false)} in READ_COMMITTED)
+   * read nothing from the bucket, so it does not count; the stale marker is only set after a read, so it does.
+   */
+  protected boolean readInCurrentTransaction() {
+    // THE FIELD FIRST: modify() IS A HOT PATH OF A BULK UPDATE, AND A RECORD NOBODY STAMPED NEEDS NO TRANSACTION LOOKUP
+    final int stamp = readInTransaction;
+    if (stamp == -1)
+      return false;
+    final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+    if (tx == null)
+      return false;
+    final int id = readTransactionId(tx.getBeginSequence());
+    return id >= 0 && ((stamp == id && buffer != null) || stamp == STALE_READ - id);
+  }
+
+  /**
+   * The lazy load {@code modify()} ends with, after {@link #prepareForModify} pinned the record's page and reloaded its
+   * content. When the record is gone from its bucket although this transaction read it, a concurrent transaction deleted it
+   * after that read and committed: the conflict a write after a concurrent delete is, answered as the retryable
+   * {@link ConcurrentModificationException} the commit-time check gives a document in the same race, as a delete of such a
+   * record already does (issue #8984). It answered {@link RecordNotFoundException}, which reaches an HTTP client as a 404 it
+   * cannot tell from a wrong RID, and which a retry loop does not retry: a Cypher SET or a SQL UPDATE of a vertex whose MATCH
+   * or WHERE read it moments before failed so. A record not read in this transaction keeps the not-found.
+   * <p>
+   * For the kind whose reload drops the content it read ({@code ImmutableVertex}, to force the reload): the reload of a
+   * document or an edge that finds its record gone keeps the content it had, so their {@code modify()} never reaches a
+   * not-found here, and the conflict is raised by the check at commit.
+   *
+   * @param readHere {@link #readInCurrentTransaction()}, taken before the reload
+   */
+  protected void loadForModify(final boolean readHere) {
+    try {
+      checkForLazyLoading();
+    } catch (final RecordNotFoundException e) {
+      if (!readHere || !rid.equals(e.getRID()))
+        throw e;
+      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
+      if (tx != null && tx.isDeletedInTransaction(rid.getBucketId(), rid.getPosition()))
+        throw e;
+      throw new ConcurrentModificationException(
+          "Record " + rid + " was deleted by a concurrent transaction after it was read in this transaction. Please retry the operation",
+          e);
+    }
   }
 
   /**
@@ -585,10 +635,25 @@ public class ImmutableDocument extends BaseDocument {
         notFound);
   }
 
+  /** Whether the record wants to know that its lazily read content came from the transaction's own image of its page (#12320). */
+  protected boolean tracksReadsFromOwnImage() {
+    return false;
+  }
+
+  /** Called when the content read lazily came from the transaction's own image of its page, see {@link #tracksReadsFromOwnImage()}. */
+  protected void contentReadFromOwnImage() {
+    // nothing to do for a document
+  }
+
   /** The content of a record handed out without it, read now: see {@link #missingGraphRecord} for a record that is gone. */
   private Binary readContentOfLazyRecord() {
     try {
-      return database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+      final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
+      final Binary content = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+      if (tx != null && tx.getOwnImageReads() != ownImageReads)
+        contentReadFromOwnImage();
+      return content;
     } catch (final RecordNotFoundException e) {
       throw missingGraphRecord((DatabaseInternal) database, rid, reachedAtCommit, e);
     }

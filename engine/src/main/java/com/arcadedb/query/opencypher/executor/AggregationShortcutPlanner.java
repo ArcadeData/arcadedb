@@ -1286,8 +1286,12 @@ final class AggregationShortcutPlanner {
     if (expr instanceof RegexExpression regex)
       return referencesOnlyVariable(regex.getExpression(), allowedVar)
           && referencesOnlyVariable(regex.getPattern(), allowedVar);
-    if (expr instanceof LabelCheckExpression labelCheck)
+    if (expr instanceof LabelCheckExpression labelCheck) {
+      for (final Expression dynamicLabel : labelCheck.getDynamicLabels())
+        if (!referencesOnlyVariable(dynamicLabel, allowedVar))
+          return false;
       return referencesOnlyVariable(labelCheck.getVariableExpression(), allowedVar);
+    }
     // Unknown boolean expression type: assume it may reference other variables
     return false;
   }

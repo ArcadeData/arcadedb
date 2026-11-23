@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -43,6 +43,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -110,6 +111,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   static final int            MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
   // The served set of the previous key is cleared for the next one up to this size, and replaced past it
   private static final int    MAX_REUSED_SERVED_SET    = 64;
+  // The entries a SKIP asks the index step for at once, see skipUnloaded()
+  private static final int    SKIP_BATCH               = 1_000;
 
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
@@ -159,6 +162,17 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean                     parallelDecided;
   private ParallelTypeScan            parallelRound;
   private int                         parallelRounds;
+  // The entries ran out while a SKIP passed over them, see skipUnloaded()
+  private boolean                     skipRanOut;
+  // A physical-order load reads every entry before it loads a record (issue #11790): the condition of the seek a loaded record
+  // is held to once a commit published since the entries were read, null when it cannot be checked on the record, and the
+  // publication sequence the entries were read from
+  private FetchFromIndexStep.SeekCheck loadSeekCheck;
+  private long                        loadEntriesSequence;
+  // Whether the last readAndLoad() met an entry whose record it could not load
+  private boolean                     pointLookupDangling;
+  // Whether readAndLoad() logs an entry whose record it could not load as dangling
+  private boolean                     warnDangling   = true;
 
   /**
    * @param context         the execution context
@@ -313,8 +327,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    */
   private List<PhysicalOrderSliceStep> unitsOfCurrentChunk(final CommandContext context, final int entriesPerUnit) {
     final List<PhysicalOrderSliceStep> units = new ArrayList<>();
-    fetcher.slices(entriesPerUnit,
-        (bucketId, positions, from, to) -> units.add(PhysicalOrderSliceStep.ofPositions(context, bucketId, positions, from, to)));
+    // A worker evaluates the seek through its own context, on its own copy of the condition
+    fetcher.slices(entriesPerUnit, (bucketId, positions, from, to) -> units.add(
+        PhysicalOrderSliceStep.ofPositions(context, bucketId, positions, from, to, loadRecheck())));
     final List<Object> passThrough = fetcher.takePassThrough();
     if (passThrough != null)
       units.add(PhysicalOrderSliceStep.ofEntries(context, passThrough, GetValueFromIndexEntryStep::toResult));
@@ -390,6 +405,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index fetch before this step left $current on the index entry it emitted ({key, rid}), and hasNext() reads ahead to
+        // the next one: the row handed on becomes $current here, as in every other fetch step, so a LET subquery reads its outer
+        // record through $parent.$current (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
 
@@ -461,9 +480,16 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
               } else {
                 nextItem = toResult(finalVal, context);
                 if (nextItem == null) {
-                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369)
-                  recovered.addAll(reconcile(indexStep, val.getProperty("key"), rid, context, guard));
+                  // A range scan reads its entries as it goes, so only an entry whose record is gone is reconciled (#9369). A row
+                  // found again is held to the range too: its RID may now name a record a commit wrote outside it (issue #11790)
+                  for (final Result row : reconcile(indexStep, key, rid, context, guard))
+                    if (rangeRowStillMatches(indexStep, row, key))
+                      recovered.add(row);
                   nextItem = recovered.pollFirst();
+                } else if (!noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence())
+                    && !rangeRowStillMatches(indexStep, nextItem, key)) {
+                  // A commit since the scan began moved the record out of the range (issue #11790): the entry is stale
+                  nextItem = null;
                 }
               }
             } else
@@ -477,6 +503,66 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         }
       }
     };
+  }
+
+  /**
+   * Passes over up to {@code n} of the rows this step serves next without loading their records, for a SKIP that throws them away
+   * (issue #11954). Only a range read in index order: a point lookup settles its entries against one committed state
+   * ({@link #loadPointLookup}), and a physical-order load or a scan serves the rows in another order than the entries. Each entry is
+   * judged by {@link IndexEntrySkip}; the first one it cannot judge without its record stops the skip and is served as before, the
+   * caller discarding what is left of the SKIP from the rows.
+   *
+   * @param typeName the type the rows must be an instance of, as the FILTER ITEMS BY TYPE after this step checks, or null
+   *
+   * @return the rows passed over
+   */
+  int skipUnloaded(final CommandContext context, final int n, final String typeName) {
+    final ExecutionStepInternal prevStep = checkForPrevious();
+    if (strategy == null)
+      chooseStrategy(context, prevStep);
+    if (strategy != Strategy.INDEX_ORDER || !(prevStep instanceof FetchFromIndexStep indexStep) || indexStep.isPointLookup()
+        || !recovered.isEmpty() || rereadCandidates != null)
+      return 0;
+
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+      final IndexEntrySkip judge = new IndexEntrySkip(context.getDatabase(), typeName);
+      int skipped = 0;
+      for (int entries = 0; skipped < n; ++entries) {
+        guard.checkPeriodically(entries);
+        final Result entry = nextEntry(context, prevStep, Math.min(n - skipped, SKIP_BATCH));
+        if (entry == null) {
+          skipRanOut = true;
+          break;
+        }
+        final Object value = entry.getProperty("rid");
+        if (!passesBucketFilter(value))
+          continue;
+        IndexEntrySkip.Verdict verdict = value instanceof RID rid ? judge.verdict(rid) : IndexEntrySkip.Verdict.LOAD;
+        // Once a commit published since the scan began, an entry may name a record that commit moved out of the range (issue
+        // #11790): only its record can tell, so it is loaded and held to the range as the rows are. Asked AFTER the slot was read,
+        // as the load path asks it after the record was loaded: a commit that lands between the two leaves the record there, and
+        // asked before, the entry would be counted as a row
+        if (verdict != IndexEntrySkip.Verdict.LOAD && !noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence()))
+          verdict = IndexEntrySkip.Verdict.LOAD;
+        if (verdict == IndexEntrySkip.Verdict.LOAD) {
+          pendingEntries.addFirst(entry);
+          break;
+        }
+        if (verdict == IndexEntrySkip.Verdict.ROW)
+          ++skipped;
+      }
+      return skipped;
+    } finally {
+      if (context.isProfiling())
+        cost += System.nanoTime() - begin;
+    }
+  }
+
+  /** Whether the entries ran out during {@link #skipUnloaded}, rather than the skip stopping at an entry to load. */
+  boolean skipRanOut() {
+    return skipRanOut;
   }
 
   /** The next index entry: one set aside first, then the previous step's, or null once both ran out. */
@@ -559,6 +645,11 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean holdsKey(final FetchFromIndexStep indexStep, final Result row, final Object key) {
     ++verifiedRows;
     return row.getElement().map(record -> indexStep.isKeyOf(record, key)).orElse(false);
+  }
+
+  private boolean rangeRowStillMatches(final FetchFromIndexStep indexStep, final Result row, final Object entryKey) {
+    ++verifiedRows;
+    return row.getElement().map(record -> indexStep.isStillInRange(record, entryKey)).orElse(true);
   }
 
   private void loseEntry(final RID rid) {
@@ -666,9 +757,34 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     return (sequence & 1) == 0 && database.getPageManager().getPublicationSequence() == sequence;
   }
 
+  /**
+   * Whether a record of a range loaded in physical order is still a row of it (issue #11790): the RIDs were all read before the
+   * first record was loaded, so a commit published since then may have moved the record out of the range. Checked only then.
+   */
+  private boolean keepsLoaded(final Record record, final CommandContext context) {
+    if (loadSeekCheck == null || !(record instanceof Document document) || noCommitSince(context.getDatabase(), loadEntriesSequence))
+      return true;
+    ++verifiedRows;
+    return loadSeekCheck.matches(document, context);
+  }
+
+  /** {@link #keepsLoaded} for a slice a worker of a parallel scan loads, or null when the seek cannot be checked on the record. */
+  private BiPredicate<Record, CommandContext> loadRecheck() {
+    if (loadSeekCheck == null)
+      return null;
+    final FetchFromIndexStep.SeekCheck check = loadSeekCheck.copy();
+    final long sequence = loadEntriesSequence;
+    return (record, workerContext) -> !(record instanceof Document document) || noCommitSince(workerContext.getDatabase(), sequence)
+        || check.matches(document, workerContext);
+  }
+
+  /**
+   * Whether the running transaction reads at REPEATABLE_READ: the level it began with, not the database's default (#13159), since
+   * {@code begin(REPEATABLE_READ)} on a READ_COMMITTED default database pins pages all the same.
+   */
   private static boolean isRepeatableRead(final DatabaseInternal database) {
-    return database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isRepeatableRead();
   }
 
   private ResultSet physicalOrderResultSet(final CommandContext context, final int nRecords) {
@@ -693,6 +809,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index entries were read before the first record was loaded, so $current still names the last entry (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
     };
@@ -704,7 +822,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       Object entry;
       while ((entry = fetcher.nextRecord(context.getDatabase())) != null) {
         guard.checkPeriodically((int) ++rowCount);
-        final Result result = entry instanceof Record record ? new ResultInternal(record) : toResult(entry, context);
+        final Result result = entry instanceof Record record ?
+            (keepsLoaded(record, context) ? new ResultInternal(record) : null) :
+            toResult(entry, context);
         if (result != null)
           return result;
       }
@@ -760,6 +880,12 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       }
       case PHYSICAL_ORDER -> strategy = Strategy.PHYSICAL_ORDER;
       case PHYSICAL_ORDER_CHUNKED -> strategy = Strategy.PHYSICAL_ORDER_CHUNKED;
+      }
+      if (fetcher != null) {
+        // Sampled by the first pass, before it read an entry. The chunks a later pass reads are held to it too: that checks a
+        // record a commit between the passes changed, never skips one a commit since its own pass changed
+        loadSeekCheck = indexStep.seekCheck();
+        loadEntriesSequence = indexStep.entriesSequence();
       }
       // Kept on the step: PROFILE is rendered after close() released the fetcher
       matchedEntries = fetcher != null ? fetcher.getMatched() : 0;
@@ -854,7 +980,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * replicated apply of a replica does not take (#11755). The last resort cannot deadlock, also for a reader inside a transaction
    * that holds file locks (explicit {@code LOCK}, or writes): a committer held off took every file lock it needs and the
    * page-manager lock before it waits for the hold and acquires none after, so it never waits for the locks this reader holds;
-   * and the read under the hold loads pages and records, which waits on no committer.
+   * and the read under the hold loads pages and records, which waits on no committer. The database read lock is the exception it
+   * takes, and {@link ConsistentKeyLookup#readAgainstOneCommit} owns it before the hold, so the load re-enters it (#13112).
    */
   private ArrayDeque<Result> loadPointLookup(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords,
       final WorkGuard guard) {
@@ -862,17 +989,27 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final PageManager pageManager = database.getPageManager();
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      boolean unpinnedForDangling = false;
       for (int attempt = 0; attempt < MAX_RECONCILE_ATTEMPTS; attempt++) {
         // a statement cancelled or past its deadline stops between attempts (#9893)
         guard.check();
         // a commit or a replicated apply is publishing: wait for it to end instead of spending an attempt inside its window
         pageManager.awaitPublicationEnd(ConsistentKeyLookup.PUBLICATION_WAIT_NANOS);
+        pointLookupDangling = false;
+        // under REPEATABLE_READ the first entry without a record is read again before it is judged dangling
+        warnDangling = unpinnedForDangling || !isRepeatableRead(database);
         final ArrayDeque<Result> rows = readAndLoad(context, indexStep, nRecords, guard);
         if (rows == null)
           return null;
         final long baseline = indexStep.entriesSequence();
-        if ((baseline & 1) == 0 && pageManager.getPublicationSequence() == baseline)
-          return rows;
+        if ((baseline & 1) == 0 && pageManager.getPublicationSequence() == baseline) {
+          // an entry without a record, in a REPEATABLE_READ transaction, may be a bucket page this transaction pinned before the
+          // record was created: the pins are released and the lookup read once more on the committed state, as the streaming path
+          // (pointLookupRow) and ConsistentKeyLookup do (#13159)
+          if (!pointLookupDangling || unpinnedForDangling || !isRepeatableRead(database))
+            return rows;
+          unpinnedForDangling = true;
+        }
         restartLookup(database, indexStep);
       }
       LogManager.instance().log(this, Level.FINE,
@@ -880,8 +1017,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
       // and not once they are held off: every commit would wait for a statement that is going to fail anyway
       guard.check();
-      return ConsistentKeyLookup.readAgainstOneCommit(pageManager, () -> {
+      return ConsistentKeyLookup.readAgainstOneCommit(database, () -> {
         restartLookup(database, indexStep);
+        warnDangling = true;
         return readAndLoad(context, indexStep, nRecords, guard);
       }, "Point lookup on index '" + indexStep.indexName + "'");
     } finally {
@@ -916,9 +1054,15 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         readBucketIds.add(rid.getBucketId());
       // a record load each, I/O: checked on every one, or a termination waits for the whole chunk (#9893)
       guard.check();
-      final Result row = toResult(value, context);
+      final Result row = toResult(value, context, false);
       if (row != null)
         rows.add(row);
+      else if (value instanceof RID rid) {
+        pointLookupDangling = true;
+        if (warnDangling)
+          LogManager.instance()
+              .log(GetValueFromIndexEntryStep.class, Level.WARNING, "Record %s not found. Skip it from the result set", null, rid);
+      }
     }
     return rows;
   }
@@ -938,7 +1082,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * pinned pages of the files involved are read again from the committed state, which is the one the lookup is repeated on.
    */
   private void unpinRepeatableReadPages(final DatabaseInternal database, final FetchFromIndexStep indexStep) {
-    if (!database.isTransactionActive() || database.getTransactionIsolationLevel() != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+    if (!isRepeatableRead(database))
       return;
     final List<Integer> files = new ArrayList<>(indexStep.indexFileIds());
     if (filterBucketIds != null)
@@ -973,7 +1117,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         return found;
     }
     guard.check();
-    return ConsistentKeyLookup.readAgainstOneCommit(pageManager,
+    return ConsistentKeyLookup.readAgainstOneCommit(database,
         () -> loadEntryAgain(database, indexStep, key, missing, context, guard),
         "Index entry " + missing + " of index '" + indexStep.indexName + "'");
   }
@@ -1048,7 +1192,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     strategy = null;
     matchedEntries = 0;
     parallelDecided = false;
+    skipRanOut = false;
     parallelRounds = 0;
+    loadSeekCheck = null;
     releaseRuntimeSteps();
   }
 

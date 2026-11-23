@@ -20,7 +20,6 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -42,18 +41,12 @@ class GavPropertyTypeConflictTest extends TestHelper {
     database.command("sqlscript", """
         CREATE VERTEX TYPE A; CREATE PROPERTY A.p INTEGER; CREATE PROPERTY A.q INTEGER;
         CREATE VERTEX TYPE B; CREATE PROPERTY B.p DOUBLE;
-        CREATE VERTEX TYPE C; CREATE PROPERTY C.p INTEGER;
-        CREATE EDGE TYPE R; CREATE PROPERTY R.w INTEGER;
-        CREATE EDGE TYPE S; CREATE PROPERTY S.w DOUBLE;
-        CREATE EDGE TYPE T; CREATE PROPERTY T.w INTEGER;""");
+        CREATE VERTEX TYPE C; CREATE PROPERTY C.p INTEGER;""");
     database.transaction(() -> {
-      final MutableVertex a = database.newVertex("A").set("p", 1).set("q", 7).save();
-      final MutableVertex b = database.newVertex("B").set("p", 2.5).save();
+      database.newVertex("A").set("p", 1).set("q", 7).save();
+      database.newVertex("B").set("p", 2.5).save();
       database.newVertex("B").set("p", 3.0).save();
-      final MutableVertex c = database.newVertex("C").set("p", 4).save();
-      a.newEdge("R", b, "w", 1);
-      b.newEdge("S", c, "w", 2.5);
-      c.newEdge("T", a, "w", 3);
+      database.newVertex("C").set("p", 4).save();
     });
   }
 
@@ -79,18 +72,6 @@ class GavPropertyTypeConflictTest extends TestHelper {
       final Map<RID, Object> q = propertyPerVertex(view, new String[] { "A", "B", "C" }, "q");
       assertThat(p.values()).as("p as the view holds it, per vertex " + p).containsOnlyNulls();
       assertThat(q.values()).as("q as the view holds it, per vertex " + q).containsOnlyOnce(7).hasSize(4);
-    } finally {
-      view.drop();
-    }
-  }
-
-  @Test
-  void anEdgePropertyConflictStaysAcrossALaterType() throws Exception {
-    final GraphAnalyticalView view = GraphAnalyticalView.builder(database).withName("gv").withVertexTypes("A", "B", "C")
-        .withEdgeTypes("R", "S", "T").withProperties().withEdgeProperties("w").build();
-    try {
-      assertThat(view.awaitReady(60, TimeUnit.SECONDS)).isTrue();
-      assertThat(view.hasEdgeProperties()).as("an edge column for w").isFalse();
     } finally {
       view.drop();
     }

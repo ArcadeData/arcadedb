@@ -303,6 +303,48 @@ class SQLFunctionVectorFuseTest extends TestHelper {
     assertThat(ranked).hasSize(5);
   }
 
+  /**
+   * Equal fused scores are ranked by RID ascending: not in the iteration order of the map the scores are fused in, which is
+   * whatever {@code RID.hashCode()} makes it. Each source below holds one document at rank 1, so every document gets exactly the
+   * same RRF score.
+   */
+  @Test
+  void equalFusedScoresAreRankedByRidAscending() {
+    database.getSchema().createDocumentType("Tied");
+    final int docs = 12;
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < docs; i++) {
+        final MutableDocument doc = database.newDocument("Tied");
+        doc.set("name", "d" + i);
+        doc.save();
+        rids.add(doc.getIdentity());
+      }
+    });
+
+    // The sources go in the reverse of the insertion order, so neither the order of the sources nor the order the documents were
+    // written in is the RID order
+    final StringBuilder sql = new StringBuilder("SELECT expand(`vector.fuse`(");
+    for (int i = docs - 1; i >= 0; i--)
+      sql.append("(SELECT @rid FROM Tied WHERE name = 'd").append(i).append("'), ");
+    sql.append("{ fusion: 'RRF' }))");
+
+    final List<RID> ranked = new ArrayList<>();
+    final List<Float> scores = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", sql.toString())) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        ranked.add((RID) row.getProperty("@rid"));
+        scores.add(((Number) row.getProperty("score")).floatValue());
+      }
+    }
+
+    assertThat(scores).as("the premise: every document has the same fused score").hasSize(docs).containsOnly(scores.getFirst());
+    final List<RID> expected = new ArrayList<>(rids);
+    expected.sort(null);
+    assertThat(ranked).containsExactlyElementsOf(expected);
+  }
+
   @Test
   void limitOptionCapsResults() {
     buildSchema();

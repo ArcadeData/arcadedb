@@ -382,9 +382,9 @@ class CypherDistinctAndGroupingTest {
    * single property {@code a = "1|b=2"} and two properties {@code a=1, b=2} both used to render as
    * {@code "a=1|b=2|"}.
    * <p>
-   * {@code UNION} is the clearest way to put two differently-shaped rows (one column vs. two columns)
-   * through the same dedup key, since a plain {@code RETURN}/{@code WITH} fixes its column set for every
-   * row of a single branch.
+   * {@code UNION} puts the rows of two branches through the same dedup key. The branches must answer the same columns
+   * (issue #11775 closed the {@code RETURN *} loophole that let them differ), so the collision is written with the same two
+   * columns and the delimiters moved from one value to the other.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */
@@ -407,32 +407,28 @@ class CypherDistinctAndGroupingTest {
     }
 
     /**
-     * The reported case, verbatim: a single string property that happens to look like a rendered
-     * {@code name=value|name=value|} key must not collide with an unrelated two-property row.
+     * Two rows whose values carry the delimiters of a rendered {@code name=value|name=value|} key must not collide: both
+     * of these used to render as {@code "a=1|b=2|b=3|"}.
      */
     @Test
-    void unionDoesNotCollapseDifferentlyShapedRowsThatRenderToTheSameDelimitedString() {
-      // Both branches write "RETURN *", so the parse-time column-name check that UNION otherwise
-      // enforces (all branches must share the same return column names) passes trivially - but the
-      // *actual* per-row property sets still differ at runtime, exactly like the reported example.
+    void unionDoesNotCollapseRowsThatRenderToTheSameDelimitedString() {
       final List<Result> rows = new ArrayList<>();
       try (ResultSet rs = database.query("cypher", """
-          WITH '1|b=2' AS a RETURN *
+          RETURN '1|b=2' AS a, '3' AS b
           UNION
-          WITH 1 AS a, 2 AS b RETURN *""")) {
+          RETURN '1' AS a, '2|b=3' AS b""")) {
         while (rs.hasNext())
           rows.add(rs.next());
       }
 
       assertThat(rows).hasSize(2);
       assertThat(rows).anySatisfy(row -> {
-        assertThat(row.getPropertyNames()).containsExactly("a");
         assertThat(row.<String>getProperty("a")).isEqualTo("1|b=2");
+        assertThat(row.<String>getProperty("b")).isEqualTo("3");
       });
       assertThat(rows).anySatisfy(row -> {
-        assertThat(row.getPropertyNames()).containsExactlyInAnyOrder("a", "b");
-        assertThat(row.<Number>getProperty("a").intValue()).isEqualTo(1);
-        assertThat(row.<Number>getProperty("b").intValue()).isEqualTo(2);
+        assertThat(row.<String>getProperty("a")).isEqualTo("1");
+        assertThat(row.<String>getProperty("b")).isEqualTo("2|b=3");
       });
     }
 

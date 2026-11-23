@@ -210,118 +210,142 @@ public class LogManager {
     return logger;
   }
 
+  // Every log() asks the logger for the level BEFORE it reads the thread's log context: disabled FINE lines sit on per-row paths
+  // (gRPC result encoding, page apply, vector search), and each one paid a thread-local lookup for an argument the logger then
+  // threw away (#12357). A logger that does not override isLoggable() answers true, and keeps receiving every message.
   public void log(final Object requester, final Level level, final String message) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get());
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get());
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get());
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get());
   }
 
   public void log(final Object requester, final Level level, final String message, final Object... args) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), args);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), args);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object... args) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), args);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), args);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, null, null, null, null, null, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, null, null, null, null, null, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, null, null, null, null, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1,
                   final Object arg2) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, null, null, null, null, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2, final Object arg3) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, null, null, null, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2,
                   final Object arg3) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, null, null, null, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3,
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2, final Object arg3, final Object arg4) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, null, null, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4,
+          null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2,
                   final Object arg3, final Object arg4) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, null, null, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4,
+          null, null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2, final Object arg3, final Object arg4, final Object arg5) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, null, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5,
+          null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2,
                   final Object arg3, final Object arg4, final Object arg5) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, null, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5,
+          null, null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, null
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6,
+          null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2,
                   final Object arg3, final Object arg4, final Object arg5, final Object arg6) {
-    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, null,
-        null, null, null,
-        null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6,
+          null, null, null, null, null, null, null, null, null, null, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Throwable throwable,
                   final Object arg1,
                   final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6,
                   final Object arg7) {
-    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7
-        , null, null,
-        null, null, null, null, null, null, null, null);
+    final Logger logger = this.logger;
+    if (logger.isLoggable(requester, level))
+      logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+          null, null, null, null, null, null, null, null, null, null);
   }
 
   /**
