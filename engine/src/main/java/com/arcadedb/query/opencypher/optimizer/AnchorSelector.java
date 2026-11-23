@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.optimizer;
 
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
@@ -186,6 +187,9 @@ public class AnchorSelector {
     // side and reverse-traversing (which silently returns empty over unidirectional edges or a GAV).
     final Map<String, InListOperand> inListPredicates = extractInListPredicates(variable, plan);
 
+    // `<constant> IN var.list` over a list property indexed BY ITEM is one seek of the item key (issue #13115).
+    final Map<String, Expression> membershipPredicates = extractListMembershipPredicates(variable, plan);
+
     // An OR whose every disjunct is an equality or IN-list on an indexed property is a union of index seeks (issue #8723).
     // Over one property that is the IN-list seek above; over several it is a seek per property, tried further down. The
     // whole WHERE is still evaluated above the anchor, so a seek that finds a superset of the matching rows is safe.
@@ -202,7 +206,7 @@ public class AnchorSelector {
     // the best so far, so a tie is decided by that order.
     AnchorSelection best = null;
 
-    if (!allPredicates.isEmpty() || !inListPredicates.isEmpty() || !rangePredicates.isEmpty()) {
+    if (!allPredicates.isEmpty() || !inListPredicates.isEmpty() || !rangePredicates.isEmpty() || !membershipPredicates.isEmpty()) {
       final List<IndexStatistics> indexes = statisticsProvider.getIndexesForType(label);
 
       for (final Map.Entry<String, Object> property : allPredicates.entrySet()) {
@@ -267,6 +271,22 @@ public class AnchorSelector {
             cost,
             estimatedRows
         ));
+      }
+
+      // List membership over a BY ITEM index: the value is one key of the index, as an equality's is.
+      for (final Map.Entry<String, Expression> membership : membershipPredicates.entrySet()) {
+        final String propertyName = membership.getKey();
+        final IndexStatistics indexStats = findByItemIndex(indexes, propertyName);
+        if (indexStats == null)
+          continue;
+
+        final Expression value = membership.getValue();
+        // Scalar: a collection the parameter resolves to is one item to look up, not a list to split into keys
+        final InListValues key = new InListValues(List.of(value), Collections.singleton(value), Collections.emptySet());
+        final double selectivity = seekSelectivity(indexStats, 1, typeCount);
+        final long estimatedRows = Math.max(1, (long) (typeCount * selectivity));
+        best = cheaper(best, new AnchorSelection(variable, node, true, indexStats, propertyName, key, List.of(key),
+            costModel.estimateIndexSeekCost(label, indexStats.getPropertyNames().getFirst(), selectivity), estimatedRows));
       }
 
       for (final Map.Entry<String, List<RangePredicate>> rangeEntry : rangePredicates.entrySet())
@@ -692,6 +712,43 @@ public class AnchorSelector {
       extractInListPredicatesFromExpression(variable, whereClause.getConditionExpression(), predicates);
 
     return predicates;
+  }
+
+  /** The single-property index over {@code propertyName} keyed by item, or null: its key is one item of the list. */
+  private static IndexStatistics findByItemIndex(final List<IndexStatistics> indexes, final String propertyName) {
+    if (indexes == null)
+      return null;
+    final String byItem = propertyName + ColumnarIndex.BY_ITEM_SUFFIX;
+    for (final IndexStatistics index : indexes)
+      if (index.getPropertyNames().size() == 1 && index.getPropertyNames().getFirst().equals(byItem))
+        return index;
+    return null;
+  }
+
+  /**
+   * The {@code <constant> IN variable.property} conjuncts of the WHERE clause, by property: a literal or parameter tested
+   * for membership of a list property. Only the top-level AND chain is read, so a predicate that is not always applied
+   * (under OR, XOR or NOT) is never taken for one.
+   */
+  private Map<String, Expression> extractListMembershipPredicates(final String variable, final LogicalPlan plan) {
+    final Map<String, Expression> predicates = new LinkedHashMap<>();
+    if (plan.getWhereFilters() != null)
+      for (final WhereClause whereClause : plan.getWhereFilters())
+        collectListMembership(variable, whereClause.getConditionExpression(), predicates);
+    return predicates;
+  }
+
+  private void collectListMembership(final String variable, final BooleanExpression expression,
+      final Map<String, Expression> predicates) {
+    if (expression instanceof BooleanWrapperExpression wrapper)
+      collectListMembership(variable, wrapper.getBooleanExpression(), predicates);
+    else if (expression instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectListMembership(variable, logical.getLeft(), predicates);
+      collectListMembership(variable, logical.getRight(), predicates);
+    } else if (expression instanceof InExpression in && in.getList() != null && in.getList().size() == 1
+        && in.getList().getFirst() instanceof PropertyAccessExpression list && list.getVariableName().equals(variable)
+        && isConstant(in.getExpression()))
+      predicates.putIfAbsent(list.getPropertyName(), in.getExpression());
   }
 
   private void extractInListPredicatesFromExpression(final String variable, final BooleanExpression expression,
