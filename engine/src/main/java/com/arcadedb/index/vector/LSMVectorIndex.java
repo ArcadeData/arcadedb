@@ -9878,7 +9878,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // One stored-vector read per candidate, and the candidates are k * oversample of them
         guard.checkPeriodically(++checked);
         final float[] stored = readRecordVectorArray(reader, candidate.getFirst(), scratch);
-        if (stored == null)
+        // A BINARY graph keeps one bit per dimension, so the build cannot see a vector whose norm the float cosine cannot hold
+        // (issue #11635): it is dropped here, where the stored vector is first scored as it is
+        if (stored == null || isUnscorable(stored))
           continue;
         reranked.add(new Pair<>(candidate.getFirst(),
             scoreToDistance(metadata.similarityFunction, metadata.similarityFunction.compare(query, vts.createFloatVector(stored)))));
@@ -10440,8 +10442,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (int i = 0; i < total; i++) {
           guard.checkPeriodically(i);
           final float[] stored = readRecordVectorArray(reader, approximate.get(i).getFirst(), scratch);
-          if (stored == null)
-            continue; // the record is gone: its approximate distance cannot be ranked against the exact ones
+          // the record is gone, or its vector is one the index never scores (see rerankOnStoredVectors): its approximate distance
+          // cannot be ranked against the exact ones
+          if (stored == null || isUnscorable(stored))
+            continue;
           distances[scored] = scoreToDistance(metadata.similarityFunction,
               metadata.similarityFunction.compare(query, vts.createFloatVector(stored)));
           positions[scored] = i;
