@@ -29,6 +29,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -80,10 +82,57 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
         .as("a parameter given to a pure method in the WHERE").isTrue();
   }
 
+  /** By the parsed statement, which does not depend on how the cache keys the text: a negative answer there cannot be vacuous. */
+  private boolean planCanBeCached(final String sql) {
+    return ((DatabaseInternal) database).getStatementCache().get(sql).executionPlanCanBeCached();
+  }
+
   @Test
   void aMethodThatDoesNotDeclareItselfPureStaysUncached() {
-    // format() reads the database's date and time settings: not a function of its arguments alone
-    assertThat(cachedAfterRunning("SELECT name, name.format('%s') AS f FROM Chunk WHERE name = ?", "alpha")).isFalse();
+    // format() reads the database's date and time settings: not a function of its arguments alone. The format is bound, not written
+    // as a literal, so the statement is stored under its own text and a plan that WAS cached would be found by contains()
+    final String impure = "SELECT name, name.format(?) AS f FROM Chunk WHERE name = ?";
+    assertThat(cachedAfterRunning(impure, "%s", "alpha")).isFalse();
+    assertThat(planCanBeCached(impure)).isFalse();
+
+    // the control: the same shape with a pure method is stored, so the answer above is about the method and not about the shape
+    assertThat(cachedAfterRunning("SELECT name, name.append(?) AS f FROM Chunk WHERE name = ?", "%s", "alpha")).isTrue();
+  }
+
+  /** A chain is as cacheable as its LEAST cacheable link, not as its first: the later links are methods that run too. */
+  @Test
+  void aChainOfMethodsIsCachedOnlyWhenEveryLinkIs() {
+    assertThat(cachedAfterRunning("SELECT name.toUpperCase().trim() AS u FROM Chunk WHERE name = ?", "alpha")).as("two pure links").isTrue();
+    assertThat(cachedAfterRunning("SELECT name.trim().append(?).toUpperCase() AS u FROM Chunk WHERE name = ?", "!", "alpha"))
+        .as("three pure links").isTrue();
+
+    final String impureSecond = "SELECT name.toUpperCase().format(?) AS u FROM Chunk WHERE name = ?";
+    assertThat(cachedAfterRunning(impureSecond, "%s", "alpha")).as("an impure second link").isFalse();
+    assertThat(planCanBeCached(impureSecond)).as("an impure second link, by the statement").isFalse();
+
+    final String impureThird = "SELECT name.trim().toUpperCase().format(?) AS u FROM Chunk WHERE name = ?";
+    assertThat(cachedAfterRunning(impureThird, "%s", "alpha")).as("an impure third link").isFalse();
+    assertThat(planCanBeCached(impureThird)).as("an impure third link, by the statement").isFalse();
+
+    final String clockArgument = "SELECT name.trim().append(sysdate()) AS u FROM Chunk WHERE name = ?";
+    assertThat(cachedAfterRunning(clockArgument, "alpha")).as("a later link whose argument reads the clock").isFalse();
+    assertThat(planCanBeCached(clockArgument)).as("a later link whose argument reads the clock, by the statement").isFalse();
+  }
+
+  /** Walking the whole chain is also what lets a correlated sub-query see a {@code $parent} that sits in a link after the first. */
+  @Test
+  void aParentReferenceInALaterLinkOfAChainIsSeen() {
+    assertThat(((DatabaseInternal) database).getStatementCache().get("SELECT name.trim().append($parent.$current.name) AS a FROM Chunk")
+        .refersToParent()).isTrue();
+    assertThat(((DatabaseInternal) database).getStatementCache().get("SELECT name.trim().append(name) AS a FROM Chunk").refersToParent())
+        .isFalse();
+  }
+
+  /** A chain over a suffix: the first link is a plain field access, the method that follows it is the one that has to answer. */
+  @Test
+  void aMethodAfterAFieldAccessIsJudgedLikeAnyOther() {
+    assertThat(cachedAfterRunning("SELECT meta.x.asString() AS s FROM Chunk WHERE name = ?", "alpha")).isFalse();
+    assertThat(cachedAfterRunning("SELECT meta.x.size() AS s FROM Chunk WHERE name = ?", "alpha")).isTrue();
   }
 
   @Test
@@ -139,6 +188,7 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
     assertThat(replacement.isDeterministic()).as("inherited from the name list").isTrue();
     factory.register(SQLMethodSize.NAME, replacement);
     try {
+      assertThat(factory.isBuiltInDeterministic(SQLMethodSize.NAME)).as("asked of the factory").isFalse();
       assertThat(cachedAfterRunning(sql, "alpha")).as("the replacement").isFalse();
     } finally {
       factory.register(SQLMethodSize.NAME, original);
@@ -157,33 +207,59 @@ class MethodCallPlanCacheIssue12466Test extends TestHelper {
   void theDeterministicBuiltInsAreExactlyTheReviewedList() {
     final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
     final Set<String> deterministic = new TreeSet<>();
-    for (final String name : factory.getBuiltInMethodNames())
-      if (factory.createMethod(name).isDeterministic())
+    for (final String name : factory.getBuiltInMethodNames()) {
+      // what the planner asks must be what the method itself answers, for every built-in
+      assertThat(factory.isBuiltInDeterministic(name)).as(name).isEqualTo(factory.createMethod(name).isDeterministic());
+      if (factory.isBuiltInDeterministic(name))
         deterministic.add(name);
+    }
 
     assertThat(deterministic).containsExactly("append", "capitalize", "charat", "first", "indexof", "keys", "last", "lastindexof", "left",
         "length", "prefix", "right", "size", "substring", "tolowercase", "touppercase", "trim", "values");
   }
 
-  /** Every method the PR lists answers what an uncached plan answers, for each row and a bound parameter. */
+  /**
+   * Every method the PR lists answers what an uncached plan answers, for each row and for each value bound to the statement. The
+   * arguments are bound too, so the statement is stored under its own text and the cache can be asked whether it holds the plan: a
+   * comparison that holds with no stored plan behind it would prove nothing.
+   */
   @Test
   void aCachedPlanAnswersWhatAFreshPlanAnswers() {
-    for (final String sql : new String[] {
-        "SELECT name, tags.first() AS f, tags.last() AS l, tags.size() AS s FROM Chunk WHERE name = ?",
-        "SELECT name, meta.keys() AS k, meta.values() AS v FROM Chunk WHERE name = ?",
-        "SELECT name.left(2) AS l, name.right(2) AS r, name.subString(1, 3) AS s, name.charAt(0) AS c, name.indexOf('a') AS i,"
-            + " name.lastIndexOf('a') AS j, name.length() AS n, name.trim() AS t, name.prefix('x') AS p, name.append('y') AS a,"
-            + " name.capitalize() AS cap, name.toLowerCase() AS lo FROM Chunk WHERE name = ?" })
-      for (final String name : new String[] { "alpha", "BETA", "gamma" }) {
+    final String[] names = { "alpha", "BETA", "gamma" };
+
+    // each case: the statement, then the values bound to everything but the last placeholder (the key of the WHERE)
+    for (final Object[] testCase : new Object[][] {
+        { "SELECT name, tags.first() AS f, tags.last() AS l, tags.size() AS s FROM Chunk WHERE name = ?" },
+        { "SELECT name, meta.keys() AS k, meta.values() AS v FROM Chunk WHERE name = ?" },
+        { "SELECT name.left(?) AS l, name.right(?) AS r, name.subString(?, ?) AS s, name.charAt(?) AS c, name.indexOf(?) AS i,"
+            + " name.lastIndexOf(?) AS j, name.length() AS n, name.trim() AS t, name.prefix(?) AS p, name.append(?) AS a,"
+            + " name.capitalize() AS cap, name.toLowerCase() AS lo FROM Chunk WHERE name = ?", 2, 2, 1, 3, 0, "a", "a", "x", "y" },
+        { "SELECT name.toUpperCase().trim().append(?) AS chain FROM Chunk WHERE name = ?", "!" } }) {
+      final String sql = (String) testCase[0];
+
+      final Map<String, String> fresh = new HashMap<>();
+      for (final String name : names) {
         ((DatabaseInternal) database).getExecutionPlanCache().invalidate();
-        final String fresh = answer(sql, name);
-        final String again = answer(sql, name);
-        final String cached = answer(sql, name);
-        // by the parsed statement: the cache is keyed by the text with its literals turned into parameters, not by this one
-        assertThat(((DatabaseInternal) database).getStatementCache().get(sql).executionPlanCanBeCached()).as(sql).isTrue();
-        assertThat(again).as(sql + " [" + name + "]").isEqualTo(fresh);
-        assertThat(cached).as(sql + " [" + name + "]").isEqualTo(fresh);
+        fresh.put(name, answer(sql, bind(testCase, name)));
       }
+
+      // one plan, planned for one binding and stored, answers every binding
+      ((DatabaseInternal) database).getExecutionPlanCache().invalidate();
+      answer(sql, bind(testCase, names[0]));
+      assertThat(((DatabaseInternal) database).getExecutionPlanCache().contains(sql)).as("stored: " + sql).isTrue();
+      assertThat(planCanBeCached(sql)).as(sql).isTrue();
+
+      for (int round = 0; round < 2; round++)
+        for (final String name : names)
+          assertThat(answer(sql, bind(testCase, name))).as(sql + " [" + name + "]").isEqualTo(fresh.get(name));
+    }
+  }
+
+  /** The values of a case after its statement, then the key of the WHERE. */
+  private static Object[] bind(final Object[] testCase, final String key) {
+    final Object[] args = Arrays.copyOfRange(testCase, 1, testCase.length + 1);
+    args[args.length - 1] = key;
+    return args;
   }
 
   private String answer(final String sql, final Object... args) {

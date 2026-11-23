@@ -78,13 +78,18 @@ public interface SQLMethod extends Comparable<SQLMethod> {
 
   /**
    * Whether two calls to this method on the same value and arguments always return the same result and never read or write
-   * anything outside them: no wall clock, no random source, no database setting, no schema or record lookup. The planner reads it,
-   * without invoking the method, to decide whether a statement containing the call can have its execution plan cached, the same
-   * question {@link SQLFunction#isDeterministic()} answers for functions (#6190). A method that does not say so is assumed not to
-   * be, so a statement calling it is planned again on every execution.
+   * anything outside them: no wall clock, no random source, no database setting, no schema lookup. The planner reads it, without
+   * invoking the method, to decide whether a statement containing the call can have its execution plan cached, the same question
+   * {@link SQLFunction#isDeterministic()} answers for functions (#6190). A method that does not say so is assumed not to be, so a
+   * statement calling it is planned again on every execution.
    * <p>
-   * Answering {@code true} wrongly is silent and reaches user data: a plan that holds a call whose result changes between
-   * executions would be reused. Defaults to {@code false}.
+   * The value it is applied to is part of what it is a function of, and that may be a record: {@code size()} on a record or a
+   * RID reads the record it names, as it does at any other time. What the marker promises is that the call is evaluated against
+   * the row of every execution and never in place of it, so a cached plan holds the call and not its result.
+   * <p>
+   * Only the implementations {@code DefaultSQLMethodFactory} registers itself are asked: a method an application adds or a built-in
+   * it replaces is never trusted to be deterministic, whatever this answers. Answering {@code true} wrongly is silent and reaches
+   * user data: a plan that holds a call whose result changes between executions would be reused. Defaults to {@code false}.
    *
    * @return {@code true} only when the method is a pure, total function of the value it is applied to and its arguments
    */

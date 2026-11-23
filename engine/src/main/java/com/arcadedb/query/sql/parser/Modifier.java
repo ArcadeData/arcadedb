@@ -238,9 +238,15 @@ public class Modifier extends SimpleNode {
       next.extractSubQueries(collector);
   }
 
+  /**
+   * Every link of the chain, not only this one: {@code name.toUpperCase().format('%s')} is one modifier holding {@code toUpperCase()}
+   * whose {@code next} holds {@code format()}, and an answer that stopped at the first link would call the statement cacheable on
+   * the strength of a method that says nothing about the one after it (#12466). {@link #refersToParent()} reads the same list, so
+   * a {@code $parent} in a later link is seen too.
+   */
   @Override
   protected SimpleNode[] getCacheableElements() {
-    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix, nestedProjection };
+    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix, nestedProjection, next };
   }
 
   protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext context) {

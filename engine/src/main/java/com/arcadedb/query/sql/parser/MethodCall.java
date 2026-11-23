@@ -61,6 +61,7 @@ public class MethodCall extends SimpleNode {
   public List<Expression> params = new ArrayList<Expression>();
 
   private Boolean calculatedIsGraph = null;
+  private String  lowerCaseName     = null;
 
   public MethodCall() {
   }
@@ -273,15 +274,17 @@ public class MethodCall extends SimpleNode {
   }
 
   /**
-   * Resolved on every call, not remembered per name as {@link FunctionCall} does: {@link DefaultSQLMethodFactory#register} is public
-   * and may replace a built-in, which a remembered answer would not see. Only the implementation the factory registered itself
-   * ({@link DefaultSQLMethodFactory#isBuiltIn}) is trusted to say it is deterministic: a replacement or an added method is not
-   * cacheable, whatever it inherits.
+   * The registry is asked on every call, not remembered per name as {@link FunctionCall} does: {@link DefaultSQLMethodFactory#register}
+   * is public and may replace a built-in, which a remembered answer would not see. Only the implementation the factory registered
+   * itself is trusted to say it is deterministic ({@link DefaultSQLMethodFactory#isBuiltInDeterministic}): a replacement or an added
+   * method is not cacheable, whatever it inherits. What IS remembered is the lower-cased name, which this check needs on every
+   * execution of a statement holding the call and which allocates a new string for every camel-cased method ({@code toUpperCase}).
    */
   private boolean isDeterministicMethod() {
-    final DefaultSQLMethodFactory factory = DefaultSQLMethodFactory.getInstance();
-    final String name = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
-    return factory.isBuiltIn(name) && factory.createMethod(name).isDeterministic();
+    String name = lowerCaseName;
+    if (name == null)
+      lowerCaseName = name = methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    return DefaultSQLMethodFactory.getInstance().isBuiltInDeterministic(name);
   }
 
   private boolean isGraphFunction() {

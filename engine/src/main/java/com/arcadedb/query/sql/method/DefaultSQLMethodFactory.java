@@ -102,6 +102,7 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
 
   private final Map<String, Object> methods = new HashMap<>();
   private final Map<String, Object> builtInMethods;
+  private final Map<String, Object> deterministicBuiltInMethods;
 
   public static DefaultSQLMethodFactory getInstance() {
     return INSTANCE;
@@ -180,6 +181,12 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodToUpperCase.NAME, new SQLMethodToUpperCase());
     register(SQLMethodTrim.NAME, new SQLMethodTrim());
     builtInMethods = Map.copyOf(methods);
+
+    final Map<String, Object> deterministic = new HashMap<>();
+    for (final Map.Entry<String, Object> entry : builtInMethods.entrySet())
+      if (entry.getValue() instanceof SQLMethod method && method.isDeterministic())
+        deterministic.put(entry.getKey(), method);
+    deterministicBuiltInMethods = Map.copyOf(deterministic);
   }
 
   /**
@@ -197,6 +204,18 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
   public boolean isBuiltIn(final String lowercaseName) {
     final Object builtIn = builtInMethods.get(lowercaseName);
     return builtIn != null && builtIn == methods.get(lowercaseName);
+  }
+
+  /**
+   * Whether {@code lowercaseName} still resolves to the implementation this factory registered for it at construction AND that
+   * implementation declared itself {@link SQLMethod#isDeterministic() deterministic} then (#12466). It is what the planner asks to
+   * decide whether a statement calling the method can have its plan cached, and it is the only implementation it trusts: a method
+   * added later, or a built-in name re-registered by an application, is not deterministic whatever it inherits from
+   * {@link AbstractSQLMethod}. The answer comes from a table built once, so asking does not create or invoke anything.
+   */
+  public boolean isBuiltInDeterministic(final String lowercaseName) {
+    final Object deterministic = deterministicBuiltInMethods.get(lowercaseName);
+    return deterministic != null && deterministic == methods.get(lowercaseName);
   }
 
   public Map<String, Object> getMethods() {

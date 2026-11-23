@@ -63,7 +63,11 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   /**
    * The built-in methods that are pure functions of the value and arguments (#12466). Listed by name here, in one place, so that
    * adding a method to the plan cache is a visible decision: the conversions that read the database's date and time settings
-   * ({@code asString}, {@code asDate}, {@code format}) and everything that reads a record or the schema are deliberately absent.
+   * ({@code asString}, {@code asDate}, {@code format}) and everything that reads the schema or the context are deliberately absent.
+   * <p>
+   * It is a list of names, so a subclass that reuses one of them inherits {@code true}: harmless, because the planner asks only the
+   * implementations the method factory registered itself ({@code DefaultSQLMethodFactory#isBuiltInDeterministic}). The census
+   * test {@code MethodCallPlanCacheIssue12466Test} pins the resulting set.
    */
   private static final Set<String> DETERMINISTIC = Set.of("size", "length", "tolowercase", "touppercase", "trim", "left", "right",
       "substring", "charat", "indexof", "lastindexof", "prefix", "append", "capitalize", "first", "last", "keys", "values");
