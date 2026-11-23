@@ -54,7 +54,9 @@ public class LineProtocolParser {
     public long toMillis(final long value) {
       // Narrow first (sub-millisecond units divide down), then multiply with an exact check so a very
       // large seconds-precision timestamp throws instead of silently wrapping to a negative ms epoch.
-      return Math.multiplyExact(value / divisor, multiplier);
+      // floorDiv, not '/': an instant before 1970 with a sub-millisecond part belongs to the millisecond that
+      // contains it, and truncation toward zero moved it forward - -1 ns into 0 ms, the next bucket (issue #11985).
+      return Math.multiplyExact(Math.floorDiv(value, divisor), multiplier);
     }
 
     /**
