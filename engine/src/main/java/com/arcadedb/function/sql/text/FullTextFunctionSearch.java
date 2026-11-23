@@ -195,8 +195,10 @@ final class FullTextFunctionSearch {
     final IndexedFunctionPushdown.Order order = pushdown.order();
     final int limit = order == IndexedFunctionPushdown.Order.FUNCTION ? pushdown.limit() : -1;
     // The postings the limited search reads, for the complete search that continues it: both belong to this fetch, so a write
-    // between two statements of a script is never missed
-    final FullTextPostingsReuse reuse = new FullTextPostingsReuse();
+    // between two statements of a script is never missed. Kept only when a filter follows the fetch, which is what pulls the plan
+    // past its limit: without one the postings would stay referenced for the iteration for a continuation that a record gone since
+    // the index was read is the only reason for
+    final FullTextPostingsReuse reuse = pushdown.filtered() ? new FullTextPostingsReuse() : null;
     final Supplier<Map<RID, Float>> complete = () -> {
       @SuppressWarnings("unchecked")
       final Map<RID, Float> allResults = (Map<RID, Float>) context.getCachedValue(cacheKey);
@@ -243,7 +245,10 @@ final class FullTextFunctionSearch {
     return searchAll(limit, guard, ridFilter, null);
   }
 
-  /** With {@code reuse}, the postings the limited search of this fetch read are scored again by its continuation, not read again. */
+  /**
+   * With {@code reuse}, not null, the postings the limited search of this fetch read are scored again by its continuation, with the
+   * corpus statistics it scored them with, instead of read again.
+   */
   private Map<RID, Float> searchAll(final int limit, final WorkGuard guard, final RIDFilter ridFilter,
       final FullTextPostingsReuse reuse) {
     if (indexes.size() == 1)
@@ -261,7 +266,7 @@ final class FullTextFunctionSearch {
     return completeSearch(context, null);
   }
 
-  /** As {@link #completeSearch(CommandContext)}, scoring the postings in {@code reuse} where the limited search left them. */
+  /** As {@link #completeSearch(CommandContext)}, scoring the postings in {@code reuse}, if any, where the limited search left them. */
   private Map<RID, Float> completeSearch(final CommandContext context, final FullTextPostingsReuse reuse) {
     completeSearches.incrementAndGet();
     final Map<RID, Float> allResults = searchAll(-1, WorkGuard.forCommandDeadline(context), null, reuse);

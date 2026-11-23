@@ -114,15 +114,16 @@ final class FullTextTopKSearch {
 
     // Pass one: every posting of every token in every bucket, read once. A bucket the filter rejects is read too: its share of the
     // document frequencies is what keeps the scores of the others those of the unfiltered search
-    final LSMTreeIndexPostings[][] reused = reuse != null ? reuse.get(bucketIndexes, tokenKeys) : null;
-    final LSMTreeIndexPostings[][] postings = reused != null ? reused : new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
+    final FullTextPostingsReuse.Read reused = reuse != null ? reuse.get(bucketIndexes, tokenKeys) : null;
+    final LSMTreeIndexPostings[][] postings =
+        reused != null ? reused.postings() : new LSMTreeIndexPostings[bucketIndexes.size()][tokenCount];
     final long[] documentFrequencies = new long[tokenCount];
     for (int b = 0; b < bucketIndexes.size(); ++b) {
       final LSMTreeFullTextIndex ftIndex = bucketIndexes.get(b);
       final int bucketId = ftIndex.getAssociatedBucketId();
       for (int t = 0; t < tokenCount; ++t) {
         guard.check();
-        final LSMTreeIndexPostings read = reused != null ? reused[b][t] : ftIndex.readPostings(tokenKeys[t]);
+        final LSMTreeIndexPostings read = reused != null ? postings[b][t] : ftIndex.readPostings(tokenKeys[t]);
         // the walk orders a bucket's documents by position alone: postings of another bucket (sorted first by bucket, so they show
         // at an end) are left to the general path
         if (read.size() > 0 && (read.bucketIds()[0] != bucketId || read.bucketIds()[read.size() - 1] != bucketId))
@@ -131,17 +132,25 @@ final class FullTextTopKSearch {
         documentFrequencies[t] += read.size();
       }
     }
-    if (reuse != null && reused == null)
-      reuse.put(bucketIndexes, tokenKeys, postings);
 
-    final Map<String, Long> frequencies = new HashMap<>(tokenCount);
-    for (int t = 0; t < tokenCount; ++t)
-      if (documentFrequencies[t] > 0)
-        frequencies.put(tokenKeys[t], documentFrequencies[t]);
-    // One bucket is searched with its own statistics, as the general path searches it; several share the type-wide ones
-    final BM25ScoringContext context = bucketIndexes.size() == 1 ?
-        first.bucketScoringContext(frequencies) :
-        FullTextSearch.createScoringContext(bucketIndexes, frequencies);
+    final BM25ScoringContext context;
+    if (reused != null)
+      // the statistics the postings were scored with by the limited search: a commit since then moved the corpus, and the postings
+      // read before it with the statistics read after it would rank the rest of the answer in another order than its first rows
+      context = reused.context();
+    else {
+      final Map<String, Long> frequencies = new HashMap<>(tokenCount);
+      for (int t = 0; t < tokenCount; ++t)
+        if (documentFrequencies[t] > 0)
+          frequencies.put(tokenKeys[t], documentFrequencies[t]);
+      // One bucket is searched with its own statistics, as the general path searches it; several share the type-wide ones
+      context = bucketIndexes.size() == 1 ?
+          first.bucketScoringContext(frequencies) :
+          FullTextSearch.createScoringContext(bucketIndexes, frequencies);
+      // only a limited search is continued: the complete search that answers every match has nothing to leave
+      if (reuse != null && limit > 0)
+        reuse.put(bucketIndexes, tokenKeys, new FullTextPostingsReuse.Read(postings, context));
+    }
 
     final double[] idf = new double[tokenCount];
     final double[] boosts = new double[tokenCount];

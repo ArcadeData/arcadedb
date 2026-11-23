@@ -4884,8 +4884,10 @@ public class SelectExecutionPlanner {
                 ridConditions, context) ?
                 indexedFunctionRowLimit(blockCandidateFunction, block, recordConditions, info, order, context) :
                 -1;
+        // A condition besides the function's own can reject rows the limit counted: the plan may then pull past the limit
         final FetchFromIndexedFunctionStep step = new FetchFromIndexedFunctionStep(blockCandidateFunction, info.target,
-            functionLimit, ridConditions, recordConditions, order, context);
+            functionLimit, ridConditions, recordConditions, order,
+            functionLimit > -1 && hasConditionBesides(block, blockCandidateFunction), context);
         if (order != IndexedFunctionPushdown.Order.FUNCTION)
           // The function answers in the RID order the ORDER BY asks for, and nothing after the fetch reorders the rows
           info.orderApplied = true;
@@ -5038,9 +5040,13 @@ public class SelectExecutionPlanner {
    * excludes something that can drop, add or reorder a row between the fetch and the LIMIT:
    * <ul>
    *   <li>a residual filter other than the function's own condition, which the plan evaluates again on each row and which
-   *       holds for every row the function returns - a filter could reject a row the limit counted. The exception is a
+   *       holds for every row the function returns - a filter could reject a row the limit counted. The exceptions are a
    *       property equality the function was handed to decide before the load ({@code recordConditions}, issue #11069): it
-   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter;</li>
+   *       keeps a match to the limit only when an index decided it, and leaves every other match to the filter; and any filter
+   *       when the function {@link IndexableSQLFunction#continuesPastLimit() answers past its limit} (issue #12535), where the
+   *       limit is only the start of its answer and the rows the filter rejects are replaced from past it, in the same order -
+   *       unless the filter, or a per-record LET under an ORDER BY the fetch order replaces, may set {@code $score} itself
+   *       ({@link #mayChangeScore}), which would give the rows another order than the function answers them in;</li>
    *   <li>UNWIND and expand, which turn one row into any number; DISTINCT, GROUP BY and aggregates, which fold rows;</li>
    *   <li>an ORDER BY other than {@code $score DESC}, the order the function produces its rows in, or than the
    *       {@code @rid} order it was asked to produce them in (issue #9909);</li>
@@ -5061,14 +5067,22 @@ public class SelectExecutionPlanner {
     // By identity: the residual is the planner's own block, or a copy of it made only to remove the function (and then
     // empty), so the function's condition is the very instance the block holds. A function that answers past its limit takes
     // the limit as where its answer starts: the filter can reject rows and the rows after them still come, in order.
-    final boolean continues = function.indexedFunctionContinuesPastLimit(context);
     for (final BooleanExpression condition : residual.getSubBlocks())
       if (condition != function && !containsInstance(recordConditions, condition)
-          && (!continues || mayChangeScore(condition, context)))
+          && (!function.indexedFunctionContinuesPastLimit(context) || mayChangeScore(condition, context)))
         // a condition that sets $score itself would give the rows another order than the one the function answers them in
         return -1;
-    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION && !isOrderByScoreDescending(info))
-      return -1;
+    if (info.orderBy != null && order == IndexedFunctionPushdown.Order.FUNCTION) {
+      if (!isOrderByScoreDescending(info))
+        return -1;
+      // The fetch order replaces the sort, so a per-record LET that scores, evaluated on every row after the fetch, would leave
+      // $score at a value the rows are not in the order of. A subquery of a LET runs in a context of its own, which $score never
+      // leaves.
+      if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null)
+        for (final LetItem item : info.perRecordLetClause.getItems())
+          if (item.getExpression() != null && mayRunScoringCall(item.getExpression(), context))
+            return -1;
+    }
 
     try {
       final int limit = info.limit.getValue(context);
@@ -5085,31 +5099,45 @@ public class SelectExecutionPlanner {
     }
   }
 
-  /**
-   * Whether evaluating {@code condition} on a row may set {@code $score}: a call that sets it anywhere in the condition, not only
-   * at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), a call the engine does not ship, whose
-   * behaviour it cannot know, {@code eval()}, whose condition is parsed only at run time, or a nested statement.
-   */
+  /** Whether {@code block} holds a condition other than {@code function}, by identity: a filter that follows the fetch. */
+  private static boolean hasConditionBesides(final AndBlock block, final BinaryCondition function) {
+    for (final BooleanExpression condition : block.getSubBlocks())
+      if (condition != function)
+        return true;
+    return false;
+  }
+
+  /** Whether evaluating {@code condition} on a row may set {@code $score}, see {@link #mayRunScoringCall}. */
   private static boolean mayChangeScore(final BooleanExpression condition, final CommandContext context) {
-    if (condition.setsScore(context))
-      return true;
-    return !SqlAstInspector.allNodesMatch(condition, node -> {
+    return condition.setsScore(context) || mayRunScoringCall(condition, context);
+  }
+
+  /**
+   * Whether evaluating the expression or condition {@code root} on a row may set {@code $score}: a call that sets it anywhere
+   * under it, not only at its top ({@code ifnull(SEARCH_INDEX(...), false) = true} runs the search too), or one the planner cannot
+   * tell does not: a function or method the engine does not ship, {@code eval()}, whose condition is parsed only at run time,
+   * {@code transform()}, which resolves the method it applies from its arguments at run time (so an application's method is
+   * reached through it), or a nested statement. Answering "may" costs the limit, never a row, so every doubt is one.
+   */
+  private static boolean mayRunScoringCall(final Object root, final CommandContext context) {
+    return !SqlAstInspector.allNodesMatch(root, node -> {
       if (node instanceof Statement)
         return false;
       if (node instanceof MethodCall call)
-        return SqlAstInspector.isBuiltInMethod(call);
+        return CorrelatedSubQueryCache.isTrustedMethod(call);
       if (!(node instanceof FunctionCall call))
         return true;
       if (call.getName() == null)
         return false;
       final String name = call.getName().getStringValue().toLowerCase(Locale.ENGLISH);
-      // eval() runs a condition parsed at run time, which may hold a search that sets $score
       if (!DefaultSQLFunctionFactory.getInstance().isBuiltIn(name) || SQLFunctionEval.NAME.equals(name))
         return false;
       try {
         final SQLFunction function = call.getSQLFunction(context);
         return function != null && !function.setsScore();
       } catch (final RuntimeException e) {
+        // a function that cannot be built from its call (a wrong argument count, say) fails when the statement runs: the planner
+        // keeps the old plan, whose evaluation raises it, instead of vouching for a call it cannot read
         return false;
       }
     });

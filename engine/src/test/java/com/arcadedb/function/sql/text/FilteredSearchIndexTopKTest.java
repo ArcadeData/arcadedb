@@ -19,15 +19,29 @@
 package com.arcadedb.function.sql.text;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextPostingsReuse;
+import com.arcadedb.index.fulltext.FullTextSearch;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.query.sql.method.AbstractSQLMethod;
+import com.arcadedb.query.sql.method.DefaultSQLMethodFactory;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.SelectStatement;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
@@ -135,6 +149,115 @@ class FilteredSearchIndexTopKTest extends TestHelper {
         .contains("(best 50 needed)").doesNotContain("ORDER BY");
   }
 
+  /** Sets {@code $score} from the value it is applied to, as a method an application registers may. */
+  private static final class RankByNumber extends AbstractSQLMethod {
+    static final String NAME = "rankbynumber";
+
+    RankByNumber() {
+      super(NAME, 0, 0);
+    }
+
+    @Override
+    public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
+      context.setVariable("$score", 1f / (1f + ((Number) value).floatValue()));
+      return value;
+    }
+  }
+
+  @Test
+  void aMethodTransformDispatchesByNameKeepsTheSortItsScoreNeeds() {
+    createCorpus(new Random(19), 4, 1500, "mixed");
+    // transform() resolves the method it applies from its argument at run time: the planner cannot see that this one sets $score
+    final DefaultSQLMethodFactory methods = DefaultSQLMethodFactory.getInstance();
+    methods.register(RankByNumber.NAME, new RankByNumber());
+    try {
+      final String sql = SCORED + " AND [n].transform('" + RankByNumber.NAME + "').size() = 1 ORDER BY $score DESC";
+      final List<Row> all = rows(sql, "w0 w1");
+      assertThat(all).hasSizeGreaterThan(50);
+      // the method's score ranks the rows, so the best match of the search is no longer the first row
+      for (int i = 1; i < all.size(); i++)
+        assertThat(all.get(i).n).isGreaterThan(all.get(i - 1).n);
+      for (final int limit : new int[] { 1, 3, 10, 50 })
+        assertThat(rows(sql + " LIMIT " + limit, "w0 w1")).as("LIMIT %d", limit).isEqualTo(all.subList(0, limit));
+      assertThat(database.query("sql", "EXPLAIN " + sql + " LIMIT 10", Map.of("q", "w0 w1")).getExecutionPlan().orElseThrow()
+          .prettyPrint(0, 2)).contains("ORDER BY").doesNotContain(" needed)");
+    } finally {
+      methods.getMethods().remove(RankByNumber.NAME);
+    }
+  }
+
+  @Test
+  void aPerRecordLetThatScoresKeepsTheSortItsScoreNeeds() {
+    createCorpus(new Random(21), 4, 1500, "mixed");
+    // the LET runs a search on every row and sets $score after the fetch, so its ranking, not the fetch's, decides the order
+    for (final String let : new String[] { "SEARCH_INDEX('Doc[body]', 'w2 w5')", "ifnull(SEARCH_INDEX('Doc[body]', 'w2 w5'), n)" })
+      for (final String filter : new String[] { "", " AND n % 2 = 0", " AND n % 100 <> 0" }) {
+        final String sql = "SELECT @rid AS rid, $score AS score, n FROM Doc LET $other = " + let
+            + " WHERE SEARCH_INDEX('Doc[body]', :q) = true" + filter + " ORDER BY $score DESC";
+        final List<Row> all = rows(sql, "w0 w1");
+        assertThat(all).as(let + filter).isNotEmpty();
+        for (final int limit : new int[] { 1, 3, 10, 50 })
+          assertThat(rows(sql + " LIMIT " + limit, "w0 w1")).as("%s%s LIMIT %d", let, filter, limit)
+              .isEqualTo(all.subList(0, Math.min(limit, all.size())));
+      }
+    // a LET that sets no score keeps the limit
+    final String plain = "SELECT @rid AS rid, $score AS score, n FROM Doc LET $c = n % 7 WHERE SEARCH_INDEX('Doc[body]', :q) = true"
+        + " AND n % 100 <> 0 ORDER BY $score DESC LIMIT 10";
+    assertThat(database.query("sql", "EXPLAIN " + plain, Map.of("q", "w0 w1")).getExecutionPlan().orElseThrow().prettyPrint(0, 2))
+        .contains("(best 10 needed)").doesNotContain("ORDER BY");
+  }
+
+  @Test
+  void theContinuationScoresWithTheStatisticsOfTheLimitedSearch() {
+    createCorpus(new Random(23), 4, 1500, "mixed");
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Doc[body]");
+    final WorkGuard guard = WorkGuard.forCommandDeadline(null);
+    final String query = "w1 w3 w7";
+    final Map<RID, Float> complete = FullTextSearch.search(index, query, -1, guard, null, null);
+
+    final FullTextPostingsReuse reuse = new FullTextPostingsReuse();
+    FullTextSearch.search(index, query, 50, guard, null, null, reuse);
+    // a commit between the limited search and its continuation moves the corpus statistics (the document count, the average
+    // length) the scores depend on: many long documents, none of them a match
+    database.transaction(() -> {
+      for (int i = 0; i < 400; i++)
+        database.newDocument("Doc").set("n", 100000 + i).set("body", "filler ".repeat(120)).save();
+    });
+    final long reused = FullTextPostingsReuse.getReusedReadsForTesting();
+    final Map<RID, Float> continued = FullTextSearch.search(index, query, -1, guard, null, null, reuse);
+    assertThat(FullTextPostingsReuse.getReusedReadsForTesting() - reused).isEqualTo(1L);
+    // the postings of the limited search, the statistics of the limited search: the order the continuation goes on in is the
+    // one the first rows were served in
+    assertThat(continued).isEqualTo(complete);
+  }
+
+  @Test
+  void onlyAFilteredLimitedSearchKeepsItsPostingsForTheContinuation() {
+    createCorpus(new Random(29), 4, 1500, "mixed");
+    final List<RID> all = rows(SCORED + " ORDER BY $score DESC", "w1 w3").stream().map(Row::rid).toList();
+    final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Doc[body]");
+    final FromClause target = ((SelectStatement) ((DatabaseInternal) database).getStatementCache().get("SELECT FROM Doc"))
+        .getTarget();
+
+    for (final boolean filtered : new boolean[] { false, true }) {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final long searches = FullTextFunctionSearch.getCompleteSearchesForTesting();
+      final long reused = FullTextPostingsReuse.getReusedReadsForTesting();
+      final Iterator<Record> answer = new FullTextFunctionSearch(index, "w1 w3", null).search(target, context,
+          new IndexedFunctionPushdown(5, null, IndexedFunctionPushdown.Order.FUNCTION, filtered)).iterator();
+      // the plan pulls past the limit when a filter rejected rows: the answer goes on, in the same order, from the complete search
+      final List<RID> pulled = new ArrayList<>();
+      while (pulled.size() < 8 && answer.hasNext())
+        pulled.add(answer.next().getIdentity());
+      assertThat(pulled).as("filtered=%s", filtered).isEqualTo(all.subList(0, 8));
+      assertThat(FullTextFunctionSearch.getCompleteSearchesForTesting() - searches).isEqualTo(1L);
+      // the postings of the limited search are kept only when a filter follows the fetch, which is what asks for the continuation
+      assertThat(FullTextPostingsReuse.getReusedReadsForTesting() - reused).as("filtered=%s", filtered)
+          .isEqualTo(filtered ? 1L : 0L);
+    }
+  }
+
   @Test
   void aWriteBetweenTwoStatementsOfAScriptIsSeen() {
     createCorpus(new Random(17), 4, 1200, "mixed");
@@ -163,6 +286,8 @@ class FilteredSearchIndexTopKTest extends TestHelper {
       final int terms = 1 + rnd.nextInt(5);
       for (int t = 0; t < terms; t++)
         query.append(t == 0 ? "" : " ").append("w").append(skewed(rnd));
+      // the complete ranking, which no limit reaches: once per query, every combination below filters and cuts it in Java
+      final List<Row> all = rows(SCORED + " ORDER BY $score DESC", query.toString());
       for (final Map.Entry<String, IntPredicate> filter : FILTERS.entrySet())
         for (final int limit : new int[] { 1, 10, 50, 333 })
           for (final int skip : new int[] { 0, 7 })
@@ -171,16 +296,19 @@ class FilteredSearchIndexTopKTest extends TestHelper {
                   " SKIP " + skip :
                   "") + " LIMIT " + limit;
               assertThat(rows(sql, query.toString())).as("%s: %s with q='%s'", stage, sql, query)
-                  .isEqualTo(expected(query.toString(), filter.getValue(), skip, limit));
+                  .isEqualTo(filteredAndCut(all, filter.getValue(), skip, limit));
               ++checks;
             }
     }
     return checks;
   }
 
-  /** The complete ranking, which no limit reaches, filtered and cut in Java. */
+  /** The complete ranking of a query, filtered and cut in Java. */
   private List<Row> expected(final String query, final IntPredicate filter, final int skip, final int limit) {
-    final List<Row> all = rows(SCORED + " ORDER BY $score DESC", query);
+    return filteredAndCut(rows(SCORED + " ORDER BY $score DESC", query), filter, skip, limit);
+  }
+
+  private static List<Row> filteredAndCut(final List<Row> all, final IntPredicate filter, final int skip, final int limit) {
     final List<Row> kept = new ArrayList<>();
     for (final Row r : all)
       if (filter.test(r.n))

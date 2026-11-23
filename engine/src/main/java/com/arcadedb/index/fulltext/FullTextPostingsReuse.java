@@ -26,33 +26,44 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The postings the limited search of one fetch read for a disjunction of terms, so the complete search that continues the same
- * fetch, when a filter rejected the rows the limit covered, scores them again without reading them again. A fetch holds its own
- * instance and never shares it with another statement. Each read is handed over once and then dropped, so the postings are held
- * at most until the continuation takes them, or until the fetch ends. The key compares the bucket indexes by identity (no index
- * overrides {@code equals}), so a read is never handed to another index.
+ * The postings the limited search of one fetch read for a disjunction of terms, with the corpus statistics it scored them with,
+ * so the complete search that continues the same fetch, when a filter rejected the rows the limit covered, scores them again
+ * without reading them again. The statistics travel with the postings so that the continuation goes on in the very order the
+ * limited search served its first rows in, even when a commit moved the corpus between the two. A fetch holds its own instance and
+ * never shares it with another statement. Each read is handed over once and then dropped, so the postings are held at most until
+ * the continuation takes them, or until the fetch ends.
+ * <p>
+ * Memory: the postings are held by reference, about 20 bytes per posting of every query term in every bucket, from the limited
+ * search until then. That is why a fetch asks for an instance only when a filter follows it (the continuation is then expected),
+ * and why only a limited search leaves its postings here.
+ * <p>
+ * The key compares the bucket indexes by identity (no index overrides {@code equals}), so a read is never handed to another index.
  */
 public final class FullTextPostingsReuse {
   // Test-only: searches that took their postings from the limited search of their fetch. Nothing in production reads it.
   private static final AtomicLong reused = new AtomicLong();
 
-  private final Map<Key, LSMTreeIndexPostings[][]> reads = new HashMap<>();
+  private final Map<Key, Read> reads = new HashMap<>();
 
   public static long getReusedReadsForTesting() {
     return reused.get();
   }
 
+  /** What a limited search read: the postings of each token in each bucket, and the corpus statistics it scored them with. */
+  record Read(LSMTreeIndexPostings[][] postings, BM25ScoringContext context) {
+  }
+
   private record Key(List<LSMTreeFullTextIndex> bucketIndexes, List<String> tokens) {
   }
 
-  LSMTreeIndexPostings[][] get(final List<LSMTreeFullTextIndex> bucketIndexes, final String[] tokens) {
-    final LSMTreeIndexPostings[][] postings = reads.remove(new Key(List.copyOf(bucketIndexes), List.of(tokens)));
-    if (postings != null)
+  Read get(final List<LSMTreeFullTextIndex> bucketIndexes, final String[] tokens) {
+    final Read read = reads.remove(new Key(List.copyOf(bucketIndexes), List.of(tokens)));
+    if (read != null)
       reused.incrementAndGet();
-    return postings;
+    return read;
   }
 
-  void put(final List<LSMTreeFullTextIndex> bucketIndexes, final String[] tokens, final LSMTreeIndexPostings[][] postings) {
-    reads.put(new Key(List.copyOf(bucketIndexes), List.of(tokens)), postings);
+  void put(final List<LSMTreeFullTextIndex> bucketIndexes, final String[] tokens, final Read read) {
+    reads.put(new Key(List.copyOf(bucketIndexes), List.of(tokens)), read);
   }
 }
