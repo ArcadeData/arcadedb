@@ -45,6 +45,7 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -6486,6 +6487,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           throw e;
         throw new IndexException("Error building the graph of vector index '" + indexName + "'", t);
       }
+    } catch (final CancellationException e) {
+      // A drop or a close cancels the build through releaseBackgroundResources(), which sets valid = false first (see the
+      // catch in buildGraphFromScratchExclusively()): on an invalid index, the index went away under the search. Answered
+      // as a search arriving just after the drop is, by the missing index, not as an internal error (issue #11849). Any
+      // other cancellation (an interrupted read on an index that is still valid) keeps its type
+      if (!isValid())
+        throw new CommandSQLParsingException(
+            "Vector index '" + indexName + "' was dropped or closed while the search was building its graph", e);
+      throw e;
     } finally {
       if (!handedOff)
         endSearchRebuildOwnership(alsoClearPersistedGraphLatch);
