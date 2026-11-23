@@ -231,7 +231,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     if (strategy == null)
       chooseStrategy(context, prevStep);
 
-    final ResultSet rows = switch (strategy) {
+    return switch (strategy) {
       case SCAN -> scanStep.syncPull(context, nRecords);
       case PHYSICAL_ORDER, PHYSICAL_ORDER_CHUNKED -> {
         if (!parallelDecided) {
@@ -244,30 +244,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
       }
       case INDEX_ORDER -> indexOrderResultSet(context, prevStep, nRecords);
     };
-    // The scan sets $current itself. The index fetch before this step set it to the index entry it emitted ({key, rid}): every
-    // record loaded here becomes $current, as every other fetch step does, so a LET subquery reads the outer record through
-    // $parent.$current (issue #12301)
-    return strategy == Strategy.SCAN ? rows : new CurrentRecordResultSet(rows, context);
-  }
-
-  /** The rows of {@code rows}, each one set as the context's {@code $current} when it is handed on. */
-  private record CurrentRecordResultSet(ResultSet rows, CommandContext context) implements ResultSet {
-    @Override
-    public boolean hasNext() {
-      return rows.hasNext();
-    }
-
-    @Override
-    public Result next() {
-      final Result result = rows.next();
-      context.setVariable("current", result);
-      return result;
-    }
-
-    @Override
-    public void close() {
-      rows.close();
-    }
   }
 
   /**
@@ -414,6 +390,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index fetch before this step left $current on the index entry it emitted ({key, rid}), and hasNext() reads ahead to
+        // the next one: the row handed on becomes $current here, as in every other fetch step, so a LET subquery reads its outer
+        // record through $parent.$current (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
 
@@ -717,6 +697,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         final Result result = nextItem;
         nextItem = null;
         fetched++;
+        // The index entries were read before the first record was loaded, so $current still names the last entry (issue #12301)
+        context.setVariable("current", result);
         return result;
       }
     };
