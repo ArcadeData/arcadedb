@@ -1885,17 +1885,48 @@ class BucketChunkChainTest {
 
     @Test
     void aRecordOfSeveralPagesReadsBackWhole() {
-      final StringBuilder payload = new StringBuilder(270_000);
-      for (int i = 0; payload.length() < 270_000; i++)
+      readsBackWholeIntoAnExactBuffer(270_000);
+    }
+
+    /**
+     * The regression test of the defect itself: the buffer a multi-page record is assembled into holds the record and nothing
+     * else. Appended chunk by chunk to a buffer that grows by half at each overflow, it ended with the spare capacity of its
+     * last growth, and the read had allocated and copied the record about three times over on the way there.
+     */
+    @Test
+    void aRecordOfSeveralPagesIsAssembledIntoABufferOfItsExactSize() {
+      // NOT A MULTIPLE OF THE ALLOCATION CHUNK, SO NO GROWTH LANDS ON THE EXACT SIZE BY CHANCE
+      readsBackWholeIntoAnExactBuffer(270_001);
+    }
+
+    @Test
+    void aRecordOfManyChunksGrowsTheKeptChunksAndReadsBackWhole() {
+      // MORE CHUNKS THAN THE EIGHT THE WALK KEEPS ROOM FOR AT FIRST
+      readsBackWholeIntoAnExactBuffer(800_003);
+    }
+
+    private void readsBackWholeIntoAnExactBuffer(final int payloadLength) {
+      final StringBuilder payload = new StringBuilder(payloadLength + 16);
+      for (int i = 0; payload.length() < payloadLength; i++)
         payload.append(i).append(',');
+      payload.setLength(payloadLength);
       final String expected = payload.toString();
 
       database.getSchema().createDocumentType("Big", 1);
       final RID[] rid = new RID[1];
       database.transaction(() -> rid[0] = database.newDocument("Big").set("payload", expected).save().getIdentity());
 
-      database.transaction(() -> assertThat(database.lookupByRID(rid[0], true).asDocument().getString("payload"))
-          .isEqualTo(expected));
+      database.transaction(() -> {
+        final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid[0].getBucketId());
+        final Binary record = bucket.getRecord(rid[0]);
+
+        assertThat(record.size()).as("the record spans pages, so it was read as a chunk chain").isGreaterThan(payloadLength);
+        assertThat(record.getContentSize()).as("the buffer is the size of the record, with no spare capacity")
+            .isEqualTo(record.size());
+        assertThat(record.position()).isZero();
+
+        assertThat(database.lookupByRID(rid[0], true).asDocument().getString("payload")).isEqualTo(expected);
+      });
     }
 
     private static byte[] pageOfDistinctBytes() {
