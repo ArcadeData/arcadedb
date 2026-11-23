@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.OrderByClause;
 import com.arcadedb.query.opencypher.ast.PathPattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
@@ -43,8 +44,8 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -110,29 +111,17 @@ public final class CypherVariableUsage {
     for (final MatchClause match : statement.getMatchClauses()) {
       if (match.hasPathPatterns()) {
         for (final PathPattern path : match.getPathPatterns()) {
-          for (final NodePattern node : path.getNodes()) {
-            if (node.hasWhereExpression()
-                && expressionReferencesVariable(node.getWhereExpression(), variable))
-              return true;
-            // An inline property map reads the row as well: (y {k: r.w}) (issue #13139)
-            if (propertiesReferenceVariable(node.getProperties(), variable))
-              return true;
-          }
-          for (int i = 0; i < path.getRelationshipCount(); i++) {
-            final RelationshipPattern rel = path.getRelationship(i);
-            if (variable.equals(rel.getVariable()))
+          for (int i = 0; i < path.getRelationshipCount(); i++)
+            if (variable.equals(path.getRelationship(i).getVariable()))
               relVarCount++;
-            // An inline WHERE inside a pattern reads the edge, e.g. -[r:E WHERE r.tag = 'ok']->.
-            // The predicate lives inside the binding pattern, so the scans below never saw it and the
-            // binding was dropped whenever nothing else in the query mentioned r. The predicate then
-            // evaluated against an unbound variable and silently filtered out every row (issue #5464).
-            if (rel.hasWhereExpression()
-                && expressionReferencesVariable(rel.getWhereExpression(), variable))
-              return true;
-            // So does the inline property map of a relationship pattern: -[e2:E {w: r.w}]-> (issue #13139)
-            if (propertiesReferenceVariable(rel.getProperties(), variable))
-              return true;
-          }
+          // Every expression nested in a MATCH pattern reads the row: an inline WHERE (-[r:E WHERE r.tag = 'ok']->,
+          // issue #5464), an inline property map (-[e2:E {w: r.w}]->, (y {k: r.w})), a dynamic label (y:$(r.kind))
+          // and the inner pattern and WHERE of a quantified path pattern (issue #13139). Each of them used to be
+          // listed here by hand, and every position left off the list dropped the edge binding: the expression
+          // then evaluated against an unbound variable and silently filtered out every row. The walker reaches
+          // every one of them; only the variables the pattern itself declares are not reads.
+          if (patternReadsVariable(path, variable))
+            return true;
         }
       }
     }
@@ -309,14 +298,18 @@ public final class CypherVariableUsage {
     return false;
   }
 
-  /** Whether an inline property map of a pattern holds an expression that reads {@code variable}. */
-  private static boolean propertiesReferenceVariable(final Map<String, Object> properties, final String variable) {
-    if (properties == null || properties.isEmpty())
-      return false;
-    for (final Object value : properties.values())
-      if (value instanceof Expression expression && expressionReferencesVariable(expression, variable))
-        return true;
-    return false;
+  /**
+   * Whether an expression nested in the MATCH pattern {@code path} reads {@code variable}. The variables the pattern
+   * declares (its path, node and relationship variables, and those of the patterns its quantified groups repeat) are
+   * bindings, not reads, so they are skipped; a pattern nested inside one of its expressions (a pattern predicate, an
+   * {@code EXISTS} body) still counts, as it does everywhere else.
+   */
+  private static boolean patternReadsVariable(final PathPattern path, final String variable) {
+    final VariableReferenceFinder finder = new VariableReferenceFinder(Set.of(variable));
+    finder.declaringPatterns = new ArrayList<>(2);
+    finder.declaringPatterns.add(path);
+    CypherExpressionWalker.walk(path, finder);
+    return finder.found;
   }
 
   private static boolean returnItemsReadVariable(final List<ReturnClause.ReturnItem> items, final String variable) {
@@ -448,8 +441,13 @@ public final class CypherVariableUsage {
    * {@link #visit(Expression)} never sees (issue #6567 review).
    */
   private static final class VariableReferenceFinder implements CypherExpressionWalker.Visitor {
-    private final Set<String> variables;
-    private       boolean     found = false;
+    private final Set<String>       variables;
+    private       boolean           found = false;
+    /**
+     * The patterns whose variables are declarations rather than reads, compared by identity: the MATCH pattern being
+     * scanned and the inner patterns of its quantified groups. Null when every pattern met is a read.
+     */
+    private       List<PathPattern> declaringPatterns;
 
     VariableReferenceFinder(final Set<String> variables) {
       this.variables = variables;
@@ -473,6 +471,14 @@ public final class CypherVariableUsage {
     public void visitPattern(final PathPattern pattern) {
       if (found)
         return;
+      if (isDeclaringPattern(pattern)) {
+        // The walker hands a quantified group's inner pattern over after this one: it declares as well
+        if (pattern.getRelationships() != null)
+          for (final RelationshipPattern relationship : pattern.getRelationships())
+            if (relationship instanceof QuantifiedPathPattern group && group.getInnerPattern() != null)
+              declaringPatterns.add(group.getInnerPattern());
+        return;
+      }
       if (contains(pattern.getPathVariable())) {
         found = true;
         return;
@@ -489,6 +495,14 @@ public final class CypherVariableUsage {
             found = true;
             return;
           }
+    }
+
+    private boolean isDeclaringPattern(final PathPattern pattern) {
+      if (declaringPatterns != null)
+        for (int i = 0; i < declaringPatterns.size(); i++)
+          if (declaringPatterns.get(i) == pattern)
+            return true;
+      return false;
     }
 
     private boolean contains(final String name) {

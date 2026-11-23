@@ -42,7 +42,11 @@ class CypherEdgeVariableReadPositionsIssue13139Test {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/cypher13139").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/cypher13139");
+    // A run aborted before its teardown leaves the database behind, and create() would refuse it
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
     database.transaction(() -> database.command("opencypher", """
         CREATE (a:A {id: 1}), (b1:B {id: 2}), (b2:B {id: 3}), (b3:B {id: 4}),
                (a)-[:R1 {w: 1}]->(b1), (a)-[:R1 {w: 3}]->(b2), (a)-[:R1 {w: 2}]->(b3), (a)-[:R2 {w: 1}]->(b3)"""));
@@ -98,18 +102,18 @@ class CypherEdgeVariableReadPositionsIssue13139Test {
 
   @Test
   void inlineRelationshipMapOfALaterMatchReadsTheEdge() {
-    assertThat(column("MATCH (a:A)-[e1:R1]->(x) MATCH (a)-[e2:R2 {w: e1.w}]->(y) RETURN count(*) AS v")).containsExactly(1L);
+    assertThat(column("MATCH (a:A)-[e1:R1]->(x) MATCH (a)-[e2:R2 {w: e1.w}]->(y) RETURN count(y) AS v")).containsExactly(1L);
     assertThat(column("MATCH (a:A)-[e1:R1]->(x) MATCH (a)-[e2:R2 {w: e1.w}]->(y) RETURN y.id AS v")).containsExactly(4);
   }
 
   @Test
   void inlineRelationshipMapOfASiblingPatternReadsTheEdge() {
-    assertThat(column("MATCH (a:A)-[e1:R1]->(x), (a)-[e2:R2 {w: e1.w}]->(y) RETURN count(*) AS v")).containsExactly(1L);
+    assertThat(column("MATCH (a:A)-[e1:R1]->(x), (a)-[e2:R2 {w: e1.w}]->(y) RETURN count(y) AS v")).containsExactly(1L);
   }
 
   @Test
   void inlineNodeMapOfALaterPatternReadsTheEdge() {
-    assertThat(column("MATCH (a:A)-[e1:R1]->(x) MATCH (a)-[:R2]->(y {id: e1.w + 3}) RETURN count(*) AS v")).containsExactly(1L);
+    assertThat(column("MATCH (a:A)-[e1:R1]->(x) MATCH (a)-[:R2]->(y {id: e1.w + 3}) RETURN count(y) AS v")).containsExactly(1L);
   }
 
   @Test
@@ -125,8 +129,29 @@ class CypherEdgeVariableReadPositionsIssue13139Test {
   }
 
   @Test
+  void dynamicLabelOfALaterMatchReadsTheEdge() {
+    database.transaction(() -> database.command("opencypher", "MATCH (:A)-[e:R2]->() SET e.kind = 'B'"));
+    // Three B vertices: an unbound e would leave the label to null and match none, or every vertex
+    assertThat(column("MATCH (a:A)-[e:R2]->(x) MATCH (y:$(e.kind)) RETURN count(y) AS v")).containsExactly(3L);
+  }
+
+  @Test
+  void quantifiedPathPatternOfALaterMatchReadsTheEdge() {
+    // R2 has w = 1, so the single R1 hop with w = 2 is the one to b3 (id 4). The RETURN reads e too in this control,
+    // which kept the binding before the fix: the group is answered right, only the binding was missing
+    assertThat(column("MATCH (a:A)-[e:R2]->(x) MATCH (a)((p)-[f:R1]->(q) WHERE f.w = e.w + 1){1,1}(c) RETURN c.id AS v, e.w AS w"))
+        .containsExactly(4);
+    assertThat(column("MATCH (a:A)-[e:R2]->(x) MATCH (a)((p)-[f:R1]->(q) WHERE f.w = e.w + 1){1,1}(c) RETURN c.id AS v"))
+        .containsExactly(4);
+    assertThat(column("MATCH (a:A)-[e:R2]->(x) MATCH (a)((p)-[f:R1 WHERE f.w = e.w + 1]->(q)){1,1}(c) RETURN c.id AS v"))
+        .containsExactly(4);
+    assertThat(column("MATCH (a:A)-[e:R2]->(x) MATCH (a)((p)-[f:R1]->(q {id: e.w + 3})){1,1}(c) RETURN c.id AS v"))
+        .containsExactly(4);
+  }
+
+  @Test
   void anEdgeReadNowhereStillAnswersAsBefore() {
     assertThat(column("MATCH (a:A)-[e:R1]->(b) WITH b ORDER BY b.id DESC LIMIT 1 RETURN b.id AS v")).containsExactly(4);
-    assertThat(column("MATCH (a:A)-[e:R1]->(b) RETURN count(*) AS v")).containsExactly(3L);
+    assertThat(column("MATCH (a:A)-[e:R1]->(b) RETURN count(b) AS v")).containsExactly(3L);
   }
 }
