@@ -385,4 +385,110 @@ class HttpErrorStatusServerTest extends BaseGraphServerTest {
       assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getType("Issue11973D").getAllIndexes(false)).isEmpty();
     }
   }
+
+  // Regression: #12037 a statement refused for the data already stored is a 4xx, not a 500
+  /**
+   * Issue #12037: a declaration refused because of the stored data answered 500 for MANDATORY and NOTNULL (in CREATE PROPERTY and in
+   * ALTER PROPERTY) and for the change of a partition key, while the same refusal for MIN, MAX and REGEXP answered 400, and a UNIQUE
+   * index built over duplicate keys is the 409 of every duplicated key. Each is the caller's request refused for a reason that holds
+   * on a retry, and each leaves the schema and the record as they were.
+   */
+  @Nested
+  class RefusedForTheStoredData {
+    private static final String D = "Issue12037D";
+    private static final String P = "Issue12037P";
+    private static final String G = "Issue12037G";
+
+    @Test
+    void anExistenceConstraintTheStoredRecordsViolateIs400WithItsKind() throws Exception {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.command("sql", "CREATE DOCUMENT TYPE " + D);
+      database.command("sql", "CREATE PROPERTY " + D + ".p INTEGER");
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO " + D + " SET q = 1");
+        database.command("sql", "INSERT INTO " + D + " SET p = null, n = null");
+      });
+
+      assertRefused("sql", "CREATE PROPERTY " + D + ".m INTEGER (MANDATORY true)", ValidationException.Kind.MANDATORY, "mandatory");
+      assertRefused("sql", "CREATE PROPERTY " + D + ".n INTEGER (NOTNULL true)", ValidationException.Kind.NOT_NULL, "cannot be null");
+      assertRefused("sql", "ALTER PROPERTY " + D + ".p MANDATORY true", ValidationException.Kind.MANDATORY, "Cannot set MANDATORY");
+      assertRefused("sql", "ALTER PROPERTY " + D + ".p NOTNULL true", ValidationException.Kind.NOT_NULL, "Cannot set NOTNULL");
+
+      // the control: the value constraints, which answered 400 before
+      database.transaction(() -> database.command("sql", "INSERT INTO " + D + " SET p = 5"));
+      assertRefused("sql", "ALTER PROPERTY " + D + ".p MIN 10", ValidationException.Kind.MIN, "less than 10");
+
+      // and nothing was declared
+      assertThat(database.getSchema().getType(D).existsProperty("m")).isFalse();
+      assertThat(database.getSchema().getType(D).existsProperty("n")).isFalse();
+      assertThat(database.getSchema().getType(D).getProperty("p").isMandatory()).isFalse();
+      assertThat(database.getSchema().getType(D).getProperty("p").isNotNull()).isFalse();
+      assertThat(database.getSchema().getType(D).getProperty("p").getMin()).isNull();
+    }
+
+    @Test
+    void aUniqueIndexOverDuplicateKeysIs409() throws Exception {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.command("sql", "CREATE DOCUMENT TYPE " + G);
+      database.command("sql", "CREATE PROPERTY " + G + ".p INTEGER");
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO " + G + " SET p = 1");
+        database.command("sql", "INSERT INTO " + G + " SET p = 1");
+      });
+
+      final JSONObject answer = post("sql", "CREATE INDEX ON " + G + " (p) UNIQUE", 409);
+      assertThat(answer.getString("exception", "")).isEqualTo(DuplicatedKeyException.class.getName());
+      assertThat(answer.getString("detail", "")).contains("Duplicated key [1]");
+
+      // nothing of the refused index is left
+      assertThat(database.getSchema().getType(G).getAllIndexes(false)).isEmpty();
+    }
+
+    @Test
+    void changingThePartitionKeyIs400FromSqlAndOpenCypher() throws Exception {
+      final Database database = getServerDatabase(0, getDatabaseName());
+      database.command("sql", "CREATE VERTEX TYPE " + P + " BUCKETS 4");
+      database.command("sql", "CREATE PROPERTY " + P + ".k INTEGER");
+      database.command("sql", "CREATE INDEX ON " + P + " (k) UNIQUE");
+      database.command("sql", "ALTER TYPE " + P + " BUCKETSELECTIONSTRATEGY `partitioned('k')`");
+      database.transaction(() -> database.command("sql", "INSERT INTO " + P + " SET k = 1, n = 1"));
+
+      final String refusal = "Cannot modify primary key when the bucket selection is partitioned";
+      final JSONObject sql = post("sql", "UPDATE " + P + " SET k = 100 WHERE n = 1", 400);
+      assertThat(sql.getString("exception", "")).isEqualTo(ValidationException.class.getName());
+      assertThat(sql.getString("detail", "")).contains(refusal);
+      final JSONObject cypher = post("opencypher", "MATCH (t:" + P + " {n: 1}) SET t.k = 100 RETURN t.k", 400);
+      assertThat(cypher.getString("exception", "")).isEqualTo(ValidationException.class.getName());
+      assertThat(cypher.getString("detail", "")).contains(refusal);
+
+      // the record is unchanged
+      assertThat(database.query("sql", "SELECT k FROM " + P + " WHERE n = 1").next().<Integer>getProperty("k")).isEqualTo(1);
+    }
+
+    private void assertRefused(final String language, final String statement, final ValidationException.Kind kind, final String detail)
+        throws Exception {
+      final JSONObject answer = post(language, statement, 400);
+      assertThat(answer.getString("exception", "")).as(statement).isEqualTo(ValidationException.class.getName());
+      assertThat(answer.getString("exceptionArgs", "")).as(statement).isEqualTo(kind.name());
+      assertThat(answer.getString("detail", "")).as(statement).contains(detail);
+    }
+
+    private JSONObject post(final String language, final String statement, final int status) throws Exception {
+      final HttpURLConnection connection = (HttpURLConnection) new URI(
+          getServerHttpUrl(0, "/api/v1/command/" + getDatabaseName())).toURL().openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, language, statement, null, Map.of());
+      connection.connect();
+      try {
+        assertThat(connection.getResponseCode()).as(statement).isEqualTo(status);
+        try (final InputStream in = connection.getErrorStream()) {
+          return new JSONObject(FileUtils.readStreamAsString(in, "UTF-8"));
+        }
+      } finally {
+        connection.disconnect();
+      }
+    }
+  }
 }

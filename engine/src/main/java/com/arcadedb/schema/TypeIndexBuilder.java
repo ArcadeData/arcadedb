@@ -766,14 +766,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       // without the reason a configuration mistake (a missing vector 'dimensions', an incompatible property
       // type, ...) reaches the user as a bare "Error on creating index" with nowhere to go (issue #5607). The whole
       // cause chain is read, not one level, so no wrapper in between can hide the reason again (issue #10382).
-      final String failure = "Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames;
-      // A UNIQUE index the stored records hold a duplicate key for is refused for the data, not for a fault of the build: it leaves
-      // as the DuplicatedKeyException it is, which every protocol answers as a conflict, rather than as an IndexException answered
-      // with a 500 (issue #12037)
-      final DuplicatedKeyException duplicate = findDuplicatedKey(e);
-      if (duplicate != null)
-        throw new DuplicatedKeyException(failure, duplicate, e);
-      throw new IndexException(failure + describeFailure(e), e);
+      throw new IndexException("Error on creating index on type '" + metadata.typeName + "', properties " + metadata.propertyNames
+          + describeFailure(e), e);
     } finally {
       // A build that failed holds the deferral still (a finished one gave it back under the lock): the index it was filling is
       // being cleaned up, and giving the check back only costs the commits that reach it meanwhile a lookup
@@ -966,15 +960,6 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         description.append(": ").append(message);
     }
     return description.toString();
-  }
-
-  /** The first {@link DuplicatedKeyException} along the cause chain of a failed build, or {@code null} (issue #12037). */
-  private static DuplicatedKeyException findDuplicatedKey(final Throwable failure) {
-    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (Throwable current = failure; current != null && visited.add(current); current = current.getCause())
-      if (current instanceof DuplicatedKeyException duplicate)
-        return duplicate;
-    return null;
   }
 
   /**

@@ -80,11 +80,12 @@ public final class ExistingRecordsCheck {
         final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, propertyName,
             mandatory, notNull);
         if (unmet != null)
-          throw refusal(unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
-                  ValidationException.Kind.NOT_NULL,
+          // a refusal of the declaration for the data it would leave violating it, the type a write refused by the same constraint
+          // has: HTTP answers it as the caller's request, not as a server fault (issue #12037)
+          throw new ValidationException(kindOf(unmet),
               "Cannot set " + (unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? "MANDATORY" : "NOTNULL") + ": record "
                   + document.getIdentity() + " violates it, " + DocumentValidator.describeUnmetExistenceConstraint(document, propertyName,
-                  unmet) + ". Fix or delete the non-conforming records first", null);
+                  unmet) + ". Fix or delete the non-conforming records first");
       }
     }
   }
@@ -105,7 +106,7 @@ public final class ExistingRecordsCheck {
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw refusal(e.getKind(),
+        throw new ValidationException(e.getKind(),
             "Cannot set " + what + ": record " + document.getIdentity() + " violates it, " + e.getMessage()
                 + ". Fix or delete the non-conforming records first", e);
       }
@@ -128,13 +129,12 @@ public final class ExistingRecordsCheck {
         continue;
       final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(document, property);
       if (unmet != null)
-        throw refusal(unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY :
-                ValidationException.Kind.NOT_NULL,
-            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)), null);
+        throw new ValidationException(kindOf(unmet),
+            createRefusal(type, property, document, DocumentValidator.describeUnmetExistenceConstraint(document, property)));
       try {
         DocumentValidator.validateStoredValue(document, property, constraints);
       } catch (final ValidationException e) {
-        throw refusal(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
+        throw new ValidationException(e.getKind(), createRefusal(type, property, document, e.getMessage()), e);
       }
     }
   }
@@ -212,15 +212,7 @@ public final class ExistingRecordsCheck {
         + " violates it, " + reason + ". Fix or delete the non-conforming records first";
   }
 
-  /**
-   * The refusal of a declaration the stored data violates (issue #12037): a {@link ValidationException}, the type a write the same
-   * constraint refuses already has, so every protocol answers it as the client's request rather than as a server fault. It was a
-   * {@code CommandExecutionException}, answered HTTP 500 unless it happened to carry a {@code ValidationException} cause.
-   */
-  private static ValidationException refusal(final ValidationException.Kind kind, final String message, final Throwable cause) {
-    final ValidationException refusal = new ValidationException(kind, message);
-    if (cause != null)
-      refusal.initCause(cause);
-    return refusal;
+  private static ValidationException.Kind kindOf(final DocumentValidator.ExistenceConstraint unmet) {
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ? ValidationException.Kind.MANDATORY : ValidationException.Kind.NOT_NULL;
   }
 }

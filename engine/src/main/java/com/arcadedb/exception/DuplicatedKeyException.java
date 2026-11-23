@@ -33,19 +33,6 @@ public class DuplicatedKeyException extends ArcadeDBException {
   }
 
   /**
-   * The same duplicate, reported by a caller that met it doing something larger - a UNIQUE index built over records that hold it
-   * (issue #12037) - and names that in front of the duplicate's own message. Index, keys and record stay those of {@code found};
-   * the cause is {@code failure}, the caller's own failure that holds {@code found} in its chain, so what the caller attached to
-   * it (e.g. a failed cleanup, as a suppressed exception) stays reachable.
-   */
-  public DuplicatedKeyException(final String context, final DuplicatedKeyException found, final Throwable failure) {
-    super(context + ": " + found.getMessage(), failure);
-    this.indexName = found.indexName;
-    this.keys = found.keys;
-    this.currentIndexedRID = found.currentIndexedRID;
-  }
-
-  /**
    * Rebuilds the exception from the {@code indexName|keys|rid} string a server sends as {@code exceptionArgs}, the
    * inverse of how the HTTP error mapper writes it. The index name is the first segment and the RID the last, so a key
    * VALUE that contains the separator itself (customer data, nothing stops it) stays whole in the keys. The RID segment
