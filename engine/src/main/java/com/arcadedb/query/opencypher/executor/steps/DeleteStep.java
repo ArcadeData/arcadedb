@@ -22,7 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
@@ -123,10 +123,15 @@ public class DeleteStep extends AbstractExecutionStep {
    *       its depth-first traverser keeps edge-segment cursors open across the rows it is still
    *       producing, so a {@code DETACH DELETE} of a bound node unlinks the edge chunks that same cursor
    *       is about to follow and the next {@code hasNext()} dereferences a removed segment record
-   *       (issue #7023).</li>
+   *       (issue #7023);</li>
+   *   <li>a {@code DETACH DELETE} behind a fixed-length relationship pattern (see
+   *       {@code EagerBarriers.detachDeleteNeedsEagerRead()}): the MATCH walks the edge list of a node while its rows are
+   *       still being produced, and the first row's DETACH removes the relationships of that list the walk has not
+   *       reached, so the rows they would have produced are lost without an error (issue #12254).</li>
    * </ul>
-   * Ordinary fixed-length connected patterns bind each row's variables independently and keep no cursor
-   * open across rows, so they are left on the cheaper streaming path.
+   * A fixed-length connected pattern read by a DELETE without DETACH, or by a DETACH DELETE that removes only the
+   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, so
+   * it is left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
    * {@code materializedInput} below) rather than streamed - acceptable for the shapes this guards, but a
@@ -138,6 +143,9 @@ public class DeleteStep extends AbstractExecutionStep {
   // THE ROWS MATERIALIZED, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591). ON
   // THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
   private OperationHeapLimit heapLimit;
+
+  /** The column names of the input rows, read off the first row a DETACH marks the cascaded relationships of. */
+  private String[] rowVariables;
 
   public DeleteStep(final DeleteClause deleteClause, final CommandContext context) {
     this(deleteClause, context, false);
@@ -206,7 +214,7 @@ public class DeleteStep extends AbstractExecutionStep {
             // produced makes that row dereference an already-removed record (issue #6491).
             final long eagerBegin = context.isProfiling() ? System.nanoTime() : 0;
             materializedInput = new ArrayList<>();
-            heapLimit = OperationHeapLimit.of(context, "DELETE of a disconnected pattern");
+            heapLimit = OperationHeapLimit.of(context, "DELETE of the matched rows");
             try {
               while (prevResults.hasNext()) {
                 final Result row = prevResults.next();
@@ -252,6 +260,11 @@ public class DeleteStep extends AbstractExecutionStep {
                 mutableResult.setProperty(var, relType != null ? new DeletedEntityMarker(relType) : DeletedEntityMarker.INSTANCE);
               }
             }
+
+            // A relationship the row binds and the DETACH took away with one of its endpoints is as deleted as one the
+            // clause names (#11688)
+            if (deleteClause.isDetach() && deleted.hasDeletedVertices() && inputResult instanceof ResultInternal mutableResult)
+              markCascadedRelationships(mutableResult, deletedVars);
 
             // Pass through the result (elements are now deleted)
             buffer.add(inputResult);
@@ -312,6 +325,23 @@ public class DeleteStep extends AbstractExecutionStep {
         DeleteStep.this.close();
       }
     };
+  }
+
+  /**
+   * Replaces with a {@link DeletedEntityMarker} every relationship of {@code row} not named by the clause whose endpoint
+   * this statement deleted: the DETACH deleted it with the vertex. Only the row's own columns are read, never the edge
+   * lists of the deleted vertices, so the cost does not grow with their degree. The columns are the same for every row
+   * of the step, so their names are read once.
+   */
+  private void markCascadedRelationships(final ResultInternal row, final Set<String> deletedVars) {
+    if (rowVariables == null)
+      rowVariables = row.getPropertyNames().toArray(new String[0]);
+    for (final String variable : rowVariables) {
+      if (deletedVars.contains(variable))
+        continue;
+      if (row.getProperty(variable) instanceof Edge edge && deleted.wentWithDeletedVertex(edge))
+        row.setProperty(variable, new DeletedEntityMarker(edge.getTypeName()));
+    }
   }
 
   /**
@@ -465,7 +495,7 @@ public class DeleteStep extends AbstractExecutionStep {
           }
           deleted.vertexDeleted(v);
         } else {
-          throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
+          throw new ObjectInUseException("DeleteConnectedNode: Cannot delete node "
               + v.getIdentity() + " because it still has relationships. To delete this node, you must first delete"
               + " its relationships, or use DETACH DELETE");
         }
@@ -739,7 +769,7 @@ public class DeleteStep extends AbstractExecutionStep {
     } else if (!edgesChecked) {
       // Non-DETACH DELETE: check for connected edges
       if (hasEdges(vertex))
-        throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
+        throw new ObjectInUseException("DeleteConnectedNode: Cannot delete node " + vertex.getIdentity() +
             " because it still has relationships. To delete this node, you must first delete its relationships, or use DETACH DELETE");
     }
 
@@ -870,6 +900,20 @@ public class DeleteStep extends AbstractExecutionStep {
      */
     boolean claimJustRead(final Edge edge) {
       return edges.add(edge.getIdentity()) || edge.getIdentity() instanceof LightEdgeRID;
+    }
+
+    /** @return true when {@code edge} was deleted with an endpoint the statement deleted */
+    boolean wentWithDeletedVertex(final Edge edge) {
+      try {
+        return vertices.contains(edge.getOut()) || vertices.contains(edge.getIn());
+      } catch (final RecordNotFoundException e) {
+        // THE EDGE RECORD IS GONE ALREADY
+        return true;
+      }
+    }
+
+    boolean hasDeletedVertices() {
+      return !vertices.isEmpty();
     }
 
     boolean contains(final Object record) {

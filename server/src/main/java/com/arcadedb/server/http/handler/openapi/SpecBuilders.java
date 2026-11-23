@@ -74,7 +74,7 @@ public final class SpecBuilders {
    * join it, and never has - {@code TimeSeriesShard.appendSamples} commits its own transaction whatever the
    * caller has open (#7410). Describing the two the same way is how a generated client ends up with a write
    * method whose contract is atomicity the server does not offer. Pinned by
-   * {@code Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest}.
+   * {@code TimeSeriesApiSpecTest}.
    */
   public static final String WRITE_SESSION_REQUEST_DESCRIPTION = """
       Session id returned by 'beginTransaction'. It makes this call run under that session's lock and \

@@ -344,12 +344,8 @@ public class TypeBuilder<T> {
         c = new LocalVertexType(schema, typeName);
       else if (type.equals(EdgeType.class))
         c = new LocalEdgeType(schema, typeName, edgeBidirectional, edgeLightweight, edgeUnique);
-      else {
+      else
         c = new LocalDocumentType(schema, typeName);
-
-        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
-        schema.getDictionary().getIdByName(typeName, true);
-      }
 
       schema.typeMap().put(typeName, c);
 
@@ -385,6 +381,14 @@ public class TypeBuilder<T> {
           LocalEdgeType.applyUniqueConstraint(schema, edgeType);
 
         schema.updateSecurity();
+
+        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED. Registered LAST,
+        // once nothing above can refuse: the registration commits a transaction of its own into the dictionary, a file that
+        // stays when the take-back below drops the type, so on a Raft leader a refusal after it left a page change the schema
+        // session could not publish and quarantined the leader (issue #13092). Nothing above needs the id: only the
+        // serialization of an embedded document of the type reads it
+        if (!(c instanceof LocalVertexType) && !(c instanceof LocalEdgeType))
+          schema.getDictionary().getIdByName(typeName, true);
       } catch (final RuntimeException e) {
         takeBack(schema, c, notMadeByTheType, e);
         throw e;

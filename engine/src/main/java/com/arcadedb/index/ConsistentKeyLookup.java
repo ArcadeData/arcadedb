@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -197,6 +198,25 @@ public final class ConsistentKeyLookup {
   }
 
   /**
+   * Runs {@code read} until it ran between two samples of the publication sequence that are equal and even, so it saw one committed
+   * state; after {@link #MAX_ATTEMPTS} attempts, once more through {@link #readAgainstOneCommit}, whose rules {@code read} follows.
+   * The loop of {@link #lookup}, without its unpinning of the pages a REPEATABLE_READ transaction holds.
+   *
+   * @param indexName names the index in the message of the conflict
+   */
+  public static <T> T readConsistently(final PageManager pageManager, final String indexName, final Supplier<T> read) {
+    for (int attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      final long before = pageManager.awaitPublicationEnd(PUBLICATION_WAIT_NANOS);
+      if ((before & 1) != 0)
+        continue;
+      final T result = read.get();
+      if (pageManager.getPublicationSequence() == before)
+        return result;
+    }
+    return readAgainstOneCommit(pageManager, read, "Lookup on index '" + indexName + "'");
+  }
+
+  /**
    * The last attempt of a read that must see one committed state (#11755): runs {@code read} with no publication open and the next
    * one held off ({@link PageManager#callWithPublicationsHeld}), which excludes the local commits and the replicated apply of a
    * replica alike, and takes what it read only when the publication sequence stayed even and did not move under it.
@@ -293,9 +313,13 @@ public final class ConsistentKeyLookup {
     return new Read(entries, bucketIds, dangling);
   }
 
+  /**
+   * Whether the running transaction reads at REPEATABLE_READ: the level it began with, not the database's default (#13159), since
+   * {@code begin(REPEATABLE_READ)} on a READ_COMMITTED default database pins pages all the same.
+   */
   private static boolean isRepeatableRead(final DatabaseInternal database) {
-    return database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isRepeatableRead();
   }
 
   /**

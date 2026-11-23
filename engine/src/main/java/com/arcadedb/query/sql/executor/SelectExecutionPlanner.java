@@ -2161,6 +2161,24 @@ public class SelectExecutionPlanner {
         || operator instanceof GeOperator;
   }
 
+  /**
+   * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
+   * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
+   * parse (such as "#1:2-3"), refuses the collection as a target.
+   */
+  static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
+    if (element instanceof String string && RID.is(string)) {
+      try {
+        return context.getDatabase().newRID(string);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+      }
+    }
+    if (element instanceof Identifiable identifiable)
+      return identifiable;
+    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+  }
+
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
       final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
@@ -2205,10 +2223,7 @@ public class SelectExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = SelectExecutionPlanner.collectionTargetElement(x, paramValue, context).getIdentity();
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());
@@ -5402,6 +5417,11 @@ public class SelectExecutionPlanner {
         logSkippedIndex(idx, e);
         continue;
       }
+      // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked in order, the index
+      // repeats the records with several elements and misses those with none, whichever of its properties is sorted on, and
+      // the null sub-plan below only adds the records whose properties are all null (issue #12518)
+      if (hasExpandedProperty(indexFields))
+        continue;
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
@@ -6524,6 +6544,19 @@ public class SelectExecutionPlanner {
         descriptors = fullKeyDescriptors;
     }
 
+    // A lookup of whole keys of a UNIQUE index - an equality or an IN list on each of its properties - answers at most one
+    // record per key, which no other index covering as many conditions can beat. It is decided here, ahead of the cost ranking
+    // below: nothing records query statistics (QueryStats.get() answers a shared instance that does not, issue #9173), so every
+    // candidate costs Integer.MAX_VALUE and the ranking cannot tell them apart. The first index the type lists then won, which
+    // could be a NOTUNIQUE index on a tenant-like property shared by most records (issue #11963)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> uniqueKeyDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isUniqueKeyLookup)
+          .toList();
+      if (!uniqueKeyDescriptors.isEmpty() && uniqueKeyDescriptors.size() < descriptors.size())
+        descriptors = uniqueKeyDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -6542,6 +6575,18 @@ public class SelectExecutionPlanner {
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
     return descriptors.getFirst();
+  }
+
+  /** Whether {@code desc} looks up whole keys of a UNIQUE index: an equality or an IN list on every property of the index. */
+  private static boolean isUniqueKeyLookup(final IndexSearchDescriptor desc) {
+    if (!desc.getIndex().isUnique() || desc.additionalRangeCondition != null
+        || desc.getSubBlocks().size() != desc.getIndex().getPropertyNames().size())
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks())
+      if (!(block instanceof InCondition)
+          && !(block instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator))
+        return false;
+    return true;
   }
 
   /**

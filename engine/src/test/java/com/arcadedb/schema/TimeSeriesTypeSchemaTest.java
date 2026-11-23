@@ -65,7 +65,7 @@ class TimeSeriesTypeSchemaTest {
    * whose {@code getTimestampColumn()} and {@code findTimestampColumnIndex()} named different columns.</li>
    * </ol>
    * The fourth item of the issue, {@code RemoteSchema.reload()} keeping a cached type's Java class, is pinned in
-   * {@code Issue7740RemoteSchemaReloadKindIT} - it needs a server.
+   * {@code RemoteTimeSeriesIT.SchemaReloadKind} - it needs a server.
    *
    * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7740">issue #7740</a>
    *
@@ -164,7 +164,7 @@ class TimeSeriesTypeSchemaTest {
      * Regrouping the embedded declaration was the first answer to #7740 and it was wrong in a way the engine can
      * feel: the stored order is the type's identity - column indices are positions in it, and a sample is a
      * positional array - so a logical restore, which maps an export's sample arrays onto the type it has just
-     * rebuilt, would have put every value in the wrong column ({@code Issue7371PromQLDiscoveryProjectionIT} builds
+     * rebuilt, would have put every value in the wrong column ({@code PromQLLabelDiscoveryIT.DiscoveryProjection} builds
      * exactly that layout on purpose, and caught it). The second answer was to leave the rendering regrouping and
      * document the difference; issue #7702 removed it instead, by making the grammar's column members repeatable
      * and orderable. This is that same recipe - a FIELD declared before the TIMESTAMP - rendered in full.

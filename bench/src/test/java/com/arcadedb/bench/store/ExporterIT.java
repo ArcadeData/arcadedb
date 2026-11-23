@@ -103,9 +103,17 @@ class ExporterIT {
   /** The sample run as another run: other time, variant, machine and release tag. */
   private static RunResult variant(final RunResult base, final String runId, final Instant startedAt, final String variant,
       final String machineId, final String tag, final double median) {
+    return variant(base, runId, startedAt, variant, machineId, tag, median, null);
+  }
+
+  /** Same as above, with the date of the measured commit ({@code null} for none). */
+  private static RunResult variant(final RunResult base, final String runId, final Instant startedAt, final String variant,
+      final String machineId, final String tag, final double median, final Instant commitDate) {
     final JSONObject arcadedb = new JSONObject(base.info().arcadedb().toString()).put("variant", variant);
     if (tag != null)
       arcadedb.put("tag", tag);
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate.toString());
     final JSONObject machine = new JSONObject(base.info().machine().toString()).put("id", machineId);
     final RunInfo info = new RunInfo(runId, startedAt, startedAt.plus(Duration.ofMinutes(40)), base.info().trigger(),
         base.info().source(), arcadedb, machine, base.info().config());
@@ -292,6 +300,54 @@ class ExporterIT {
   }
 
   @Test
+  void aPointIsPlacedAtTheDateOfItsCommitAndKeepsTheRunTime() {
+    final RunResult base = sample();
+    final Instant commitDate = T0.minus(Duration.ofDays(20));
+    upload(variant(base, "r1", T0, "jvm", "perf-01", "26.10.2", 100.0, commitDate));
+    export();
+    final JSONObject p = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points").getJSONObject(0);
+    assertThat(p.getString("t")).isEqualTo(commitDate.toString());
+    assertThat(p.getString("runAt")).isEqualTo(T0.toString());
+  }
+
+  @Test
+  void aRunWithoutACommitDateIsPlacedAtItsStart() {
+    upload(variant(sample(), "r1", T0, "jvm", "perf-01", null, 100.0));
+    export();
+    final JSONObject p = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points").getJSONObject(0);
+    assertThat(p.getString("t")).isEqualTo(T0.toString());
+    assertThat(p.getString("runAt")).isEqualTo(T0.toString());
+  }
+
+  @Test
+  void aReleaseMeasuredAfterANightlyIsOrderedByItsCommitDate() {
+    // the 26.10.2 baseline is measured a day after the nightly of main, but its code is a month older
+    final RunResult base = sample();
+    upload(variant(base, "nightly", T0, "jvm", "perf-01", null, 120.0, T0.minus(Duration.ofHours(3))));
+    upload(variant(base, "release", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", "26.10.2", 100.0,
+        T0.minus(Duration.ofDays(30))));
+    export();
+    final JSONArray points = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points");
+    assertThat(points.getJSONObject(0).getString("runId")).isEqualTo("release");
+    assertThat(points.getJSONObject(1).getString("runId")).isEqualTo("nightly");
+    final JSONObject latest = latestThroughput();
+    assertThat(latest.getJSONObject("last").getString("runId")).isEqualTo("nightly");
+    assertThat(latest.getJSONObject("previousRelease").getString("runId")).isEqualTo("release");
+  }
+
+  @Test
+  void twoRunsOfTheSameCommitAreOrderedByRunTime() {
+    final RunResult base = sample();
+    final Instant commitDate = T0.minus(Duration.ofDays(2));
+    upload(variant(base, "second", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", null, 110.0, commitDate));
+    upload(variant(base, "first", T0, "jvm", "perf-01", null, 100.0, commitDate));
+    export();
+    final JSONArray points = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points");
+    assertThat(points.getJSONObject(0).getString("runId")).isEqualTo("first");
+    assertThat(points.getJSONObject(1).getString("runId")).isEqualTo("second");
+  }
+
+  @Test
   void latestCarriesPreviousAndPreviousRelease() {
     final RunResult base = sample();
     upload(variant(base, "r1", T0, "jvm", "perf-01", "26.11.1", 100.0));
@@ -312,6 +368,62 @@ class ExporterIT {
     assertThat(found.getJSONObject("previousRelease").getString("runId")).isEqualTo("r1");
     assertThat(found.getJSONObject("previousRelease").getString("tag")).isEqualTo("26.11.1");
     assertThat(found.getJSONObject("last").isNull("tag")).isTrue();
+  }
+
+  @Test
+  void previousReleaseSkipsAFailedRelease() {
+    final RunResult base = sample();
+    final CaseResult first = base.results().getFirst();
+    final CaseResult failed = new CaseResult(first.workload(), first.caseName(), first.scale(), first.params(), first.reps(),
+        first.warmup(), List.of(), CaseResult.Status.FAILED, "boom");
+    upload(variant(base, "r1", T0, "jvm", "perf-01", "26.11.1", 100.0));
+    final RunResult failedRelease = variant(base, "r2", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", "26.12.1", 0.0);
+    upload(new RunResult(failedRelease.info(), List.of(failed)));
+    upload(variant(base, "r3", T0.plus(Duration.ofDays(2)), "jvm", "perf-01", null, 120.0));
+    export();
+    final JSONObject found = latestThroughput();
+    assertThat(found.getJSONObject("previous").getString("runId")).isEqualTo("r2");
+    assertThat(found.getJSONObject("previous").isNull("median")).isTrue();
+    assertThat(found.getJSONObject("previousRelease").getString("runId")).isEqualTo("r1");
+    assertThat(found.getJSONObject("previousRelease").getString("tag")).isEqualTo("26.11.1");
+  }
+
+  @Test
+  void aFailedReleaseOnlyLeavesNoPreviousRelease() {
+    final RunResult base = sample();
+    final CaseResult first = base.results().getFirst();
+    final CaseResult failed = new CaseResult(first.workload(), first.caseName(), first.scale(), first.params(), first.reps(),
+        first.warmup(), List.of(), CaseResult.Status.FAILED, "boom");
+    final RunResult failedRelease = variant(base, "r1", T0, "jvm", "perf-01", "26.12.1", 0.0);
+    upload(new RunResult(failedRelease.info(), List.of(failed)));
+    upload(variant(base, "r2", T0.plus(Duration.ofDays(1)), "jvm", "perf-01", null, 120.0));
+    export();
+    assertThat(latestThroughput().isNull("previousRelease")).isTrue();
+  }
+
+  @Test
+  void aStatusRowAndARealPointOfTheSameCaseAndRunAreOnePoint() {
+    final RunResult base = sample();
+    final CaseResult first = base.results().getFirst();
+    final CaseResult failed = new CaseResult(first.workload(), first.caseName(), first.scale(), first.params(), first.reps(),
+        first.warmup(), List.of(), CaseResult.Status.FAILED, "boom");
+    // the same case twice in one run, once with its metrics and once as a bare status row: the series keeps the real point
+    upload(new RunResult(base.info(), List.of(first, failed)));
+    export();
+    final JSONArray points = line(series("knn-k10__M__throughput.json"), "perf-01", "jvm").getJSONArray("points");
+    assertThat(points.length()).isEqualTo(1);
+    assertThat(points.getJSONObject(0).getString("status")).isEqualTo("ok");
+    assertThat(points.getJSONObject(0).isNull("median")).isFalse();
+  }
+
+  private JSONObject latestThroughput() {
+    final JSONArray latest = read(out.resolve("latest.json")).getJSONArray("series");
+    JSONObject found = null;
+    for (int i = 0; i < latest.length(); i++)
+      if (latest.getJSONObject(i).getString("metric").equals("throughput"))
+        found = latest.getJSONObject(i);
+    assertThat(found).isNotNull();
+    return found;
   }
 
   @Test

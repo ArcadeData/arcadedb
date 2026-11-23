@@ -107,7 +107,7 @@ class RaftForwardedWriteBookmarkIT extends BaseRaftHATest {
     final String dbName = getDatabaseName();
 
     // Hold the follower's apply thread off the database: the install apply gate is the lock it takes before applying an entry
-    // for it (as in Issue8454SnapshotSourceBehindFollowerIT). The leader still commits with the other follower.
+    // for it (as in SnapshotSourceBehindFollowerIT). The leader still commits with the other follower.
     final RaftHAServer followerRaft = getRaftPlugin(followerIndex).getRaftHAServer();
     final CountDownLatch held = new CountDownLatch(1);
     final CountDownLatch release = new CountDownLatch(1);

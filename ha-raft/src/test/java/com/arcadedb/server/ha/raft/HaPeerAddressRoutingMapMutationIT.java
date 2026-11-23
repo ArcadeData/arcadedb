@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * endpoint must flag each such peer as {@code httpAddressAmbiguous}, and the presence matrix must report a peer it
  * cannot identify as unreachable instead of dialling the shared address and crediting the peer with the local node's
  * databases (the same false all-clear the verify endpoint gave before #6221). The ambiguity is injected by emptying the
- * leader's map for the duration of one test, as {@link Issue6221VerifyFanOutGuardIT} does, rather than by starting the
+ * leader's map for the duration of one test, as {@link VerifyFanOutGuardIT} does, rather than by starting the
  * cluster misconfigured, so cluster startup is not part of what is under test.</li>
  * <li><b>#10060</b> / <b>#10066</b>: a follower that cannot tell its peers apart (a same-host cluster declaring no HTTP
  * ports, #6191, reproduced with {@link #refuseForwardedWritesOn(int)}) resolves the leader to its OWN address. Its

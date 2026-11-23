@@ -22,6 +22,10 @@ import com.arcadedb.bench.env.CpuTopology;
 import com.arcadedb.bench.env.IdleCheck;
 import com.arcadedb.bench.env.MachineProbe;
 import com.arcadedb.bench.env.Processes;
+import com.arcadedb.bench.gate.BenchChanges;
+import com.arcadedb.bench.gate.Planner;
+import com.arcadedb.bench.gate.RawData;
+import com.arcadedb.bench.gate.TrackedIssue;
 import com.arcadedb.bench.ldbc.LdbcAdapter;
 import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.RunInfo;
@@ -35,15 +39,18 @@ import com.arcadedb.bench.store.ResultsStore;
 import com.arcadedb.bench.store.Uploader;
 import com.arcadedb.bench.workload.Scale;
 import com.arcadedb.bench.workload.WorkloadRegistry;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -56,7 +63,8 @@ import java.util.stream.Stream;
 
 /**
  * Command line entry point: {@code bench run ...}, {@code bench list}, {@code bench init-store ...},
- * {@code bench upload ...}, {@code bench export ...} and {@code bench ldbc-convert ...}. Exit codes: 0 ok (even when cases failed), 1 an upload failed, 2 bad arguments, 3 the idle check failed.
+ * {@code bench upload ...}, {@code bench export ...}, {@code bench ldbc-convert ...}, {@code bench gate ...} and
+ * {@code bench gate-pairs ...}. Exit codes: 0 ok (even when cases failed), 1 an upload failed, 2 bad arguments, 3 the idle check failed.
  */
 public final class BenchMain {
   /** Starts the server under test; a seam so tests run without Docker. */
@@ -74,7 +82,7 @@ public final class BenchMain {
 
   static int run(final String[] args, final List<Workload> registry, final ServerFactory serverFactory, final PrintStream out) {
     if (args.length == 0) {
-      System.err.println("usage: bench <run|list|init-store|upload|export|ldbc-convert> [options]");
+      System.err.println("usage: bench <run|list|init-store|upload|export|ldbc-convert|gate|gate-pairs> [options]");
       return 2;
     }
     switch (args[0]) {
@@ -110,13 +118,28 @@ public final class BenchMain {
       }
     case "upload":
       try {
-        return upload(parse(args, true, UPLOAD_OPTIONS), System.err);
+        return upload(parse(args, true, UPLOAD_OPTIONS), out, System.err);
+      } catch (final IllegalArgumentException e) {
+        System.err.println("error: " + e.getMessage());
+        return 2;
+      }
+    case "gate":
+      try {
+        return gate(parse(args, false, GATE_OPTIONS), out, System.err);
+      } catch (final IllegalArgumentException e) {
+        System.err.println("error: " + e.getMessage());
+        return 2;
+      }
+    case "gate-pairs":
+      try {
+        return gatePairs(parse(args, false, GATE_PAIRS_OPTIONS), out, System.err);
       } catch (final IllegalArgumentException e) {
         System.err.println("error: " + e.getMessage());
         return 2;
       }
     default:
-      System.err.println("unknown command '" + args[0] + "', expected run, list, init-store, upload, export or ldbc-convert");
+      System.err.println(
+          "unknown command '" + args[0] + "', expected run, list, init-store, upload, export, ldbc-convert, gate or gate-pairs");
       return 2;
     }
   }
@@ -132,14 +155,19 @@ public final class BenchMain {
 
   /** The options each subcommand accepts; any other {@code --flag} is rejected, so a typo cannot silently fall back to a default. */
   static final Set<String> RUN_OPTIONS = Set.of("workload", "scale", "image", "variant", "out", "reps", "warmup", "timeout-min",
-      "seed", "mem-limit-gb", "heap", "trigger", "machine-id", "tag", "params", "skip-idle-check", "server-cpus", "client-cpus",
-      "commit", "version", "bench-commit");
+      "prepare-timeout-min", "case-timeout-min", "seed", "mem-limit-gb", "heap", "trigger", "machine-id", "tag", "params",
+      "skip-idle-check", "server-cpus", "client-cpus", "commit", "version", "bench-commit", "commit-date");
   static final Set<String> INIT_STORE_OPTIONS = Set.of("url", "root-user", "root-password-env", "writer-password-env",
       "reader-password-env");
   static final Set<String> EXPORT_OPTIONS = Set.of("url", "user", "password-env", "out");
   static final Set<String> LDBC_CONVERT_OPTIONS = Set.of("summary", "dataset", "commit", "out", "started-at", "version", "tag",
-      "trigger", "machine-id", "bench-commit");
-  static final Set<String> UPLOAD_OPTIONS = Set.of("url", "user", "password-env");
+      "trigger", "machine-id", "bench-commit", "commit-date");
+  static final Set<String> UPLOAD_OPTIONS = Set.of("url", "user", "password-env", "replace-release");
+  static final Set<String> GATE_OPTIONS = Set.of("data", "issues", "bench-changes", "out");
+  static final Set<String> GATE_PAIRS_OPTIONS = Set.of("data", "issues");
+
+  /** Options that are flags: present or absent, they take no value. */
+  private static final Set<String> FLAGS = Set.of("skip-idle-check", "replace-release");
 
   static Map<String, String> parse(final String[] args, final boolean allowPositional, final Set<String> known) {
     final Map<String, String> options = new HashMap<>();
@@ -154,7 +182,7 @@ public final class BenchMain {
       final String key = arg.substring(2);
       if (!known.contains(key))
         throw new IllegalArgumentException("unknown option " + arg);
-      if (key.equals("skip-idle-check"))
+      if (FLAGS.contains(key))
         options.put(key, "true");
       else {
         if (i + 1 >= args.length)
@@ -195,6 +223,7 @@ public final class BenchMain {
     final Path summaryPath = Path.of(required(o, "summary"));
     final String dataset = required(o, "dataset");
     final String commit = required(o, "commit");
+    final String commitDate = commitDate(o);
     final Path dir = Path.of(required(o, "out"));
     final JSONObject summary;
     final Instant startedAt;
@@ -213,6 +242,8 @@ public final class BenchMain {
         .put("variant", "jvm").put("image", "embedded").put("imageDigest", "n/a").put("revision", commit);
     if (o.containsKey("tag"))
       arcadedb.put("tag", o.get("tag"));
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate);
     final JSONObject config = new JSONObject().put("dataset", dataset).put("framework", "graphalytics").put("mode1", true)
         .put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
     final String runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), "jvm") + "-ldbc";
@@ -237,7 +268,12 @@ public final class BenchMain {
     return 0;
   }
 
-  private static int upload(final Map<String, String> o, final PrintStream err) {
+  /**
+   * The {@code upload} command. With {@code --replace-release} each run also replaces the earlier runs of its release (see
+   * {@link Uploader}), and every replaced runId is printed as {@code replaced <runId>} so the caller can drop its raw file.
+   */
+  private static int upload(final Map<String, String> o, final PrintStream out, final PrintStream err) {
+    final boolean replaceRelease = o.containsKey("replace-release");
     final String url = required(o, "url");
     final String user = required(o, "user");
     final String password = passwordFromEnv(o, "password-env");
@@ -260,13 +296,72 @@ public final class BenchMain {
     int failed = 0;
     for (final Path file : files) {
       try {
-        Uploader.upload(url, user, password, RunResult.read(file));
+        for (final String replaced : Uploader.upload(url, user, password, RunResult.read(file), replaceRelease))
+          out.println("replaced " + replaced);
       } catch (final RuntimeException e) {
         failed++;
         err.println("upload of " + file + " failed: " + e.getMessage());
       }
     }
     return failed == 0 ? 0 : 1;
+  }
+
+  /**
+   * The {@code gate} command: judges the raw run files under {@code --data} against the regression issues the workflow listed in
+   * {@code --issues}, and writes the plan of GitHub actions to {@code --out}. It makes no network call and runs no git: whether the
+   * bench changed between two runs comes from {@code --bench-changes}, the workflow's answers to {@code gate-pairs}. A skipped run
+   * file or issue is warned on {@code err} and the command still exits 0.
+   */
+  private static int gate(final Map<String, String> o, final PrintStream out, final PrintStream err) {
+    final Path data = existingDirectory(required(o, "data"));
+    final Path issuesFile = existingFile(required(o, "issues"));
+    final Path outFile = Path.of(required(o, "out"));
+    final BenchChanges bench = BenchChanges.read(o.containsKey("bench-changes") ? Path.of(o.get("bench-changes")) : null, err);
+    final List<TrackedIssue> issues = TrackedIssue.readAll(issuesFile, err);
+    final JSONObject plan = Planner.plan(RawData.read(data, err), issues, bench);
+    for (final String warning : Planner.oversized(plan))
+      err.println("warning: " + warning);
+    try {
+      Files.writeString(outFile, plan.toString(2), StandardCharsets.UTF_8);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    final Map<String, Integer> counts = new HashMap<>();
+    final JSONArray actions = plan.getJSONArray("actions");
+    for (int i = 0; i < actions.length(); i++)
+      counts.merge(actions.getJSONObject(i).getString("op"), 1, Integer::sum);
+    out.println("plan: " + counts.getOrDefault("create", 0) + " create, " + counts.getOrDefault("update", 0) + " update, "
+        + counts.getOrDefault("comment", 0) + " comment, " + counts.getOrDefault("close", 0) + " close");
+    return 0;
+  }
+
+  /**
+   * The {@code gate-pairs} command: prints, one {@code A B} per line, each pair of bench commits whose difference a {@code gate} over
+   * the same data and issues will show, so the workflow can answer them with git before it runs the gate. {@code --issues} is
+   * optional: without it no issue is tracked.
+   */
+  private static int gatePairs(final Map<String, String> o, final PrintStream out, final PrintStream err) {
+    final Path data = existingDirectory(required(o, "data"));
+    final List<TrackedIssue> issues = o.containsKey("issues") ? TrackedIssue.readAll(existingFile(o.get("issues")), err) : List.of();
+    for (final String pair : BenchChanges.pairsNeeded(RawData.read(data, err), issues)) {
+      final int dots = pair.indexOf("..");
+      out.println(pair.substring(0, dots) + " " + pair.substring(dots + 2));
+    }
+    return 0;
+  }
+
+  private static Path existingFile(final String value) {
+    final Path file = Path.of(value);
+    if (!Files.isRegularFile(file))
+      throw new IllegalArgumentException("no such file: " + file);
+    return file;
+  }
+
+  private static Path existingDirectory(final String value) {
+    final Path dir = Path.of(value);
+    if (!Files.isDirectory(dir))
+      throw new IllegalArgumentException("no such directory: " + dir);
+    return dir;
   }
 
   private static int intOption(final Map<String, String> o, final String key, final int def) {
@@ -294,13 +389,20 @@ public final class BenchMain {
     final String outDir = required(o, "out");
     final int reps = intOption(o, "reps", 5);
     final int warmup = intOption(o, "warmup", 2);
+    // each warm-up and repetition; prepare (which may load the data set) has its own; the case cap is a hang detector, 0 = none
     final int timeoutMin = intOption(o, "timeout-min", 30);
+    final int prepareTimeoutMin = intOption(o, "prepare-timeout-min", timeoutMin);
+    final int caseTimeoutMin = intOption(o, "case-timeout-min", 120);
+    // built before any work starts, so a bad limit is refused up front
+    final BenchRunner runner = new BenchRunner(reps, warmup, Duration.ofMinutes(timeoutMin), Duration.ofMinutes(prepareTimeoutMin),
+        Duration.ofMinutes(caseTimeoutMin));
     final long seed = intOption(o, "seed", 42);
     final int memLimitGb = intOption(o, "mem-limit-gb", 16);
     final String heap = o.getOrDefault("heap", "8g");
     final String trigger = o.getOrDefault("trigger", "manual");
     final String machineId = o.getOrDefault("machine-id", "local");
     final String tag = o.get("tag");
+    final String commitDate = commitDate(o);
     final JSONObject params;
     try {
       params = new JSONObject(o.getOrDefault("params", "{}"));
@@ -335,7 +437,6 @@ public final class BenchMain {
     final String clientCpus = resolveCpus(o.getOrDefault("client-cpus", "auto"), false);
 
     final Instant startedAt = Instant.now();
-    final BenchRunner runner = new BenchRunner(reps, warmup, Duration.ofMinutes(timeoutMin));
     final List<CaseResult> results = new ArrayList<>();
     JSONObject serverConfig = null;
     JSONObject imageInfo = null;
@@ -371,9 +472,12 @@ public final class BenchMain {
         .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
     if (tag != null)
       arcadedb.put("tag", tag);
+    if (commitDate != null)
+      arcadedb.put("commitDate", commitDate);
     final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
     config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
-    config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin).put("seed", seed)
+    config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin)
+        .put("prepareTimeoutMin", prepareTimeoutMin).put("caseTimeoutMin", caseTimeoutMin).put("seed", seed)
         .put("serverCpus", serverCpus.isEmpty() ? "none" : serverCpus)
         .put("clientCpus", clientCpus.isEmpty() ? "none" : clientCpus);
 
@@ -384,6 +488,22 @@ public final class BenchMain {
     new RunResult(info, results).write(dir);
     out.println(dir.resolve(runId + ".json"));
     return 0;
+  }
+
+  /**
+   * The {@code --commit-date} option: when the measured commit was made, as git prints it ({@code %cI}, with an offset) or as a
+   * UTC instant. The dashboard places a point at this date rather than at the run's start, so a release measured today lands
+   * where its code is. Returned as a UTC instant, {@code null} when the option is absent.
+   */
+  static String commitDate(final Map<String, String> o) {
+    final String value = o.get("commit-date");
+    if (value == null)
+      return null;
+    try {
+      return OffsetDateTime.parse(value).toInstant().toString();
+    } catch (final DateTimeParseException e) {
+      throw new IllegalArgumentException("--commit-date must be an ISO-8601 date-time with an offset, got '" + value + "'");
+    }
   }
 
   /** The value of an introspection call; a failure is logged and replaced by the fallback instead of aborting the run. */

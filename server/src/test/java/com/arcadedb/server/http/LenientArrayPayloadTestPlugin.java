@@ -30,7 +30,7 @@ import io.undertow.server.HttpServerExchange;
  * {@code refusesMalformedPayload()} and finds the raw body, which it still has, in {@code RAW_PAYLOAD}.
  * <p>
  * A plugin of its own and not a second route of {@link ArrayPayloadTestPlugin}, whose routes are listed exactly by
- * {@code Issue10296PluginRoutesRegisterApiTest}. Not auto-discovered: the route appears only for a test that names this plugin in
+ * {@code HttpPluginRoutesTest.RegisterApi}. Not auto-discovered: the route appears only for a test that names this plugin in
  * SERVER_PLUGINS.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

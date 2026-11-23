@@ -198,6 +198,16 @@ public interface GraphTraversalProvider {
   }
 
   /**
+   * A number that moves whenever a type changes, which is when {@link #resolveEdgeTypes} may answer another selection for the same
+   * names (issue #12032). What a holder of something built from one resolution checks before it keeps it: a resolution that was
+   * the same before and after a build says nothing of a type attached and detached again in between, the number does. The default
+   * is a constant, for a provider whose resolution is the request itself.
+   */
+  default long getTypesGeneration() {
+    return 0L;
+  }
+
+  /**
    * {@link #getNeighborIds} along ONE concrete edge type, sub-types left out: the slice a relationship is read from, which
    * is what names it when two hops of a pattern must not bind the same one (issue #10213).
    *

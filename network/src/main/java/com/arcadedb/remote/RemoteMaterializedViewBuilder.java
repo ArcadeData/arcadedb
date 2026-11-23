@@ -34,7 +34,7 @@ import com.arcadedb.schema.MaterializedViewBuilder;
  * A refusal that needs the schema - a name already taken by a view or a type, a source type that does not exist - comes
  * from the server, which runs the very same embedded builder: same sentence, and the remote client maps the server's
  * {@code SchemaException} back to a {@code SchemaException}, so a caller catches the same type on both paths. Pinned by
- * {@code Issue7688RemoteViewBuildersIT.aDuplicateNameIsRefusedOnBothPathsWithTheSameExceptionType}.
+ * {@code RemoteViewBuildersIT.ViewBuilders#aDuplicateNameIsRefusedOnBothPathsWithTheSameExceptionType}.
  */
 public class RemoteMaterializedViewBuilder extends MaterializedViewBuilder {
   private final RemoteDatabase remoteDatabase;

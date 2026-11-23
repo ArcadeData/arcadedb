@@ -48,6 +48,7 @@ import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.steps.AggregationStep;
+import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.CallStep;
 import com.arcadedb.query.opencypher.executor.steps.CountEdgesReturnStep;
 import com.arcadedb.query.opencypher.executor.steps.CreateStep;
@@ -137,6 +138,22 @@ final class CypherStepBuilder {
   }
 
   /**
+   * A SET, a REMOVE or a MERGE with actions holds its rows until every row has written, so the clauses after it read the writes
+   * of every row (issue #12656). One that ends the statement has no clause after it to read them: it hands them out as it
+   * writes them, so a bulk write ({@code UNWIND $rows AS row MATCH (n {id: row.id}) SET n += row}) keeps streaming and stays
+   * out of the per-operation heap limit.
+   */
+  private static AbstractExecutionStep withLastWriteStreaming(final AbstractExecutionStep root) {
+    if (root instanceof SetStep set)
+      set.streamRows();
+    else if (root instanceof RemoveStep remove)
+      remove.streamRows();
+    else if (root instanceof MergeStep merge)
+      merge.streamRows();
+    return root;
+  }
+
+  /**
    * Builds execution steps using the optimized physical plan.
    * Phase 4: Integrates physical operators with execution steps.
    * <p>
@@ -211,7 +228,8 @@ final class CypherStepBuilder {
           if (!setClause.isEmpty() && (barrierFirst || !EagerBarriers.absorbsSet(currentStep, setClause))) {
             if (currentStep != null && (barrierFirst || eagerness.needsBarrier(setClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
-            final SetStep setStep = new SetStep(setClause, context, functionFactory);
+            final SetStep setStep = new SetStep(setClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
             eagerness.observeWriteClause();
@@ -223,8 +241,11 @@ final class CypherStepBuilder {
         case DELETE: {
           final DeleteClause deleteClause = entry.getTypedClause();
           if (!deleteClause.isEmpty()) {
+            // A MATCH here is never preceded by a WITH (see CypherExecutionPlanner.shouldUseOptimizer()), so the walk of an
+            // earlier segment never reaches this DELETE (issue #12254)
             final DeleteStep deleteStep = new DeleteStep(deleteClause, context,
-                EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses));
+                EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
+                    || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, false));
             deleteStep.setPrevious(currentStep);
             currentStep = deleteStep;
             eagerness.observeWriteClause();
@@ -239,7 +260,8 @@ final class CypherStepBuilder {
             if (currentStep != null && (eagerness.needsBarrier(removeClause) || eagerness.needsBarrierAfterMerge(removeClause)
                 || eagerness.needsBarrierForPropertyWrites(removeClause)))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
-            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory);
+            final RemoveStep removeStep = new RemoveStep(removeClause, context, functionFactory,
+                SelectionPredicates.before(clausesInOrder, removeClause));
             removeStep.setPrevious(currentStep);
             currentStep = removeStep;
             eagerness.observeWriteClause();
@@ -415,7 +437,7 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 
   /**
@@ -493,6 +515,10 @@ final class CypherStepBuilder {
     // variable-length relationship), kept forever once tainted (even across a WITH that merely forwards
     // them unchanged) - see EagerBarriers.closeMatchSegment() and EagerBarriers.deleteMayTargetTaintedVariable().
     final Set<String> disconnectedTaintedVariables = new HashSet<>();
+    // True when a segment already closed matched a relationship pattern and no aggregating WITH has read its walk to the end
+    // since: the rows it produces still reach this segment one at a time, so a DETACH DELETE here still cuts the edge lists
+    // under it (issue #12254). Set where a WITH closes a segment, see EagerBarriers.relationshipsWalkedAfter()
+    boolean relationshipsWalkedBefore = false;
     // The UNWIND and CALL subquery clauses of the open segment, whose names take the taint of the segment's own MATCH variables
     // only when it closes (issue #12323): see EagerBarriers.closeMatchSegment()
     final List<ClauseEntry> currentSegmentBindings = new ArrayList<>();
@@ -639,6 +665,8 @@ final class CypherStepBuilder {
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
+            relationshipsWalkedBefore =
+                EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -655,6 +683,8 @@ final class CypherStepBuilder {
             final WithClause nextWith = ((ClauseEntry) clausesInOrder.get(entryIndex)).getTypedClause();
             applyProjectionToScope(nextWith.getItems(), boundVariables);
             // the skipped WITH starts a new segment (issue #6631)
+            relationshipsWalkedBefore =
+                EagerBarriers.relationshipsWalkedAfter(nextWith, currentSegmentMatchClauses, relationshipsWalkedBefore);
             EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
             EagerBarriers.propagateTaintThroughRenames(nextWith, disconnectedTaintedVariables);
             break;
@@ -675,7 +705,10 @@ final class CypherStepBuilder {
         // A WITH boundary starts a new segment (issue #6631) - but a WITH that plainly forwards a
         // variable bound by a disconnected-pattern MATCH (e.g. WITH n, o) does not resolve the #6491
         // hazard for that variable, since rows still flow through it one at a time rather than being
-        // fully consumed; EagerBarriers.closeMatchSegment() taints it before the segment is cleared.
+        // fully consumed; EagerBarriers.closeMatchSegment() taints it before the segment is cleared. The same goes for
+        // the walk of a relationship pattern (issue #12254): only an aggregating WITH ends it
+        relationshipsWalkedBefore =
+            EagerBarriers.relationshipsWalkedAfter(withClause, currentSegmentMatchClauses, relationshipsWalkedBefore);
         EagerBarriers.closeMatchSegment(currentSegmentMatchClauses, currentSegmentBindings, disconnectedTaintedVariables);
         // A rename (WITH n AS m) doesn't change how rows flow either - propagate the taint onto the
         // new name too, or a later DELETE of m would find nothing tainted under that name.
@@ -738,7 +771,7 @@ final class CypherStepBuilder {
             if (barrierFirst || eagerness.needsBarrier(setClause))
               currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
             final SetStep setStep =
-                new SetStep(setClause, context, functionFactory);
+                new SetStep(setClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, setClause));
             setStep.setPrevious(currentStep);
             currentStep = setStep;
           }
@@ -755,7 +788,7 @@ final class CypherStepBuilder {
               || eagerness.needsBarrierForPropertyWrites(removeClause))
             currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
           final RemoveStep removeStep =
-              new RemoveStep(removeClause, context, functionFactory);
+              new RemoveStep(removeClause, context, functionFactory, SelectionPredicates.before(clausesInOrder, removeClause));
           removeStep.setPrevious(currentStep);
           currentStep = removeStep;
           eagerness.observeWrite(removeClause);
@@ -766,7 +799,8 @@ final class CypherStepBuilder {
         final DeleteClause deleteClause = entry.getTypedClause();
         if (!deleteClause.isEmpty() && currentStep != null) {
           final boolean eagerMaterialize = EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
-              || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables);
+              || EagerBarriers.deleteMayTargetTaintedVariable(deleteClause, disconnectedTaintedVariables)
+              || EagerBarriers.detachDeleteNeedsEagerRead(deleteClause, currentSegmentMatchClauses, relationshipsWalkedBefore);
           final DeleteStep deleteStep = new DeleteStep(deleteClause, context, eagerMaterialize);
           deleteStep.setPrevious(currentStep);
           currentStep = deleteStep;
@@ -809,9 +843,13 @@ final class CypherStepBuilder {
 
       case FOREACH:
         final ForeachClause foreachClause = entry.getTypedClause();
+        // The body deletes per row, behind the walk of the MATCH that feeds it: a DETACH DELETE there cuts the edge lists
+        // that walk still reads, whatever the body names (issue #12254)
         final boolean foreachEagerMaterialize = foreachClause.containsDelete()
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses)
-                || EagerBarriers.foreachDeleteMayTargetTaintedVariable(foreachClause, disconnectedTaintedVariables));
+                || EagerBarriers.foreachDeleteMayTargetTaintedVariable(foreachClause, disconnectedTaintedVariables)
+                || (foreachClause.containsDetachDelete()
+                    && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore)));
         final boolean foreachEagerExecution =
             database.getConfiguration().getValueAsBoolean(GlobalConfiguration.OPENCYPHER_FOREACH_EAGER_READ)
                 && GraphReadAnalysis.graphReadFollows(clausesInOrder, entryIndex);
@@ -833,10 +871,15 @@ final class CypherStepBuilder {
         final CypherStatement subqueryBody = subqueryClause.getInnerStatement();
         // The body runs once per row the enumeration behind it hands over, so a node it deletes is unlinked while that
         // enumeration is still walking it (issue #10512). The rows are read ahead of the first run on the same terms as for
-        // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided
+        // a DELETE placed in the outer query, where DeleteStep.eagerMaterialize is decided. A DETACH DELETE in it also cuts the
+        // edge lists of a relationship pattern's walk, whatever it names (issue #12254)
         if (currentStep != null && ((EagerBarriers.subqueryBodyDeletes(subqueryBody)
             && (EagerBarriers.matchClausesNeedEagerDelete(currentSegmentMatchClauses) || !disconnectedTaintedVariables.isEmpty()))
-            || eagerness.needsBarrierForPropertyWrites(subqueryBody)))
+            || (EagerBarriers.subqueryBodyDetachDeletes(subqueryBody)
+            && EagerBarriers.relationshipsWalked(currentSegmentMatchClauses, relationshipsWalkedBefore))
+            || eagerness.needsBarrierForPropertyWrites(subqueryBody)
+            // a body that writes what a MERGE before it matches on runs after the MERGE of every row (issue #12520)
+            || eagerness.needsBarrierAfterMerge(subqueryBody)))
           currentStep = EagerBarriers.withEagerBarrier(currentStep, context, eagerness);
         final SubqueryStep subqueryStep =
             new SubqueryStep(subqueryClause, context, database, parameters, expressionEvaluator);
@@ -966,7 +1009,7 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 
   /** Whether {@code source} is reached from {@code end} through the steps' previous links. */
@@ -1388,9 +1431,16 @@ final class CypherStepBuilder {
                   ("  nd" + matchSteps.nextAnonymousId());
               matchVariables.add(variable); // Track variable for OPTIONAL MATCH
 
-              // Check if this variable was already bound in a previous MATCH clause
-              if (legacyBoundVariables.contains(variable)) {
-                // Variable already bound - skip creating a new MatchNodeStep
+              // A variable already bound in a previous MATCH clause needs no scan: with no label and no property to check,
+              // the binding is the match as long as it is a node, and a null one an OPTIONAL MATCH left cannot match
+              // (issue #11761). With labels or properties the MatchNodeStep below checks them against the bound vertex.
+              if (legacyBoundVariables.contains(variable) && !nodePattern.hasLabels() && !nodePattern.hasProperties()) {
+                final BoundNodeCheckStep checkStep = new BoundNodeCheckStep(variable, context);
+                if (currentStep != null && !(isOptional && matchChainStart == null))
+                  checkStep.setPrevious(currentStep);
+                currentStep = checkStep;
+                if (isOptional && matchChainStart == null)
+                  matchChainStart = checkStep;
                 continue;
               }
 
@@ -1749,8 +1799,9 @@ final class CypherStepBuilder {
     // statement.getMatchClauses() - one flat list each, not one per WITH-delimited segment), so it never
     // sees the multi-segment shape #6631 is about.
     if (statement.getDeleteClause() != null && !statement.getDeleteClause().isEmpty() && currentStep != null) {
-      final DeleteStep deleteStep = new DeleteStep(
-          statement.getDeleteClause(), context, EagerBarriers.matchClausesNeedEagerDelete(statement.getMatchClauses()));
+      final DeleteStep deleteStep = new DeleteStep(statement.getDeleteClause(), context,
+          EagerBarriers.matchClausesNeedEagerDelete(statement.getMatchClauses())
+              || EagerBarriers.detachDeleteNeedsEagerRead(statement.getDeleteClause(), statement.getMatchClauses(), false));
       deleteStep.setPrevious(currentStep);
       currentStep = deleteStep;
       eagerness.observeWriteClause();
@@ -1852,6 +1903,6 @@ final class CypherStepBuilder {
       currentStep = finalProjectionStep;
     }
 
-    return currentStep;
+    return withLastWriteStreaming(currentStep);
   }
 }

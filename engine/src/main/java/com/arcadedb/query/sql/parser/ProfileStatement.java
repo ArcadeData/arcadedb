@@ -145,5 +145,11 @@ public class ProfileStatement extends Statement {
   public boolean refersToParent() {
     return statement.refersToParent();
   }
+
+  /** PROFILE runs the wrapped statement, so a wrapped BEGIN, COMMIT or ROLLBACK is a transaction control (issue #12202). */
+  @Override
+  public boolean isTransactionControl() {
+    return statement.isTransactionControl();
+  }
 }
 /* JavaCC - OriginalChecksum=9fdd24510993cbee32e38a51c838bdb4 (do not edit this line) */
