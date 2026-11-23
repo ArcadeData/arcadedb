@@ -11899,9 +11899,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the record, so a caller that hands a search result on without reading its record asks this instead, and reads no page for
    * it. It cannot see a record removed from its bucket behind the index's back (a crash, a restore): only reading the record
    * notices that one, and {@code REBUILD INDEX} repairs it.
+   * <p>
+   * A "no" is checked again under the read lock: the replay of an update tombstones the old vector and adds the new one while it
+   * holds the write lock ({@link #replayRemovalsAndBatch}), and the first read is lock-free, so it can land between the two and a record
+   * that is in the index before and after the commit would be dropped from a search result as stale.
    */
   public boolean hasLiveVector(final RID rid) {
-    return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    if (vectorIndex().getVectorIdsForRid(rid).length > 0)
+      return true;
+    lock.readLock().lock();
+    try {
+      return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 
   /**
@@ -11987,6 +11998,51 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
   private static Set<RID> supersededRIDs(final TransactionVectorOverlay overlay) {
     return overlay == null ? null : overlay.supersededRIDs();
+  }
+
+  /**
+   * Commit replay of one transaction's entries for this index: tombstones the vectors of {@code removedRids}, then adds the
+   * winners of the batch, in ONE section under the write lock, so that the removal of a record's old vector and the add of its new
+   * one are a single step for searches (issue #13229). Replayed apart, each under the lock on its own, a search taking the read
+   * lock between the two saw neither vector, and a record that is in the index before and after the commit was missing from it.
+   * <p>
+   * Only this index's own removals and adds are inside the section: the replay of the transaction's other indexes does not hold
+   * it, and a transaction that only adds, or only removes, takes the lock as it always did. Everything that must not run under the
+   * index lock is done before it, as {@link #putBatch} does: the locations are materialised (issue #6722) and the dimensions of an
+   * index sized on its first vector are derived from its records (issue #11141).
+   *
+   * @param removedRids the RIDs whose vectors this transaction retires, replayed first
+   * @param keysList    the key arrays of the vectors to add, as for {@link #putBatch}
+   * @param ridsList    the RIDs of the vectors to add
+   */
+  public void replayRemovalsAndBatch(final List<RID> removedRids, final List<Object[]> keysList, final List<RID> ridsList) {
+    if (removedRids.isEmpty()) {
+      putBatch(keysList, ridsList);
+      return;
+    }
+    if (keysList.isEmpty()) {
+      for (int i = 0; i < removedRids.size(); i++)
+        remove(null, removedRids.get(i), true);
+      return;
+    }
+
+    final long startTime = System.currentTimeMillis();
+    checkIdAllocatorIsComplete();
+    if (metadata.dimensions < 1)
+      deriveDimensionsFromData();
+
+    lock.writeLock().lock();
+    try {
+      // the write lock is reentrant: each removal takes it again, and finds the locations materialised above
+      for (int i = 0; i < removedRids.size(); i++)
+        remove(null, removedRids.get(i), true);
+      putBatchUnderLock(keysList, ridsList);
+    } finally {
+      lock.writeLock().unlock();
+    }
+
+    scheduleInactivityRebuild();
+    metrics.addInsertLatency(System.currentTimeMillis() - startTime);
   }
 
   @Override
@@ -12579,71 +12635,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     lock.writeLock().lock();
     try {
-      // See put(): opened before the first page write so the insert cursor is captured (issue #7931).
-      final VectorIndexReplayUndo undo = openReplayUndo();
-
-      for (int i = 0; i < keysList.size(); i++) {
-        final Object[] keys = keysList.get(i);
-        final RID rid = ridsList.get(i);
-
-        if (keys == null || keys.length == 0 || keys[0] == null)
-          continue;
-
-        final float[] vector;
-        if (keys[0] instanceof ComparableVector c)
-          vector = c.vector;
-        else {
-          try {
-            vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
-          } catch (final IllegalArgumentException e) {
-            // Drop the row but log loudly: putBatch runs during commit replay where the originating
-            // call site has long returned, so a swallowed conversion failure is the only thing
-            // separating an operator from silent index drift. The cause is preserved for triage.
-            LogManager.instance().log(this, Level.WARNING,
-                "Vector index '%s' skipping batch entry for %s: unsupported key type %s (%s)",
-                indexName, rid, keys[0].getClass().getSimpleName(), e.getMessage());
-            continue;
-          }
-        }
-
-        // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
-        // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
-        // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
-        // the index on, or the copy of one another node accepted
-        if (metadata.dimensions < 1)
-          sizeOnVector(vector.length, false);
-
-        if (vector.length != metadata.dimensions) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Vector index '%s' skipping batch entry for %s: %s of length %d does not match index dimension %d",
-              indexName, rid, keys[0].getClass().getSimpleName(), vector.length, metadata.dimensions);
-          continue;
-        }
-
-        final int id = allocateVectorId();
-        if (undo != null)
-          undo.recordAllocated(id);
-
-        persistVectorWithLocation(id, rid, vector);
-
-        final VectorFloat<?> vf = vts.createFloatVector(vector);
-
-        // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
-        // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
-        queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
-
-        mutationsSinceSerialize.incrementAndGet();
-        if (undo != null)
-          ++undo.mutationsCharged;
-      }
-
-      if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
-        if (undo != null)
-          undo.recordGraphFlip(graphState);
-        this.graphState = GraphState.MUTABLE;
-      }
-
-      metrics.incrementInsertOperations(keysList.size());
+      putBatchUnderLock(keysList, ridsList);
     } finally {
       lock.writeLock().unlock();
     }
@@ -12653,6 +12645,75 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final long elapsed = System.currentTimeMillis() - startTime;
     metrics.addInsertLatency(elapsed);
+  }
+
+  /** The body of {@link #putBatch}, run by a caller that holds the write lock and did the steps that precede it. */
+  private void putBatchUnderLock(final List<Object[]> keysList, final List<RID> ridsList) {
+    // See put(): opened before the first page write so the insert cursor is captured (issue #7931).
+    final VectorIndexReplayUndo undo = openReplayUndo();
+
+    for (int i = 0; i < keysList.size(); i++) {
+      final Object[] keys = keysList.get(i);
+      final RID rid = ridsList.get(i);
+
+      if (keys == null || keys.length == 0 || keys[0] == null)
+        continue;
+
+      final float[] vector;
+      if (keys[0] instanceof ComparableVector c)
+        vector = c.vector;
+      else {
+        try {
+          vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
+        } catch (final IllegalArgumentException e) {
+          // Drop the row but log loudly: putBatch runs during commit replay where the originating
+          // call site has long returned, so a swallowed conversion failure is the only thing
+          // separating an operator from silent index drift. The cause is preserved for triage.
+          LogManager.instance().log(this, Level.WARNING,
+              "Vector index '%s' skipping batch entry for %s: unsupported key type %s (%s)",
+              indexName, rid, keys[0].getClass().getSimpleName(), e.getMessage());
+          continue;
+        }
+      }
+
+      // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
+      // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+      // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
+      // the index on, or the copy of one another node accepted
+      if (metadata.dimensions < 1)
+        sizeOnVector(vector.length, false);
+
+      if (vector.length != metadata.dimensions) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' skipping batch entry for %s: %s of length %d does not match index dimension %d",
+            indexName, rid, keys[0].getClass().getSimpleName(), vector.length, metadata.dimensions);
+        continue;
+      }
+
+      final int id = allocateVectorId();
+      if (undo != null)
+        undo.recordAllocated(id);
+
+      persistVectorWithLocation(id, rid, vector);
+
+      final VectorFloat<?> vf = vts.createFloatVector(vector);
+
+      // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
+      // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
+      queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
+
+      mutationsSinceSerialize.incrementAndGet();
+      if (undo != null)
+        ++undo.mutationsCharged;
+    }
+
+    if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
+      if (undo != null)
+        undo.recordGraphFlip(graphState);
+      this.graphState = GraphState.MUTABLE;
+    }
+
+    metrics.incrementInsertOperations(keysList.size());
   }
 
   /**
