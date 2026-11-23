@@ -759,9 +759,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // longer than this means something is not releasing, and failing the apply loudly is better than installing
   // a sealed store that a copy in flight can pair with the wrong page image.
   static final long              SEALED_INSTALL_LOCK_TIMEOUT_MS    = 120_000L;
-  /** The keys of the range a continuous aggregate records as invalidated, in the schema JSON (see ContinuousAggregateImpl.toJSON). */
-  static final String            INVALIDATED_FROM_KEY              = "invalidatedFromTs";
-  static final String            INVALIDATED_TO_KEY                = "invalidatedToTs";
 
   // The transactions this node originated that are in flight between replication and the publication of their
   // pages, and the page versions the Raft log has assigned but this node has not applied yet (issue #6965).

@@ -961,7 +961,7 @@ final class SchemaEntryApplier {
    * for a sealed entry while a range is pending on the leader, which lasts until its next refresh.
    */
   static boolean carriesAContinuousAggregateRecordNotHeldHere(final DatabaseInternal db, final String schemaJson) {
-    if (schemaJson == null || !(schemaJson.contains(ArcadeStateMachine.INVALIDATED_FROM_KEY)
+    if (schemaJson == null || !(schemaJson.contains(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
         || schemaJson.contains(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)))
       return false;
     final JSONObject aggregates = new JSONObject(schemaJson).getJSONObject("continuousAggregates", null);
@@ -974,8 +974,8 @@ final class SchemaEntryApplier {
       if (definition == null)
         continue;
       // the keys every build reads, and the ones of the late appends since #13049: the definition holds a range under each pair
-      final boolean carriesDeleted = definition.has(ArcadeStateMachine.INVALIDATED_FROM_KEY)
-          && definition.has(ArcadeStateMachine.INVALIDATED_TO_KEY);
+      final boolean carriesDeleted = definition.has(ContinuousAggregateImpl.INVALIDATED_FROM_KEY)
+          && definition.has(ContinuousAggregateImpl.INVALIDATED_TO_KEY);
       final boolean carriesLate = definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY)
           && definition.has(ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY);
       if (!carriesDeleted && !carriesLate)
@@ -985,8 +985,8 @@ final class SchemaEntryApplier {
         return true;
       // the record as this node would write it: compared with the leader's, key by key, so the two spell the same hull
       final JSONObject heldDefinition = held.toJSON();
-      if (carriesDeleted && differsFromRecordHeld(heldDefinition, definition, ArcadeStateMachine.INVALIDATED_FROM_KEY,
-          ArcadeStateMachine.INVALIDATED_TO_KEY))
+      if (carriesDeleted && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.INVALIDATED_FROM_KEY,
+          ContinuousAggregateImpl.INVALIDATED_TO_KEY))
         return true;
       if (carriesLate && differsFromRecordHeld(heldDefinition, definition, ContinuousAggregateImpl.LATE_INVALIDATED_FROM_KEY,
           ContinuousAggregateImpl.LATE_INVALIDATED_TO_KEY))
