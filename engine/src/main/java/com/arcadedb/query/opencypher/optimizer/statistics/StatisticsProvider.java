@@ -370,7 +370,8 @@ public class StatisticsProvider {
 
     // If no vertex labels provided, estimate using all vertices
     if (sourceVertexCount == 0 && targetVertexCount == 0) {
-      // Collect all vertex type counts
+      // Collect all vertex type counts. A sum over EVERY vertex type, so each one is counted on its own buckets: a polymorphic
+      // count here would charge the vertices of a subtype once more for each of its ancestors
       long totalVertexCount = 0;
       for (final DocumentType type : schema.getTypes()) {
         if (type instanceof VertexType) {
