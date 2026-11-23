@@ -171,6 +171,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public static volatile SchemaEntryRecorder TEST_SCHEMA_ENTRY_COUNTER = null;
 
   /**
+   * Test-only: runs on the thread taking a checkpoint, right before {@link #takeSnapshot()} forces the data files (issue
+   * #11989), so a test can see what was still left to force on the apply thread. Always null in production.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method.
+   */
+  static volatile Consumer<ArcadeStateMachine> TEST_BEFORE_CHECKPOINT_SYNC = null;
+
+  /**
    * See {@link #TEST_SCHEMA_ENTRY_COUNTER}. Deduplicating by Raft entry index is what makes
    * {@link #count()} the number of schema entries the leader PUBLISHED, rather than the number of times this node
    * happened to apply one.
@@ -1867,7 +1875,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * The ArcadeDB database files on disk are inherently the snapshot state, once they are durable: neither a replicated
    * apply nor a local commit fsyncs a data file, so the pages of every open database are flushed and forced first
-   * (issue #11258, {@link #syncDataFilesOfOpenDatabases()}). Returning the last-applied index here tells Ratis it may
+   * (issue #11258, {@link #syncDataFilesOfOpenDatabases(Level)}). Returning the last-applied index here tells Ratis it may
    * purge log entries up to that index, reducing log disk usage over time, and a restart replays none of them.
    * <p>
    * <b>Why a marker file is written (issue #4829):</b> the returned index is the Ratis contract
@@ -1981,7 +1989,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // them with nothing left to replay: the empty dictionary and bucket files, with crash recovery `completed` over them,
     // of the Jepsen LazyFS runs. appliedIndex was read above, and the apply writes or enqueues an entry's pages before
     // lastAppliedIndex moves past it, so every page of an entry at or below currentIndex is pending or written by now.
-    if (!syncDataFilesOfOpenDatabases()) {
+    final Consumer<ArcadeStateMachine> beforeCheckpointSync = TEST_BEFORE_CHECKPOINT_SYNC;
+    if (beforeCheckpointSync != null)
+      beforeCheckpointSync.accept(this);
+    if (!syncDataFilesOfOpenDatabases(Level.WARNING)) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not make the data files of every open database durable at index %d; not authorising log purge", currentIndex);
       return RaftLog.INVALID_LOG_INDEX;
@@ -2041,6 +2052,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Forces the data files of every open database ahead of a checkpoint, on the caller's thread (issue #11989).
+   * {@link #takeSnapshot()} runs on the Ratis StateMachineUpdater, which is also the apply thread: everything it forces
+   * there holds every commit of the node until it is done, which after a compaction interval of writes can take seconds.
+   * Forcing the files here first, from the thread that asks for the checkpoint, leaves {@link #takeSnapshot()} only what
+   * was written in between: it still forces that, so the guarantee of the marker does not depend on this call. A failure
+   * is not reported here for the same reason, the checkpoint reports it, and nothing thrown here may keep the caller from
+   * asking for the checkpoint.
+   * <p>
+   * Nothing is forced when Ratis is going to answer the request without a checkpoint, that is when fewer than
+   * {@code creationGap} entries were applied since the latest snapshot (the test of {@code RaftServerImpl.takeSnapshotAsync},
+   * on the same two indexes): a node below the gap pays no fsync for a tick that purges nothing. An entry applied between
+   * this test and Ratis's own can still take the checkpoint without the early pass; it then forces everything itself, as
+   * it did before. The same holds if a later Ratis decides differently: this test only chooses where the forcing is paid,
+   * a wrong answer costs one early pass too many or one stall on the apply thread, never the durability of the marker.
+   *
+   * @param creationGap the gap the snapshot request carries; not positive means Ratis's configured one, which is not
+   *                    known here, so the files are forced
+   */
+  void syncDataFilesAheadOfCheckpoint(final long creationGap) {
+    if (creationGap > 0) {
+      final TermIndex applied = getLastAppliedTermIndex();
+      final var latest = storage.getLatestSnapshot();
+      if (applied == null || applied.getIndex() - (latest != null ? latest.getIndex() : 0L) < creationGap)
+        return;
+    }
+    try {
+      syncDataFilesOfOpenDatabases(Level.FINE);
+    } catch (final RuntimeException e) {
+      // A database closed or swapped by an install under this pass: the checkpoint forces what is open by then
+      LogManager.instance().log(this, Level.FINE, "Could not force the data files ahead of the checkpoint: %s", e.getMessage());
+    }
+  }
+
+  /**
    * Makes the pages written so far by every open database durable in its data files, for {@link #takeSnapshot()} (issue
    * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
    * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
@@ -2048,9 +2093,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * nothing written since the previous checkpoint costs no fsync. A database that is not open was forced when it closed,
    * except after a crash-equivalent close, which {@link #databasesClosedWithPagesLeftToRecovery()} reports (issue #12025).
    *
+   * @param failureLevel the level a database whose pages are not all durable is logged at
+   *
    * @return false when a database still had pages pending at the deadline or an fsync failed
    */
-  private boolean syncDataFilesOfOpenDatabases() {
+  private boolean syncDataFilesOfOpenDatabases(final Level failureLevel) {
     if (this.server == null)
       return true;
     // One deadline for the whole checkpoint, not one per database: the apply thread waits at most this long however many
@@ -2060,7 +2107,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (open instanceof LocalDatabase local && local.isOpen() && !local.getPageManager()
           .flushAndSyncDatabase(local, Math.max(0L, deadline - System.currentTimeMillis()))) {
         // A failed fsync is logged at SEVERE with its exception by FileManager.syncFiles(), naming the file
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(this, failureLevel,
             "Database '%s': its pages are not all durable yet (flush still pending after %dms, flush suspended by a backup, "
                 + "or an fsync failed, logged above)", local.getName(), SNAPSHOT_DATA_FLUSH_WAIT_MS);
         return false;
