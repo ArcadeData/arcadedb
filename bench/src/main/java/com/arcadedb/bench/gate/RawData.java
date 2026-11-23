@@ -116,9 +116,11 @@ public final class RawData {
       final String caseName = r.getString("case", "");
       final String scale = r.getString("scale", "");
       final String status = r.getString("status", "");
+      final boolean hostNotQuiet = objectOrEmpty(r, "notes").has("hostNotQuiet");
 
       add(lines, new LineKey(machine, variant, scale, workload, caseName, LineKey.STATUS),
-          new Point(trigger, ref, commit, tag, t, runAt, runId, benchCommit, status, Double.NaN, new double[0], null, null));
+          new Point(trigger, ref, commit, tag, t, runAt, runId, benchCommit, status, Double.NaN, new double[0], null, null,
+              hostNotQuiet));
 
       final JSONArray metrics = r.getJSONArray("metrics", new JSONArray());
       for (int m = 0; m < metrics.length(); m++) {
@@ -133,7 +135,7 @@ public final class RawData {
           values[v] = vals.getDouble(v);
         add(lines, new LineKey(machine, variant, scale, workload, caseName, metric.getString("name", "")),
             new Point(trigger, ref, commit, tag, t, runAt, runId, benchCommit, status, median, values,
-                metric.getString("unit", null), metric.getString("better", null)));
+                metric.getString("unit", null), metric.getString("better", null), hostNotQuiet));
       }
     }
   }

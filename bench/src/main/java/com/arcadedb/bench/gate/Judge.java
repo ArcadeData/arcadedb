@@ -24,7 +24,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
-/** Judges the newest point of each trigger of each line against its baseline. */
+/**
+ * Judges the newest point of each trigger of each line against its baseline. A point of a case during which the host was not quiet
+ * ({@link Point#hostNotQuiet()}) is not a measurement: it is never judged, never a baseline and never followed.
+ */
 final class Judge {
 
   static final String[] TRIGGERS = { "nightly", "release" };
@@ -53,10 +56,10 @@ final class Judge {
     return out;
   }
 
-  /** The last point of the trigger, or null. */
+  /** The last point of the trigger measured on a quiet host, or null. */
   static Point newest(final List<Point> points, final String trigger) {
     for (int i = points.size() - 1; i >= 0; i--)
-      if (trigger.equals(points.get(i).trigger()))
+      if (trigger.equals(points.get(i).trigger()) && !points.get(i).hostNotQuiet())
         return points.get(i);
     return null;
   }
@@ -80,7 +83,7 @@ final class Judge {
     final LinkedHashMap<String, Point> byRef = new LinkedHashMap<>();
     for (int i = from + 1; i < points.size(); i++) {
       final Point p = points.get(i);
-      if (!trigger.equals(p.trigger()) || p.ref().equals(lastRun))
+      if (!trigger.equals(p.trigger()) || p.ref().equals(lastRun) || p.hostNotQuiet())
         continue;
       byRef.remove(p.ref());
       byRef.put(p.ref(), p);
@@ -89,14 +92,14 @@ final class Judge {
   }
 
   /**
-   * The nearest earlier point of the same trigger and a different ref: the first valid one for a metric line, whatever its status
-   * for the status line. Null if none.
+   * The nearest earlier point of the same trigger and a different ref, measured on a quiet host: the first valid one for a metric line,
+   * whatever its status for the status line. Null if none.
    */
   static Point baselineOf(final List<Point> points, final Point newest, final boolean statusLine) {
     final int idx = points.lastIndexOf(newest);
     for (int i = (idx < 0 ? points.size() : idx) - 1; i >= 0; i--) {
       final Point p = points.get(i);
-      if (!p.trigger().equals(newest.trigger()) || p.ref().equals(newest.ref()))
+      if (!p.trigger().equals(newest.trigger()) || p.ref().equals(newest.ref()) || p.hostNotQuiet())
         continue;
       if (statusLine || p.valid())
         return p;

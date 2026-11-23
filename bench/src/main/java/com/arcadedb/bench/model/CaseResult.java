@@ -29,18 +29,48 @@ import java.util.Locale;
  * The outcome of one case. A failed or timed-out case is kept with its status and error, never dropped.
  */
 public record CaseResult(String workload, String caseName, String scale, JSONObject params, int reps, int warmup,
-                         List<Metric> metrics, Status status, String error) {
+                         List<Metric> metrics, Status status, String error, JSONObject notes, JSONArray histograms) {
   public enum Status {
     OK, FAILED, TIMEOUT
+  }
+
+  public CaseResult(final String workload, final String caseName, final String scale, final JSONObject params, final int reps,
+      final int warmup, final List<Metric> metrics, final Status status, final String error) {
+    this(workload, caseName, scale, params, reps, warmup, metrics, status, error, new JSONObject(), new JSONArray());
+  }
+
+  public CaseResult {
+    if (notes == null)
+      notes = new JSONObject();
+    if (histograms == null)
+      histograms = new JSONArray();
+  }
+
+  /**
+   * Returns a copy with the note set, leaving this instance untouched.
+   */
+  public CaseResult withNote(final String key, final Object value) {
+    final JSONObject copy = new JSONObject(notes.toString());
+    copy.put(key, value);
+    return new CaseResult(workload, caseName, scale, params, reps, warmup, metrics, status, error, copy, histograms);
+  }
+
+  public CaseResult withStatus(final Status newStatus, final String newError) {
+    return new CaseResult(workload, caseName, scale, params, reps, warmup, metrics, newStatus, newError, notes, histograms);
   }
 
   public JSONObject toJSON() {
     final JSONArray array = new JSONArray();
     for (final Metric metric : metrics)
       array.put(metric.toJSON());
-    return new JSONObject().put("workload", workload).put("case", caseName).put("scale", scale).put("params", params)
+    final JSONObject json = new JSONObject().put("workload", workload).put("case", caseName).put("scale", scale).put("params", params)
         .put("reps", reps).put("warmup", warmup).put("metrics", array)
         .put("status", status.name().toLowerCase(Locale.ROOT)).put("error", error == null ? JSONObject.NULL : error);
+    if (!notes.isEmpty())
+      json.put("notes", notes);
+    if (histograms.length() > 0)
+      json.put("histograms", histograms);
+    return json;
   }
 
   public static CaseResult fromJSON(final JSONObject json) {
@@ -51,6 +81,7 @@ public record CaseResult(String workload, String caseName, String scale, JSONObj
     return new CaseResult(json.getString("workload"), json.getString("case"), json.getString("scale"),
         json.getJSONObject("params", new JSONObject()), json.getInt("reps", 0), json.getInt("warmup", 0), metrics,
         Status.valueOf(json.getString("status", "ok").toUpperCase(Locale.ROOT)),
-        json.isNull("error") ? null : json.getString("error"));
+        json.isNull("error") ? null : json.getString("error"), json.getJSONObject("notes", new JSONObject()),
+        json.getJSONArray("histograms", new JSONArray()));
   }
 }
