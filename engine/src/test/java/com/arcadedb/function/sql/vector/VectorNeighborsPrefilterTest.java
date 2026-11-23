@@ -420,6 +420,23 @@ class VectorNeighborsPrefilterTest {
         assertThat(spaces(row.getProperty("n"))).containsOnly(row.<String>getProperty("name")).hasSize(5);
     }
 
+    @Test
+    void aSubqueryThatRefersToItsParentRunsOncePerCallToo() {
+      // The candidate is never bound to a variable the subquery can see, so within one call a $parent subquery reads only the
+      // enclosing row, which the call does not change: re-running it before each test answered the same rows every time
+      calls.set(0);
+      final List<Result> rows = query("""
+          SELECT name,
+                 `vector.neighbors`('Passage[embedding]', :q, 5,
+                   { where: "space IN (SELECT issue12112Counted(name) AS name FROM Allowed WHERE name = $parent.$current.name)" }) AS n
+          FROM Allowed ORDER BY name""", Map.of("q", QUERY));
+
+      assertThat(rows).hasSize(2);
+      for (final Result row : rows)
+        assertThat(spaces(row.getProperty("n"))).containsOnly(row.<String>getProperty("name")).hasSize(5);
+      assertThat(calls.get()).as("two outer rows, one call each, one one-row subquery per call").isEqualTo(2);
+    }
+
     private List<String> spaces(final Object neighbors) {
       final List<String> out = new ArrayList<>();
       for (final Object neighbor : (List<?>) neighbors) {

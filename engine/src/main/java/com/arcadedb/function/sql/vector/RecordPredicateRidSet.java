@@ -104,8 +104,9 @@ import java.util.logging.Level;
  * for a small, known set of RIDs the {@code filter} option remains the plan that scans only them.
  * <p>
  * A subquery of a SQL condition is lifted out of it once per call, as the planner of a {@code SELECT} lifts the subqueries of its
- * {@code WHERE} into LETs (issue #12112): an uncorrelated one runs on the first test and its rows are read by every later one,
- * where evaluated in place it ran again for every candidate; one that refers to {@code $parent} still runs before each test.
+ * {@code WHERE} into LETs (issue #12112): it runs on the first test and its rows are read by every later one, where evaluated
+ * in place it ran again for every candidate. That holds for one that refers to {@code $parent} too: the candidate is never bound
+ * to a variable the subquery can see, so within one call it reads only the enclosing row, which the call does not change.
  * Their values are variables of a context of the call's own, a child of the caller's, so they neither overwrite the
  * enclosing statement's own lifted subqueries (the generated aliases are the same) nor outlive the call.
  * <p>
@@ -148,8 +149,8 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   private final LiftedSubquery[]                subqueries;
   // Where the condition is evaluated: the caller's context, or a child of it holding the values of the lifted subqueries
   private final CommandContext                  evaluationContext;
-  // Whether the uncorrelated subqueries ran: on the first test of the call. Read and written under this set's lock
-  private       boolean                         uncorrelatedBound;
+  // Whether the lifted subqueries ran: on the first test of the call. Read and written under this set's lock
+  private       boolean                         subqueriesBound;
 
   /**
    * The equalities of the predicate an index may answer, and whether they are the whole predicate.
@@ -165,10 +166,9 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
   }
 
   /**
-   * A subquery lifted out of the condition, which reads its value through the variable {@code alias}: an uncorrelated one runs
-   * once per call, one that refers to {@code $parent} before each test, as the LET steps of a {@code SELECT} run them.
+   * A subquery lifted out of the condition, which reads its value through the variable {@code alias}, run once per call.
    */
-  private record LiftedSubquery(String alias, Statement statement, boolean correlated) {
+  private record LiftedSubquery(String alias, Statement statement) {
   }
 
   private RecordPredicateRidSet(final CommandContext context, final Map<String, Object> equalities, final WhereClause condition,
@@ -263,19 +263,23 @@ public final class RecordPredicateRidSet extends AbstractSet<RID> implements Pre
     final LiftedSubquery[] lifted = new LiftedSubquery[found.size()];
     int i = 0;
     for (final Map.Entry<Identifier, Statement> e : found.entrySet())
-      lifted[i++] = new LiftedSubquery(e.getKey().getStringValue(), e.getValue(), e.getValue().refersToParent());
+      lifted[i++] = new LiftedSubquery(e.getKey().getStringValue(), e.getValue());
     return lifted;
   }
 
   /**
-   * Binds the values of the lifted subqueries in the evaluation context: the uncorrelated ones on the first test of the call,
-   * the correlated ones on every test. Called under this set's lock.
+   * Binds the values of the lifted subqueries in the evaluation context, on the first test of the call. A subquery that refers
+   * to {@code $parent} is no exception: {@code matchesFilters} binds the candidate to no variable, so the only row such a
+   * subquery can read is the enclosing one, fixed for the whole call, and running it again before each test answered the same
+   * rows at the cost per candidate this set exists to avoid. The flag is set only once every subquery ran: one that throws
+   * fails the search, and nothing half-bound is ever read. Called under this set's lock.
    */
   private void bindSubqueries() {
+    if (subqueriesBound)
+      return;
     for (final LiftedSubquery subquery : subqueries)
-      if (subquery.correlated || !uncorrelatedBound)
-        evaluationContext.setVariable(subquery.alias, run(subquery.statement));
-    uncorrelatedBound = true;
+      evaluationContext.setVariable(subquery.alias, run(subquery.statement));
+    subqueriesBound = true;
   }
 
   private List<Result> run(final Statement statement) {
