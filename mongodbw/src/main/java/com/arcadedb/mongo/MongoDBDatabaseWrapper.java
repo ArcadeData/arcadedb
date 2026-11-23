@@ -989,10 +989,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /** Closes the cursors that have not been read from for {@link #CURSOR_IDLE_NANOS} as of {@code nowNanos}. */
   void purgeIdleCursors(final long nowNanos) {
-    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet())
-      if (!entry.getValue().isNoTimeout() && nowNanos - entry.getValue().getLastUsedNanos() > CURSOR_IDLE_NANOS
-          && findCursors.remove(entry.getKey(), entry.getValue()))
-        entry.getValue().close();
+    for (final Map.Entry<Long, MongoFindCursor> entry : findCursors.entrySet()) {
+      final MongoFindCursor cursor = entry.getValue();
+      if (cursor.isNoTimeout() || nowNanos - cursor.getLastUsedNanos() <= CURSOR_IDLE_NANOS)
+        continue;
+      // read again under the monitor a getMore holds while it serves a batch: one that touched the cursor since keeps it, and one
+      // that comes after finds it closed. A cursor in use is touched, so the monitor of an idle one is never waited for
+      synchronized (cursor) {
+        if (nowNanos - cursor.getLastUsedNanos() > CURSOR_IDLE_NANOS && findCursors.remove(entry.getKey(), cursor))
+          cursor.close();
+      }
+    }
   }
 
   /** {@link #purgeIdleCursors} at most once per {@link #PURGE_INTERVAL_NANOS}: a database with no cursor left open pays one read. */

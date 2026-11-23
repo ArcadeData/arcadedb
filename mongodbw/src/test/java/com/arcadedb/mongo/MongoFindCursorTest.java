@@ -190,6 +190,44 @@ class MongoFindCursorTest {
     assertThat(tiny.takeBatch(Integer.MAX_VALUE, 1L)).as("the budget is smaller than one document").hasSize(1);
   }
 
+  /** A string is answered as its UTF-8 bytes: three for a CJK character, and four for the pair of chars of an emoji. */
+  @Test
+  void aStringCountsTheBytesOfItsUtf8Text() {
+    assertThat(MongoFindCursor.estimateSize(new Document("t", "x".repeat(1_000)))).isBetween(1_000L, 1_030L);
+    assertThat(MongoFindCursor.estimateSize(new Document("t", "中".repeat(1_000)))).isBetween(3_000L, 3_030L);
+    assertThat(MongoFindCursor.estimateSize(new Document("t", "😀".repeat(1_000)))).isBetween(4_000L, 4_030L);
+    assertThat(MongoFindCursor.estimateSize(new Document("中".repeat(100), 1))).as("a field name too").isGreaterThan(300L);
+  }
+
+  /** The budget is checked before a document joins a batch: the batch is never filled past it, and the document is not lost. */
+  @Test
+  void aDocumentThatDoesNotFitWaitsForTheNextBatchWithoutBeingLostOrCountedTwice() {
+    final String text = "中".repeat(2_000);
+    final Source source = new Source(5);
+    final Iterator<Object> rows = new Iterator<>() {
+      @Override
+      public boolean hasNext() {
+        return source.hasNext();
+      }
+
+      @Override
+      public Object next() {
+        return new Document("n", ((Document) source.next()).get("n")).append("t", text);
+      }
+    };
+    final MongoFindCursor cursor = new MongoFindCursor(rows, source, 0, 4, null);
+
+    // 6 KB a document, a budget of 10 KB: a batch holds one
+    for (int expected = 0; expected < 4; expected++) {
+      final List<Document> batch = cursor.takeBatch(Integer.MAX_VALUE, 10_000L);
+      assertThat(values(batch)).containsExactly(expected);
+      assertThat(cursor.isEmpty()).as("a retained document keeps the cursor from being empty, until the limit").isEqualTo(expected == 3);
+    }
+    assertThat(source.pulled.get()).as("the limit stops the reading: the fifth row is never pulled").isEqualTo(4);
+    assertThat(source.closed.get()).isEqualTo(1);
+    assertThat(cursor.takeBatch(Integer.MAX_VALUE, 10_000L)).isEmpty();
+  }
+
   /** A byte[] property is answered as a BinData: its bytes, not the 16 of a number, are what the reply holds. */
   @Test
   void aBinaryValueCountsItsBytesAndEndsTheBatchAtTheBudget() {

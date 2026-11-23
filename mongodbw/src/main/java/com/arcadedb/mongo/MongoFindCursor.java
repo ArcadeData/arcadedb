@@ -61,6 +61,9 @@ final class MongoFindCursor implements Cursor {
   private       long           remaining;
   private       boolean        closed;
   private       boolean        drained;
+  /** The document converted for a batch that had no room for it, answered first by the next one, with its estimated size. */
+  private       Document       pending;
+  private       long           pendingSize;
 
   // WHAT THE DATABASE WRAPPER KNOWS ABOUT A REGISTERED CURSOR: SET BEFORE THE CURSOR IS PUBLISHED IN ITS MAP, WHICH PUBLISHES THEM TOO
   private volatile long    id;
@@ -104,6 +107,8 @@ final class MongoFindCursor implements Cursor {
   public synchronized boolean isEmpty() {
     if (closed)
       return true;
+    if (pending != null)
+      return false;
     if (remaining <= 0L) {
       close();
       return true;
@@ -139,17 +144,33 @@ final class MongoFindCursor implements Cursor {
       final boolean budgeted = maxBytes != Long.MAX_VALUE;
       long bytes = 0L;
       while (batch.size() < maxDocuments) {
-        if (remaining <= 0L || !rows.hasNext()) {
-          drained = true;
+        final Document document;
+        long size = 0L;
+        if (pending != null) {
+          // the document the batch before it had no room for
+          document = pending;
+          size = pendingSize;
+          pending = null;
+        } else {
+          if (remaining <= 0L || !rows.hasNext()) {
+            drained = true;
+            break;
+          }
+          final Document converted = toDocument(rows.next());
+          document = projection != null ? projection.apply(converted) : converted;
+          // the size is not asked of a batch with no budget (an OP_QUERY answers every document in one reply): it would walk every value
+          if (budgeted)
+            size = estimateSize(document);
+        }
+        // a document that does not fit what the batch holds waits for the next one, which it opens: a batch is never filled past its
+        // budget, except by its first document, which is answered whatever its size or the cursor would never advance past it
+        if (budgeted && !batch.isEmpty() && bytes + size > maxBytes) {
+          pending = document;
+          pendingSize = size;
           break;
         }
-        Document document = toDocument(rows.next());
-        if (projection != null)
-          document = projection.apply(document);
         batch.add(document);
-        // the size is not asked of a batch with no budget (an OP_QUERY answers every document in one reply): it would walk every value
-        if (budgeted)
-          bytes += estimateSize(document);
+        bytes += size;
         // the limit is reached with this document: known without reading a row more
         if (--remaining <= 0L) {
           drained = true;
@@ -191,6 +212,7 @@ final class MongoFindCursor implements Cursor {
     if (closed)
       return;
     closed = true;
+    pending = null;
     if (resource != null)
       try {
         resource.close();
@@ -247,14 +269,14 @@ final class MongoFindCursor implements Cursor {
   // ---- the size a document takes in a reply
 
   /**
-   * What a document takes in a BSON reply, estimated from its values: the text of a string counts one byte per character (the
-   * budget is a third of the message a driver accepts, which covers the three bytes a character takes at most). Nothing is
-   * encoded, this only decides where a batch ends.
+   * What a document takes in a BSON reply, estimated from its values: a string counts the bytes of its UTF-8 text, a binary its
+   * length, a number or a date the 16 bytes that cover the widest of them. Nothing is encoded, this only decides where a batch ends:
+   * the budget is a third of the message a driver accepts, and no batch is filled past it but by its first document.
    */
   static long estimateSize(final Document document) {
     long size = 5L;
     for (final Map.Entry<String, Object> entry : document.entrySet())
-      size += 2L + entry.getKey().length() + estimateSize(entry.getValue());
+      size += 2L + utf8Length(entry.getKey()) + estimateSize(entry.getValue());
     return size;
   }
 
@@ -262,7 +284,7 @@ final class MongoFindCursor implements Cursor {
     if (value == null)
       return 0L;
     if (value instanceof String string)
-      return 5L + string.length();
+      return 5L + utf8Length(string);
     if (value instanceof Document document)
       return estimateSize(document);
     if (value instanceof Collection<?> collection) {
@@ -277,14 +299,26 @@ final class MongoFindCursor implements Cursor {
     if (value instanceof BinData binary)
       return 5L + binary.getData().length;
     if (value instanceof BsonRegularExpression regex)
-      return 2L + regex.getPattern().length() + (regex.getOptions() != null ? regex.getOptions().length() : 0);
+      return 2L + utf8Length(regex.getPattern()) + (regex.getOptions() != null ? regex.getOptions().length() : 0);
     if (value instanceof Map<?, ?> map) {
       long size = 5L;
       for (final Map.Entry<?, ?> entry : map.entrySet())
-        size += 2L + String.valueOf(entry.getKey()).length() + estimateSize(entry.getValue());
+        size += 2L + utf8Length(String.valueOf(entry.getKey())) + estimateSize(entry.getValue());
       return size;
     }
     // numbers, booleans, dates, object ids: 16 bytes covers the widest of them
     return 16L;
+  }
+
+  /** The bytes of the UTF-8 encoding of {@code text} (a surrogate pair is the 4 bytes of its code point, 2 for each of its chars). */
+  private static long utf8Length(final String text) {
+    final int length = text.length();
+    long bytes = length;
+    for (int i = 0; i < length; i++) {
+      final char c = text.charAt(i);
+      if (c >= 0x80)
+        bytes += c < 0x800 || Character.isSurrogate(c) ? 1L : 2L;
+    }
+    return bytes;
   }
 }
