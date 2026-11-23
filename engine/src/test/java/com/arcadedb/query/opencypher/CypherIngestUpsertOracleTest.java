@@ -350,4 +350,20 @@ class CypherIngestUpsertOracleTest {
     assertThat(node("Fact", "external_id", "f2")).isEqualTo(map("external_id", "f2", "created_at", "keep", "deleted_at", "rdead", "deleted", true));
     assertThat(count("MATCH (:Fact)-[:OF_RECORD]->(:Record)")).isEqualTo(2);
   }
+
+  @Test
+  void foreachOverANullListDoesNothingAndOverAScalarRunsOnce() {
+    schema(false, "T", "v");
+    // A row without the list (row.xs is null) is skipped, the row with a list iterates it
+    command("UNWIND [{xs: null}, {xs: [1, 2]}, {}] AS row FOREACH (x IN row.xs | CREATE (:T {v: x}))");
+    assertThat(count("MATCH (n:T)")).isEqualTo(2);
+    command("FOREACH (x IN null | CREATE (:T {v: x}))");
+    assertThat(count("MATCH (n:T)")).isEqualTo(2);
+    // Neo4j 5.26 treats a non-list value as a one element list
+    command("FOREACH (x IN 5 | CREATE (:T {v: x}))");
+    command("FOREACH (x IN 'ab' | CREATE (:T {v: x}))");
+    assertThat(count("MATCH (n:T)")).isEqualTo(4);
+    assertThat(count("MATCH (n:T {v: 5})")).isEqualTo(1);
+    assertThat(count("MATCH (n:T {v: 'ab'})")).isEqualTo(1);
+  }
 }
