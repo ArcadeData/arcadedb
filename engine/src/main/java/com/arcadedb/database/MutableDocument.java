@@ -354,8 +354,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     if (old instanceof Collection<?> collection) {
       try {
         ((Collection<EmbeddedDocument>) old).add(emb);
@@ -390,8 +389,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
                                                      final String mapKey) {
     final Object old = get(propertyName);
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
 
     if (old == null) {
       final Map<String, EmbeddedDocument> embMap = new HashMap<>();
@@ -431,11 +429,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException(
           "Cannot store an embedded document in a map because another value was found instead of a Map");
 
-    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName),
-        embeddedTypeName);
+    final MutableEmbeddedDocument emb = createEmbeddedDocument(embeddedTypeName, propertyName);
     putInStoredMap(propertyName, (Map<Object, EmbeddedDocument>) old, propertyMapKey, emb);
 
     return emb;
+  }
+
+  /**
+   * Creates the embedded document the {@code newEmbeddedDocument()} methods store in {@code propertyName}. A record with no
+   * {@link Database} behind it, the remote client's, builds it itself (issue #12190).
+   */
+  protected MutableEmbeddedDocument createEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+    return database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
   }
 
   /**
@@ -802,7 +807,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   private Object setTransformValue(final Object value, final String propertyName) {
     if (value instanceof EmbeddedDocument document) {
-      if (!document.getDatabase().getName().equals(database.getName())) {
+      if (fromAnotherDatabase(document)) {
         // SET DIRTY TO FORCE RE-MARSHALL. IF THE RECORD COMES FROM ANOTHER DATABASE WITHOUT A FULL RE-MARSHALL, IT
         // WILL HAVE THE DICTIONARY IDS OF THE OTHER DATABASE
         ((BaseDocument) value).buffer.rewind();
@@ -819,7 +824,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
         final Object v = list.get(i);
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -836,7 +841,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       final Map<String, Object> map = (Map<String, Object>) value;
       for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
-        if (v instanceof Document document && !document.getDatabase().getName().equals(database.getName())) {
+        if (v instanceof Document document && fromAnotherDatabase(document)) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
               .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
@@ -852,6 +857,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       return transformMapToEmbedded(materialiseMapValues(map, propertyName), propertyName);
     }
     return value;
+  }
+
+  /**
+   * Whether {@code document} was read from another database than this record's, so it has to be re-marshalled with the dictionary
+   * of this one. A record with no {@link Database} behind it, the remote client's, holds no dictionary ids (issue #12190).
+   */
+  private boolean fromAnotherDatabase(final Document document) {
+    return database != null && !document.getDatabase().getName().equals(database.getName());
   }
 
   /**
