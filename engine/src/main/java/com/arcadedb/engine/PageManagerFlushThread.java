@@ -1968,7 +1968,7 @@ public class PageManagerFlushThread extends Thread {
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     //
     // The suspension flag and the deferred batches are dropped UNDER the database's own suspend monitor - the same
-    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.offer, and the
+    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.compute defer, and the
     // same argument Phase 2 of the resume rests on. Without it the flush thread could observe "suspended" just
     // before this method runs and offer its batch just after, re-creating a deferred queue for a database this
     // method has already forgotten: nothing would ever resume it, so the batch, the map entry pinning the closed

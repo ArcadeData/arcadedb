@@ -529,19 +529,28 @@ class PageManagerFlushSuspendTest {
       assertThat(flush.pageIndex.hasPendingOf(database))
           .as("the batch deferred while the resume detached the backlog must have been flushed, not left in an unreachable queue")
           .isFalse();
-      assertThat(database.query("sql", "select count(*) as c from Detach").next().<Long>getProperty("c")).isEqualTo(1L);
+      // count(), not count(*): the latter answers from the bucket's cached counter and is no proof of what was stored.
+      assertThat(database.query("sql", "select count() as c from Detach").next().<Long>getProperty("c")).isEqualTo(1L);
     }
 
-    /** Waits until {@code waiter} is blocked on a monitor {@code owner} holds. */
+    /**
+     * Waits until {@code waiter} is blocked on a monitor {@code owner} holds, and FAILS when it is not: the test goes on
+     * from this point to release the hook that holds the race open, so a missed synchronisation point (the deadline, or a
+     * waiter that ended without ever blocking there) must not read as a pass of a race that was never exercised. The
+     * deadline is a hang detector, not a latency bound.
+     */
     private static void awaitBlockedOnAMonitorOwnedBy(final Thread waiter, final Thread owner) throws InterruptedException {
       final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
       final long deadline = System.currentTimeMillis() + 30_000;
-      while (System.currentTimeMillis() < deadline && waiter.isAlive()) {
+      boolean blocked = false;
+      while (!blocked && waiter.isAlive() && System.currentTimeMillis() < deadline) {
         final ThreadInfo info = threads.getThreadInfo(waiter.threadId());
-        if (info != null && info.getThreadState() == Thread.State.BLOCKED && info.getLockOwnerId() == owner.threadId())
-          return;
-        Thread.sleep(1);
+        blocked = info != null && info.getThreadState() == Thread.State.BLOCKED && info.getLockOwnerId() == owner.threadId();
+        if (!blocked)
+          Thread.sleep(1);
       }
+      assertThat(blocked).as("'%s' must be blocked on a monitor held by '%s' (alive=%s)", waiter.getName(), owner.getName(),
+          waiter.isAlive()).isTrue();
     }
   }
 
