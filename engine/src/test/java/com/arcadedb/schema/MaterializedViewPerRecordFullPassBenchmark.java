@@ -45,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("benchmark")
 class MaterializedViewPerRecordFullPassBenchmark extends TestHelper {
-  private static final int ROWS   = Integer.getInteger("mv.bench.rows", 1_000_000);
-  private static final int ROUNDS = Integer.getInteger("mv.bench.rounds", 3);
+  private static final int    ROWS   = Integer.getInteger("mv.bench.rows", 1_000_000);
+  private static final int    ROUNDS = Integer.getInteger("mv.bench.rounds", 3);
   private static final int    BATCH  = 50_000;
   private static final String DELTAS = System.getProperty("mv.bench.deltas", "1000,10000,50000,100000,250000");
 
@@ -73,9 +73,19 @@ class MaterializedViewPerRecordFullPassBenchmark extends TestHelper {
     assertThat(perRecord.isPerRecord()).isTrue();
 
     System.out.printf("=== %,d rows, %d rounds ===%n", ROWS, ROUNDS);
+    // Alternate which pass runs first, so the page cache and JIT state the first one leaves behind do not favour the same pass
+    // every round; the printed labels record the executed order
+    final Runnable snapshotPass = () -> measure("writeSnapshot", () -> MaterializedViewRefresher.refreshOnce(database, snapshot));
+    final Runnable perRecordPass = () -> measure("per-record fullPass",
+        () -> MaterializedViewPerRecordRefresher.fullPass(database, perRecord));
     for (int round = 0; round < ROUNDS; round++) {
-      measure("writeSnapshot", () -> MaterializedViewRefresher.refreshOnce(database, snapshot));
-      measure("per-record fullPass", () -> MaterializedViewPerRecordRefresher.fullPass(database, perRecord));
+      if (round % 2 == 0) {
+        snapshotPass.run();
+        perRecordPass.run();
+      } else {
+        perRecordPass.run();
+        snapshotPass.run();
+      }
     }
 
     // Delta passes over N records spread evenly across the source, against the full pass above: where they cross is where the

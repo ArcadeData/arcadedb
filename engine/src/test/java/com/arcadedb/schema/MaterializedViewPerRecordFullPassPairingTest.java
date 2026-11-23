@@ -121,6 +121,7 @@ class MaterializedViewPerRecordFullPassPairingTest extends TestHelper {
     assertThat(links.size()).isZero();
     assertThat(links.match(new RID(1, 1))).isEqualTo(-1);
   }
+
   /**
    * Updates in place, inserts, deletes, a record moving out of the WHERE and one moving back in, over a source spread on
    * several buckets and a subtype, while the view is not maintained on commit: one full pass must bring the view equal to the
