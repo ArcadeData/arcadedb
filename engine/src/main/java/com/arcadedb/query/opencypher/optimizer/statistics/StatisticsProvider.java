@@ -477,8 +477,8 @@ public class StatisticsProvider {
    * Calculates mean edges per connected pair by sampling edges of the type and counting how many
    * distinct (out, in) pairs they resolve to.
    * <p>
-   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order, not a
-   * uniform or reservoir sample - edges for one pair are often created (and therefore stored)
+   * The sample is the first {@value #MULTIPLICITY_SAMPLE_LIMIT} edges in storage order (the type's own buckets, then its
+   * subtypes'), not a uniform or reservoir sample - edges for one pair are often created (and therefore stored)
    * together, so a prefix can over- or under-represent multiplicity depending on where the cut
    * falls relative to that clustering. Acceptable for a cost-model heuristic; not a statistically
    * unbiased estimator.
@@ -491,7 +491,9 @@ public class StatisticsProvider {
     final Set<Map.Entry<RID, RID>> distinctPairs = new HashSet<>();
     long sampledEdges = 0;
 
-    for (final Iterator<Edge> it = database.<Edge>iterateType(edgeType, false); it.hasNext(); ) {
+    // Polymorphic, as [:E] is and as the edge count this estimate is cached under: an edge supertype whose edges all live in its
+    // subtypes has an empty sample otherwise, and answers the 1.0 of a simple graph for a multigraph (issue #12280)
+    for (final Iterator<Edge> it = database.<Edge>iterateType(edgeType, true); it.hasNext(); ) {
       final Edge edge = it.next();
       distinctPairs.add(Map.entry(edge.getOut(), edge.getIn()));
       if (++sampledEdges >= MULTIPLICITY_SAMPLE_LIMIT)
