@@ -24,6 +24,7 @@ import com.arcadedb.graph.olap.GraphAnalyticalView;
 import java.lang.ref.SoftReference;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
 import java.util.function.Supplier;
 
@@ -229,6 +230,11 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
+  public long getTypesGeneration() {
+    return delegate.getTypesGeneration();
+  }
+
+  @Override
   public int[] getNeighborIdsOfSlice(final int nodeId, final Vertex.DIRECTION direction, final String edgeType) {
     final int id = delegateId(nodeId);
     if (id < 0)
@@ -361,11 +367,27 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    */
   @Override
   public NeighborView getNeighborView(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    return cachedView(viewKey(direction, edgeTypes), () -> translate(delegate.getNeighborView(direction, edgeTypes)));
+    // The view is kept only if no type changed from before the key was resolved to after the view was built: the delegate expands
+    // the slices once more while it builds, and a type changed in between (even attached and detached again, which the slices
+    // resolved twice would not show) would store the view of one selection under the key of another
+    final long generation = delegate.getTypesGeneration();
+    final String[] slices = sliceSelection(edgeTypes);
+    return cachedView(viewKey(direction, slices), () -> translate(delegate.getNeighborView(direction, slices)),
+        () -> delegate.getTypesGeneration() == generation);
   }
 
-  private static String viewKey(final Vertex.DIRECTION direction, final String[] edgeTypes) {
-    return direction + (edgeTypes == null ? "|*" : "|" + String.join("\u0000", edgeTypes));
+  /**
+   * The slices {@code edgeTypes} resolve to NOW, not the names asked (null: every slice). An instance lives as long as a view's
+   * snapshot (issue #10411) and a schema change does not replace the snapshot, so a key of the names asked went on answering what
+   * a type expanded to before the change: the slices of a sub-type dropped or detached since (issue #12032).
+   */
+  private String[] sliceSelection(final String[] edgeTypes) {
+    return edgeTypes == null ? null : delegate.resolveEdgeTypes(edgeTypes);
+  }
+
+  /** The key a renumbered view of the {@link #sliceSelection} {@code slices} is held under. */
+  private static String viewKey(final Vertex.DIRECTION direction, final String[] slices) {
+    return direction + (slices == null ? "|*" : "|" + String.join("\u0000", slices));
   }
 
   /** The key of a slice view: the one place it is spelled, so the lookup of a held view cannot drift from the one that stores it. */
@@ -385,11 +407,19 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
    * under memory pressure. A delegate with no view for the key answers null, which is not kept.
    */
   private NeighborView cachedView(final String key, final Supplier<NeighborView> builder) {
+    return cachedView(key, builder, null);
+  }
+
+  /**
+   * @param keyStillCurrent asked once the view is built, or null for a key that cannot go stale: a view built while it does not
+   *                        hold is answered but not kept
+   */
+  private NeighborView cachedView(final String key, final Supplier<NeighborView> builder, final BooleanSupplier keyStillCurrent) {
     final SoftReference<NeighborView> cached = views.get(key);
     NeighborView view = cached != null ? cached.get() : null;
     if (view == null) {
       view = builder.get();
-      if (view != null)
+      if (view != null && (keyStillCurrent == null || keyStillCurrent.getAsBoolean()))
         views.put(key, new SoftReference<>(view));
     }
     return view;
@@ -419,7 +449,7 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   @Override
   public NeighborView getNeighborViewForVisits(final long expectedVisits, final Vertex.DIRECTION direction,
       final String... edgeTypes) {
-    final NeighborView held = heldView(viewKey(direction, edgeTypes));
+    final NeighborView held = heldView(viewKey(direction, sliceSelection(edgeTypes)));
     if (held != null)
       return held;
     if (delegate.getNeighborViewForVisits(expectedVisits, direction, edgeTypes) == null)

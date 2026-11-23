@@ -21,10 +21,15 @@ package com.arcadedb.function.node;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collection;
-
 /**
  * node.degree.out(node, [relTypes]) - Get the out-degree of a node.
+ * <p>
+ * {@code relTypes} is APOC's relationship pattern, read as {@link NodeDegree} reads it with the direction fixed to
+ * {@code OUT} (issue #12103): a blank one counts every outgoing relationship, {@code 'KNOWS|LIKES'} sums the outgoing
+ * relationships of each alternative, and an alternative whose marker agrees with the direction ({@code 'KNOWS>'}) counts like
+ * a bare {@code 'KNOWS'}. An alternative marked the other way ({@code '<KNOWS'}) names no outgoing relationship and counts 0,
+ * as it does in {@code node.degree(n, '<KNOWS', 'OUT')}. APOC itself reads the argument as one type name, so a plain type name
+ * answers the same in both.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -55,25 +60,6 @@ public class NodeDegreeOut extends AbstractNodeFunction {
     if (vertex == null)
       return 0L;
 
-    final String[] relTypes = extractRelTypes(args);
-
-    // The types go in ONE call, which counts an edge once whichever of them it matches (issue #12075)
-    return relTypes != null ? vertex.countEdges(Vertex.DIRECTION.OUT, relTypes) : vertex.countEdges(Vertex.DIRECTION.OUT);
-  }
-
-  @SuppressWarnings("unchecked")
-  private String[] extractRelTypes(final Object[] args) {
-    if (args.length < 2 || args[1] == null)
-      return null;
-
-    if (args[1] instanceof String)
-      return new String[] { (String) args[1] };
-
-    if (args[1] instanceof Collection) {
-      final Collection<?> coll = (Collection<?>) args[1];
-      return coll.stream().map(Object::toString).toArray(String[]::new);
-    }
-
-    return new String[] { args[1].toString() };
+    return countEdges(context, vertex, patternArgument(args, 1), Vertex.DIRECTION.OUT);
   }
 }

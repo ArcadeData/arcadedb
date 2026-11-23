@@ -2641,13 +2641,127 @@ expect "reports a workflow it cannot find" 1 "not found" \
 expect "the repository's own claude-code-action prompts are executable" 0 "prompts are executable" \
     "$PROMPTMUT"
 
-# The label the review flags with must be the one the repository has: `do not merge`, with spaces.
-# #10600's instruction named "do to not merge", and its own report then named `do-not-merge`.
-if grep -qF "labels[]=do not merge'" .github/workflows/claude-code-review.yml; then
-    pass "the review flags a hazardous PR with the repository's 'do not merge' label"
+# classify-pr.yml runs a model over an untrusted PR under pull_request_target, where secrets are
+# present. Its containment is the job split: the `classify` job that runs the model holds no write
+# scope and no write tool, reads files only (each tool pinned to a path, since a bare `Read` reaches
+# /proc/self/environ and the runner's files), denies Bash, Edit, Write, NotebookEdit, WebFetch and
+# WebSearch outright, and nothing in the workflow checks out the PR head.
+# The `do not merge` flag of the deleted claude-code-review.yml now lives in pr-classify-apply.js
+# and is pinned by test-pr-workflow-scripts.js.
+echo
+echo "classify-pr.yml containment"
+
+# Prints one line per broken containment rule of a classify-pr workflow; nothing when it holds.
+classify_pr_problems() {
+    python3 -c '
+import re, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+jobs = doc.get("jobs") or {}
+problems = []
+classify = jobs.get("classify")
+if not isinstance(classify, dict):
+    problems.append("no classify job")
+    classify = {}
+perms = classify.get("permissions")
+if not isinstance(perms, dict):
+    problems.append("classify job sets no explicit permissions map")
+else:
+    for scope, level in perms.items():
+        if level == "write":
+            problems.append(f"classify job holds {scope}: write")
+tools, denied = [], []
+for step in classify.get("steps") or []:
+    if "anthropics/claude-code-action" in str(step.get("uses", "")):
+        args = str((step.get("with") or {}).get("claude_args", ""))
+        for m in re.finditer(r"--allowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
+            tools += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+        for m in re.finditer(r"--disallowed-?tools(?:=|\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", args):
+            denied += [t.strip() for t in m.group(1).strip("\"\x27").split(",") if t.strip()]
+# Deny rules beat allow rules from any settings source, so the allow list alone is not enough.
+for name in ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"):
+    if name not in denied:
+        problems.append(f"classify job does not deny {name} in --disallowed-tools")
+for tool in denied:
+    if tool.startswith("StructuredOutput"):
+        problems.append(f"classify job denies the structured-output tool: {tool}")
+if not tools:
+    problems.append("classify job has no --allowed-tools list")
+for tool in tools:
+    if tool.startswith("Bash"):
+        problems.append(f"classify job allows a shell command: {tool}")
+    for banned in ("gh pr comment", "gh api", "gh pr edit", "git push"):
+        if banned in tool:
+            problems.append(f"classify job allows a write tool: {tool}")
+    if tool in ("Read", "Grep", "Glob") or re.fullmatch(r"(Read|Grep|Glob)\(\s*\)", tool):
+        problems.append(f"classify job allows {tool} on any path")
+for job_id, job in jobs.items():
+    for step in (job or {}).get("steps") or []:
+        if "actions/checkout" not in str(step.get("uses", "")):
+            continue
+        w = step.get("with") or {}
+        ref = str(w.get("ref", ""))
+        if re.search(r"head\.sha|head\.ref|refs/pull", ref):
+            problems.append(f"job {job_id} checks out the PR head ({ref})")
+        if w.get("persist-credentials") is not False:
+            problems.append(f"job {job_id} leaves the token in .git/config (persist-credentials)")
+print("\n".join(problems))
+' "$1"
+}
+
+CLASSIFYPR=".github/workflows/classify-pr.yml"
+if [[ -f $CLASSIFYPR ]]; then
+    pass "classify-pr.yml exists"
+    problems="$(classify_pr_problems "$CLASSIFYPR")"
+    if [[ -z $problems ]]; then
+        pass "classify-pr.yml: the model job is read-only, reads pinned paths only, and no checkout takes the PR head"
+    else
+        fail "classify-pr.yml: the model job is read-only, reads pinned paths only, and no checkout takes the PR head" "$problems"
+    fi
 else
-    fail "the review flags a hazardous PR with the repository's 'do not merge' label"
+    fail "classify-pr.yml exists"
 fi
+if [[ ! -e .github/workflows/claude-code-review.yml ]]; then
+    pass "claude-code-review.yml is gone (one automatic review per push)"
+else
+    fail "claude-code-review.yml is gone (one automatic review per push)"
+fi
+
+# The other direction: a classify job that broke every rule must be reported on each one.
+cat >"$work/classify-pr-bad.yml" <<'YAML'
+name: bad
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          prompt: Review.
+          claude_args: '--allowed-tools "Read,Grep(./**),Bash(gh pr comment 5:*),Bash(gh api:*)" --disallowed-tools "Edit,Write,StructuredOutput"'
+YAML
+problems="$(classify_pr_problems "$work/classify-pr-bad.yml")"
+for needle in "pull-requests: write" "Read on any path" "Bash(gh pr comment 5:*)" "write tool: Bash(gh api:*)" \
+    "checks out the PR head" "persist-credentials" "does not deny Bash in" "does not deny NotebookEdit" \
+    "does not deny WebFetch" "does not deny WebSearch" "denies the structured-output tool: StructuredOutput"; do
+    if [[ $problems == *"$needle"* ]]; then
+        pass "the classify-pr containment check reports: $needle"
+    else
+        fail "the classify-pr containment check reports: $needle" "$problems"
+    fi
+done
+for needle in "does not deny Edit" "does not deny Write"; do
+    if [[ $problems != *"$needle"* ]]; then
+        pass "the classify-pr containment check accepts a listed deny: $needle"
+    else
+        fail "the classify-pr containment check accepts a listed deny: $needle" "$problems"
+    fi
+done
 
 # The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
 # linux/amd64 leg, so it must carry a `suffix` that keeps its workflow artifact and its release

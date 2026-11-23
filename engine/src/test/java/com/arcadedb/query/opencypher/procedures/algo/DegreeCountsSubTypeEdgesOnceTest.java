@@ -35,7 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #12075: a degree asked over several edge types counts each edge once, whichever of the types it matches. With
  * {@code E1 EXTENDS E0}, a type's degree includes its sub-types' edges, so a sum taken one type at a time over {@code E0} and
  * {@code E1} counted every {@code E1} edge twice: {@code algo.degree()} over a Graph Analytical View (every "all types" request
- * lists both), {@code algo.degree(['E0', 'E1'])} over a view, and the {@code node.degree*} functions with or without one.
+ * lists both) and {@code algo.degree(['E0', 'E1'])} over a view.
+ * <p>
+ * The {@code node.degree*} functions are not covered here: they sum per alternative of a relationship pattern on purpose, as APOC
+ * does (issue #12129, pinned by {@code CypherApocRelationshipPatternTest}).
  */
 class DegreeCountsSubTypeEdgesOnceTest extends TestHelper {
   // E0: i -> i + 1 and 0 -> 2; E1: i + 1 -> i and 3 -> 1
@@ -66,6 +69,7 @@ class DegreeCountsSubTypeEdgesOnceTest extends TestHelper {
 
     buildView(null);
     assertThat(degrees("")).isEqualTo(withoutView);
+    assertThat(degrees("[]")).isEqualTo(withoutView);
     assertThat(degrees("['E0', 'E1']")).isEqualTo(withoutView);
     assertThat(degrees("'E0'")).isEqualTo(withoutView);
   }
@@ -88,23 +92,6 @@ class DegreeCountsSubTypeEdgesOnceTest extends TestHelper {
     assertThat(degrees.get(3)).isEqualTo("in 2, out 2");
     assertThat(degrees.values().stream().mapToInt(DegreeCountsSubTypeEdgesOnceTest::outOf).sum())
         .isEqualTo(E0_EDGES.length + E1_EDGES.length + 1);
-  }
-
-  @Test
-  void nodeDegreeFunctionsCountSubTypeEdgesOnce() {
-    // Vertex 3: out E1 3 -> 2 and 3 -> 1; in E0 2 -> 3
-    assertThat(nodeFunction("node.degree(a, ['E0', 'E1'], 'OUT')")).isEqualTo(2L);
-    assertThat(nodeFunction("node.degree(a, ['E0', 'E1'], 'IN')")).isEqualTo(1L);
-    assertThat(nodeFunction("node.degree(a, ['E0', 'E1'])")).isEqualTo(3L);
-    assertThat(nodeFunction("node.degree.out(a, ['E0', 'E1'])")).isEqualTo(2L);
-    assertThat(nodeFunction("node.degree.in(a, ['E0', 'E1'])")).isEqualTo(1L);
-    assertThat(nodeFunction("node.degree.out(a, ['E1', 'E1'])")).isEqualTo(2L);
-    assertThat(nodeFunction("node.degree.out(a, 'E0')")).isEqualTo(2L);
-    assertThat(nodeFunction("node.degree.in(a)")).isEqualTo(1L);
-
-    buildView(null);
-    assertThat(nodeFunction("node.degree(a, ['E0', 'E1'])")).isEqualTo(3L);
-    assertThat(nodeFunction("node.degree.in(a, ['E0', 'E1'])")).isEqualTo(1L);
   }
 
   private void buildView(final String edgeType) {
@@ -146,11 +133,5 @@ class DegreeCountsSubTypeEdgesOnceTest extends TestHelper {
 
   private static int outOf(final String degrees) {
     return Integer.parseInt(degrees.substring(degrees.indexOf("out ") + 4));
-  }
-
-  private Object nodeFunction(final String call) {
-    try (final ResultSet rs = database.query("opencypher", "MATCH (a:V {i: 3}) RETURN " + call + " AS c")) {
-      return rs.next().getProperty("c");
-    }
   }
 }

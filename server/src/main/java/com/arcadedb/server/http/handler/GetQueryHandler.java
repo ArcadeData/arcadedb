@@ -47,7 +47,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
    * transaction: it must read the caller's own writes, and it is refused once a failed command has rolled the transaction back.
    * <p>
    * The invariant this relies on: {@code database.query} accepts idempotent statements only (a function that writes is refused
-   * as well, see {@code Issue8775PostQueryOutsideTransactionTest}), so nothing in the session transaction can be half applied by
+   * as well, see {@code QueryEndpointReadOnlyTest}), so nothing in the session transaction can be half applied by
    * a failing request here. If a route that can write is ever built on this handler it must answer true again, because there
    * would be no rollback to clean up after it.
    */

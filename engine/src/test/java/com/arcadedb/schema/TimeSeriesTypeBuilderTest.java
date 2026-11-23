@@ -52,7 +52,7 @@ class TimeSeriesTypeBuilderTest {
    * <li>that executing the rendered SQL yields the same type declaration as calling {@code create()} on the very same
    * builder state - the local-to-local parity that the remote path then rides on.</li>
    * </ul>
-   * The end-to-end embedded-vs-remote comparison lives in {@code Issue7399RemoteTimeSeriesTypeBuilderIT}.
+   * The end-to-end embedded-vs-remote comparison lives in {@code RemoteTimeSeriesIT.TypeBuilder}.
    */
   @Nested
   class TimeSeriesTypeBuilderSQL extends TestHelper {

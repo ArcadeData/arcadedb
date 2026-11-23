@@ -984,6 +984,37 @@ class IndexBuildTest {
       }
     }
 
+    /**
+     * #12724: a super type's index has a bucket index in each sub type bucket, named after the sub type. The commit asked the sub type
+     * whether the check was deferred, the build had deferred it on the super type only, so every batch of a sub type bucket was still
+     * checked against the index being filled, and the build of a type whose records live in its sub types stayed quadratic.
+     */
+    @Test
+    void theBuildOfASuperTypeIndexDefersTheCheckOfItsSubTypeBucketsToo() {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);
+      final int records = 20_000;
+      createPopulatedType("Flat", 1, records);
+      database.getSchema().buildDocumentType().withName("Root").withTotalBuckets(1).create().createProperty("id", Type.STRING);
+      database.getSchema().buildDocumentType().withName("Leaf").withTotalBuckets(1).create().addSuperType("Root");
+      for (int from = 0; from < records; from += 10_000) {
+        final int first = from;
+        database.transaction(() -> {
+          for (int i = first; i < Math.min(records, first + 10_000); i++)
+            database.newDocument("Leaf").set("id", workId(i)).save();
+        });
+      }
+
+      final long flat = pageAccessesOfTheBuild("Flat");
+      final long polymorphic = pageAccessesOfTheBuild("Root");
+
+      // THE SAME RECORDS, ONLY IN THE BUCKET OF A SUB TYPE: THE SAME BUILD. Checked at every batch, the sub type bucket read over two thousand
+      // times the pages at this size
+      assertThat(sortedBuilds).isEmpty();
+      assertThat((double) polymorphic / flat).as("pages read building Root (%d) over pages read building Flat (%d)", polymorphic, flat)
+          .isLessThan(1.5);
+      assertThat(database.getSchema().getType("Root").getIndexByProperties("id").countEntries()).isEqualTo(records + 1);
+    }
+
     @Test
     void aDuplicateInTheSameBucketIsRefusedAndLeavesNoIndex() throws Exception {
       database.getConfiguration().setValue(GlobalConfiguration.INDEX_BUILD_SORTED_UNIQUE_MIN_RECORDS, 1_000L);

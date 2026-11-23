@@ -337,4 +337,42 @@ class SupportPeerQueryTest {
     assertThat(peers.getJSONArray("peers").getString(0)).isEqualTo("b");
     assertThat(peers.toString()).doesNotContain(a).doesNotContain(TOKEN);
   }
+
+  // ------------------------------------------------------------------------------------------------------------
+  // Regression: #9314
+  // Issue #9314: a peer's refusal ending in a DEL character threw inside the detail formatter, because the slice was bounded by
+  // the length of a different string than the one it cut, and the admin was told only "HTTP 500".
+  //
+  // @author Luca Garulli (l.garulli@arcadedata.com)
+  // ------------------------------------------------------------------------------------------------------------
+
+  private static String detail(final String text) {
+    return SupportPeerQuery.detailOf(new JSONObject().put("detail", text).toString());
+  }
+
+  // Regression: #9314 a peer refusal ending in DEL threw in the detail formatter
+  @Test
+  void aTrailingDelKeepsTheText() {
+    assertThat(detail("abc\u007f")).isEqualTo(": abc");
+  }
+
+  // Regression: #9314 a peer refusal ending in DEL threw in the detail formatter
+  @Test
+  void aLeadingDelKeepsTheText() {
+    assertThat(detail("\u007fleading")).isEqualTo(": leading");
+  }
+
+  // Regression: #9314 a peer refusal ending in DEL threw in the detail formatter
+  @Test
+  void aDelInsideBecomesASpace() {
+    assertThat(detail("msg with \u007f DEL inside")).isEqualTo(": msg with   DEL inside");
+  }
+
+  // Regression: #9314 a peer refusal ending in DEL threw in the detail formatter
+  @Test
+  void plainTextAndTheLengthCapAreUnchanged() {
+    assertThat(detail("plain message")).isEqualTo(": plain message");
+    assertThat(detail("x".repeat(500))).isEqualTo(": " + "x".repeat(300));
+    assertThat(detail("\u007f" + "x".repeat(500) + "\u007f")).isEqualTo(": " + "x".repeat(300));
+  }
 }

@@ -19,11 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.DenseNodeIdProvider;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -32,6 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -126,7 +123,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, guard);
+    return executeWithOLTP(db, dampingFactor, maxIterations, tolerance, guard, context);
   }
 
   private Stream<Result> executeWithCSR(final GraphTraversalProvider provider,
@@ -217,51 +214,45 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
   }
 
   private Stream<Result> executeWithOLTP(final Database db, final double dampingFactor,
-      final int maxIterations, final double tolerance, final WorkGuard guard) {
-    final List<Vertex> vertices = loadVertices(db, null, newMemoryBudget(db));
-    if (vertices.isEmpty())
+      final int maxIterations, final double tolerance, final WorkGuard guard, final CommandContext context) {
+    final GraphData graph = loadGraphFromRecords(db, null, context);
+    final int n = graph.nodeCount;
+    if (n == 0)
       return Stream.empty();
 
-    final int n = vertices.size();
-    final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
-
-    final long[] outDegrees = new long[n];
+    // The rows are read from the edge lists without loading an edge, and are priced against the call's budget as they are built, as the
+    // graph itself is (issue #12554). The out-degree of a node is the length of its row
+    final int[][] outNeighbors = graph.adjacency(guard, Vertex.DIRECTION.OUT);
     long totalOutDeg = 0;
-    for (int i = 0; i < n; i++) {
-      outDegrees[i] = vertices.get(i).countEdges(Vertex.DIRECTION.OUT);
-      totalOutDeg += outDegrees[i];
-    }
+    for (int i = 0; i < n; i++)
+      totalOutDeg += outNeighbors[i].length;
     final double avgOutDeg = (double) totalOutDeg / n;
 
+    // The scores, which the rows are read from, and the vector the next iteration is summed in
+    graph.memory().reserve(saturatingProduct(n, 2L * DOUBLE_BYTES), "the rank vectors", n + " nodes");
     final double[] scores = new double[n];
-    final double initialScore = 1.0 / n;
-    for (int i = 0; i < n; i++)
-      scores[i] = initialScore;
+    final double[] newScores = new double[n];
+    Arrays.fill(scores, 1.0 / n);
 
     for (int iter2 = 0; iter2 < maxIterations; iter2++) {
       // Same knob and same checkpoint as the CSR path above: the tolerance break only fires if the graph
       // converges, so maxIterations is what ends the run and the guard is what can abort it.
       guard.check();
-      final double[] newScores = new double[n];
+      Arrays.fill(newScores, 0.0);
       double dangling = 0.0;
       for (int i = 0; i < n; i++)
-        if (outDegrees[i] == 0)
+        if (outNeighbors[i].length == 0)
           dangling += scores[i];
 
       for (int i = 0; i < n; i++) {
         // A single iteration walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
         guard.checkPeriodically(i);
-        final Vertex v = vertices.get(i);
-        final double denom = outDegrees[i] + avgOutDeg;
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-          try {
-            final Integer neighborIdx = ridToIdx.get(edge.getIn());
-            if (neighborIdx != null)
-              newScores[neighborIdx] += scores[i] / denom;
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
+        final int[] neighbors = outNeighbors[i];
+        if (neighbors.length == 0)
+          continue;
+        final double contribution = scores[i] / (neighbors.length + avgOutDeg);
+        for (final int neighbor : neighbors)
+          newScores[neighbor] += contribution;
       }
 
       final double danglingContribution = dampingFactor * dangling / n;
@@ -278,7 +269,7 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
 
     return IntStream.range(0, n).mapToObj(i -> {
       final ResultInternal r = new ResultInternal();
-      r.setProperty("node", vertices.get(i).getIdentity());
+      r.setProperty("node", graph.getRID(i));
       r.setProperty("score", scores[i]);
       return (Result) r;
     });
