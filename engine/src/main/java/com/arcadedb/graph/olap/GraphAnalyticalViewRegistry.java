@@ -20,10 +20,19 @@ package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -160,6 +169,19 @@ public class GraphAnalyticalViewRegistry {
   }
 
   /**
+   * Unregisters {@code name} only while {@code view} is the view registered there: a view shutting down must not free a name
+   * that another view, built again under it, holds now (issue #12389).
+   */
+  public static void unregister(final Database database, final String name, final GraphAnalyticalView view) {
+    synchronized (REGISTRY) {
+      final Database unwrapped = unwrap(database);
+      final HashMap<String, GraphAnalyticalView> views = REGISTRY.get(unwrapped);
+      if (views != null && views.remove(name, view) && views.isEmpty())
+        REGISTRY.remove(unwrapped);
+    }
+  }
+
+  /**
    * Frees {@code name} from a view whose background work failed and records why, in one step under the registry lock, and only
    * while {@code view} is the view registered there (issue #11032). Answers whether it was. The view that replaced it under the
    * same name keeps the name, and a registration or a {@code shutdownAll()} cannot slip between the removal and the record: the
@@ -217,6 +239,55 @@ public class GraphAnalyticalViewRegistry {
       REGISTRY.remove(unwrap(database));
       FAILURES.remove(unwrap(database));
     }
+  }
+
+  /**
+   * A transaction reached {@code database} as pages, with no record event (issue #12250): a follower applying the replicated log,
+   * the leader applying a commit a follower made in its own transaction, a reconciliation from the replicated payload. The change
+   * listeners of the views never hear of it, so each view of the database is told here when the entry wrote a bucket that can
+   * hold vertices, edges or edge lists. Telling a view costs a counter increment on the applying thread: the view reports STALE
+   * from then on and rebuilds when a query asks for it (see {@link GraphAnalyticalView#onReplicatedCommit()}).
+   * <p>
+   * The views are those the query planner can serve, named or built without a name: the traversal provider registry holds both,
+   * where this registry holds only the named ones.
+   * <p>
+   * Called after the pages are written, and also when the apply failed part-way, which may have published some of them. A view
+   * registered after the read of the providers below is built by a scan that starts after its registration, so it reads them.
+   */
+  public static void onTransactionApplied(final Database database, final WALFile.WALTransaction tx) {
+    // A single volatile read when no database has a view, the common case
+    if (!GraphTraversalProviderRegistry.hasAnyProviders())
+      return;
+    final List<GraphTraversalProvider> providers = GraphTraversalProviderRegistry.getProviders(database);
+    if (providers.isEmpty() || !writesGraphBuckets(database.getSchema(), tx))
+      return;
+    for (final GraphTraversalProvider provider : providers)
+      if (provider instanceof GraphAnalyticalView view)
+        view.onReplicatedCommit();
+  }
+
+  /**
+   * Whether the entry wrote a page of a bucket a view can read: one a vertex or edge type owns or involves (an edge list, the
+   * external values of a vertex), or one no type accounts for, which is not ruled out. A page of an index, of the dictionary or of
+   * a document type's bucket changes no view.
+   */
+  static boolean writesGraphBuckets(final Schema schema, final WALFile.WALTransaction tx) {
+    int previous = -1;
+    if (tx.pages == null)
+      return false;
+    for (final WALFile.WALPage page : tx.pages) {
+      final int fileId = page.fileId;
+      // The pages of a file are consecutive in an entry: one lookup per file, not per page
+      if (fileId == previous)
+        continue;
+      previous = fileId;
+      if (!(schema.getFileByIdIfExists(fileId) instanceof LocalBucket))
+        continue;
+      final DocumentType type = schema.getInvolvedTypeByBucketId(fileId);
+      if (type == null || type instanceof VertexType || type instanceof EdgeType)
+        return true;
+    }
+    return false;
   }
 
   private static Database unwrap(final Database database) {

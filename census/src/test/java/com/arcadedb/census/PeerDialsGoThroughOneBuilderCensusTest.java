@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * same credential pair by hand: a snapshot download sent the token with no principal, a probe spelled the root principal as a
  * literal, seven dials fell back to plain HTTP on an SSL cluster without a word. The helpers are now one builder,
  * {@code PeerRequest} (server module), which attaches the cluster token and the forwarded user together and says the notice; the
- * dials are pinned by {@code Issue9999PeerDialsGoThroughOneBuilderTest}.
+ * dials are pinned by {@code PeerDialSafetyTest.PeerDialsGoThroughOneBuilder}.
  * <p>
  * The census ranges over the authority (#11288), in the compiled classes ({@link CompiledClasses}):
  * <ul>

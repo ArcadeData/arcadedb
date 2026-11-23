@@ -38,7 +38,9 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Map;
@@ -87,6 +89,11 @@ public class BinaryTypes {
   // (issue #10856). Those two are still read, so existing records need no migration; an update rewrites a value in this form.
   public final static byte TYPE_ARRAY_OF_FLOATS_FIXED    = 36;
   public final static byte TYPE_ARRAY_OF_DOUBLES_FIXED   = 37;
+  // @SINCE 26.12.1 - LocalDateTime as epochSecond (signed varint), nano (unsigned varint): a value with a nanosecond digit outside
+  // 1677-09-21..2262-04-11, which a TYPE_DATETIME_NANOS count cannot hold, on a property nothing declares (issue #12296). Every
+  // other undeclared LocalDateTime keeps the TYPE_DATETIME* of its precision, so an older build only meets this byte for a value
+  // it could not store at all.
+  public final static byte TYPE_LOCAL_DATETIME           = 38;
   public final static byte TYPE_EXTERNAL_COMPRESSED_MAX  = 31; // @SINCE 26.5.1 - Same as TYPE_EXTERNAL_COMPRESSED_FAST but compressed with LZ4 HC (high compression, ~10pp smaller output, 8-20x slower compress; decompression is identical to FAST since LZ4 HC uses the same format).
 
   // Geometry subtypes for TYPE_COMPRESSED_GEOMETRY
@@ -154,6 +161,21 @@ public class BinaryTypes {
     return result.isElement() ? result.getElement().get() : result.toMap();
   }
 
+  /**
+   * The binary type of a LocalDateTime on a property nothing declares: the TYPE_DATETIME* of the value's own precision, or
+   * {@link #TYPE_LOCAL_DATETIME} for a value with a nanosecond digit a nanosecond count cannot hold, which could not be stored at
+   * all before (issue #12296). The bound is conservative by one second at each end, where the exact form is used as well.
+   */
+  private static byte undeclaredLocalDateTimeType(final LocalDateTime time) {
+    final ChronoUnit precision = DateUtils.getPrecision(time.getNano());
+    if (precision == ChronoUnit.NANOS) {
+      final long epochSecond = time.toEpochSecond(ZoneOffset.UTC);
+      if (epochSecond <= Long.MIN_VALUE / 1_000_000_000L || epochSecond >= Long.MAX_VALUE / 1_000_000_000L)
+        return TYPE_LOCAL_DATETIME;
+    }
+    return DateUtils.getBestBinaryTypeForPrecision(precision);
+  }
+
   public static byte getTypeFromValue(final Object value, final Property propertyType) {
     final byte type;
 
@@ -180,7 +202,7 @@ public class BinaryTypes {
       if (propertyType != null)
         type = propertyType.getType().getBinaryType();
       else
-        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+        type = undeclaredLocalDateTimeType(time);
     } else if (value instanceof ZonedDateTime) {
       // THE ZONE IS PART OF THE VALUE (Cypher datetime()): KEEP IT UNLESS THE SCHEMA ASKED FOR AN INSTANT
       if (propertyType != null)
@@ -292,7 +314,11 @@ public class BinaryTypes {
         }
       }
       type = t;
-    } else {
+    } else if (value instanceof Character)
+      // THE STRING Type.TYPES_BY_USERTYPE MAPS IT TO, WRITTEN AS ITS ONE-CHARACTER TEXT AND READ BACK AS A String: IT USED TO FALL
+      // TO THE UNKNOWN BRANCH BELOW, SO THE PROPERTY WAS LEFT OUT OF THE RECORD AND A LIST OR MAP ELEMENT BECAME null (ISSUE #12021)
+      type = TYPE_STRING;
+    else {
       LogManager.instance()
           .log(BinaryTypes.class, Level.WARNING, "Cannot serialize value '%s' of type %s. The value will be ignored", value,
               value.getClass());
@@ -349,6 +375,7 @@ public class BinaryTypes {
       case BinaryTypes.TYPE_LOCAL_TIME -> LocalTime.class;
       case BinaryTypes.TYPE_ZONED_DATETIME -> ZonedDateTime.class;
       case BinaryTypes.TYPE_DURATION -> CypherDuration.class;
+      case BinaryTypes.TYPE_LOCAL_DATETIME -> LocalDateTime.class;
       case BinaryTypes.TYPE_RID, BinaryTypes.TYPE_UUID -> RID.class;
       case BinaryTypes.TYPE_EMBEDDED -> Document.class;
       case BinaryTypes.TYPE_ARRAY_OF_SHORTS -> short[].class;

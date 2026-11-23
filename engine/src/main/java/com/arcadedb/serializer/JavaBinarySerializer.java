@@ -104,11 +104,11 @@ public class JavaBinarySerializer {
     // inside writeObject, while the identical document path worked. The narrowing bought nothing: the head-chunk
     // pointers are declared on VertexInternal and the endpoints on Edge itself.
     if (document instanceof VertexInternal vertex) {
-      final RID outRID = vertex.getOutEdgesHeadChunk();
+      final RID outRID = vertex.peekOutEdgesHeadChunk();
       out.writeInt(outRID != null ? outRID.getBucketId() : -1);
       out.writeLong(outRID != null ? outRID.getPosition() : -1);
 
-      final RID inRID = vertex.getInEdgesHeadChunk();
+      final RID inRID = vertex.peekInEdgesHeadChunk();
       out.writeInt(inRID != null ? inRID.getBucketId() : -1);
       out.writeLong(inRID != null ? inRID.getPosition() : -1);
     } else if (document instanceof Edge edge) {

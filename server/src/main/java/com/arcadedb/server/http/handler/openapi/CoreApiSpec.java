@@ -144,6 +144,23 @@ public class CoreApiSpec implements OpenApiContributor {
       Database not found, or the session id header names a transaction that no longer resolves \
       ("Remote transaction session not found or expired"): it was rolled back, terminated, expired or never \
       existed, and nothing was committed""";
+  // Issues #12440, #12441: the commit is where a conflict with a concurrent commit surfaces, and the route did not list it
+  private static final String COMMIT_503_DESCRIPTION = """
+      The commit lost a race with a concurrent commit that changed the same records (ConcurrentModificationException \
+      in 'exception'), or another retryable refusal. Nothing was committed and the session is closed: begin a new \
+      transaction, read the records again and re-apply the change. The Retry-After header says how long to wait, \
+      0 for a conflict, which clears as soon as the competing commit has landed""";
+  private static final String RETRY_AFTER_DESCRIPTION = """
+      Seconds to wait before retrying: 0 for a refusal that clears by itself (a conflict with a concurrent commit), \
+      1 or more for a server too busy to start the request. It is a floor, not a schedule: a client that retries in a \
+      loop still backs off, with jitter, when the same refusal comes back""";
+
+  // The 504 of a write whose outcome could not be learned (issue #11887), on the two operations that commit a write.
+  private static final String OUTCOME_UNKNOWN_504_DESCRIPTION = """
+      Transaction outcome unknown (exception com.arcadedb.exception.TransactionOutcomeUnknownException, or its HA subtype \
+      com.arcadedb.server.ha.raft.ReplicationDispatchedTimeoutException): in an HA cluster the write was handed to the \
+      replication, or forwarded by a follower to a leader that did not answer, and it may or may not have been applied. \
+      Check whether it landed before sending it again""";
 
   // Shared by the POST query and command operations, which both reach the stale-session branch of
   // DatabaseAbstractHandler.setTransactionInThreadLocal. Held in one place so the two cannot desync:
@@ -153,6 +170,22 @@ public class CoreApiSpec implements OpenApiContributor {
   private static final String STALE_SESSION_404_DESCRIPTION =
       "Database not found, or the session id header names a transaction that no longer resolves "
           + "(\"Remote transaction session not found or expired\")";
+
+  // The values of the 'params' of a query and of a command, which carry the same typed markers (issue #12187). Held in one place
+  // so the two request objects cannot list different ones.
+  private static final String TYPED_MARKERS_DESCRIPTION = """
+      Values may be JSON primitives, arrays, or typed-marker objects: \
+      {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
+      {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
+      INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip), \
+      {"$date": "2024-01-15"} for a DATE, \
+      {"$rid": "#12:0"} for a link to a record rather than its text, \
+      {"$decimal": "0.10"} for a DECIMAL with its scale kept rather than a double, \
+      {"$datetime": 1700000000123} for a DATETIME from epoch milliseconds, \
+      {"$localDateTime": "2024-02-29T13:14:15"}, {"$instant": "2023-11-14T22:13:20.123Z"} and \
+      {"$zonedDateTime": "2024-01-01T10:00:00+01:00[Europe/Rome]"} for the date-time types, as ISO-8601 text. \
+      A marker that does not decode, or a '$decimal' beyond the limits of a JSON number (1000 characters, an \
+      exponent up to 1000), is refused with 400 before the statement runs.""";
 
   // Shared by all three operations that advertise 'application/x-ndjson' under their 200. PostQueryHandler
   // extends PostCommandHandler and overrides only executeCommand(), and GetQueryHandler - a sibling under
@@ -472,6 +505,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.addParametersItem(ndJsonAcceptParam());
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
     postOp.setResponses(createCommandResponses());
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(OUTCOME_UNKNOWN_504_DESCRIPTION));
     addNdJsonAlternative(postOp.getResponses());
     addCommitIndexBookmarkHeader(postOp.getResponses());
     addSessionPartialCommitHeader(postOp.getResponses());
@@ -514,6 +548,10 @@ public class CoreApiSpec implements OpenApiContributor {
     // A fresh set: rollback shares createTransactionResponses() and keeps its plain 404 (issue #10164)
     postOp.setResponses(createTransactionResponses());
     postOp.getResponses().addApiResponse("404", SpecBuilders.errorResponse(COMMIT_404_DESCRIPTION));
+    final ApiResponse conflict = SpecBuilders.errorResponse(COMMIT_503_DESCRIPTION);
+    conflict.addHeaderObject("Retry-After", SpecBuilders.stringHeader(RETRY_AFTER_DESCRIPTION));
+    postOp.getResponses().addApiResponse("503", conflict);
+    postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(OUTCOME_UNKNOWN_504_DESCRIPTION));
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -672,11 +710,20 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("404", SpecBuilders.errorResponse(
         "Database not found, or the 'arcadedb-session-id' names a session this server cannot resolve"));
     responses.addApiResponse("409", SpecBuilders.errorResponse(
-        "Concurrent modification: a page the load touched changed underneath it"));
+        "Concurrent modification: a page the load touched changed underneath it. Also another GraphBatch load already in "
+            + "progress on this database ('A GraphBatch load is already in progress on this database', exception "
+            + "com.arcadedb.exception.GraphBatchInProgressException): nothing of this load ran, send it again once the other "
+            + "one has finished"));
     responses.addApiResponse("413", SpecBuilders.errorResponse("Request body too large"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.addApiResponse("503", SpecBuilders.errorResponse(
         "Service unavailable: on a replicated database, no leader was reachable"));
+    // Issue #11899: the follower forwarding the load to the leader could not learn its outcome
+    responses.addApiResponse("504", SpecBuilders.errorResponse(
+        "On an HA follower the load is forwarded to the leader. 'Cannot connect' (no exception field): it did not reach the "
+            + "leader. With exception com.arcadedb.exception.TransactionOutcomeUnknownException: the connection to the leader "
+            + "was lost or the leader did not answer in time, and the load may have been applied in whole or in part. Check "
+            + "before sending it again"));
     post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();
@@ -849,11 +896,7 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("command", SpecBuilders.string("Query or command to execute"));
     schema.addProperty("language", SpecBuilders.string("Query language").example("sql"));
     schema.addProperty("params", SpecBuilders.mapOf(SpecBuilders.anyValue("One parameter value"),
-        """
-        Query parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
-        {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
-        {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
-        INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
+        "Query parameters. " + TYPED_MARKERS_DESCRIPTION));
     schema.addProperty("serializer", SpecBuilders.string("Response serializer").example("json"));
     schema.addProperty("limit", SpecBuilders.integer(
         """
@@ -873,11 +916,7 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("command", SpecBuilders.string("Command to execute"));
     schema.addProperty("language", SpecBuilders.string("Command language").example("sql"));
     schema.addProperty("params", SpecBuilders.mapOf(SpecBuilders.anyValue("One parameter value"),
-        """
-        Command parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
-        {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
-        {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
-        INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
+        "Command parameters. " + TYPED_MARKERS_DESCRIPTION));
     // PostQueryHandler extends PostCommandHandler and overrides only executeCommand(), not execute(), so
     // both /api/v1/query/{database} and /api/v1/command/{database} honor 'limit' identically (issue #6584).
     schema.addProperty("limit", SpecBuilders.integer(

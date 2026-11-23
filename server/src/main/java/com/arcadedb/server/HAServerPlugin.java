@@ -339,6 +339,25 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Describes why this node's replication has stopped while nothing is recovering it, or {@code null} while it has not
+   * (issue #12552). The Raft implementation reports a terminated StateMachineUpdater thread (no committed entry is
+   * applied, whatever the division reports), a close of a previous Ratis server that never finished (no in-place
+   * restart can run beside it), and a health monitor whose tick loop has died or stalled (nothing recovers the node in
+   * place any more).
+   * <p>
+   * NOT behind {@code arcadedb.server.readinessRequiresHA}, for the reason {@link #getCriticalHaltReason()} gives: the
+   * node is not behind, it has stopped. Unlike the halt it can clear: an in-place restart that succeeds, or a stuck close
+   * that finally ends, brings the node back into the Service on its own.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such concept.
+   *
+   * @return a human-readable description, suitable for a readiness response body, or {@code null}
+   */
+  default String getReplicationFailureReason() {
+    return null;
+  }
+
+  /**
    * Whether this node was added to the cluster's membership by a change it applied while running - an
    * {@code addPeer}, a {@code connect cluster} or a {@code KubernetesAutoJoin} self-join - rather than being a
    * member from the first configuration it observed (issue #7819).
@@ -900,6 +919,26 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default boolean createDatabaseInCluster(final String databaseName) {
     return false;
+  }
+
+  /**
+   * Waits until THIS node has applied everything the cluster had committed when the call was
+   * made (issue #11739): it asks the leader for its commit index and waits for the local state machine to reach it. Meant for a
+   * command this node forwarded to the leader, whose effect reaches this node only when it applies the entry the leader
+   * committed. {@link #awaitLocalApply()} is not enough there: it waits for the commit index THIS node has heard of, and a
+   * follower hears of a commit only with the leader's next append, which can be after the leader's answer to the command.
+   * <p>
+   * Best effort: it returns {@code false}, without failing, when the leader cannot be asked, when the deadline passes, or
+   * when this node is inside a snapshot resync gap that waiting cannot close. The default, for non-HA setups, has nothing to
+   * wait for.
+   * <p>
+   * Bounded as a whole by the quorum timeout ({@code arcadedb.ha.quorumTimeout}): asking the leader for its commit index (the
+   * ReadIndex round a LINEARIZABLE follower read makes) and the wait for the local apply share that one deadline.
+   *
+   * @return whether this node has applied the leader's commit index
+   */
+  default boolean awaitLeaderCommitApplied() {
+    return true;
   }
 
   /**

@@ -90,9 +90,18 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
 
   /**
    * The document's Raft index this node has applied (issue #11458). Absent when unknown. The leader reads it to hold
-   * entries back from a follower whose apply backlog, which Ratis keeps decoded on the heap, would exceed a byte budget.
+   * entries back from a follower whose apply backlog, which Ratis keeps on the heap, would exceed a byte budget.
    */
   static final String APPLIED_INDEX = "appliedIndex";
+
+  /**
+   * The document's byte budget for the Raft entries this node may hold received but not applied, resolved from ITS heap
+   * and its {@code arcadedb.ha.applyBacklogMax} (issue #11508). Absent when it has none (the setting is 0). The leader
+   * holds entries back from this node at the smaller of its own budget and this one, so a node with a smaller heap than
+   * its leader is bound by its own. A plain field, not a capability: a peer that predates it ignores it, and one that
+   * omits it is bound by the leader's budget alone.
+   */
+  static final String APPLY_BACKLOG_BUDGET = "applyBacklogBudget";
 
   /**
    * Request header: the calling node's peer id (issue #9255). The self-description travels in headers rather than in the
@@ -140,7 +149,8 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
         advertisement(raftHAServer.getLocalPeerId().toString(), raftHAServer.getAdvertisedCapabilities(),
             stateMachine != null && stateMachine.hasLeaderServiceGap(),
             stateMachine != null ? stateMachine.getQuarantinedDatabaseNames() : Set.of(),
-            raftHAServer.getRelayablePeerHttpAddresses(), raftHAServer.getLastAppliedIndex()).toString());
+            raftHAServer.getRelayablePeerHttpAddresses(), raftHAServer.getLastAppliedIndex(),
+            raftHAServer.getApplyBacklogBudgetBytes()).toString());
   }
 
   /**
@@ -188,6 +198,18 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
   // @VisibleForTesting
   static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
       final Set<String> quarantined, final Map<String, String> peerHttpAddresses, final long appliedIndex) {
+    return advertisement(peerId, capabilities, serviceGap, quarantined, peerHttpAddresses, appliedIndex, -1L);
+  }
+
+  /**
+   * As {@link #advertisement(String, Set, boolean, Set, Map, long)}, also carrying {@link #APPLY_BACKLOG_BUDGET} when this
+   * node has one (issue #11508). Written only when positive, so a node that disabled the budget leaves the document as
+   * it was.
+   */
+  // @VisibleForTesting
+  static JSONObject advertisement(final String peerId, final Set<String> capabilities, final boolean serviceGap,
+      final Set<String> quarantined, final Map<String, String> peerHttpAddresses, final long appliedIndex,
+      final long applyBacklogBudget) {
     final JSONArray array = new JSONArray();
     for (final String capability : new TreeSet<>(capabilities))
       array.put(capability);
@@ -200,6 +222,8 @@ public class PostCapabilitiesHandler extends AbstractServerHttpHandler {
       json.put(SERVICE_GAP, true);
     if (appliedIndex >= 0)
       json.put(APPLIED_INDEX, appliedIndex);
+    if (applyBacklogBudget > 0)
+      json.put(APPLY_BACKLOG_BUDGET, applyBacklogBudget);
     if (quarantined != null && !quarantined.isEmpty()) {
       final JSONArray names = new JSONArray();
       for (final String name : new TreeSet<>(quarantined))

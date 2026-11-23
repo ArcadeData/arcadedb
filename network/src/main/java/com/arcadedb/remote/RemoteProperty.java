@@ -25,6 +25,7 @@ import com.arcadedb.schema.Type;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -39,8 +40,28 @@ import java.util.Map;
 public class RemoteProperty extends AbstractProperty {
 
   RemoteProperty(final DocumentType owner, final Map<String, Object> record) {
-    super(owner, (String) record.get("name"), Type.getTypeByName((String) record.get("type")), (Integer) record.get("id"));
+    super(owner, (String) record.get("name"), typeOf((String) record.get("type")), (Integer) record.get("id"));
     reload(record);
+  }
+
+  /**
+   * The type a {@code schema:types} entry names, or null when the name is missing or unknown. The server writes the name of the
+   * constant ({@code ARRAY_OF_LONGS}), which {@link Type#getTypeByName} does not know for the five array types, whose declared
+   * name is {@code Long[]} and the like: such a property had no type on the client, so its values kept the list the JSON parser
+   * built instead of being read as the primitive array they are (issue #12189). The one place that resolves the name, for the
+   * constructor and for {@link #describes}.
+   */
+  static Type typeOf(final String name) {
+    if (name == null)
+      return null;
+    final Type type = Type.getTypeByName(name);
+    if (type != null)
+      return type;
+    try {
+      return Type.valueOf(name.toUpperCase(Locale.ENGLISH));
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
   }
 
   @Override
@@ -108,31 +129,37 @@ public class RemoteProperty extends AbstractProperty {
     throw new UnsupportedOperationException("setCustomValue() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> CUSTOM <key> = <value> instead.");
   }
 
+  /**
+   * Whether this is the property {@code entry} of a {@code schema:types} record describes. The id and the type of a
+   * property are fixed when it is built, so an entry that carries another type describes a property dropped and declared
+   * again under the same name, and this instance must not stand for it (issue #12188). The type name is resolved by
+   * {@link #typeOf}, as the constructor did: {@link Type#getTypeByName} answers null for the constant name of an array type, so
+   * comparing against it would make every {@code ARRAY_OF_*} property a different declaration on each reload (issue #12189).
+   */
+  boolean describes(final Map<String, Object> entry) {
+    return entry.get("id") instanceof Integer entryId && entryId == id && type == typeOf((String) entry.get("type"));
+  }
+
   void reload(final Map<String, Object> entry) {
-    if (entry.containsKey("ofType"))
-      ofType = (String) entry.get("ofType");
-    if (entry.containsKey("mandatory"))
-      mandatory = (Boolean) entry.get("mandatory");
-    if (entry.containsKey("readOnly"))
-      readonly = (Boolean) entry.get("readOnly");
-    if (entry.containsKey("notNull"))
-      notNull = (Boolean) entry.get("notNull");
-    if (entry.containsKey("min"))
-      min = (String) entry.get("min");
-    if (entry.containsKey("max"))
-      max = (String) entry.get("max");
-    if (entry.containsKey("hidden"))
-      hidden = (Boolean) entry.get("hidden");
-    if (entry.containsKey("external"))
-      external = (Boolean) entry.get("external");
-    if (entry.containsKey("compression"))
-      compression = (String) entry.get("compression");
+    // The server lists an attribute only while it is set (FetchFromSchemaTypesStep), so one that is absent is the default,
+    // not "unchanged": taken as unchanged, an ALTER PROPERTY that cleared a constraint left it in force on this client for
+    // the life of the connection (issue #12188).
+    ofType = (String) entry.get("ofType");
+    mandatory = Boolean.TRUE.equals(entry.get("mandatory"));
+    readonly = Boolean.TRUE.equals(entry.get("readOnly"));
+    notNull = Boolean.TRUE.equals(entry.get("notNull"));
+    min = (String) entry.get("min");
+    max = (String) entry.get("max");
+    hidden = Boolean.TRUE.equals(entry.get("hidden"));
+    external = Boolean.TRUE.equals(entry.get("external"));
+    compression = (String) entry.get("compression");
     if (entry.containsKey("default"))
       // No compiled expression: the server sends the definition and the remote side only reports it back, having no
       // embedded database to evaluate an SQL expression against.
       setDefaultValueDefinition(entry.get("default"));
-    if (entry.containsKey("regexp"))
-      regexp = Regexp.of((String) entry.get("regexp"));
+    else if (getDefaultValueDefinition() != null)
+      setDefaultValueDefinition(DEFAULT_NOT_SET);
+    regexp = Regexp.of((String) entry.get("regexp"));
     if (entry.containsKey("custom") && entry.get("custom") instanceof Map<?, ?> received) {
       // built aside and published whole, like every change of the map
       final Map<String, Object> built = new HashMap<>(received.size());

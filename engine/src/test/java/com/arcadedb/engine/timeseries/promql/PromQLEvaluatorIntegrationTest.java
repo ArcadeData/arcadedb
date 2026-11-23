@@ -482,7 +482,10 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       assertThat(samples.getFirst().labels()).doesNotContainKey("__name__").containsEntry("host", "api");
 
       assertThat(vectorOf("m8926_errors + m8926_total").getFirst().value()).isEqualTo(15.0);
-      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).hasSize(1);
+      // a range function drops the name, so the two sides match on their labels. Not rate(): each series holds ONE sample, and
+      // rate() answers no sample for it, as Prometheus does (issue #11980)
+      assertThat(vectorOf("sum_over_time(m8926_errors[5m]) / sum_over_time(m8926_total[5m])")).hasSize(1);
+      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).isEmpty();
     }
 
     // #8926
@@ -2226,7 +2229,9 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       final InstantVector iv = (InstantVector) result;
       assertThat(iv.samples()).hasSize(1);
       final VectorSample sample = iv.samples().getFirst();
-      assertThat(sample.timestampMs()).as("the true latest timestamp").isEqualTo(4_000L);
+      // the element of an instant vector is stamped with the evaluation time, as Prometheus does (issue #11990); the value is what
+      // tells the true latest sample from the last one scanned
+      assertThat(sample.timestampMs()).as("the evaluation time").isEqualTo(5_000L);
       assertThat(sample.value()).as("the value paired with the true latest sample, not the last one scanned")
           .isEqualTo(104.0);
     }

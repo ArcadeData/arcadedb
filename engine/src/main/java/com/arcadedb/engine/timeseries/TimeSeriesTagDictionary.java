@@ -256,7 +256,7 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       // The component was absent from the schema but its file already carries an initialised header.
       // Adopt what is there: writing a fresh header would silently reset the id space and orphan every
       // id already stored in a data page. The test is on the header itself and not on getTotalPages(),
-      // which under-reports for as long as the pages sit in the flush queue (issue #6198).
+      // which counts only the pages this instance has seen (issue #6198).
       dictionary.load(header);
     else {
       dictionary.initHeaderPage();
@@ -462,11 +462,12 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
    * been stored here".
    * <p>
    * <b>The header page is the authority, not {@link #getTotalPages()}</b> (issue #6198). That counter is
-   * per-instance: it is seeded from the physical file size at construction and afterwards only the
-   * component <em>registered with the schema</em> gets it bumped at commit. So an instance built over a
-   * file whose committed pages are still in the flush queue reads zero pages for a file that holds
-   * several, and gating on it conflated "this instance has loaded nothing" with "the file holds
-   * nothing" - disabling the self-heal in {@link #resolveMiss} exactly in the state it exists for, and
+   * per-instance: it is seeded at construction, from the file and (since issue #12101) the flush queue,
+   * and afterwards only the component <em>registered with the schema</em> gets it bumped at commit. So an
+   * instance built before another one committed pages reads fewer pages than the file holds (before issue
+   * #12101, zero for a file whose pages were all still in the flush queue), and gating on it conflated
+   * "this instance has loaded nothing" with "the file holds nothing" - disabling the self-heal in
+   * {@link #resolveMiss} exactly in the state it exists for, and
    * letting {@link #openOrCreate} write a fresh header over a populated file. Reading page 0 has neither
    * blind spot: the read cache and the flush queue sit in front of the disk, so a committed page is
    * visible whether or not it has reached the file, and the magic tells an initialised header from a

@@ -37,11 +37,10 @@
         <!-- gremlin.version is defined in the parent pom so arcadedb-gremlin-it can share it -->
         <translation.version>1.0.4</translation.version>
         <snakeyaml.version>2.7</snakeyaml.version>
-        <netty.version>4.2.20.Final</netty.version>
+        <netty.version>4.2.21.Final</netty.version>
         <commons-configuration2.version>2.15.1</commons-configuration2.version>
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
-        <commons-lang3.version>3.21.0</commons-lang3.version>
-        <ivy.version>2.6.0</ivy.version>
+        <commons-lang3.version>3.22.0</commons-lang3.version>
         <!-- Both properties below are dictated by TinkerPop, not chosen by ArcadeDB.
              Do not raise either one without upgrading gremlin.version first; see #5535. -->
 
@@ -147,10 +146,43 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Only the Netty modules Gremlin Server and the driver reach: HTTP/WebSocket (with its
+             permessage-deflate compression) over NIO or epoll. TinkerPop declares netty-all, which also
+             bundles HTTP/3, QUIC, MQTT, Redis, SMTP, STOMP, memcache, DNS, SCTP, UDT, RXTX, kqueue and
+             io_uring with their native libraries; nothing here loads them, so gremlin-driver and
+             gremlin-util exclude it below. netty-codec-http pulls common, buffer, transport, resolver,
+             handler, codec-base and codec-compression at the same version.
+             ShadedJarLayoutTest.librariesNothingReachesAreNotBundled is the guard. -->
         <dependency>
             <groupId>io.netty</groupId>
-            <artifactId>netty-all</artifactId>
+            <artifactId>netty-codec-http</artifactId>
             <version>${netty.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-classes-epoll</artifactId>
+            <version>${netty.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+            <version>${netty.version}</version>
+            <classifier>linux-x86_64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+            <version>${netty.version}</version>
+            <classifier>linux-aarch_64</classifier>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+            <version>${netty.version}</version>
+            <classifier>linux-riscv64</classifier>
+            <scope>runtime</scope>
         </dependency>
         <!-- explicit import to solve CVE-2025-48924-->
         <dependency>
@@ -176,48 +208,14 @@
             <version>${snakeyaml.version}</version>
         </dependency>
 
-        <!-- ARCADEDB DOES NOT USE THIS LIBRARY BUT GREMLIN DOES: gremlin-groovy pulls Ivy in to
-             back Groovy's Grape dependency loader. TinkerPop 3.8.1 resolves 2.5.3, which is
-             affected by the PackagerResolver path traversal
-             https://nvd.nist.gov/vuln/detail/CVE-2026-26032 -->
-        <dependency>
-            <groupId>org.apache.ivy</groupId>
-            <artifactId>ivy</artifactId>
-            <version>${ivy.version}</version>
-        </dependency>
-
         <!-- Groovy core is declared directly so its version is pinned at depth 1. It also arrives
-             transitively from groovy-groovysh (4.0.33) and from gremlin-groovy (4.0.25), both at
-             depth 2, so without this declaration Maven picks the winner by DECLARATION ORDER:
-             moving the gremlin-groovy block above groovy-groovysh silently drops the whole
-             uber-jar back to Groovy 4.0.25. A silent version divergence of exactly that kind is
+             transitively from gremlin-groovy (4.0.25) at depth 2, so without this declaration
+             the whole uber-jar silently drops back to Groovy 4.0.25. A silent version divergence of exactly that kind is
              what issue #6771 was, so the pin is explicit rather than positional. -->
         <dependency>
             <groupId>org.apache.groovy</groupId>
             <artifactId>groovy</artifactId>
             <version>${groovy.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.groovy</groupId>
-            <artifactId>groovy-groovysh</artifactId>
-            <version>${groovy.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>jline</groupId>
-                    <artifactId>jline</artifactId>
-                </exclusion>
-                <!-- groovy-console drags in groovy-swing, i.e. an AWT/Swing UI that a headless
-                     server never opens. It also ships META-INF/groovy/org.codehaus.groovy.runtime.ExtensionModule.
-                     That descriptor is a single-module properties file at a fixed path, so a
-                     consumer that resolves groovy-swing normally (gremlin-groovy pulls 4.0.25)
-                     ends up with two descriptors naming module groovy-swing at different versions
-                     and Groovy aborts with "Conflicting module versions" (issue #6771). Dropping
-                     groovy-swing removes the descriptor, and with it the conflict. -->
-                <exclusion>
-                    <groupId>org.apache.groovy</groupId>
-                    <artifactId>groovy-console</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.groovy</groupId>
@@ -237,6 +235,16 @@
                 <exclusion>
                     <groupId>commons-beanutils</groupId>
                     <artifactId>commons-beanutils</artifactId>
+                </exclusion>
+                <!-- javapoet only serves TinkerPop's @GremlinDsl annotation processor, which lives in
+                     gremlin-annotations and is not on this classpath; hppc is referenced by no class at all. -->
+                <exclusion>
+                    <groupId>com.squareup</groupId>
+                    <artifactId>javapoet</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>com.carrotsearch</groupId>
+                    <artifactId>hppc</artifactId>
                 </exclusion>
                 <!-- gremlin-core pulls antlr4-runtime 4.9.1 transitively via gremlin-language,
                      independently of and in addition to the explicit (optional) antlr4-runtime
@@ -260,17 +268,43 @@
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-driver</artifactId>
             <version>${gremlin.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-all</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-util</artifactId>
             <version>${gremlin.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-all</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.apache.tinkerpop</groupId>
             <artifactId>gremlin-groovy</artifactId>
             <version>${gremlin.version}</version>
+            <!-- Ivy only backs Groovy's Grape (@Grab), which downloads and loads jars at runtime: a
+                 server has no business doing that, and Ivy carried CVE-2026-26032. groovy-groovysh
+                 (with groovy-templates and groovy-xml) is the interactive Groovy shell; no Gremlin
+                 class references it. -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.ivy</groupId>
+                    <artifactId>ivy</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.groovy</groupId>
+                    <artifactId>groovy-groovysh</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -382,20 +416,12 @@
                             <shadedPattern>com.arcadedb.gremlin.shaded.com.github.benmanes</shadedPattern>
                         </relocation>
                         <relocation>
-                            <pattern>com.carrotsearch</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.com.carrotsearch</shadedPattern>
-                        </relocation>
-                        <relocation>
                             <pattern>com.codahale</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.com.codahale</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>org.yaml</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.org.yaml</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>org.apache.ivy</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.org.apache.ivy</shadedPattern>
                         </relocation>
                         <relocation>
                             <pattern>nl.altindag</pattern>
@@ -408,10 +434,6 @@
                         <relocation>
                             <pattern>org.mindrot</pattern>
                             <shadedPattern>com.arcadedb.gremlin.shaded.org.mindrot</shadedPattern>
-                        </relocation>
-                        <relocation>
-                            <pattern>com.squareup.javapoet</pattern>
-                            <shadedPattern>com.arcadedb.gremlin.shaded.com.squareup.javapoet</shadedPattern>
                         </relocation>
                         <!-- Jackson at the BOM version, rebuilt onto TinkerPop's OWN relocation prefix (issue #7097):
                              gremlin-core and gremlin-util were compiled against org.apache.tinkerpop.shaded.jackson
@@ -474,6 +496,17 @@
                              shade keeps whichever class it met first and the uber-jar runs a mix of two Jacksons.
                              Kryo, minlog and objenesis stay: TinkerPop relocates those into the same jar and no
                              scanner has anything to say about them. -->
+                        <!-- Groovy core carries Grape's Ivy backend. Ivy is not bundled, so these classes could only
+                             fail to link; without them Grape.getInstance() finds no engine (it catches the
+                             ClassNotFoundException) and @Grab resolves nothing instead of reaching the network. -->
+                        <filter>
+                            <artifact>org.apache.groovy:groovy</artifact>
+                            <excludes>
+                                <exclude>groovy/grape/GrapeIvy*</exclude>
+                                <exclude>groovy/grape/IvyGrabRecord*</exclude>
+                                <exclude>groovy/grape/defaultGrapeConfig.xml</exclude>
+                            </excludes>
+                        </filter>
                         <filter>
                             <artifact>org.apache.tinkerpop:gremlin-shaded</artifact>
                             <excludes>

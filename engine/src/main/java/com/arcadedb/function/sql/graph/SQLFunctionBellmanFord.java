@@ -72,10 +72,19 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
   }
 
   @Override
+  public int getMinArgs() {
+    return 3;
+  }
+
+  @Override
+  public int getMaxArgs() {
+    return 4;
+  }
+
+  @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult,
       final Object[] params, final CommandContext context) {
-    if (params.length < 3)
-      throw new IllegalArgumentException("bellmanFord() requires at least 3 parameters: source, destination, weightProperty");
+    checkArity(params);
 
     final Vertex sourceVertex = toVertex(params[0], context);
     final Vertex destVertex = toVertex(params[1], context);

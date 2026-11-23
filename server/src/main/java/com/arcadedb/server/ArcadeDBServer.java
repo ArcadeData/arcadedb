@@ -401,7 +401,27 @@ public class ArcadeDBServer {
   }
 
   public static void main(final String[] args) {
-    new ArcadeDBServer().start();
+    if (!startOrStop(new ArcadeDBServer()))
+      // The services a failed start left running (the wire-protocol listeners own non-daemon threads) must not keep
+      // the process alive: a supervisor restarts it only when it exits (issue #12827)
+      System.exit(1);
+  }
+
+  /**
+   * Starts the server. A start that fails stops everything it had already brought up, because {@link #start()} leaves
+   * that decision to its caller and the process entry point has nobody above it to decide.
+   *
+   * @return true if the server is running, false if the start failed and the server was stopped
+   */
+  static boolean startOrStop(final ArcadeDBServer server) {
+    try {
+      server.start();
+      return true;
+    } catch (final RuntimeException | Error e) {
+      LogManager.instance().log(server, Level.SEVERE, "Error on starting the server, stopping the services that were started", e);
+      CodeUtils.executeIgnoringExceptions(server::stop, "Error on stopping the server after a failed start", false);
+      return false;
+    }
   }
 
   /**

@@ -186,6 +186,14 @@ public class UnionStatement implements CypherStatement {
   }
 
   @Override
+  public boolean hasSchemaProcedureCall() {
+    for (final CypherStatement query : queries)
+      if (query.hasSchemaProcedureCall())
+        return true;
+    return false;
+  }
+
+  @Override
   public OrderByClause getOrderByClause() {
     // For UNION, ORDER BY applies to the final result
     // Currently we don't support ORDER BY after UNION in the grammar

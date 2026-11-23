@@ -168,7 +168,7 @@ class AlgoAllocationTest {
       // The reservation follows the allocation. Yen's used to hold a nodeCount x nodeCount weight matrix - 501 x 501
       // doubles, ~2 MB, on this graph - which 100 KB refused. Since #9914 it runs on the adjacency lists, and what it
       // holds beside them is node-sized: the search state and the two spur masks, ~9 KB here. The budget has to admit
-      // the loaded graph, priced since #6317 at 501 x OLTP_VERTEX_BYTES, and now admits the whole call.
+      // the loaded graph, priced since #6317 at 501 x LOADED_NODE_BYTES, and now admits the whole call.
       database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, 100_000L);
 
       assertThat(drain("""

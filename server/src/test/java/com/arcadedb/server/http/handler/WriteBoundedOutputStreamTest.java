@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * Tested here rather than through a socket because the moment the stall begins is a function of buffer sizes the
  * kernel picks, which a test cannot set on both ends; the end-to-end reachability of this class from the
- * endpoint is {@code Issue7381BatchContractIT}.
+ * endpoint is {@code PostBatchIdempotencyAndWriteBoundIT}.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
