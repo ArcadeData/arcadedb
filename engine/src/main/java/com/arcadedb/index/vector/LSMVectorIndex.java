@@ -5885,7 +5885,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *       {@link #ensureGraphAvailable()} runs immediately before this on every search path, so by the time this
    *       test is made a null graph really does mean "nothing was persisted either" - it no longer also means
    *       "a graph is on disk but this session wrote before it searched, so it was never loaded" (issue #6772).</li>
-   *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough).</li>
+   *   <li>If threshold reached and graph is small (&lt; 1000 vectors): synchronous rebuild (fast enough). Not
+   *       before: a resident small graph is searched through the delta buffer until then, so one write does not
+   *       cost the next search a build under {@link #graphBuildLock} (issue #12342).</li>
    *   <li>If threshold reached and graph is large (&ge; 1000 vectors): async rebuild + search the current graph
    *       (valid but excludes the newest vectors not yet incorporated into the graph topology).</li>
    *   <li>Below threshold: no rebuild — search uses current graph.</li>
@@ -6153,8 +6155,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * reason to build is routinely gone by the time this thread is let through.
    */
   private boolean smallGraphRebuildIsDue() {
-    return graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
-        && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE);
+    if (graphState != GraphState.MUTABLE)
+      return false;
+    final int mutations = mutationsSinceSerialize.get();
+    if (mutations <= 0)
+      return false;
+    final ImmutableGraphIndex graph = this.graphIndex;
+    if (graph == null)
+      return true; // nothing to search yet: the first build cannot wait for a threshold
+    // A resident graph is rebuilt on the calling thread only once the mutation threshold is reached, like a large one is in the
+    // background. Before that the vectors written since the graph was built are searched through the delta buffer, exactly,
+    // so a rebuild per search after every write bought nothing but a build under graphBuildLock that every other search of this
+    // bucket queued behind. The size is that of the graph of ONE bucket, so a type with many buckets has many such graphs.
+    return graph.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE && mutations >= getEffectiveMutationsBeforeRebuild();
   }
 
   /**
@@ -15546,15 +15559,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Decide whether the inactivity rebuild timer should actually rebuild the graph.
    * <p>
    * A rebuild is only expensive - O(current graph size) - once the graph has grown past
-   * {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}; below that, {@link #rebuildGraphBeforeSearch()} itself
-   * rebuilds synchronously on every threshold check with no threshold gate at all, because doing so
-   * is already fast enough not to matter. The timer used to mirror only the top half of that: it
-   * rebuilt on {@code pending > 0} alone regardless of graph size, so a single insert into a large
-   * settled index cost a full O(N) rebuild on the next quiet period (issue #6496). The fix is not to
-   * gate small graphs too - that would defer a rebuild that was never expensive to begin with, taking
-   * away the guarantee that a handful of buffered vectors get flushed out of the linear-scan delta
-   * buffer promptly - but to apply the same threshold the search path uses, and only where the search
-   * path would also apply it: once the graph is large enough that a rebuild is no longer free.
+   * {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE}. The timer used to rebuild on {@code pending > 0} alone regardless
+   * of graph size, so a single insert into a large settled index cost a full O(N) rebuild on the next quiet
+   * period (issue #6496). The fix is not to gate small graphs too - that would defer a rebuild that was never
+   * expensive to begin with, taking away the guarantee that a handful of buffered vectors get flushed out of
+   * the linear-scan delta buffer promptly - but to apply the same threshold the search path uses, and only
+   * where it is a matter of cost: once the graph is large enough that a rebuild is no longer free.
+   * <p>
+   * The two paths now deliberately differ on a small graph (issue #12342). The timer rebuilds it on any pending
+   * mutation, because it runs after a quiet period and off the search thread, so the build delays no query. The
+   * search path does not: {@link #rebuildGraphBeforeSearch()} rebuilds a resident small graph only once the
+   * mutation threshold is reached ({@link #smallGraphRebuildIsDue()}), because the build runs on the calling
+   * thread under {@link #graphBuildLock} and a rebuild per search after every write made every other search of
+   * the bucket queue behind it, while the new vectors are searched exactly through the delta buffer anyway.
    * <p>
    * "How large is the graph" is asked through {@link #inactivityRebuildScopeSize()} rather than off
    * {@link #graphIndex} directly, because on this path a null graph does not mean what it means on the search
@@ -15572,9 +15589,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return false;
 
     if (inactivityRebuildScopeSize() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
-      // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are
-      // pending, same as rebuildGraphBeforeSearch()'s unconditional synchronous rebuild for this
-      // case. Any pending mutation is worth flushing promptly.
+      // Small graph (or none yet): a rebuild is cheap regardless of how many mutations are pending, and it runs
+      // here, after a quiet period, not on a search thread (the search path waits for the mutation threshold,
+      // see smallGraphRebuildIsDue()). Any pending mutation is worth flushing promptly.
       return true;
 
     final int threshold = getEffectiveMutationsBeforeRebuild();
