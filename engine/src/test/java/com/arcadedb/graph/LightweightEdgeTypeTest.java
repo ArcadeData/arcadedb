@@ -363,6 +363,9 @@ class LightweightEdgeTypeTest extends TestHelper {
         assertThat(edge).isInstanceOf(LightEdge.class);
         assertThat(edge.getOut()).isEqualTo(a);
         assertThat(edge.getIn()).isEqualTo(b);
+        // the very edge stored in the vertices, not a new one
+        assertThat(edge.getIdentity()).isEqualTo(
+            database.lookupByRID(a, true).asVertex().getEdges(Vertex.DIRECTION.OUT, "Follows").iterator().next().getIdentity());
         assertThat(rs.hasNext()).isFalse();
       }
     });
