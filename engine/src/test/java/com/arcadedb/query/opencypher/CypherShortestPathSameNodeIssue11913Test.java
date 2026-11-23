@@ -34,6 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * pattern has no row for that pair (a null / empty list in the expression form), whichever evaluator runs it.
  * <p>
  * Graph: 0 -> 1 -> 2 -> 0 (a cycle), 3 -> 3 (a self loop) and 3 -> 4; every relationship carries w = 1.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class CypherShortestPathSameNodeIssue11913Test extends TestHelper {
 
