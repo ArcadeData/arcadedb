@@ -502,6 +502,49 @@ public class TransactionIndexContext {
 
     checkUniqueIndexKeys();
 
+    // A vector index gets a record's REMOVE in the passes below and its replacement ADD in putBatch, each under the index lock on its
+    // own. Held across both, a search sees the old vector or the new one, never neither.
+    final List<LSMVectorIndex> locked = lockVectorIndexesForReplay();
+    try {
+      replay();
+    } finally {
+      for (int i = locked.size() - 1; i >= 0; --i)
+        locked.get(i).unlockAfterReplay();
+    }
+  }
+
+  /**
+   * Takes the replay lock of every dense vector index this transaction queued entries for, in the order of their names (two
+   * commits queueing for the same indexes lock their files first, which already serialises them; the order only keeps this loop
+   * from depending on map iteration order). When one lock fails, those taken are released.
+   */
+  private List<LSMVectorIndex> lockVectorIndexesForReplay() {
+    final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
+    final Map<LSMVectorIndex, Boolean> seen = new IdentityHashMap<>();
+    for (final String lane : indexEntries.keySet())
+      if (resolveIndex(lane) instanceof LSMVectorIndex vectorIndex && seen.put(vectorIndex, Boolean.TRUE) == null)
+        vectorIndexes.add(vectorIndex);
+    for (final String lane : unorderedEntries.keySet())
+      if (resolveIndex(lane) instanceof LSMVectorIndex vectorIndex && seen.put(vectorIndex, Boolean.TRUE) == null)
+        vectorIndexes.add(vectorIndex);
+    if (vectorIndexes.isEmpty())
+      return vectorIndexes;
+    vectorIndexes.sort(Comparator.comparing(LSMVectorIndex::getName));
+    final List<LSMVectorIndex> locked = new ArrayList<>(vectorIndexes.size());
+    try {
+      for (final LSMVectorIndex vectorIndex : vectorIndexes) {
+        vectorIndex.lockForReplay();
+        locked.add(vectorIndex);
+      }
+    } catch (final RuntimeException | Error e) {
+      for (int i = locked.size() - 1; i >= 0; --i)
+        locked.get(i).unlockAfterReplay();
+      throw e;
+    }
+    return locked;
+  }
+
+  private void replay() {
     // APPEND-ONLY LANE FIRST: ITS ENTRIES CARRY NO UNIQUENESS CONSTRAINT AND REPLAY STRICTLY IN
     // INSERTION ORDER, SO A REMOVE FOLLOWED BY AN ADD ON THE SAME KEY ENDS WITH THE ADD (AND VICE
     // VERSA) WITHOUT THE TWO-PHASE REMOVE-THEN-ADD SPLIT THE ORDERED LANE NEEDS FOR ITS DEDUP MAP.

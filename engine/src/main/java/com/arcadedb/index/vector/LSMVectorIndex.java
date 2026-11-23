@@ -11865,9 +11865,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the record, so a caller that hands a search result on without reading its record asks this instead, and reads no page for
    * it. It cannot see a record removed from its bucket behind the index's back (a crash, a restore): only reading the record
    * notices that one, and {@code REBUILD INDEX} repairs it.
+   * <p>
+   * A "no" is checked again under the read lock: the replay of an update tombstones the old vector and adds the new one while it
+   * holds the write lock ({@link #lockForReplay()}), and the first read is lock-free, so it can land between the two and a record
+   * that is in the index before and after the commit would be dropped from a search result as stale.
    */
   public boolean hasLiveVector(final RID rid) {
-    return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    if (vectorIndex().getVectorIdsForRid(rid).length > 0)
+      return true;
+    lock.readLock().lock();
+    try {
+      return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 
   /**
@@ -11953,6 +11964,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
   private static Set<RID> supersededRIDs(final TransactionVectorOverlay overlay) {
     return overlay == null ? null : overlay.supersededRIDs();
+  }
+
+  /**
+   * Takes this index's write lock for the whole replay of one transaction, so that the removal of a record's old vector and the add
+   * of its new one are a single step for searches. {@code TransactionIndexContext.commit()} replays every REMOVE of the lane first
+   * and the ADDs afterwards through {@link #putBatch}, each taking the lock on its own: a search taking the read lock between the
+   * two saw neither vector, and a record that is in the index before and after the commit was missing from it.
+   * <p>
+   * The locations are materialised first, as {@link #putBatch} and {@link #remove} do, so that the first write after a reopen does
+   * not run its page scan inside the exclusive section (issue #6722). The write lock is reentrant: the replay calls still take it.
+   * Commits take their files' locks before the index lock, and this is called inside that, so the order is the one they always had.
+   *
+   * @see #unlockAfterReplay()
+   */
+  public void lockForReplay() {
+    vectorIndex();
+    lock.writeLock().lock();
+  }
+
+  /** Releases what {@link #lockForReplay()} took. */
+  public void unlockAfterReplay() {
+    lock.writeLock().unlock();
   }
 
   @Override
