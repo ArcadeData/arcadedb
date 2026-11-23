@@ -124,7 +124,7 @@ final class ExpressionPatternParser {
     // A negation, the wildcard or a mix of '&' and '|' is checked as a predicate on the node, the way the MATCH-side
     // builder does it (issue #8992).
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildLabelPredicate(ctx.labelExpression(), expressions::parseExpression);
     if (labelPredicate != null) {
       labels = labelPredicate.requiredLabels();
       if (variable == null)
@@ -133,6 +133,16 @@ final class ExpressionPatternParser {
     } else if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
       labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
+      // (b:$(expr)) in a pattern comprehension or predicate: checked as a predicate on the node (issue #11776)
+      final List<Expression> dynamicLabels = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressions::parseExpression);
+      if (dynamicLabels != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, labels, dynamicLabels, ctx.labelExpression());
+        // (n:A|$(expr)): the static labels alone are not a filter, the check above carries all of them
+        if (labelDisjunction)
+          labels = null;
+      }
     }
 
     String propertiesParameterName = null;
@@ -147,8 +157,10 @@ final class ExpressionPatternParser {
     // as a generic expression and coerced to a predicate, mirroring the relationship form below, so
     // comparisons, AND/OR/NOT and boolean-typed properties are all covered.
     BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
+    if (ctx.expression() != null) {
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
       whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+    }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, null, properties, propertiesParameterName, labelDisjunction, whereExpression);
@@ -169,7 +181,7 @@ final class ExpressionPatternParser {
     }
 
     BooleanExpression labelCheck = null;
-    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression());
+    final LabelPredicate labelPredicate = ParserUtils.buildRelationshipTypePredicate(ctx.labelExpression(), expressions::parseExpression);
     if (labelPredicate != null) {
       // Evaluated per hop on a variable-length relationship too, through the inline WHERE it is ANDed into (#9117).
       final List<String> required = labelPredicate.requiredLabels();
@@ -179,6 +191,14 @@ final class ExpressionPatternParser {
       labelCheck = ParserUtils.labelCheckOn(variable, labelPredicate, ctx.labelExpression());
     } else if (ctx.labelExpression() != null) {
       types = extractLabels(ctx.labelExpression());
+      // [r:$(expr)]: the whole type list is checked per relationship, see the MATCH-side builder (issue #11776)
+      final List<Expression> dynamicTypes = ParserUtils.parseDynamicLabels(ctx.labelExpression(), expressions::parseExpression);
+      if (dynamicTypes != null) {
+        if (variable == null)
+          variable = ParserUtils.newLabelExpressionVariable();
+        labelCheck = ParserUtils.dynamicLabelCheckOn(variable, types, dynamicTypes, ctx.labelExpression());
+        types = null;
+      }
     }
 
     String propertiesParameterName = null;
@@ -214,8 +234,10 @@ final class ExpressionPatternParser {
     // a generic expression and coerced to a predicate so comparisons, AND/OR/NOT and boolean-typed
     // properties are all covered without duplicating the boolean-parsing hierarchy.
     BooleanExpression whereExpression = null;
-    if (ctx.expression() != null)
+    if (ctx.expression() != null) {
+      BooleanExpressionBuilder.rejectNonBooleanPatternExpressions(ctx.expression());
       whereExpression = new BooleanCoercionExpression(expressions.parseExpression(ctx.expression()));
+    }
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,

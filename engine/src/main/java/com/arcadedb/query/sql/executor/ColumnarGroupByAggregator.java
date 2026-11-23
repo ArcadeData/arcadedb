@@ -414,9 +414,12 @@ final class ColumnarGroupByAggregator implements AutoCloseable {
   }
 
   /**
-   * Ordered as {@code Double.compare} (NaN above every other value). SQL's {@code min()} and {@code max()} compare with
-   * {@code BinaryComparator}, where -0.0 equals 0.0: a DOUBLE column never holds -0.0 (stored as 0.0), so the only difference is the sign of
-   * a zero extreme, a documented limitation of the projection.
+   * Ordered as {@code Double.compare} (-0.0 below 0.0; NaN above every other value).
+   * <p>
+   * Plain SQL min() and max() functions evaluate via {@code BinaryComparator}, which treats
+   * -0.0 and 0.0 as equal and therefore preserves whichever zero was seen first in row order.
+   * Under columnar acceleration, {@code Double.compare} imposes a deterministic total order
+   * where -0.0 is the minimum and 0.0 is the maximum.
    */
   private void addDouble(final int i, final int g, final double value) {
     final double[] values = doubleValues[i];

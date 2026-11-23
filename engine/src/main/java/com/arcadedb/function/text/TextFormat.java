@@ -18,17 +18,22 @@
  */
 package com.arcadedb.function.text;
 
+import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.StringUtils;
 
-import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 
 /**
- * text.format(format, args...) - Format string with arguments.
+ * text.format(format, params, [language]) - Format a string with Java's {@code String.format}, as {@code apoc.text.format} does
+ * (issue #12104): the parameters are ONE list, and the language (default {@code 'en'}) decides the decimal and grouping separators.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class TextFormat extends AbstractTextFunction {
+  private static final String DEFAULT_LANGUAGE = "en";
+
   @Override
   protected String getSimpleName() {
     return "format";
@@ -41,12 +46,12 @@ public class TextFormat extends AbstractTextFunction {
 
   @Override
   public int getMaxArgs() {
-    return Integer.MAX_VALUE;
+    return 3;
   }
 
   @Override
   public String getDescription() {
-    return "Format string using Java's String.format() with the provided arguments";
+    return "Format string using Java's String.format() with the parameters given as one list, in the language given (default 'en')";
   }
 
   @Override
@@ -55,10 +60,15 @@ public class TextFormat extends AbstractTextFunction {
     if (format == null)
       return null;
 
-    if (args.length == 1)
+    if (args.length < 2 || args[1] == null)
       return format;
 
-    final Object[] formatArgs = Arrays.copyOfRange(args, 1, args.length);
-    return StringUtils.format("text.format", format, formatArgs);
+    // A value that is not a list is the one parameter
+    final List<Object> params = CypherFunctionHelper.asListOrNull(args[1]);
+    final Object[] values = params != null ? params.toArray() : new Object[] { args[1] };
+
+    // APOC fails on a null language; it is the default one here
+    final String language = args.length > 2 && args[2] != null ? args[2].toString() : DEFAULT_LANGUAGE;
+    return StringUtils.format(getName(), Locale.of(language), format, values);
   }
 }

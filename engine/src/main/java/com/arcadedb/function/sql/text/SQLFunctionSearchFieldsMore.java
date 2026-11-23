@@ -273,6 +273,17 @@ public class SQLFunctionSearchFieldsMore extends SQLFunctionAbstract {
     return result;
   }
 
+  /** Sets {@code $score} and {@code $similarity} on every record it is evaluated on, 0 for one it does not match (#11773). */
+  @Override
+  public boolean setsScore() {
+    return true;
+  }
+
+  @Override
+  public boolean setsSimilarity() {
+    return true;
+  }
+
   @Override
   public String getSyntax() {
     return "SEARCH_FIELDS_MORE(<field-names>, <source-rids>, [<metadata>])";

@@ -19,11 +19,15 @@
 package com.arcadedb.function.sql.misc;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.ArithmeticErrorException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -123,16 +127,37 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
       throw new CommandParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
     }
 
+    // FROM HERE THE STATEMENT PARSED AND THE OVERLOAD IS PICKED: A FAILURE IS AN EXECUTION ERROR, NEVER A PARSING ONE (#12445)
     try {
       return method.invoke(null, params);
+    } catch (final InvocationTargetException e) {
+      throw targetFault(e.getCause(), paramsPrettyPrint);
     } catch (final ReflectiveOperationException e) {
-      throw new CommandParsingException("Error executing function " + name + paramsPrettyPrint.get(), e);
+      throw new CommandExecutionException("Error executing function " + name + paramsPrettyPrint.get(), e);
     } catch (final IllegalArgumentException x) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing function %s", x, name);
 
       return null; //if a function fails for given input, just return null to avoid breaking the query execution
     }
 
+  }
+
+  /**
+   * The exception to raise for a fault the invoked method threw. An engine exception already says what failed and is
+   * raised as itself, an {@link Error} is never wrapped, an arithmetic fault ({@code Math.addExact} overflowing,
+   * {@code Math.floorDiv} by zero) is the {@link ArithmeticErrorException} the operators raise for the same fault, and
+   * anything else is an execution error that carries it.
+   */
+  private RuntimeException targetFault(final Throwable fault, final Supplier<String> paramsPrettyPrint) {
+    if (fault instanceof ArcadeDBException engineException)
+      return engineException;
+    if (fault instanceof Error error)
+      throw error;
+
+    final String message = "Error executing function " + name + paramsPrettyPrint.get() + ": " + fault;
+    if (fault instanceof ArithmeticException)
+      return new ArithmeticErrorException(message, fault);
+    return new CommandExecutionException(message, fault);
   }
 
   @Override

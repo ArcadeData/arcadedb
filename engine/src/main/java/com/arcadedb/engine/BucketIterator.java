@@ -29,6 +29,7 @@ import com.arcadedb.exception.BrokenChunkChainException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SerializationException;
+import com.arcadedb.graph.ImmutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.schema.DocumentType;
@@ -61,7 +62,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
   private              int              prefetchIndex = 0;
-  final                long             limit;
   private final        boolean          forwardDirection;
   int      nextPageNumber;
   // READ ONLY AT ABSOLUTE POSITIONS, ACROSS CALLS TOO: THE PAGE CACHE'S SHARED VIEW SERVES IT, NO VIEW PER PAGE (#10820)
@@ -75,7 +75,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
   short    recordCountInCurrentPage;
   int      totalPages;
   int      currentRecordInPage;
-  long     browsed     = 0;
   private int  writeIndex     = 0;
   // RECORDS RESOLVED BY THE CURRENT fetchNext(), REPORTED TO THE readRecord STATISTIC ONCE PER BATCH
   private long recordsRead    = 0;
@@ -138,11 +137,7 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     this.positions = positions;
     this.positionIndex = positionsFrom;
     this.positionsEnd = positionsTo;
-    this.totalPages = bucket.pageCount.get();
-
-    final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.fileId);
-    if (txPageCounter != null && txPageCounter > totalPages)
-      this.totalPages = txPageCounter;
+    this.totalPages = bucket.getReadablePageCount();
 
     if (toPage > -1 && toPage < this.totalPages) {
       if (!forwardDirection)
@@ -150,7 +145,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
       this.totalPages = toPage;
     }
 
-    limit = database.getResultSetLimit();
     maxBatchBytes = database.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_BATCH_MAX_BYTES);
 
     if (forwardDirection) {
@@ -229,13 +223,14 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
         document.setContentPageVersion(pageVersion);
       document.setReadInTransaction(readInTransaction);
     }
+    // #12320: a vertex read from the transaction's own image of its page carries the heads of that image
+    if (currentPageImage != null && record instanceof ImmutableVertex vertex)
+      vertex.markReadFromOwnImage();
     return database.invokeAfterReadEvents(record);
   }
 
   @Override
   public boolean hasNext() {
-    if (limit > -1 && browsed >= limit)
-      return false;
     start();
     return prefetchIndex < writeIndex && nextBatch[prefetchIndex] != null;
   }
@@ -253,7 +248,6 @@ public class BucketIterator implements Iterator<Record>, ScanPressureReporter {
     if (prefetchIndex >= writeIndex || nextBatch[prefetchIndex] == null)
       throw new IllegalStateException();
 
-    ++browsed;
     final Record record = nextBatch[prefetchIndex];
     nextBatch[prefetchIndex] = null; // EARLY CLEANSE FOR GC
     prefetchIndex++;

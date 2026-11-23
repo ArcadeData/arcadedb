@@ -38,7 +38,14 @@
       <div id="querySidebarContent">
         <!-- Overview Panel -->
         <div class="sidebar-panel active" id="sidebarPanelOverview">
-          <div class="sidebar-empty">Loading...</div>
+          <div class="sidebar-filter">
+            <input type="search" id="queryTypeFilter" class="sidebar-filter-input" placeholder="Filter types..." aria-label="Filter types by name"
+                   autocomplete="off" spellcheck="false" data-on-input="filterTypeSidebar" data-args='["queryOverviewTypes"]'>
+            <div class="sidebar-filter-status" id="queryTypeFilterStatus" aria-live="polite"></div>
+          </div>
+          <div id="queryOverviewTypes">
+            <div class="sidebar-empty">Loading...</div>
+          </div>
         </div>
         <!-- History Panel -->
         <div class="sidebar-panel" id="sidebarPanelHistory"></div>

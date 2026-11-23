@@ -36,7 +36,7 @@ public class MaterializedViewRefresher {
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
     // A per-record view passes the request through its pending delta (issue #11475): the pass that drains it, this caller's or
     // the running owner's next one, then rewrites the whole view instead of only the records changed meanwhile
-    if (view.isPerRecord())
+    if (view.tracksPendingDelta())
       view.requestFullPass(false);
     refresh(database, view, false);
   }
@@ -114,7 +114,7 @@ public class MaterializedViewRefresher {
           replaced = true;
           break;
         }
-        MaterializedViewImpl.PendingDelta delta = view.isPerRecord() ? view.drainPendingDelta() : null;
+        MaterializedViewImpl.PendingDelta delta = view.tracksPendingDelta() ? view.drainPendingDelta() : null;
         if (delta != null && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
           // The full pass a failed pass owes (issue #11475) rewrites the whole view, and the commit that found it pending owes
           // its client nothing of that cost: the request goes back and the scheduler makes it. Until it succeeds the view says
@@ -133,16 +133,18 @@ public class MaterializedViewRefresher {
         view.setStatus(MaterializedViewStatus.BUILDING);
         final long startNs = System.nanoTime();
 
-        if (delta != null)
+        if (delta == null)
+          refreshOnce(database, view);
+        else if (view.isPerRecord())
           perRecordPass(database, view, delta);
         else
-          refreshOnce(database, view);
+          MaterializedViewGroupedRefresher.pass(database, view, delta);
 
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
         // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475): this pass
         // did not cover those records, so it does not end VALID; the further pass it was asked for makes the recovery
-        if (view.isPerRecord() && view.owesRecoveryPass())
+        if (view.tracksPendingDelta() && view.owesRecoveryPass())
           view.setStatus(MaterializedViewStatus.STALE);
         else {
           view.setStatus(MaterializedViewStatus.VALID);
@@ -171,15 +173,18 @@ public class MaterializedViewRefresher {
       // A per-record pass that failed took its records out of the pending delta and wrote none of them: only a full pass
       // repairs that, so it is asked for here, before the ownership is released, and the next pass of any trigger makes it.
       // Without it the next commit's delta pass ended VALID over a view still missing the failed pass's records (#11475).
-      if (view.isPerRecord())
+      if (view.tracksPendingDelta()) {
         view.requestFullPass(true);
+        // what the failed pass drained of a grouped view's delta is gone with it: its state is rebuilt from the source
+        view.setGroupedRuntime(null);
+      }
       view.setStatus(MaterializedViewStatus.ERROR);
       // An ALTER that replaced this instance while the pass ran copied only what was still pending, not what the pass had drained:
       // the full pass is owed by the registered view too, or its next delta pass ends VALID over the records this one failed to
       // write. Only its flags are touched, never its ownership; a pass of it running now is asked to make one more, which drains
       // the request. Set before the save below, so the status stored is the registered view's
       final MaterializedViewImpl current = view.current();
-      if (current != view && current.isPerRecord()) {
+      if (current != view && current.tracksPendingDelta()) {
         current.requestFullPass(true);
         current.setStatus(MaterializedViewStatus.STALE);
         current.markRefreshPendingIfRunning();
@@ -217,7 +222,7 @@ public class MaterializedViewRefresher {
       final boolean mayHandOffFurtherPasses) {
     replaced.endRefresh();
     final MaterializedViewImpl current = replaced.current();
-    if (current.isPerRecord())
+    if (current.tracksPendingDelta())
       current.requestFullPass(false);
     refresh(database, current, mayHandOffFurtherPasses);
   }
@@ -329,7 +334,7 @@ public class MaterializedViewRefresher {
    * ceiling - the repopulate was already a single unbounded transaction, so a view too large to refresh in one
    * transaction was already too large to refresh.
    */
-  private static void refreshOnce(final Database database, final MaterializedViewImpl view) {
+  static void refreshOnce(final Database database, final MaterializedViewImpl view) {
     final String backingTypeName = view.getBackingTypeName();
 
     // Use joinCurrentTx=false to always create a dedicated transaction for the refresh.
@@ -399,7 +404,7 @@ public class MaterializedViewRefresher {
    * resize and nothing else - which spares the common case, a view whose row count barely moves between refreshes,
    * from growing them at all.
    */
-  private static RecordIdentities collectIdentities(final Database database, final String backingTypeName) {
+  static RecordIdentities collectIdentities(final Database database, final String backingTypeName) {
     final long count = database.countType(backingTypeName, false);
     final RecordIdentities identities = new RecordIdentities(
         count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);

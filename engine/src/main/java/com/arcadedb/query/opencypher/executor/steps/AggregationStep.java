@@ -24,6 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
@@ -146,7 +147,7 @@ public class AggregationStep extends AbstractExecutionStep {
     if (complexAggregations.isEmpty()) {
       final ResultInternal parallel = aggregateInParallel(context);
       if (parallel != null)
-        return resultSet(List.of(parallel));
+        return resultSet(List.of(parallel), context);
     }
 
     // Process all rows, feeding data to aggregators
@@ -225,7 +226,8 @@ public class AggregationStep extends AbstractExecutionStep {
         // Build overrides map: aggregation text -> aggregated result
         final Map<String, Object> overrides = new HashMap<>();
         for (final Map.Entry<String, StatelessFunction> funcEntry : complexInfo.innerFunctions.entrySet())
-          overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+          // the records collect() gathered, as the writes of every row left them (issue #12565)
+          overrides.put(funcEntry.getKey(), WrittenCopy.resolveValue(funcEntry.getValue().getAggregatedResult(), context));
 
         // Evaluate the full expression with overrides, using representative row for variable resolution
         evaluator.setAggregationOverrides(overrides);
@@ -245,7 +247,7 @@ public class AggregationStep extends AbstractExecutionStep {
     // Return single aggregated row
     final List<Result> results = new ArrayList<>();
     results.add(aggregatedResult);
-    return resultSet(results);
+    return resultSet(results, context);
   }
 
   /**
@@ -283,7 +285,9 @@ public class AggregationStep extends AbstractExecutionStep {
     }
   }
 
-  private ResultSet resultSet(final List<Result> results) {
+  private ResultSet resultSet(final List<Result> results, final CommandContext context) {
+    // Every input row has made its writes by now: the records the aggregates hold are read as those writes left them (issue #12565)
+    WrittenCopy.resolveRows(context, results);
     return new ResultSet() {
       private int index = 0;
 
@@ -307,73 +311,22 @@ public class AggregationStep extends AbstractExecutionStep {
   }
 
   /**
-   * Recursively collects all aggregation FunctionCallExpressions from an expression tree.
-   * Uses the expression text as key for deduplication.
+   * Collects every aggregate call nested in an expression tree, keyed by the call's text for deduplication, with a fresh
+   * function instance for each. The walk is the one {@link NestedAggregates} shares with the other aggregation step.
    */
   private void collectAggregations(final Expression expr,
       final Map<String, FunctionCallExpression> innerAggs,
       final Map<String, StatelessFunction> innerFunctions) {
-    if (expr == null)
-      return;
-    if (expr instanceof FunctionCallExpression funcExpr) {
-      if (funcExpr.isAggregation()) {
-        final String key = funcExpr.getText();
-        if (!innerAggs.containsKey(key)) {
-          innerAggs.put(key, funcExpr);
-          final StatelessFunction innerFunction = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
-              funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit);
-          funcExpr.validateArity(innerFunction);
-          innerFunctions.put(key, innerFunction);
-        }
-        return; // Don't recurse into aggregation arguments
+    NestedAggregates.forEach(expr, funcExpr -> {
+      final String key = funcExpr.getText();
+      if (!innerAggs.containsKey(key)) {
+        innerAggs.put(key, funcExpr);
+        final StatelessFunction innerFunction = HeapBufferingFunction.adopt(functionFactory.getFunctionExecutor(
+            funcExpr.getFunctionName(), funcExpr.isDistinct()), heapLimit);
+        funcExpr.validateArity(innerFunction);
+        innerFunctions.put(key, innerFunction);
       }
-      for (final Expression arg : funcExpr.getArguments())
-        collectAggregations(arg, innerAggs, innerFunctions);
-    } else if (expr instanceof ArithmeticExpression arith) {
-      collectAggregations(arith.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(arith.getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListComprehensionExpression lce) {
-      collectAggregations(lce.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListPredicateExpression lpe) {
-      collectAggregations(lpe.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListExpression le) {
-      for (final Expression elem : le.getElements())
-        collectAggregations(elem, innerAggs, innerFunctions);
-    } else if (expr instanceof ComparisonExpressionWrapper cew) {
-      collectAggregations(cew.getComparison().getLeft(), innerAggs, innerFunctions);
-      collectAggregations(cew.getComparison().getRight(), innerAggs, innerFunctions);
-    } else if (expr instanceof CaseExpression ce) {
-      collectAggregations(ce.getCaseExpression(), innerAggs, innerFunctions);
-      for (final CaseAlternative alt : ce.getAlternatives()) {
-        collectAggregations(alt.getWhenExpression(), innerAggs, innerFunctions);
-        collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
-      }
-      collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof MapExpression me) {
-      for (final Expression value : me.getEntries().values())
-        collectAggregations(value, innerAggs, innerFunctions);
-    } else if (expr instanceof ListSliceExpression lse) {
-      collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ListIndexExpression lie) {
-      collectAggregations(lie.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(lie.getIndexExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof ReduceExpression re) {
-      collectAggregations(re.getInitialValue(), innerAggs, innerFunctions);
-      collectAggregations(re.getListExpression(), innerAggs, innerFunctions);
-      collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof BooleanWrapperExpression bwe) {
-      collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
-    } else if (expr instanceof TernaryLogicalExpression logical) {
-      // AND, OR, XOR and NOT in expression position (issue #11597)
-      collectAggregations(logical.getLeft(), innerAggs, innerFunctions);
-      collectAggregations(logical.getRight(), innerAggs, innerFunctions);
-    }
-  }
-
-  private void collectBooleanAggregations(final BooleanExpression boolExpr,
-      final Map<String, FunctionCallExpression> innerAggs,
-      final Map<String, StatelessFunction> innerFunctions) {
-    BooleanWrapperExpression.forEachOperand(boolExpr, operand -> collectAggregations(operand, innerAggs, innerFunctions));
+    });
   }
 
   /**
