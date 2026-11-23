@@ -1889,9 +1889,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
       memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the degree buffer", nodeCount + " nodes");
       final int[] degrees = new int[nodeCount];
       if (provider != null) {
-        // A provider sums several slices through a second nodeCount-sized scratch buffer: reserved here, as the per-type sum
-        // that used to run here reserved its own
-        memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
+        // A provider sums several slices through a second nodeCount-sized scratch buffer, and reads a single one straight into the
+        // result: the scratch is reserved only when more than one slice is asked for. The count is the provider's own resolution
+        // of the request, an upper bound of what it sums (it drops a type listed twice).
+        final String[] slices = relTypes != null && relTypes.length > 0 ?
+            provider.resolveEdgeTypes(relTypes) :
+            provider.getMaterializedEdgeTypes();
+        if (slices != null && slices.length > 1)
+          memory.reserve(saturatingProduct(nodeCount, INT_BYTES), "the per-type degree scratch buffer", nodeCount + " nodes");
         provider.getDegrees(degrees, dir, relTypes);
         return degrees;
       }

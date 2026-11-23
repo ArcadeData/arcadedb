@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -92,6 +93,51 @@ class DegreeCountsSubTypeEdgesOnceTest extends TestHelper {
     assertThat(degrees.get(3)).isEqualTo("in 2, out 2");
     assertThat(degrees.values().stream().mapToInt(DegreeCountsSubTypeEdgesOnceTest::outOf).sum())
         .isEqualTo(E0_EDGES.length + E1_EDGES.length + 1);
+  }
+
+  /**
+   * A provider reads one slice straight into the result and needs a second nodeCount-sized buffer only to sum several, so only a
+   * request that resolves to several slices is charged for it against the algo working-memory budget.
+   */
+  @Test
+  void algoDegreeChargesTheScratchBufferOnlyWhenSeveralSlicesAreSummed() {
+    buildView(null);
+    try {
+      // E1 has no sub-type: one slice. E0 brings E1 with it: two slices, summed through the scratch buffer
+      final long oneSlice = smallestBudget("'E1'");
+      final long twoSlices = smallestBudget("'E0'");
+      assertThat(oneSlice).as("the smallest budget that admits a one-slice degree").isPositive();
+      assertThat(twoSlices).as("the smallest budget that admits a degree summed over two slices").isGreaterThan(oneSlice);
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY,
+          GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getDefValue());
+    }
+  }
+
+  /** The smallest working-memory budget, in bytes, under which {@code algo.degree(args)} runs, by bisection. */
+  private long smallestBudget(final String args) {
+    long refused = 0L;
+    long admitted = 1L << 20;
+    assertThat(runsUnderBudget(args, admitted)).as("algo.degree(" + args + ") under " + admitted + " bytes").isTrue();
+    while (admitted - refused > 1) {
+      final long middle = (refused + admitted) >>> 1;
+      if (runsUnderBudget(args, middle))
+        admitted = middle;
+      else
+        refused = middle;
+    }
+    return admitted;
+  }
+
+  private boolean runsUnderBudget(final String args, final long budgetBytes) {
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY, budgetBytes);
+    try {
+      degrees(args);
+      return true;
+    } catch (final RuntimeException e) {
+      assertThat(e).hasStackTraceContaining(GlobalConfiguration.CYPHER_ALGO_MAX_WORKING_MEMORY.getKey());
+      return false;
+    }
   }
 
   private void buildView(final String edgeType) {
