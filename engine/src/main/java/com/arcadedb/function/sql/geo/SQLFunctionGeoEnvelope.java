@@ -53,6 +53,10 @@ public class SQLFunctionGeoEnvelope extends SQLFunctionAbstract {
     final Shape shape = GeoUtils.parseGeometry(iParams[0]);
     if (shape == null)
       return null;
+    // an EMPTY geometry has no bounding box: an empty polygon, as PostGIS's ST_Envelope answers an empty geometry, rather
+    // than a polygon of NaN coordinates (issue #12277)
+    if (shape.isEmpty())
+      return "POLYGON EMPTY";
 
     final Rectangle bbox = shape.getBoundingBox();
     // the two parts either side of the antimeridian are defined once, where the JTS functions read the same rectangle

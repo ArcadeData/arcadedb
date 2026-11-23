@@ -95,12 +95,13 @@ public class GeoUtils {
   /**
    * Reads the x/y of one vertex given to a geometry constructor ({@code geo.lineString()}, {@code geo.polygon()}): a
    * Spatial4j point, an {@code [x, y]} pair, or whatever a {@code point()} call returns (the WKT string {@code POINT (x y)})
-   * or a Cypher point map.
+   * or a Cypher point map. An EMPTY point has no position, so it is no vertex: it is refused like any value that is not a
+   * point rather than read as the NaN coordinates of a constructed geometry (issue #12277).
    *
-   * @throws IllegalArgumentException if the value is not a point
+   * @throws IllegalArgumentException if the value is not a point, or is an EMPTY one
    */
   public static double[] pointXY(final Object point) {
-    if (point instanceof Point p)
+    if (point instanceof Point p && !p.isEmpty())
       return new double[] { p.getX(), p.getY() };
     if (point instanceof List<?> list) {
       if (list.size() < 2)
@@ -118,7 +119,7 @@ public class GeoUtils {
       } catch (final IllegalArgumentException e) {
         throw new IllegalArgumentException("Invalid point element: " + point, e);
       }
-      if (shape instanceof Point p)
+      if (shape instanceof Point p && !p.isEmpty())
         return new double[] { p.getX(), p.getY() };
     }
     throw new IllegalArgumentException("Invalid point element: " + point);
@@ -211,8 +212,13 @@ public class GeoUtils {
    * short way round. A circle is its centre less its radius. The distance between those two points is the great-circle
    * one, so it is exact for a point and, for a larger shape, close to the shortest distance on the sphere but not always
    * equal to it: the plane picks the nearest edge in degrees, and a degree of longitude is shorter the nearer the pole.
+   * <p>
+   * NaN when either shape is EMPTY: it has no position, so it is at no distance from anything and {@code geo.dWithin}
+   * answers false for it (issue #12277).
    */
   public static double distanceDegrees(final Shape a, final Shape b) {
+    if (a.isEmpty() || b.isEmpty())
+      return Double.NaN;
     if (a instanceof Circle circle)
       return Math.max(0.0, distanceDegrees(circle.getCenter(), b) - circle.getRadius());
     if (b instanceof Circle circle)
