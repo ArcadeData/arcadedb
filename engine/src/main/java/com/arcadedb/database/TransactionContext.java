@@ -2079,10 +2079,11 @@ public class TransactionContext implements Transaction {
    */
   public static void checkRecordIsStillTheOneRead(final LocalBucket bucket, final RID rid, final BasePage recordPage,
       final Record record) {
-    if (recordPage == null || !(record instanceof MutableDocument))
+    if (recordPage == null || !(record instanceof MutableDocument document))
       return;
 
-    final Binary readImage = ((RecordInternal) record).getBuffer();
+    // THE STORED IMAGE, NOT THE CONTENT AN AFTER-READ LISTENER RETURNED FOR THE RECORD: THE SLOT NEVER HELD THAT (#12579)
+    final Binary readImage = document.getStoredBuffer();
     if (readImage != null && bucket.hasRecordChangedSinceRead(rid, recordPage, readImage))
       throw new ConcurrentModificationException("Record " + rid + " was modified by a concurrent transaction between "
           + "its read and its update. Please retry the operation");

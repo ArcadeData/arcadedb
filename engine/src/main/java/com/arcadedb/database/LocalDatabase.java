@@ -2220,7 +2220,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public Document getOriginalDocument(final Record record) {
-    final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+    // THE STORED IMAGE: THE INDEXES WERE WRITTEN FROM IT, NOT FROM THE CONTENT AN AFTER-READ LISTENER RETURNED FOR THE RECORD (#12579)
+    final Binary originalBuffer =
+        record instanceof BaseRecord base ? base.getStoredBuffer() : ((RecordInternal) record).getBuffer();
     if (originalBuffer == null)
       throw new IllegalStateException("Cannot read original buffer for record " + record.getIdentity()
           + ". In case of tx retry check the record is created inside the transaction");
@@ -2572,6 +2574,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * loading itself, unpinned, when the cleanup asks its properties. Nothing is refused for it either: its caller decided on a RID,
    * not on content, and the RID still names a record.
    * <p>
+   * The image the slot is compared with is the stored one, which is not always the buffer of the record: when an after-read listener
+   * handed back other content than the stored one (a decryption), the record answers that content and its buffer holds it, so the slot
+   * differed from the record with no other transaction involved, and every delete of it was refused (issue #12579). Such a record
+   * keeps the image it was read as ({@link BaseRecord#getStoredBuffer()}), which is what is compared, and what the cleanup reads the
+   * entries to remove from: the listener may have rewritten an indexed property, and the index holds the stored value. A record a
+   * listener filtered away holds no content at all, and is read from the slot like one that was never loaded.
+   * <p>
    * The record that is neither changed in its slot nor pending costs the pin, which its delete takes anyway a few lines later,
    * and one comparison in place: nothing is allocated for it.
    */
@@ -2579,7 +2588,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     final RID rid = document.getIdentity();
     if (rid == null || rid.getPosition() < 0 || !(document instanceof BaseRecord base))
       return document;
-    final Binary readImage = base.getBuffer();
+    // THE STORED IMAGE, NOT THE CONTENT AN AFTER-READ LISTENER RETURNED FOR IT (ISSUE #12579): THE SLOT NEVER HELD THAT, SO THE RECORD
+    // WOULD BE REFUSED AS CHANGED BY A CONCURRENT TRANSACTION ON EVERY ATTEMPT
+    final Binary readImage = base.getStoredBuffer();
 
     // A RECORD WITH NO BUFFER WAS NOT LOADED YET (lookupByRID(rid, false)): LEFT TO LOAD ITSELF WHEN THE CLEANUP ASKS ITS PROPERTIES,
     // IT WOULD BE READ BEFORE ITS PAGE IS PINNED, WITH THE SAME WINDOW FOR A CONCURRENT COMMIT. IT IS READ FROM THE SLOT, PINNED
@@ -2610,7 +2621,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             + "and its delete. Please retry the operation");
       // THE COPY DETACHES THE IMAGE FROM A PAGE THAT CHANGED UNDER THE CALLER'S; A RECORD READ HERE FIRST IS A VIEW, AS ANY READ IS
       stored = readImage == null ? current : current.copyOfContent();
-    } else if (document instanceof MutableDocument mutable && mutable.isDirty()) {
+    } else if ((document instanceof MutableDocument mutable && mutable.isDirty()) || base.isContentRewrittenByListener()) {
+      // A RECORD A LISTENER REWROTE ANSWERS WHAT THE LISTENER RETURNED, WHICH IS NOT WHAT THE INDEXES AND THE EXTERNAL VALUES WERE
+      // WRITTEN FROM: THE STORED IMAGE IS (ISSUE #12579)
       readImage.rewind();
       stored = readImage;
     } else

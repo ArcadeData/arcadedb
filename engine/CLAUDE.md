@@ -61,6 +61,14 @@ The record table of an image never shrinks while the transaction runs, so a slot
 
 RID is a physical position (`pageNumber * maxRecordsInPage + slot`), which is why the engine tracks pages rather than records in the first place.
 
+## `getBuffer()` is not the stored image when an after-read listener rewrote the record (#12579)
+
+An `AfterRecordReadListener` that returns other content than the stored one (a decryption is the in-tree shape) makes the record install the listener's content as its buffer (`ImmutableDocument.checkForLazyLoading`, `BaseRecord.reload`). `modify()` then builds the `MutableDocument` from that buffer. So `getBuffer()` answers what the record SAYS, and anything that compares the record with its slot, or cleans the indexes and the EXTERNAL values up from what the record was stored as, must use `BaseRecord.getStoredBuffer()` instead. Compared with `getBuffer()`, the slot always differs, no other transaction is involved, and the delete (`LocalDatabase.storedImageForCleanup`, #12472) or the update (`TransactionContext.checkRecordIsStillTheOneRead`, #6950) is refused with a retryable `ConcurrentModificationException` on every attempt. The three consumers today are those two and `LocalDatabase.getOriginalDocument` (the index diff of an update).
+
+The image rides on the buffer, as a `ListenerRewrittenBinary` that carries it, so no record pays a field for it and a save or a reload that runs no listener drops it with the buffer. `Binary.copyOfContent()` is deliberately NOT overridden to carry it: a copy that is written to a page or handed to another record would carry the image of a state the slot has left. The one copy that wants it is the one `modify()` builds (`copyOfContentForModify`). A record a listener FILTERS AWAY holds no buffer at all, so it has no image to compare and is deleted as a record that was never loaded is: by RID.
+
+Still reading `getBuffer()`: the base image of the stale-read edge-list head merge (`TransactionContext.mergeEdgeListHeads`), which only reads the head prefix a listener leaves alone, and `GraphEngine.indexedImageOf` / `cleanUpBeforePhysicalDelete` (the index and EXTERNAL cleanup of a moved edge, which also copies the listener's properties into the replacement). A new consumer that compares a record with its slot, or cleans up from what the record was stored as, takes `getStoredBuffer()`.
+
 ## A record that outgrows its page becomes CHUNKS; the placeholder is what is left of the mechanism that came before
 
 The placeholder - an 8-byte pointer in the record's slot and the content on another page - is the pre-chunk spill mechanism. The chunk chain (#332) took over every case it used to serve except one, and `LocalBucket` has exactly one branch that still writes placeholder pointers: the spill branch of `updateRecordInternal`, when the slot cannot reach `MINIMUM_SPACE_FOR_FIRST_CHUNK` (14 bytes - marker, chunk size, next-chunk pointer, one byte of content).
