@@ -687,10 +687,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction its CALLER owns (HTTP /begin,
       // Bolt BEGIN, an embedded begin() or transaction()) the caller's ROLLBACK could not undo them and the batches would not
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
-      // request keeps running it.
+      // request keeps running it. A server transaction shared by several statements that already holds an earlier statement's
+      // writes is no longer implicit either (a Postgres pipeline, issue #13222), so the message names that cause and the cure.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
         throw new ImplicitTransactionRequiredException(
-            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
+            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction"
+                + " or in one already holding the writes of earlier statements (such as an earlier statement of the same Postgres pipeline):"
+                + " commit those first (COMMIT, or Sync for a pipeline)");
       return executeWrite(plan, execDb, profile, timeExecution);
     }
 
