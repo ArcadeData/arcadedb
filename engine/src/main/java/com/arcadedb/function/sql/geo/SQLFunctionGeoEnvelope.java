@@ -30,7 +30,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * A bounding box that crosses the antimeridian ({@code minX > maxX}) is written as the MULTIPOLYGON of its two parts either
  * side of it, split at 180 as GeoJSON (RFC 7946 section 3.1.9) does: the one polygon of its corners, {@code minX .. maxX},
  * is read by every {@code geo.*} function as the band between those meridians the other way round, the complement of the
- * box (issue #12270).
+ * box (issue #12270). A box that starts or ends on the antimeridian has no part on its other side: it is one POLYGON.
  *
  * <p>Usage: {@code geo.envelope(<geometry>)}</p>
  * <p>Returns: WKT {@code "POLYGON ((minX minY, maxX minY, maxX maxY, minX maxY, minX minY))"}, or across the antimeridian
@@ -55,21 +55,22 @@ public class SQLFunctionGeoEnvelope extends SQLFunctionAbstract {
       return null;
 
     final Rectangle bbox = shape.getBoundingBox();
-    final double minY = bbox.getMinY();
-    final double maxY = bbox.getMaxY();
-    if (!bbox.getCrossesDateLine())
-      return "POLYGON (" + ring(bbox.getMinX(), bbox.getMaxX(), minY, maxY) + ")";
-    return "MULTIPOLYGON ((" + ring(bbox.getMinX(), 180, minY, maxY) + "), (" + ring(-180, bbox.getMaxX(), minY, maxY) + "))";
-  }
+    // the two parts either side of the antimeridian are defined once, where the JTS functions read the same rectangle
+    if (bbox.getCrossesDateLine())
+      return GeoUtils.jtsToWKT(GeoUtils.rectangleToJts(bbox));
 
-  private static String ring(final double minX, final double maxX, final double minY, final double maxY) {
-    return "(" +
+    final double minX = bbox.getMinX();
+    final double minY = bbox.getMinY();
+    final double maxX = bbox.getMaxX();
+    final double maxY = bbox.getMaxY();
+
+    return "POLYGON ((" +
         GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) + ", " +
         GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(minY) + ", " +
         GeoUtils.formatCoord(maxX) + " " + GeoUtils.formatCoord(maxY) + ", " +
         GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(maxY) + ", " +
         GeoUtils.formatCoord(minX) + " " + GeoUtils.formatCoord(minY) +
-        ")";
+        "))";
   }
 
   @Override

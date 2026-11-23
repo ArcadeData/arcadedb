@@ -278,8 +278,8 @@ public class GeoUtils {
    * Returns null if the value is null.
    * <p>
    * When the input is a {@link JtsGeometry}, the underlying JTS geometry is returned directly to
-   * avoid lossy WKT round-trips (Spatial4j may write Rectangle shapes as ENVELOPE WKT which is
-   * not understood by the JTS WKT reader).
+   * avoid lossy WKT round-trips. A {@link Rectangle}, and Spatial4j's {@code ENVELOPE} text (which the JTS WKT reader
+   * does not understand), are converted by {@link #rectangleToJts}.
    * </p>
    */
   public static Geometry parseJtsGeometry(final Object value) {
@@ -288,7 +288,7 @@ public class GeoUtils {
     // Fast path: JtsGeometry wraps the JTS Geometry directly — no WKT round-trip needed
     if (value instanceof JtsGeometry jtsShape)
       return jtsShape.getGeom();
-    // For Rectangle (bounding box shapes), build the polygon manually to avoid ENVELOPE WKT
+    // A Rectangle (bounding box shape) is converted as it is: written as WKT it would be ENVELOPE, which JTS cannot read
     if (value instanceof Rectangle rect)
       return rectangleToJts(rect);
     final String wkt;
@@ -317,13 +317,24 @@ public class GeoUtils {
    * corners, {@code 170 .. -170}, is the 340-degree band between those meridians on the longitude/latitude plane JTS works
    * on, so {@code geo.crosses}, {@code geo.equals}, {@code geo.asGeoJson} and the other JTS-backed functions answered for
    * the complement of the rectangle (issue #12270).
+   * <p>
+   * A crossing rectangle that starts or ends ON the antimeridian ({@code ENVELOPE (180, -170, 10, 0)}) has a part of no
+   * width: it is the other part alone, one polygon, as a ring without an area is not a geometry the other {@code geo.*}
+   * functions accept.
    */
-  public static Geometry rectangleToJts(final Rectangle rect) {
+  static Geometry rectangleToJts(final Rectangle rect) {
     final GeometryFactory factory = SPATIAL_CONTEXT.getGeometryFactory();
+    final double minX = rect.getMinX();
+    final double maxX = rect.getMaxX();
+    final double minY = rect.getMinY();
+    final double maxY = rect.getMaxY();
     if (!rect.getCrossesDateLine())
-      return box(factory, rect.getMinX(), rect.getMaxX(), rect.getMinY(), rect.getMaxY());
-    return factory.createMultiPolygon(new Polygon[] { box(factory, rect.getMinX(), 180, rect.getMinY(), rect.getMaxY()),
-        box(factory, -180, rect.getMaxX(), rect.getMinY(), rect.getMaxY()) });
+      return box(factory, minX, maxX, minY, maxY);
+    if (maxX <= -180)
+      return box(factory, minX, 180, minY, maxY);
+    if (minX >= 180)
+      return box(factory, -180, maxX, minY, maxY);
+    return factory.createMultiPolygon(new Polygon[] { box(factory, minX, 180, minY, maxY), box(factory, -180, maxX, minY, maxY) });
   }
 
   private static Polygon box(final GeometryFactory factory, final double minX, final double maxX, final double minY,

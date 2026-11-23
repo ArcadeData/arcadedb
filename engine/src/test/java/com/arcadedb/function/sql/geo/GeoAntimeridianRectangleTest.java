@@ -98,6 +98,25 @@ class GeoAntimeridianRectangleTest extends TestHelper {
     assertThat(value("SELECT geo.within('POINT (0 5)', ?) AS v", buffer)).isEqualTo(false);
   }
 
+  @Test
+  void aBoxThatEndsOnTheAntimeridianIsOnePolygonNotOneWithAnEmptyPart() {
+    // 180 .. -170 is the strip -180 .. -170: the part east of the antimeridian has no width, and a ring without an area is
+    // not a geometry any other geo.* function reads
+    final String strip = "POLYGON ((-180 0, -170 0, -170 10, -180 10, -180 0))";
+    assertThat(value("SELECT geo.envelope('MULTIPOINT (180 0, -170 10)') AS v")).isEqualTo(strip);
+    assertThat(value("SELECT geo.within('POINT (-175 5)', geo.envelope('MULTIPOINT (180 0, -170 10)')) AS v")).isEqualTo(true);
+    assertThat(value("SELECT geo.equals('ENVELOPE(180, -170, 10, 0)', ?) AS v", strip)).isEqualTo(true);
+    assertThat(new JSONObject((String) value("SELECT geo.asGeoJson('ENVELOPE(180, -170, 10, 0)') AS v")).getString("type")).isEqualTo(
+        "Polygon");
+
+    // and 170 .. -180 the strip 170 .. 180
+    final String east = "POLYGON ((170 0, 180 0, 180 10, 170 10, 170 0))";
+    assertThat(value("SELECT geo.envelope('MULTIPOINT (170 0, -180 10)') AS v")).isEqualTo(east);
+    assertThat(value("SELECT geo.equals('ENVELOPE(170, -180, 10, 0)', ?) AS v", east)).isEqualTo(true);
+    assertThat(new JSONObject((String) value("SELECT geo.asGeoJson('ENVELOPE(170, -180, 10, 0)') AS v")).getString("type")).isEqualTo(
+        "Polygon");
+  }
+
   private Object value(final String sql, final Object... args) {
     try (final ResultSet result = database.query("sql", sql, args)) {
       return result.next().getProperty("v");
