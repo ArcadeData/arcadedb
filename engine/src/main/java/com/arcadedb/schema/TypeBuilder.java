@@ -340,10 +340,8 @@ public class TypeBuilder<T> {
       // there, and its super types are linked after that. Every refusal the super types can already give is asked first, or the
       // refused create would leave a half-built type behind (issues #9846, #10394)
       if (superTypes != null)
-        for (final LocalDocumentType sup : superTypes) {
-          LocalDocumentType.checkSameRecordKind(typeName, recordKind(), sup);
-          LocalDocumentType.checkSuperTypeOfNewType(typeName, sup, edgeLightweight);
-        }
+        for (final LocalDocumentType sup : superTypes)
+          LocalDocumentType.checkSuperTypeOfNewType(typeName, recordKind(), sup, edgeLightweight);
 
       // The same for a bucket another type owns, or one listed twice: addBucket refuses it, but only after the type is registered,
       // which left the type behind with the buckets before it (issue #10317)

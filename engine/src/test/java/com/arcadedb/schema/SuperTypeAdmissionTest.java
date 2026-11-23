@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
@@ -28,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -103,17 +105,69 @@ class SuperTypeAdmissionTest {
 
       database = factory.open();
 
-      final DocumentType a = database.getSchema().getType("A");
-      final DocumentType c = database.getSchema().getType("C");
-      // the three links form a cycle: one of them is left out, whichever the load met last
-      final int links = a.getSuperTypes().size() + c.getSuperTypes().size() + database.getSchema().getType("B").getSuperTypes().size();
-      assertThat(links).isEqualTo(2);
-      // every polymorphic walk ends: the scans and a schema change that saves the schema again
-      assertThat(database.countType("A", true)).isBetween(0L, 1L);
+      final List<DocumentType> types = List.of(database.getSchema().getType("A"), database.getSchema().getType("B"),
+          database.getSchema().getType("C"));
+      // the three links form a cycle: one of them is left out, whichever the load met last, and the two left are a chain, so exactly
+      // one of the three types has no super type
+      assertThat(types.stream().mapToInt(t -> t.getSuperTypes().size()).sum()).isEqualTo(2);
+      final List<DocumentType> roots = types.stream().filter(t -> t.getSuperTypes().isEmpty()).toList();
+      assertThat(roots).hasSize(1);
+      // every polymorphic walk ends, and the root of the chain reaches the record of C: the scans, and a schema change that saves the
+      // schema again
+      final String root = roots.getFirst().getName();
+      assertThat(database.countType(root, true)).isEqualTo(1L);
+      try (final ResultSet rs = database.query("sql", "SELECT FROM " + root)) {
+        assertThat(rs.stream().count()).isEqualTo(1);
+      }
       try (final ResultSet rs = database.query("sql", "SELECT FROM C")) {
         assertThat(rs.stream().count()).isEqualTo(1);
       }
       assertThatCode(() -> database.command("sql", "CREATE PROPERTY A.y INTEGER")).doesNotThrowAnyException();
+    }
+
+    /**
+     * Two types whose names differ only by case are two types (the schema keys them by the exact name), so linking one under the other
+     * is no link of a type to itself, and the link the other way is a real cycle. The check used to compare the names ignoring the case.
+     */
+    @Test
+    void typesWhoseNamesDifferOnlyByCaseAreNotTakenForOneAnother() {
+      final DocumentType upper = database.getSchema().createDocumentType("Foo");
+      final DocumentType lower = documentTypeOnItsOwnBucket("foo", "FooLowerBucket");
+
+      assertThatCode(() -> lower.addSuperType(upper)).doesNotThrowAnyException();
+      assertThat(lower.getSuperTypes()).extracting(DocumentType::getName).containsExactly("Foo");
+
+      assertThatThrownBy(() -> upper.addSuperType(lower)).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("'foo' is already a sub type of 'Foo'");
+      assertThat(upper.getSuperTypes()).isEmpty();
+    }
+
+    /**
+     * The same link, in a schema file written by a database that accepted it, is not mistaken for a cycle by the load either: the load
+     * used to leave it out with a warning, and the next schema save wrote the loss.
+     */
+    @Test
+    void aStoredLinkBetweenTypesNamedAlikeIsNotDroppedByTheLoad() throws Exception {
+      database.getSchema().createDocumentType("Foo");
+      documentTypeOnItsOwnBucket("foo", "FooLowerBucket");
+
+      database.close();
+
+      final Path schemaFile = Path.of(getDatabasePath(), LocalSchema.SCHEMA_FILE_NAME);
+      final JSONObject schemaJson = new JSONObject(Files.readString(schemaFile));
+      schemaJson.getJSONObject("types").getJSONObject("foo").put("parents", new JSONArray().put("Foo"));
+      Files.writeString(schemaFile, schemaJson.toString());
+
+      database = factory.open();
+
+      assertThat(database.getSchema().getType("foo").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Foo");
+      assertThat(database.getSchema().getType("Foo").getSuperTypes()).isEmpty();
+    }
+
+    /** A bucket of its own, so that the files of two types named alike do not meet on a file system that ignores the case. */
+    private DocumentType documentTypeOnItsOwnBucket(final String typeName, final String bucketName) {
+      final Bucket bucket = database.getSchema().createBucket(bucketName);
+      return database.getSchema().buildDocumentType().withName(typeName).withBuckets(List.of(bucket)).create();
     }
   }
 
@@ -183,6 +237,10 @@ class SuperTypeAdmissionTest {
 
       for (final String name : new String[] { "D2", "E2", "V2", "D4" })
         assertThat(database.getSchema().existsType(name)).as(name).isFalse();
+      // refused BEFORE the type is made, not made and taken back: a document type registers its name in the dictionary when it is made,
+      // and a name that was registered stays there
+      assertThat(database.getSchema().getDictionary().getIdByName("D2", false)).isEqualTo(-1);
+      assertThat(database.getSchema().getDictionary().getIdByName("D4", false)).isEqualTo(-1);
 
       assertThatCode(() -> database.command("sql", "CREATE EDGE TYPE E5 EXTENDS E")).doesNotThrowAnyException();
       assertThatCode(() -> database.command("sql", "CREATE DOCUMENT TYPE D5 EXTENDS D")).doesNotThrowAnyException();
@@ -206,6 +264,64 @@ class SuperTypeAdmissionTest {
       database = factory.open();
 
       assertThat(database.getSchema().getType("D").getSuperTypes()).extracting(DocumentType::getName).containsExactly("V");
+    }
+
+    /**
+     * A TIMESERIES type is a document type: under a graph type it is still refused for being a time series, with the message that says
+     * so, and not for its kind.
+     */
+    @Test
+    void aTimeSeriesTypeUnderAGraphTypeKeepsItsOwnRefusal() {
+      database.command("sql", "CREATE VERTEX TYPE V");
+      database.command("sql", "CREATE TIMESERIES TYPE Reading TIMESTAMP ts FIELDS (v DOUBLE)");
+
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Reading SUPERTYPE +V")).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("TIMESERIES");
+      assertThat(database.getSchema().getType("Reading").getSuperTypes()).isEmpty();
+    }
+
+    /**
+     * DROP TYPE of the type in the middle links its sub types straight to its super types, which is a new link for them (issue #11272),
+     * so the kind rule is asked of it: dropping {@code M} out of a pre-check {@code D -> M -> X}, with a document type under a vertex
+     * type, would hang the document directly under {@code X}. The drop is refused before anything changes and names the link to take
+     * out, after which it goes through.
+     */
+    @Test
+    void dropTypeDoesNotReattachASubTypeUnderASuperTypeOfAnotherKind() {
+      final LocalDocumentType x = (LocalDocumentType) database.getSchema().createVertexType("X");
+      final LocalDocumentType m = (LocalDocumentType) database.getSchema().createVertexType("M");
+      final LocalDocumentType d = (LocalDocumentType) database.getSchema().createDocumentType("D");
+      m.addSuperType(x);
+      // the re-establishing linkage of the schema load, which a database written before the check went through
+      d.addSuperType(m, false);
+
+      for (final String statement : List.of("DROP TYPE M", "DROP TYPE M IF EXISTS", "DROP TYPE M UNSAFE"))
+        assertThatThrownBy(() -> database.command("sql", statement)).as(statement).isInstanceOf(SchemaException.class)
+            .hasMessageContaining("Cannot drop the type 'M'").hasMessageContaining("'D'")
+            .hasMessageContaining("ALTER TYPE `D` SUPERTYPE -`M`");
+
+      // nothing changed
+      assertThat(database.getSchema().existsType("M")).isTrue();
+      assertThat(d.getSuperTypes()).extracting(DocumentType::getName).containsExactly("M");
+      assertThat(m.getSuperTypes()).extracting(DocumentType::getName).containsExactly("X");
+
+      database.command("sql", "ALTER TYPE `D` SUPERTYPE -`M`");
+      database.command("sql", "DROP TYPE M");
+      assertThat(database.getSchema().existsType("M")).isFalse();
+      assertThat(x.getSubTypes()).isEmpty();
+      assertThat(d.getSuperTypes()).isEmpty();
+    }
+
+    /** The rule is transitive, so a hierarchy that satisfies it is still dropped from the middle: a vertex type lands under a document type. */
+    @Test
+    void dropTypeOfAMiddleTypeOfAHierarchyThatFollowsTheRuleIsUntouched() {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE VERTEX TYPE Mid EXTENDS Doc");
+      database.command("sql", "CREATE VERTEX TYPE Leaf EXTENDS Mid");
+
+      database.command("sql", "DROP TYPE Mid");
+
+      assertThat(database.getSchema().getType("Leaf").getSuperTypes()).extracting(DocumentType::getName).containsExactly("Doc");
     }
   }
 }

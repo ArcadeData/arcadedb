@@ -4976,11 +4976,12 @@ public class LocalSchema implements Schema {
           final LocalDocumentType parent = getType(p);
           // A schema saved with a cycle (issue #12028: a refused ALTER TYPE ... SUPERTYPE + used to leave it in memory, for the next schema
           // save to write) cannot be linked as written: every polymorphic walk would recurse until the stack overflows. The link that
-          // would close the cycle is left out, so the database opens
-          if (parent.isSubTypeOf(type.getName())) {
+          // would close the cycle is left out, so the database opens. The types are compared by identity: two types whose names differ
+          // only by case are two types, and the link between them is no cycle
+          if (parent.isSameOrSubTypeOf(type)) {
             LogManager.instance().log(this, Level.WARNING,
-                "Type '%s' is declared a sub type of '%s', which is already one of its sub types: the link is left out because a type "
-                    + "hierarchy cannot have a cycle", type.getName(), parent.getName());
+                "Type '%s' is declared a sub type of '%s', which is the type itself or already one of its sub types: the link is left out "
+                    + "because a type hierarchy cannot have a cycle", type.getName(), parent.getName());
             continue;
           }
           type.addSuperType(parent, false);
