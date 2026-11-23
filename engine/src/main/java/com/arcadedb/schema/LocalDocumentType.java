@@ -3975,9 +3975,9 @@ public class LocalDocumentType implements DocumentType {
     // the caller holds, and does not see the caller's uncommitted writes. Every family can share it since issue #10438,
     // which made the vector ones join; the per-index test is kept so a family that cannot has the place to say so.
     final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
-    // Asked about THIS type's buckets, the ones createSubIndexesFor builds over: a caller that wrote only elsewhere has
-    // nothing there for the build to see, so the build keeps a transaction of its own (issue #10450).
-    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChangesIn(database, buckets);
+    // Asked about the buckets createSubIndexesFor builds over, this type's and its sub types': a caller that wrote only elsewhere
+    // has nothing there for the build to see, so the build keeps a transaction of its own (issue #10450).
+    final boolean callerTransactionHasChanges = IndexBuilder.callerTransactionHasChangesIn(database, cachedPolymorphicBuckets);
 
     // Two lists, because "has to be built later" and "has to be taken away if anything goes wrong" are not the same
     // set. An index family that cannot share the caller's transaction is built INLINE during component creation and
@@ -4074,7 +4074,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * One super-type index, over every bucket of THIS type that does not already carry it.
+   * One super-type index, over every bucket of THIS type and of the types below it that does not already carry it: the whole
+   * subtree joins the super type, so its records are the super type's records from now on (issue #12036). A sub type's
+   * bucket is looked up on the type that owns it, which is the type its sub-indexes are bound to.
    *
    * @param sharesCallerTransaction when true the component is created without an inline build and is appended to
    *                                {@code toBuild}, so the build can join the caller's transaction later and see its
@@ -4082,11 +4084,16 @@ public class LocalDocumentType implements DocumentType {
    */
   private void createSubIndexesFor(final TypeIndex index, final boolean sharesCallerTransaction, final List<Index> created,
       final List<Index> toBuild) {
-    for (int i = 0; i < buckets.size(); i++) {
-      final Bucket bucket = buckets.get(i);
+    // THIS type's buckets and, deduplicated, the ones of every type below it: the list a polymorphic read of this type walks
+    final List<Bucket> subtreeBuckets = cachedPolymorphicBuckets;
+    for (int i = 0; i < subtreeBuckets.size(); i++) {
+      final Bucket bucket = subtreeBuckets.get(i);
+      final LocalDocumentType bucketOwner = schema.getBucketOwner(bucket.getFileId());
+      // The sub-indexes of a sub type's bucket are bound to the sub type, not to this one, so it is the one to ask
+      final LocalDocumentType carrier = bucketOwner != null ? bucketOwner : this;
 
       boolean alreadyCreated = false;
-      for (final IndexInternal idx : getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
+      for (final IndexInternal idx : carrier.getPolymorphicBucketIndexByBucketId(bucket.getFileId(), index.getPropertyNames())) {
         final TypeIndex typeIndex = idx.getTypeIndex();
         if (typeIndex != null && typeIndex.equals(index)) {
           alreadyCreated = true;
