@@ -140,20 +140,58 @@ public final class BenchRunner {
    */
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter,
       final Consumer<List<CaseResult>> onCase) {
+    return run(w, ctx, null, caseFilter, onCase);
+  }
+
+  /**
+   * As {@link #run(Workload, WorkloadContext, Predicate, Consumer)}, and before every case after the first asks {@code guard}
+   * (null = no check) whether the server is still alive. A dead server amends the case it died in (a failed or timed-out case
+   * gets {@code "server died: <reason>; "} before its error, an ok one a {@code serverDied} note), hands {@code onCase} the
+   * amended list and is restarted; the next case gets a {@code serverRestarted} note. A second death, or a restart that fails,
+   * records every remaining case of the workload as not run.
+   */
+  public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final ServerGuard guard,
+      final Predicate<String> caseFilter, final Consumer<List<CaseResult>> onCase) {
     final List<CaseResult> results = new ArrayList<>();
+    WorkloadContext current = ctx;
+    int deaths = 0;
+    // why the remaining cases are not run; null while the workload goes on
+    String stopped = null;
     for (final String caseName : w.cases()) {
       if (caseFilter != null && !caseFilter.test(caseName))
         continue;
-      final CaseResult result;
+      boolean restarted = false;
+      if (guard != null && stopped == null && !results.isEmpty() && abandoned == null
+          && !Thread.currentThread().isInterrupted()) {
+        final String reason = deathReason(guard);
+        if (reason != null) {
+          final int last = results.size() - 1;
+          results.set(last, diedIn(results.get(last), reason));
+          onCase.accept(List.copyOf(results));
+          if (++deaths > 1)
+            stopped = "not started: server died twice";
+          else {
+            try {
+              current = guard.restart();
+              restarted = true;
+            } catch (final Throwable t) {
+              stopped = "server restart failed: " + describe(t);
+            }
+          }
+        }
+      }
+      CaseResult result;
       if (Thread.currentThread().isInterrupted())
-        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED, "not started: the run was interrupted");
       else if (abandoned != null)
-        result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED,
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED,
             "not started: the worker of case '" + abandoned + "' is still running");
+      else if (stopped != null)
+        result = result(w, current, caseName, List.of(), CaseResult.Status.FAILED, stopped);
       else {
         final long wallStart = clocks.wallMillis().getAsLong();
         final long monoStart = clocks.monoNanos().getAsLong();
-        final CaseResult ran = runCase(w, ctx, caseName);
+        final CaseResult ran = runCase(w, current, caseName);
         final long wallDelta = clocks.wallMillis().getAsLong() - wallStart;
         final long monoDeltaMillis = TimeUnit.NANOSECONDS.toMillis(clocks.monoNanos().getAsLong() - monoStart);
         final long ahead = wallDelta - monoDeltaMillis;
@@ -163,10 +201,28 @@ public final class BenchRunner {
         if (!lastWorkerStopped)
           abandoned = caseName;
       }
+      if (restarted)
+        result = result.withNote("serverRestarted", true);
       results.add(result);
       onCase.accept(List.copyOf(results));
     }
     return results;
+  }
+
+  /** A liveness check that throws cannot tell the server is alive: it counts as a death, so a fresh server takes over. */
+  private static String deathReason(final ServerGuard guard) {
+    try {
+      return guard.deathReason();
+    } catch (final Throwable t) {
+      return "liveness check failed: " + describe(t);
+    }
+  }
+
+  /** The case the server died in: a failed or timed-out one says so in its error, an ok one keeps its status and gets a note. */
+  private static CaseResult diedIn(final CaseResult r, final String reason) {
+    if (r.status() == CaseResult.Status.OK)
+      return r.withNote("serverDied", reason);
+    return r.withStatus(r.status(), "server died: " + reason + "; " + r.error());
   }
 
   /** Whether a timed-out worker could not be stopped: every later case is then recorded as not started. */

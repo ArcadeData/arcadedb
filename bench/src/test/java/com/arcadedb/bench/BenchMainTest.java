@@ -24,6 +24,7 @@ import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.runner.Measurement;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
+import com.arcadedb.bench.server.ServerUnderTest;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -387,6 +389,59 @@ class BenchMainTest {
       });
       assertThat(result.results().get(2).workload()).isEqualTo("beta");
       assertThat(result.results().get(2).status()).isEqualTo(CaseResult.Status.OK);
+    }
+  }
+
+  /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
+  private static final class DyingServers implements BenchMain.ServerFactory {
+    final List<String> reasons;
+    int starts;
+    int checks;
+
+    DyingServers(final String... reasons) {
+      this.reasons = Arrays.asList(reasons);
+    }
+
+    @Override
+    public ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap) {
+      starts++;
+      return null;
+    }
+
+    @Override
+    public String deathReason(final ServerUnderTest server) {
+      final int i = checks++;
+      return i < reasons.size() ? reasons.get(i) : null;
+    }
+  }
+
+  @Test
+  void nextWorkloadGetsAFreshServerAfterTwoDeaths() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2", "a3")), new Fake("beta", List.of("b1", "b2")));
+    // dead before a2 (restart), dead before a3 (second death: a3 not started); beta alive throughout
+    final DyingServers servers = new DyingServers("OOMKilled", "exit code 137");
+    final int code = BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit",
+        "abc1234567", "--out", tmp.toString() }, registry, servers, new PrintStream(new ByteArrayOutputStream(), true,
+        StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    // alpha's first server, its restart, then beta's own
+    assertThat(servers.starts).isEqualTo(3);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final RunResult result = RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+      final List<CaseResult> r = result.results();
+      assertThat(r).extracting(CaseResult::caseName).containsExactly("a1", "a2", "a3", "b1", "b2");
+      // the amended results replace the earlier ones in the file
+      assertThat(r.get(0).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+      assertThat(r.get(1).notes().getString("serverDied", "")).isEqualTo("exit code 137");
+      assertThat(r.get(1).notes().getBoolean("serverRestarted", false)).isTrue();
+      assertThat(r.get(2).status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.get(2).error()).isEqualTo("not started: server died twice");
+      assertThat(r.subList(3, 5)).allSatisfy(c -> {
+        assertThat(c.status()).isEqualTo(CaseResult.Status.OK);
+        assertThat(c.notes().has("serverDied")).isFalse();
+        assertThat(c.notes().has("serverRestarted")).isFalse();
+      });
     }
   }
 

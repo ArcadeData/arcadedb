@@ -92,6 +92,16 @@ class ServerUnderTestIT {
   }
 
   @Test
+  void deathReasonNamesAKilledContainer() {
+    try (final ServerUnderTest other = ServerUnderTest.start(IMAGE, "0-1", 4, "2g", Map.of())) {
+      assertThat(other.deathReason()).isNull();
+      DockerClientFactory.instance().client().killContainerCmd(other.containerId()).exec();
+      // SIGKILL: the container is gone with exit code 137
+      assertThat(other.deathReason()).isNotNull().isNotEmpty();
+    }
+  }
+
+  @Test
   void imageInfoHasDigest() {
     final JSONObject info = server.imageInfo();
     assertThat(info.getString("imageDigest")).startsWith("sha256:");

@@ -39,6 +39,10 @@ import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -70,6 +74,8 @@ public final class ServerUnderTest implements AutoCloseable {
   private static final int  GRPC_PORT         = 50051;
   private static final long GIB               = 1024L * 1024 * 1024;
   private static final long FRESH_SAMPLE_WAIT = 1_500L;
+  /** How long the liveness check waits for {@code /api/v1/ready}. */
+  private static final Duration READY_TIMEOUT = Duration.ofSeconds(5);
 
   private final GenericContainer<?> container;
   private final String              image;
@@ -219,6 +225,42 @@ public final class ServerUnderTest implements AutoCloseable {
         .put("imageDigest", digest)
         .put("revision", revision)
         .put("variant", nativeImage ? "native" : "jvm");
+  }
+
+  /**
+   * Null while {@code /api/v1/ready} answers within {@link #READY_TIMEOUT}, else why the server does not: {@code "OOMKilled"} or
+   * {@code "exit code <n>"} when Docker says the container stopped, {@code "not answering /api/v1/ready"} when it still runs
+   * (or cannot be inspected) but does not answer.
+   */
+  public String deathReason() {
+    if (answersReady())
+      return null;
+    try {
+      final InspectContainerResponse.ContainerState state = docker.inspectContainerCmd(container.getContainerId()).exec().getState();
+      if (state != null) {
+        if (Boolean.TRUE.equals(state.getOOMKilled()))
+          return "OOMKilled";
+        if (Boolean.FALSE.equals(state.getRunning()))
+          return "exit code " + state.getExitCodeLong();
+      }
+    } catch (final RuntimeException e) {
+      LOGGER.warn("Cannot inspect the container of the server under test: {}", e.toString());
+    }
+    return "not answering /api/v1/ready";
+  }
+
+  private boolean answersReady() {
+    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(READY_TIMEOUT).build()) {
+      final HttpRequest request = HttpRequest.newBuilder(URI.create(httpUrl() + "/api/v1/ready")).timeout(READY_TIMEOUT).GET()
+          .build();
+      final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+      return status >= 200 && status < 300;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    } catch (final IOException | RuntimeException e) {
+      return false;
+    }
   }
 
   public JSONObject config() {

@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -568,5 +569,195 @@ class BenchRunnerTest {
     final CaseResult r = runWithClockMoves(5_000, 1_000_000_000L, true).get(0);
     assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(r.notes().has("hostNotQuiet")).isTrue();
+  }
+
+  /** A guard answering {@link #deathReason()} from a script, one entry per call (null = alive), and counting restarts. */
+  private static final class ScriptedGuard implements ServerGuard {
+    final List<String>     reasons;
+    final AtomicInteger    checks   = new AtomicInteger();
+    final AtomicInteger    restarts = new AtomicInteger();
+    final WorkloadContext  fresh    = new WorkloadContext(null, Scale.XS, 1L, new JSONObject().put("fresh", true));
+    RuntimeException       restartFailure;
+
+    ScriptedGuard(final String... reasons) {
+      this.reasons = Arrays.asList(reasons);
+    }
+
+    @Override
+    public String deathReason() {
+      final int i = checks.getAndIncrement();
+      return i < reasons.size() ? reasons.get(i) : null;
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      restarts.incrementAndGet();
+      if (restartFailure != null)
+        throw restartFailure;
+      return fresh;
+    }
+
+    @Override
+    public boolean threadDump(final int n) {
+      return false;
+    }
+  }
+
+  /** Cases a, b, c, d; the named ones fail, the others pass; the context each measured case saw is recorded. */
+  private static final class Recording extends Fake {
+    final List<WorkloadContext> seenCtx = new ArrayList<>();
+    final List<String>          failing;
+
+    Recording(final String... failing) {
+      this.failing = List.of(failing);
+    }
+
+    @Override
+    public List<String> cases() {
+      return List.of("a", "b", "c", "d");
+    }
+
+    @Override
+    public Measurement measure(final WorkloadContext ctx, final String caseName) {
+      seenCtx.add(ctx);
+      if (failing.contains(caseName))
+        throw new IllegalStateException("connection refused");
+      return m(1);
+    }
+  }
+
+  @Test
+  void deadServerIsRestartedBeforeNextCase() {
+    final Recording w = new Recording();
+    // alive before b, dead before c
+    final ScriptedGuard guard = new ScriptedGuard(null, "OOMKilled");
+    final List<List<CaseResult>> seen = new ArrayList<>();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, seen::add);
+
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    // the check runs before every case after the first
+    assertThat(guard.checks.get()).isEqualTo(3);
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    assertThat(results.get(2).notes().getBoolean("serverRestarted", false)).isTrue();
+    assertThat(results.get(3).notes().has("serverRestarted")).isFalse();
+    // c and d run against the restarted server's context
+    assertThat(w.seenCtx.get(1)).isSameAs(CTX);
+    assertThat(w.seenCtx.get(2)).isSameAs(guard.fresh);
+    assertThat(w.seenCtx.get(3)).isSameAs(guard.fresh);
+    // the amendment of b is handed over too: a, b, b amended, c, d
+    assertThat(seen).hasSize(5);
+    assertThat(seen.get(2)).hasSize(2);
+    assertThat(seen.get(2).get(1).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    assertThat(seen.get(4)).isEqualTo(results);
+  }
+
+  @Test
+  void failedCaseCarriesTheDeathReason() {
+    final Recording w = new Recording("a");
+    final ScriptedGuard guard = new ScriptedGuard("exit code 137");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    final CaseResult a = results.get(0);
+    assertThat(a.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(a.error()).startsWith("server died: exit code 137; ").contains("connection refused");
+    assertThat(results.get(1).notes().getBoolean("serverRestarted", false)).isTrue();
+    assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void timedOutCaseCarriesTheDeathReason() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (caseName.equals("a"))
+          Thread.sleep(60_000);
+        return m(1);
+      }
+    };
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200)).run(w, CTX, guard, null, done -> {
+    });
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).startsWith("server died: OOMKilled; ");
+  }
+
+  @Test
+  void okCaseKeepsStatusAndGetsServerDiedNote() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard("not answering /api/v1/ready");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    final CaseResult a = results.get(0);
+    assertThat(a.status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(a.error()).isNull();
+    assertThat(a.notes().getString("serverDied", "")).isEqualTo("not answering /api/v1/ready");
+    assertThat(a.metrics()).hasSize(1);
+  }
+
+  @Test
+  void secondDeathStopsTheWorkload() {
+    final Recording w = new Recording();
+    // dead before b, alive before c, dead before d
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled", null, "OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    assertThat(results.get(2).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    final CaseResult d = results.get(3);
+    assertThat(d.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(d.error()).isEqualTo("not started: server died twice");
+    // d never ran
+    assertThat(w.seenCtx).hasSize(3);
+  }
+
+  @Test
+  void secondDeathFailsEveryRemainingCase() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard("OOMKilled", "OOMKilled");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(results.subList(2, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("not started: server died twice");
+    });
+    // no check once the workload is stopped
+    assertThat(guard.checks.get()).isEqualTo(2);
+    assertThat(w.seenCtx).hasSize(2);
+  }
+
+  @Test
+  void restartFailureFailsTheRest() {
+    final Recording w = new Recording();
+    final ScriptedGuard guard = new ScriptedGuard(null, "OOMKilled");
+    guard.restartFailure = new IllegalStateException("no docker");
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+    });
+
+    assertThat(results).hasSize(4);
+    assertThat(results.get(1).notes().getString("serverDied", "")).isEqualTo("OOMKilled");
+    assertThat(results.subList(2, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("server restart failed: java.lang.IllegalStateException: no docker");
+    });
+    assertThat(guard.restarts.get()).isEqualTo(1);
+    assertThat(w.seenCtx).hasSize(2);
+  }
+
+  @Test
+  void aNullGuardMeansNoCheck() {
+    final Recording w = new Recording();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, null, null, done -> {
+    });
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.OK);
+    assertThat(results).allSatisfy(r -> assertThat(r.notes().has("serverRestarted")).isFalse());
   }
 }

@@ -31,6 +31,7 @@ import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.RunInfo;
 import com.arcadedb.bench.model.RunResult;
 import com.arcadedb.bench.runner.BenchRunner;
+import com.arcadedb.bench.runner.ServerGuard;
 import com.arcadedb.bench.runner.Workload;
 import com.arcadedb.bench.runner.WorkloadContext;
 import com.arcadedb.bench.server.ServerUnderTest;
@@ -71,6 +72,11 @@ public final class BenchMain {
   /** Starts the server under test; a seam so tests run without Docker. */
   interface ServerFactory {
     ServerUnderTest start(String image, String cpuset, int memLimitGb, String heap);
+
+    /** Why the server no longer answers, null while it does; a seam so a test can script a death. */
+    default String deathReason(final ServerUnderTest server) {
+      return server == null ? null : server.deathReason();
+    }
   }
 
   private BenchMain() {
@@ -459,18 +465,81 @@ public final class BenchMain {
         file.write(results, false);
         continue;
       }
-      try (server) {
-        if (server != null && file.serverConfig == null) {
-          file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
-          file.imageInfo = orFallback(server::imageInfo, null, "image info");
-        }
-        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), null, file.onCase(results)));
+      if (server != null && file.serverConfig == null) {
+        file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
+        file.imageInfo = orFallback(server::imageInfo, null, "image info");
+      }
+      final Guard guard = new Guard(serverFactory, server, image, serverCpus, memLimitGb, heap, scale, seed, params);
+      try {
+        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), guard, null, file.onCase(results)));
+      } finally {
+        guard.close();
       }
     }
 
     file.write(results, true);
     out.println(dir.resolve(file.runId + ".json"));
     return 0;
+  }
+
+  /**
+   * The server of one workload as the runner sees it between cases: alive or why not, and a fresh one with the same image and
+   * settings in place of a dead one. Holds whichever server is current, so the workload closes the last one it ran against.
+   */
+  private static final class Guard implements ServerGuard {
+    private final ServerFactory   factory;
+    private final String          image;
+    private final String          cpus;
+    private final int             memLimitGb;
+    private final String          heap;
+    private final Scale           scale;
+    private final long            seed;
+    private final JSONObject      params;
+    private       ServerUnderTest server;
+
+    Guard(final ServerFactory factory, final ServerUnderTest server, final String image, final String cpus, final int memLimitGb,
+        final String heap, final Scale scale, final long seed, final JSONObject params) {
+      this.factory = factory;
+      this.server = server;
+      this.image = image;
+      this.cpus = cpus;
+      this.memLimitGb = memLimitGb;
+      this.heap = heap;
+      this.scale = scale;
+      this.seed = seed;
+      this.params = params;
+    }
+
+    @Override
+    public String deathReason() {
+      return factory.deathReason(server);
+    }
+
+    @Override
+    public WorkloadContext restart() {
+      close();
+      server = factory.start(image, cpus, memLimitGb, heap);
+      return new WorkloadContext(server, scale, seed, params);
+    }
+
+    // Task 5 takes dumps; until then none is taken
+    @Override
+    public boolean threadDump(final int n) {
+      return false;
+    }
+
+    /** Closes the current server; a failure to close a dead one must not stop the run. */
+    void close() {
+      final ServerUnderTest s = server;
+      server = null;
+      if (s == null)
+        return;
+      try {
+        s.close();
+      } catch (final RuntimeException e) {
+        System.err.println("warning: cannot close the server under test: " + e);
+      }
+    }
   }
 
   /**
