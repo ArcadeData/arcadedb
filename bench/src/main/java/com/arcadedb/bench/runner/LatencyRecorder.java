@@ -18,12 +18,20 @@
  */
 package com.arcadedb.bench.runner;
 
+import org.HdrHistogram.Histogram;
+
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.zip.DataFormatException;
 
 /**
  * Records latency samples in nanoseconds in a growable primitive array, sorted once on the first read.
  */
 public final class LatencyRecorder {
+  private static final long HIGHEST_TRACKABLE_MICROS = 3_600_000_000L;
+  private static final int  SIGNIFICANT_DIGITS       = 3;
+
   private long[]  samples;
   private int     count;
   private boolean sorted = true;
@@ -65,5 +73,29 @@ public final class LatencyRecorder {
 
   public int count() {
     return count;
+  }
+
+  /**
+   * The samples as an HdrHistogram in microseconds (3 significant digits, up to 1 hour, larger samples clamped), compressed and
+   * base64 encoded.
+   */
+  public String encodedHistogram() {
+    final Histogram histogram = new Histogram(HIGHEST_TRACKABLE_MICROS, SIGNIFICANT_DIGITS);
+    for (int i = 0; i < count; i++)
+      histogram.recordValue(Math.min(samples[i] / 1000L, HIGHEST_TRACKABLE_MICROS));
+    final ByteBuffer buffer = ByteBuffer.allocate(histogram.getNeededByteBufferCapacity());
+    final int length = histogram.encodeIntoCompressedByteBuffer(buffer);
+    final byte[] bytes = new byte[length];
+    buffer.rewind();
+    buffer.get(bytes);
+    return Base64.getEncoder().encodeToString(bytes);
+  }
+
+  public static Histogram decode(final String encoded) {
+    try {
+      return Histogram.decodeFromCompressedByteBuffer(ByteBuffer.wrap(Base64.getDecoder().decode(encoded)), 0L);
+    } catch (final DataFormatException e) {
+      throw new IllegalArgumentException("not a latency histogram: " + e.getMessage(), e);
+    }
   }
 }

@@ -71,6 +71,26 @@ class BenchRunnerTest {
   }
 
   @Test
+  void histogramsOnePerMeasuredRep() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        final LatencyRecorder recorder = new LatencyRecorder(16);
+        recorder.record(1_000_000L);
+        return Measurement.of(m(1).perRep(), recorder);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(3, 2, Duration.ofSeconds(10)).run(w, CTX, null, l -> {
+    });
+    assertThat(results.get(0).histograms().length()).isEqualTo(3);
+  }
+
+  @Test
   void onCaseSeesEveryCaseInOrder() {
     final Fake w = new Fake() {
       @Override

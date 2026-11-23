@@ -20,6 +20,7 @@ package com.arcadedb.bench.runner;
 
 import com.arcadedb.bench.model.CaseResult;
 import com.arcadedb.bench.model.Metric;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.Duration;
@@ -434,10 +435,14 @@ public final class BenchRunner {
     // metric name -> per-rep medians, in first-seen order
     final Map<String, List<Double>> values = new LinkedHashMap<>();
     final Map<String, Metric> first = new LinkedHashMap<>();
+    final JSONArray histograms = new JSONArray();
     for (int i = 0; i < reps; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("rep " + (i + 1) + "/" + reps, System.nanoTime(), stepNanos));
-      for (final Metric m : w.measure(ctx, caseName).perRep()) {
+      final Measurement measurement = w.measure(ctx, caseName);
+      if (measurement.histogram() != null)
+        histograms.put(measurement.histogram());
+      for (final Metric m : measurement.perRep()) {
         first.putIfAbsent(m.name(), m);
         values.computeIfAbsent(m.name(), k -> new ArrayList<>()).add(m.median());
       }
@@ -451,7 +456,9 @@ public final class BenchRunner {
       final Metric f = e.getValue();
       metrics.add(new Metric(f.name(), f.unit(), f.better(), Stats.median(v), v));
     }
-    return result(w, ctx, caseName, metrics, CaseResult.Status.OK, null);
+    final CaseResult r = result(w, ctx, caseName, metrics, CaseResult.Status.OK, null);
+    return new CaseResult(r.workload(), r.caseName(), r.scale(), r.params(), r.reps(), r.warmup(), r.metrics(), r.status(), r.error(),
+        r.notes(), histograms);
   }
 
   /**
