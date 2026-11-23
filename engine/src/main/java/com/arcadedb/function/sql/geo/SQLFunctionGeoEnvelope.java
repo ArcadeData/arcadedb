@@ -26,9 +26,16 @@ import org.locationtech.spatial4j.shape.Shape;
 
 /**
  * SQL function geo.envelope: returns the WKT bounding box polygon of a geometry.
+ * <p>
+ * A bounding box that crosses the antimeridian ({@code minX > maxX}) is written as the MULTIPOLYGON of its two parts either
+ * side of it, split at 180 as GeoJSON (RFC 7946 section 3.1.9) does: the one polygon of its corners, {@code minX .. maxX},
+ * is read by every {@code geo.*} function as the band between those meridians the other way round, the complement of the
+ * box (issue #12270). A box that starts or ends on the antimeridian has no part on its other side: it is one POLYGON.
  *
  * <p>Usage: {@code geo.envelope(<geometry>)}</p>
- * <p>Returns: WKT {@code "POLYGON ((minX minY, maxX minY, maxX maxY, minX maxY, minX minY))"}</p>
+ * <p>Returns: WKT {@code "POLYGON ((minX minY, maxX minY, maxX maxY, minX maxY, minX minY))"}, or across the antimeridian
+ * {@code "MULTIPOLYGON (((minX minY, 180 minY, 180 maxY, minX maxY, minX minY)), ((-180 minY, maxX minY, maxX maxY,
+ * -180 maxY, -180 minY)))"}</p>
  */
 public class SQLFunctionGeoEnvelope extends SQLFunctionAbstract {
   public static final String NAME = "geo.envelope";
@@ -48,6 +55,10 @@ public class SQLFunctionGeoEnvelope extends SQLFunctionAbstract {
       return null;
 
     final Rectangle bbox = shape.getBoundingBox();
+    // the two parts either side of the antimeridian are defined once, where the JTS functions read the same rectangle
+    if (bbox.getCrossesDateLine())
+      return GeoUtils.jtsToWKT(GeoUtils.rectangleToJts(bbox));
+
     final double minX = bbox.getMinX();
     final double minY = bbox.getMinY();
     final double maxX = bbox.getMaxX();

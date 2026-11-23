@@ -23,6 +23,7 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.util.AffineTransformation;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
@@ -277,8 +278,8 @@ public class GeoUtils {
    * Returns null if the value is null.
    * <p>
    * When the input is a {@link JtsGeometry}, the underlying JTS geometry is returned directly to
-   * avoid lossy WKT round-trips (Spatial4j may write Rectangle shapes as ENVELOPE WKT which is
-   * not understood by the JTS WKT reader).
+   * avoid lossy WKT round-trips. A {@link Rectangle}, and Spatial4j's {@code ENVELOPE} text (which the JTS WKT reader
+   * does not understand), are converted by {@link #rectangleToJts}.
    * </p>
    */
   public static Geometry parseJtsGeometry(final Object value) {
@@ -287,9 +288,9 @@ public class GeoUtils {
     // Fast path: JtsGeometry wraps the JTS Geometry directly — no WKT round-trip needed
     if (value instanceof JtsGeometry jtsShape)
       return jtsShape.getGeom();
-    // For Rectangle (bounding box shapes), build the polygon manually to avoid ENVELOPE WKT
+    // A Rectangle (bounding box shape) is converted as it is: written as WKT it would be ENVELOPE, which JTS cannot read
     if (value instanceof Rectangle rect)
-      return buildPolygonFromRect(rect);
+      return rectangleToJts(rect);
     final String wkt;
     if (value instanceof Shape shape)
       wkt = toWKT(shape);
@@ -297,9 +298,12 @@ public class GeoUtils {
       wkt = value.toString().trim();
     if (wkt == null || wkt.isEmpty())
       return null;
-    // If the WKT is ENVELOPE format (Spatial4j-specific), convert to polygon
-    if (wkt.startsWith("ENVELOPE"))
-      return parseEnvelopeWkt(wkt);
+    // Spatial4j's ENVELOPE (minX, maxX, maxY, minY), which JTS cannot read: read as the Rectangle it is
+    if (wkt.startsWith("ENVELOPE")) {
+      if (parseGeometry(wkt) instanceof Rectangle rect)
+        return rectangleToJts(rect);
+      throw new IllegalArgumentException("Invalid ENVELOPE WKT: " + wkt);
+    }
     try {
       return WKT_READER.get().read(wkt);
     } catch (ParseException e) {
@@ -308,53 +312,35 @@ public class GeoUtils {
   }
 
   /**
-   * Builds a rectangular JTS Polygon from a Spatial4j Rectangle.
+   * The JTS geometry of a Spatial4j rectangle. One that crosses the antimeridian ({@code minX > maxX}, as
+   * {@code ENVELOPE (170, -170, 10, 0)}) is the MULTIPOLYGON of its two parts either side of it: the one polygon of its
+   * corners, {@code 170 .. -170}, is the 340-degree band between those meridians on the longitude/latitude plane JTS works
+   * on, so {@code geo.crosses}, {@code geo.equals}, {@code geo.asGeoJson} and the other JTS-backed functions answered for
+   * the complement of the rectangle (issue #12270).
+   * <p>
+   * A crossing rectangle that starts or ends ON the antimeridian ({@code ENVELOPE (180, -170, 10, 0)}) has a part of no
+   * width: it is the other part alone, one polygon, as a ring without an area is not a geometry the other {@code geo.*}
+   * functions accept.
    */
-  private static Geometry buildPolygonFromRect(final Rectangle rect) {
+  static Geometry rectangleToJts(final Rectangle rect) {
+    final GeometryFactory factory = SPATIAL_CONTEXT.getGeometryFactory();
     final double minX = rect.getMinX();
     final double maxX = rect.getMaxX();
     final double minY = rect.getMinY();
     final double maxY = rect.getMaxY();
-    final String wkt = "POLYGON ((" +
-        formatCoord(minX) + " " + formatCoord(minY) + ", " +
-        formatCoord(maxX) + " " + formatCoord(minY) + ", " +
-        formatCoord(maxX) + " " + formatCoord(maxY) + ", " +
-        formatCoord(minX) + " " + formatCoord(maxY) + ", " +
-        formatCoord(minX) + " " + formatCoord(minY) + "))";
-    try {
-      return WKT_READER.get().read(wkt);
-    } catch (ParseException e) {
-      throw new IllegalArgumentException("Cannot build polygon from rectangle: " + rect, e);
-    }
+    if (!rect.getCrossesDateLine())
+      return box(factory, minX, maxX, minY, maxY);
+    if (maxX <= -180)
+      return box(factory, minX, 180, minY, maxY);
+    if (minX >= 180)
+      return box(factory, -180, maxX, minY, maxY);
+    return factory.createMultiPolygon(new Polygon[] { box(factory, minX, 180, minY, maxY), box(factory, -180, maxX, minY, maxY) });
   }
 
-  /**
-   * Parses Spatial4j's ENVELOPE(minX, maxX, maxY, minY) into a JTS polygon.
-   */
-  private static Geometry parseEnvelopeWkt(final String envelopeWkt) {
-    // Format: ENVELOPE (minX, maxX, maxY, minY)
-    final int start = envelopeWkt.indexOf('(');
-    final int end = envelopeWkt.lastIndexOf(')');
-    if (start < 0 || end < 0)
-      throw new IllegalArgumentException("Invalid ENVELOPE WKT: " + envelopeWkt);
-    final String[] parts = envelopeWkt.substring(start + 1, end).split(",");
-    if (parts.length != 4)
-      throw new IllegalArgumentException("Invalid ENVELOPE WKT: " + envelopeWkt);
-    final double minX = Double.parseDouble(parts[0].trim());
-    final double maxX = Double.parseDouble(parts[1].trim());
-    final double maxY = Double.parseDouble(parts[2].trim());
-    final double minY = Double.parseDouble(parts[3].trim());
-    final String wkt = "POLYGON ((" +
-        formatCoord(minX) + " " + formatCoord(minY) + ", " +
-        formatCoord(maxX) + " " + formatCoord(minY) + ", " +
-        formatCoord(maxX) + " " + formatCoord(maxY) + ", " +
-        formatCoord(minX) + " " + formatCoord(maxY) + ", " +
-        formatCoord(minX) + " " + formatCoord(minY) + "))";
-    try {
-      return WKT_READER.get().read(wkt);
-    } catch (ParseException e) {
-      throw new IllegalArgumentException("Cannot parse ENVELOPE as polygon: " + envelopeWkt, e);
-    }
+  private static Polygon box(final GeometryFactory factory, final double minX, final double maxX, final double minY,
+      final double maxY) {
+    return factory.createPolygon(new Coordinate[] { new Coordinate(minX, minY), new Coordinate(maxX, minY),
+        new Coordinate(maxX, maxY), new Coordinate(minX, maxY), new Coordinate(minX, minY) });
   }
 
   /**
