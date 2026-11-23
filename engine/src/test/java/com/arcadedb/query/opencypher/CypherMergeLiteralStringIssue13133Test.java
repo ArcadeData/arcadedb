@@ -75,6 +75,7 @@ class CypherMergeLiteralStringIssue13133Test extends TestHelper {
   void aLiteralInAPathMergeWithABoundEndpointIsStoredAsWritten() {
     database.transaction(() -> database.command("opencypher", "CREATE (:P {k: 1})"));
     assertThat(names("MATCH (a:P {k: 1}) UNWIND ['zz'] AS x MERGE (a)-[r:R]->(b:Q {name: 'x'}) RETURN b.name AS v")).containsExactly("x");
+    // the same statement again: it must match the path the first run created instead of creating a second one
     assertThat(names("MATCH (a:P {k: 1}) UNWIND ['zz'] AS x MERGE (a)-[r:R]->(b:Q {name: 'x'}) RETURN b.name AS v")).containsExactly("x");
     assertThat(names("MATCH (b:Q) RETURN count(b) AS v")).containsExactly(1L);
   }
