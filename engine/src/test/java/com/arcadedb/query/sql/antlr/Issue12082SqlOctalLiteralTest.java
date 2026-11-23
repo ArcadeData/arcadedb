@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -28,12 +29,14 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * #12082: an integer literal with a leading {@code 0} followed by more digits is octal, as sql-syntax.adoc documents and the
- * lexer's {@code OCTAL_LITERAL} rule spells it ({@code 010} is 8, {@code -065} is -53), and it has that value wherever it is
- * written: in an expression, in a value written to a record, in LIMIT/SKIP, in a range, in a bucket id or count, and when the
- * statement is served from the literal-parameterized statement cache. RID parts stay decimal, as the RID's own text form is.
+ * #12082: a numeric literal with a leading {@code 0} followed by more digits is octal, as sql-syntax.adoc documents and the
+ * lexer's {@code OCTAL_LITERAL} rule spells it ({@code 010} is 8, {@code -065} is -53), and it has that value wherever a number
+ * is read: in an expression, in a value written to a record, in LIMIT/SKIP, in a range, and when the statement is served from
+ * the literal-parameterized statement cache. The positions that name something with a number (a bucket count, a bucket id, the
+ * parts of a RID) are not numeric literals: they keep reading decimal digits, and keep refusing hexadecimal and the L suffix.
  */
 class Issue12082SqlOctalLiteralTest extends TestHelper {
 
@@ -53,12 +56,16 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
   @Test
   void octalLiteralsAtTheLongBounds() {
     // 21 sevens are 2^63 - 1 in octal, while the same digits read in decimal overflow a long
-    final Result row = single("SELECT 0777777777777777777777 AS max, -01000000000000000000000 AS min, -0x8000000000000000 AS hexMin,"
-        + " 020000000000 AS widened");
+    final Result row = single(
+        "SELECT 0777777777777777777777 AS max, -01000000000000000000000 AS min, -01000000000000000000000L AS minL, 020000000000 AS widened");
     assertThat(row.<Object>getProperty("max")).isEqualTo(Long.MAX_VALUE);
     assertThat(row.<Object>getProperty("min")).isEqualTo(Long.MIN_VALUE);
-    assertThat(row.<Object>getProperty("hexMin")).isEqualTo(Long.MIN_VALUE);
+    assertThat(row.<Object>getProperty("minL")).isEqualTo(Long.MIN_VALUE);
     assertThat(row.<Object>getProperty("widened")).isEqualTo(2147483648L);
+
+    // one more than the magnitude of Long.MIN_VALUE is still an overflow
+    assertThatThrownBy(() -> database.query("sql", "SELECT -01000000000000000000001 AS v").close()).hasMessageContaining(
+        "Invalid integer");
   }
 
   @Test
@@ -86,32 +93,47 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     assertThat(count("SELECT FROM T LIMIT 010")).isEqualTo(8);
     assertThat(count("SELECT FROM T SKIP 010")).isEqualTo(12);
 
-    final Result row = single("SELECT l[01..010] AS r, l[01...010] AS e FROM L");
+    // the range written without spaces is one token, with spaces it goes through the expression parser: they agree
+    final Result row = single("SELECT l[01..010] AS r, l[01...010] AS e, l[01 .. 010] AS rs, l[01 ... 010] AS es, l[010] AS one FROM L");
     assertThat(row.<List<Integer>>getProperty("r")).containsExactly(1, 2, 3, 4, 5, 6, 7);
     assertThat(row.<List<Integer>>getProperty("e")).containsExactly(1, 2, 3, 4, 5, 6, 7, 8);
+    assertThat(row.<List<Integer>>getProperty("rs")).containsExactly(1, 2, 3, 4, 5, 6, 7);
+    assertThat(row.<List<Integer>>getProperty("es")).containsExactly(1, 2, 3, 4, 5, 6, 7, 8);
+    assertThat(row.<Object>getProperty("one")).isEqualTo(8);
+
+    // hexadecimal and the L suffix were never accepted in the range token, and still are not
+    assertThatThrownBy(() -> database.query("sql", "SELECT l[0x1..0x3] AS r FROM L").close()).hasMessageContaining("range token");
+    assertThatThrownBy(() -> database.query("sql", "SELECT l[1L..3L] AS r FROM L").close()).hasMessageContaining("range token");
   }
 
   @Test
-  void octalBucketCountAndBucketIds() {
+  void bucketCountsBucketIdsAndRidPartsStayDecimal() {
+    // a count is not a numeric literal: BUCKETS 010 is ten buckets, as it always was
     database.command("sql", "CREATE DOCUMENT TYPE T BUCKETS 010");
     final DocumentType type = database.getSchema().getType("T");
-    assertThat(type.getBuckets(false)).hasSize(8);
+    assertThat(type.getBuckets(false)).hasSize(10);
 
-    // a bucket id whose octal spelling differs from its decimal one
-    final int bucketId = type.getBuckets(false).getLast().getFileId();
-    assertThat(bucketId).isGreaterThanOrEqualTo(8);
-    final String octal = "0" + Integer.toOctalString(bucketId);
+    // hexadecimal and the L suffix were never accepted for a count, and still are not
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE H BUCKETS 0x10")).isInstanceOf(RuntimeException.class);
+    assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE H BUCKETS 10L")).isInstanceOf(RuntimeException.class);
+    assertThat(database.getSchema().existsType("H")).isFalse();
+
+    // a bucket id whose decimal digits are all octal digits and whose octal reading would be another bucket: bucket:0NN is the
+    // bucket NN, as RID's own text form says (#NN:0 is the first record of the bucket NN)
+    final int bucketId = type.getBuckets(false).stream().map(Bucket::getFileId).filter(id -> id >= 8 && isOctalSpelled(id)).findFirst()
+        .orElseThrow();
+    final String padded = "0" + bucketId;
 
     database.transaction(() -> {
       for (int i = 0; i < 11; i++)
-        database.command("sql", "INSERT INTO bucket:" + octal + " SET n = ?", i);
+        database.command("sql", "INSERT INTO bucket:" + padded + " SET n = ?", i);
     });
-    final List<Result> rows = database.query("sql", "SELECT @rid AS rid FROM bucket:" + octal).stream().toList();
+    final List<Result> rows = database.query("sql", "SELECT @rid AS rid FROM bucket:" + padded).stream().toList();
     assertThat(rows).hasSize(11);
     for (final Result row : rows)
       assertThat(row.<RID>getProperty("rid").getBucketId()).isEqualTo(bucketId);
 
-    // a RID is an address: its parts are decimal, as RID's own text form is
+    // the parts of a RID are decimal: #NN:010 is the record 10 of the bucket NN
     final RID tenth = single("SELECT @rid AS rid FROM #" + bucketId + ":010").getProperty("rid");
     assertThat(tenth).isEqualTo(new RID("#" + bucketId + ":10"));
   }
@@ -129,6 +151,13 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     });
     assertThat(single("SELECT n FROM T WHERE n = 10").<Object>getProperty("n")).isEqualTo(10);
     assertThat(single("SELECT n FROM T WHERE n = 010").<Object>getProperty("n")).isEqualTo(8);
+  }
+
+  private static boolean isOctalSpelled(final int id) {
+    for (final char c : Integer.toString(id).toCharArray())
+      if (c > '7')
+        return false;
+    return true;
   }
 
   private Result single(final String sql) {
