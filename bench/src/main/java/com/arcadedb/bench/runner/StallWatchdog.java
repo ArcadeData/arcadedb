@@ -45,6 +45,7 @@ public final class StallWatchdog {
   // whether the current stall has been handled (dumped, or the dump failed): only a changed stack starts a new one
   private boolean             handled;
   private int                 taken;
+  private int                 withoutDump;
 
   /**
    * @param workerStack the current stack of the worker; an empty one (no worker, or one that ended) is never a stall
@@ -80,10 +81,10 @@ public final class StallWatchdog {
     if (handled || now - sameSince < thresholdNanos)
       return;
     handled = true;
-    if (taken >= maxDumps)
-      return;
-    if (Boolean.TRUE.equals(dump.apply(taken + 1)))
+    if (taken < maxDumps && Boolean.TRUE.equals(dump.apply(taken + 1)))
       taken++;
+    else
+      withoutDump++;
   }
 
   /** Forgets the stack seen so far, so the next case's worker starts with no stall; the budget is kept. */
@@ -94,6 +95,14 @@ public final class StallWatchdog {
   /** The dumps taken so far over the life of this watchdog. */
   public synchronized int dumpsTaken() {
     return taken;
+  }
+
+  /**
+   * The stalls seen so far over the life of this watchdog that got no dump: the image cannot take one (native), the dump failed,
+   * or the budget was spent.
+   */
+  public synchronized int stallsWithoutDump() {
+    return withoutDump;
   }
 
   private void forget() {

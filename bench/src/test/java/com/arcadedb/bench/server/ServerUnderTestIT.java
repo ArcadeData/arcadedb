@@ -129,6 +129,8 @@ class ServerUnderTestIT {
       assertThat(server.threadDump(dump)).isTrue();
       assertThat(Files.readString(dump)).contains("Full thread dump");
       assertThat(diagnostics.getJSONArray("classHistogram").length()).isEqualTo(ServerUnderTest.HISTOGRAM_ROWS);
+      // the headers are left out: the first row is class #1
+      assertThat(diagnostics.getJSONArray("classHistogram").getString(0)).matches("^\\s*1:\\s+\\d+.*");
     }
     // the host sees the server process only where Docker runs natively (Linux), not under Docker Desktop
     if (Files.isDirectory(Path.of("/proc/self")))

@@ -32,15 +32,20 @@ class ServerUnderTestDiagnosticsTest {
   }
 
   @Test
-  void histogramKeepsTheFirstRows() {
-    final StringBuilder text = new StringBuilder("1:\n num     #instances         #bytes  class name (module)\n\n");
+  void histogramKeepsTheTopClassesWithoutTheHeaders() {
+    // the shape jcmd prints: the pid line, the column header, a separator, the class rows, the total
+    final StringBuilder text = new StringBuilder("1:\n num     #instances         #bytes  class name (module)\n"
+        + "-------------------------------------------------------\n");
     for (int i = 1; i <= 100; i++)
-      text.append(String.format("%4d:  %10d  %10d  C%d%n", i, i, i, i));
-    final JSONArray rows = ServerUnderTest.firstLines(text.toString(), 30);
+      text.append(String.format("%4d:  %10d  %10d  C%d%n", i, 1000 - i, 1000 - i, i));
+    text.append("Total        123456       7890123\n");
+    final JSONArray rows = ServerUnderTest.topClasses(text.toString(), 30);
     assertThat(rows.length()).isEqualTo(30);
-    assertThat(rows.getString(0)).isEqualTo("1:");
-    // the blank line is not a row
-    assertThat(rows.getString(2)).contains("C1");
-    assertThat(ServerUnderTest.firstLines("a\nb", 30).length()).isEqualTo(2);
+    assertThat(rows.getString(0)).startsWith("   1:").endsWith("C1");
+    assertThat(rows.getString(29)).startsWith("  30:").endsWith("C30");
+    // a short histogram keeps its class rows only, never the header or the total
+    final JSONArray few = ServerUnderTest.topClasses("1:\n num  #instances  #bytes  class name\n   1:  5  80  C1\nTotal  5  80\n", 30);
+    assertThat(few.length()).isEqualTo(1);
+    assertThat(few.getString(0)).endsWith("C1");
   }
 }

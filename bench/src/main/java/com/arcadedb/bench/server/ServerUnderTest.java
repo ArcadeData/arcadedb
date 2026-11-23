@@ -58,6 +58,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -266,7 +267,7 @@ public final class ServerUnderTest implements AutoCloseable {
     }
   }
 
-  /** The rows of the class histogram kept in {@link #diagnostics()}: its header lines and the biggest classes. */
+  /** The class rows of the histogram kept in {@link #diagnostics()}: the biggest classes by bytes, as jcmd orders them. */
   static final int HISTOGRAM_ROWS = 30;
 
   /**
@@ -292,7 +293,7 @@ public final class ServerUnderTest implements AutoCloseable {
   /**
    * What the run file keeps about the server at the end of a workload: {@code threads}, its thread count read from
    * {@code /proc/<pid>/status} on the host (absent where the host has no such file, as under Docker Desktop), and, for the JVM
-   * image only, {@code classHistogram}, the first {@value #HISTOGRAM_ROWS} lines of {@code jcmd 1 GC.class_histogram}. Nothing
+   * image only, {@code classHistogram}, the first {@value #HISTOGRAM_ROWS} class rows of {@code jcmd 1 GC.class_histogram}. Nothing
    * here sends the native image a signal.
    */
   public JSONObject diagnostics() {
@@ -303,18 +304,21 @@ public final class ServerUnderTest implements AutoCloseable {
     if (!nativeImage) {
       final String histogram = jcmd("GC.class_histogram");
       if (histogram != null)
-        json.put("classHistogram", firstLines(histogram, HISTOGRAM_ROWS));
+        json.put("classHistogram", topClasses(histogram, HISTOGRAM_ROWS));
     }
     return json;
   }
 
-  /** The first {@code n} non-empty lines of a text. */
-  static JSONArray firstLines(final String text, final int n) {
+  /** A class row of {@code GC.class_histogram}: {@code "   1:   12345   678901  java.lang.String"}; the header lines are not. */
+  private static final Pattern HISTOGRAM_ROW = Pattern.compile("^\\s*\\d+:\\s+\\d+");
+
+  /** The first {@code n} class rows of a class histogram, header and total lines left out: the top {@code n} classes. */
+  static JSONArray topClasses(final String histogram, final int n) {
     final JSONArray rows = new JSONArray();
-    for (final String line : text.split("\\R")) {
+    for (final String line : histogram.split("\\R")) {
       if (rows.length() >= n)
         break;
-      if (!line.isBlank())
+      if (HISTOGRAM_ROW.matcher(line).find())
         rows.put(line);
     }
     return rows;

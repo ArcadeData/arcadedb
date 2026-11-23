@@ -99,6 +99,8 @@ class StallWatchdogTest {
     }
     assertThat(rig.dumps).containsExactly(1, 2, 3);
     assertThat(rig.watchdog.dumpsTaken()).isEqualTo(3);
+    // the stalls past the budget are still counted, as stalls without a dump
+    assertThat(rig.watchdog.stallsWithoutDump()).isEqualTo(2);
   }
 
   @Test
@@ -108,6 +110,7 @@ class StallWatchdogTest {
     rig.sampleFor(60);
     assertThat(rig.dumps).containsExactly(1);
     assertThat(rig.watchdog.dumpsTaken()).isZero();
+    assertThat(rig.watchdog.stallsWithoutDump()).isEqualTo(1);
     // the budget is untouched: a later stall that can be dumped gets number 1
     rig.dumpSucceeds = true;
     rig.stack = frames("b");
@@ -123,5 +126,6 @@ class StallWatchdogTest {
     rig.stack = new StackTraceElement[0];
     rig.sampleFor(120);
     assertThat(rig.dumps).isEmpty();
+    assertThat(rig.watchdog.stallsWithoutDump()).isZero();
   }
 }

@@ -764,6 +764,16 @@ class BenchRunnerTest {
   /** A guard whose server never dies and whose every thread dump succeeds, recording the dump numbers asked for. */
   private static final class DumpingGuard implements ServerGuard {
     final List<Integer> dumps = new ArrayList<>();
+    final boolean       succeeds;
+
+    DumpingGuard() {
+      this(true);
+    }
+
+    /** {@code succeeds} false: a native image, which never takes a dump. */
+    DumpingGuard(final boolean succeeds) {
+      this.succeeds = succeeds;
+    }
 
     @Override
     public String deathReason() {
@@ -778,7 +788,7 @@ class BenchRunnerTest {
     @Override
     public synchronized boolean threadDump(final int n) {
       dumps.add(n);
-      return true;
+      return succeeds;
     }
   }
 
@@ -840,6 +850,22 @@ class BenchRunnerTest {
     assertThat(first).allSatisfy(r -> assertThat(r.notes().getInt("stallDumps", 0)).isEqualTo(1));
     assertThat(second.get(0).notes().getInt("stallDumps", 0)).isEqualTo(1);
     assertThat(second.get(1).notes().has("stallDumps")).isFalse();
+    // the 4th stall is past the budget: still recorded, as a stall without a dump
+    assertThat(second.get(1).notes().getInt("stallsWithoutDump", 0)).isEqualTo(1);
+    assertThat(first).allSatisfy(r -> assertThat(r.notes().has("stallsWithoutDump")).isFalse());
+    assertThat(second.get(0).notes().has("stallsWithoutDump")).isFalse();
+  }
+
+  @Test
+  void stallWithoutADumpIsStillNoted() {
+    final DumpingGuard guard = new DumpingGuard(false);
+    final List<CaseResult> results = stallRunner().run(new Stalling("quick", "stall-1"), CTX, guard, null, r -> {
+    });
+
+    assertThat(guard.dumps).containsExactly(1);
+    assertThat(results.get(1).notes().getInt("stallsWithoutDump", 0)).isEqualTo(1);
+    assertThat(results.get(1).notes().has("stallDumps")).isFalse();
+    assertThat(results.get(0).notes().has("stallsWithoutDump")).isFalse();
   }
 
   @Test

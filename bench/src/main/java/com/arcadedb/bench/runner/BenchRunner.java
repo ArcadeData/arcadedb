@@ -155,6 +155,7 @@ public final class BenchRunner {
       try {
         return g != null && g.threadDump(n);
       } catch (final RuntimeException e) {
+        System.err.println("warning: thread dump " + n + " of the server under test failed: " + describe(e));
         return false;
       }
     });
@@ -190,6 +191,7 @@ public final class BenchRunner {
    * <p>
    * With a guard, a watchdog samples the stack of each case's worker every 5 s; a stack unchanged for 40 s asks the guard for a
    * thread dump of the server (at most 3 per run), and the case gets a {@code stallDumps} note with the number taken during it.
+   * A stall that gets no dump (a native image, a failed dump, the budget spent) is counted in a {@code stallsWithoutDump} note.
    */
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final ServerGuard guard,
       final Predicate<String> caseFilter, final Consumer<List<CaseResult>> onCase) {
@@ -295,6 +297,7 @@ public final class BenchRunner {
       }
     });
     final int dumpsBefore = watchdog.dumpsTaken();
+    final int undumpedBefore = watchdog.stallsWithoutDump();
     final ScheduledExecutorService stallWatch = dumpGuard != null ? startWatchdog() : null;
     CaseResult result;
     boolean workerStopped = true;
@@ -331,7 +334,12 @@ public final class BenchRunner {
       }
     }
     final int dumps = watchdog.dumpsTaken() - dumpsBefore;
-    return dumps > 0 ? result.withNote("stallDumps", dumps) : result;
+    if (dumps > 0)
+      result = result.withNote("stallDumps", dumps);
+    final int undumped = watchdog.stallsWithoutDump() - undumpedBefore;
+    if (undumped > 0)
+      result = result.withNote("stallsWithoutDump", undumped);
+    return result;
   }
 
   private ScheduledExecutorService startWatchdog() {
@@ -348,6 +356,7 @@ public final class BenchRunner {
         watchdog.sample();
       } catch (final Throwable t) {
         // the next sample tries again
+        System.err.println("warning: the stall watchdog failed to sample the case worker: " + describe(t));
       }
     }, period, period, TimeUnit.NANOSECONDS);
     return scheduler;
