@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -336,7 +337,7 @@ public class DocumentValidator {
       try {
         pattern = regexp != null ? Pattern.compile(regexp) : null;
       } catch (final PatternSyntaxException e) {
-        throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
+        throw new InvalidArgumentException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
       }
       // read once per scan, not per record
       return new StoredValueConstraints(checkType, min, max, regexp, pattern,
@@ -468,7 +469,7 @@ public class DocumentValidator {
   public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
     final String reason = unreadableBound(database, p.getType(), bound);
     if (reason != null)
-      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
@@ -487,7 +488,7 @@ public class DocumentValidator {
       final String regexp) {
     final String reason = unusableRegexp(database, p.getType(), regexp);
     if (reason != null)
-      throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
