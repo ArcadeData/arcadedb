@@ -362,6 +362,10 @@ public class ForeachStep extends AbstractExecutionStep {
       throw new CommandExecutionException("FOREACH execution failed", e);
     } finally {
       context.setVariable(FOREACH_DELETED_SO_FAR_VAR, existingDeleted);
+      // Every iteration of this input row ran its batch: what its bodies noted as about to be deleted is deleted. A FOREACH nested
+      // in a body leaves them to the outermost one, whose own iteration may still hold targets it has not run
+      if (existingDeleted == null)
+        activeDeleted.clearDoomed();
     }
 
     // Once per input row rather than once per iteration: the list FOREACH iterates is usually the very list being

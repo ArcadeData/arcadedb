@@ -59,24 +59,6 @@ import java.util.Set;
  * @author lvca (l.garulli@arcadedata.com)
  */
 public final class DeletedReferences {
-  /** Answers whether the statement deleted a node or a relationship. Asked once per element a row's view hands out. */
-  @FunctionalInterface
-  public interface Deletions {
-    /**
-     * @param record a node, a relationship or any other record a row holds
-     *
-     * @return true when the statement deleted it, or is about to: its DELETE found it connected and left it to the end
-     */
-    boolean isDeleted(Document record);
-
-    /** @return a check that answers true when this one or {@code other} does; this one itself when {@code other} is null */
-    default Deletions or(final Deletions other) {
-      if (other == null || other == this) // NOPMD: by identity, the same check twice answers the same
-        return this;
-      return record -> isDeleted(record) || other.isDeleted(record);
-    }
-  }
-
   // The collections of the last rows, so the rows that share one (every row of WITH collect(n) AS ns UNWIND ns AS x) share its
   // view too: whoever keys on a collection by identity, the way HeldCollectionRefresher does, meets one object, not one per row.
   // A few slots, not a map: they are kept until the step closes, and a row of a long statement must not pin its collections
@@ -100,7 +82,8 @@ public final class DeletedReferences {
       return;
     for (final String name : row.getPropertyNames()) {
       final Object value = row.getProperty(name);
-      final Object marked = value instanceof List || value instanceof Map ? viewOf(value) : resolve(value, deletions);
+      final Object marked =
+          value instanceof List || value instanceof Map || value instanceof TraversalPath ? viewOf(value) : resolve(value, deletions);
       if (marked != value) // NOPMD: by identity, as resolve answers an unchanged value
         internal.setProperty(name, marked);
     }
@@ -114,15 +97,22 @@ public final class DeletedReferences {
     }
   }
 
+  /** The view of a list, a map or a path a row holds: the one an earlier row of the step got when it held the same, or a new one. */
   private Object viewOf(final Object collection) {
     if (collection instanceof LongRangeList)
       return collection; // a lazy range holds numbers only
+    // Already read through this check, by an earlier step of the FOREACH it runs in or by this one: not wrapped again, so the
+    // views of the iterations of a loop do not pile up one on top of the other
+    if (collection instanceof LiveList list && list.deletions == deletions // NOPMD: by identity
+        || collection instanceof LiveMap map && map.deletions == deletions) // NOPMD: by identity
+      return collection;
     for (int i = 0; i < MEMO_SIZE; i++)
       if (memoSources[i] == collection) // NOPMD: by identity
         return memoViews[i];
     // A collection of scalars cannot hold a deleted record: it stays the object it is, so what the rest of the statement does with
     // its type or identity is unchanged, and no row of a long statement pays a wrapper for it
-    final Object view = holdsRecordsOrCollections(collection) ? resolve(collection, deletions) : collection;
+    final Object view =
+        collection instanceof TraversalPath || holdsRecordsOrCollections(collection) ? resolve(collection, deletions) : collection;
     memoSources[memoNext] = collection;
     memoViews[memoNext] = view;
     memoNext = (memoNext + 1) % MEMO_SIZE;
@@ -156,6 +146,24 @@ public final class DeletedReferences {
     if (value instanceof TraversalPath path)
       return path.withDeletions(deletions);
     return value;
+  }
+
+  /** Answers whether the statement deleted a node or a relationship. Asked once per element a row's view hands out. */
+  @FunctionalInterface
+  public interface Deletions {
+    /**
+     * @param record a node, a relationship or any other record a row holds
+     *
+     * @return true when the statement deleted it, or is about to: its DELETE found it connected and left it to the end
+     */
+    boolean isDeleted(Document record);
+
+    /** @return a check that answers true when this one or {@code other} does; this one itself when {@code other} is null */
+    default Deletions or(final Deletions other) {
+      if (other == null || other == this) // NOPMD: by identity, the same check twice answers the same
+        return this;
+      return record -> isDeleted(record) || other.isDeleted(record);
+    }
   }
 
   /** The elements of a list, each answered as {@link #resolve} does. */

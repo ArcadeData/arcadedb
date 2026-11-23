@@ -239,6 +239,22 @@ class DeletedReferencesTest extends TestHelper {
   }
 
   @Test
+  void theRowsThatShareAPathShareItsCheckedCopy() {
+    deleted.add(doomed.getIdentity());
+    final TraversalPath path = new TraversalPath(alive);
+    path.addStep(relationship, (Vertex) doomed);
+    final DeletedReferences references = references();
+    final ResultInternal first = row("path", path);
+    final ResultInternal second = row("path", path);
+
+    references.mark(first);
+    references.mark(second);
+
+    assertThat((Object) first.getProperty("path")).isNotSameAs(path);
+    assertThat((Object) second.getProperty("path")).isSameAs(first.getProperty("path"));
+  }
+
+  @Test
   void aViewIsNotWrappedTwiceByTheSameCheck() {
     deleted.add(doomed.getIdentity());
     final DeletedReferences references = references();

@@ -440,6 +440,76 @@ class CypherDeletedEntityInCollectionIssue12548Test {
   }
 
   @Test
+  void testForeachBodyReadsTheRelationshipsAnIterationDetachDeletesAsDeleted() {
+    // DETACH DELETE a is deferred to the end of the iteration: the relationship of a, held in a list, is read as deleted by the
+    // clause after it, as it is once the iteration ends
+    assertDeletedEntityAccess("""
+        MATCH (a:A)-[r:R]->(b:B)
+        WITH a, b, [r] AS rs
+        FOREACH (i IN [1] | DETACH DELETE a SET b.c = rs[0].k)""");
+
+    // Without DETACH the relationship is not taken away with the node: the statement fails on the node still connected
+    assertThatThrownBy(() -> database.transaction(() -> execute("""
+        MATCH (a:A)-[r:R]->(b:B)
+        WITH a, b, [r] AS rs
+        FOREACH (i IN [1] | DELETE a SET b.c = rs[0].k)""")))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("DeleteConnectedNode");
+  }
+
+  @Test
+  void testForeachBodyReadsADeferredLightweightEdgeAsDeletedAndItsTwinAsLive() {
+    createTwoParallelLightweightEdges();
+
+    // The twin deleted by the iteration is read as deleted by the clause after the DELETE
+    assertDeletedEntityAccess("""
+        MATCH (p1:Leaf {id: 101})-[r:L]->(p2:Leaf {id: 102}), (a:A)
+        WITH a, collect(r) AS rs
+        FOREACH (i IN [1] | DELETE rs[0] SET a.c = size(keys(rs[0])))""");
+
+    // ... and the twin that is kept is not
+    final List<Long> sizes = new ArrayList<>();
+    database.transaction(() -> {
+      execute("""
+          MATCH (p1:Leaf {id: 101})-[r:L]->(p2:Leaf {id: 102}), (a:A)
+          WITH a, collect(r) AS rs
+          FOREACH (i IN [1] | DELETE rs[0] SET a.c = size(keys(rs[1])))""");
+      try (final ResultSet rs = database.query("opencypher", "MATCH (a:A) RETURN a.c AS c")) {
+        sizes.add(((Number) rs.next().getProperty("c")).longValue());
+      }
+    });
+    assertThat(sizes).containsExactly(0L);
+  }
+
+  @Test
+  void testForeachOverManyIterationsKeepsOneViewOfTheListItDeletesFrom() {
+    // Each iteration runs on a plan of its own: a view stacked on the one of the iteration before would be as deep as the loop is
+    // long, and the first read of the list would overflow the stack
+    final int count = 20_000;
+    database.getSchema().createVertexType("Many");
+    database.transaction(() -> {
+      for (int i = 0; i < count; i++)
+        database.newVertex("Many").set("i", (long) i).save();
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.command("opencypher", """
+          MATCH (n:Many)
+          WITH collect(n) AS ns
+          FOREACH (x IN ns | DELETE x)
+          RETURN size(ns) AS s""")) {
+        assertThat(((Number) rs.next().getProperty("s")).longValue()).isEqualTo(count);
+      }
+    });
+
+    assertDeletedEntityAccess("""
+        MATCH (n:Isolated)
+        WITH collect(n) AS ns
+        FOREACH (x IN [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] | FOREACH (y IN ns | DELETE y))
+        RETURN ns[0].v""");
+  }
+
+  @Test
   void testForeachLaterIterationReadsWhatAnEarlierOneDeleted() {
     assertDeletedEntityAccess("""
         MATCH (n:Isolated), (a:A)
