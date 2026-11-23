@@ -2780,7 +2780,10 @@ jobs = doc.get("jobs") or {}
 problems = []
 classify = jobs.get("classify") or {}
 apply_job = jobs.get("apply") or {}
-NAME = "classify-pr-decision"
+# Named by the head the decision is for, so apply can never read the decision of another head:
+# not one left by an earlier attempt, and not a rerun of apply alone, which a per-attempt name
+# would send looking for an artifact its classify job never uploaded.
+NAME = "classify-pr-decision-${{ needs.gate.outputs.head_sha }}"
 FILE = "${{ runner.temp }}/classify-decision/decision.json"
 
 def steps(job, action):
@@ -2891,8 +2894,8 @@ YAML
 problems="$(classify_pr_handoff_problems "$work/classify-pr-joboutput.yml")"
 for needle in "exposes the decision as the job output structured_output" \
     "reads needs.classify.outputs.structured_output" "no decision_saved output" \
-    "does not upload the classify-pr-decision artifact" "has no save step" \
-    "does not download the classify-pr-decision artifact" "does not pass DECISION_FILE" \
+    "does not upload the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" "has no save step" \
+    "does not download the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" "does not pass DECISION_FILE" \
     "does not pass CLASSIFY_RESULT" "does not pass DECISION_SAVED" "still reads STRUCTURED_OUTPUT"; do
     if [[ $problems == *"$needle"* ]]; then
         pass "the classify-pr hand-off check reports: $needle"
@@ -2922,7 +2925,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
       - uses: actions/upload-artifact@v7
         with:
-          name: classify-pr-decision
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
           path: ${{ github.workspace }}
           retention-days: 90
   apply:
@@ -2932,7 +2935,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: classify-pr-decision
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
           path: ${{ runner.temp }}/elsewhere
       - uses: actions/github-script@v9
         env:
@@ -2952,6 +2955,41 @@ for needle in "the decision upload does not run with if: always()" \
     else
         fail "the classify-pr hand-off check reports: $needle" "$problems"
     fi
+done
+
+# An artifact name shared by every head and attempt of the run: a decision left by an earlier
+# attempt, for another head, could be downloaded and posted under the current head's marker; and
+# a per-attempt name would make a rerun of apply alone look for an artifact classify never uploaded.
+for fixed in "classify-pr-decision" 'classify-pr-decision-${{ github.run_attempt }}'; do
+    cat >"$work/classify-pr-fixed-name.yml" <<YAML
+name: fixed
+on: [ pull_request_target ]
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: $fixed
+          path: \${{ runner.temp }}/classify-decision/decision.json
+  apply:
+    needs: [classify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: $fixed
+YAML
+    problems="$(classify_pr_handoff_problems "$work/classify-pr-fixed-name.yml")"
+    for needle in "does not upload the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact" \
+        "does not download the classify-pr-decision-\${{ needs.gate.outputs.head_sha }} artifact"; do
+        if [[ $problems == *"$needle"* ]]; then
+            pass "the classify-pr hand-off check reports a name of '$fixed': $needle"
+        else
+            fail "the classify-pr hand-off check reports a name of '$fixed': $needle" "$problems"
+        fi
+    done
 done
 
 # The linux/amd64 -march=compatibility leg (#11253) shares os_name and arch with the default
