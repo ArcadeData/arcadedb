@@ -2509,6 +2509,11 @@ public class PageManager extends LockContext {
    * <p>
    * The callable must be short (it delays every commit and apply of the JVM while it runs), must not publish, and must not wait for
    * anything a publication holds: it can load pages, which takes neither the page-manager lock nor a publication.
+   * <p>
+   * The caller takes the database lock BEFORE it asks for the hold, never inside the callable: a commit holds the database read lock
+   * while it waits for the holds to be released, so a callable that takes that lock (a record load by RID) waits for a lock the fair
+   * lock refuses it once a schema change queued behind the commit, while the commit waits for this hold (#13112).
+   * {@code ConsistentKeyLookup.readAgainstOneCommit} does it for the readers of records.
    *
    * @return what {@code callable} returned, or {@code null} without running it when the publications did not end within
    * {@code maxWaitNanos}, or when the waiting thread is interrupted (its interrupt is kept)

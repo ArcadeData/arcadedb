@@ -57,6 +57,28 @@ public class Bucket extends SimpleNode {
     return bucketNumber;
   }
 
+  /**
+   * Resolves the name this node gives the bucket: the literal name, or the value of the input parameter ({@code bucket::name},
+   * {@code bucket:?}). A bucket given by number has no name here, the schema answers that one by id. Every statement that takes a
+   * bucket target resolves it through this method, so the read side and the write side of a statement agree on the bucket (#12480).
+   *
+   * @param params the input parameters of the command, may be null
+   *
+   * @return the bucket name, or null when the node carries a number, or its parameter is not bound or bound to null
+   */
+  public String resolveName(final Map<String, Object> params) {
+    if (bucketName != null)
+      return bucketName;
+
+    if (inputParam != null) {
+      final Object paramValue = inputParam.getValue(params);
+      if (paramValue != null)
+        return paramValue.toString();
+    }
+
+    return null;
+  }
+
   public Bucket copy() {
     final Bucket result = new Bucket();
     result.bucketName = bucketName;

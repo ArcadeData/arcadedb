@@ -65,7 +65,7 @@ public final class IssueText {
     final String lines = n == 1 ? " line" : " lines";
     if (NIGHTLY.equals(m.getTrigger()))
       return "Performance regression: " + n + lines + " worse between " + shortRef(m.getTrigger(), m.getBaseRef()) + ".." + shortRef(
-          m.getTrigger(), m.getRef());
+          m.getTrigger(), m.getRef()) + ("M".equals(m.getScale()) ? "" : " (scale " + m.getScale() + ")");
     return "Performance regression: " + n + lines + " worse in release " + m.getRef() + " vs " + m.getBaseRef();
   }
 
@@ -173,7 +173,9 @@ public final class IssueText {
   static String runComment(final String runKey, final List<String> rows, final List<String> improvements, final String closing) {
     final int colon = runKey.indexOf(':');
     final String trigger = colon < 0 ? runKey : runKey.substring(0, colon);
-    final String ref = colon < 0 ? "" : runKey.substring(colon + 1);
+    // a nightly key carries the scale after the ref: nightly:<ref>:<scale>
+    final int scaleColon = colon < 0 || !NIGHTLY.equals(trigger) ? -1 : runKey.indexOf(':', colon + 1);
+    final String ref = colon < 0 ? "" : scaleColon < 0 ? runKey.substring(colon + 1) : runKey.substring(colon + 1, scaleColon);
     final StringBuilder sb = new StringBuilder(RUN_MARKER_PREFIX).append(runKey).append(" -->\n");
     sb.append(NIGHTLY.equals(trigger) ? "**Nightly run `" + shortRef(trigger, ref) + "`**" : "**Release `" + ref + "`**").append("\n\n");
     for (final String row : rows)

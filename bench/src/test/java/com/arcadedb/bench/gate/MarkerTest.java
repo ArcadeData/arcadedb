@@ -55,6 +55,23 @@ class MarkerTest {
   }
 
   @Test
+  void missingScaleReadsAsM() {
+    // a nightly marker written before the run key carried the scale
+    final Marker legacy = Marker.parse(sample().render());
+    assertThat(legacy.getScale()).isEqualTo("M");
+    assertThat(legacy.render()).doesNotContain("\"scale\"");
+
+    final Marker s = Marker.create("nightly", "abc1234", "S", "def5678");
+    final Marker parsed = Marker.parse(s.render());
+    assertThat(s.render()).contains("\"scale\":\"S\"");
+    assertThat(parsed.getScale()).isEqualTo("S");
+    assertThat(parsed.render()).isEqualTo(s.render());
+
+    // a release run is one run whatever its scales
+    assertThat(Marker.parse(Marker.create("release", "26.11.1", null, "26.10.2").render()).getScale()).isNull();
+  }
+
+  @Test
   void roundTripsThroughTheBody() {
     final Marker marker = sample();
     final String body = "Some text\n\n" + marker.render() + "\n\nmore text";

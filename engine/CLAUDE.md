@@ -95,6 +95,8 @@ So every enclosing loop of the read path must feed pages newest first, and they 
 
 **If you change any iteration order in the LSM read path, check it against this invariant.** Getting it wrong does not throw. It silently drops live records that were re-added after a tombstone, surfacing only as "the index returns fewer rows than a plain scan".
 
+**The header page of a compacted file is the one page of an LSM index a `REPEATABLE_READ` transaction must not pin (#13050).** An incremental compaction round appends its series to the SAME compacted file and rewrites page 0 to name them, in the swap that puts in a NEW, empty mutable file (never pinned: new file id). A transaction that pinned the old header read the mutable file as of now and the series as of its first read, two states that never coexisted, so a key committed before the transaction began (the entries the round moved) answered no entry, and a duplicate of it passed the unique check. `LSMTreeIndexCompacted.getHeaderPage()` reads it through `TransactionContext.getPageForAbsoluteReadsNeverPinned`; the series pages it names never change once written and stay pinned. A full compaction writes a new compacted file and never had the problem.
+
 Reproducing any tombstone-ordering bug requires the remove and the re-add to be in **separate transactions**: within one transaction `TransactionIndexContext` collapses a REMOVE followed by an ADD on the same (key, RID) into a single ADD, so no tombstone is ever written.
 
 ## `count(*)` and `count()` take different paths
@@ -138,6 +140,10 @@ Never call it on a query path. If you need an "is there more?" signal, derive it
 `EXPLICIT_LOCK_TIMEOUT` and `COMMIT_LOCK_TIMEOUT` both default to 5000 ms (`TX_RETRIES` defaults to 3). When N threads serialize through one type or bucket lock and each held transaction does a WAL commit, per-thread wait grows as `(N-1) * per_tx_time`. On a slow 2-vCPU CI runner that crosses 5 s and `acquireLock` throws, which is a common source of intermittent failures in contention tests.
 
 Both are `SCOPE.DATABASE`, so a test can raise them per-database without polluting the suite. If you do, comment why - a raised timeout turns a future real deadlock into a long hang instead of a fast failure.
+
+## The database read lock is taken BEFORE a publication hold, never inside it (#13112)
+
+`LocalDatabase.commit()` runs under the database read lock and, in `PageManager.publishPages`, waits (no timeout, not interruptible) for every publication hold to be released. A reader that takes a hold (`PageManager.callWithPublicationsHeld`) and then loads a record by RID inside it takes the read lock a second time, as a NEW acquisition - and the lock is fair: once a writer is queued (any schema change, a super-node promotion creating its stripe buckets), a reader that does not own the lock is refused. The writer waits for the commit's read lock, the commit for the hold, the hold owner for the read lock: three threads, forever. `ConsistentKeyLookup.readAgainstOneCommit` owns the read lock before it asks for the hold (and before the page-manager lock of its fallback, the order a commit has too), so the load inside re-enters it, which is always granted. A new caller of `callWithPublicationsHeld` whose callable loads records by RID, or takes any other database lock, owes the same. A callable that only loads pages (`LocalBucket.callAgainstOneCommit`) needs nothing. `ConsistentKeyLookupLockOrderTest` builds the three threads with the reader and the commit on one stripe of the lock, which is what makes the cycle certain instead of a matter of thread ids.
 
 ## Waiting for the async workers inside a schema frame never ends
 

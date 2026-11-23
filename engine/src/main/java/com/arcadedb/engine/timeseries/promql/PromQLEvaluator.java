@@ -216,7 +216,9 @@ public class PromQLEvaluator {
           // timestamp is wherever the lookback window happened to resolve. A series sparser than the step
           // resolved to the same sample on several consecutive steps and repeated its timestamp, so any
           // consumer indexing the matrix by timestamp (Grafana included) saw duplicate keys and jitter
-          // instead of a regular grid. The raw timestamp still drives staleness/lookback inside evaluate().
+          // instead of a regular grid. Since issue #11990 the selector already stamps its elements with the
+          // evaluation time, so this is the same value; lookback is decided by the scan window and staleness
+          // by the sample value, neither by this timestamp.
           seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { t, sample.value() });
           labelsMap.putIfAbsent(key, sample.labels());
         }
@@ -323,11 +325,13 @@ public class PromQLEvaluator {
     }
 
     // A series whose newest sample in the lookback is a staleness marker has ENDED: Prometheus answers nothing for it, where the
-    // marker read as a NaN measurement kept it in the vector for the whole lookback and made sum() NaN (issue #11991)
+    // marker read as a NaN measurement kept it in the vector for the whole lookback and made sum() NaN (issue #11991).
+    // The stored timestamp only chose the newest sample above; an instant vector is AT the evaluation time, which is what
+    // Prometheus stamps every element of it with and what every aggregation and operator over it inherits (issue #11990)
     final List<VectorSample> samples = new ArrayList<>(latestByLabels.size());
     for (final VectorSample sample : latestByLabels.values())
       if (!isStaleMarker(sample.value()))
-        samples.add(sample);
+        samples.add(new VectorSample(sample.labels(), sample.value(), evalTimeMs));
     return new InstantVector(samples);
   }
 

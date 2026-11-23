@@ -2316,7 +2316,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     if (results.size() > 1) {
       guard.check();
-      results.sort(Comparator.comparingInt((IndexCursorEntry e) -> e.score).reversed());
+      // Best score first, equal scores by RID, as every other ranked result of this index: not the iteration order of `scoreMap`,
+      // which is whatever RID.hashCode() makes it
+      results.sort((a, b) -> {
+        final int byScore = Integer.compare(b.score, a.score);
+        return byScore != 0 ? byScore : a.record.getIdentity().compareTo(b.record.getIdentity());
+      });
     }
 
     return new TempIndexCursor(results);

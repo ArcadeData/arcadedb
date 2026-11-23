@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -27,6 +28,7 @@ import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
@@ -260,7 +262,7 @@ public class MatchExecutionPlanner {
       final String attribute = item.getRecordAttr();
       if (attribute == null || isReturnedColumn(attribute))
         continue;
-      throw new CommandExecutionException("ORDER BY " + attribute
+      throw new CommandSQLParsingException("ORDER BY " + attribute
           + " has no meaning on the rows of this MATCH: its RETURN builds new rows out of the matched aliases, which have no "
           + attribute + " of their own. Order by <alias>." + attribute + " or by a column of the RETURN instead, for example "
           + "RETURN a." + attribute + " AS key ... ORDER BY key");
@@ -1169,7 +1171,9 @@ public class MatchExecutionPlanner {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();
     for (final MatchExpression expr : this.matchExpressions) {
-      pattern.addExpression(expr.copy());
+      // NOT A COPY: rebindFilters() below gives every occurrence of an alias the where: of the others, and it has to reach the items
+      // the pattern's edges traverse, or a node reached through an occurrence that does not carry its where: is not filtered by it
+      pattern.addExpression(expr);
     }
 
     final Map<String, WhereClause> aliasFilters = new LinkedHashMap<>();
@@ -1185,17 +1189,53 @@ public class MatchExecutionPlanner {
     this.aliasBuckets = aliasClusters;
     this.aliasRids = aliasRids;
 
-    rebindFilters(aliasFilters);
+    rebindFilters();
   }
 
-  private void rebindFilters(final Map<String, WhereClause> aliasFilters) {
+  /**
+   * An alias written in several patterns is one node, so the where: of every occurrence constrains it, whichever occurrence the walk binds it
+   * through. Each occurrence gets its own where: ANDed with the where:s of the other occurrences of its alias. A where: that reads
+   * {@code $depth} is the one exception: it belongs to the recursive hop it is written on (the depth of its walk), and means nothing on
+   * another occurrence of the alias, where no walk has given {@code $depth} a value.
+   * <p>
+   * {@code aliasFilters} (see {@link #addAliases}) holds the same merge once per alias, {@code $depth} included, and is what the root
+   * fetch, the reverse walk ({@code EdgeTraversal.leftFilter}) and the dependencies read. The two have to answer the same where: for a
+   * node, so a change to how the where:s of an alias are combined belongs in both places.
+   */
+  private void rebindFilters() {
+    final Map<String, List<MatchFilter>> occurrences = new LinkedHashMap<>();
     for (final MatchExpression expression : matchExpressions) {
-      WhereClause newFilter = aliasFilters.get(expression.getOrigin().getAlias());
-      expression.getOrigin().setFilter(newFilter);
+      occurrences.computeIfAbsent(expression.getOrigin().getAlias(), k -> new ArrayList<>()).add(expression.getOrigin());
+      for (final MatchPathItem item : expression.getItems())
+        occurrences.computeIfAbsent(item.getFilter().getAlias(), k -> new ArrayList<>()).add(item.getFilter());
+    }
 
-      for (final MatchPathItem item : expression.getItems()) {
-        newFilter = aliasFilters.get(item.getFilter().getAlias());
-        item.getFilter().setFilter(newFilter);
+    // the where: of every occurrence as it was written, read before any occurrence is rebound
+    final Map<MatchFilter, WhereClause> written = new IdentityHashMap<>();
+    for (final List<MatchFilter> sameAlias : occurrences.values())
+      for (final MatchFilter occurrence : sameAlias)
+        written.put(occurrence, occurrence.getFilter());
+
+    for (final List<MatchFilter> sameAlias : occurrences.values()) {
+      if (sameAlias.size() < 2)
+        continue;
+      for (final MatchFilter occurrence : sameAlias) {
+        final List<BooleanExpression> others = new ArrayList<>();
+        for (final MatchFilter other : sameAlias) {
+          final WhereClause where = written.get(other);
+          if (other != occurrence && where != null && where.getBaseExpression() != null && !readsDepth(where))
+            others.add(where.getBaseExpression());
+        }
+        if (others.isEmpty())
+          continue;
+        final WhereClause own = written.get(occurrence);
+        final AndBlock combined = new AndBlock();
+        if (own != null && own.getBaseExpression() != null)
+          combined.getSubBlocks().add(own.getBaseExpression());
+        combined.getSubBlocks().addAll(others);
+        final WhereClause rebound = new WhereClause();
+        rebound.setBaseExpression(combined);
+        occurrence.setFilter(rebound);
       }
     }
   }

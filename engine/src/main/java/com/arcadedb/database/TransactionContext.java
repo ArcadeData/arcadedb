@@ -31,6 +31,7 @@ import com.arcadedb.engine.PageVersionReservations;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.TransactionManager.VertexChange;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -790,6 +791,17 @@ public class TransactionContext implements Transaction {
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
     return isolationLevel;
+  }
+
+  /**
+   * Whether reads on this context are {@code REPEATABLE_READ}: the level the transaction began with, and only while that transaction
+   * runs. The context is reused by the next transaction of the thread and by the reads the thread makes outside any transaction, and it
+   * keeps its level after the transaction ended (a session restarts its transaction at it), so a read outside a transaction must not
+   * pin pages or snapshots as a {@code REPEATABLE_READ} transaction does: nothing would ever release them, and every later read of the
+   * thread, the next transaction's included, would answer from them.
+   */
+  public boolean isRepeatableRead() {
+    return isolationLevel == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ && isActive();
   }
 
   /** #5064: see the {@code remotelyCommitted} field - HA-layer only, call after quorum commit, before phase 2. */
@@ -2296,8 +2308,8 @@ public class TransactionContext implements Transaction {
    */
   public long getRepeatableCommittedCount(final int bucketId, final long committedNow) {
     // ONLY INSIDE A TRANSACTION: THE CONTEXT OUTLIVES ITS TRANSACTION AND KEEPS ITS LEVEL, AND A COUNT BETWEEN TWO
-    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ || !isActive())
+    // TRANSACTIONS MUST NOT PIN A VALUE THE NEXT ONE WOULD START FROM (#12789: THE SAME PREDICATE AS THE PAGE PINS)
+    if (!isRepeatableRead())
       return committedNow;
     if (snapshotBucketCounts == null)
       snapshotBucketCounts = new LongLongHashMap();
@@ -2337,29 +2349,23 @@ public class TransactionContext implements Transaction {
     // NOT FOUND, DELEGATES TO THE DATABASE
     final BasePage page = database.getPageManager().getImmutablePage(pageId, size, false, true);
 
-    if (page != null) {
-      switch (isolationLevel) {
-      case READ_COMMITTED:
-        break;
-      case REPEATABLE_READ:
-        // #5976: the component's OWN page count (bumped synchronously at commit time, see
-        // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
-        // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
-        // page until the async flush thread actually writes it. Using the physical size here made a just-
-        // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
-        // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
-        // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
-        // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
-        // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
-        // below into a hard failure on this read path instead (code review on #6013). The cast is safe
-        // because PaginatedComponent is the only direct subclass of Component in the codebase.
-        final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
-        final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
-        if (!isNewPage)
-          // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
-          immutablePages.put(pageId, (ImmutablePage) page);
-        break;
-      }
+    if (page != null && isRepeatableRead()) {
+      // #5976: the component's OWN page count (bumped synchronously at commit time, see
+      // PaginatedComponent.updatePageCount()) is the authoritative "does this page exist" answer - unlike
+      // PaginatedComponentFile.getTotalPages() (physical on-disk file size), which lags behind a committed
+      // page until the async flush thread actually writes it. Using the physical size here made a just-
+      // committed, not-yet-flushed page look "new", so it was never cached into immutablePages: a later
+      // Record.modify() on that same record then saw hasPageForRecord() return false, forced an
+      // unnecessary reload(), and re-fired AfterRecordReadListener re-entrantly on the same record.
+      // getFileByIdIfExists(), NOT getFileById(): the latter throws SchemaException on an unregistered id
+      // instead of returning null, which would turn the "not cacheable, don't blow up the read" fallback
+      // below into a hard failure on this read path instead (code review on #6013). The cast is safe
+      // because PaginatedComponent is the only direct subclass of Component in the codebase.
+      final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(pageId.getFileId());
+      final boolean isNewPage = component == null || pageId.getPageNumber() >= component.getReadablePageCount();
+      if (!isNewPage)
+        // CACHE THE IMMUTABLE PAGE ONLY IF IT IS NOT NEW
+        immutablePages.put(pageId, (ImmutablePage) page);
     }
 
     return page;
@@ -2375,10 +2381,34 @@ public class TransactionContext implements Transaction {
    * {@code getPage}, whose caller may move its buffer position.
    */
   public BasePage getPageForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPage(pageId, size);
 
     final BasePage page = getPageHeldByTransaction(pageId);
+    return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
+  }
+
+  /**
+   * {@link #getPageForAbsoluteReads} for a page that is NEVER pinned, whatever the isolation level: a page the transaction wrote
+   * is answered as {@code getPageForAbsoluteReads} answers it, any other is the newest committed version of the page, and a
+   * {@code REPEATABLE_READ} transaction keeps nothing of it (issue #13050).
+   * <p>
+   * It is for the one page of a component that is rewritten in place to publish a new state of pages that do not change, as the
+   * header page of a compacted LSM-tree file is by every incremental compaction round: the series it names are written once,
+   * and the page that names them moves on. Pinned, the page ties the transaction to the state of the first read, while the rest
+   * of the index (the mutable file a compaction swaps in as a new file, never pinned) is read as of now, and the two never
+   * coexisted: an entry the round moved from the mutable file into a new series is in neither. The pages the header names stay
+   * pinned like any other.
+   */
+  public BasePage getPageForAbsoluteReadsNeverPinned(final PageId pageId, final int size) throws IOException {
+    BasePage page = null;
+
+    if (modifiedPages != null)
+      page = modifiedPages.get(pageId);
+
+    if (page == null && newPages != null)
+      page = newPages.get(pageId);
+
     return page != null ? page : database.getPageManager().getSharedImmutablePage(pageId, size);
   }
 
@@ -2390,7 +2420,7 @@ public class TransactionContext implements Transaction {
    * {@code REPEATABLE_READ} reads as {@code getPageNotHeld} does, which keeps the page for the rest of the transaction.
    */
   public BasePage getPageNotHeldForAbsoluteReads(final PageId pageId, final int size) throws IOException {
-    if (isolationLevel != Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED)
+    if (isRepeatableRead())
       return getPageNotHeld(pageId, size);
     return database.getPageManager().getSharedImmutablePage(pageId, size);
   }
@@ -2870,7 +2900,7 @@ public class TransactionContext implements Transaction {
       // vertex these relationships
       final RID appendsOwner = entry.getValue().owner;
       if (appendsOwner != null)
-        refuseVertexDeletedSinceBegin(appendsOwner, true);
+        refuseVertexChangedSinceBegin(appendsOwner, true);
 
       final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(segmentRID.getBucketId());
 
@@ -6247,7 +6277,7 @@ public class TransactionContext implements Transaction {
       // version check: a transaction that pins the page only after the new vertex was committed finds the version it pinned
       // current, and a read of identical bytes is not marked stale. Two volatile reads when no vertex was ever deleted. A vertex
       // this transaction created on a RID freed since it began is its own and keeps its relationships
-      refuseVertexDeletedSinceBegin(rid, isLeader);
+      refuseVertexChangedSinceBegin(rid, isLeader);
 
       final MutablePage pinned = modifiedPages.get(pageId);
       if (!staleRead && (pinned == null || pageManager.getMostRecentVersionOfPage(pageId, bucket.getPageSize()) == pinned.getVersion()))
@@ -6296,13 +6326,28 @@ public class TransactionContext implements Transaction {
    * {@link #refuseVertexPageApplyDuringChecks}: a follower's commit cannot rebase onto a page an apply moved, its version check
    * refuses it.
    */
-  private void refuseVertexDeletedSinceBegin(final RID rid, final boolean isLeader) {
-    if (database.getTransactionManager().wasVertexDeletedSince(rid, vertexDeleteEpoch)) {
+  private void refuseVertexChangedSinceBegin(final RID rid, final boolean isLeader) {
+    final VertexChange change = database.getTransactionManager().vertexChangeSince(rid, vertexDeleteEpoch);
+    if (change != VertexChange.NONE) {
       if (!isCreatedInTransaction(rid))
-        throw new ConcurrentModificationException(
-            "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation");
+        throw new ConcurrentModificationException(vertexChangedSinceBeginMessage(rid, change));
     } else if (isLeader)
       vertexDeleteChecked = true;
+  }
+
+  /**
+   * The refusal of {@link #refuseVertexChangedSinceBegin}, worded for its cause (#12123): a follower whose peers only updated the
+   * vertex is refused because a replicated apply wrote its page, and telling it the vertex "was deleted" points at a delete that
+   * never happened. The exception and its retry are the same for every cause.
+   */
+  static String vertexChangedSinceBeginMessage(final RID rid, final VertexChange change) {
+    return switch (change) {
+      case DELETED -> "Record " + rid + " was deleted by a concurrent transaction. Please retry the operation";
+      case BUCKET_DROPPED -> "The bucket of record " + rid + " was dropped after this transaction began. Please retry the operation";
+      case PAGE_REPLICATED -> "The page of record " + rid
+          + " was written by a replicated transaction after this transaction began. Please retry the operation";
+      case NONE -> throw new IllegalArgumentException("Record " + rid + " did not change since this transaction began");
+    };
   }
 
   /**
@@ -6409,7 +6454,7 @@ public class TransactionContext implements Transaction {
         // #11592: the vertex the transaction appended for can have been deleted since it began, and the vertex at its RID now be
         // a new one, with a chunk of its own at the RID of the one appended to. Written from that image, the new head would give
         // the new vertex these relationships; mergeEdgeListHeads skips an owner queued here, so it is refused here
-        refuseVertexDeletedSinceBegin(owner, isLeader);
+        refuseVertexChangedSinceBegin(owner, isLeader);
         final int ownerMaxRecords = ownerBucket.getMaxRecordsInPage();
         final PageId ownerPageId = new PageId(database, ownerBucket.getFileId(), (int) (owner.getPosition() / ownerMaxRecords));
         final ImmutablePage ownerPage = committedPage(ownerPageId, ownerBucket.getPageSize());

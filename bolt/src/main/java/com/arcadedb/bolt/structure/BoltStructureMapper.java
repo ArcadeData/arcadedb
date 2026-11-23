@@ -22,6 +22,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.geo.CypherPointFunction;
@@ -34,6 +35,7 @@ import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.math.BigDecimal;
@@ -287,20 +289,32 @@ public class BoltStructureMapper {
 
   /**
    * Convert a Document to a properties map.
+   * <p>
+   * A stored record is read once: {@code ImmutableDocument.get(name)} walks the record header from its first byte until it
+   * meets the name, so asking for each name in turn cost a node or relationship of P properties P walks of the same record
+   * (issue #12582, as #11738 and #12558 were on the HTTP, gRPC and Postgres paths). A value that does not decode (a damaged
+   * record) is left out of the single read, where the read by name answered null: Bolt has no null property either way.
    */
   public static Map<String, Object> toProperties(final Document document) {
-    final Map<String, Object> properties = new LinkedHashMap<>();
-
-    for (final String propertyName : document.getPropertyNames()) {
-      // Skip internal properties
-      if (propertyName.startsWith("@")) {
-        continue;
-      }
-
-      final Object value = document.get(propertyName);
-      properties.put(propertyName, toPackStreamValue(value));
+    if (document instanceof ImmutableDocument stored) {
+      final Map<String, Object> read = stored.propertiesAsMap();
+      final Map<String, Object> properties = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+      for (final Map.Entry<String, Object> entry : read.entrySet())
+        // Skip internal properties
+        if (!entry.getKey().startsWith("@"))
+          properties.put(entry.getKey(), toPackStreamValue(entry.getValue()));
+      return properties;
     }
 
+    // A document held in memory (a mutable or a light edge, a wrapper that answers names its own way): its reads by name
+    // walk nothing, and its getPropertyNames() and get() are the answer it gives
+    final Map<String, Object> properties = new LinkedHashMap<>();
+    for (final String propertyName : document.getPropertyNames()) {
+      // Skip internal properties
+      if (propertyName.startsWith("@"))
+        continue;
+      properties.put(propertyName, toPackStreamValue(document.get(propertyName)));
+    }
     return properties;
   }
 
@@ -318,11 +332,11 @@ public class BoltStructureMapper {
       return toProperties(element);
     }
 
-    // For projections, return as map
-    final Map<String, Object> map = new LinkedHashMap<>();
-    for (final String prop : result.getPropertyNames()) {
-      map.put(prop, toPackStreamValue(result.getProperty(prop)));
-    }
+    // For projections, return as map. The row's properties are read in one pass (issue #12582)
+    final Map<String, Object> read = ResultInternal.propertiesOf(result);
+    final Map<String, Object> map = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+    for (final Map.Entry<String, Object> entry : read.entrySet())
+      map.put(entry.getKey(), toPackStreamValue(entry.getValue()));
     return map;
   }
 

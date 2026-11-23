@@ -43,10 +43,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ValidationExceptionKindCensusTest {
   private static final String AUTHORITY = "com/arcadedb/exception/ValidationException";
-  private static final String WITH_KIND = "(Lcom/arcadedb/exception/ValidationException$Kind;Ljava/lang/String;)V";
+  /** The constructors of the authority that take the kind, whatever follows it: the message, and the cause of the refusal. */
+  private static final String WITH_KIND = "(Lcom/arcadedb/exception/ValidationException$Kind;";
 
   /** The reviewed constructions with no kind, as {@code class#method} relative to {@code com/arcadedb}, each with why. */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
+      Map.entry("database/ExistingRecordsCheck#requireSamples",
+          "a TIMESERIES column constraint over stored samples: one sentence from TimeSeriesColumnConstraints for every constraint"),
       Map.entry("exception/RecordVetoedException#<init>", "a listener's veto of the whole record, not a declared constraint on a value"),
       Map.entry("engine/timeseries/TimeSeriesStorableRows#refused",
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),
@@ -68,6 +71,9 @@ class ValidationExceptionKindCensusTest {
     // the scan still reaches the authority: the property validator, which raises every declared constraint through one helper
     assertThat(withKind).as("the census no longer reaches the constructions of " + AUTHORITY + " that pass a kind")
         .containsKey("database/DocumentValidator#throwValidationException");
+    // and the one that keeps the refusal it was raised from as the cause (issue #12037): a stored value refused by a declaration
+    assertThat(withKind).as("the census no longer reaches the constructions of " + AUTHORITY + " that pass a kind and a cause")
+        .containsKey("database/ExistingRecordsCheck#requireValues");
 
     final Map<String, Set<String>> withoutKind = constructions(classes, false);
     assertThat(CompiledClasses.unreviewed(withoutKind, ALLOWED)).as("pass the ValidationException.Kind of the constraint the value "
@@ -83,7 +89,7 @@ class ValidationExceptionKindCensusTest {
    */
   private static Map<String, Set<String>> constructions(final Map<String, byte[]> classes, final boolean passingAKind) {
     final Map<String, Set<String>> sites = new TreeMap<>(CompiledClasses.callSitesOf(classes,
-        (owner, name, descriptor) -> AUTHORITY.equals(owner) && "<init>".equals(name) && WITH_KIND.equals(descriptor) == passingAKind));
+        (owner, name, descriptor) -> AUTHORITY.equals(owner) && "<init>".equals(name) && descriptor.startsWith(WITH_KIND) == passingAKind));
     sites.keySet().removeIf(site -> site.startsWith("exception/ValidationException#"));
     return sites;
   }

@@ -553,6 +553,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
+   * True once {@link #closeForReopen()} has started: from then on {@code begin()} is refused, so close-time work that needs a
+   * transaction (a vector index's graph build on flush) must be deferred rather than attempted.
+   */
+  public boolean isClosedForReopen() {
+    return closedForReopen;
+  }
+
+  /**
    * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
    * <p>
    * NOTE (#4927): kill() deliberately does NOT release this instance's PageManager lifecycle reference -
@@ -1348,7 +1356,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
       final boolean loadRecordContent;
-      if (!loadContent && tx.getIsolationLevel() == TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ)
+      if (!loadContent && tx.isRepeatableRead())
         // FORCE LOAD OF CONTENT TO GUARANTEE THE LOADING OF MULTI-PAGE RECORD INTO THE TX CONTEXT
         loadRecordContent = true;
       else
@@ -2079,6 +2087,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // the record overwrites them, so they are harmless.)
               if (!alreadyQueued)
                 tx.removeRecordFromCache(rid);
+              else if (record instanceof MutableDocument mutable)
+                takeRefusedValuesOffQueuedRecord(tx, mutable, indexes, e);
               throw e;
             } finally {
               indexChanges.disarmRecordUndo();
@@ -2122,6 +2132,41 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     return true;
+  }
+
+  /**
+   * An index refused the save of a record that an earlier save of this transaction had queued for the commit (issue #13130): the values
+   * the caller assigned are on the queued instance, and its queue entry stays, as the earlier save's indexed state is what the indexes
+   * still hold. The commit writes that instance and indexes whatever was assigned to it since its last accepted save (#11751), so it
+   * would fail on the refused value and lose every valid write of the transaction, when the caller handled the refusal and went on. The
+   * indexed properties go back to what the indexes hold, which leaves the commit nothing to index; when one cannot be put back (see
+   * {@link DocumentIndexer#restoreIndexedValues}) the commit is refused with the reason, as for a before-update listener that vetoes the
+   * update of a queued record ({@link #refusedUpdateOfQueuedRecordDoomsCommit}), rather than storing a value no index describes.
+   * <p>
+   * Not for a statement that runs inside the transaction: its savepoint takes the record back to the content it held before the
+   * statement (issue #10346), and refuses the commit itself when it cannot.
+   *
+   * @param cause the refusal, which the caller rethrows: what goes wrong here is added to it, never thrown over it
+   */
+  private void takeRefusedValuesOffQueuedRecord(final TransactionContext tx, final MutableDocument record, final List<IndexInternal> indexes,
+      final Throwable cause) {
+    if (tx.getActiveStatement() != null)
+      return;
+
+    boolean restored;
+    try {
+      restored = indexer.restoreIndexedValues(tx, record, indexes);
+    } catch (final RuntimeException | Error t) {
+      cause.addSuppressed(t);
+      restored = false;
+    }
+
+    if (restored)
+      // the indexes hold what the record holds, the state a save leaves it in
+      record.clearAssignedAfterSave();
+    else
+      tx.setRollbackOnly("an index refused the update of record " + record.getIdentity() + " (" + cause.getClass().getSimpleName()
+          + "), which the transaction had already updated, and the transaction cannot take the value it assigned back off the record");
   }
 
   /**
@@ -2314,6 +2359,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     markModified();
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
+
+    // AN EDGE RECORD THIS TRANSACTION ALREADY DELETED IS NOT DELETED A SECOND TIME (issue #12253). GraphEngine.deleteEdge ignores
+    // the not-found of its physical delete, so the -1 folded below would drift the persisted record count behind count(*) and the
+    // listeners and the index cleanup would run again. A vertex and a document already answer a second delete with their
+    // not-found. A lightweight edge owns no record, so there is nothing to check for it
+    if (record instanceof Edge && record.getIdentity().getPosition() >= 0 && getTransactionIfExists() instanceof TransactionContext tx
+        && tx.isDeletedInTransaction(record.getIdentity()))
+      throw new RecordNotFoundException("Record " + record.getIdentity() + " not found", record.getIdentity());
 
     if (mode == ComponentFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
@@ -2858,6 +2911,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public Schema getSchema() {
     checkDatabaseIsOpen();
     return schema;
+  }
+
+  @Override
+  public Dictionary getDictionary() {
+    // NO lastUsedOn STAMP, UNLIKE checkDatabaseIsOpen(): READING A PROPERTY OF A RECORD ALREADY LOADED IS NOT A DATABASE ACCESS, AND
+    // THE LOOKUP OR QUERY THAT LOADED THE RECORD HAS STAMPED IT ALREADY
+    checkOpenAndNotFenced();
+    return schema.getDictionary();
   }
 
   @Override
@@ -5399,16 +5460,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   /** {@link #checkDatabaseIsOpen(boolean, String)}, answering this thread's context of the database it found or created. */
   private DatabaseContext.DatabaseContextTL checkDatabaseIsOpenAndGetContext(final boolean updateIntent,
       final String databaseReadOnlyErrorMessage) {
-    if (!open)
-      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
-    if (fenceReason != null)
-      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
-      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
-      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
-      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
-      throw new DatabaseOperationException(
-          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
-              + fenceReason + ")");
+    checkOpenAndNotFenced();
     DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(databasePath);
     if (context == null)
       context = DatabaseContext.INSTANCE.init(this);
@@ -5429,6 +5481,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     if (lastUsedOn != now)
       lastUsedOn = now;
     return context;
+  }
+
+  private void checkOpenAndNotFenced() {
+    if (!open)
+      throw closedForReopen ? new DatabaseIsReopeningException(name) : DatabaseIsClosedException.of(name);
+    if (fenceReason != null)
+      // #5053: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
+      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
+      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
+      throw new DatabaseOperationException(
+          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
+              + fenceReason + ")");
   }
 
   private void setDefaultValues(final Record record) {
