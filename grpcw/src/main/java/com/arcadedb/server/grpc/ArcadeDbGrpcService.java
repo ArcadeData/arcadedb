@@ -4599,16 +4599,32 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final Map<String, RID> tempIdMap) {
     final RID srcRID = resolveRef(rec.getFromRef(), db, tempIdMap);
     final RID dstRID = resolveRef(rec.getToRef(), db, tempIdMap);
-    // An endpoint given as a RID comes from the client and is taken on trust by GraphBatch.newEdge: one that does not exist or
-    // is not a vertex used to fail at the close of the batch with the edge records written and unreachable (issue #12895)
-    if (rec.getFromRef().charAt(0) == '#')
-      batch.requireVertex(srcRID);
-    if (rec.getToRef().charAt(0) == '#')
-      batch.requireVertex(dstRID);
+    requireExistingVertex(batch, rec.getFromRef(), srcRID);
+    requireExistingVertex(batch, rec.getToRef(), dstRID);
     if (rec.getPropertiesMap().isEmpty())
       batch.newEdge(srcRID, rec.getTypeName(), dstRID);
     else
       batch.newEdge(srcRID, rec.getTypeName(), dstRID, toPropertyArray(rec.getPropertiesMap()));
+  }
+
+  /**
+   * An endpoint given as a RID comes from the client and is taken on trust by {@link GraphBatch#newEdge}: one that does not exist
+   * or is not a vertex used to fail at the close of the batch with the edge records written and unreachable (issue #12895).
+   * Refused here, before the edge is buffered, as the client error it is. The endpoints given as temporary ids are vertices of
+   * this load and need no check.
+   * <p>
+   * A missing record is re-raised as an {@link IllegalArgumentException} without it as the cause: the record is data of the
+   * stream, not the resource the call addresses, so it is {@code INVALID_ARGUMENT} like the rest of the stream's mistakes and not
+   * the {@code NOT_FOUND} of a missing record (a cause is read by the error classification, which would answer it as one).
+   */
+  private static void requireExistingVertex(final GraphBatch batch, final String ref, final RID rid) {
+    if (ref.charAt(0) != '#')
+      return;
+    try {
+      batch.requireVertex(rid);
+    } catch (final IllegalArgumentException | RecordNotFoundException e) {
+      throw new IllegalArgumentException("Edge endpoint '" + ref + "': " + e.getMessage());
+    }
   }
 
   private void configureGraphBatchOptions(final GraphBatch.Builder builder, final GraphBatchOptions opts) {

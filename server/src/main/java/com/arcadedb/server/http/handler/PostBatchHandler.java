@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryAdmissionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.graph.GraphBatch;
@@ -1861,14 +1862,18 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * exist, or is not a vertex, used to surface at the close of the batch as a 404 or a 500 after the edge records were
    * written, with no vertex leading to them (issue #12895). Refused here, on the line that names it, like a malformed RID.
    * The endpoints given as temporary ids are vertices of this payload and need no check.
+   * <p>
+   * A missing record is re-raised as an {@link IllegalArgumentException} without it as the cause: the record is data of the
+   * payload, not the resource the request addresses, so it is a 400 like the rest of the payload's mistakes and not the 404 of a
+   * missing record (a cause is read by the error classification, which would answer it as one).
    */
   private static void requireExistingVertex(final GraphBatch batch, final String ref, final RID rid, final int lineNumber) {
     if (ref.charAt(0) != '#')
       return;
     try {
       batch.requireVertex(rid);
-    } catch (final IllegalArgumentException e) {
-      throw new IllegalArgumentException("Edge endpoint '" + ref + "' at line " + lineNumber + ": " + e.getMessage(), e);
+    } catch (final IllegalArgumentException | RecordNotFoundException e) {
+      throw new IllegalArgumentException("Edge endpoint '" + ref + "' at line " + lineNumber + ": " + e.getMessage());
     }
   }
 

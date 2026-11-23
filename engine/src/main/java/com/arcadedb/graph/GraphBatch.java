@@ -926,13 +926,16 @@ public class GraphBatch implements AutoCloseable {
    * Not called by {@link #newEdge} itself: the endpoints of a payload's own temporary ids are vertices this batch created,
    * and one record lookup per endpoint of every edge of a load of millions would be paid for nothing.
    *
-   * @throws IllegalArgumentException when the record does not exist or is not a vertex
+   * @throws RecordNotFoundException  when the record does not exist: what every protocol answers as a missing record, so a
+   *                                  caller whose RID came from its client re-raises it as the client error it is (the record
+   *                                  the request names is not the resource it addresses)
+   * @throws IllegalArgumentException when the RID is null or the record is not a vertex
    */
   public void requireVertex(final RID rid) {
     if (rid == null)
       throw new IllegalArgumentException("Vertex RID is null");
     if (!database.existsRecord(rid))
-      throw new IllegalArgumentException("Vertex " + rid + " does not exist");
+      throw new RecordNotFoundException("Vertex " + rid + " does not exist", rid);
     final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
     if (!(type instanceof VertexType))
       throw new IllegalArgumentException(

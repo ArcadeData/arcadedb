@@ -321,11 +321,11 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGrpcServerTest {
    * received edges rather than flushed ones would report those as committed, and a caller reconciling against
    * that number re-sends too little and loses them - the exact failure the trailer exists to prevent.
    * <p>
-   * The failure is arranged past the vertex phase, by pointing an edge at a bucket that does not exist. Since issue #12895 a RID
-   * endpoint is refused when its record is read, so the load is abandoned with the edges it had buffered dropped (a failure of the
-   * flush that {@code close()} performs, the case this test used to arrange, can no longer be reached through a RID; the flush
-   * cleanup is pinned at engine level by {@code OrphanAndGhostEdgeTest}). The vertices are committed by then, so the trailer has to
-   * report some of the load as durable.
+   * The failure is arranged on the flush that {@code close()} performs, past the vertex phase and past a flush that committed: an
+   * edge buffer of two writes the first two edges as the second one arrives, and the third, which lacks the MANDATORY property its
+   * type declares, fails the flush of the close. (It used to be arranged by pointing an edge at a bucket that does not exist; since
+   * issue #12895 such a RID endpoint is refused when its record is read, before anything of the edge is buffered.) The vertices and
+   * the first two edges are committed by then, so the trailer has to report that part of the load as durable.
    * <p>
    * Since issue #6083 this also pins the two properties that follow from the flush cleaning up after itself:
    * the edge count is exact rather than a lower bound, and {@code countType} agrees with a traversal because no
@@ -333,6 +333,15 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGrpcServerTest {
    */
   @Test
   void countsConnectedEdgesExactlyOnTheTrailerOfALoadThatFailsClosing() throws Exception {
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE EDGE TYPE Issue6070StrictLink IF NOT EXISTS")
+        .build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCommand("CREATE PROPERTY Issue6070StrictLink.tag IF NOT EXISTS STRING (MANDATORY TRUE)")
+        .build());
+
     final AtomicReference<Throwable> errorRef = new AtomicReference<>();
     final CountDownLatch done = new CountDownLatch(1);
 
@@ -341,28 +350,25 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGrpcServerTest {
 
     final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder()
         .setDatabase(getDatabaseName())
-        .setOptions(GraphBatchOptions.newBuilder().setVertexBatchSize(2).build());
+        .setOptions(GraphBatchOptions.newBuilder().setVertexBatchSize(2).setBatchSize(2).build());
     for (int i = 0; i < 4; i++)
       chunk.addRecords(vertex("e" + i));
 
-    // Both edges are buffered and neither is flushed before the failure. The second originates from a bucket that does not
-    // exist, which is refused as soon as its record is read: the load is abandoned and the first edge, still buffered, is dropped.
+    // The second edge fills the buffer of two: both are written and connected there. The third stays buffered until close(), whose
+    // flush fails on it.
+    chunk.addRecords(strictEdge("e0", "e1", "first"));
+    chunk.addRecords(strictEdge("e1", "e2", "second"));
     chunk.addRecords(GraphBatchRecord.newBuilder()
         .setKind(GraphBatchRecord.Kind.EDGE)
-        .setTypeName("Issue6070Link")
-        .setFromRef("e0")
-        .setToRef("e1"));
-    chunk.addRecords(GraphBatchRecord.newBuilder()
-        .setKind(GraphBatchRecord.Kind.EDGE)
-        .setTypeName("Issue6070Link")
-        .setFromRef("#31212:0")
-        .setToRef("e2"));
+        .setTypeName("Issue6070StrictLink")
+        .setFromRef("e2")
+        .setToRef("e3"));
 
     observer.onNext(chunk.build());
     observer.onCompleted();
 
     assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-    assertThat(errorRef.get()).as("an edge pointing at a bucket that does not exist must fail the load")
+    assertThat(errorRef.get()).as("an edge without its mandatory property must fail the flush of the close")
         .isInstanceOf(StatusRuntimeException.class);
 
     final Metadata trailers = ((StatusRuntimeException) errorRef.get()).getTrailers();
@@ -378,18 +384,18 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGrpcServerTest {
 
     // The invariant that matters, and the one this counter exists to keep: never claim an edge the graph does
     // not hold. Over-reporting costs a caller the edge, silently - counting received records instead of
-    // connected ones did exactly that here, claiming both.
+    // connected ones did exactly that here, claiming all three.
     //
-    // Since issue #6083 the counter is EXACT rather than a lower bound: it counts what the graph holds, and the graph holds no
-    // edge here. A caller reconciling against this re-sends both edges.
-    final long connected = connectedEdgeCount();
-    assertThat(connected).as("the abandoned load wrote no edge").isZero();
+    // Since issue #6083 the counter is EXACT rather than a lower bound: the two edges of the flush that committed are the ones the
+    // graph holds, and the trailer says so. A caller reconciling against this re-sends exactly the edge that is missing.
+    final long connected = connectedEdgeCount("Issue6070StrictLink");
+    assertThat(connected).as("the flush that committed before the failing one keeps its edges, reachable").isEqualTo(2);
     assertThat(partial.getEdgesCreated()).as("the trailer must report exactly the edges the graph holds")
         .isEqualTo(connected);
 
     // #6083 item 2: countType() agrees with a traversal: no edge record is left that no vertex points at
-    assertThat(countOf("Issue6070Link"))
-        .as("a failed load must leave no edge record that no vertex points at").isEqualTo(connected);
+    assertThat(countOf("Issue6070StrictLink"))
+        .as("a failed flush must leave no edge record that no vertex points at").isEqualTo(connected);
   }
 
   /**
@@ -517,11 +523,25 @@ public class Issue6070GraphBatchLoadHardeningIT extends BaseGrpcServerTest {
 
   /** Edges actually reachable from the vertices, as opposed to edge records the failed flush left orphaned. */
   private long connectedEdgeCount() {
+    return connectedEdgeCount("Issue6070Link");
+  }
+
+  private long connectedEdgeCount(final String edgeTypeName) {
     final long[] connected = { 0 };
     final Database db = getServerDatabase(0, getDatabaseName());
     db.transaction(() -> db.iterateType("Issue6070Node", true)
-        .forEachRemaining(r -> connected[0] += r.asVertex().countEdges(Vertex.DIRECTION.OUT, "Issue6070Link")));
+        .forEachRemaining(r -> connected[0] += r.asVertex().countEdges(Vertex.DIRECTION.OUT, edgeTypeName)));
     return connected[0];
+  }
+
+  private static GraphBatchRecord strictEdge(final String from, final String to, final String tag) {
+    return GraphBatchRecord.newBuilder()
+        .setKind(GraphBatchRecord.Kind.EDGE)
+        .setTypeName("Issue6070StrictLink")
+        .setFromRef(from)
+        .setToRef(to)
+        .putProperties("tag", GrpcValue.newBuilder().setStringValue(tag).build())
+        .build();
   }
 
   private long countOf(final String typeName) {
