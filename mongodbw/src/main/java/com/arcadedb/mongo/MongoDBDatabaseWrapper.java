@@ -224,6 +224,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final Oplog opLog) {
     // NOT TAGGED HERE: MongoDBBackend TAGS EVERY ENTRY POINT THE LIBRARY CALLS WITH A CLIENT'S REQUEST, THIS ONE AMONG THEM
     // (ISSUE #10390)
+    // EVERY COMMAND OF THE DATABASE IS A CHANCE TO REAP THE CURSORS NOBODY READS FROM ANY MORE: THERE IS NO TIMER, AND A DATABASE THAT
+    // SEES NO COMMAND AT ALL KEEPS THE ITERATORS OF THEM (AT MOST 1024) UNTIL IT DOES
+    purgeIdleCursorsOnce(System.nanoTime());
     final long quota = profiledLimit();
     // THE SQL STATEMENTS THE COMMAND READS THROUGH ARE A PART OF IT: NONE TAKES THE QUOTA AS ITS LIMIT (ISSUE #13087)
     ProfiledLimitScope.enter();
@@ -334,6 +337,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public QueryResult handleQuery(final MongoQuery query) throws MongoServerException {
+    purgeIdleCursorsOnce(System.nanoTime());
     final long quota = profiledLimit();
     ProfiledLimitScope.enter();
     try {
@@ -774,8 +778,6 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document find(final Document document, final long quota) throws MongoServerException {
     // a field this would not read is refused, not ignored: the answer would be the one of another command (issue #11778)
     MongoCommandFields.check("find", document);
-    // every command is a chance to reap what nobody reads from any more, so that a database that no find leaves a cursor on does not keep them
-    purgeIdleCursorsOnce(System.nanoTime());
     final Document filter = documentField(document, "filter");
     final Document sort = documentField(document, "sort");
     // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)

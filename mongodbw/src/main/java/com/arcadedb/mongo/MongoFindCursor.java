@@ -21,6 +21,8 @@ package com.arcadedb.mongo;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import de.bwaldvogel.mongo.backend.Cursor;
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 
 import java.util.ArrayList;
@@ -271,6 +273,11 @@ final class MongoFindCursor implements Cursor {
     }
     if (value instanceof byte[] bytes)
       return 5L + bytes.length;
+    // what a byte[] property is answered as (MongoDBToSqlTranslator): a binary blob is the one value that can take megabytes
+    if (value instanceof BinData binary)
+      return 5L + binary.getData().length;
+    if (value instanceof BsonRegularExpression regex)
+      return 2L + regex.getPattern().length() + (regex.getOptions() != null ? regex.getOptions().length() : 0);
     if (value instanceof Map<?, ?> map) {
       long size = 5L;
       for (final Map.Entry<?, ?> entry : map.entrySet())

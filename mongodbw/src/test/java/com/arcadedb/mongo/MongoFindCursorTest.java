@@ -18,6 +18,8 @@
  */
 package com.arcadedb.mongo;
 
+import de.bwaldvogel.mongo.bson.BinData;
+import de.bwaldvogel.mongo.bson.BsonRegularExpression;
 import de.bwaldvogel.mongo.bson.Document;
 import org.junit.jupiter.api.Test;
 
@@ -186,6 +188,20 @@ class MongoFindCursorTest {
     final MongoFindCursor tiny = new MongoFindCursor(IntStream.range(0, 5).<Object>mapToObj(i -> new Document("t", text))
         .iterator(), null, 0, 0, null);
     assertThat(tiny.takeBatch(Integer.MAX_VALUE, 1L)).as("the budget is smaller than one document").hasSize(1);
+  }
+
+  /** A byte[] property is answered as a BinData: its bytes, not the 16 of a number, are what the reply holds. */
+  @Test
+  void aBinaryValueCountsItsBytesAndEndsTheBatchAtTheBudget() {
+    final byte[] megabyte = new byte[1_000_000];
+    assertThat(MongoFindCursor.estimateSize(new Document("b", new BinData(megabyte)))).isGreaterThan(1_000_000L);
+    assertThat(MongoFindCursor.estimateSize(new Document("b", List.of(new BinData(megabyte), new BinData(megabyte))))).isGreaterThan(
+        2_000_000L);
+    assertThat(MongoFindCursor.estimateSize(new Document("r", new BsonRegularExpression("x".repeat(1_000), "i")))).isGreaterThan(1_000L);
+
+    final Iterator<Object> rows = IntStream.range(0, 50).<Object>mapToObj(i -> new Document("b", new BinData(megabyte))).iterator();
+    final MongoFindCursor cursor = new MongoFindCursor(rows, null, 0, 0, null);
+    assertThat(cursor.takeBatch(Integer.MAX_VALUE, 10_000_000L).size()).as("10 MB of budget, 1 MB a document").isBetween(9, 10);
   }
 
   @Test

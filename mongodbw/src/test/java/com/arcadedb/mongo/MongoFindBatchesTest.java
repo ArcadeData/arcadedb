@@ -30,6 +30,7 @@ import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
 import org.bson.Document;
+import org.bson.types.Binary;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -264,6 +265,23 @@ public class MongoFindBatchesTest extends BaseMongoServerTest {
 
     assertThat(big.find().sort(new Document("_id", 1)).into(new ArrayList<>())).hasSize(30);
     assertThat(big.find().into(new ArrayList<>())).hasSize(30);
+    assertThat(wrapper().openCursors()).isZero();
+  }
+
+  @Test
+  void aBatchOfBinaryDocumentsStopsAtTheSizeAReplyMayHaveToo() {
+    // 30 documents of 1 MB of bytes: a binary is a few bytes of estimate unless its length is counted
+    final MongoCollection<Document> blobs = client.getDatabase(getDatabaseName()).getCollection("blobs");
+    final byte[] megabyte = new byte[1_000_000];
+    blobs.insertMany(IntStream.range(0, 30).mapToObj(i -> new Document("_id", i).append("blob", new Binary(megabyte)))
+        .collect(Collectors.toList()));
+
+    final Document reply = run(new Document("find", "blobs"));
+    assertThat(batchOf(reply, "firstBatch").size()).isBetween(1, 17);
+    assertThat(idOf(reply)).isNotZero();
+    run(new Document("killCursors", "blobs").append("cursors", List.of(idOf(reply))));
+
+    assertThat(blobs.find().into(new ArrayList<>())).hasSize(30);
     assertThat(wrapper().openCursors()).isZero();
   }
 
