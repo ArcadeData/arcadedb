@@ -542,7 +542,7 @@ public class PostgresCatalog {
         "min_val", "max_val", "enumvals", "boot_val", "reset_val", "sourcefile", "sourceline", "pending_restart");
 
     // The declared type of every column that is not a varchar: what the rows of each relation carry, held to it by
-    // Issue10869CatalogColumnTypesTest over every modelled relation
+    // PostgresCatalogColumnsTest.ColumnTypes over every modelled relation
     columnTypes("pg_namespace", PostgresType.INTEGER, "oid", "nspowner");
     columnTypes("pg_class", PostgresType.INTEGER, "oid", "relnamespace", "reltype", "reloftype", "relowner", "relam", "relfilenode",
         "reltablespace", "relpages", "reltuples", "reltoastrelid", "relnatts", "relchecks", "relrewrite");

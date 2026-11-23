@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.coll.SizeFunction;
 import com.arcadedb.function.misc.CoalesceFunction;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -105,6 +106,9 @@ public class FunctionCallExpression implements Expression {
               value = arguments.get(i).evaluate(result, context);
             return finishCoalesce(function, value, result, context);
           }
+          final Long size = sizeWithoutList(function, result, context);
+          if (size != null)
+            return size;
           final Object[] args = new Object[arguments.size()];
           for (int i = 0; i < args.length; i++)
             args[i] = arguments.get(i).evaluate(result, context);
@@ -113,6 +117,18 @@ public class FunctionCallExpression implements Expression {
       }
     }
     throw new UnsupportedOperationException("Function evaluation requires StatelessFunction: " + functionName);
+  }
+
+  /**
+   * {@code size([(p)-[:K]->(q) | q])} answered as the degree it is, without building the list (issue #11891), for both
+   * evaluation paths; null when this call is not that, or when the row needs the list built.
+   */
+  public Long sizeWithoutList(final StatelessFunction function, final Result result, final CommandContext context) {
+    if (!(function instanceof SizeFunction) || arguments.size() != 1
+        || !(arguments.getFirst() instanceof PatternComprehensionExpression comprehension))
+      return null;
+    final long count = comprehension.countElements(result, context);
+    return count != OneHopPattern.NOT_ANSWERED ? count : null;
   }
 
   /**

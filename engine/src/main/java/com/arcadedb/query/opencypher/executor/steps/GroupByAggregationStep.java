@@ -25,6 +25,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.HeapEstimator;
@@ -146,6 +147,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       releaseHeap();
       throw e;
     }
+    // Every input row has made its writes by now: the records the groups hold are read as those writes left them (issue #12565)
+    WrittenCopy.resolveRows(context, results);
 
     return new ResultSet() {
       private int index = 0;
@@ -403,6 +406,15 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
     final List<Result> results = new ArrayList<>(groups.size());
     final long beginBuild = context.isProfiling() ? System.nanoTime() : 0;
     try {
+      // A complex item reads the group's first row (h{.v, c: count(*)} reads h.v there): every input row has made its writes
+      // by now, so its records are read as those writes left them. The grouping keys were computed already (issue #12565)
+      if (!complexAggregationItems.isEmpty() && WrittenCopy.resolves(context)) {
+        final List<Result> representatives = new ArrayList<>(groups.size());
+        for (final GroupAggregators groupAgg : groups.values())
+          representatives.add(groupAgg.representativeRow);
+        WrittenCopy.resolveRows(context, representatives);
+      }
+
       for (final Map.Entry<GroupKeyValues, GroupAggregators> groupEntry : groups.entrySet()) {
         final GroupKeyValues keyValues = groupEntry.getKey();
         final GroupAggregators groupAgg = groupEntry.getValue();
@@ -420,7 +432,8 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
           final Map<String, StatelessFunction> innerFuncs = groupAgg.complexAggregators.get(complexItem.outputName);
           final Map<String, Object> overrides = new HashMap<>();
           for (final Map.Entry<String, StatelessFunction> funcEntry : innerFuncs.entrySet())
-            overrides.put(funcEntry.getKey(), funcEntry.getValue().getAggregatedResult());
+            // the records collect() gathered, as the writes of every row left them (issue #12565)
+            overrides.put(funcEntry.getKey(), WrittenCopy.resolveValue(funcEntry.getValue().getAggregatedResult(), context));
           evaluator.setAggregationOverrides(overrides);
           try {
             final Object value = evaluator.evaluate(complexItem.expression, groupAgg.representativeRow, context);

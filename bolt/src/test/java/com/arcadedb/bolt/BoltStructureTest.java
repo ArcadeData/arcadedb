@@ -478,7 +478,7 @@ class BoltStructureTest {
   @Test
   void mapperOffsetDateTime() throws Exception {
     final OffsetDateTime dateTime = OffsetDateTime.of(2024, 1, 15, 10, 30, 45, 0, ZoneOffset.ofHours(2));
-    assertThat(wireRoundTrip(dateTime)).isEqualTo(dateTime);
+    assertThat(wireRoundTrip(dateTime)).isEqualTo(dateTime.toZonedDateTime());
   }
 
   @Test
@@ -497,13 +497,13 @@ class BoltStructureTest {
   void mapperInstant() throws Exception {
     final Instant instant = Instant.parse("2024-01-15T10:30:45Z");
     // Instant maps to a DateTime struct; assert the instant survives the round-trip.
-    assertThat(((OffsetDateTime) wireRoundTrip(instant)).toInstant()).isEqualTo(instant);
+    assertThat(((ZonedDateTime) wireRoundTrip(instant)).toInstant()).isEqualTo(instant);
   }
 
   @Test
   void mapperJavaDate() throws Exception {
     final Date date = Date.from(Instant.parse("2024-01-15T10:30:45Z"));
-    assertThat(((OffsetDateTime) wireRoundTrip(date)).toInstant()).isEqualTo(date.toInstant());
+    assertThat(((ZonedDateTime) wireRoundTrip(date)).toInstant()).isEqualTo(date.toInstant());
   }
 
   @Test

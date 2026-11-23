@@ -25,6 +25,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -52,7 +54,7 @@ class BenchRunnerTest {
     }
 
     @Override
-    public void prepare(final WorkloadContext ctx, final String caseName) {
+    public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
     }
 
     @Override
@@ -130,6 +132,28 @@ class BenchRunnerTest {
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(results.get(0).error()).contains("boom");
     assertThat(results.get(1).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  // a remote client wraps the transport failure: "Error on executing remote operation" alone says nothing of what broke
+  @Test
+  void failureRecordsTheWholeCauseChain() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        throw new IllegalStateException("Error on executing remote operation 'command'",
+            new UncheckedIOException(new IOException("HTTP/1.1 header parser received no bytes")));
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(results.get(0).error())
+        .startsWith("java.lang.IllegalStateException: Error on executing remote operation 'command'")
+        .contains("caused by java.io.IOException: HTTP/1.1 header parser received no bytes");
   }
 
   @Test
@@ -346,5 +370,123 @@ class BenchRunnerTest {
     assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(results.get(0).error()).contains("not started").contains("'a'");
     assertThat(next.calls.get()).isZero();
+  }
+
+  // #12839: a case of 2 warm-ups + 5 reps + a data load timed out as a whole although no single build came near the cap
+  @Test
+  void theTimeoutAppliesToEachStepNotToTheWholeCase() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(600);
+        return m(calls.incrementAndGet());
+      }
+    };
+    // 6 steps of 600 ms = 3.6 s in total, each one far under the 2 s step timeout
+    final List<CaseResult> results = new BenchRunner(5, 1, Duration.ofSeconds(2)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(results.get(0).metrics().get(0).values()).hasSize(5);
+  }
+
+  @Test
+  void aSlowRepetitionTimesOutAndIsNamed() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (calls.incrementAndGet() == 4) // warm-up 1, then reps 1..3
+          Thread.sleep(5_000);
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(3, 1, Duration.ofMillis(300)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("rep 3/3").contains("300 ms");
+  }
+
+  @Test
+  void prepareIsBoundedByItsOwnTimeoutNotByTheStepTimeout() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(600); // a data load longer than one repetition may take
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofMillis(200), Duration.ofSeconds(5), Duration.ZERO,
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void aSlowPrepareTimesOutAndIsNamed() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(5_000);
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        calls.incrementAndGet();
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10), Duration.ofMillis(200), Duration.ZERO,
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("prepare").contains("200 ms");
+    assertThat(w.calls.get()).isZero();
+  }
+
+  @Test
+  void theCaseCapEndsACaseWhoseStepsEachFit() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        calls.incrementAndGet();
+        Thread.sleep(300);
+        return m(1);
+      }
+    };
+    final List<CaseResult> results = new BenchRunner(20, 0, Duration.ofSeconds(10), Duration.ofSeconds(10), Duration.ofSeconds(1),
+        Duration.ofSeconds(5)).run(w, CTX, n -> true);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.TIMEOUT);
+    assertThat(results.get(0).error()).contains("case exceeded 1000 ms");
+    assertThat(w.calls.get()).isLessThan(20);
+  }
+
+  @Test
+  void aNegativeCaseCapIsRefused() {
+    assertThatThrownBy(() -> new BenchRunner(1, 0, Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(-1)))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("case timeout");
   }
 }
