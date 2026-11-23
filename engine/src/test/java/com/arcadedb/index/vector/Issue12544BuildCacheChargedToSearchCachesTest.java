@@ -67,8 +67,8 @@ class Issue12544BuildCacheChargedToSearchCachesTest extends TestHelper {
 
     assertThat(searched.graphBuildCachesPlannedBytes(true)).as("no build runs yet").isZero();
     final long withNoBuild = searched.affordableSearchCacheEntries(1, bytesPerEntry, available, false);
-    assertThat(withNoBuild).as("with no build running, the whole percent is the first cache's")
-        .isEqualTo(available / 100 / bytesPerEntry);
+    assertThat(withNoBuild).as("with no build running, the percent is the first cache's, less the smallest plan the building index is owed")
+        .isEqualTo(available / 100 / bytesPerEntry - SLOTS);
     assertThat(searched.affordableSearchCacheEntries(1, bytesPerEntry, tight, false))
         .as("with no build running, the first cache keeps at least the floor").isGreaterThanOrEqualTo(FLOOR);
 

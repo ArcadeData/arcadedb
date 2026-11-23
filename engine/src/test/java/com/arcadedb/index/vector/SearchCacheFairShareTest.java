@@ -162,6 +162,26 @@ class SearchCacheFairShareTest extends TestHelper {
     assertThat(fourth.capacity()).isGreaterThanOrEqualTo(SLOTS);
   }
 
+  /**
+   * The smallest plan an index without a cache is owed is counted in bytes, whatever the index that is sized first costs per entry:
+   * 64 dimensions (264 bytes an entry) first, 768 dimensions (3,080 bytes) with no cache yet, a budget of 5,500,000 bytes.
+   */
+  @Test
+  void theFirstCacheLeavesAnIndexOfOtherDimensionsItsSmallestPlan() {
+    final LSMVectorIndex narrow = createBucketIndexes("Narrow", 1, 64)[0];
+    createBucketIndexes("Wide", 1, 768);
+    final long narrowBytes = FlatVectorCache.bytesPerVector(64);
+    final long wideBytes = FlatVectorCache.bytesPerVector(768);
+    final int percent = Math.min(((DatabaseInternal) database).getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_MAX_HEAP_PERCENT), 90);
+    final long available = availableFor(5_500_000L);
+    final long budget = available / 100 * percent;
+
+    final long entries = narrow.affordableSearchCacheEntries(percent, narrowBytes, available, false);
+    assertThat(entries).as("what is left past the 1,024 entries of the wide index")
+        .isEqualTo((budget - SLOTS * wideBytes) / narrowBytes);
+  }
+
   /** The cache an index was cut to is the one it keeps: asking again with the same reading does not rebuild it. */
   @Test
   void aCutCacheIsNotRebuiltOnEverySearch() {
@@ -187,10 +207,14 @@ class SearchCacheFairShareTest extends TestHelper {
   }
 
   private LSMVectorIndex[] createBucketIndexes(final String typeName, final int buckets) {
+    return createBucketIndexes(typeName, buckets, DIMENSIONS);
+  }
+
+  private LSMVectorIndex[] createBucketIndexes(final String typeName, final int buckets, final int dimensions) {
     database.transaction(() -> {
       database.getSchema().buildDocumentType().withName(typeName).withTotalBuckets(buckets).create()
           .createProperty("embedding", Type.ARRAY_OF_FLOATS);
-      database.command("sql", "CREATE INDEX ON " + typeName + " (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+      database.command("sql", "CREATE INDEX ON " + typeName + " (embedding) LSM_VECTOR METADATA { \"dimensions\": " + dimensions
           + ", \"similarity\": \"COSINE\" }");
     });
     return bucketIndexes(typeName, buckets);

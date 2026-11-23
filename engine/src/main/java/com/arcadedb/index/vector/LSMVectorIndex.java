@@ -15337,10 +15337,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long level = fairShareBytes(wants, items, Math.max(0L, budget - builds));
     final long fair = level == Long.MAX_VALUE ? Long.MAX_VALUE : Math.max(level / bytesPerEntry, MIN_SEARCH_CACHE_SLOTS);
     final long left = Math.max(0L, budget - othersPlan) / bytesPerEntry;
-    // The first cache of the database: nothing is planned beside it, so it takes its fair share of the percent, and the floor at
-    // least
-    if (othersPlan == 0L)
-      return left < MIN_SEARCH_CACHE_SIZE ? MIN_SEARCH_CACHE_SIZE : Math.min(left, fair);
+    // The first cache of the database: nothing is planned beside it, so it takes its fair share of the percent, and the floor when
+    // the percent is under it. The indexes that have no cache yet are owed their smallest plan before it, in bytes: an index of 64
+    // dimensions sized first would otherwise leave an index of 768 dimensions fewer entries than its minimum
+    if (othersPlan == 0L) {
+      if (budget / bytesPerEntry < MIN_SEARCH_CACHE_SIZE)
+        return MIN_SEARCH_CACHE_SIZE;
+      final long beyondPending = Math.max(0L, budget - pendingMinimum) / bytesPerEntry;
+      return Math.min(Math.max(beyondPending, MIN_SEARCH_CACHE_SLOTS), fair);
+    }
 
     // The caches the indexes that have none yet will ask for are owed their smallest plan before this one takes more than its
     // own: the available-heap reading falls with the caches already planned as they fill, and the others' plans are charged
