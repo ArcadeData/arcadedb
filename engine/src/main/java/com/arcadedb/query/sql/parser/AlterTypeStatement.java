@@ -454,19 +454,37 @@ public class AlterTypeStatement extends DDLStatement {
     if (item.identifierListValue == null)
       throw new CommandExecutionException("Invalid super type names");
 
+    // every name is resolved before the first change, so a name that does not exist leaves the type as it was
+    final List<DocumentType> superclasses = new ArrayList<>(item.identifierListValue.size());
     for (int i = 0; i < item.identifierListValue.size(); i++) {
       final Identifier superTypeName = item.identifierListValue.get(i);
-      final Boolean add = item.identifierListAddRemove.get(i);
-
       final DocumentType superclass = context.getDatabase().getSchema().getType(superTypeName.getStringValue());
       if (superclass == null)
         throw new SchemaException("Super type '" + superTypeName.getStringValue() + "' not found");
-
-      if (add)
-        type.addSuperType(superclass);
-      else
-        type.removeSuperType(superclass);
+      superclasses.add(superclass);
     }
+
+    if (superclasses.size() == 1) {
+      if (item.identifierListAddRemove.getFirst())
+        type.addSuperType(superclasses.getFirst());
+      else
+        type.removeSuperType(superclasses.getFirst());
+      return;
+    }
+
+    // issue #12038: several changes in one statement are one change of the super types, applied through setSuperTypes, which asks
+    // whether an index keeps its property about what the type is left with once all of them are in (so "-P, +Q" is not refused
+    // for the moment the type has neither) and before the first of them is applied
+    final List<DocumentType> superTypes = new ArrayList<>(type.getSuperTypes());
+    for (int i = 0; i < superclasses.size(); i++) {
+      final DocumentType superclass = superclasses.get(i);
+      if (item.identifierListAddRemove.get(i)) {
+        if (!superTypes.contains(superclass))
+          superTypes.add(superclass);
+      } else
+        superTypes.remove(superclass);
+    }
+    type.setSuperTypes(superTypes);
   }
 
   private void doSetAliases(final DocumentType type, final Item item) {

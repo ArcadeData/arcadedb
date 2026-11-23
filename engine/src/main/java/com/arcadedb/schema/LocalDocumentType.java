@@ -566,7 +566,9 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Removes a super type from the current type.
+   * Removes a super type from the current type. A {@link SchemaException} is thrown and nothing changes if an index of this type or
+   * of a type below it stands on a property that type would stop inheriting (issue #12038), as {@link #dropProperty} does for the
+   * declaration of that property.
    *
    * @see #removeSuperType(String)
    * @see #addSuperType(DocumentType)
@@ -575,6 +577,18 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
+    return removeSuperType(superType, true, null, null);
+  }
+
+  /**
+   * @param judge      whether the indexes of the subtree are asked if they keep the property they stand on (issue #12038), which
+   *                   {@link #setSuperTypes} has done for the whole change in its first removal: the ones after it are not asked again
+   * @param endState   the super types this type is left with once the change this removal belongs to is complete, {@code null} for
+   *                   a removal that is the whole change
+   * @param change     what the change is, for the refusal; {@code null} together with {@code endState}
+   */
+  private DocumentType removeSuperType(final DocumentType superType, final boolean judge, final List<LocalDocumentType> endState,
+      final String change) {
     checkForSchemaMutation();
     recordFileChanges(() -> {
       if (!superTypes.contains(superType))
@@ -582,20 +596,25 @@ public class LocalDocumentType implements DocumentType {
         return null;
 
       final LocalDocumentType former = (LocalDocumentType) superType;
+      // issue #12038: decided before the link is touched, as a refusal of a type left alone: a lock-free reader never finds the type
+      // out of its super type for a removal that is refused, and the caches derived from the type graph are not retired for it.
+      // Skipped during DROP TYPE, which detaches the dropped type from its parents and drops its indexes anyway
+      if (judge && !schema.isTypeBeingDropped()) {
+        final String refusal;
+        if (endState != null)
+          refusal = findIndexOnPropertyNoLongerInherited(change, endState);
+        else {
+          final List<LocalDocumentType> remaining = new ArrayList<>(superTypes);
+          remaining.remove(former);
+          refusal = findIndexOnPropertyNoLongerInherited(describeSuperTypeChange(List.of(former), List.of()), remaining);
+        }
+        if (refusal != null)
+          throw new SchemaException(refusal);
+      }
+
       final int position = superTypes.indexOf(former);
       final int subPosition = former.subTypes.indexOf(this);
-      // issue #12038: the properties the indexes of the subtree stand on, as the subtree inherits them before the link goes, to tell
-      // which ones it loses or gets from elsewhere as another type
-      final Map<LocalDocumentType, Map<String, Property>> indexedBefore =
-          schema.isTypeBeingDropped() ? null : indexedPropertiesOfSubtree();
       unlinkSuperType(former);
-      if (indexedBefore != null) {
-        final String refusal = findIndexOnPropertyNoLongerInherited(former, indexedBefore);
-        if (refusal != null) {
-          relinkSuperType(former, position, subPosition);
-          throw new SchemaException(refusal);
-        }
-      }
       // issue #10421: a refusal before the first sub-index is dropped puts the link back, so the statement either completes or
       // leaves the type as it found it. Nothing irreversible has happened until then: the link is the in-memory part
       final boolean[] dropping = new boolean[1];
@@ -621,11 +640,19 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * What this type and every type below it resolve each property an index of their own stands on to, keyed by type (issue
-   * #12038). A type with no index of its own has no entry, so the walk of a type without indexes allocates nothing per type.
+   * The refusal of a change of this type's super types when an index of this type or of a type below it stands on a property that
+   * type would stop inheriting (issue #12038), the rule {@link #dropProperty} applies to the same declaration: the index would be
+   * left keyed on a property its type no longer declares. A property the type still has, declared by itself or reached through
+   * another super type, does not count, unless it would then resolve to a declaration of another type: the index is keyed on the
+   * type it was built for, and the property would convert every later write to the other one.
+   * <p>
+   * Answered from the super types the change leaves this type with, without touching the link: only this type's list is replaced,
+   * everything below it resolves through this type. {@code null} when nothing is lost.
+   *
+   * @param change         what the change is, as the refusal says it ("remove the super type 'P' from the type 'C'")
+   * @param superTypesAfter this type's super types once the change is complete, in order
    */
-  private Map<LocalDocumentType, Map<String, Property>> indexedPropertiesOfSubtree() {
-    final Map<LocalDocumentType, Map<String, Property>> result = new IdentityHashMap<>();
+  private String findIndexOnPropertyNoLongerInherited(final String change, final List<LocalDocumentType> superTypesAfter) {
     final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
     final List<LocalDocumentType> toVisit = new ArrayList<>();
     toVisit.add(this);
@@ -636,43 +663,14 @@ public class LocalDocumentType implements DocumentType {
         continue;
       toVisit.addAll(type.subTypes);
 
-      Map<String, Property> indexed = null;
       for (final TypeIndex index : type.getAllIndexes(false))
         for (final String indexProperty : index.getPropertyNames()) {
           final String property = Index.basePropertyName(indexProperty);
-          final Property resolved = type.getPolymorphicPropertyIfExists(property);
-          if (resolved != null) {
-            if (indexed == null)
-              indexed = new HashMap<>();
-            indexed.put(property, resolved);
-          }
-        }
-      if (indexed != null)
-        result.put(type, indexed);
-    }
-    return result;
-  }
-
-  /**
-   * The refusal of {@link #removeSuperType(DocumentType)} when an index of this type or of a type below it stands on a property
-   * that type stops inheriting with the link just severed, the rule {@link #dropProperty} applies to the same declaration (issue
-   * #12038): the index would be left keyed on a property its type no longer declares. A property the type still has, declared by
-   * itself or reached through another super type, does not count, unless it now resolves to a declaration of another type: the
-   * index is keyed on the type it was built for, and the property would convert every later write to the other one. {@code null}
-   * when nothing is lost.
-   */
-  private String findIndexOnPropertyNoLongerInherited(final LocalDocumentType formerSuperType,
-      final Map<LocalDocumentType, Map<String, Property>> indexedBefore) {
-    for (final Map.Entry<LocalDocumentType, Map<String, Property>> entry : indexedBefore.entrySet()) {
-      final LocalDocumentType type = entry.getKey();
-      for (final TypeIndex index : type.getAllIndexes(false))
-        for (final String indexProperty : index.getPropertyNames()) {
-          final String property = Index.basePropertyName(indexProperty);
-          final Property before = entry.getValue().get(property);
+          final Property before = type.getPolymorphicPropertyIfExists(property);
           if (before == null)
             continue;
 
-          final Property after = type.getPolymorphicPropertyIfExists(property);
+          final Property after = resolvePropertyAfter(type, property, superTypesAfter, Collections.newSetFromMap(new IdentityHashMap<>()));
           final String consequence;
           if (after == null)
             consequence = "would no longer inherit";
@@ -682,16 +680,55 @@ public class LocalDocumentType implements DocumentType {
           else
             continue;
 
-          return "Cannot remove the super type '" + formerSuperType.getName() + "' from the type '" + name + "' because the property '"
-              + property + "' that type '" + type.getName() + "' " + consequence + " is used by index '" + index.getName()
-              + "'. Drop the index first, or declare the property on '" + type.getName() + "'";
+          return "Cannot " + change + " because the property '" + property + "' that type '" + type.getName() + "' " + consequence
+              + " is used by index '" + index.getName() + "'. Drop the index first, or declare the property on '" + type.getName()
+              + "'";
         }
+    }
+    return null;
+  }
+
+  /**
+   * What {@code type} resolves {@code property} to, the way {@link DocumentType#getPolymorphicPropertyIfExists} does (its own
+   * declaration, then its super types in order, depth first), with this type's super types replaced by {@code superTypesAfter}.
+   * {@code visited} keeps a type reached through two paths from being searched twice, and a link the change would make from being
+   * followed in a circle.
+   */
+  private Property resolvePropertyAfter(final LocalDocumentType type, final String property, final List<LocalDocumentType> superTypesAfter,
+      final Set<LocalDocumentType> visited) {
+    final Property own = type.getPropertyIfExists(property);
+    if (own != null)
+      return own;
+    if (!visited.add(type))
+      return null;
+
+    for (final LocalDocumentType superType : type == this ? superTypesAfter : type.superTypes) {
+      final Property inherited = resolvePropertyAfter(superType, property, superTypesAfter, visited);
+      if (inherited != null)
+        return inherited;
     }
     return null;
   }
 
   private static String describeDeclaration(final Property property) {
     return property.getOfType() == null ? property.getType().name() : property.getType().name() + " OF " + property.getOfType();
+  }
+
+  private String describeSuperTypeChange(final List<? extends DocumentType> toRemove, final List<? extends DocumentType> toAdd) {
+    final String removed = quotedNames(toRemove);
+    return toAdd.isEmpty() ?
+        "remove the super type " + removed + " from the type '" + name + "'" :
+        "replace the super type " + removed + " of the type '" + name + "' with " + quotedNames(toAdd);
+  }
+
+  private static String quotedNames(final List<? extends DocumentType> types) {
+    final StringBuilder names = new StringBuilder();
+    for (final DocumentType type : types) {
+      if (!names.isEmpty())
+        names.append(", ");
+      names.append('\'').append(type.getName()).append('\'');
+    }
+    return names.toString();
   }
 
   /**
@@ -1222,10 +1259,28 @@ public class LocalDocumentType implements DocumentType {
 
     final List<DocumentType> toRemove = new ArrayList<>(superTypes);
     toRemove.removeAll(commonSuperTypes);
-    toRemove.forEach(this::removeSuperType);
 
     final List<DocumentType> toAdd = new ArrayList<>(newSuperTypes);
     toAdd.removeAll(commonSuperTypes);
+
+    if (!toRemove.isEmpty()) {
+      // issue #12038: the removals are applied before the additions, so an index of the subtree that stands on a property the removed
+      // types provide is asked against what this type is left with once the additions are in too (a replacement that still provides
+      // it is fine), and by the first removal for all of them: a refusal leaves the type as it found it
+      final List<LocalDocumentType> endState = new ArrayList<>(commonSuperTypes.size() + toAdd.size());
+      for (final DocumentType superType : commonSuperTypes)
+        endState.add((LocalDocumentType) superType);
+      for (final DocumentType superType : toAdd)
+        endState.add((LocalDocumentType) superType);
+      final String change = describeSuperTypeChange(toRemove, toAdd);
+
+      boolean judge = true;
+      for (final DocumentType superType : toRemove) {
+        removeSuperType(superType, judge, endState, change);
+        judge = false;
+      }
+    }
+
     toAdd.forEach(this::addSuperType);
 
     return this;

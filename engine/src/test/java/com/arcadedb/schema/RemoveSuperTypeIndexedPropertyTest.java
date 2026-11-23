@@ -19,12 +19,14 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -237,20 +239,101 @@ class RemoveSuperTypeIndexedPropertyTest extends TestHelper {
   }
 
   @Test
-  void replacementAddedBeforeTheRemovalAllowsTheSwap() {
-    // the removal is judged where it is applied, so the replacement that still provides k goes first
+  void replacementThatStillProvidesThePropertyAllowsTheSwapInEitherOrder() {
+    // the removal is judged against what C is left with once the whole statement is applied, not against the step
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE R");
+    database.command("sql", "CREATE PROPERTY R.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q");
+
+    assertThat(database.getSchema().getType("C").isSubTypeOf("P")).isFalse();
+    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
+    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
+
+    database.command("sql", "ALTER TYPE C SUPERTYPE +R, -Q");
+
+    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isFalse();
+    assertThat(database.getSchema().getType("C").isSubTypeOf("R")).isTrue();
+    assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
+  }
+
+  @Test
+  void setSuperTypesReplacementThatStillProvidesThePropertyIsAllowed() {
     database.command("sql", "CREATE DOCUMENT TYPE P");
     database.command("sql", "CREATE PROPERTY P.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE Q");
     database.command("sql", "CREATE PROPERTY Q.k INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
     database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    database.transaction(() -> database.command("sql", "INSERT INTO C SET k = 1"));
 
-    database.command("sql", "ALTER TYPE C SUPERTYPE +Q, -P");
+    database.getSchema().getType("C").setSuperTypes(List.of(database.getSchema().getType("Q")));
 
     assertThat(database.getSchema().getType("C").isSubTypeOf("P")).isFalse();
     assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
     assertThat(database.getSchema().existsIndex("C[k]")).isTrue();
+    assertThat(database.query("sql", "SELECT FROM C WHERE k = 1").stream().count()).isEqualTo(1L);
+  }
+
+  @Test
+  void replacementThatDoesNotProvideThePropertyRefusesTheWholeStatementAndChangesNothing() {
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.other STRING");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P, +Q"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("'k'")//
+        .hasMessageContaining("'C[k]'");
+
+    // not even the addition that came after the refused removal is applied
+    assertUnchanged("C", "P", "C[k]");
+    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isFalse();
+  }
+
+  @Test
+  void removingTwoSuperTypesAtOnceIsRefusedBeforeTheFirstGoes() {
+    // k is provided by both: the first removal alone would pass, the statement as a whole leaves C without it
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, Q");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P, -Q"))//
+        .isInstanceOf(SchemaException.class)//
+        .hasMessageContaining("'C[k]'");
+
+    assertUnchanged("C", "P", "C[k]");
+    assertThat(database.getSchema().getType("C").isSubTypeOf("Q")).isTrue();
+  }
+
+  @Test
+  void refusedRemovalNeverTouchesTheLinkSoNoReaderCanSeeTheTypeOutOfItsSuperType() {
+    // decided before the link is touched: the polymorphic buckets a lock-free SELECT FROM P reads are the very list it read before,
+    // not one recomputed without the buckets of C and then once more with them for a statement that changes nothing
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+
+    final DocumentType p = database.getSchema().getType("P");
+    final List<Bucket> polymorphicBuckets = p.getBuckets(true);
+    assertThat(polymorphicBuckets).hasSizeGreaterThan(p.getBuckets(false).size());
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE C SUPERTYPE -P")).isInstanceOf(SchemaException.class);
+
+    assertThat(p.getBuckets(true)).isSameAs(polymorphicBuckets);
   }
 
   @Test
