@@ -245,6 +245,8 @@ public class TransactionContext implements Transaction {
   // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
   // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
   private       int                                  edgeAppendDepth;
+  private       int                                  probeDepth;
+  private       List<Runnable>                       probeReads;
   private       MutablePage[]                        deferredReadPages;
   private       int[]                                deferredReadSlots;
   private       int                                  deferredReads;
@@ -3706,10 +3708,48 @@ public class TransactionContext implements Transaction {
    * not replay this transaction's writes onto the newer page when they may rest on such a read. Only a page the transaction
    * holds modified is recorded, while it runs: nothing is allocated for any other read.
    */
+  /** True while a MERGE existence probe runs: the reads it makes are held back, see {@link #beginMergeProbe()}. */
+  public boolean isReadsExcused() {
+    return probeDepth > 0;
+  }
+
+  /**
+   * Opens the window of the existence probe of a MERGE (a walk of the edge lists of the relationship it looks for). The page, chunk
+   * and edge-list-head reads it makes are held back, and {@link #endMergeProbe(boolean)} then either records them as the
+   * application's reads or drops them. A probe that finds nothing is followed by the creation of the relationship, which the
+   * {@link MergedEdgeRegistry} checks at commit against any concurrent MERGE of the same relationship, so the probe's read of a
+   * list a concurrent transaction appended to decides nothing that registry does not; dropping those reads keeps the edge-append
+   * and head merges from refusing every transaction that probed a hot list.
+   */
+  public void beginMergeProbe() {
+    ++probeDepth;
+  }
+
+  /** Defers {@code read} to the end of the probe window, where it is recorded or dropped. */
+  public void deferProbeRead(final Runnable read) {
+    if (probeReads == null)
+      probeReads = new ArrayList<>();
+    probeReads.add(read);
+  }
+
+  public void endMergeProbe(final boolean keepReads) {
+    if (probeDepth == 0)
+      return;
+    if (--probeDepth > 0)
+      return;
+    final List<Runnable> reads = probeReads;
+    probeReads = null;
+    if (keepReads && reads != null)
+      for (final Runnable r : reads)
+        r.run();
+  }
+
   public void trackReadFromPage(final BasePage page, final int slot) {
     if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage()) {
       ++ownImageReads;
-      if (edgeAppendDepth > 0)
+      if (probeDepth > 0)
+        deferProbeRead(() -> trackReadFromPage(page, slot));
+      else if (edgeAppendDepth > 0)
         deferRead(mutable, slot);
       else if (slot < 0)
         mutable.markWholePageRead();
@@ -3737,6 +3777,10 @@ public class TransactionContext implements Transaction {
   public void trackEdgeListHeadReadFromOwnImage(final RID vertex, final boolean out) {
     if (vertex == null || edgeAppendDepth > 0 || !isTrackingReadsFromOwnImage())
       return;
+    if (probeDepth > 0) {
+      deferProbeRead(() -> trackEdgeListHeadReadFromOwnImage(vertex, out));
+      return;
+    }
     if (out) {
       if (outHeadsReadFromOwnImage == null)
         outHeadsReadFromOwnImage = new RidHashSet();
@@ -3913,6 +3957,10 @@ public class TransactionContext implements Transaction {
   private void trackReadOfWrittenChunk(final RID rid) {
     if (!isTrackingReadsFromOwnImage())
       return;
+    if (probeDepth > 0) {
+      deferProbeRead(() -> trackReadOfWrittenChunk(rid));
+      return;
+    }
     if (edgeAppendDepth == 0) {
       markChunkRead(rid);
       return;

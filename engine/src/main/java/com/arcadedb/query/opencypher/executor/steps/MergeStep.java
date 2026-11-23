@@ -464,7 +464,7 @@ public class MergeStep extends AbstractExecutionStep {
    * mapped to an unrelated existing node (fix for issue #3998).
    */
   private List<Result> mergePathAll(final PathPattern pathPattern, final ResultInternal baseResult) {
-    final List<Result> found = findAllMatchingPaths(pathPattern, baseResult);
+    final List<Result> found = findAllMatchingPathsDroppingReads(pathPattern, baseResult);
     if (!found.isEmpty())
       return found;
     final TypeIndex answeredBy = existenceIndex;
@@ -475,7 +475,7 @@ public class MergeStep extends AbstractExecutionStep {
     try {
       return createNewPath(pathPattern, baseResult, answeredBy);
     } catch (final DuplicatedKeyException e) {
-      final List<Result> retry = findAllMatchingPaths(pathPattern, baseResult);
+      final List<Result> retry = findAllMatchingPathsDroppingReads(pathPattern, baseResult);
       if (retry.isEmpty())
         throw e;
       return retry;
@@ -502,6 +502,23 @@ public class MergeStep extends AbstractExecutionStep {
    * of children over time and the anchor walk became O(parent.degree) per
    * MERGE).
    */
+  private List<Result> findAllMatchingPathsDroppingReads(final PathPattern pathPattern, final ResultInternal baseResult) {
+    final TransactionContext tx = pathPattern.getRelationshipCount() > 0 ?
+        ((DatabaseInternal) context.getDatabase()).getTransactionIfExists() : null;
+    if (tx == null)
+      return findAllMatchingPaths(pathPattern, baseResult);
+    tx.beginMergeProbe();
+    List<Result> found = null;
+    try {
+      found = findAllMatchingPaths(pathPattern, baseResult);
+      return found;
+    } finally {
+      // dropped whatever the probe found: a hit decides nothing that a later write rests on (READ_COMMITTED), and a miss is
+      // followed by a creation the merged-edge registry checks. An error keeps the reads
+      tx.endMergeProbe(found == null);
+    }
+  }
+
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
     existenceIndex = null;

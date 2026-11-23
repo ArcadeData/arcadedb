@@ -134,15 +134,24 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     return this;
   }
 
+  private void recordHeadRead(final int bit) {
+    final com.arcadedb.database.TransactionContext tx = ((com.arcadedb.database.DatabaseInternal) database).getTransactionIfExists();
+    if (tx != null && tx.isReadsExcused())
+      // a MERGE existence probe: recorded, or dropped, when the probe ends
+      tx.deferProbeRead(() -> edgeListHeadsRead |= bit);
+    else
+      edgeListHeadsRead |= bit;
+  }
+
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getOutEdgesHeadChunk() {
-    edgeListHeadsRead |= OUT_HEAD_READ;
+    recordHeadRead(OUT_HEAD_READ);
     return outEdges;
   }
 
   /** The head of the incoming list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */
   public RID getInEdgesHeadChunk() {
-    edgeListHeadsRead |= IN_HEAD_READ;
+    recordHeadRead(IN_HEAD_READ);
     return inEdges;
   }
 
