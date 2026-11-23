@@ -57,6 +57,68 @@ class LSMVectorIndexSmallGraphRebuildTest extends TestHelper {
   }
 
   @Test
+  void everySearchAfterAWriteBelowTheThresholdReusesTheGraphAndFindsTheWrite() {
+    final LSMVectorIndex index = indexWithGraphOf(30, 50);
+    final long generation = generation(index);
+    final Random random = new Random(11);
+
+    // The shape of the issue: a write, then a search, over and over. None of the ten searches may build, and each must
+    // find the vector the write before it left in the delta buffer
+    for (int round = 1; round <= 10; round++) {
+      final float[] written = randomVector(random);
+      final RID[] rid = new RID[1];
+      database.transaction(() -> rid[0] = database.newVertex("Item").set("vector", written).save().getIdentity());
+
+      final List<Pair<RID, Float>> results = index.findNeighborsFromVector(written, 5);
+
+      assertThat(results).hasSize(5);
+      assertThat(results.get(0).getFirst()).as("round %d: the vector just written is its own nearest neighbour", round)
+          .isEqualTo(rid[0]);
+      assertThat(mutations(index)).as("round %d: the search must not have rebuilt the graph", round).isEqualTo((long) round);
+    }
+    assertThat(generation(index)).as("no search published a new graph").isEqualTo(generation);
+  }
+
+  @Test
+  void aDeleteBelowTheThresholdIsHiddenWithoutARebuild() {
+    final LSMVectorIndex index = indexWithGraphOf(30, 50);
+    final long generation = generation(index);
+
+    final List<Pair<RID, Float>> before = index.findNeighborsFromVector(distinctiveQuery(), 5);
+    final RID nearest = before.get(0).getFirst();
+    database.transaction(() -> nearest.asVertex().delete());
+    assertThat(mutations(index)).isEqualTo(1L);
+
+    final List<Pair<RID, Float>> after = index.findNeighborsFromVector(distinctiveQuery(), 5);
+
+    assertThat(after).as("the deleted vector is still in the graph, and must not be answered").hasSize(5)
+        .extracting(Pair::getFirst).doesNotContain(nearest);
+    assertThat(after.get(0).getFirst()).as("the runner-up takes its place").isEqualTo(before.get(1).getFirst());
+    assertThat(mutations(index)).as("the search must not have rebuilt the graph").isEqualTo(1L);
+    assertThat(generation(index)).isEqualTo(generation);
+  }
+
+  @Test
+  void anUpdateBelowTheThresholdIsFoundOnlyAtItsNewPositionWithoutARebuild() {
+    final LSMVectorIndex index = indexWithGraphOf(30, 50);
+    final long generation = generation(index);
+
+    final float[] origin = new float[DIM];
+    final RID moved = index.findNeighborsFromVector(origin, 1).get(0).getFirst();
+    final float[] far = new float[DIM];
+    far[0] = 998.0f;
+    database.transaction(() -> moved.asVertex().modify().set("vector", far).save());
+    assertThat(mutations(index)).as("an update is a delete and an insert").isEqualTo(2L);
+
+    assertThat(index.findNeighborsFromVector(distinctiveQuery(), 5).get(0).getFirst()).as("found at its new position")
+        .isEqualTo(moved);
+    assertThat(index.findNeighborsFromVector(origin, 5)).as("and no longer at the old one").hasSize(5)
+        .extracting(Pair::getFirst).doesNotContain(moved);
+    assertThat(mutations(index)).as("no search rebuilt the graph").isEqualTo(2L);
+    assertThat(generation(index)).isEqualTo(generation);
+  }
+
+  @Test
   void theThresholdStillTriggersTheRebuild() {
     final LSMVectorIndex index = indexWithGraphOf(30, 50);
     final Random random = new Random(7);
@@ -122,6 +184,10 @@ class LSMVectorIndexSmallGraphRebuildTest extends TestHelper {
 
   private static long mutations(final LSMVectorIndex index) {
     return index.getStats().get("mutationsSinceRebuild");
+  }
+
+  private static long generation(final LSMVectorIndex index) {
+    return index.getStats().get("rebuildSnapshotGeneration");
   }
 
   private static float[] distinctiveQuery() {
