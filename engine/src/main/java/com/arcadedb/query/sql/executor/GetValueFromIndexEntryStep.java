@@ -165,6 +165,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   // publication sequence the entries were read from
   private FetchFromIndexStep.SeekCheck loadSeekCheck;
   private long                        loadEntriesSequence;
+  // Whether the last readAndLoad() met an entry whose record it could not load
+  private boolean                     pointLookupDangling;
+  // Whether readAndLoad() logs an entry whose record it could not load as dangling
+  private boolean                     warnDangling   = true;
 
   /**
    * @param context         the execution context
@@ -885,11 +889,6 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   private static final int MAX_RECONCILE_ATTEMPTS   = 8;
   private static final int MAX_POINT_LOOKUP_ENTRIES = 256;
-
-  /** Whether the last {@link #readAndLoad} met an entry whose record it could not load. */
-  private boolean pointLookupDangling;
-  /** Whether {@link #readAndLoad} logs an entry whose record it could not load as dangling. */
-  private boolean warnDangling = true;
 
   /**
    * Loads the rows of a point lookup - an equality or an {@code IN} - against ONE committed state (#9369). A commit puts its
