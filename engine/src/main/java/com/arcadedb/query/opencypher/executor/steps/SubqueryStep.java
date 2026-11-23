@@ -532,17 +532,16 @@ public class SubqueryStep extends AbstractExecutionStep {
   }
 
   /**
-   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS} and has not committed yet, then begins
-   * its transaction again for the clauses that follow (issue #13172). The batch runs in a transaction of its own, which does not
-   * see the uncommitted writes of the statement's: a label written before the CALL replaces the node by a new record, and the
-   * body, pointed at that record, failed with "Record not found". IN TRANSACTIONS already gives up the atomicity of the statement,
-   * each batch committing on its own, so committing what the statement wrote before it is consistent with that. It runs before
-   * every batch, not only the first: the outer rows of a later batch are produced after the earlier batches committed, and what
-   * the clauses before the CALL wrote for them is pending again.
+   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS}, then begins its transaction again
+   * for the clauses that follow (issue #13172). The batch's own transaction does not see the statement's uncommitted writes, so a
+   * label written before the CALL left the body pointed at a record it could not find. IN TRANSACTIONS already gives up the
+   * statement's atomicity, so committing these writes is consistent with it. It runs before every batch: the outer rows of a later
+   * batch are produced after the earlier batches committed.
    * <p>
-   * Only the statement's own transaction is committed: the implicit one the engine or a server opened around the statement, at
-   * the first level. A transaction its caller owns is refused with IN TRANSACTIONS before anything runs (issue #11588), and a
-   * deeper level belongs to someone else, so both are left alone.
+   * Only the implicit transaction at the first level is committed: a caller's transaction is refused with IN TRANSACTIONS before
+   * anything runs (issue #11588), and a deeper level belongs to someone else.
+   * <p>
+   * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
    *
    * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
    */
