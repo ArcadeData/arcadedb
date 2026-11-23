@@ -27,6 +27,8 @@ import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
@@ -51,8 +53,8 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
@@ -62,6 +64,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -842,9 +845,9 @@ final class MatchStepBuilder {
    * or WITH row). The step that starts the pattern then finds the target through that index, once per row, and the hop walks its
    * relationships backwards.
    * <p>
-   * An unlabelled source starts from a target a UNIQUE index pins. A labelled source does when the seek finds fewer vertices than
-   * the label has: one for a UNIQUE index, the sampled entries per key of another ({@link #indexedTargetEntriesPerKey}), so
-   * that the label scan, repeated for every row, is not the cheaper side.
+   * An unlabelled source starts from a target a UNIQUE index pins. A labelled source does when the seeks of the target find fewer
+   * vertices than the label has: one per key for a UNIQUE index, the sampled entries per key of another
+   * ({@link #indexedTargetSeekRows}), so that the label scan, repeated for every row, is not the cheaper side.
    * <p>
    * Not over a relationship of no type or of a unidirectional type, whose incoming side no vertex stores, and not for an OPTIONAL
    * MATCH or a path variable, which bind the pattern in the order written. Not when the {@code WHERE} clause pins the source
@@ -876,51 +879,119 @@ final class MatchStepBuilder {
       return false;
     if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
       return false;
-    final boolean uniquelyKeyed = isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
-        || targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
     if (!sourceNode.hasLabels())
-      return uniquelyKeyed;
+      return isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
+          || targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
 
-    // a labelled source is a scan of its label, repeated for every row an UNWIND or a WITH hands over: the seek of the target finds
+    // a labelled source is a scan of its label, repeated for every row an UNWIND or a WITH hands over: the seeks of the target find
     // fewer vertices than that scan reads (issue #13267)
     final long scanned = new StatisticsProvider(database).getMatchingVertexCardinality(sourceNode.getLabels(),
         sourceNode.isLabelDisjunction());
-    final long found = uniquelyKeyed ? 1L : indexedTargetEntriesPerKey(target, targetVar, where, boundVariables);
+    final long found = indexedTargetSeekRows(target, targetVar, where, boundVariables);
     return found >= 0L && found < scanned;
   }
 
   /**
-   * How many vertices the seek of a node pattern's label finds for one key, when an index of that one label has every column
-   * pinned by an equality or an {@code IN}-list the node's property map or the {@code WHERE} clause gives, with values an earlier
-   * clause decides (issue #13267), or -1 when there is no such index. A UNIQUE index finds one; the others are sampled: the
-   * entries a prefix of the index holds per distinct key, at least one. The sample is the first {@value #KEY_SAMPLE_ENTRIES}
-   * entries in key order, whole groups of a key but for the last, which is as good as the sampling of the statistics provider is
-   * for a cost estimate; an index the keys of which are all different, such as one on a uuid, reads as one.
+   * How many vertices the seeks of a node pattern's label are expected to find for one row, through an index of that one label
+   * that {@link MatchNodeStep} can seek with every column pinned by an equality or an {@code IN}-list the node's property map or
+   * the {@code WHERE} clause gives, with values an earlier clause decides (issue #13267), or -1 when there is no such index. A seek
+   * is one key: an equality, or one element of an {@code IN}-list written out ({@code x IN ['a', 'b']}), on an index of that one
+   * column. A list the plan cannot count ({@code x IN $ids}, a variable) and a list over a composite key, which the node step does
+   * not seek, give no index. A UNIQUE index finds one vertex per key; an ordered one of another kind is sampled: the entries a
+   * prefix of the index holds per distinct key, at least one (see {@link #sampledEntriesPerKey}); a hash index of another kind
+   * cannot be walked in order and gives no estimate.
    */
-  private long indexedTargetEntriesPerKey(final NodePattern target, final String targetVar, final BooleanExpression where,
+  private long indexedTargetSeekRows(final NodePattern target, final String targetVar, final BooleanExpression where,
       final Set<String> boundVariables) {
     if (!target.hasLabels() || target.getLabels().size() != 1 || !database.getSchema().existsType(target.getLabels().getFirst()))
       return -1L;
-    final Set<String> pinned = new HashSet<>();
+    final Map<String, Long> keyCounts = new HashMap<>();
     if (target.hasProperties() && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
-      pinned.addAll(target.getProperties().keySet());
+      for (final String property : target.getProperties().keySet())
+        keyCounts.put(property, 1L);
     if (targetVar != null)
-      pinned.addAll(wherePinnedProperties(targetVar, where, value -> valueReadsOnlyEarlierClauses(value, boundVariables)));
-    if (pinned.isEmpty())
+      for (final Map.Entry<String, Long> entry : wherePinnedKeyCounts(targetVar, where, boundVariables).entrySet())
+        keyCounts.merge(entry.getKey(), entry.getValue(), MatchStepBuilder::fewerKeys);
+    if (keyCounts.isEmpty())
       return -1L;
 
     long best = -1L;
     for (final TypeIndex index : database.getSchema().getType(target.getLabels().getFirst()).getAllIndexes(true)) {
       final List<String> keys = index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
-      if (keys == null || !pinned.containsAll(keys))
+      if (keys == null)
         continue;
-      final long entries = index.isUnique() ? 1L : sampledEntriesPerKey(index);
-      if (best < 0L || entries < best)
-        best = entries;
+      long seeks = 1L;
+      for (final String key : keys) {
+        final Long count = keyCounts.get(key);
+        // MatchNodeStep seeks a list of keys on an index of one column only
+        if (count == null || count < 0L || count > 1L && keys.size() > 1) {
+          seeks = -1L;
+          break;
+        }
+        seeks *= count;
+      }
+      if (seeks < 0L || !index.isUnique() && !index.supportsOrderedIterations())
+        continue;
+      final long perKey = index.isUnique() ? 1L : sampledEntriesPerKey(index);
+      if (perKey < 0L)
+        continue;
+      final long rows = seeks * perKey;
+      if (best < 0L || rows < best)
+        best = rows;
     }
     return best;
   }
 
+  /** The count of a pin that names fewer keys, an unknown count (-1) giving way to a known one. */
+  private static Long fewerKeys(final Long a, final Long b) {
+    return a < 0L ? b : b < 0L ? a : Math.min(a, b);
+  }
+
+  /**
+   * The properties of {@code variable} the {@code WHERE} clause pins as {@link #wherePinnedProperties} reads them for values an
+   * earlier clause decides, each with the number of keys it names: 1 for an equality, the length of a list written out, -1 for an
+   * {@code IN} whose list is one parameter or variable, which only the row can count.
+   */
+  private static Map<String, Long> wherePinnedKeyCounts(final String variable, final BooleanExpression where,
+      final Set<String> boundVariables) {
+    final Map<String, Long> counts = new HashMap<>();
+    if (where == null)
+      return counts;
+    final Map<String, Object> rowIndependent = new LinkedHashMap<>();
+    EdgeIndexSeedPlanner.collectWherePredicates(variable, where, rowIndependent);
+    for (final Map.Entry<String, Object> entry : rowIndependent.entrySet())
+      counts.merge(entry.getKey(), entry.getValue() instanceof InListValues inList ? keysOfList(inList.getValues()) : 1L,
+          MatchStepBuilder::fewerKeys);
+    for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where)) {
+      if (conjunct instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS) {
+        if (comparison.getLeft() instanceof PropertyAccessExpression left && variable.equals(left.getVariableName())
+            && valueReadsOnlyEarlierClauses(comparison.getRight(), boundVariables))
+          counts.merge(left.getPropertyName(), 1L, MatchStepBuilder::fewerKeys);
+        else if (comparison.getRight() instanceof PropertyAccessExpression right && variable.equals(right.getVariableName())
+            && valueReadsOnlyEarlierClauses(comparison.getLeft(), boundVariables))
+          counts.merge(right.getPropertyName(), 1L, MatchStepBuilder::fewerKeys);
+      } else if (conjunct instanceof InExpression in && in.getExpression() instanceof PropertyAccessExpression listed
+          && variable.equals(listed.getVariableName()) && in.getList() != null && !in.getList().isEmpty()
+          && in.getList().stream().allMatch(value -> valueReadsOnlyEarlierClauses(value, boundVariables)))
+        counts.merge(listed.getPropertyName(), keysOfList(in.getList()), MatchStepBuilder::fewerKeys);
+    }
+    return counts;
+  }
+
+  /** The keys of an IN-list: its elements when it is written out, -1 for one element that is not a literal (a parameter or variable). */
+  private static long keysOfList(final List<Expression> list) {
+    final List<Expression> elements = list.size() == 1 && list.getFirst() instanceof ListExpression written ? written.getElements() : list;
+    return elements.size() == 1 && !(elements.getFirst() instanceof LiteralExpression) ? -1L : elements.size();
+  }
+
+  /**
+   * The entries per distinct key of an ordered, NOTUNIQUE index, read from its first {@value #KEY_SAMPLE_ENTRIES} entries in key
+   * order (whole groups of a key but for the last), which is as good as the sampling of the statistics provider is for a cost
+   * estimate; an index the keys of which are all different, such as one on a uuid, reads as one. A sample that one key fills
+   * (a {@code group_id} column whose first group is large) says only that the group has at least that many entries: -1, no
+   * estimate. A prefix of an index whose first keys are rare and later ones frequent still reads low, which is the limit of
+   * a sample in key order.
+   */
   private static long sampledEntriesPerKey(final TypeIndex index) {
     final Set<List<Object>> keys = new HashSet<>();
     long entries = 0L;
@@ -934,7 +1005,9 @@ final class MatchStepBuilder {
     } finally {
       cursor.close();
     }
-    return keys.isEmpty() ? 1L : Math.max(1L, (entries + keys.size() - 1L) / keys.size());
+    if (keys.isEmpty())
+      return 1L;
+    return entries == KEY_SAMPLE_ENTRIES && keys.size() == 1 ? -1L : Math.max(1L, (entries + keys.size() - 1L) / keys.size());
   }
 
   /**
