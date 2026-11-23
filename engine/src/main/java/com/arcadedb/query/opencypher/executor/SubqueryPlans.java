@@ -59,7 +59,11 @@ public final class SubqueryPlans {
     if (context == null)
       return null;
     return context.getVariable(CONTEXT_KEY) instanceof SubqueryPlans subqueryPlans
-        && subqueryPlans.owner == Thread.currentThread() ? subqueryPlans : null;
+        && subqueryPlans.isOwnedByCurrentThread() ? subqueryPlans : null;
+  }
+
+  private boolean isOwnedByCurrentThread() {
+    return owner == Thread.currentThread();
   }
 
   /**

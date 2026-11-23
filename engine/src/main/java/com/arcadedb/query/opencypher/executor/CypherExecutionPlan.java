@@ -152,6 +152,20 @@ public class CypherExecutionPlan {
   public static final int SEEDED_BATCH_SIZE = 100;
 
   /**
+   * The steps a seeded chain may be built of to be run again for the next outer row (issue #12136). Each one keeps the
+   * state of a run in the result set its {@code syncPull} returns, opens what it reads again on the next call, and gives
+   * back on {@code close()} what one run held, which is what lets {@link OptionalMatchStep} already run its inner chain
+   * once per input row. Anything else - a count push-down answering for the seed's own vertex, an eager barrier holding the
+   * rows of the first run, a nested {@code CALL { }}, a step whose class this list does not name exactly - is built again
+   * for every outer row as before.
+   */
+  private static final Set<Class<? extends AbstractExecutionStep>> RE_RUNNABLE_STEPS = Set.of(
+      MatchNodeStep.class, MatchRelationshipStep.class, ZeroLengthPathStep.class,
+      OptionalMatchStep.class, FilterPropertiesStep.class, UnwindStep.class, WithStep.class, ProjectReturnStep.class,
+      VariableProjectionStep.class, AggregationStep.class, GroupByAggregationStep.class, OrderByStep.class, SkipStep.class,
+      LimitStep.class, FinalProjectionStep.class);
+
+  /**
    * How much smaller than its label an index seek's estimated rows must be for a count to be left to the ordinary plan rather than
    * pushed down (issue #11680). The pipeline pays more per row than a push-down pays per vertex it walks: on the issue's graph an
    * anchored chain walked a Record in about 0.25 us and a Section in about 2 us, while the seek plus expansion produced a row in
@@ -733,20 +747,6 @@ public class CypherExecutionPlan {
 
     return rootStep.syncPull(context, batchSize);
   }
-
-  /**
-   * The steps a seeded chain may be built of to be run again for the next outer row (issue #12136). Each one keeps the
-   * state of a run in the result set its {@code syncPull} returns, opens what it reads again on the next call, and gives
-   * back on {@code close()} what one run held, which is what lets {@link OptionalMatchStep} already run its inner chain
-   * once per input row. Anything else - a count push-down answering for the seed's own vertex, an eager barrier holding the
-   * rows of the first run, a nested {@code CALL { }}, a step whose class this list does not name exactly - is built again
-   * for every outer row as before.
-   */
-  private static final Set<Class<? extends AbstractExecutionStep>> RE_RUNNABLE_STEPS = Set.of(
-      MatchNodeStep.class, MatchRelationshipStep.class, ZeroLengthPathStep.class,
-      OptionalMatchStep.class, FilterPropertiesStep.class, UnwindStep.class, WithStep.class, ProjectReturnStep.class,
-      VariableProjectionStep.class, AggregationStep.class, GroupByAggregationStep.class, OrderByStep.class, SkipStep.class,
-      LimitStep.class, FinalProjectionStep.class);
 
   /** Whether every step from {@code rootStep} down to the seed is one {@link #RE_RUNNABLE_STEPS} names. */
   private static boolean canRunAgain(final AbstractExecutionStep rootStep, final SeedRowStep seedStep) {
