@@ -371,7 +371,11 @@ public class PageManager extends LockContext {
     public long concurrentModificationExceptions;
     public long edgeAppendMerges;
     public long txPageSlotMerges;
-    /** See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped page image. */
+    /**
+     * See {@link PageManager#getMutablePage(PageId, int, boolean, boolean, byte[])}: page copies written into the array of a dropped
+     * page image. Read by name by the tests that pin the recycling; not exported by the {@code Profiler} or the metrics binder, which
+     * name the counters they surface.
+     */
     public long txPageBuffersRecycled;
     /** See {@link PageManager#incrementEdgeListHeadMerges()}: vertices written as the merge of two edge-list head moves. */
     public long edgeListHeadMerges;
@@ -1823,7 +1827,11 @@ public class PageManager extends LockContext {
     return getMutablePage(pageId, pageSize, isNew, createIfNotExists, null);
   }
 
-  /** As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}). */
+  /**
+   * As above, the copy written into {@code recycled} when it is an array of the page's length (see {@link CachedPage#useAsMutable(byte[])}).
+   * The caller must OWN {@code recycled}: nothing else may hold or read that array after the call, because the copy of the page is
+   * written into it. Counted in {@link PPageManagerStats#txPageBuffersRecycled} when it was used.
+   */
   public MutablePage getMutablePage(final PageId pageId, final int pageSize, final boolean isNew, final boolean createIfNotExists,
       final byte[] recycled) throws IOException {
     final CachedPage page = getCachedPage(pageId, pageSize, isNew, createIfNotExists);

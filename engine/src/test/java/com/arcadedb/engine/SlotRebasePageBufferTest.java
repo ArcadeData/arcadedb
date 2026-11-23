@@ -79,8 +79,8 @@ class SlotRebasePageBufferTest extends TestHelper {
     assertThat(pages.size()).as("pages the records fill").isGreaterThanOrEqualTo(FEW_PAGES + MANY_PAGES);
 
     final long recycledBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled;
-    final long few = commitAllocation(pages.subList(0, FEW_PAGES));
-    final long many = commitAllocation(pages.subList(FEW_PAGES, FEW_PAGES + MANY_PAGES));
+    final long few = commitAllocation(pages.subList(0, FEW_PAGES), false);
+    final long many = commitAllocation(pages.subList(FEW_PAGES, FEW_PAGES + MANY_PAGES), false);
 
     assertThat(((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled - recycledBefore)
         .as("page copies written into a dropped page's array").isGreaterThanOrEqualTo(FEW_PAGES + MANY_PAGES);
@@ -90,11 +90,36 @@ class SlotRebasePageBufferTest extends TestHelper {
         MANY_PAGES, many).isLessThan(bucket.getPageSize() / 2L);
   }
 
+  @Test
+  void aRebaseWithAStatementOpenMergesTheSameButDoesNotReuseTheDroppedArray() throws Exception {
+    database.getSchema().createDocumentType("Rebased", 1);
+    final List<RID> all = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < 300; i++)
+        all.add(database.newDocument("Rebased").set("tag", BULKY).set("n", i).save().getIdentity());
+    });
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(all.getFirst().getBucketId());
+    final int perPage = bucket.getMaxRecordsInPage();
+    final TreeMap<Long, List<RID>> byPage = new TreeMap<>();
+    for (final RID rid : all)
+      byPage.computeIfAbsent(rid.getPosition() / perPage, k -> new ArrayList<>()).add(rid);
+    final List<List<RID>> pages = new ArrayList<>(byPage.values());
+    assertThat(pages.size()).as("pages the records fill").isGreaterThanOrEqualTo(FEW_PAGES);
+
+    final long recycledBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled;
+    // commitAllocation checks that every page was merged and that the records of both transactions are intact
+    commitAllocation(pages.subList(0, FEW_PAGES), true);
+
+    assertThat(((DatabaseInternal) database).getPageManager().getStats().txPageBuffersRecycled - recycledBefore)
+        .as("page copies written into a dropped array while a statement was open").isZero();
+  }
+
   /**
    * Updates the first record of each page in a transaction that loses the race on every one of them to a competitor that updated the
-   * second, and returns the bytes the losing commit allocated.
+   * second, and returns the bytes the losing commit allocated. With {@code statementOpen} the transaction commits while a statement
+   * savepoint is open.
    */
-  private long commitAllocation(final List<List<RID>> onPages) throws Exception {
+  private long commitAllocation(final List<List<RID>> onPages, final boolean statementOpen) throws Exception {
     final List<RID> mine = new ArrayList<>();
     final List<RID> theirs = new ArrayList<>();
     for (final List<RID> onPage : onPages) {
@@ -122,12 +147,16 @@ class SlotRebasePageBufferTest extends TestHelper {
     competitor.start();
 
     final long mergesBefore = ((DatabaseInternal) database).getPageManager().getStats().txPageSlotMerges;
+    // fully qualified: java.lang.management.ThreadMXBean has no per-thread allocation counter, and the two names clash
     final com.sun.management.ThreadMXBean threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
     final long thread = Thread.currentThread().threadId();
     long allocated;
 
     database.begin();
     try {
+      if (statementOpen)
+        // the savepoint of a statement the caller runs in its transaction: it could hold the pages the rebase drops
+        assertThat(((DatabaseInternal) database).getTransaction().beginStatement()).isNotNull();
       try {
         for (final RID rid : mine)
           rid.asDocument(true).modify().set("tag", "a".repeat(BULKY.length())).save();

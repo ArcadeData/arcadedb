@@ -503,7 +503,9 @@ public class TransactionContext implements Transaction {
   /**
    * The array of a page image of this transaction that the commit-time rebase has just replaced, for the copy of the committed page that
    * replaces it: nothing reads the stale image any more, and a rebase otherwise allocates a page for every one it drops. Set only for
-   * the span of a rebase and taken by the first page copy in it; null otherwise.
+   * the span of a rebase and taken by the first page copy in it; null otherwise. The array is deliberately page-agnostic: any dead array
+   * of the page length serves any page, so it goes to whichever page the rebase copies first, which in an edge-append rebase may be
+   * another page than the one it came from.
    */
   private       byte[]                               spareBuffer;
   private       StatementSavepoint                   pooledStatement;
@@ -2867,8 +2869,11 @@ public class TransactionContext implements Transaction {
     modifiedPages.remove(pageId);
     immutablePages.remove(pageId);
 
-    // The array of the dropped page is read by nothing from here on: the first page copy of the rebase is written into it. A statement
-    // still open could hold the dropped page (to take the statement back), so then its array is not spare
+    // The array of the dropped page is read by nothing from here on: the first page copy of the rebase is written into it, and the
+    // rest of this method and its caller use the page id only (the commit loop took the page out of its lists). A statement still open
+    // could hold the dropped page (to take the statement back), so then its array is not spare. That is reachable: a statement that
+    // commits its own transaction (a script's COMMIT, a batch boundary) commits while its savepoint is open, and the array is then
+    // left to the garbage collector as before
     spareBuffer = statement == null ? stale.getContent().array() : null;
     try {
       return rebaseEdgeAppendsOnReloadedPage(pageId);
@@ -4068,7 +4073,8 @@ public class TransactionContext implements Transaction {
     immutablePages.remove(pageId);
 
     final MutablePage committed;
-    // A statement still open could hold the dropped page (to take the statement back), so then its array is not spare
+    // A statement still open could hold the dropped page (to take the statement back), so then its array is not spare. After this the
+    // method reads only the metadata of the dropped page (isWholePageRead, isSlotRead: a flag and a bit set), never its bytes
     spareBuffer = statement == null ? ownPage.getContent().array() : null;
     try {
       committed = getPageToModify(pageId, bucket.getPageSize(), false);
