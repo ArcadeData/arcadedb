@@ -56,6 +56,16 @@ class Issue12407ExistsWithoutADatabaseNameIs400Test extends BaseGraphServerTest 
   }
 
   @Test
+  void aNameThatTheServerDoesNotCallEmptyIsNotRefused() throws Exception {
+    // U+2003 (em space) is whitespace for String.isBlank() but not for String.trim(), which is what ArcadeDBServer.checkDatabaseNameIsValid
+    // uses: a database of that name is valid, so the route must answer for it like for any other name instead of refusing the request.
+    final Response response = send("GET", "/api/v1/exists/%E2%80%83");
+
+    assertThat(response.status).as(response.body).isEqualTo(200);
+    assertThat(response.body).as("no such database").contains("\"result\":false");
+  }
+
+  @Test
   void aDatabaseThatExistsStillAnswersTrue() throws Exception {
     final Response response = send("GET", "/api/v1/exists/" + getDatabaseName());
 
