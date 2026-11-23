@@ -172,6 +172,8 @@ public enum ErrorCategory {
       // before IllegalArgumentException, which it extends: the definition asked for exists already (issue #11392)
       new Rule(EquivalentIndexException.class, ALREADY_EXISTS),
       new Rule(RecordNotFoundException.class, NOT_FOUND),
+      // an entity the statement deleted itself, read or linked later in it: Neo4j's EntityNotFound (issue #11974)
+      new Rule(DeletedEntityException.class, NOT_FOUND),
       new Rule(SchemaException.class, SCHEMA),
       new Rule(SecurityException.class, SECURITY),
       new Rule(CommandParsingException.class, PARSING),
@@ -182,6 +184,8 @@ public enum ErrorCategory {
       // a CommandExecutionException, which no rule classifies: a TRUNCATE or DROP of a type that holds records, a DROP of an
       // indexed property, refused for what the database holds now, was a server fault on every protocol (issue #11803)
       new Rule(ObjectInUseException.class, VALIDATION),
+      // a CommandExecutionException too: CALL { ... } IN TRANSACTIONS inside the caller's own transaction (issue #12161)
+      new Rule(ImplicitTransactionRequiredException.class, VALIDATION),
       new Rule(QueryNotIdempotentException.class, VALIDATION),
       // every runtime type error, InvalidPropertyTypeException among them (issue #11211)
       new Rule(TypeMismatchException.class, VALIDATION),

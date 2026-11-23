@@ -80,6 +80,44 @@ class OrderedAfterCommitCallbackTest extends TestHelper {
     assertThat(events).containsExactly("a:commitPoint", "b:commitPoint", "a:run", "b:run");
   }
 
+  /**
+   * Issue #12720: every ordered callback is told its transaction is published before the first callback runs, while the transaction
+   * still holds its locks (it is not released yet), so what it hands over there is the newest state of the records it wrote.
+   */
+  @Test
+  void thePublicationIsToldToEveryCallbackBeforeTheFirstOneRunsWhileTheLocksAreHeld() {
+    final List<TransactionContext.STATUS> statusAtPublication = new ArrayList<>();
+    database.transaction(() -> {
+      database.newDocument("Doc").set("n", 1).save();
+      final TransactionContext tx = transaction();
+      tx.addAfterCommitCallback(() -> events.add("plain:run"));
+      tx.addAfterCommitCallback(toldOfPublication("a", tx, statusAtPublication));
+      tx.addAfterCommitCallback(toldOfPublication("b", tx, statusAtPublication));
+    });
+
+    assertThat(events).containsExactly("a:commitPoint", "b:commitPoint", "a:published", "b:published", "plain:run", "a:run",
+        "b:run");
+    assertThat(statusAtPublication).containsExactly(TransactionContext.STATUS.COMMIT_2ND_PHASE,
+        TransactionContext.STATUS.COMMIT_2ND_PHASE);
+  }
+
+  /** Told of the publication, then abandoned by an error of a callback that runs before it: the transaction ended without running it. */
+  @Test
+  void aCallbackToldOfThePublicationIsAbandonedWhenItWillNotRun() {
+    final List<TransactionContext.STATUS> statusAtPublication = new ArrayList<>();
+    database.begin();
+    database.newDocument("Doc").set("n", 1).save();
+    transaction().addAfterCommitCallback(() -> {
+      throw new StackOverflowError("an error, not an exception");
+    });
+    transaction().addAfterCommitCallback(toldOfPublication("a", transaction(), statusAtPublication));
+
+    assertThatThrownBy(() -> database.commit()).hasRootCauseInstanceOf(StackOverflowError.class);
+
+    assertThat(events).containsExactly("a:commitPoint", "a:published", "a:abandoned");
+    assertThat(statusAtPublication).containsExactly(TransactionContext.STATUS.COMMIT_2ND_PHASE);
+  }
+
   @Test
   void aRolledBackTransactionNeverReachesTheCommitPoint() {
     database.begin();
@@ -162,6 +200,17 @@ class OrderedAfterCommitCallbackTest extends TestHelper {
     });
 
     assertThat(events).containsExactly("a:run");
+  }
+
+  /** A recorder that is also told of the publication, and notes the status of its transaction then. */
+  private Recorder toldOfPublication(final String name, final TransactionContext tx, final List<TransactionContext.STATUS> statuses) {
+    return new Recorder(name) {
+      @Override
+      public void onPublished() {
+        events.add(name + ":published");
+        statuses.add(tx.getStatus());
+      }
+    };
   }
 
   private TransactionContext transaction() {

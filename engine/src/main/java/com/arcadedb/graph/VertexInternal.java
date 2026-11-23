@@ -33,6 +33,20 @@ public interface VertexInternal extends Vertex {
 
   RID getInEdgesHeadChunk();
 
+  /**
+   * The head of the outgoing edge list, read by a writer of the list (an append, a head flip, the serializer, the commit's own
+   * merges) rather than by a traversal: a {@link MutableVertex} records a traversal read of a head so the commit can tell a
+   * decision taken on a head a concurrent transaction moved (issue #12320), and this read is not one.
+   */
+  default RID peekOutEdgesHeadChunk() {
+    return getOutEdgesHeadChunk();
+  }
+
+  /** {@link #peekOutEdgesHeadChunk()} for the incoming edge list. */
+  default RID peekInEdgesHeadChunk() {
+    return getInEdgesHeadChunk();
+  }
+
   void setOutEdgesHeadChunk(RID newChunk);
 
   void setInEdgesHeadChunk(RID newChunk);

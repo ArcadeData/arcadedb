@@ -72,6 +72,16 @@ public abstract class BaseRecord implements Record {
   }
 
   /**
+   * The bytes of content this record holds in memory right now, or 0 for a record handed out without its content that
+   * nothing has read yet. Unlike {@link #size()} it never loads the record: it is for a caller that keeps records and has
+   * to know what they weigh.
+   */
+  public int getLoadedSize() {
+    final Binary current = buffer;
+    return current != null ? current.size() : 0;
+  }
+
+  /**
    * Returns the record content, or fails with a message that says WHICH record and WHY instead of letting the caller
    * dereference a {@code null} buffer.
    * <p>

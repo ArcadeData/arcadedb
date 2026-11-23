@@ -103,6 +103,16 @@ public class WithClause {
   }
 
   /**
+   * Whether the WHERE has to run after the SKIP and LIMIT of this WITH. The WHERE filters the rows the WITH produces, and the
+   * projection body ({@code DISTINCT}, {@code ORDER BY}, {@code SKIP}, {@code LIMIT}) produces them, so a filter applied before
+   * the paging would hand the limit rows it should never have counted: {@code WITH x ORDER BY x LIMIT 1 WHERE x = 2} must answer
+   * no row (issue #11762). Without paging the order does not matter, and the filter stays where it removes rows earliest.
+   */
+  public boolean isWhereAfterPaging() {
+    return whereClause != null && (skip != null || limit != null);
+  }
+
+  /**
    * Check if any WITH item is an aggregation function.
    * This includes wrapped aggregations like head(collect(...)).
    */
@@ -118,7 +128,8 @@ public class WithClause {
   /**
    * Check if any WITH item is NOT an aggregation function.
    * Used to detect implicit GROUP BY (when WITH has both aggregations and non-aggregations).
-   * An expression is considered non-aggregation if it doesn't contain any aggregation.
+   * An expression is considered non-aggregation if it doesn't contain any aggregation. The variable an aggregating map
+   * projection groups by implicitly ({@link ImplicitGroupingKeys}) makes the projection grouping too.
    */
   public boolean hasNonAggregations() {
     for (final ReturnClause.ReturnItem item : items) {
@@ -126,6 +137,7 @@ public class WithClause {
         return true;
       }
     }
-    return false;
+    // An aggregating map projection groups by its variable without projecting it (issue #12316)
+    return !ImplicitGroupingKeys.of(items).isEmpty();
   }
 }

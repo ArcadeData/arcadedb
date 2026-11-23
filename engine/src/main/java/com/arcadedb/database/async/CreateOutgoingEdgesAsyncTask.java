@@ -44,7 +44,10 @@ public class CreateOutgoingEdgesAsyncTask extends DatabaseAsyncAbstractTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    final List<Edge> edges = database.getGraphEngine().newEdges(sourceVertex, connections, edgeBidirectional);
+    // READ INSIDE THIS WORKER'S TRANSACTION, AS CreateEdgeAsyncTask DOES: THE INSTANCE THE CALLER PASSED CAN CARRY A STALE EDGE LIST
+    // HEAD (issue #12719)
+    final VertexInternal source = (VertexInternal) database.lookupByRID(sourceVertex.getIdentity(), true);
+    final List<Edge> edges = database.getGraphEngine().newEdges(source, connections, edgeBidirectional);
 
     if (callback != null)
       callback.call(edges);

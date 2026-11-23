@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ExternalResourceException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.Expression;
@@ -161,7 +162,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
               closeReader();
             } catch (final IOException e) {
               closeReader();
-              throw new CommandExecutionException("Error reading CSV file: " + currentUrl, e);
+              throw new ExternalResourceException("Error reading CSV file: " + currentUrl, e);
             } finally {
               if (context.isProfiling())
                 cost += System.nanoTime() - begin;
@@ -198,7 +199,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
             }
           } catch (final IOException e) {
             closeReader();
-            throw new CommandExecutionException("Error opening CSV file: " + currentUrl, e);
+            throw new ExternalResourceException("Error opening CSV file: " + currentUrl, e);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;

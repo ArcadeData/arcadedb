@@ -57,6 +57,12 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   // edge list, so that a save can tell a property write computed from an earlier read from an edge-list-only change. An
   // in-place change to a container got from this record is not tracked: it changes this record's own, reloaded content
   protected boolean             propertiesAssigned;
+  // #11751: the same assignments, counted from the last save() the transaction queued this record with. That save diffs the indexes
+  // against the values the record holds then, and the commit writes the record as it is THEN, so what is assigned after it reaches the
+  // record and not the indexes unless the commit indexes it: the commit asks this flag which records to look at. Cleared by that save
+  // (LocalDatabase.applyUpdate), whereas propertiesAssigned stays set for the whole transaction. A change made in place to a container got
+  // from this record assigns nothing, exactly as for propertiesAssigned: it has to be saved
+  private   boolean             assignedAfterSave;
   // #8610: built by modify() from content reloaded because a concurrent commit changed it after this transaction read it.
   // Deliberately not reset by a save: an edge-list-only save leaves the read just as stale for a later property write
   private   boolean             basedOnStaleRead;
@@ -108,6 +114,22 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
+   * Whether a property was assigned or removed since the last {@code save()} that queued this record for its transaction's commit, or
+   * since the record was loaded when there was none (issue #11751). Such a change is written by the commit but was not seen by the
+   * indexes, which follow the {@code save()}: the commit indexes it.
+   */
+  boolean isAssignedAfterSave() {
+    return assignedAfterSave;
+  }
+
+  /**
+   * Called by the save that has just brought the indexes to what this record holds (issue #11751).
+   */
+  void clearAssignedAfterSave() {
+    assignedAfterSave = false;
+  }
+
+  /**
    * Whether this record was built by {@code modify()} from content reloaded because a concurrent transaction committed
    * a change to it after this transaction read it (issue #8610). Assigning a property then is refused at save as a
    * retryable conflict: the value is presumably computed from the older read.
@@ -143,6 +165,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     super.setBuffer(buffer);
     dirty = false;
     propertiesAssigned = false;
+    assignedAfterSave = false;
     //map = null; // AVOID RESETTING HERE FOR INDEXES THAT CAN LOOKUP UP FOR FIELDS CAUSING AN UNMARSHALLING
   }
 
@@ -151,6 +174,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     //map = null;
     dirty = false;
     propertiesAssigned = false;
+    assignedAfterSave = false;
   }
 
   public MutableDocument fromMap(final Map<String, Object> map) {
@@ -161,7 +185,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       putFromMap(entry.getKey(), entry.getValue());
 
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     return this;
   }
 
@@ -244,7 +268,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name, value);
     return this;
   }
@@ -257,7 +281,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name2);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name1, value1);
     putProperty(name2, value2);
     return this;
@@ -273,7 +297,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkPropertyName(name3);
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     putProperty(name1, value1);
     putProperty(name2, value2);
     putProperty(name3, value3);
@@ -301,7 +325,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
 
     for (int p = 0; p < properties.length; p += 2)
       putProperty((String) properties[p], properties[p + 1]);
@@ -336,7 +360,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       try {
         ((Collection<EmbeddedDocument>) old).add(emb);
         dirty = true;
-        propertiesAssigned = true;
+        propertiesAssigned = assignedAfterSave = true;
       } catch (final UnsupportedOperationException e) {
         // THE STORED COLLECTION IS IMMUTABLE (E.G. A List.of() THE CALLER SET, WHICH A LIST PROPERTY KEEPS AS-IS BECAUSE
         // IT IS ALREADY A List): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE NEW ELEMENT (ISSUE #7777). TRY/CATCH
@@ -423,7 +447,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     try {
       stored.put(key, emb);
       dirty = true;
-      propertiesAssigned = true;
+      propertiesAssigned = assignedAfterSave = true;
     } catch (final UnsupportedOperationException e) {
       // THE STORED MAP IS IMMUTABLE (E.G. A Map.of() THE CALLER SET): REPLACE IT WITH A MUTABLE COPY THAT CARRIES THE
       // NEW ENTRY. TRY/CATCH RATHER THAN A CHECK UP FRONT BECAUSE THE JDK EXPOSES NO "IS IT MUTABLE" QUERY
@@ -445,7 +469,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
 
     for (final Map.Entry<String, Object> entry : properties.entrySet())
       putFromMap(entry.getKey(), entry.getValue());
@@ -527,7 +551,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   public Object remove(final String name) {
     checkForLazyLoadingProperties();
     dirty = true;
-    propertiesAssigned = true;
+    propertiesAssigned = assignedAfterSave = true;
     return map.remove(name);
   }
 
@@ -634,6 +658,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   @Override
   public void reload() {
     dirty = false;
+    // #11751: the content is replaced by what the page holds, which is not what the last save() brought the indexes to when this record
+    // is queued for the commit: the commit compares the two
+    assignedAfterSave = true;
     map = null;
     undecodableContent = null;
     buffer = null;
@@ -657,6 +684,49 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     parseRecordPrefix(snapshot);
     dirty = dirtyBefore;
     propertiesAssigned = assignedBefore;
+    // #11751: the content from before the statement can hold assignments no save brought to the indexes, and which ones is not kept:
+    // the commit compares the record with what the indexes hold, which finds nothing to queue when they agree
+    assignedAfterSave = true;
+  }
+
+  /**
+   * Gives a record an earlier statement of the transaction queued for its commit the content it held before a statement that changed it
+   * was taken back (issue #10346), and keeps the buffer it was read with. That buffer is the image of the record the transaction
+   * started from: it stays frozen until the commit because the write is deferred, and everything that asks "what was this record read
+   * as" compares with it - the delete refusing a record changed by a concurrent commit since its read (#12472), the pre-update image
+   * the indexes are diffed against, the commit's own checks. Installing the snapshot as the buffer, as {@link #restoreContent} does,
+   * made the record look read from a slot that never held that content, and a later delete of it was refused as a conflict with a
+   * transaction that does not exist (issue #12747). The properties are decoded from the snapshot here, the record having no
+   * buffer to decode them from afterwards.
+   * <p>
+   * The buffer given back is the one the record held when the snapshot was taken, not the one it holds now: the failed statement may
+   * have replaced it (a reload against a slot a concurrent commit has changed since), and that newer image would silently become
+   * "what the record was read as". The prefix of the snapshot has the length of the one of the read image (a vertex prefix has a fixed
+   * length, the endpoints of an edge never change), so the offset of the properties parsed from it describes both.
+   *
+   * @param snapshot       the content of the record before the statement
+   * @param readBuffer     the buffer the record held when the snapshot was taken, null if it held none
+   * @param dirtyBefore    whether the record was dirty then
+   * @param assignedBefore whether a property had been assigned or removed then
+   */
+  void restoreQueuedContent(final Binary snapshot, final Binary readBuffer, final boolean dirtyBefore, final boolean assignedBefore) {
+    // The prefix (the heads of a vertex, the endpoints of an edge) and the properties are read from the snapshot
+    restoreContent(snapshot, dirtyBefore, assignedBefore);
+    if (readBuffer == null)
+      // A record with no image it was read with: the snapshot is the only content it has
+      return;
+
+    try {
+      checkForLazyLoadingProperties();
+    } catch (final RuntimeException e) {
+      // The snapshot stays the buffer: the record keeps the content of the earlier statements, at worst a later delete of it is refused
+      // as a conflict. Giving the read image back with no decoded properties would make the next read decode the image from before
+      // the transaction and silently drop those changes
+      map = null;
+      return;
+    }
+    if (map != null && undecodableContent == null)
+      buffer = readBuffer;
   }
 
   protected void checkForLazyLoadingProperties() {

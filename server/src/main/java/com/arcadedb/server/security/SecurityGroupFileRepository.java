@@ -74,7 +74,7 @@ public class SecurityGroupFileRepository {
   /**
    * Cancels the watcher, for good: see {@link ReloadableSecurityArtifact#stop()}. Synchronized on this monitor, which
    * is the lock the policy itself takes, so the modifier changes nothing but keeps the contract readable at this level
-   * ({@code Issue7545GroupsWatcherStartedTest} pins it). It cannot deadlock or stall a shutdown; the longest it can wait
+   * ({@code SecurityGroupsAndTokensReloadTest.WatcherStartedByReplicatedApply} pins it). It cannot deadlock or stall a shutdown; the longest it can wait
    * for the monitor is one in-flight read or write of a small JSON document.
    */
   public synchronized void stop() {
