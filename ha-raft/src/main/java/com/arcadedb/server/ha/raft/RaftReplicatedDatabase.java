@@ -73,6 +73,7 @@ import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.ImplicitTransactionRequiredException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ObjectInUseException;
 import com.arcadedb.exception.UnknownFunctionException;
 import com.arcadedb.exception.ValidationException;
@@ -483,6 +484,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       Map.entry(ExternalResourceException.class.getName(), ExternalResourceException::new),
       // #12161: a statement refused for the transaction the caller holds, the caller's to resolve
       Map.entry(ImplicitTransactionRequiredException.class.getName(), ImplicitTransactionRequiredException::new),
+      // #12436: a value the statement carries that the leader refuses (a bare word, a bound that cannot be read, a bucket a type owns),
+      // the caller's mistake: without an entry a forwarded DDL answered the follower's client 500 where the leader answers 400
+      Map.entry(InvalidArgumentException.class.getName(), InvalidArgumentException::new),
       Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /**

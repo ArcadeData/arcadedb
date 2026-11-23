@@ -142,11 +142,13 @@ public class MaterializedViewRefresher {
   }
 
   /**
-   * Asks a per-record view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
-   * database open, a leadership acquisition) never waits on it (issue #11550). The pending delta and the recovery mark live in
-   * memory only, so after a crash or a failover nothing says which commits the view is missing: the full pass rewrites only the
-   * rows whose source changed, matched through the {@code _sourceRID} index, so a view that misses nothing costs reads, not
-   * writes. The view says STALE until that pass ends VALID.
+   * Asks an INCREMENTAL view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
+   * database open, a leadership acquisition) never waits on it. A per-record view's pending delta and recovery mark live in memory
+   * only (issue #11550), and a view refreshed as a whole owes the pass its after-commit callback was making when the process died
+   * (issue #12220): after a crash or a failover nothing says which commits the view is missing. For a per-record view the full
+   * pass rewrites only the rows whose source changed, matched through the {@code _sourceRID} index, so a view that misses nothing
+   * costs reads, not writes; a view refreshed as a whole is rewritten in place, as every pass of it is. The view says STALE until
+   * that pass ends VALID.
    * <p>
    * When another thread owns the refresh, the request goes to it: its next pass drains the recovery mark set here. Returns
    * {@code false} when the scheduler cannot take the pass (closed, or not a local schema): the view then keeps the recovery mark,
@@ -214,8 +216,11 @@ public class MaterializedViewRefresher {
           replaced = true;
           break;
         }
-        MaterializedViewImpl.PendingDelta delta = view.tracksPendingDelta() ? view.drainPendingDelta() : null;
-        if (delta != null && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
+        // Drained for every view, so a recovery mark (issues #11550, #12220) is taken by the pass that covers it: a view refreshed as
+        // a whole rewrites everything at every pass, so for it the mark only says the pass is owed
+        MaterializedViewImpl.PendingDelta delta = view.drainPendingDelta();
+        final boolean tracksDelta = view.tracksPendingDelta();
+        if (tracksDelta && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
           // The full pass a failed pass owes (issue #11475) rewrites the whole view, and the commit that found it pending owes
           // its client nothing of that cost: the request goes back and the scheduler makes it. Until it succeeds the view says
           // STALE, persisted, because the records the failed pass drained are not in it.
@@ -230,10 +235,11 @@ public class MaterializedViewRefresher {
 
         // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
         final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(view.getStatus());
-        view.setStatus(MaterializedViewStatus.BUILDING);
+        // #12252: reported, never saved: a schema save while the pass runs keeps the status it started from
+        view.markPassRunning();
         final long startNs = System.nanoTime();
 
-        if (delta == null)
+        if (!tracksDelta)
           refreshOnce(database, view);
         else if (view.isPerRecord())
           perRecordPass(database, view, delta);
@@ -242,9 +248,10 @@ public class MaterializedViewRefresher {
 
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
-        // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475): this pass
-        // did not cover those records, so it does not end VALID; the further pass it was asked for makes the recovery
-        if (view.tracksPendingDelta() && view.owesRecoveryPass())
+        // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475), or a recovery
+        // was asked while this pass ran (issue #12220): this pass may not cover those commits, so it does not end VALID; the further
+        // pass it was asked for makes the recovery
+        if (view.owesRecoveryPass())
           view.setStatus(MaterializedViewStatus.STALE);
         else {
           view.setStatus(MaterializedViewStatus.VALID);
@@ -256,7 +263,7 @@ public class MaterializedViewRefresher {
         // rows without the source link the upgraded view matches by (issue #11475). The ALTER registered its replacement before
         // its own pass started, so either this pass committed first and that pass deleted its rows, or it is seen here and the
         // full pass passed on deletes them
-        if (delta == null && view.current() != view) {
+        if (!tracksDelta && view.current() != view) {
           replaced = true;
           break;
         }
@@ -279,13 +286,16 @@ public class MaterializedViewRefresher {
         view.setGroupedRuntime(null);
       }
       view.setStatus(MaterializedViewStatus.ERROR);
-      // An ALTER that replaced this instance while the pass ran copied only what was still pending, not what the pass had drained:
-      // the full pass is owed by the registered view too, or its next delta pass ends VALID over the records this one failed to
-      // write. Only its flags are touched, never its ownership; a pass of it running now is asked to make one more, which drains
-      // the request. Set before the save below, so the status stored is the registered view's
+      // An ALTER that replaced this instance while the pass ran copied the status the pass started from, and only what was still
+      // pending, not what the pass had drained. The registered view holds the rows from before this pass whatever its kind, so it
+      // is STALE (a VALID copied before the failure stayed VALID, issue #12252 review); a per-record one also owes the full pass,
+      // or its next delta pass ends VALID over the records this one failed to write. Only its flags are touched, never its
+      // ownership; a pass of it running now is asked to make one more, which drains the request and settles the status. Set
+      // before the save below, so the status stored is the registered view's
       final MaterializedViewImpl current = view.current();
-      if (current != view && current.tracksPendingDelta()) {
-        current.requestFullPass(true);
+      if (current != view) {
+        if (current.tracksPendingDelta())
+          current.requestFullPass(true);
         current.setStatus(MaterializedViewStatus.STALE);
         current.markRefreshPendingIfRunning();
       }

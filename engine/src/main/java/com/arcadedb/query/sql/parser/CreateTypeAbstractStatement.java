@@ -449,12 +449,16 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected List<Bucket> getBuckets(final Schema schema) {
     final List<Bucket> bucketInstances = new ArrayList<>();
     for (final BucketIdentifier b : buckets) {
-      if (!schema.existsBucket(b.bucketName.getStringValue()))
-        schema.createBucket(b.bucketName.getStringValue());
-
-      bucketInstances.add(b.bucketName != null ?
-          schema.getBucketByName(b.bucketName.getStringValue()) :
-          schema.getBucketById(b.bucketId.value.intValue()));
+      // A bucket named by its id (BUCKET 1,2,3) has no name to create: it must exist already, and getBucketById refuses an unknown
+      // one with a schema error. The name branch used to read the name first, so an id reached a null name (#12436)
+      if (b.bucketName == null) {
+        bucketInstances.add(schema.getBucketById(b.bucketId.value.intValue()));
+        continue;
+      }
+      final String name = b.bucketName.getStringValue();
+      if (!schema.existsBucket(name))
+        schema.createBucket(name);
+      bucketInstances.add(schema.getBucketByName(name));
     }
     return bucketInstances;
   }

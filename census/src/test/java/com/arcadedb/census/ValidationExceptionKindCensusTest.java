@@ -48,9 +48,11 @@ class ValidationExceptionKindCensusTest {
 
   /** The reviewed constructions with no kind, as {@code class#method} relative to {@code com/arcadedb}, each with why. */
   private static final Map<String, String> ALLOWED = new TreeMap<>(Map.ofEntries(//
-      Map.entry("database/ExistingRecordsCheck#requireSamples",
-          "a TIMESERIES column constraint over stored samples: one sentence from TimeSeriesColumnConstraints for every constraint"),
       Map.entry("exception/RecordVetoedException#<init>", "a listener's veto of the whole record, not a declared constraint on a value"),
+      Map.entry("database/ExistingRecordsCheck#requireSamples",
+          "a MIN, MAX or REGEXP of a TIMESERIES column that stored samples break: TimeSeriesColumnConstraints answers its reason as "
+              + "one sentence whichever of them broke, as at SaveElementStep#refuseViolation (issue #12436). A missing MANDATORY or "
+              + "NOTNULL there passes its kind"),
       Map.entry("engine/timeseries/TimeSeriesStorableRows#refused",
           "the refusal of a TIMESERIES batch: one message for every row and column constraint the batch broke"),
       Map.entry("query/sql/executor/SaveElementStep#refuseViolation",
