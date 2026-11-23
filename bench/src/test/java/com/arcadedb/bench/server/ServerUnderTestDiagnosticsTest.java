@@ -21,6 +21,13 @@ package com.arcadedb.bench.server;
 import com.arcadedb.serializer.json.JSONArray;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ServerUnderTestDiagnosticsTest {
@@ -47,5 +54,80 @@ class ServerUnderTestDiagnosticsTest {
     final JSONArray few = ServerUnderTest.topClasses("1:\n num  #instances  #bytes  class name\n   1:  5  80  C1\nTotal  5  80\n", 30);
     assertThat(few.length()).isEqualTo(1);
     assertThat(few.getString(0)).endsWith("C1");
+  }
+
+  /** Answers the ready probe from a script, one entry per call (the last repeats), and counts the Docker inspections. */
+  private static final class Probe {
+    final Deque<Boolean> answers;
+    final AtomicInteger  probes   = new AtomicInteger();
+    final AtomicInteger  inspects = new AtomicInteger();
+    String               stopped;
+
+    Probe(final Boolean... answers) {
+      this.answers = new ArrayDeque<>(List.of(answers));
+    }
+
+    String deathReason() {
+      return ServerUnderTest.deathReason(() -> {
+        probes.incrementAndGet();
+        return answers.size() > 1 ? answers.pop() : answers.peek();
+      }, () -> {
+        inspects.incrementAndGet();
+        return stopped;
+      }, 3, Duration.ZERO);
+    }
+  }
+
+  @Test
+  void oneMissedReadyProbeIsNoDeath() {
+    final Probe probe = new Probe(false, false, true);
+    assertThat(probe.deathReason()).isNull();
+    assertThat(probe.probes.get()).isEqualTo(3);
+  }
+
+  @Test
+  void threeMissedReadyProbesOfARunningContainerAreADeath() {
+    final Probe probe = new Probe(false);
+    assertThat(probe.deathReason()).isEqualTo(ServerUnderTest.NOT_ANSWERING);
+    assertThat(probe.probes.get()).isEqualTo(3);
+  }
+
+  @Test
+  void aContainerDockerReportsStoppedNeedsNoRetry() {
+    final Probe probe = new Probe(false);
+    probe.stopped = "OOMKilled";
+    assertThat(probe.deathReason()).isEqualTo("OOMKilled");
+    assertThat(probe.probes.get()).isEqualTo(1);
+    assertThat(probe.inspects.get()).isEqualTo(1);
+  }
+
+  @Test
+  void anAnsweringServerIsNeverInspected() {
+    final Probe probe = new Probe(true);
+    assertThat(probe.deathReason()).isNull();
+    assertThat(probe.inspects.get()).isZero();
+  }
+
+  @Test
+  void aWedgedExecIsGivenUpAtTheDeadline() throws Exception {
+    final CountDownLatch never = new CountDownLatch(1);
+    try {
+      // a jcmd that never returns, as against a JVM wedged in a safepoint
+      final String out = ServerUnderTest.withDeadline(() -> {
+        never.await();
+        return "dump";
+      }, Duration.ofMillis(100), "jcmd Thread.print");
+      assertThat(out).isNull();
+    } finally {
+      never.countDown();
+    }
+  }
+
+  @Test
+  void anExecWithinTheDeadlineReturnsItsResult() {
+    assertThat(ServerUnderTest.withDeadline(() -> "dump", Duration.ofSeconds(30), "jcmd Thread.print")).isEqualTo("dump");
+    assertThat(ServerUnderTest.<String>withDeadline(() -> {
+      throw new IllegalStateException("no jcmd");
+    }, Duration.ofSeconds(30), "jcmd Thread.print")).isNull();
   }
 }

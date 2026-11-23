@@ -260,9 +260,8 @@ public final class Planner {
   }
 
   /**
-   * Lines of the run that improved on their own baseline, in a workload of the issue and, for a nightly, at its scale, that no open issue
-   * tracks: at most
-   * {@link #MAX_IMPROVEMENTS}, the largest change first.
+   * Lines of the run that improved on their own baseline, in a workload of the issue and, for a nightly, at its scale, that no
+   * open issue tracks: at most {@link #MAX_IMPROVEMENTS}, the largest change first.
    */
   private static List<String> improvements(final List<Verdict> verdicts, final Marker marker, final String ref, final Set<String> tracked) {
     final String trigger = marker.getTrigger();

@@ -132,6 +132,8 @@ class ServerUnderTestIT {
       // the headers are left out: the first row is class #1
       assertThat(diagnostics.getJSONArray("classHistogram").getString(0)).matches("^\\s*1:\\s+\\d+.*");
     }
+    // a server found not answering is asked for no class histogram: a jcmd against it would most likely hang
+    assertThat(server.diagnostics(false).has("classHistogram")).isFalse();
     // the host sees the server process only where Docker runs natively (Linux), not under Docker Desktop
     if (Files.isDirectory(Path.of("/proc/self")))
       assertThat(diagnostics.getInt("threads", 0)).isGreaterThan(0);

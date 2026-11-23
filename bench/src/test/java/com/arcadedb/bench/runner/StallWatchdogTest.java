@@ -34,9 +34,10 @@ class StallWatchdogTest {
   private static final class Rig {
     StackTraceElement[] stack = frames("a");
     long nanos;
+    long progress;
     boolean dumpSucceeds = true;
     final List<Integer> dumps = new ArrayList<>();
-    final StallWatchdog watchdog = new StallWatchdog(() -> stack, () -> nanos, THRESHOLD, 3, n -> {
+    final StallWatchdog watchdog = new StallWatchdog(() -> stack, () -> progress, () -> nanos, THRESHOLD, 3, n -> {
       dumps.add(n);
       return dumpSucceeds;
     });
@@ -65,6 +66,38 @@ class StallWatchdogTest {
     rig.sampleFor(120);
     assertThat(rig.dumps).containsExactly(1);
     assertThat(rig.watchdog.dumpsTaken()).isEqualTo(1);
+  }
+
+  @Test
+  void unchangedStackWithAdvancingProgressNeverDumps() {
+    // a multi-threaded worker parked in Future.get for a whole repetition, or a query loop repeating the same frames
+    final Rig rig = new Rig();
+    for (int i = 0; i < 100; i++) {
+      rig.progress++;
+      rig.sampleFor(5);
+    }
+    assertThat(rig.dumps).isEmpty();
+    assertThat(rig.watchdog.stallsWithoutDump()).isZero();
+  }
+
+  @Test
+  void unchangedStackAndNoProgressDumpsOnce() {
+    final Rig rig = new Rig();
+    rig.progress = 17;
+    rig.sampleFor(35);
+    assertThat(rig.dumps).isEmpty();
+    rig.sampleFor(120);
+    assertThat(rig.dumps).containsExactly(1);
+    assertThat(rig.watchdog.stallsWithoutDump()).isZero();
+  }
+
+  @Test
+  void progressEndsAStallSoTheNextOneDumpsAgain() {
+    final Rig rig = new Rig();
+    rig.sampleFor(60);
+    rig.progress++;
+    rig.sampleFor(60);
+    assertThat(rig.dumps).containsExactly(1, 2);
   }
 
   @Test

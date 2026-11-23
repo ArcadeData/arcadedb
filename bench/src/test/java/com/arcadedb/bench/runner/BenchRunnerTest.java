@@ -598,6 +598,8 @@ class BenchRunnerTest {
     final AtomicInteger    restarts = new AtomicInteger();
     final WorkloadContext  fresh    = new WorkloadContext(null, Scale.XS, 1L, new JSONObject().put("fresh", true));
     RuntimeException       restartFailure;
+    // the check is cut short by an interrupt of the run, as a probe sleeping between attempts would be
+    boolean                interruptOnCheck;
 
     ScriptedGuard(final String... reasons) {
       this.reasons = Arrays.asList(reasons);
@@ -606,6 +608,8 @@ class BenchRunnerTest {
     @Override
     public String deathReason() {
       final int i = checks.getAndIncrement();
+      if (interruptOnCheck)
+        Thread.currentThread().interrupt();
       return i < reasons.size() ? reasons.get(i) : null;
     }
 
@@ -770,6 +774,86 @@ class BenchRunnerTest {
     });
     assertThat(guard.restarts.get()).isEqualTo(1);
     assertThat(w.seenCtx).hasSize(2);
+  }
+
+  @Test
+  void anInterruptedLivenessCheckIsNoDeath() {
+    final Recording w = new Recording();
+    // the liveness probe is cut short by an interrupt of the run: its failure says nothing about the server
+    final ScriptedGuard scripted = new ScriptedGuard("not answering /api/v1/ready");
+    scripted.interruptOnCheck = true;
+    final ServerGuard guard = scripted;
+    final List<CaseResult> results;
+    try {
+      results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, guard, null, done -> {
+      });
+    } finally {
+      Thread.interrupted();
+    }
+
+    assertThat(scripted.restarts.get()).isZero();
+    assertThat(results).hasSize(4);
+    assertThat(results.get(0).status()).isEqualTo(CaseResult.Status.OK);
+    assertThat(results.get(0).notes().has("serverDied")).isFalse();
+    assertThat(results.subList(1, 4)).allSatisfy(r -> {
+      assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+      assertThat(r.error()).isEqualTo("not started: the run was interrupted");
+      assertThat(r.notes().has("serverRestarted")).isFalse();
+    });
+    assertThat(w.seenCtx).hasSize(1);
+  }
+
+  @Test
+  void aFailedTeardownKeepsTheHistograms() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        final LatencyRecorder recorder = new LatencyRecorder(16);
+        recorder.record(1_000_000L);
+        return Measurement.of(m(1).perRep(), recorder);
+      }
+
+      @Override
+      public void teardown(final WorkloadContext ctx) {
+        throw new IllegalStateException("drop failed");
+      }
+    };
+    final CaseResult r = new BenchRunner(2, 0, Duration.ofSeconds(10)).run(w, CTX, null, l -> {
+    }).getFirst();
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.error()).isEqualTo("teardown: java.lang.IllegalStateException: drop failed");
+    assertThat(r.metrics()).hasSize(1);
+    assertThat(r.histograms().length()).isEqualTo(2);
+  }
+
+  @Test
+  void aWorkerThatMovesFromStepToStepIsNotStalled() {
+    // every repetition sits in the same sleep, so the stack never changes; each new repetition is progress all the same
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        Thread.sleep(100);
+        return m(1);
+      }
+    };
+    final BenchRunner runner = new BenchRunner(15, 0, Duration.ofSeconds(30));
+    runner.stallTiming(Duration.ofMillis(20), Duration.ofSeconds(1));
+    final DumpingGuard guard = new DumpingGuard();
+    final CaseResult r = runner.run(w, CTX, guard, null, l -> {
+    }).getFirst();
+    assertThat(guard.dumps).isEmpty();
+    assertThat(r.notes().has("stallDumps")).isFalse();
+    assertThat(r.notes().has("stallsWithoutDump")).isFalse();
   }
 
   @Test

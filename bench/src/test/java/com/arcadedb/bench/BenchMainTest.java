@@ -141,7 +141,7 @@ class BenchMainTest {
 
   @Test
   void runIdWaitsForTheFirstServerThatReportsAnImage() throws Exception {
-    final Map<String, String> options = java.util.Map.of();
+    final Map<String, String> options = Map.of();
     final BenchMain.RunFile file = new BenchMain.RunFile(tmp, Instant.parse("2026-11-23T03:00:00Z"), options, "jvm", "img:1",
         null, null, "manual", "local", 1, 0, 30, 30, 120, 42L, "none", "none");
     final CaseResult failed = new CaseResult("alpha", "a1", "XS", new JSONObject(), 1, 0, List.of(), CaseResult.Status.FAILED,
@@ -395,9 +395,11 @@ class BenchMainTest {
 
   /** Counts server starts and answers each liveness check from a script, one entry per call (null = alive). */
   private static final class DyingServers implements BenchMain.ServerFactory {
-    final List<String> reasons;
+    final List<String>  reasons;
+    final List<Boolean> histogramsAsked = new ArrayList<>();
     int starts;
     int checks;
+    int diagnosed;
 
     DyingServers(final String... reasons) {
       this.reasons = Arrays.asList(reasons);
@@ -414,6 +416,114 @@ class BenchMainTest {
       final int i = checks++;
       return i < reasons.size() ? reasons.get(i) : null;
     }
+
+    /** Numbers each server's diagnostics in the order they are taken, and records whether a class histogram was asked for. */
+    @Override
+    public JSONObject diagnostics(final ServerUnderTest server, final boolean classHistogram) {
+      histogramsAsked.add(classHistogram);
+      return new JSONObject().put("server", ++diagnosed);
+    }
+  }
+
+  private int runAll(final List<Workload> registry, final BenchMain.ServerFactory servers, final Path out) {
+    return BenchMain.run(new String[] { "run", "--workload", "all", "--scale", "XS", "--image", "i", "--variant", "jvm", "--reps", "1",
+        "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--commit", "abc1234567", "--out",
+        out.toString() }, registry, servers, new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+  }
+
+  private static RunResult onlyRunFile(final Path dir) throws Exception {
+    try (final Stream<Path> files = Files.list(dir)) {
+      return RunResult.read(files.filter(p -> p.toString().endsWith(".json")).findFirst().orElseThrow());
+    }
+  }
+
+  @Test
+  void aReplacedServerKeepsItsDiagnosticsUnderANumberedKey() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2", "a3")), new Fake("beta", List.of("b1")));
+    // alpha's server dies before a2 and is replaced; the replacement serves a2 and a3
+    final DyingServers servers = new DyingServers("OOMKilled");
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    final JSONObject diagnostics = onlyRunFile(tmp).diagnostics();
+    assertThat(diagnostics.keySet()).containsExactlyInAnyOrder("alpha#1", "alpha", "beta");
+    assertThat(diagnostics.getJSONObject("alpha#1").getInt("server", 0)).isEqualTo(1);
+    assertThat(diagnostics.getJSONObject("alpha").getInt("server", 0)).isEqualTo(2);
+    assertThat(diagnostics.getJSONObject("beta").getInt("server", 0)).isEqualTo(3);
+  }
+
+  @Test
+  void aServerNotAnsweringGetsNoClassHistogram() throws Exception {
+    final List<Workload> registry = List.of(new Fake("alpha", List.of("a1", "a2")));
+    // jcmd against a JVM that does not answer HTTP would most likely hang too
+    final DyingServers servers = new DyingServers(ServerUnderTest.NOT_ANSWERING);
+    assertThat(runAll(registry, servers, tmp)).isZero();
+    // the dead server, then its healthy replacement
+    assertThat(servers.histogramsAsked).containsExactly(false, true);
+  }
+
+  @Test
+  void aFailedInterimWriteIsAWarningAndTheRunGoesOn() throws Exception {
+    // the output path is taken by a file until the last case removes it: every interim write fails, the final one succeeds
+    final Path out = tmp.resolve("out");
+    Files.writeString(out, "in the way");
+    final List<String> measured = new ArrayList<>();
+    final Workload clearing = new Workload() {
+      @Override
+      public String name() {
+        return "alpha";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("a1", "a2", "a3");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        measured.add(caseName);
+        if (caseName.equals("a3"))
+          Files.delete(out);
+        return new Measurement(List.of());
+      }
+    };
+    assertThat(runAll(List.of(clearing), (image, cpuset, mem, heap) -> null, out)).isZero();
+    assertThat(measured).containsExactly("a1", "a2", "a3");
+    final RunResult result = onlyRunFile(out);
+    assertThat(result.complete()).isTrue();
+    assertThat(result.results()).hasSize(3);
+  }
+
+  @Test
+  void aFailedFinalWriteExitsNonZero() throws Exception {
+    final Path out = tmp.resolve("out");
+    Files.writeString(out, "in the way");
+    final List<String> measured = new ArrayList<>();
+    final Workload w = new Workload() {
+      @Override
+      public String name() {
+        return "alpha";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("a1", "a2");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        measured.add(caseName);
+        return new Measurement(List.of());
+      }
+    };
+    assertThat(runAll(List.of(w), (image, cpuset, mem, heap) -> null, out)).isEqualTo(1);
+    assertThat(measured).containsExactly("a1", "a2");
   }
 
   @Test
@@ -455,7 +565,7 @@ class BenchMainTest {
       }
 
       @Override
-      public JSONObject diagnostics(final ServerUnderTest server) {
+      public JSONObject diagnostics(final ServerUnderTest server, final boolean classHistogram) {
         return new JSONObject().put("threads", 7);
       }
     };

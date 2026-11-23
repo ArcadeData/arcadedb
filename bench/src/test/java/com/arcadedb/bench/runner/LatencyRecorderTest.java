@@ -47,4 +47,14 @@ class LatencyRecorderTest {
     final Histogram h = LatencyRecorder.decode(recorder.encodedHistogram());
     assertThat(h.getTotalCount()).isEqualTo(1L);
   }
+
+  @Test
+  void everySampleIsProgressForTheStallWatchdog() {
+    final LatencyRecorder recorder = new LatencyRecorder(16);
+    final long before = Progress.count();
+    recorder.record(1_000L);
+    recorder.record(2_000L);
+    // other tests may record meanwhile: at least these two
+    assertThat(Progress.count() - before).isGreaterThanOrEqualTo(2L);
+  }
 }

@@ -26,7 +26,8 @@ import java.util.Base64;
 import java.util.zip.DataFormatException;
 
 /**
- * Records latency samples in nanoseconds in a growable primitive array, sorted once on the first read.
+ * Records latency samples in nanoseconds in a growable primitive array, sorted once on the first read. Every sample counts as
+ * {@link Progress} for the stall watchdog.
  */
 public final class LatencyRecorder {
   private static final long HIGHEST_TRACKABLE_MICROS = 3_600_000_000L;
@@ -45,6 +46,7 @@ public final class LatencyRecorder {
       samples = Arrays.copyOf(samples, count + (count >> 1) + 1);
     samples[count++] = nanos;
     sorted = false;
+    Progress.advance();
   }
 
   /**

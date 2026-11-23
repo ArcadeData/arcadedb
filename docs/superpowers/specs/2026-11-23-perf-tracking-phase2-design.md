@@ -92,25 +92,38 @@ project builds on the previous one.
 
 ### 2. Measurement additions (project 1)
 
-- **Server alive check and restart.** Before each case the runner checks the server answers (`/api/v1/ready`). If it does
-  not, the runner reads why from Docker (exit code, `OOMKilled`), records it on the case that was running when it died
-  (that case is `failed`, message `server died: OOMKilled` or the exit code), starts a fresh server with the same image and
-  settings, and records `serverRestarted` on the next case. Workloads already rebuild their data in `prepare()` when the
-  baseline is missing; the restart costs time, not cases. A second death in the same workload stops the workload (the rest
-  `failed`, `not started: server died twice`), so a crash loop cannot eat the budget.
-- **Results written as they come.** The run file is rewritten after every case (same `runId`), and the workflow's publish
+- **Server alive check and restart.** Before each case the runner checks the server answers (`/api/v1/ready`): up to 3
+  probes of 5 s each, 2 s apart, with Docker asked after each missed one; a container Docker reports stopped (exit code,
+  `OOMKilled`) ends the check at once, a running one that misses all 3 is `not answering /api/v1/ready`. A dead server is
+  recorded on the case before the check (a `failed` or `timeout` case gets `server died: OOMKilled; ` or the exit code
+  ahead of its message; a case that completed keeps `ok` with a `serverDied` note, since the death is only detected before
+  the next case), the runner starts a fresh server with the same image and settings, and records `serverRestarted` on the
+  next case. A death in the last case of a workload is not recorded on that case: no check follows it, and the next
+  workload gets a fresh server anyway. A check cut short by an interrupt of the run is no death: the remaining cases are
+  `not started: the run was interrupted`. Workloads already rebuild their data in `prepare()` when the baseline is
+  missing; the restart costs time, not cases. A second death in the same workload stops the workload (the rest `failed`,
+  `not started: server died twice`), so a crash loop cannot eat the budget.
+- **Results written as they come.** The run file is rewritten after every case (same `runId`); a rewrite that fails is a
+  warning and the run goes on, while a failed final write exits non-zero. The workflow's publish
   step runs `if: always()`, so a job cancelled at its timeout publishes the cases it finished. The file carries
   `complete: false` until the last case; the dashboard and gate read it like any other (a missing case is simply absent).
 - **Stall watchdog.** When one client call has waited 40 s, the bench takes a thread dump of the server (JVM: `jcmd 1
-  Thread.print` in the container; native: whatever the image supports, else nothing and a note) - at most 3 per run. Dumps
-  are files next to the run (workflow artifact, kept 30 days); the case records how many were taken.
+  Thread.print` in the container, given up after 30 s; native: whatever the image supports, else nothing and a note) - at
+  most 3 per run. A call has waited when, sampled every 5 s, the case worker's stack has not changed AND no progress was
+  made over the same 40 s (no latency sample recorded, no new warm-up or repetition started): a worker waiting on its own
+  insert threads, or a query loop repeating the same frames, is not stalled. Dumps are files next to the run (workflow
+  artifact, kept 30 days); the case records how many were taken (`stallDumps`), and a stall that got no dump (native image,
+  failed dump, budget spent) is counted in a `stallsWithoutDump` note.
 - **Latency histogram in the result.** Each latency case keeps its HdrHistogram (compressed, base64) per repetition, so reps
   and runs can be merged exactly later. `schemaVersion` raised; older files have none.
 - **End-of-workload diagnostics.** At the end of each workload: `GC.class_histogram` top 30 and the live thread count (JVM;
-  native: thread count only), stored under the workload's diagnostics in the run file, not as metrics.
+  native: thread count only), stored under the workload's diagnostics in the run file, not as metrics. A server a restart
+  replaced keeps its own under `<workload>#<n>` (n = 1 for the first one replaced). A server found not answering
+  `/api/v1/ready` gets no class histogram (jcmd against it would most likely hang), and every jcmd is given up after 30 s.
 - **Clock check.** During each case the bench compares the wall clock with the monotonic clock; a gap over 1 s means the host
   slept or was suspended. The case records `hostNotQuiet` with the reason. **Gate change:** a point marked `hostNotQuiet` is
-  not valid (never a baseline, never judged), as the inputs note's rule 1 asks.
+  not valid (never a baseline, never judged), as the inputs note's rule 1 asks; a status point (`failed` or `timeout`) from
+  a non-quiet case is not judged either.
 - **S sizing rule.** Every case at S must measure something: a timed operation (a build, an import) takes at least 5 s per
   repetition, a latency case runs at least 1,000 operations per repetition. Phase 1 S sizes that break the rule are raised
   (first suspects: vector build 20k, full-text build 50k); a unit test per workload asserts its S size against the rule's

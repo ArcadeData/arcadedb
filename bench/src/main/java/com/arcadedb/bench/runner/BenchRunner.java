@@ -76,7 +76,7 @@ public final class BenchRunner {
 
   /** The name of the thread that watches a case's worker for a stall; it never outlives its case. */
   static final String WATCHDOG_THREAD = "bench-stall-watchdog";
-  /** A worker whose stack has not changed for this long is stalled: the server gets a thread dump. */
+  /** A worker whose stack and {@link Progress} have not changed for this long is stalled: the server gets a thread dump. */
   private static final Duration STALL_THRESHOLD = Duration.ofSeconds(40);
   private static final Duration STALL_PERIOD    = Duration.ofSeconds(5);
   /** The most thread dumps of one run: the watchdog lives as long as the runner, which serves the whole run. */
@@ -151,7 +151,7 @@ public final class BenchRunner {
     return new StallWatchdog(() -> {
       final Thread t = worker;
       return t == null ? new StackTraceElement[0] : t.getStackTrace();
-    }, System::nanoTime, threshold, MAX_DUMPS, n -> {
+    }, Progress::count, System::nanoTime, threshold, MAX_DUMPS, n -> {
       final ServerGuard g = dumpGuard;
       try {
         return g != null && g.threadDump(n);
@@ -190,8 +190,9 @@ public final class BenchRunner {
    * amended list and is restarted; the next case gets a {@code serverRestarted} note. A second death, or a restart that fails,
    * records every remaining case of the workload as not run.
    * <p>
-   * With a guard, a watchdog samples the stack of each case's worker every 5 s; a stack unchanged for 40 s asks the guard for a
-   * thread dump of the server (at most 3 per run), and the case gets a {@code stallDumps} note with the number taken during it.
+   * With a guard, a watchdog samples the stack of each case's worker every 5 s; a stack unchanged for 40 s while no
+   * {@link Progress} is made (no latency sample recorded, no new step) asks the guard for a thread dump of the server (at most 3
+   * per run), and the case gets a {@code stallDumps} note with the number taken during it.
    * A stall that gets no dump (a native image, a failed dump, the budget spent) is counted in a {@code stallsWithoutDump} note.
    */
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final ServerGuard guard,
@@ -209,7 +210,8 @@ public final class BenchRunner {
       if (guard != null && stopped == null && !results.isEmpty() && abandoned == null
           && !Thread.currentThread().isInterrupted()) {
         final String reason = deathReason(guard);
-        if (reason != null) {
+        // a check cut short by an interrupt of the run says nothing about the server: the cases below are not started
+        if (reason != null && !Thread.currentThread().isInterrupted()) {
           final int last = results.size() - 1;
           results.set(last, diedIn(results.get(last), reason));
           onCase.accept(List.copyOf(results));
@@ -329,9 +331,9 @@ public final class BenchRunner {
       try {
         w.teardown(ctx);
       } catch (final Throwable t) {
+        // the metrics, histograms and notes measured stay: only the status says the case did not end cleanly
         if (result.status() == CaseResult.Status.OK)
-          result = result(w, ctx, caseName, result.metrics(), CaseResult.Status.FAILED,
-              "teardown: " + describe(t));
+          result = result.withStatus(CaseResult.Status.FAILED, "teardown: " + describe(t));
       }
     }
     final int dumps = watchdog.dumpsTaken() - dumpsBefore;
@@ -429,6 +431,7 @@ public final class BenchRunner {
     for (int i = 0; i < warmup; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("warm-up " + (i + 1) + "/" + warmup, System.nanoTime(), stepNanos));
+      Progress.advance();
       w.measure(ctx, caseName);
     }
 
@@ -439,6 +442,7 @@ public final class BenchRunner {
     for (int i = 0; i < reps; i++) {
       stopIfCancelled(cancelled);
       step.set(new Step("rep " + (i + 1) + "/" + reps, System.nanoTime(), stepNanos));
+      Progress.advance();
       final Measurement measurement = w.measure(ctx, caseName);
       if (measurement.histogram() != null)
         histograms.put(measurement.histogram());
