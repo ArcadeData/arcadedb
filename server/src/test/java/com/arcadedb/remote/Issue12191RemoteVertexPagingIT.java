@@ -29,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -221,5 +222,141 @@ class Issue12191RemoteVertexPagingIT extends BaseGraphServerTest {
       assertThat(edges).as("edges at page size %d", pageSize).isEqualTo(9);
       assertThat(neighbours).as("neighbours at page size %d", pageSize).containsEntry("lightLeaf", 6).containsEntry("recordLeaf", 3);
     }
+  }
+
+  @Test
+  void lightweightEdgesDeletedBetweenPagesDoNotHideLiveOnes() {
+    // the lightweight edges of a bucket share one RID, so the cursor resumes by the far endpoint of the last one read (the list
+    // is ordered by it): deleting an edge already read, as another client can, does not move what comes next
+    final int pageSize = 2;
+    for (final boolean vertices : new boolean[] { false, true }) {
+      final LightweightHub fixture = createLightweightHub(Vertex.DIRECTION.OUT, -1);
+      final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(fixture.hub).asVertex(), database);
+
+      final Iterator<?> it = vertices ?
+          remoteHub.getVerticesPaged(Vertex.DIRECTION.OUT, pageSize).iterator() :
+          remoteHub.getEdgesPaged(Vertex.DIRECTION.OUT, pageSize).iterator();
+      final List<RID> read = new ArrayList<>();
+      for (int i = 0; i < pageSize; i++)
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.OUT));
+
+      deleteLightweightEdge(fixture.hub, read.getFirst(), Vertex.DIRECTION.OUT);
+
+      while (it.hasNext())
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.OUT));
+
+      assertThat(read).as("%s of the lightweight hub", vertices ? "vertices" : "edges")
+          .containsExactlyInAnyOrderElementsOf(fixture.leaves);
+    }
+  }
+
+  @Test
+  void incomingLightweightEdgesDeletedBetweenPagesDoNotHideLiveOnes() {
+    final int pageSize = 3;
+    for (final boolean vertices : new boolean[] { false, true }) {
+      final LightweightHub fixture = createLightweightHub(Vertex.DIRECTION.IN, -1);
+      final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(fixture.hub).asVertex(), database);
+
+      final Iterator<?> it = vertices ?
+          remoteHub.getVerticesPaged(Vertex.DIRECTION.IN, pageSize).iterator() :
+          remoteHub.getEdgesPaged(Vertex.DIRECTION.IN, pageSize).iterator();
+      final List<RID> read = new ArrayList<>();
+      for (int i = 0; i < pageSize; i++)
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.IN));
+
+      deleteLightweightEdge(fixture.hub, read.getFirst(), Vertex.DIRECTION.IN);
+
+      while (it.hasNext())
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.IN));
+
+      assertThat(read).as("%s of the lightweight hub", vertices ? "vertices" : "edges")
+          .containsExactlyInAnyOrderElementsOf(fixture.leaves);
+    }
+  }
+
+  @Test
+  void aTwinLightweightEdgeIsNotSkippedWhenAnEdgeAlreadyReadIsDeleted() {
+    // two lightweight edges of the same type and endpoints: the page ends between them, so the cursor skips the one already
+    // read and still returns the other, whatever happens to the edges before them
+    final int pageSize = 3;
+    for (final boolean vertices : new boolean[] { false, true }) {
+      final LightweightHub fixture = createLightweightHub(Vertex.DIRECTION.OUT, 2);
+      final RemoteVertex remoteHub = new RemoteVertex(database.lookupByRID(fixture.hub).asVertex(), database);
+
+      final Iterator<?> it = vertices ?
+          remoteHub.getVerticesPaged(Vertex.DIRECTION.OUT, pageSize).iterator() :
+          remoteHub.getEdgesPaged(Vertex.DIRECTION.OUT, pageSize).iterator();
+      final List<RID> read = new ArrayList<>();
+      for (int i = 0; i < pageSize; i++)
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.OUT));
+
+      // the third of the edges read is the first of the twins: the leaf before it is not
+      deleteLightweightEdge(fixture.hub, read.getFirst(), Vertex.DIRECTION.OUT);
+
+      while (it.hasNext())
+        read.add(farEndpoint(it.next(), Vertex.DIRECTION.OUT));
+
+      final List<RID> expected = new ArrayList<>(fixture.leaves);
+      expected.add(fixture.leaves.get(2));
+      assertThat(read).as("%s of the lightweight hub", vertices ? "vertices" : "edges")
+          .containsExactlyInAnyOrderElementsOf(expected);
+    }
+  }
+
+  /** The vertex at the other side of an edge or, for a vertex, the vertex itself. */
+  private static RID farEndpoint(final Object element, final Vertex.DIRECTION direction) {
+    if (element instanceof Vertex vertex)
+      return vertex.getIdentity();
+    final Edge edge = (Edge) element;
+    return direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+  }
+
+  private record LightweightHub(RID hub, List<RID> leaves) {
+  }
+
+  /**
+   * A hub with eight lightweight edges to (or, for IN, from) eight leaves, the one at {@code twinOf} twice when it is not
+   * negative. The leaves are listed in RID order, which is the order the edges of the hub are read in.
+   */
+  private LightweightHub createLightweightHub(final Vertex.DIRECTION direction, final int twinOf) {
+    final Database embeddedDatabase = getServerDatabase(0, getDatabaseName());
+    final RID[] hub = new RID[1];
+    final List<RID> leaves = new ArrayList<>();
+    embeddedDatabase.transaction(() -> {
+      final MutableVertex hubVertex = embeddedDatabase.newVertex("V12191").set("name", "lightHub").save();
+      hub[0] = hubVertex.getIdentity();
+      final List<MutableVertex> leafVertices = new ArrayList<>();
+      for (int i = 0; i < 8; i++)
+        leafVertices.add(embeddedDatabase.newVertex("V12191").set("name", "lightLeaf").save());
+      leafVertices.sort(Comparator.comparing(MutableVertex::getIdentity));
+
+      for (int i = 0; i < leafVertices.size(); i++) {
+        final MutableVertex leaf = leafVertices.get(i);
+        leaves.add(leaf.getIdentity());
+        final int times = i == twinOf ? 2 : 1;
+        for (int t = 0; t < times; t++)
+          if (direction == Vertex.DIRECTION.OUT)
+            hubVertex.newLightEdge("E12191", leaf);
+          else
+            leaf.newLightEdge("E12191", hubVertex);
+      }
+    });
+    return new LightweightHub(hub[0], leaves);
+  }
+
+  /** Deletes one lightweight edge between the hub and {@code far}, as another client does with the database embedded. */
+  private void deleteLightweightEdge(final RID hub, final RID far, final Vertex.DIRECTION direction) {
+    final Database embeddedDatabase = getServerDatabase(0, getDatabaseName());
+    embeddedDatabase.transaction(() -> {
+      final Vertex hubVertex = embeddedDatabase.lookupByRID(hub, true).asVertex();
+      for (final Edge edge : hubVertex.getEdges(direction, "E12191")) {
+        final RID otherEnd = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+        if (otherEnd.equals(far)) {
+          edge.delete();
+          return;
+        }
+      }
+      throw new AssertionError("No lightweight edge between " + hub + " and " + far);
+    });
   }
 }

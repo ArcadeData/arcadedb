@@ -161,7 +161,11 @@ public class RemoteVertex {
    * Each page is one SQL query that resumes after the RID of the last edge of the previous page (issue #12191): the edges
    * the caller deletes while iterating, or another client deletes, do not move the next page, as an offset into the edge list
    * did. {@link Vertex.DIRECTION#BOTH} reads the outgoing edges, then the incoming ones, as the embedded API does, so a
-   * self-loop is returned twice, once from each list.
+   * self-loop is returned twice, once from each list. The edges come in RID order, not in the order of the edge list.
+   * <p>
+   * A lightweight edge has no RID of its own, so a page resumes after it by the vertex at its other end and skips only the
+   * edges of the same type between the same two vertices (twins) already read: deleting any other edge already read cannot
+   * hide a live one, deleting an already read twin can.
    * <p>
    * Cost: the server cannot seek into the edge list of a vertex by RID, so every page reads all the edges of the vertex in
    * the direction, filters them on the RID bound and keeps the first {@code pageSize} in a bounded top-K heap: O(E) record
@@ -272,7 +276,10 @@ public class RemoteVertex {
     private final String[]           edgeTypes;
     private       int                directionIndex = 0;
     private       RID                lastEdge       = null;
-    // edges after lastEdge already read: non-zero only when lastEdge is the bound of the lightweight edges of one bucket
+    // the vertex at the other end of the last lightweight edge read: set only when lastEdge is the bound of the lightweight
+    // edges of one bucket, null when it is the RID of a record-backed edge
+    private       RID                lastFar        = null;
+    // lightweight edges between the same two vertices as the last one (its twins) already read, to be skipped
     private       int                skip           = 0;
     private       Iterator<T>        currentPage    = Collections.emptyIterator();
 
@@ -294,14 +301,15 @@ public class RemoteVertex {
           return false;
 
         final Vertex.DIRECTION pageDirection = directions[directionIndex];
-        final List<Edge> edges = fetchEdgesAfter(pageDirection, edgeTypes, lastEdge, skip, pageSize);
+        final List<Edge> edges = fetchEdgesAfter(pageDirection, edgeTypes, lastEdge, lastFar, skip, pageSize);
         if (edges.size() < pageSize) {
           // the last page of this direction
           ++directionIndex;
           lastEdge = null;
+          lastFar = null;
           skip = 0;
         } else
-          advanceCursor(edges);
+          advanceCursor(pageDirection, edges);
 
         currentPage = elementsOf(pageDirection, edges).iterator();
       }
@@ -310,33 +318,36 @@ public class RemoteVertex {
 
     /**
      * Moves the cursor past a full page. A record-backed last edge is the bound itself. A lightweight one is not: every
-     * lightweight edge of a bucket prints as {@code #<bucket>:-1}, and the server orders them by endpoints, which the
-     * literal does not carry. So the bound becomes {@code #<bucket>:-1}, which sorts before every lightweight edge of the
-     * bucket and after every edge of a lower bucket, and the lightweight edges of the bucket read so far are skipped.
+     * lightweight edge of a bucket prints as {@code #<bucket>:-1}, and the server orders them by their endpoints, which the
+     * literal does not carry. In the list of one vertex one endpoint is always that vertex, so the order of the lightweight
+     * edges of a bucket is the order of the vertex at their other end. The cursor is then the bucket's {@code #<bucket>:-1}
+     * plus that vertex ({@code lastFar}): the next page starts at the edges to it or after it, and skips only the twins of the
+     * last edge (same type and same two vertices, so indistinguishable from it) already read. Deleting a lightweight edge
+     * already read moves nothing but the twins, which are the same edge by definition.
      */
-    private void advanceCursor(final List<Edge> edges) {
-      final RID last = edges.getLast().getIdentity();
+    private void advanceCursor(final Vertex.DIRECTION pageDirection, final List<Edge> edges) {
+      final Edge lastRead = edges.getLast();
+      final RID last = lastRead.getIdentity();
       if (last.getPosition() >= 0) {
         lastEdge = last;
+        lastFar = null;
         skip = 0;
         return;
       }
 
       final int bucketId = last.getBucketId();
-      int lightInBucket = 0;
+      final RID far = otherEnd(pageDirection, lastRead);
+      int twins = 0;
       for (final Edge edge : edges) {
         final RID rid = edge.getIdentity();
-        if (rid.getPosition() < 0 && rid.getBucketId() == bucketId)
-          ++lightInBucket;
+        if (rid.getPosition() < 0 && rid.getBucketId() == bucketId && far.equals(otherEnd(pageDirection, edge)))
+          ++twins;
       }
 
-      if (lastEdge != null && lastEdge.getPosition() < 0 && lastEdge.getBucketId() == bucketId)
-        // the page continued the lightweight edges of the same bucket
-        skip += lightInBucket;
-      else {
-        lastEdge = new RID(bucketId, -1L);
-        skip = lightInBucket;
-      }
+      // the page started past the twins already read when the last edge is one of the same twins as before
+      skip = far.equals(lastFar) && lastEdge.getBucketId() == bucketId ? skip + twins : twins;
+      lastEdge = new RID(bucketId, -1L);
+      lastFar = far;
     }
 
     @Override
@@ -347,25 +358,41 @@ public class RemoteVertex {
     }
   }
 
+  /** The vertex at the other end of {@code edge} from the vertex of an edge list read in {@code direction}. */
+  private static RID otherEnd(final Vertex.DIRECTION direction, final Edge edge) {
+    return direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+  }
+
   /**
    * Up to {@code limit} edges of {@code direction} ({@code OUT} or {@code IN}) in RID order, the ones after {@code after}
    * less the first {@code skip} of them, or from the first one when it is null. The edge list carries no RID order the
    * engine could seek on (it is newest first), so the server expands every edge and ORDER BY ... LIMIT keeps the smallest
-   * {@code limit} of the ones after the bound in a bounded heap rather than sorting them all. {@code skip} is non-zero
-   * only past lightweight edges, which share one RID per bucket (see {@code advanceCursor}).
+   * {@code limit} of the ones after the bound in a bounded heap rather than sorting them all.
+   * <p>
+   * Lightweight edges share one RID per bucket, {@code #<bucket>:-1}: {@code after} is then that RID and {@code afterFar}
+   * the vertex at the other end of the last one read, and the edges returned are the record-backed ones of the bucket and
+   * of the buckets after it, and the lightweight ones of the bucket to {@code afterFar} or after it, in the order the server
+   * sorts them (by the endpoints, so by that vertex). {@code skip} is then the number of twins of the last one already read.
+   * Both are null/zero past a record-backed edge (see {@code advanceCursor}).
    */
   private List<Edge> fetchEdgesAfter(final Vertex.DIRECTION direction, final String[] types, final RID after,
-      final int skip, final int limit) {
+      final RID afterFar, final int skip, final int limit) {
     final StringBuilder query = new StringBuilder("select from ( select expand( ")
         .append(direction == Vertex.DIRECTION.OUT ? "outE" : "inE").append("(");
     final Map<String, Object> params = new HashMap<>();
     appendBoundTypes(query, types, params);
 
     query.append(") ) from ").append(vertex.getIdentity()).append(" )");
-    // a RID literal, not a parameter: a RID sent as a JSON parameter is bound as a string. The literal is safe to inline:
+    // RID literals, not parameters: a RID sent as a JSON parameter is bound as a string. The literals are safe to inline:
     // RID#toString always prints the controlled "#<bucket>:<position>" form of two numbers, nothing a caller can shape
-    if (after != null)
+    if (after != null) {
       query.append(" WHERE @rid > ").append(after);
+      if (afterFar != null)
+        // the lightweight edges of the bucket sort before its first record (#<bucket>:0): of those, only the ones to the
+        // vertex of the last one read, or after it
+        query.append(" AND (@rid >= ").append(new RID(after.getBucketId(), 0L)).append(" OR ")
+            .append(direction == Vertex.DIRECTION.OUT ? "@in" : "@out").append(" >= ").append(afterFar).append(')');
+    }
     query.append(" ORDER BY @rid");
     if (skip > 0)
       query.append(" SKIP ").append(skip);
@@ -390,7 +417,7 @@ public class RemoteVertex {
 
     final Set<RID> rids = new LinkedHashSet<>(edges.size());
     for (final Edge edge : edges)
-      rids.add(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+      rids.add(otherEnd(direction, edge));
 
     final Map<RID, Vertex> byRid = new HashMap<>(rids.size());
     final StringBuilder query = new StringBuilder();
@@ -408,7 +435,7 @@ public class RemoteVertex {
 
     final List<Vertex> vertices = new ArrayList<>(edges.size());
     for (final Edge edge : edges) {
-      final Vertex v = byRid.get(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+      final Vertex v = byRid.get(otherEnd(direction, edge));
       if (v != null)
         vertices.add(v);
     }

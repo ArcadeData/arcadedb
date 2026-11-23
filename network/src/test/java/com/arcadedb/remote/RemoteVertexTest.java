@@ -248,10 +248,11 @@ class RemoteVertexTest {
   }
 
   @Test
-  void getEdgesPagedSkipsTheLightweightEdgesReadSinceTheyShareOneRid() {
-    // every lightweight edge of a bucket prints as #3:-1, so the bound alone cannot advance past them
-    final ResultSet page1 = edgeResultSetOf(edgeResult(-1), edgeResult(-1));
-    final ResultSet page2 = edgeResultSetOf(edgeResult(-1), edgeResult(5));
+  void getEdgesPagedResumesLightweightEdgesAtTheirFarVertexAndSkipsOnlyTheirTwins() {
+    // every lightweight edge of a bucket prints as #3:-1, so the bound alone cannot advance past them: the cursor is that RID,
+    // the vertex at the other end of the last one read and the number of its twins (same endpoints) already read
+    final ResultSet page1 = edgeResultSetOf(edgeResult(-1, 1), edgeResult(-1, 1));
+    final ResultSet page2 = edgeResultSetOf(edgeResult(-1, 1), edgeResult(5));
     final ResultSet page3 = edgeResultSetOf(edgeResult(6));
 
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
@@ -264,15 +265,17 @@ class RemoteVertexTest {
     assertThat(collected).hasSize(5);
     final List<String> queries = sqlCaptor.getAllValues();
     assertThat(queries).hasSize(3);
-    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 2 LIMIT 2");
+    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 AND (@rid >= #3:0 OR @in >= #1:1) ORDER BY @rid SKIP 2 LIMIT 2");
     assertThat(queries.get(2)).contains("WHERE @rid > #3:5 ORDER BY @rid LIMIT 2");
   }
 
   @Test
-  void getEdgesPagedAccumulatesTheSkipAcrossPagesOfLightweightEdges() {
-    final ResultSet page1 = edgeResultSetOf(edgeResult(2), edgeResult(-1));
-    final ResultSet page2 = edgeResultSetOf(edgeResult(-1), edgeResult(-1));
-    final ResultSet page3 = edgeResultSetOf();
+  void getEdgesPagedCountsOnlyTheTwinsOfTheLastLightweightEdgeAcrossPages() {
+    // the first page ends on the vertex 2 after an edge to the vertex 1: only the edges to the vertex 2 are skipped, and they
+    // add up while the next pages keep ending on it
+    final ResultSet page1 = edgeResultSetOf(edgeResult(-1, 1), edgeResult(-1, 2));
+    final ResultSet page2 = edgeResultSetOf(edgeResult(-1, 2), edgeResult(-1, 2));
+    final ResultSet page3 = edgeResultSetOf(edgeResult(-1, 4));
 
     final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
     when(mockDatabase.queryUncounted(eq("sql"), sqlCaptor.capture(), any(Map.class))).thenReturn(page1, page2, page3);
@@ -281,10 +284,12 @@ class RemoteVertexTest {
     for (final Edge e : remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2))
       collected.add(e);
 
-    assertThat(collected).hasSize(4);
+    assertThat(collected).hasSize(5);
     final List<String> queries = sqlCaptor.getAllValues();
-    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 1 LIMIT 2");
-    assertThat(queries.get(2)).contains("WHERE @rid > #3:-1 ORDER BY @rid SKIP 3 LIMIT 2");
+    assertThat(queries).hasSize(3);
+    assertThat(queries.get(0)).doesNotContain("WHERE");
+    assertThat(queries.get(1)).contains("WHERE @rid > #3:-1 AND (@rid >= #3:0 OR @in >= #1:2) ORDER BY @rid SKIP 1 LIMIT 2");
+    assertThat(queries.get(2)).contains("WHERE @rid > #3:-1 AND (@rid >= #3:0 OR @in >= #1:2) ORDER BY @rid SKIP 3 LIMIT 2");
   }
 
   @Test
