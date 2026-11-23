@@ -296,11 +296,12 @@ public class SubqueryStep extends AbstractExecutionStep {
               // The body reads as many rows at a time as this step was asked for, so a LIMIT after it bounds the body too
               final ResultSet body = executeBody(currentOuterRow, context,
                   Math.max(1, Math.min(nRecords, CypherExecutionPlan.SEEDED_BATCH_SIZE)));
+              // Registered before the first pull, so close() also reaches a body that fails on it
+              streamedBody = body;
               if (body.hasNext()) {
-                streamedBody = body;
                 currentInnerResults = body;
               } else {
-                body.close();
+                closeStreamedBody();
                 if (subqueryClause.isOptional())
                   buffer.add(withReturnedColumnsNull(currentOuterRow));
               }
