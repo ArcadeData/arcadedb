@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
@@ -112,6 +113,16 @@ public final class BenchRunner {
   }
 
   public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter) {
+    return run(w, ctx, caseFilter, done -> {
+    });
+  }
+
+  /**
+   * As {@link #run(Workload, WorkloadContext, Predicate)}, and after every case (once its teardown is done) hands {@code onCase}
+   * an immutable copy of this workload's results so far, so a caller can persist them while the run goes on.
+   */
+  public List<CaseResult> run(final Workload w, final WorkloadContext ctx, final Predicate<String> caseFilter,
+      final Consumer<List<CaseResult>> onCase) {
     final List<CaseResult> results = new ArrayList<>();
     for (final String caseName : w.cases()) {
       if (caseFilter != null && !caseFilter.test(caseName))
@@ -128,6 +139,7 @@ public final class BenchRunner {
           abandoned = caseName;
       }
       results.add(result);
+      onCase.accept(List.copyOf(results));
     }
     return results;
   }

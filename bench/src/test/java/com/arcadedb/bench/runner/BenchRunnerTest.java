@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -65,6 +66,33 @@ class BenchRunnerTest {
     static Measurement m(final double v) {
       return new Measurement(List.of(new Metric("t", "ms", Metric.Better.LOWER, v, new double[] { v })));
     }
+  }
+
+  @Test
+  void onCaseSeesEveryCaseInOrder() {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a", "b", "c");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        if (caseName.equals("b"))
+          throw new IllegalStateException("boom");
+        return m(1);
+      }
+    };
+    final List<List<CaseResult>> seen = new ArrayList<>();
+    final List<CaseResult> results = new BenchRunner(1, 0, Duration.ofSeconds(10)).run(w, CTX, null, seen::add);
+    assertThat(seen).hasSize(3);
+    assertThat(seen.get(0)).extracting(CaseResult::caseName).containsExactly("a");
+    final List<CaseResult> last = seen.get(2);
+    assertThat(last).extracting(CaseResult::caseName).containsExactly("a", "b", "c");
+    assertThat(last).extracting(CaseResult::status)
+        .containsExactly(CaseResult.Status.OK, CaseResult.Status.FAILED, CaseResult.Status.OK);
+    assertThat(last).isEqualTo(results);
+    assertThatThrownBy(() -> last.add(results.get(0))).isInstanceOf(UnsupportedOperationException.class);
   }
 
   @Test

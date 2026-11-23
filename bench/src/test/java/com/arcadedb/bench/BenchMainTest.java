@@ -90,6 +90,51 @@ class BenchMainTest {
   }
 
   @Test
+  void runFileIsRewrittenAfterEachCase() throws Exception {
+    final List<RunResult> seen = new ArrayList<>();
+    final Workload spy = new Workload() {
+      @Override
+      public String name() {
+        return "spy";
+      }
+
+      @Override
+      public List<String> cases() {
+        return List.of("s1", "s2");
+      }
+
+      @Override
+      public void prepare(final WorkloadContext ctx, final String caseName) {
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) throws Exception {
+        if (caseName.equals("s2"))
+          try (final Stream<Path> files = Files.list(tmp)) {
+            seen.add(RunResult.read(files.filter(p -> p.toString().endsWith(".json")).toList().getFirst()));
+          }
+        return new Measurement(List.of());
+      }
+    };
+    final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+    final int code = BenchMain.run(new String[] { "run", "--workload", "spy", "--scale", "XS", "--image", "img:1", "--variant", "jvm",
+        "--reps", "1", "--warmup", "0", "--skip-idle-check", "--server-cpus", "none", "--client-cpus", "none", "--out",
+        tmp.toString() }, List.of(spy), (image, cpuset, mem, heap) -> null, new PrintStream(buf, true, StandardCharsets.UTF_8));
+    assertThat(code).isZero();
+    assertThat(seen).hasSize(1);
+    assertThat(seen.getFirst().complete()).isFalse();
+    assertThat(seen.getFirst().results()).hasSize(1);
+    try (final Stream<Path> files = Files.list(tmp)) {
+      final List<Path> json = files.toList();
+      assertThat(json).hasSize(1);
+      final RunResult last = RunResult.read(json.getFirst());
+      assertThat(last.complete()).isTrue();
+      assertThat(last.results()).hasSize(2);
+      assertThat(last.info().runId()).isEqualTo(seen.getFirst().info().runId());
+    }
+  }
+
+  @Test
   void benchCommitFlagLandsInConfigOfRun() throws Exception {
     final ByteArrayOutputStream buf = new ByteArrayOutputStream();
     final int code = run(buf, "run", "--workload", "all", "--scale", "XS", "--image", "img:1", "--variant", "jvm", "--reps", "1",

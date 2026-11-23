@@ -58,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -437,13 +438,15 @@ public final class BenchMain {
     final String clientCpus = resolveCpus(o.getOrDefault("client-cpus", "auto"), false);
 
     final Instant startedAt = Instant.now();
+    final Path dir = Path.of(outDir);
+    final RunFile file = new RunFile(dir, startedAt, o, variant, image, tag, commitDate, trigger, machineId, reps, warmup, timeoutMin,
+        prepareTimeoutMin, caseTimeoutMin, seed, serverCpus, clientCpus);
+    // the results of the workloads already finished; the one running is added by the runner's callback
     final List<CaseResult> results = new ArrayList<>();
-    JSONObject serverConfig = null;
-    JSONObject imageInfo = null;
     for (final Workload w : selected) {
       if (runner.hasAbandonedWorker()) {
         // the runner records every case as not started; a server started now would only compete with the stuck worker
-        results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null));
+        results.addAll(runner.run(w, new WorkloadContext(null, scale, seed, params), null, file.onCase(results)));
         continue;
       }
       final ServerUnderTest server;
@@ -453,41 +456,108 @@ public final class BenchMain {
         for (final String caseName : w.cases())
           results.add(new CaseResult(w.name(), caseName, scale.name(), params, reps, warmup, List.of(), CaseResult.Status.FAILED,
               "server start failed: " + t.getClass().getName() + ": " + t.getMessage()));
+        file.write(results, false);
         continue;
       }
       try (server) {
-        if (server != null && serverConfig == null) {
-          serverConfig = orFallback(server::config, new JSONObject(), "server config");
-          imageInfo = orFallback(server::imageInfo, null, "image info");
+        if (server != null && file.serverConfig == null) {
+          file.serverConfig = orFallback(server::config, new JSONObject(), "server config");
+          file.imageInfo = orFallback(server::imageInfo, null, "image info");
         }
-        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), null));
+        results.addAll(runner.run(w, new WorkloadContext(server, scale, seed, params), null, file.onCase(results)));
       }
     }
 
-    final String commit = o.getOrDefault("commit",
-        imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
-    final JSONObject arcadedb = new JSONObject().put("commit", commit).put("version", o.getOrDefault("version", "unknown"))
-        .put("variant", variant).put("image", image)
-        .put("imageDigest", imageInfo != null ? imageInfo.getString("imageDigest", "unknown") : "unknown")
-        .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
-    if (tag != null)
-      arcadedb.put("tag", tag);
-    if (commitDate != null)
-      arcadedb.put("commitDate", commitDate);
-    final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
-    config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
-    config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin)
-        .put("prepareTimeoutMin", prepareTimeoutMin).put("caseTimeoutMin", caseTimeoutMin).put("seed", seed)
-        .put("serverCpus", serverCpus.isEmpty() ? "none" : serverCpus)
-        .put("clientCpus", clientCpus.isEmpty() ? "none" : clientCpus);
-
-    final String runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), variant);
-    final RunInfo info = new RunInfo(runId, startedAt, Instant.now(), trigger, "bench", arcadedb,
-        MachineProbe.probe(machineId), config);
-    final Path dir = Path.of(outDir);
-    new RunResult(info, results).write(dir);
-    out.println(dir.resolve(runId + ".json"));
+    file.write(results, true);
+    out.println(dir.resolve(file.runId + ".json"));
     return 0;
+  }
+
+  /**
+   * The run file: rewritten after every case with {@code complete=false} and once more at the end with {@code complete=true}, all
+   * under the same run id, so a run cut short keeps what it measured. The run id carries the commit, known only once the first
+   * server has reported its image, so it is fixed at the first write, which precedes the first case's result.
+   */
+  private static final class RunFile {
+    private final Path                dir;
+    private final Instant             startedAt;
+    private final Map<String, String> o;
+    private final String              variant;
+    private final String              image;
+    private final String              tag;
+    private final String              commitDate;
+    private final String              trigger;
+    private final String              machineId;
+    private final int                 reps;
+    private final int                 warmup;
+    private final int                 timeoutMin;
+    private final int                 prepareTimeoutMin;
+    private final int                 caseTimeoutMin;
+    private final long                seed;
+    private final String              serverCpus;
+    private final String              clientCpus;
+    JSONObject serverConfig;
+    JSONObject imageInfo;
+    String     runId;
+    JSONObject machine;
+
+    RunFile(final Path dir, final Instant startedAt, final Map<String, String> o, final String variant, final String image,
+        final String tag, final String commitDate, final String trigger, final String machineId, final int reps, final int warmup,
+        final int timeoutMin, final int prepareTimeoutMin, final int caseTimeoutMin, final long seed, final String serverCpus,
+        final String clientCpus) {
+      this.dir = dir;
+      this.startedAt = startedAt;
+      this.o = o;
+      this.variant = variant;
+      this.image = image;
+      this.tag = tag;
+      this.commitDate = commitDate;
+      this.trigger = trigger;
+      this.machineId = machineId;
+      this.reps = reps;
+      this.warmup = warmup;
+      this.timeoutMin = timeoutMin;
+      this.prepareTimeoutMin = prepareTimeoutMin;
+      this.caseTimeoutMin = caseTimeoutMin;
+      this.seed = seed;
+      this.serverCpus = serverCpus;
+      this.clientCpus = clientCpus;
+    }
+
+    /** The callback for one workload: writes the finished workloads' results followed by that workload's results so far. */
+    Consumer<List<CaseResult>> onCase(final List<CaseResult> finished) {
+      return current -> {
+        final List<CaseResult> all = new ArrayList<>(finished);
+        all.addAll(current);
+        write(all, false);
+      };
+    }
+
+    void write(final List<CaseResult> results, final boolean complete) {
+      final String commit = o.getOrDefault("commit",
+          imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
+      final JSONObject arcadedb = new JSONObject().put("commit", commit).put("version", o.getOrDefault("version", "unknown"))
+          .put("variant", variant).put("image", image)
+          .put("imageDigest", imageInfo != null ? imageInfo.getString("imageDigest", "unknown") : "unknown")
+          .put("revision", imageInfo != null ? imageInfo.getString("revision", "unknown") : "unknown");
+      if (tag != null)
+        arcadedb.put("tag", tag);
+      if (commitDate != null)
+        arcadedb.put("commitDate", commitDate);
+      final JSONObject config = serverConfig != null ? serverConfig : new JSONObject();
+      config.put("benchCommit", o.getOrDefault("bench-commit", "unknown"));
+      config.put("reps", reps).put("warmup", warmup).put("timeoutMin", timeoutMin)
+          .put("prepareTimeoutMin", prepareTimeoutMin).put("caseTimeoutMin", caseTimeoutMin).put("seed", seed)
+          .put("serverCpus", serverCpus.isEmpty() ? "none" : serverCpus)
+          .put("clientCpus", clientCpus.isEmpty() ? "none" : clientCpus);
+
+      if (runId == null)
+        runId = RunInfo.newRunId(startedAt, commit.substring(0, Math.min(10, commit.length())), variant);
+      if (machine == null)
+        machine = MachineProbe.probe(machineId);
+      final RunInfo info = new RunInfo(runId, startedAt, Instant.now(), trigger, "bench", arcadedb, machine, config);
+      new RunResult(info, results, complete, new JSONObject()).write(dir);
+    }
   }
 
   /**

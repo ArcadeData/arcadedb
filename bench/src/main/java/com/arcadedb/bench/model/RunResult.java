@@ -26,6 +26,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -77,7 +78,11 @@ public record RunResult(RunInfo info, List<CaseResult> results, boolean complete
   public void write(final Path dir) {
     try {
       Files.createDirectories(dir);
-      Files.writeString(dir.resolve(info.runId() + ".json"), toJSON().toString(2), StandardCharsets.UTF_8);
+      // through a temp file and an atomic move, so a kill mid-write never leaves half a file
+      final Path target = dir.resolve(info.runId() + ".json");
+      final Path temp = dir.resolve(info.runId() + ".json.tmp");
+      Files.writeString(temp, toJSON().toString(2), StandardCharsets.UTF_8);
+      Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }

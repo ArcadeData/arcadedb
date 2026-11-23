@@ -102,6 +102,15 @@ class RawDataTest {
   }
 
   @Test
+  void incompleteFileIsReadLikeAnyOther() throws IOException {
+    write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m", 1)).replaceFirst("\\{", "{\"complete\":false,"));
+
+    final Map<LineKey, List<Point>> lines = RawData.read(dir);
+
+    assertThat(lines.get(new LineKey("perf-01", "jvm", "S", "w", "c", "m")).get(0).median()).isEqualTo(1.0);
+  }
+
+  @Test
   void emitsAStatusLineAndOneLinePerMetric() throws IOException {
     write("a.json", run("r-a", "nightly", "abc123", null, null, "2026-11-20T03:00:00Z", metric("m1", 1) + "," + metric("m2", 2)));
 
