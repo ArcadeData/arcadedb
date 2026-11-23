@@ -106,7 +106,14 @@ public class TraverseExecutionPlanner {
     if (target == null) {
       handleNoTarget(result, context);
     } else if (target.getIdentifier() != null) {
-      handleClassAsTarget(result, this.target, context);
+      final Identifier identifier = target.getIdentifier();
+      // A context variable ($x, $parent.$current, $parent.$current.children) is resolved when the traversal runs, as
+      // SELECT does for a variable it cannot resolve while planning (issue #12084): a script LET is set after the
+      // whole script is planned. A back-tick quoted `$x` stays a type name.
+      if (!identifier.isQuoted() && identifier.getStringValue().startsWith("$"))
+        result.chain(new FetchFromVariableStep(identifier.getStringValue(), target.getModifier(), context));
+      else
+        handleClassAsTarget(result, this.target, context);
     } else if (target.getBucket() != null) {
       handleClustersAsTarget(result, List.of(target.getBucket()), context);
     } else if (target.getBucketList() != null) {
