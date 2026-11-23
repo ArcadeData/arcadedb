@@ -336,7 +336,7 @@ public class SelectExecutionPlanner {
         // a bucket named by an input parameter (FROM bucket:?) is resolved as the fetch resolves it, and the plan depends on it
         if (bucket.getInputParam() != null)
           planDependsOnInputParameters = true;
-        final String bucketName = resolveBucketName(bucket, context);
+        final String bucketName = bucket.resolveName(context.getInputParameters());
         if (bucketName == null && bucket.getBucketNumber() == null)
           throw new CommandExecutionException("FACETS: the target bucket " + bucket + " cannot be resolved");
         targetBuckets[i] = bucketName != null ? db.getSchema().getBucketByName(bucketName).getFileId() : bucket.getBucketNumber();
@@ -7227,7 +7227,12 @@ public class SelectExecutionPlanner {
     final Set<String> bucketNames = new HashSet<>();
 
     for (final Bucket parserBucket : buckets) {
-      String name = resolveBucketName(parserBucket, context);
+      // a bucket named by an input parameter (FROM bucket::name, FROM bucket:?) is resolved into the plan for this execution's
+      // bindings only: a plan kept for the next execution of the same text would read the bucket of the first one (#12480)
+      if (parserBucket.getInputParam() != null)
+        planDependsOnInputParameters = true;
+
+      String name = parserBucket.resolveName(context.getInputParameters());
       Integer bucketId = parserBucket.getBucketNumber();
       // #5636: null-tolerant, matching the name arm below. This method is an index-optimisation PROBE: every other
       // way of failing to resolve a bucket here sets tryByIndex = false and falls through to the ordinary fetch,
@@ -7292,7 +7297,7 @@ public class SelectExecutionPlanner {
 
       Integer bucketId = parserBucket.getBucketNumber();
       if (bucketId == null) {
-        final String resolvedName = resolveBucketName(parserBucket, context);
+        final String resolvedName = parserBucket.resolveName(context.getInputParameters());
         if (resolvedName != null) {
           final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
           if (bucket != null)
@@ -7316,7 +7321,7 @@ public class SelectExecutionPlanner {
 
         Integer bucketId = parserBucket.getBucketNumber();
         if (bucketId == null) {
-          final String resolvedName = resolveBucketName(parserBucket, context);
+          final String resolvedName = parserBucket.resolveName(context.getInputParameters());
           if (resolvedName != null) {
             final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByNameIfExists(resolvedName);
             if (bucket != null)
@@ -7332,31 +7337,6 @@ public class SelectExecutionPlanner {
       final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, orderByRidAsc);
       plan.chain(step);
     }
-  }
-
-  /**
-   * Resolves the bucket name from a Bucket object, handling parameterized bucket names.
-   * If the bucket has an inputParam, it resolves the parameter value from the context.
-   *
-   * @param parserBucket the bucket object to resolve
-   * @param context      the command context containing input parameters
-   * @return the resolved bucket name, or null if it cannot be resolved
-   */
-  private String resolveBucketName(final Bucket parserBucket, final CommandContext context) {
-    // First check for literal bucket name
-    if (parserBucket.getBucketName() != null) {
-      return parserBucket.getBucketName();
-    }
-
-    // Check for input parameter
-    if (parserBucket.getInputParam() != null) {
-      final Object paramValue = parserBucket.getInputParam().getValue(context.getInputParameters());
-      if (paramValue != null) {
-        return paramValue.toString();
-      }
-    }
-
-    return null;
   }
 
   private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {
