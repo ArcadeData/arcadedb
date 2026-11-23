@@ -7734,6 +7734,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // the hot path of every insert, to guard against a mistake that only a code change can introduce.
     assert lock.isWriteLockedByCurrentThread() : "queueDeltaEntry() without the write lock";
 
+    // A vector this index cannot score stays out of the buffer as the graph build leaves it out of the graph (issue #11635): the
+    // float cosine scores a squared norm below 2^-63 as -Infinity, so the vector would be the nearest to every query
+    if (entry.vector != null && isUnscorable(entry.vector))
+      return;
+
     DeltaVectorEntry queued = entry;
     if (entry.vector != null && !admitDeltaPayload())
       // Re-wrapped rather than mutated, so the entry stays immutable and safe to publish to the lock-free readers
