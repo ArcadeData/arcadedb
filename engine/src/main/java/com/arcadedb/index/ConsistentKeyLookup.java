@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -312,9 +313,13 @@ public final class ConsistentKeyLookup {
     return new Read(entries, bucketIds, dangling);
   }
 
+  /**
+   * Whether the running transaction reads at REPEATABLE_READ: the level it began with, not the database's default (#13159), since
+   * {@code begin(REPEATABLE_READ)} on a READ_COMMITTED default database pins pages all the same.
+   */
   private static boolean isRepeatableRead(final DatabaseInternal database) {
-    return database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isRepeatableRead();
   }
 
   /**
