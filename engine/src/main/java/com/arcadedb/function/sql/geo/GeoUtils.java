@@ -94,12 +94,13 @@ public class GeoUtils {
   /**
    * Reads the x/y of one vertex given to a geometry constructor ({@code geo.lineString()}, {@code geo.polygon()}): a
    * Spatial4j point, an {@code [x, y]} pair, or whatever a {@code point()} call returns (the WKT string {@code POINT (x y)})
-   * or a Cypher point map.
+   * or a Cypher point map. An EMPTY point has no position, so it is no vertex: it is refused like any value that is not a
+   * point rather than read as the NaN coordinates of a constructed geometry (issue #12277).
    *
-   * @throws IllegalArgumentException if the value is not a point
+   * @throws IllegalArgumentException if the value is not a point, or is an EMPTY one
    */
   public static double[] pointXY(final Object point) {
-    if (point instanceof Point p)
+    if (point instanceof Point p && !p.isEmpty())
       return new double[] { p.getX(), p.getY() };
     if (point instanceof List<?> list) {
       if (list.size() < 2)
@@ -117,7 +118,7 @@ public class GeoUtils {
       } catch (final IllegalArgumentException e) {
         throw new IllegalArgumentException("Invalid point element: " + point, e);
       }
-      if (shape instanceof Point p)
+      if (shape instanceof Point p && !p.isEmpty())
         return new double[] { p.getX(), p.getY() };
     }
     throw new IllegalArgumentException("Invalid point element: " + point);

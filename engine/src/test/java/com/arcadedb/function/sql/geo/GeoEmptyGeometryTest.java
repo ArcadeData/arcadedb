@@ -21,8 +21,11 @@ package com.arcadedb.function.sql.geo;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.locationtech.spatial4j.shape.Point;
+import org.locationtech.spatial4j.shape.Shape;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The {@code geo.*} functions answer an EMPTY geometry the way PostGIS and GeoJSON do instead of with an exception or NaN
@@ -75,6 +78,35 @@ class GeoEmptyGeometryTest extends TestHelper {
     assertThat(value("SELECT geo.envelope('POLYGON EMPTY') AS v")).isEqualTo("POLYGON EMPTY");
     assertThat(value("SELECT geo.area(geo.envelope('POINT EMPTY')) AS v")).isEqualTo(0.0);
     assertThat(value("SELECT geo.envelope('POINT (1 2)') AS v")).isEqualTo("POLYGON ((1 2, 1 2, 1 2, 1 2, 1 2))");
+  }
+
+  @Test
+  void anEmptyCircleIsAtNoDistance() {
+    // a circle is empty when its centre is: the guard in distanceDegrees covers the shapes that wrap another one too
+    final Shape emptyCircle = GeoUtils.getSpatialContext().getShapeFactory().circle((Point) GeoUtils.parseGeometry("POINT EMPTY"), 1.0);
+    final Shape point = GeoUtils.parseGeometry("POINT (1 1)");
+
+    assertThat(emptyCircle.isEmpty()).isTrue();
+    assertThat(GeoUtils.distanceDegrees(emptyCircle, point)).isNaN();
+    assertThat(GeoUtils.distanceDegrees(point, emptyCircle)).isNaN();
+    assertThat(new SQLFunctionGeoDistance().execute(null, null, null, new Object[] { emptyCircle, point }, null)).isNull();
+  }
+
+  @Test
+  void anEmptyPointIsNoVertexOfALineOrARing() {
+    // an EMPTY point has no position: it is refused as any other point that is not one, instead of written as NaN
+    assertThatThrownBy(() -> value("SELECT geo.lineString([geo.geomFromText('POINT EMPTY'), 'POINT (1 1)']) AS v")).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("Invalid point element");
+    assertThatThrownBy(() -> value("SELECT geo.lineString(['POINT (1 1)', 'POINT EMPTY']) AS v")).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("Invalid point element");
+    assertThatThrownBy(() -> value("SELECT geo.polygon(['POINT (0 0)', 'POINT (10 0)', 'POINT EMPTY']) AS v")).isInstanceOf(
+        IllegalArgumentException.class).hasMessageContaining("Invalid point element");
+    assertThatThrownBy(() -> value("SELECT geo.polygon([geo.geomFromText('POINT EMPTY'), 'POINT (10 0)', 'POINT (10 10)']) AS v"))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Invalid point element");
+
+    // non-empty answers are unchanged
+    assertThat(value("SELECT geo.lineString(['POINT (0 0)', geo.geomFromText('POINT (1 1)')]) AS v")).isEqualTo("LINESTRING (0 0, 1 1)");
+    assertThat(value("SELECT geo.polygon([[0, 0], [10, 0], [10, 10]]) AS v")).isEqualTo("POLYGON ((0 0, 10 0, 10 10, 0 0))");
   }
 
   @Test
