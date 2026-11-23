@@ -83,6 +83,10 @@ import java.util.logging.Level;
  * that state that do not involve this class at all - {@code ALTER PROPERTY ... MANDATORY TRUE} on a populated type,
  * and the {@code RESTORE} of #6127 - which is why it lives in the checker rather than here.
  * <p>
+ * A statement that commits partway - {@code CALL { ... } IN TRANSACTIONS}, which commits what the statement wrote before the
+ * CALL and then each batch on its own - has a check at each of those commits as well ({@link #checkBeforeCommit}, issue #13221):
+ * a record committed incomplete could not be taken back by the check at the end, whose delete the failed statement rolls back.
+ * <p>
  * Scopes nest: only the outermost {@link #open} returns a scope, so a nested plan (a {@code CALL} subquery, a
  * {@code FOREACH} body, a UNION branch) contributes its provisional records to the enclosing statement's scope and
  * never checks or closes it. That nesting is thread-bound, being keyed on {@link DatabaseContext}: it holds because
@@ -594,6 +598,61 @@ public class DeferredExistenceChecks {
         (incomplete.size() == 1 ?
             "A record created by this statement was left incomplete: " :
             incomplete.size() + " records created by this statement were left incomplete: ") + violations + outcome);
+  }
+
+  /**
+   * Enforces the deferred existence constraints at a commit point INSIDE the statement, called right before that commit
+   * (issue #13221). {@code CALL { ... } IN TRANSACTIONS} commits what the statement wrote before the CALL, then each batch on its
+   * own: a provisional record still pending at one of those commits would be committed incomplete, and {@link #check()} at the end
+   * of the statement could no longer take it back, its delete being rolled back with the failed statement. So every record pending
+   * here - the ones written since the previous commit point, as each commit point empties the set - must be complete now, as Neo4j
+   * validates existence constraints when an inner transaction commits.
+   * <p>
+   * A record still incomplete is deleted in the transaction about to commit and a {@link ValidationException} is raised, exactly as
+   * {@link #check()} does: the caller then rolls that transaction back (the statement fails, or under ON ERROR CONTINUE/BREAK only
+   * the batch is undone), so nothing of the record is committed. Either way the writes of the transaction are done with as far as
+   * this scope is concerned: the journal of what was written beside the provisional records is dropped.
+   * <p>
+   * A no-op when no scope is open on this thread (the statement runs no deferral) or nothing is pending.
+   */
+  public static void checkBeforeCommit(final DatabaseInternal database) {
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope == null || !scope.active)
+      return;
+
+    try {
+      if (!scope.isEmpty())
+        scope.check();
+    } finally {
+      scope.endOfTransaction();
+    }
+  }
+
+  /**
+   * Forgets every provisional record pending on this thread, called once the transaction they were written in has been rolled back
+   * inside the statement (a batch of {@code CALL { ... } IN TRANSACTIONS} under ON ERROR CONTINUE or BREAK, issue #13221): nothing
+   * of them is left to check, and a RID the rollback freed can be taken by a record of a later batch.
+   */
+  public static void rolledBack(final DatabaseInternal database) {
+    final DatabaseContext.DatabaseContextTL context = contextOf(database);
+    final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
+    if (scope == null || !scope.active)
+      return;
+
+    scope.unresolved.clear();
+    scope.pending.clear();
+    scope.endOfTransaction();
+  }
+
+  /** What a commit point or a rollback inside the statement leaves of this scope: no tally or journal of the writes before it. */
+  private void endOfTransaction() {
+    deferredUpdates = null;
+    journal = null;
+    journalOverflowed = false;
+    lightEdgeConnected = false;
+    if (isEmpty())
+      disarm();
   }
 
   /**
