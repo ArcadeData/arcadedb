@@ -113,6 +113,47 @@ class Issue12179InlinePropertyEvaluatedOnceTest extends TestHelper {
   }
 
   /**
+   * A deterministic WHERE equality is still sought in the index: only a value whose second evaluation can differ is left to the
+   * filter, so the fix costs no seek of the statements that never had the defect.
+   */
+  @Test
+  void deterministicWhereEqualityIsStillSoughtInTheIndex() {
+    final String query = "UNWIND range(0, 9) AS j MATCH (a:Indexed) WHERE a.k = j % 10 RETURN count(a) AS n";
+    assertThat(count(query)).isEqualTo(10L);
+    try (final ResultSet rs = database.query("opencypher", "PROFILE " + query)) {
+      while (rs.hasNext())
+        rs.next();
+      assertThat(rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2)).contains("Indexed[k]");
+    }
+  }
+
+  /**
+   * The leading prefix of a composite index (issue #11576) is tried after every whole-key seek found nothing, and is a lookup of its
+   * own: it has to take the value resolved once for the row too. Each prefix holds two entries, so every row keeps two matches
+   * (a seek of one draw checked with another kept about one row in ten).
+   */
+  @Test
+  void compositeIndexPrefixIsSoughtWithTheValueOfTheRow() {
+    database.command("sql", "CREATE VERTEX TYPE Pair");
+    database.command("sql", "CREATE PROPERTY Pair.a INTEGER");
+    database.command("sql", "CREATE PROPERTY Pair.b INTEGER");
+    database.command("sql", "CREATE INDEX ON Pair (a, b) NOTUNIQUE");
+    database.transaction(
+        () -> database.command("opencypher", "UNWIND range(0, 9) AS i UNWIND range(0, 1) AS m CREATE (:Pair {a: i, b: m})"));
+
+    assertThat(count("UNWIND range(1, 2000) AS j MATCH (p:Pair {a: toInteger(rand() * 10)}) RETURN count(p) AS n")).isEqualTo(4000L);
+
+    // the whole key, with one part drawn and one fixed
+    assertThat(count("UNWIND range(1, 2000) AS j MATCH (p:Pair {a: toInteger(rand() * 10), b: 1}) RETURN count(p) AS n"))
+        .isEqualTo(2000L);
+
+    calls.set(0);
+    assertThat(count("UNWIND range(1, 100) AS j MATCH (p:Pair {a: " + CALL + "(j % 10), b: " + CALL + "(j % 2)}) RETURN count(p) AS n"))
+        .isEqualTo(100L);
+    assertThat(calls.get()).isEqualTo(200);
+  }
+
+  /**
    * A node that names no type is sought in the index of each bucket it reads (issue #12522), with the value resolved once for the
    * row: the one every candidate is then checked with. Plain is emptied so no bucket is walked and the index answers every row.
    */
