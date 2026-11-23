@@ -170,6 +170,23 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public QueryResult handleQuery(final QueryParameters queryParameters) {
+    // an OP_QUERY answers every document in the one reply: the cursor is drained, and closed with the last row
+    final MongoFindCursor cursor = openCursor(queryParameters, null);
+    try {
+      final List<Document> documents = cursor.takeBatch(Integer.MAX_VALUE, Long.MAX_VALUE);
+      return new QueryResult(documents);
+    } finally {
+      cursor.close();
+    }
+  }
+
+  /**
+   * The documents a query selects, as a cursor that reads and converts them one batch at a time. The caller owns it: it must
+   * {@link MongoFindCursor#close() close} it, unless it is drained, which releases it too.
+   *
+   * @param projection applied to every document the cursor answers, or {@code null}
+   */
+  MongoFindCursor openCursor(final QueryParameters queryParameters, final MongoProjection projection) {
     int numberToReturn = queryParameters.getLimit();
     if (numberToReturn < 0)
       numberToReturn = -numberToReturn;
@@ -197,11 +214,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     // so is an invalid sort
     final MongoSortOrder sortOrder = orderBy != null && !orderBy.isEmpty() ? new MongoSortOrder(orderBy) : null;
     if (this.count() == 0)
-      return new QueryResult();
+      return MongoFindCursor.empty();
 
-    final Iterable<Document> objs = this.queryDocuments(filter, sortOrder, numberToSkip, numberToReturn);
-
-    return new QueryResult(objs);
+    return this.queryDocuments(filter, sortOrder, numberToSkip, numberToReturn, projection);
   }
 
   @Override
@@ -601,48 +616,63 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   /**
+   * The documents of a query, read and converted as the cursor is consumed.
+   *
    * @param sortOrder the order of the answer, or {@code null} for the order the documents are read in
    */
-  private Iterable<Document> queryDocuments(final MongoFilter filter, final MongoSortOrder sortOrder, final int numberToSkip,
-      final int numberToReturn) {
-    final List<Document> result = new ArrayList<>();
-
+  private MongoFindCursor queryDocuments(final MongoFilter filter, final MongoSortOrder sortOrder, final int numberToSkip,
+      final int numberToReturn, final MongoProjection projection) {
     // a TIMESERIES type keeps its samples in its own engine, not in its buckets: the scan would answer no document while the
     // count answers the samples, so it is read with SQL, which serves them (issue #10442)
     if (filter.isEmpty() && !(database.getSchema().getTypeOrNull(collectionName) instanceof TimeSeriesType)) {
       // SCAN
       final Iterator<?> records = database.iterateType(collectionName, false);
       if (sortOrder == null)
-        MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, records);
-      else
-        fillSorted(sortOrder, numberToSkip, numberToReturn, result, records);
-    } else {
-      // EXECUTE A SQL QUERY. A filter the SQL cannot answer exactly (see MongoFilter) is applied to the rows the query returns, in the
-      // order it returns them, so skip and limit count the matches
-      final Map<String, Object> params = new HashMap<>();
-      final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
-
-      filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
-
-      try (final ResultSet rs = database.query("SQL", sql.toString(), params)) {
-        final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
-        if (sortOrder == null)
-          MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rows);
-        else
-          fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows);
-      }
+        return new MongoFindCursor(records, null, numberToSkip, numberToReturn, projection);
+      return sorted(sortOrder, numberToSkip, numberToReturn, records, projection);
     }
 
-    return result;
+    // EXECUTE A SQL QUERY. A filter the SQL cannot answer exactly (see MongoFilter) is applied to the rows the query returns, in the
+    // order it returns them, so skip and limit count the matches
+    final Map<String, Object> params = new HashMap<>();
+    final StringBuilder sql = new StringBuilder("select from ").append(Identifier.quote(collectionName));
+
+    filter.appendCandidateWhere(sql, params, database.getSchema().getTypeOrNull(collectionName));
+
+    final ResultSet rs = database.query("SQL", sql.toString(), params);
+    // the cursor owns the result set once it exists: a sort reads every row at once and is done with it
+    boolean handedOver = false;
+    try {
+      final Iterator<?> rows = filter.isEmpty() ? rs : new FilteredIterator(rs, filter);
+      if (sortOrder == null) {
+        final MongoFindCursor cursor = new MongoFindCursor(rows, rs, numberToSkip, numberToReturn, projection);
+        handedOver = true;
+        return cursor;
+      }
+      return sorted(sortOrder, numberToSkip, numberToReturn, rows, projection);
+    } finally {
+      if (!handedOver)
+        rs.close();
+    }
+  }
+
+  /** The cursor over the rows in the order of a sort, which is known only once every row is read. */
+  private static MongoFindCursor sorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn,
+      final Iterator<?> rows, final MongoProjection projection) {
+    final List<Object> result = new ArrayList<>();
+    fillSorted(sortOrder, numberToSkip, numberToReturn, result, rows);
+    return new MongoFindCursor(result.iterator(), null, 0L, 0L, projection);
   }
 
   /**
    * Answers the matching rows in the BSON order of the sort, then skips and limits (issue #12069). SQL {@code ORDER BY} cannot be used:
    * it coerces across types and sees an array as one value, so it answers another order and paginates over other documents. With a
    * limit only the first {@code skip + limit} documents of the order are held, and only those are converted to a reply document: the
-   * others are placed by the few properties the sort reads.
+   * others are placed by the few properties the sort reads, and the ones answered are converted as the cursor serves them.
+   *
+   * @param result receives the rows, or the converted documents when every match was converted to be placed
    */
-  private static void fillSorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final List<Document> result,
+  private static void fillSorted(final MongoSortOrder sortOrder, final int numberToSkip, final int numberToReturn, final List<Object> result,
       final Iterator<?> rows) {
     final int skip = Math.max(numberToSkip, 0);
     if (numberToReturn > 0) {
@@ -658,13 +688,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       }
       final List<MongoSortOrder.Entry<Object>> sorted = top.sorted();
       for (int i = skip; i < sorted.size(); i++)
-        result.add(toMongoDocument(sorted.get(i).value));
+        result.add(sorted.get(i).value);
     } else {
       // every match is answered: each is converted once, and its keys read off the reply document. Known cost: without a limit
       // every match is held before the sort (mongod would spill to disk past 100MB), as the SQL ORDER BY this replaces held them
       final List<MongoSortOrder.Entry<Document>> entries = new ArrayList<>();
       while (rows.hasNext()) {
-        final Document document = toMongoDocument(rows.next());
+        final Document document = MongoFindCursor.toDocument(rows.next());
         entries.add(new MongoSortOrder.Entry<>(sortOrder.keyOf(document), 0, document));
       }
       sortOrder.sort(entries);
@@ -678,14 +708,6 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
       return result.toPropertyMap(false);
     if (row instanceof com.arcadedb.database.Document document)
       return document.toMap(false);
-    throw new IllegalArgumentException("Object not supported: " + (row != null ? row.getClass().getName() : null));
-  }
-
-  private static Document toMongoDocument(final Object row) {
-    if (row instanceof Result result)
-      return MongoDBToSqlTranslator.convertDocumentToMongoDB(result);
-    if (row instanceof com.arcadedb.database.Document document)
-      return MongoDBToSqlTranslator.convertDocumentToMongoDB(document);
     throw new IllegalArgumentException("Object not supported: " + (row != null ? row.getClass().getName() : null));
   }
 
