@@ -208,6 +208,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String          owner;
     final long            createdAtMs;
     volatile long         lastAccessMs;
+    // Statements of this transaction that are executing right now: a transaction in the middle of one is in use, however long
+    // the statement outlasts the idle window, and the idle reaper must not roll it back under it (issue #13253)
+    final AtomicInteger   runningStatements = new AtomicInteger();
     // A statement running in this transaction was terminated (issue #9689): it is rolled back, and a commit that claimed
     // the transaction while the statement still ran - its task queued behind the statement's - must not publish anything
     volatile boolean      terminated;
@@ -246,6 +249,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      */
     void touch() {
       this.lastAccessMs = System.currentTimeMillis();
+    }
+
+    /** True when the transaction has been unused for {@code idleMs}: no statement is running in it and the last use is that old. */
+    boolean isIdleFor(final long idleMs, final long now) {
+      return runningStatements.get() == 0 && now - lastAccessMs >= idleMs;
     }
 
     void shutdown() {
@@ -621,12 +629,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final RunningQuery.Binding binding = runningQuery != null ? runningQuery.bind() : null;
         final QueryAdmissionGate.Adoption adoption = admission.adopt();
         Throwable failure = null;
+        txCtx.runningStatements.incrementAndGet();
         try {
           return task.call();
         } catch (final Throwable t) {
           failure = t;
           throw t;
         } finally {
+          // the idle window counts from the end of the statement, not from its dispatch
+          txCtx.touch();
+          txCtx.runningStatements.decrementAndGet();
           adoption.close();
           if (readConsistency != null)
             readConsistency.clear();
@@ -666,7 +678,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final TransactionContext ctx = entry.getValue();
         final long idleMs = now - ctx.lastAccessMs;
         final long ageMs = now - ctx.createdAtMs;
-        final boolean idleExpired = txMaxIdleMs > 0 && idleMs >= txMaxIdleMs;
+        final boolean idleExpired = txMaxIdleMs > 0 && ctx.isIdleFor(txMaxIdleMs, now);
         final boolean ageExpired = txMaxAgeMs > 0 && ageMs >= txMaxAgeMs;
         if (!idleExpired && !ageExpired)
           continue;
@@ -675,11 +687,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // request that touched it (via lookupActiveTransaction()) between the staleness read above and the
         // remove below is not reaped out from under an active caller. An age-expired transaction is reaped
         // regardless, since createdAtMs never advances on touch().
-        if (!ageExpired) {
-          final long freshIdleMs = System.currentTimeMillis() - ctx.lastAccessMs;
-          if (txMaxIdleMs <= 0 || freshIdleMs < txMaxIdleMs)
-            continue;
-        }
+        if (!ageExpired && (txMaxIdleMs <= 0 || !ctx.isIdleFor(txMaxIdleMs, System.currentTimeMillis())))
+          continue;
 
         // remove(key, value) ensures only one of the reaper / commit / rollback wins the cleanup.
         // Residual TOCTOU note: a request could lookupActiveTransaction() (touch + submit work) in the instant
