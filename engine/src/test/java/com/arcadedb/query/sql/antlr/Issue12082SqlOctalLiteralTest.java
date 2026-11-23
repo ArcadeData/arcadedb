@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -104,6 +104,10 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     // hexadecimal and the L suffix were never accepted in the range token, and still are not
     assertThatThrownBy(() -> database.query("sql", "SELECT l[0x1..0x3] AS r FROM L").close()).hasMessageContaining("range token");
     assertThatThrownBy(() -> database.query("sql", "SELECT l[1L..3L] AS r FROM L").close()).hasMessageContaining("range token");
+
+    // a leading 0 followed by an 8 or a 9 never lexed as one number, so it never reached the range token: still a syntax error
+    assertThatThrownBy(() -> database.query("sql", "SELECT l[08..10] AS r FROM L").close()).isInstanceOf(CommandSQLParsingException.class);
+    assertThatThrownBy(() -> database.query("sql", "SELECT l[1..09] AS r FROM L").close()).isInstanceOf(CommandSQLParsingException.class);
   }
 
   @Test
@@ -120,8 +124,7 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
 
     // a bucket id whose decimal digits are all octal digits and whose octal reading would be another bucket: bucket:0NN is the
     // bucket NN, as RID's own text form says (#NN:0 is the first record of the bucket NN)
-    final int bucketId = type.getBuckets(false).stream().map(Bucket::getFileId).filter(id -> id >= 8 && isOctalSpelled(id)).findFirst()
-        .orElseThrow();
+    final int bucketId = bucketIdWhoseOctalReadingDiffers();
     final String padded = "0" + bucketId;
 
     database.transaction(() -> {
@@ -148,9 +151,34 @@ class Issue12082SqlOctalLiteralTest extends TestHelper {
     database.transaction(() -> {
       database.command("sql", "INSERT INTO T SET n = 8");
       database.command("sql", "INSERT INTO T SET n = 10");
+      database.command("sql", "INSERT INTO T SET n = -8");
+      database.command("sql", "INSERT INTO T SET n = 0");
+      database.command("sql", "INSERT INTO T SET big = -9223372036854775808");
     });
     assertThat(single("SELECT n FROM T WHERE n = 10").<Object>getProperty("n")).isEqualTo(10);
     assertThat(single("SELECT n FROM T WHERE n = 010").<Object>getProperty("n")).isEqualTo(8);
+
+    // the extracted value of a negated literal: the sign moves into the value, with or without the L suffix, and so does the
+    // Long.MIN_VALUE fold of a magnitude that overflows a long (the same value the parser gives it)
+    assertThat(single("SELECT n FROM T WHERE n = -010").<Object>getProperty("n")).isEqualTo(-8);
+    assertThat(single("SELECT n FROM T WHERE n = -010L").<Object>getProperty("n")).isEqualTo(-8);
+    assertThat(single("SELECT n FROM T WHERE n = -0").<Object>getProperty("n")).isEqualTo(0);
+    assertThat(single("SELECT big FROM T WHERE big = -01000000000000000000000").<Object>getProperty("big")).isEqualTo(Long.MIN_VALUE);
+    assertThat(single("SELECT big FROM T WHERE big = -01000000000000000000000L").<Object>getProperty("big")).isEqualTo(Long.MIN_VALUE);
+  }
+
+  /**
+   * The id of a bucket whose decimal digits are all octal digits, so that {@code bucket:0NN} lexes as one token, and that is at
+   * least 8, so that reading those digits in octal would address another bucket. File ids depend on what the database holds, so
+   * single-bucket types are created until one has such an id.
+   */
+  private int bucketIdWhoseOctalReadingDiffers() {
+    for (int i = 0; i < 200; i++) {
+      final int id = database.getSchema().createDocumentType("B" + i, 1).getBuckets(false).getFirst().getFileId();
+      if (id >= 8 && isOctalSpelled(id))
+        return id;
+    }
+    throw new AssertionError("no bucket id spelled with octal digits only");
   }
 
   private static boolean isOctalSpelled(final int id) {

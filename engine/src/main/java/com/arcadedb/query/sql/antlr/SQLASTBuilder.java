@@ -3438,7 +3438,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       if (!Character.isDigit(text.charAt(i)))
         return null; // hex-shaped: not the digits-only shape we fold here
 
-    // a leading 0 makes the digits octal (#12082): the magnitude of Long.MIN_VALUE is 01000000000000000000000
+    // a leading 0 makes the digits octal (#12082): the magnitude of Long.MIN_VALUE is 01000000000000000000000. `text` is the
+    // digits without the L suffix, tested for fit here; the fold below takes `originalText` and strips the suffix itself
     final int radix = integerLiteralRadix(text);
     try {
       Long.parseLong(text, radix);
