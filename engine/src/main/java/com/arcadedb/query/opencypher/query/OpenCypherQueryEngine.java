@@ -40,6 +40,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -109,6 +110,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -879,7 +881,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       try {
         if (type.existsProperty(propName))
           type.dropProperty(propName);
-        type.createProperty(propName, previous);
+        // Every attribute that can be put back is. One the schema refuses now - a DEFAULT an earlier release accepted and the schema
+        // refuses at DDL time since #12040 (#6134 before it) - is left off: stopping at it would also drop every attribute applied
+        // after it (MANDATORY, READONLY, NOTNULL, the bounds, the pattern, the custom values), and the default was failing every
+        // record create of the type already.
+        type.createProperty(propName, previous, (attribute, refusal) -> LogManager.instance().log(this, Level.WARNING,
+            "The %s of property '%s.%s' was not put back after the refused change of its type, because the schema refuses it: %s",
+            attribute, typeName, propName, refusal.getMessage()));
       } catch (final Throwable restoreFailure) {
         e.addSuppressed(restoreFailure);
       }

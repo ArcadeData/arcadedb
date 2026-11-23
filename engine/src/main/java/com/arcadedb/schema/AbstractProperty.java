@@ -207,6 +207,9 @@ public abstract class AbstractProperty implements Property {
    * <li>a bare identifier, which is a field reference: the default expression is always evaluated against a
    * {@code null} record, so it can never resolve and silently yielded {@code null} forever. {@code DEFAULT active} is
    * the obvious thing to type for a literal, and has to be written {@code DEFAULT 'active'}.</li>
+   * <li>a default written as literals alone that cannot be converted to the property's type ({@code INTEGER DEFAULT 'dflt'},
+   * {@code DATE DEFAULT 'notadate'}), which failed every record create of the type (issue #12040). A default that calls a
+   * function is evaluated per record, and stays a per-record question.</li>
    * </ul>
    * While the schema is still hydrating from {@code schema.json} this never throws: an existing database whose schema
    * already holds an invalid default must still open. Such a default is logged as a warning and left uncompiled, which
@@ -225,6 +228,7 @@ public abstract class AbstractProperty implements Property {
 
     Expression compiled = null;
     String reason = null;
+    // set when the default compiles but its value cannot be converted: the load path words its warning for that case
     boolean unconvertible = false;
     try {
       compiled = new SQLAntlrParser(database).parseExpression(text);
@@ -239,13 +243,14 @@ public abstract class AbstractProperty implements Property {
     // A default written as literals alone ('dflt', 42, null, arithmetic over them) has the one value every record would get, so it is
     // converted to the property's type now: one that cannot be converted used to fail every record create of the type with a 500
     // (issue #12040). A default calling a function (sysdate()) is evaluated per record and stays a per-record question.
-    if (reason == null && compiled.isLiteral())
+    if (reason == null && compiled.isLiteral()) {
       try {
-        Type.convert(database, compiled.execute((Record) null, new BasicCommandContext().setDatabase(database)), type.javaDefaultType);
-      } catch (Exception e) {
+        requireConvertible(compiled, database);
+      } catch (final Exception e) {
         unconvertible = true;
         reason = "it cannot be converted to the property type " + type + (e.getMessage() == null ? "" : ": " + e.getMessage());
       }
+    }
 
     if (reason == null)
       return compiled;
@@ -270,6 +275,21 @@ public abstract class AbstractProperty implements Property {
     // a bare identifier compiled, and keeping it preserves the null it has always evaluated to; an unparseable one is
     // null here, which is what makes getDefaultValue() fall back to the source text.
     return compiled;
+  }
+
+  /**
+   * Evaluates a literal default and converts the value the way a record create does, so a value the property cannot hold is
+   * found now and not on every record (issue #12040). A record create converts it twice: {@link #getDefaultValue()} to the
+   * default class of the type, then the record's {@code set()} to the class the property is stored as, which is also where the
+   * {@code OF} type of a collection applies ({@code MutableDocument.convertValueToSchemaType}). Both are asked here, in that
+   * order, with the same calls.
+   *
+   * @throws RuntimeException the one a record create would raise
+   */
+  private void requireConvertible(final Expression literal, final Database database) {
+    final Object value = Type.convert(database, literal.execute((Record) null, new BasicCommandContext().setDatabase(database)),
+        type.javaDefaultType);
+    Type.convert(database, value, type.getJavaImplementation(database), this);
   }
 
   /**
