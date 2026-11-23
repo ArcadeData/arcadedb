@@ -40,6 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * every relationship of the file as {@code skippedEdges} in its vertex pass, created or not, and counted the ones it really
  * dropped as {@code warnings}; the OrientDB importer counted them in a field that never reached the report. Both now report
  * exactly the dropped edges as {@code skippedEdges}, the counter the CSV route reports the same case in.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12047ImportReportSkippedEdgesTest {
   private static final String DB_PATH = "target/databases/issue12047";
@@ -63,12 +65,16 @@ class Issue12047ImportReportSkippedEdgesTest {
         {"type":"relationship","id":"1","label":"R","properties":{},"start":{"id":"1","labels":["P"]},"end":{"id":"0","labels":["P"]}}
         {"type":"relationship","id":"2","label":"R","properties":{},"start":{"id":"0","labels":["P"]},"end":{"id":"99","labels":["P"]}}
         {"type":"relationship","id":"3","label":"R","properties":{},"start":{"id":"98","labels":["P"]},"end":{"id":"0","labels":["P"]}}
+        {"type":"relationship","id":"4","properties":{},"start":{"id":"0","labels":["P"]},"end":{"id":"1","labels":["P"]}}
         """, StandardCharsets.UTF_8);
     try {
       final Result report = importFile(source);
       assertThat(report.<Long>getProperty("createdEdges")).isEqualTo(2L);
-      assertThat(report.<Long>getProperty("skippedEdges")).isEqualTo(2L);
+      // MISSING END, MISSING START AND NO LABEL: THE THREE CASES THE EDGE PASS DROPS A RELATIONSHIP IN
+      assertThat(report.<Long>getProperty("skippedEdges")).isEqualTo(3L);
       assertThat(report.hasProperty("warnings")).isFalse();
+      // EVERY RELATIONSHIP IS EITHER CREATED OR SKIPPED, SO THE REPORT ADDS UP (ISSUE #7488)
+      assertThat(report.<Long>getProperty("parsedRecords")).isEqualTo(2L + 2L + 3L);
     } finally {
       source.delete();
     }

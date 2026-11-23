@@ -251,9 +251,11 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
 
     // THE PASS COUNTS EVERY RECORD AS IT SAVES IT, BUT THE PASS IS ONE ALL-OR-NOTHING TRANSACTION: WHEN IT DOES NOT
     // COMMIT, WHAT THE REPORT CALLS "CREATED" MUST GO BACK TO WHAT IT WAS BEFORE THE PASS, OR A FAILED IMPORT REPORTS
-    // EVERY RECORD IT READ AS CREATED (#8160). A FAILED commit() DISCARDS THE PASS TOO, SO IT RESTORES AS WELL
+    // EVERY RECORD IT READ AS CREATED (#8160). A FAILED commit() DISCARDS THE PASS TOO, SO IT RESTORES AS WELL. THE EDGES
+    // THE PASS DROPPED FOR A MISSING ENDPOINT ARE THE SAME KIND OF COUNT, REPORTED ONLY FOR THE PASSES THAT COMMITTED (#12047)
     final long verticesBefore = context.createdVertices.get();
     final long edgesBefore = context.createdEdges.get();
+    final long skippedEdgesBefore = context.skippedEdges.get();
     final long parsedBefore = context.parsed.get();
     boolean committed = false;
 
@@ -274,6 +276,7 @@ public class GraphSONImporterFormat extends AbstractTinkerPopImporterFormat {
       if (!committed) {
         context.createdVertices.set(verticesBefore);
         context.createdEdges.set(edgesBefore);
+        context.skippedEdges.set(skippedEdgesBefore);
         context.parsed.set(parsedBefore);
       }
     }

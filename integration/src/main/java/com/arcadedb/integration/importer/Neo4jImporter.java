@@ -207,8 +207,9 @@ public class Neo4jImporter {
       final long elapsed = (System.currentTimeMillis() - context.startedOn) / 1000;
 
       log("***************************************************************************************************");
-      log("Import of Neo4j database completed in %,d secs with %,d errors and %,d warnings.", elapsed, context.errors.get(),
-          context.warnings.get());
+      // THE EDGES DROPPED FOR A MISSING ENDPOINT OR LABEL ARE NO LONGER IN warnings: THEY ARE skippedEdges, SO THE SUMMARY SAYS SO (#12047)
+      log("Import of Neo4j database completed in %,d secs with %,d errors, %,d warnings and %,d skipped edges.", elapsed,
+          context.errors.get(), context.warnings.get(), context.skippedEdges.get());
       log("\nSUMMARY\n");
       log("- Vertices.............: %,d", totalVerticesParsed);
       for (final Map.Entry<String, Long> entry : totalVerticesByType.entrySet()) {

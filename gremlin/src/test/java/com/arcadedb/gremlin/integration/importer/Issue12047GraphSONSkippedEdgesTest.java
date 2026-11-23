@@ -20,7 +20,9 @@ package com.arcadedb.gremlin.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.integration.importer.ImportException;
 import com.arcadedb.integration.importer.Importer;
+import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,10 +34,13 @@ import java.nio.file.Files;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12047: on the GraphSON route for non-RID vertex ids an edge whose endpoint is not in the file was logged on the server
  * and counted nowhere, so the import report could not show it. It is now reported as {@code skippedEdges}.
+ *
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12047GraphSONSkippedEdgesTest {
   private static final String DATABASE_PATH = "target/databases/issue-12047-graphson-skipped-edges";
@@ -61,6 +66,38 @@ class Issue12047GraphSONSkippedEdgesTest {
           .containsEntry("skippedEdges", 1L);
       assertThat(database.countType("k", true)).isEqualTo(2);
     } finally {
+      database.drop();
+      source.delete();
+    }
+  }
+
+  /**
+   * The edge pass is one all-or-nothing transaction (issue #8160): when it throws, the report goes back to what the committed
+   * passes made, and an edge the pass dropped before it threw is not part of what the report says about the import.
+   */
+  @Test
+  void aRolledBackEdgePassDoesNotReportTheEdgesItDropped() throws Exception {
+    final File source = new File("target/issue12047-rolled-back.graphson");
+    // THE EDGE OF "a" NAMES A VERTEX THAT IS NOT IN THE FILE (DROPPED, COUNTED), THE ONE OF "b" NAMES A DOCUMENT TYPE (THROWS)
+    Files.writeString(source.toPath(), """
+        {"id":"a","label":"p","outE":{"k":[{"id":10,"inV":"missing"}]},"properties":{}}
+        {"id":"b","label":"p","outE":{"NotAnEdge":[{"id":11,"inV":"a"}]},"properties":{}}
+        """, StandardCharsets.UTF_8);
+
+    final Database database = new DatabaseFactory(DATABASE_PATH).create();
+    try {
+      database.command("sql", "CREATE DOCUMENT TYPE NotAnEdge");
+
+      final Importer importer = new Importer(database, source.getAbsolutePath());
+      assertThatThrownBy(importer::load).isInstanceOf(ImportException.class);
+
+      final ImporterContext context = importer.getContext();
+      assertThat(context.createdVertices.get()).as("the vertex pass committed").isEqualTo(2L);
+      assertThat(context.createdEdges.get()).isEqualTo(0L);
+      assertThat(context.skippedEdges.get()).as("the edge the rolled back pass dropped is not reported").isEqualTo(0L);
+    } finally {
+      while (database.isTransactionActive())
+        database.rollback();
       database.drop();
       source.delete();
     }
