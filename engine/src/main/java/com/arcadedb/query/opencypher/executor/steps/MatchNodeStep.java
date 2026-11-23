@@ -47,6 +47,7 @@ import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
@@ -104,6 +105,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
   // concurrent queries (issue #4909).
   private static final Result       EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  // Whether that expression reads only what the input row binds, not the variable this step binds (WHERE id(a) = id(a) reads a, which
+  // the row does not hold: a null there is no answer for the row)
+  private final boolean             dynamicIdReadsOnlyTheRow;
   // The IN-lists of the WHERE filter a property index can answer, found once here rather than per input row (see InListSeek)
   private final List<InListSeek>    inListSeeks;
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
@@ -231,6 +235,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.idFilter = idFilter;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
     this.dynamicIdExpression = whereFilter != null ? findIdValueExpression(whereFilter) : null;
+    this.dynamicIdReadsOnlyTheRow = dynamicIdExpression != null
+        && !WhereClause.collectExpressionVariables(dynamicIdExpression).contains(variable);
     // When the dynamic ID expression handles {@code id(variable) = X} via runtime RID lookup, the
     // same predicate is still present in the WHERE pushdown filter. Re-evaluating it row-by-row
     // would be wasted work, and after id() became Neo4j-compatible (returns Long instead of an RID
@@ -661,14 +667,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if ((effectiveIdFilter == null || effectiveIdFilter.isEmpty())
         && dynamicIdExpression != null && currentInputResult != null) {
       final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
-      if (resolved != null) {
-        if (resolved instanceof Identifiable identifiable)
-          effectiveIdFilter = identifiable.getIdentity().toString();
-        else if (resolved instanceof Number number)
-          effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
-        else
-          effectiveIdFilter = resolved.toString();
-      }
+      // id(n) = null is never true, and the equality was stripped from the filter: falling through would scan the whole type for a
+      // row that cannot match (issue #13236)
+      if (resolved == null && dynamicIdReadsOnlyTheRow)
+        return Collections.emptyIterator();
+      if (resolved instanceof Identifiable identifiable)
+        effectiveIdFilter = identifiable.getIdentity().toString();
+      else if (resolved instanceof Number number)
+        effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
+      else if (resolved != null)
+        effectiveIdFilter = resolved.toString();
     }
 
     // If ID filter is present, look up the specific vertex by ID.
