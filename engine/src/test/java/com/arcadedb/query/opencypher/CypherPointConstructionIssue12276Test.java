@@ -113,6 +113,16 @@ class CypherPointConstructionIssue12276Test extends TestHelper {
     assertThat(value("point({x: 1, y: 2, latitude: 3, longitude: 4, crs: 'wgs-84'}).latitude")).isEqualTo(2.0);
   }
 
+  // z wins over height when a map holds both, and a null z suppresses the height, as the map always read
+  @Test
+  void zWinsOverHeight() {
+    assertThat(value("point({x: 1, y: 2, z: 3, height: 4, srid: 4979}).height")).isEqualTo(3.0);
+    assertThat(value("point({longitude: 1, latitude: 2, z: 3, height: 4}).height")).isEqualTo(3.0);
+    assertThat(value("point({longitude: 1, latitude: 2, z: 3, height: 4}).z")).isEqualTo(3.0);
+    assertThat(value("point({longitude: 1, latitude: 2, height: 4}).z")).isEqualTo(4.0);
+    assertThat(value("point({longitude: 1, latitude: 2, z: null, height: 4}).crs")).isEqualTo("wgs-84");
+  }
+
   @Test
   void nonFiniteCoordinatesAreRefused() {
     assertRefused("point({x: 1/0.0, y: 2}).x", "non-finite");

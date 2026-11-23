@@ -207,8 +207,7 @@ public class CypherPointFunction implements StatelessFunction {
 
   /** Names the keys of the map, a capped and cleaned list of them: the message travels to the client and into the log. */
   private static CommandSemanticException invalidPoint(final Map<?, ?> map) {
-    return new CommandSemanticException(
-        "point() A map with keys " + CypherValues.describeKeys(map) + " is not describing a valid point");
+    return new CommandSemanticException("A map with keys " + CypherValues.describeKeys(map) + " is not describing a valid point");
   }
 
   /**
@@ -340,7 +339,7 @@ public class CypherPointFunction implements StatelessFunction {
           "point() '" + key + "' must be numeric, found " + describe(value));
     // As in Neo4j (issue #12276): an infinite or NaN coordinate made point.distance() answer Infinity or NaN
     if (!Double.isFinite(coordinate))
-      throw new CommandSemanticException("point() Cannot create a point with non-finite coordinate values");
+      throw new CommandSemanticException("Cannot create a point with non-finite coordinate values");
     return coordinate;
   }
 
