@@ -52,6 +52,10 @@ import java.util.function.LongSupplier;
  *       non-200 and is the discriminator this whole mechanism turns on;</li>
  *   <li>a peer whose last answer is older than {@link #ttlMs}.</li>
  * </ul>
+ * <p>
+ * One reader is exempt, and only for what a peer has already said: {@link #peersMissingFramedSection}, the gate of the
+ * framed optional sections of {@code TX_ENTRY} (issue #12122). See there for why a peer that merely stopped answering
+ * keeps, for those sections only, the capabilities of its last answer.
  *
  * <h2>Why the answer expires</h2>
  *
@@ -84,10 +88,15 @@ public final class PeerCapabilityRegistry {
 
   /** One peer's last successful answer. */
   public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap,
-      Set<String> quarantined, long appliedIndex) {
+      Set<String> quarantined, long appliedIndex, long applyBacklogBudget) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
+    }
+
+    public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
+        final boolean serviceGap, final Set<String> quarantined, final long appliedIndex) {
+      this(capabilities, version, observedAtMs, serviceGap, quarantined, appliedIndex, -1L);
     }
 
     public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
@@ -157,6 +166,17 @@ public final class PeerCapabilityRegistry {
    * operator-facing: {@link #peersMissing} never reads it, because every unknown is a "no" whatever produced it.
    */
   private final ConcurrentHashMap<String, Unknown>       unknownReasons = new ConcurrentHashMap<>();
+
+  /**
+   * The capabilities of each peer's last answer, kept through a probe that got NO answer (issue #12122): read by
+   * {@link #peersMissingFramedSection} only. Replaced by the next answer, and dropped by the outcomes that say something
+   * about the peer or about this node's right to ask it: a 404 on the capability route ({@link UnknownKind#ROUTE_MISSING}),
+   * an address this node may not dial ({@link UnknownKind#ADDRESS_REFUSED}) unless the round still asks the peer at a shared
+   * address, the peer leaving the configuration
+   * ({@link #retainOnly}) and {@link #clear()}. An {@link UnknownKind#UNREACHABLE} probe and an answer that aged past the
+   * TTL leave it in place.
+   */
+  private final ConcurrentHashMap<String, Set<String>>   lastAnswered   = new ConcurrentHashMap<>();
   private final long                                     ttlMs;
 
   /**
@@ -236,12 +256,25 @@ public final class PeerCapabilityRegistry {
    */
   public boolean record(final long generation, final String peerId, final Set<String> capabilities,
       final String version, final boolean serviceGap, final Set<String> quarantined, final long appliedIndex) {
+    return record(generation, peerId, capabilities, version, serviceGap, quarantined, appliedIndex, -1L);
+  }
+
+  /**
+   * As {@link #record(long, String, Set, String, boolean, Set, long)}, also holding the byte budget the peer advertises
+   * for its own apply backlog ({@code -1} when it advertises none), which the leader reads to hold a follower to the
+   * smaller of the two nodes' budgets (issue #11508). Not a transition to report either.
+   */
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version, final boolean serviceGap, final Set<String> quarantined, final long appliedIndex,
+      final long applyBacklogBudget) {
     final Set<String> frozen = Set.copyOf(capabilities);
     final Set<String> frozenQuarantined = quarantined == null || quarantined.isEmpty() ? Set.of() : Set.copyOf(quarantined);
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
-      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined, appliedIndex));
+      advertisements.put(peerId,
+          new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined, appliedIndex, applyBacklogBudget));
+      lastAnswered.put(peerId, frozen);
       unknownReasons.remove(peerId);
       return !frozen.equals(lastReported.put(peerId, frozen));
     }
@@ -269,10 +302,23 @@ public final class PeerCapabilityRegistry {
    * itself.
    */
   public boolean forget(final long generation, final String peerId, final String reason, final UnknownKind kind) {
+    return forget(generation, peerId, reason, kind, holdsLastAnswer(kind));
+  }
+
+  /**
+   * As {@link #forget(long, String, String, UnknownKind)}, with the caller deciding whether what the peer last answered stays held
+   * for {@link #peersMissingFramedSection} (issue #12122). The capability round passes {@code true} for an
+   * {@link UnknownKind#ADDRESS_REFUSED} peer it still asks at a shared address: the refusal is this node's configuration, and the
+   * peer's next answer, or a 404 there, ends the hold as it does for any other peer.
+   */
+  public boolean forget(final long generation, final String peerId, final String reason, final UnknownKind kind,
+      final boolean holdLastAnswer) {
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
       advertisements.remove(peerId);
+      if (!holdLastAnswer)
+        lastAnswered.remove(peerId);
       putUnknown(peerId, reason, kind);
       return lastReported.put(peerId, PROBE_FAILED) != PROBE_FAILED;
     }
@@ -301,10 +347,18 @@ public final class PeerCapabilityRegistry {
 
   /** As {@link #suspend(long, String, String)}, recording what kind of failure {@code reason} describes (issue #8655). */
   public void suspend(final long generation, final String peerId, final String reason, final UnknownKind kind) {
+    suspend(generation, peerId, reason, kind, holdsLastAnswer(kind));
+  }
+
+  /** As {@link #suspend(long, String, String, UnknownKind)}, with the hold decided as in {@link #forget(long, String, String, UnknownKind, boolean)}. */
+  public void suspend(final long generation, final String peerId, final String reason, final UnknownKind kind,
+      final boolean holdLastAnswer) {
     synchronized (writeLock) {
       if (generation != this.generation)
         return;
       advertisements.remove(peerId);
+      if (!holdLastAnswer)
+        lastAnswered.remove(peerId);
       putUnknown(peerId, reason, kind);
     }
   }
@@ -319,6 +373,16 @@ public final class PeerCapabilityRegistry {
   }
 
   /**
+   * Whether a failure of {@code kind} keeps what the peer last answered held for the framed sections (issue #12122): only a probe
+   * that got no answer, which says nothing about the build behind the peer id. Every other failed outcome drops it unless the
+   * caller knows better (see {@link #forget(long, String, String, UnknownKind, boolean)}). A null kind is recorded as UNREACHABLE
+   * by putUnknown, and is read the same way here.
+   */
+  static boolean holdsLastAnswer(final UnknownKind kind) {
+    return kind == null || kind == UnknownKind.UNREACHABLE;
+  }
+
+  /**
    * Forgets everything, with nothing left to report as unchanged. Called when this node ACQUIRES leadership
    * (issue #7301): the advertisements in here were observed under a previous leadership term and their
    * timestamps are what the TTL is measured against, so a node that leads again would otherwise believe the
@@ -326,6 +390,11 @@ public final class PeerCapabilityRegistry {
    * wire-format section could be written to a peer whose capabilities have not been re-confirmed. A build does
    * not change because an election happened, so nothing here is lost that the first round does not restore; what
    * is dropped is the entitlement to act on it before that round has run.
+   * <p>
+   * What {@link #peersMissingFramedSection} holds goes too (issue #12122). Since issue #7549 the monitor runs in every role
+   * and is started once, so on a running node a new leadership term does not reach this method and the held answers survive
+   * it: an outage of the previous leader does not turn the framed sections off on the node that replaces it. What does reach
+   * it is a node starting (or restarting) its monitor, and that node has observed nothing it could hold.
    */
   public void clear() {
     synchronized (writeLock) {
@@ -333,6 +402,7 @@ public final class PeerCapabilityRegistry {
       advertisements.clear();
       unknownReasons.clear();
       lastReported.clear();
+      lastAnswered.clear();
     }
   }
 
@@ -410,6 +480,8 @@ public final class PeerCapabilityRegistry {
       // The report shadow goes with them, or a re-added peer's first advertisement is suppressed as "unchanged"
       // against what it said before it left (issue #7301).
       lastReported.keySet().retainAll(retained);
+      // A peer that left the configuration and comes back is a new peer as far as its build goes: it answers again first
+      lastAnswered.keySet().retainAll(retained);
     }
   }
 
@@ -429,6 +501,16 @@ public final class PeerCapabilityRegistry {
   public long freshAppliedIndexOf(final String peerId) {
     final Advertisement advertisement = freshAdvertisementOf(peerId);
     return advertisement == null ? -1L : advertisement.appliedIndex();
+  }
+
+  /**
+   * The byte budget {@code peerId} advertised for its own apply backlog in its last fresh answer, or {@code -1} when it
+   * is unknown, expired or never said (a build that predates the field, or a node with the budget set to 0). Unknown
+   * reads as "the leader's budget alone", which is what bound every follower before the field (issue #11508).
+   */
+  public long freshApplyBacklogBudgetOf(final String peerId) {
+    final Advertisement advertisement = freshAdvertisementOf(peerId);
+    return advertisement == null ? -1L : advertisement.applyBacklogBudget();
   }
 
   /**
@@ -470,6 +552,40 @@ public final class PeerCapabilityRegistry {
     for (final String peerId : peerIds) {
       final Advertisement advertisement = freshAdvertisementOf(peerId);
       if (advertisement == null || !advertisement.capabilities().contains(capability))
+        missing.add(peerId);
+    }
+    return missing.isEmpty() ? Collections.emptyList() : missing;
+  }
+
+  /**
+   * {@link #peersMissing} for an optional FRAMED section of {@code TX_ENTRY} ({@code tx-prepared-at-index},
+   * {@code tx-fulltext-corpus-deltas}): the peers of {@code peerIds} whose last answer did not list {@code capability},
+   * or that have no answer this node may still go by (issue #12122). Unlike {@link #peersMissing}, a peer that answered
+   * with it and has since stopped answering is NOT missing, for as long as it gives no other answer.
+   * <p>
+   * Why only these sections. The strict read made one node's outage, the failure a Raft cluster exists to absorb, switch
+   * the sections off for every commit of every other node: the {@code #8686} refusal stopped, so a follower transaction
+   * racing {@code CREATE INDEX} was accepted and its record never entered the index on any node, and the BM25 corpus
+   * counters drifted (issue #12119). What the strict read protects against is a peer replaced by an older build behind
+   * the same id. For these two sections, holding the last answer through an outage does not put that peer at risk:
+   * <ul>
+   *   <li>both sections are framed, and every build that ever advertised either token reads the {@code #7138} extension
+   *       framing (it shipped in the same release as {@code tx-prepared-at-index}), so a downgrade to a build that does not
+   *       know the section skips it, and only a downgrade below the framing does not: that build halts on the trailing bytes,
+   *       a loud, local failure, instead of misreading them;</li>
+   *   <li>the strict read never closed that window either: a peer restarted on another build between two probes, well
+   *       inside {@link #ttlMs}, is believed by it just the same, and receives the sections just the same;</li>
+   *   <li>the hold ends with the peer's first answer, one refresh period after it is back, and a downgraded build either
+   *       answers without the token or answers 404, both of which end it.</li>
+   * </ul>
+   * Not for anything else: the record-level fixed-width float form (an older build cannot read the RECORD, framed or not),
+   * the schema deltas, the security and configuration entry types and the file renames all keep {@link #peersMissing}.
+   */
+  public List<String> peersMissingFramedSection(final Collection<String> peerIds, final String capability) {
+    final List<String> missing = new ArrayList<>();
+    for (final String peerId : peerIds) {
+      final Set<String> held = lastAnswered.get(peerId);
+      if (held == null || !held.contains(capability))
         missing.add(peerId);
     }
     return missing.isEmpty() ? Collections.emptyList() : missing;

@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -108,9 +109,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
     this.propertyNames = Collections.unmodifiableSet(new LinkedHashSet<>(map.keySet()));
 
-    final String ridAsString = (String) attributes.get(RID_PROPERTY);
-    if (ridAsString != null)
-      this.rid = remoteDatabase.newRID(ridAsString);
+    // The rid text over HTTP; a RID when a gRPC row carries @rid as a property, since gRPC decodes a link as one (#12195)
+    final Object ridValue = attributes.get(RID_PROPERTY);
+    if (ridValue instanceof RID ridObject)
+      this.rid = ridObject;
+    else if (ridValue != null)
+      this.rid = remoteDatabase.newRID((String) ridValue);
     else
       this.rid = null;
   }

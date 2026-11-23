@@ -268,9 +268,17 @@ public class GraphAnalyticalViewBuilder {
     if (useWhenStale != null)
       view.setUseWhenStale(useWhenStale);
     if (name != null) {
+      // Registered first: the registration is what refuses a name already taken, before its definition is overwritten
       GraphAnalyticalViewRegistry.register(database, name, view);
       if (!skipPersistence)
-        GraphAnalyticalViewPersistence.save(database, view);
+        try {
+          GraphAnalyticalViewPersistence.save(database, view);
+        } catch (final RuntimeException | Error e) {
+          // A view whose definition is stored nowhere would answer queries until the next open and then be gone (issue #12389):
+          // a replica refusing the schema change, a user without UPDATE_SCHEMA, an I/O error. It never served, so it goes
+          view.shutdown();
+          throw e;
+        }
     }
     view.registerAsTraversalProvider();
     return view;

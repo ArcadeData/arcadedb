@@ -46,9 +46,9 @@ class StringLengthCountsCharactersTest {
   private static final String ASTRAL = new String(Character.toChars(0x1D538));
   // a letter of the BMP with the same character count
   private static final String BMP    = "À";
-  // the two functions whose job is to expose the encoding: the code point value of the first character (À is 192, 𝔸 is 120120) and the
-  // number of UTF-8 bytes. Every other function must not.
-  private static final Set<String> ANSWERS_THE_ENCODING = Set.of("text.code", "text.byteCount");
+  // the function whose job is to expose the encoding: the number of UTF-8 bytes. Every other function must not (text.code() takes a
+  // code point, not a string, since issue #12104).
+  private static final Set<String> ANSWERS_THE_ENCODING = Set.of("text.byteCount");
   /** What a call that threw answers, so that a call which threw is told from one that answered null. */
   private static final Object      THREW                = new Object();
 

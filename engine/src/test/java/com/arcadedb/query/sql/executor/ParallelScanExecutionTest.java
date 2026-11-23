@@ -973,7 +973,10 @@ class ParallelScanExecutionTest extends TestHelper {
     }
   }
 
-  /** Regression test for issue #8797. */
+  /**
+   * Regression test for issue #8797. Since issue #11873 an argument calling a built-in scalar function the workers can run
+   * ({@code toInteger()}, {@code abs()}) keeps the aggregate in them.
+   */
   @Test
   void wholeTypeAggregatesRunInTheWorkers() {
     createCypherAggregationFixture();
@@ -988,7 +991,8 @@ class ParallelScanExecutionTest extends TestHelper {
           "MATCH (n:%s) WHERE n.x > 500 RETURN count(*) AS c, sum(n.x) AS s".formatted(type),
           "MATCH (n:%s) WHERE n.grp = 7 AND n.flag <> 1 RETURN count(n) AS c, avg(n.n) AS a".formatted(type),
           "MATCH (n:%s) WHERE n.grp IN [1, 2, 3] RETURN count(*) AS c".formatted(type),
-          "MATCH (n:%s {grp: 5}) RETURN count(*) AS c, sum(n.x) AS s".formatted(type) }) {
+          "MATCH (n:%s {grp: 5}) RETURN count(*) AS c, sum(n.x) AS s".formatted(type),
+          "MATCH (n:%s) RETURN sum(toInteger(n.x)) AS s, max(abs(n.n - 25)) AS d".formatted(type) }) {
         final String plan = cypherAssertSameAsSequential(query);
         assertThat(plan).as(query).contains("(parallel:");
       }
@@ -1025,7 +1029,8 @@ class ParallelScanExecutionTest extends TestHelper {
 
   /**
    * Regression test for issue #8797.
-   * What stays on the consuming thread - a DISTINCT aggregate, collect(), a function in an argument - still answers the same.
+   * What stays on the consuming thread - a DISTINCT aggregate, collect(), a function the workers cannot run in an argument (a
+   * SQL function; a built-in scalar one runs in them since issue #11873) - still answers the same.
    */
   @Test
   void whatCannotMergeStaysSequentialAndCorrect() {
@@ -1033,7 +1038,7 @@ class ParallelScanExecutionTest extends TestHelper {
     for (final String query : new String[] {
         "MATCH (n:OneBucket) RETURN count(DISTINCT n.grp) AS c",
         "MATCH (n:OneBucket) RETURN n.flag AS flag, collect(n.n)[0] AS first",
-        "MATCH (n:OneBucket) RETURN sum(toInteger(n.x)) AS s",
+        "MATCH (n:OneBucket) RETURN sum(sql.abs(n.x)) AS s",
         "MATCH (n:OneBucket) RETURN count(*) * 10 + 1 AS c" }) {
       assertThat(cypherAssertSameAsSequential(query)).as(query).doesNotContain("(parallel:");
     }

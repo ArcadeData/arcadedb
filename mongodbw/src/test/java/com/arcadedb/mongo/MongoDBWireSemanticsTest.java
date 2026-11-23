@@ -235,9 +235,9 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     collection.insertOne(Document.parse("{_id: 1, name: 'bob', tags: ['a', 'b']}"));
 
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'name.first': 'x'}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(28);
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'tags.x': 1}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(28);
 
     final Document doc = collection.find(new Document("_id", 1)).first();
     assertThat(doc.getString("name")).isEqualTo("bob");
@@ -312,7 +312,7 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
   void setOnAHugeArrayIndexIsRefused() {
     collection.insertOne(Document.parse("{_id: 1, tags: ['a']}"));
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {'tags.999999999': 1}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(2);
     assertThat(collection.find(new Document("_id", 1)).first().getList("tags", String.class)).containsExactly("a");
   }
 
@@ -357,7 +357,7 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
   void incOnANonNumericValueIsATypeError() {
     collection.insertOne(Document.parse("{_id: 1, s: 'text'}"));
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$inc: {'s.x': 1}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(28);
   }
 
   @Test
@@ -489,9 +489,9 @@ public class MongoDBWireSemanticsTest extends BaseMongoServerTest {
     collection.insertOne(Document.parse("{_id: 1, a: 1}"));
 
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$set: {_id: 99}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(66);
     assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), Document.parse("{$unset: {_id: ''}}")))
-        .isInstanceOf(MongoCommandException.class);
+        .isInstanceOf(MongoWriteException.class).extracting(e -> ((MongoWriteException) e).getCode()).isEqualTo(66);
     // the same value is allowed
     collection.updateOne(new Document("_id", 1), Document.parse("{$set: {_id: 1, a: 2}}"));
 

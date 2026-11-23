@@ -386,49 +386,49 @@ class RaftHAServerTest {
 
   @Test
   void extractHostFromHostPort() {
-    assertThat(RaftHAServer.extractHost("splitter-0.splitter.sbu.svc.cluster.local:2434"))
+    assertThat(PeerEndpoints.extractHost("splitter-0.splitter.sbu.svc.cluster.local:2434"))
         .isEqualTo("splitter-0.splitter.sbu.svc.cluster.local");
   }
 
   @Test
   void extractHostFromHostOnly() {
-    assertThat(RaftHAServer.extractHost("myhost")).isEqualTo("myhost");
+    assertThat(PeerEndpoints.extractHost("myhost")).isEqualTo("myhost");
   }
 
   @Test
   void extractHostFromIPv6BracketedAddress() {
-    assertThat(RaftHAServer.extractHost("[::1]:2434")).isEqualTo("[::1]");
-    assertThat(RaftHAServer.extractHost("[2001:db8::1]:2434")).isEqualTo("[2001:db8::1]");
+    assertThat(PeerEndpoints.extractHost("[::1]:2434")).isEqualTo("[::1]");
+    assertThat(PeerEndpoints.extractHost("[2001:db8::1]:2434")).isEqualTo("[2001:db8::1]");
   }
 
   @Test
   void extractHostFromNullOrBlankReturnsNull() {
-    assertThat(RaftHAServer.extractHost(null)).isNull();
-    assertThat(RaftHAServer.extractHost("")).isNull();
+    assertThat(PeerEndpoints.extractHost(null)).isNull();
+    assertThat(PeerEndpoints.extractHost("")).isNull();
   }
 
   @Test
   void deriveHttpAddressCombinesPeerHostWithLocalPort() {
     // The fallback combines the peer's Raft host with this node's HTTP port. Correct for
     // homogeneous clusters (e.g. Kubernetes StatefulSets) where every node shares the HTTP port.
-    assertThat(RaftHAServer.deriveHttpAddress("splitter-0.splitter.sbu.svc.cluster.local:2434", 2480))
+    assertThat(PeerEndpoints.deriveHttpAddress("splitter-0.splitter.sbu.svc.cluster.local:2434", 2480))
         .isEqualTo("splitter-0.splitter.sbu.svc.cluster.local:2480");
   }
 
   @Test
   void deriveHttpAddressWithIPv6Host() {
-    assertThat(RaftHAServer.deriveHttpAddress("[::1]:2434", 2480)).isEqualTo("[::1]:2480");
+    assertThat(PeerEndpoints.deriveHttpAddress("[::1]:2434", 2480)).isEqualTo("[::1]:2480");
   }
 
   @Test
   void deriveHttpAddressReturnsNullWhenPortUnknown() {
     // -1 is the value returned by HttpServer.getPort() before the listener has bound.
-    assertThat(RaftHAServer.deriveHttpAddress("host:2434", -1)).isNull();
-    assertThat(RaftHAServer.deriveHttpAddress("host:2434", 0)).isNull();
+    assertThat(PeerEndpoints.deriveHttpAddress("host:2434", -1)).isNull();
+    assertThat(PeerEndpoints.deriveHttpAddress("host:2434", 0)).isNull();
   }
 
   @Test
   void deriveHttpAddressReturnsNullForNullAddress() {
-    assertThat(RaftHAServer.deriveHttpAddress(null, 2480)).isNull();
+    assertThat(PeerEndpoints.deriveHttpAddress(null, 2480)).isNull();
   }
 }
