@@ -300,10 +300,10 @@ public class OrderByStep extends AbstractExecutionStep {
         // Priority queue with reversed comparator: worst elements bubble to top. Each entry carries the keys of its row,
         // evaluated once when the row was read: re-evaluated at every offer, ORDER BY rand() LIMIT k drew new keys for the
         // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
-        final PriorityQueue<Keyed> topK = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+        final PriorityQueue<Keyed> topK = new PriorityQueue<>(initialHeapCapacity(k), comparator.reversed());
 
         // Pull all results and maintain a top-K heap
-        final int batchSize = Math.max(1000, k * 10);
+        final int batchSize = (int) Math.min(Math.max(1000L, k * 10L), Integer.MAX_VALUE);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();
@@ -695,6 +695,11 @@ public class OrderByStep extends AbstractExecutionStep {
     heapLimit.replace(removed.row(), added.row(), added.keyBytes() - removed.keyBytes());
   }
 
+  /** The starting capacity of a top-K heap: k + 1 up to 1000. Computed in long, since k + 1 wraps for LIMIT 2147483647 (issue #13230). */
+  private static int initialHeapCapacity(final int k) {
+    return (int) Math.min(k + 1L, 1000L);
+  }
+
   /** One worker's top K rows of a parallel scan (issue #11873). Not thread-safe: one worker fills it, the caller merges it after. */
   private static final class PartialTopK {
     private final int                 k;
@@ -709,7 +714,7 @@ public class OrderByStep extends AbstractExecutionStep {
       this.k = k;
       this.comparator = comparator;
       this.heapLimit = heapLimit;
-      this.heap = new PriorityQueue<>(Math.min(k + 1, 1000), comparator.reversed());
+      this.heap = new PriorityQueue<>(initialHeapCapacity(k), comparator.reversed());
     }
 
     /**
