@@ -18,19 +18,20 @@
  */
 package com.arcadedb.index.lsm;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.sun.management.ThreadMXBean;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
+import java.util.Collections;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class LSMTreeIndexMissedProbeTest extends TestHelper {
   private static final int BUCKETS = 16;
-  private static final long LIMIT   = 320L;
+  private static final int COMPACTED_KEYS = 40_000;
 
   @Test
   void aProbeThatFindsNothingAnswersWithTheSharedEmptyCursor() throws IOException {
@@ -57,24 +58,60 @@ class LSMTreeIndexMissedProbeTest extends TestHelper {
     assertThat((Object) second).as("no cursor is built for a probe that found nothing").isSameAs(first);
   }
 
+  /**
+   * The structural property the allocation figures of the issue stand for, asserted without a byte count (which depends on the JIT
+   * and the GC): a lookup of a key no page holds builds no result collection, so the compacted lookup answers with the shared empty set
+   * and the mutable one with the shared empty cursor, while a lookup that finds the key answers with its own entries. The
+   * compacted index is searched directly, after a real compaction, for a hit and for a miss.
+   */
   @Test
-  void aProbeThatFindsNothingAllocatesNothingOfItsOwn() throws IOException {
-    final LSMTreeIndexMutable[] probes = createTypeAndIndex();
-    final ThreadMXBean threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
-    final long threadId = Thread.currentThread().threadId();
-    final Object[] keys = new Object[] { "no-such-key" };
-    final int lookups = 2_000;
+  void aCompactedLookupBuildsACollectionOnlyForAKeyItHolds() throws Exception {
+    GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
+    GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(1L);
+    try {
+      database.getSchema().buildDocumentType().withName("Wide").withTotalBuckets(1).create().createProperty("k", Type.STRING);
+      database.getSchema().buildTypeIndex("Wide", new String[] { "k" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+          .withPageSize(256 * 1024).create();
+      database.transaction(() -> {
+        for (int i = 0; i < COMPACTED_KEYS; i++)
+          database.newDocument("Wide").set("k", wideKey(i)).save();
+      });
 
-    for (int i = 0; i < lookups; i++)
-      probes[0].get(keys, -1).close();
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Wide[k]");
+      assertThat(((IndexInternal) typeIndex).scheduleCompaction()).isTrue();
+      assertThat(((IndexInternal) typeIndex).compact()).isTrue();
 
-    final long before = threads.getThreadAllocatedBytes(threadId);
-    for (int i = 0; i < lookups; i++)
-      probes[0].get(keys, -1).close();
-    final long perProbe = (threads.getThreadAllocatedBytes(threadId) - before) / lookups;
+      final LSMTreeIndexMutable mutable = ((LSMTreeIndex) typeIndex.getIndexesOnBuckets()[0]).getMutableIndex();
+      final LSMTreeIndexCompacted compacted = mutable.getSubIndex();
+      assertThat(compacted).as("the compaction produced a sub-index").isNotNull();
 
-    // A probe that read no page took 464 bytes: three collections, a cursor and the sink; the rest is the key conversion and the lookup
-    assertThat(perProbe).as("bytes allocated per probe that found nothing").isLessThan(LIMIT);
+      final Set<IndexCursorEntry> miss = compacted.get(new Object[] { "no-such-key" }, -1);
+      assertThat(miss).isEmpty();
+      assertThat((Object) miss).as("a miss builds no collection").isSameAs(Collections.emptySet());
+
+      final Set<IndexCursorEntry> hit = compacted.get(new Object[] { wideKey(123) }, -1);
+      assertThat(hit).hasSize(1);
+      assertThat((Object) hit).isNotSameAs(Collections.emptySet());
+      assertThat(database.lookupByRID(hit.iterator().next().record.getIdentity(), true).asDocument().getString("k"))
+          .isEqualTo(wideKey(123));
+
+      // and through the type index, which asks the mutable pages and the compacted series
+      try (final IndexCursor cursor = typeIndex.get(new Object[] { wideKey(COMPACTED_KEYS - 1) })) {
+        assertThat(cursor.hasNext()).isTrue();
+        cursor.next();
+        assertThat(cursor.hasNext()).isFalse();
+      }
+      try (final IndexCursor cursor = typeIndex.get(new Object[] { "no-such-key" })) {
+        assertThat(cursor.hasNext()).isFalse();
+      }
+    } finally {
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.reset();
+      GlobalConfiguration.INDEX_COMPACTION_RAM_MB.reset();
+    }
+  }
+
+  private static String wideKey(final int i) {
+    return "K" + "x".repeat(64) + String.format("%08d", i);
   }
 
   @Test

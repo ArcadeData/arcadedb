@@ -1252,7 +1252,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * when a page holds the key (issue #13243): the lookup of a type with many buckets probes the index of every bucket and
    * all but one of them miss, so a collection built per probe was most of what a lookup allocated.
    */
-  protected final class EntryCollector implements KeyLookupSink {
+  final class EntryCollector implements KeyLookupSink {
     private final Object[]                                      originalKeys;
     private final Object[]                                      convertedKeys;
     private final int                                           limit;
@@ -1277,11 +1277,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     }
   }
 
-  protected EntryCollector resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit) {
+  EntryCollector resultSetSink(final Object[] originalKeys, final Object[] convertedKeys, final int limit) {
     return new EntryCollector(originalKeys, convertedKeys, limit);
   }
 
-  protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
+  boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
       final EntryCollector collector) {
     final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer,
         collector.convertedKeys, 1);
