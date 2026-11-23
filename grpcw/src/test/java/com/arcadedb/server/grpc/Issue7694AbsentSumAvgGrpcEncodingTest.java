@@ -31,8 +31,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #7694, gRPC half - the fourth reader of {@code MultiColumnAggregationResult.getValue()}, and the one
  * issue #7653 found had no regression coverage at all.
  * <p>
- * The other three readers are pinned: {@code Issue7584AbsentSumAvgSampleEncodingTest} and
- * {@code Issue7584AbsentSumAvgOverHttpIT} for the two HTTP time-series handlers,
+ * The other three readers are pinned: {@code TimeSeriesAbsentSampleEncodingTest} and
+ * {@code TimeSeriesHttpIT} for the two HTTP time-series handlers,
  * {@code TimeSeriesNaNHandlingTest} for {@code AggregateFromTimeSeriesStep}. The gRPC aggregation
  * stream in {@code ArcadeDbGrpcService} hands every value to {@link GrpcTimeSeriesSupport#toSampleValue}, which
  * maps an absent sample to an unset {@code GrpcValue} - correct by inspection, and until now driven by nothing, so

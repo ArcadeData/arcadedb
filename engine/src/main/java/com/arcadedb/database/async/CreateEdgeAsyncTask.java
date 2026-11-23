@@ -20,7 +20,9 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.VertexInternal;
 
 /**
@@ -34,10 +36,22 @@ public class CreateEdgeAsyncTask extends DatabaseAsyncAbstractTask {
   protected final Object[] edgeAttributes;
 
   protected final boolean         light;
+  protected final boolean         outgoingOnly;
   protected final NewEdgeCallback callback;
 
   public CreateEdgeAsyncTask(final Identifiable sourceVertex, final Identifiable destinationVertex, final String edgeType,
       final Object[] edgeAttributes, final boolean light, final NewEdgeCallback callback) {
+    this(sourceVertex, destinationVertex, edgeType, edgeAttributes, light, false, callback);
+  }
+
+  /**
+   * @param outgoingOnly {@code true} wires only the OUT side of the edge, because the caller has the IN side connected afterwards by
+   *                     a {@link CreateIncomingEdgeAsyncTask} in the slot of the vertex the edge ends at: wiring it here too appended
+   *                     the edge twice to the IN list of the destination (issue #12602). Meaningless for a unidirectional type,
+   *                     which has no IN side.
+   */
+  public CreateEdgeAsyncTask(final Identifiable sourceVertex, final Identifiable destinationVertex, final String edgeType,
+      final Object[] edgeAttributes, final boolean light, final boolean outgoingOnly, final NewEdgeCallback callback) {
     this.sourceVertex = sourceVertex;
     this.destinationVertex = destinationVertex;
 
@@ -45,6 +59,7 @@ public class CreateEdgeAsyncTask extends DatabaseAsyncAbstractTask {
     this.edgeAttributes = edgeAttributes;
 
     this.light = light;
+    this.outgoingOnly = outgoingOnly;
     this.callback = callback;
   }
 
@@ -56,14 +71,22 @@ public class CreateEdgeAsyncTask extends DatabaseAsyncAbstractTask {
   protected void createEdge(final DatabaseInternal database, final Identifiable sourceVertex, final Identifiable destinationVertex,
       final boolean createdSourceVertex, final boolean createdDestinationVertex) {
 
-    final Edge edge;
+    final GraphEngine graphEngine = database.getGraphEngine();
+    // READ INSIDE THIS WORKER'S TRANSACTION: THE VERTEX THE CALLER PASSED WAS READ ON ITS THREAD, BEFORE THE EARLIER TASKS OF THIS OPEN
+    // BATCH REWROTE IT, AND ITS EDGE LIST HEAD IS NOT THE ONE THE TRANSACTION HOLDS ANY MORE (ConcurrentModificationException, WHOLE BATCH
+    // ROLLED BACK, issue #12719)
+    final VertexInternal source = (VertexInternal) database.lookupByRID(sourceVertex.getIdentity(), true);
+    final RID destination = destinationVertex.getIdentity();
 
+    final Edge edge;
     if (light)
-      edge = database.getGraphEngine()
-          .newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity());
+      edge = outgoingOnly ?
+          graphEngine.newOutgoingOnlyLightEdge(source, edgeType, destination) :
+          graphEngine.newLightEdge(source, edgeType, destination);
     else
-      edge = database.getGraphEngine()
-          .newEdgeReportingVeto((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), edgeAttributes);
+      edge = outgoingOnly ?
+          graphEngine.newOutgoingOnlyEdgeReportingVeto(source, edgeType, destination, edgeAttributes) :
+          graphEngine.newEdgeReportingVeto(source, edgeType, destination, edgeAttributes);
 
     // AN EDGE A BeforeRecordCreateListener VETOED IS NOT AN ERROR AND CREATED NOTHING: NO CALLBACK, AS FOR A VETOED DOCUMENT (issue #10085)
     if (edge != null && callback != null)

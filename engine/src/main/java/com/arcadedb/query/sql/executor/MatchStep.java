@@ -166,7 +166,7 @@ public class MatchStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("  ");
     result.append("{").append(edge.edge.out.alias).append("}");
-    result.append(edge.edge.item.getMethod());
+    edge.edge.item.traversalToString(null, result);
     result.append("{").append(edge.edge.in.alias).append("}");
     return result.toString();
   }

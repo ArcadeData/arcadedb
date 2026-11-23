@@ -27,6 +27,7 @@ import java.util.List;
  * <p>
  * Examples:
  * - REMOVE n.property - removes a property from a node
+ * - REMOVE (expr).property - removes a property from the node or relationship the expression yields
  * - REMOVE n:Label - removes a label from a node
  * - REMOVE n:$(expr) - removes the label(s) the expression yields (Cypher 25 dynamic label)
  */
@@ -59,6 +60,7 @@ public class RemoveClause {
 
     private final RemoveType type;
     private final String variable;
+    private final Expression targetExpression;  // For PROPERTY type with an expression target: REMOVE (expr).p
     private final String property;  // For PROPERTY type
     private final Expression keyExpression;  // For dynamic PROPERTY type: REMOVE n[keyExpr]
     private final List<String> labels;  // For LABELS type
@@ -71,10 +73,26 @@ public class RemoveClause {
      * @param property the property name to remove
      */
     public RemoveItem(final String variable, final String property) {
+      this(variable, null, property, null);
+    }
+
+    /**
+     * Constructor for a property removal whose target is an expression rather than a variable:
+     * {@code REMOVE (head(ns)).p}, {@code REMOVE (CASE WHEN ... THEN n END).p}, {@code REMOVE (expr)[keyExpr]}. Exactly one
+     * of {@code variable} and {@code targetExpression} is set, and exactly one of {@code property} and {@code keyExpression}.
+     *
+     * @param variable         the variable name (node or edge), or null when the target is an expression
+     * @param targetExpression the expression that yields the node or edge, or null when the target is a variable
+     * @param property         the static property name, or null when the name is computed
+     * @param keyExpression    the expression that yields the property name, or null when the name is static
+     */
+    public RemoveItem(final String variable, final Expression targetExpression, final String property,
+        final Expression keyExpression) {
       this.type = RemoveType.PROPERTY;
       this.variable = variable;
+      this.targetExpression = targetExpression;
       this.property = property;
-      this.keyExpression = null;
+      this.keyExpression = keyExpression;
       this.labels = null;
       this.labelExpressions = List.of();
     }
@@ -87,12 +105,7 @@ public class RemoveClause {
      * @param keyExpression the expression that yields the property name to remove
      */
     public RemoveItem(final String variable, final Expression keyExpression) {
-      this.type = RemoveType.PROPERTY;
-      this.variable = variable;
-      this.property = null;
-      this.keyExpression = keyExpression;
-      this.labels = null;
-      this.labelExpressions = List.of();
+      this(variable, null, null, keyExpression);
     }
 
     /**
@@ -116,6 +129,7 @@ public class RemoveClause {
     public RemoveItem(final String variable, final List<String> labels, final List<Expression> labelExpressions) {
       this.type = RemoveType.LABELS;
       this.variable = variable;
+      this.targetExpression = null;
       this.property = null;
       this.keyExpression = null;
       this.labels = labels;
@@ -128,6 +142,14 @@ public class RemoveClause {
 
     public String getVariable() {
       return variable;
+    }
+
+    /**
+     * The expression naming the node or relationship of a property removal that does not go through a variable
+     * ({@code REMOVE (head(ns)).p}), or null when {@link #getVariable()} names it.
+     */
+    public Expression getTargetExpression() {
+      return targetExpression;
     }
 
     public String getProperty() {
@@ -154,7 +176,8 @@ public class RemoveClause {
     @Override
     public String toString() {
       if (type == RemoveType.PROPERTY) {
-        return keyExpression != null ? variable + "[" + keyExpression + "]" : variable + "." + property;
+        final String target = targetExpression != null ? "(" + targetExpression + ")" : variable;
+        return keyExpression != null ? target + "[" + keyExpression + "]" : target + "." + property;
       } else {
         final StringBuilder sb = new StringBuilder(variable);
         for (final String label : labels)

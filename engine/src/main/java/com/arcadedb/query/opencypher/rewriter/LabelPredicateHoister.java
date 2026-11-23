@@ -136,7 +136,9 @@ public final class LabelPredicateHoister {
 
     if (!(candidate instanceof LabelCheckExpression labelCheck))
       return null;
-    if (labelCheck.getOperator() != LabelCheckExpression.LabelOperator.AND || labelCheck.getLabels().size() != 1)
+    // A dynamic $(expr) label is only known per row: the check stays a filter (issue #11776)
+    if (labelCheck.getOperator() != LabelCheckExpression.LabelOperator.AND || labelCheck.getLabels().size() != 1
+        || labelCheck.hasDynamicLabels())
       return null;
 
     final Expression subject = labelCheck.getVariableExpression();

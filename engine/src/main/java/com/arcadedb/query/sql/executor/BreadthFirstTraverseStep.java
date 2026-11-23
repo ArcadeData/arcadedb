@@ -79,8 +79,11 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   protected void fetchNextResults(final CommandContext context, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
       final TraverseResult item = (TraverseResult) this.entryPoints.removeFirst();
+      // A row emitted stays charged until it is handed downstream; one filtered out leaves the frontier here
       if (postFilter == null || postFilter.matchesFilters(item, context))
         this.results.add(item);
+      else
+        releaseFrontier(item);
       // Test the depth first: the projection (an out() loads the vertex and its edge segment) must not run on vertices that can no longer expand
       final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
       if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth)
@@ -175,6 +178,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   private void tryAddEntryPoint(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.addLast(res);
+      chargeFrontier(res);
     }
 
     if (res.isElement()) {
@@ -187,6 +191,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   private void tryAddEntryPointAtTheEnd(final Result res, final CommandContext context) {
     if (whileClause == null || whileClause.matchesFilters(res, context)) {
       this.entryPoints.add(res);
+      chargeFrontier(res);
     }
 
     if (res.isElement()) {

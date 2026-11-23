@@ -128,7 +128,7 @@ class RaftPropertiesBuilder {
    * the fallback for admin, client and server. If a Ratis upgrade changes that, this one entry stops reaching
    * the endpoints that do not set their own, and the symptom is the bug this method exists to prevent - a
    * client dialling the Raft port in plaintext against a TLS server. On any Ratis version bump, re-read
-   * {@code GrpcFactory} and run {@code Issue3890RaftMtlsIT}, which is the test that would catch it.
+   * {@code GrpcFactory} and run {@code RaftMtlsIT}, which is the test that would catch it.
    *
    * @return the TLS configuration that was installed, or {@code null} when TLS is disabled
    */

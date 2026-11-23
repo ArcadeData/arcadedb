@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #8261: the portal's SET marker is cleared only AFTER the SET applied (issue #8135), so a refused SET leaves
  * it standing and a replay of the same portal is refused again instead of answering {@code CommandComplete SET}
  * having applied nothing. The wire can no longer reach a replay of the same portal (see
- * {@code Issue8135SetAppliedAtExecuteIT}), so the ordering is pinned here, on the method itself.
+ * {@code PostgresSessionSettingsIT}), so the ordering is pinned here, on the method itself.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

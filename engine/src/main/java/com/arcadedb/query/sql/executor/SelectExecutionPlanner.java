@@ -28,6 +28,7 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -1347,17 +1348,34 @@ public class SelectExecutionPlanner {
       return;
 
     final OrderBy newOrderBy = info.orderBy.copy();
-    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(info.projection.getAllAliases(),
-        newOrderBy);
+    // an excluded item (`!secret`) does not project its alias: sorting on it needs a generated alias like any other
+    // non-projected key, or the sort reads the excluded column as null on every row (#12453)
+    final List<String> projectedAliases = new ArrayList<>();
+    for (final ProjectionItem item : info.projection.getItems())
+      if (!item.exclude)
+        projectedAliases.add(item.getProjectionAliasAsString());
+    final List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(projectedAliases, newOrderBy);
     if (additionalOrderByProjections.size() > 0) {
       info.orderBy = newOrderBy;//the ORDER BY has changed
     }
     if (additionalOrderByProjections.size() > 0) {
       info.projectionAfterOrderBy = new Projection();
       info.projectionAfterOrderBy.setItems(new ArrayList<>());
-      for (final String alias : info.projection.getAllAliases()) {
-        info.projectionAfterOrderBy.getItems().add(projectionFromAlias(new Identifier(alias)));
+      boolean keepsAll = false;
+      for (final ProjectionItem item : info.projection.getItems()) {
+        final ProjectionItem after = projectionFromAlias(new Identifier(item.getProjectionAliasAsString()));
+        // an excluded column stays excluded, rather than coming back as a null column (#12453)
+        after.exclude = item.exclude;
+        keepsAll |= item.isAll();
+        info.projectionAfterOrderBy.getItems().add(after);
       }
+      if (keepsAll)
+        // `*` copies every column of the row, so the columns generated for the ORDER BY are excluded by name (#12453)
+        for (final ProjectionItem item : additionalOrderByProjections) {
+          final ProjectionItem excluded = projectionFromAlias(item.getAlias());
+          excluded.exclude = true;
+          info.projectionAfterOrderBy.getItems().add(excluded);
+        }
 
       for (final ProjectionItem item : additionalOrderByProjections) {
         if (info.aggregateProjection != null && isAggregate(item, context)) {
@@ -2145,6 +2163,24 @@ public class SelectExecutionPlanner {
         || operator instanceof GeOperator;
   }
 
+  /**
+   * An element of a bound collection target as a record. A RID string, as a remote driver binds one, names its record here as a
+   * single bound RID string does (issue #11767). Any other element, including a string that only looks like a RID and does not
+   * parse (such as "#1:2-3"), refuses the collection as a target.
+   */
+  static Identifiable collectionTargetElement(final Object element, final Object collection, final CommandContext context) {
+    if (element instanceof String string && RID.is(string)) {
+      try {
+        return context.getDatabase().newRID(string);
+      } catch (final NumberFormatException e) {
+        throw new CommandExecutionException("Cannot use collection as target: " + collection, e);
+      }
+    }
+    if (element instanceof Identifiable identifiable)
+      return identifiable;
+    throw new CommandExecutionException("Cannot use collection as target: " + collection);
+  }
+
   private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters,
       final QueryPlanningInfo info, final InputParameter inputParam, final CommandContext context) {
     Object paramValue = inputParam.getValue(context.getInputParameters());
@@ -2189,10 +2225,7 @@ public class SelectExecutionPlanner {
       //try list of RIDs
       final List<Rid> rids = new ArrayList<>();
       for (final Object x : iterable) {
-        if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
-        }
-        final RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = SelectExecutionPlanner.collectionTargetElement(x, paramValue, context).getIdentity();
         final Rid rid = new Rid();
         final PInteger bucket = new PInteger();
         bucket.setValue(orid.getBucketId());
@@ -2261,12 +2294,15 @@ public class SelectExecutionPlanner {
     case INDEX:
       BooleanExpression keyCondition = null;
       BooleanExpression ridCondition = null;
+      // A condition an index target cannot answer is the statement's error, not the server's: refused as such (a 400 over HTTP)
+      // and naming the condition, read here because the WHERE clause is cleared once it is handed to the index (issue #11850)
+      final String unsupportedCondition = "Index queries with this kind of condition are not supported yet: " + info.whereClause
+          + ". A query on the index " + indexName + " takes a condition on key (=, IN, BETWEEN, a range), optionally AND one on rid";
       if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
-        if (!index.supportsOrderedIterations()) {
-          throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
-        }
+        if (!index.supportsOrderedIterations())
+          throw new CommandSemanticException("Index " + indexName + " does not allow iteration without a condition");
       } else if (info.flattenedWhereClause.size() > 1) {
-        throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
+        throw new CommandSemanticException(unsupportedCondition);
       } else {
         final AndBlock andBlock = info.flattenedWhereClause.getFirst();
         if (andBlock.getSubBlocks().size() == 1) {
@@ -2274,23 +2310,17 @@ public class SelectExecutionPlanner {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
-          if (keyCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
+          if (keyCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
         } else if (andBlock.getSubBlocks().size() == 2) {
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
           info.flattenedWhereClause = null;
           keyCondition = getKeyCondition(andBlock);
           ridCondition = getRidCondition(andBlock);
-          if (keyCondition == null || ridCondition == null) {
-            throw new CommandExecutionException(
-                "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-          }
-        } else {
-          throw new CommandExecutionException(
-              "Index queries with this kind of condition are not supported yet: " + info.whereClause);
-        }
+          if (keyCondition == null || ridCondition == null)
+            throw new CommandSemanticException(unsupportedCondition);
+        } else
+          throw new CommandSemanticException(unsupportedCondition);
       }
       result.chain(new FetchFromIndexStep(index, keyCondition, null, context));
       if (ridCondition != null) {
@@ -5389,6 +5419,11 @@ public class SelectExecutionPlanner {
         logSkippedIndex(idx, e);
         continue;
       }
+      // A BY ITEM/KEY/VALUE property holds one entry per element and none for an empty collection: walked in order, the index
+      // repeats the records with several elements and misses those with none, whichever of its properties is sorted on, and
+      // the null sub-plan below only adds the records whose properties are all null (issue #12518)
+      if (hasExpandedProperty(indexFields))
+        continue;
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
@@ -6624,6 +6659,19 @@ public class SelectExecutionPlanner {
         descriptors = fullKeyDescriptors;
     }
 
+    // A lookup of whole keys of a UNIQUE index - an equality or an IN list on each of its properties - answers at most one
+    // record per key, which no other index covering as many conditions can beat. It is decided here, ahead of the cost ranking
+    // below: nothing records query statistics (QueryStats.get() answers a shared instance that does not, issue #9173), so every
+    // candidate costs Integer.MAX_VALUE and the ranking cannot tell them apart. The first index the type lists then won, which
+    // could be a NOTUNIQUE index on a tenant-like property shared by most records (issue #11963)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> uniqueKeyDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isUniqueKeyLookup)
+          .toList();
+      if (!uniqueKeyDescriptors.isEmpty() && uniqueKeyDescriptors.size() < descriptors.size())
+        descriptors = uniqueKeyDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -6642,6 +6690,18 @@ public class SelectExecutionPlanner {
 
     // Return the first descriptor (all remaining have same subBlocks size and cost)
     return descriptors.getFirst();
+  }
+
+  /** Whether {@code desc} looks up whole keys of a UNIQUE index: an equality or an IN list on every property of the index. */
+  private static boolean isUniqueKeyLookup(final IndexSearchDescriptor desc) {
+    if (!desc.getIndex().isUnique() || desc.additionalRangeCondition != null
+        || desc.getSubBlocks().size() != desc.getIndex().getPropertyNames().size())
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks())
+      if (!(block instanceof InCondition)
+          && !(block instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator))
+        return false;
+    return true;
   }
 
   /**
@@ -6932,6 +6992,12 @@ public class SelectExecutionPlanner {
       if (!index.supportsOrderedIterations()) {
         return null;
       }
+      // A record whose BY ITEM / BY KEY / BY VALUE collection has no element has no entry at all, so a lookup that leaves such a
+      // column unbound would miss it although the conditions on the bound columns match it: `m1 CONTAINSKEY 'k'` on
+      // (m1 BY KEY, m2 BY VALUE) with an empty m2, `name = 'x'` on (name, tags BY ITEM) with no tags (issue #12444)
+      for (int i = indexKeyValue.getSubBlocks().size(); i < indexFields.size(); ++i)
+        if (!Index.basePropertyName(indexFields.get(i)).equals(indexFields.get(i)))
+          return null;
     }
 
     if (found) {

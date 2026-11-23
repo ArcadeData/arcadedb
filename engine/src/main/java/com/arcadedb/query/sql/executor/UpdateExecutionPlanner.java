@@ -79,6 +79,8 @@ public class UpdateExecutionPlanner {
 
   public UpdateExecutionPlan createExecutionPlan(final CommandContext context) {
     refuseTimeSeriesTarget(target, context, "UPDATE");
+    if (upsert)
+      UpsertStep.refuseEdgeType(target, context);
     final int limitValue = limit != null ? limit.getValue(context) : 0;
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context, limitValue);
 
@@ -101,12 +103,15 @@ public class UpdateExecutionPlanner {
 
   /**
    * add a step that transforms a normal OResult in a specific object that under setProperty() updates the actual PIdentifiable
+   * <p>
+   * The step evaluates the WHERE again on a record a concurrent commit changed after the source read it (issue #11818). It gets its
+   * own copy: the source plan is built from this one.
    *
    * @param plan    the execution plan
    * @param context the execution context
    */
   private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context) {
-    plan.chain(new ConvertToUpdatableResultStep(context));
+    plan.chain(new ConvertToUpdatableResultStep(context, whereClause != null ? whereClause.copy() : null, upsert));
   }
 
   private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context,
@@ -205,13 +210,7 @@ public class UpdateExecutionPlanner {
             throw new CommandExecutionException("Missing payload for UPDATE MERGE: " + op);
           break;
         case UpdateOperations.TYPE_CONTENT:
-          if (op.getJson() != null) {
-            plan.chain(new UpdateContentStep(op.getJson(), context));
-          } else if (op.getJsonArray() != null) {
-            plan.chain(new UpdateContentStep(op.getJsonArray(), context));
-          } else if (op.getInputParam() != null) {
-            plan.chain(new UpdateContentStep(op.getInputParam(), context));
-          }
+          plan.chain(UpdateContentStep.of(op, "UPDATE", context));
           break;
         case UpdateOperations.TYPE_PUT:
         case UpdateOperations.TYPE_INCREMENT:
