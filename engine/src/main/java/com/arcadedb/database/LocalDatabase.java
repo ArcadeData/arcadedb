@@ -2087,6 +2087,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // the record overwrites them, so they are harmless.)
               if (!alreadyQueued)
                 tx.removeRecordFromCache(rid);
+              else if (record instanceof MutableDocument mutable)
+                takeRefusedValuesOffQueuedRecord(tx, mutable, indexes, e);
               throw e;
             } finally {
               indexChanges.disarmRecordUndo();
@@ -2130,6 +2132,41 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
 
     return true;
+  }
+
+  /**
+   * An index refused the save of a record that an earlier save of this transaction had queued for the commit (issue #13130): the values
+   * the caller assigned are on the queued instance, and its queue entry stays, as the earlier save's indexed state is what the indexes
+   * still hold. The commit writes that instance and indexes whatever was assigned to it since its last accepted save (#11751), so it
+   * would fail on the refused value and lose every valid write of the transaction, when the caller handled the refusal and went on. The
+   * indexed properties go back to what the indexes hold, which leaves the commit nothing to index; when one cannot be put back (see
+   * {@link DocumentIndexer#restoreIndexedValues}) the commit is refused with the reason, as for a before-update listener that vetoes the
+   * update of a queued record ({@link #refusedUpdateOfQueuedRecordDoomsCommit}), rather than storing a value no index describes.
+   * <p>
+   * Not for a statement that runs inside the transaction: its savepoint takes the record back to the content it held before the
+   * statement (issue #10346), and refuses the commit itself when it cannot.
+   *
+   * @param cause the refusal, which the caller rethrows: what goes wrong here is added to it, never thrown over it
+   */
+  private void takeRefusedValuesOffQueuedRecord(final TransactionContext tx, final MutableDocument record, final List<IndexInternal> indexes,
+      final Throwable cause) {
+    if (tx.getActiveStatement() != null)
+      return;
+
+    boolean restored;
+    try {
+      restored = indexer.restoreIndexedValues(tx, record, indexes);
+    } catch (final RuntimeException | Error t) {
+      cause.addSuppressed(t);
+      restored = false;
+    }
+
+    if (restored)
+      // the indexes hold what the record holds, the state a save leaves it in
+      record.clearAssignedAfterSave();
+    else
+      tx.setRollbackOnly("an index refused the update of record " + record.getIdentity() + " (" + cause.getClass().getSimpleName()
+          + "), which the transaction had already updated, and the transaction cannot take the value it assigned back off the record");
   }
 
   /**
