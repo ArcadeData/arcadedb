@@ -202,6 +202,8 @@ public class CSRBuilder {
     final long uncoveredMark = uncoveredEdgeWrites != null ? uncoveredEdgeWrites.get() : -1L;
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
     final Set<String> scannedEdgeTypes = Set.copyOf(bucketToEdgeType.values());
+    // WHAT EACH SLICE IS SCANNED FROM: A TYPE OF THE SAME NAME THAT OWNS OTHER BUCKETS LATER IS NOT THE ONE THE SLICE HOLDS (#12507)
+    final Map<String, int[]> edgeTypeBuckets = bucketsPerEdgeType(bucketToEdgeType);
     boolean uncoveredEdgesSeen = false;
     // THE BUCKETS OF THE UNCOVERED EDGES MET: A TYPE THAT JOINS THE FILTER LATER HELD EDGES THE CSR DOES NOT HAVE (#10214)
     final IntHashSet uncoveredEdgeBuckets = new IntHashSet();
@@ -221,7 +223,7 @@ public class CSRBuilder {
       final long elapsedMs = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
       return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping)).withScanCoverage(uncoveredMark,
-          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
+          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets, edgeTypeBuckets);
     }
 
     // Detect property types from schema (instant, no scanning needed).
@@ -440,7 +442,7 @@ public class CSRBuilder {
         totalMemory / (1024.0 * 1024.0), elapsedMs);
 
     return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap).withScanCoverage(
-        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
+        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets, edgeTypeBuckets);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
@@ -568,6 +570,24 @@ public class CSRBuilder {
       for (final int bucketId : database.getSchema().getType(name).getBucketIds(false))
         map.put(bucketId, name);
     return map;
+  }
+
+  /**
+   * The buckets of each concrete edge type of {@code bucketToEdgeType}, by the type's name, sorted (issue #12507). A bucket is what
+   * a slice is made of, and what tells the type it was scanned from from another that took its name: file ids are not reused, so a
+   * type dropped and created again, or one renamed over another, owns other buckets.
+   */
+  private static Map<String, int[]> bucketsPerEdgeType(final Map<Integer, String> bucketToEdgeType) {
+    final Map<String, int[]> buckets = new HashMap<>();
+    for (final Map.Entry<Integer, String> entry : bucketToEdgeType.entrySet()) {
+      final int[] known = buckets.get(entry.getValue());
+      final int[] grown = known == null ? new int[1] : Arrays.copyOf(known, known.length + 1);
+      grown[grown.length - 1] = entry.getKey();
+      buckets.put(entry.getValue(), grown);
+    }
+    for (final int[] ids : buckets.values())
+      Arrays.sort(ids);
+    return buckets;
   }
 
   /** The requested edge types and all their sub-types, or every edge type of the schema when none is requested. */
@@ -1372,6 +1392,8 @@ public class CSRBuilder {
     // SEE GraphAnalyticalView.Snapshot.uncoveredWritesMark AND uncoveredEdgeBuckets (ISSUE #10214)
     private       long                           uncoveredWritesMark   = -1L;
     private       IntHashSet                     uncoveredEdgeBuckets;
+    // SEE GraphAnalyticalView.Snapshot.edgeTypeBuckets (ISSUE #12507)
+    private       Map<String, int[]>             edgeTypeBuckets;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
@@ -1389,16 +1411,18 @@ public class CSRBuilder {
     }
 
     CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
-        final IntHashSet uncoveredEdgeBuckets) {
+        final IntHashSet uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
       this.uncoveredWritesMark = uncoveredWritesMark;
       this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
+      this.edgeTypeBuckets = edgeTypeBuckets;
       return this;
     }
 
     long getUncoveredEdgeFreeAsOf() { return uncoveredEdgeFreeAsOf; }
     Set<String> getScannedEdgeTypes() { return scannedEdgeTypes; }
+    Map<String, int[]> getEdgeTypeBuckets() { return edgeTypeBuckets; }
     long getUncoveredWritesMark() { return uncoveredWritesMark; }
     IntHashSet getUncoveredEdgeBuckets() { return uncoveredEdgeBuckets; }
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }
