@@ -364,6 +364,11 @@ public class RemoteDocumentType implements DocumentType {
   // Issue #12193: the index lookups answer from the server's schema:indexes, as RemoteSchema.existsIndex() does, with the
   // description RemoteTypeIndex gives of an index. They answered null or an empty list for an existing index, which a caller
   // could not tell from "no index". A RemoteTypeIndex is never ready for queries, so no client side planner reads it.
+  //
+  // THE COST: ONE ROUND TRIP TO THE SERVER PER TYPE READ, A POLYMORPHIC LOOKUP ONE PER TYPE OF THE HIERARCHY, AND NOTHING IS CACHED:
+  // THE IDEMPOTENT SETUP "IF getIndexByProperties(...) == null THEN createTypeIndex(...)" NEEDS AN INDEX ANOTHER CLIENT JUST CREATED
+  // OR DROPPED TO BE SEEN, AND A CACHE CLEARED ONLY BY THIS CLIENT'S invalidateSchema() WOULD NOT SEE IT. A CALLER THAT ASKS IN A LOOP
+  // KEEPS THE ANSWER. THE GREMLIN STRATEGY DOES NOT ASK AT ALL OVER A RemoteDatabase (ArcadeTraversalStrategy).
 
   @Override
   public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
