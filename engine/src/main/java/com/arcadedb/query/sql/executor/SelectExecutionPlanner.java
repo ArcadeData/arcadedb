@@ -5552,15 +5552,16 @@ public class SelectExecutionPlanner {
 
   /**
    * The condition {@code exp} written the way an index answers it, the indexed property on the left, or null when it is already
-   * written so or has no such form (issue #12281):
+   * written so or has no such form (issue #12281). Only a form that selects the very records {@code exp} does is returned:
    * <ul>
-   *   <li>{@code 5 = id} is {@code id = 5}: an equality compares the same both ways round;</li>
-   *   <li>{@code :lo < id} is {@code id > :lo}, but only when the value has the property's type. A comparison converts its right
-   *   operand to the type of its left one, so with a value of another type the two spellings compare differently ({@code '10' > id}
-   *   compares text, {@code id < '10'} numbers), and the index would answer the second one;</li>
-   *   <li>{@code NOT (id <> 5)} is {@code id = 5} and {@code NOT (id >= 3)} is {@code id < 3}: a comparison with a null operand is
-   *   unknown and stays unknown under NOT, so both leave out a record whose id is null. A range under NOT needs a value of the
-   *   property's type as well: one the comparison cannot convert makes a range and its complement both false.</li>
+   *   <li>{@code NOT (id <> 5)} is {@code id = 5}: {@code <>} is the negation of {@code =} and the property keeps the left side, so
+   *   the two are the same function, and a comparison with a null operand is unknown and stays unknown under NOT;</li>
+   *   <li>{@code NOT (NOT (id < 3))} is {@code id < 3}, in the same three-valued logic;</li>
+   *   <li>{@code 5 = id} is {@code id = 5} and {@code :lo < id} is {@code id > :lo}, and {@code NOT (id >= 3)} is {@code id < 3}, but
+   *   only when the value has the property's type. A comparison converts its right operand to the type of its left one, so with a
+   *   value of another type the spellings compare differently: {@code '10' > id} compares text where {@code id < '10'} compares
+   *   numbers, {@code 9 = s} reads the text "09" as 9 where {@code s = 9} looks for the key "9", and a value the comparison
+   *   cannot convert makes a range and its complement both false.</li>
    * </ul>
    */
   private static BooleanExpression indexKeyForm(final BooleanExpression exp, final IndexSearchInfo info, final DocumentType clazz) {
@@ -5581,7 +5582,8 @@ public class SelectExecutionPlanner {
 
     final boolean propertyLeft = isPropertyReference(condition.getLeft(), info.getField());
     final boolean propertyRight = !propertyLeft && isPropertyReference(condition.getRight(), info.getField());
-    if (!propertyLeft && !propertyRight || propertyLeft && !negated)
+    // a plain comparison with the property first is what isIndexAware has already judged
+    if (!propertyLeft && !propertyRight || propertyLeft && unwrapped == exp)
       return null;
 
     BinaryCompareOperator operator = condition.getOperator();
@@ -5592,8 +5594,10 @@ public class SelectExecutionPlanner {
     if (operator == null)
       return null;
 
+    // The operands change sides, or a range is complemented: each of them compares as the original only when the value is of the
+    // property's type. An equality that keeps its operands (NOT (id <> v), a double negation) is the same function either way.
     final Expression value = propertyLeft ? condition.getRight() : condition.getLeft();
-    if (operator.isRangeOperator() && !valueHasPropertyType(value, info, clazz))
+    if ((propertyRight || negated && operator.isRangeOperator()) && !valueHasPropertyType(value, info, clazz))
       return null;
 
     final BinaryCondition keyForm = new BinaryCondition();
@@ -5606,7 +5610,7 @@ public class SelectExecutionPlanner {
   /** {@code a op b} reads {@code b mirror a}, or null for an operator this planner does not turn round. */
   private static BinaryCompareOperator mirrorOf(final BinaryCompareOperator operator) {
     return switch (operator) {
-      case EqualsCompareOperator ignored -> new EqualsCompareOperator();
+      case EqualsCompareOperator equals -> equals;
       case LtOperator ignored -> new GtOperator();
       case GtOperator ignored -> new LtOperator();
       case LeOperator ignored -> new GeOperator();
@@ -5632,16 +5636,26 @@ public class SelectExecutionPlanner {
    * Whether {@code value}, computed with no record, has the type the property holds (a number for a numeric property, a string for
    * a STRING one): then a comparison converts nothing either way round. A parameter's value decides it, so the plan holds for that
    * binding only.
+   * <p>
+   * The value is read while planning only when it is a literal or a bound parameter, or arithmetic over them. Any other expression
+   * that needs no record (a function call, {@code uuid()}, {@code sysdate()}, a user function) is {@link Expression#isEarlyCalculated}
+   * too, and reading it here would invoke it once more than the statement asks for (issue #6179): such a value keeps the scan.
    */
   private static boolean valueHasPropertyType(final Expression value, final IndexSearchInfo info, final DocumentType clazz) {
-    if (!value.isEarlyCalculated(info.getContext()))
+    if (!value.isLiteral(true))
       return false;
     final Property property = clazz.getPolymorphicPropertyIfExists(info.getField());
     if (property == null || property.getType() == null)
       return false;
-    final Object v = value.execute((Result) null, info.getContext());
     if (!value.isLiteral())
       info.setPlanDependsOnValue();
+    final Object v;
+    try {
+      v = value.execute((Result) null, info.getContext());
+    } catch (final RuntimeException e) {
+      // a value that cannot be computed (a missing parameter, a division by zero) is reported by the scan, as it always was
+      return false;
+    }
     return switch (property.getType()) {
       case BYTE, SHORT, INTEGER, LONG, FLOAT, DOUBLE, DECIMAL -> v instanceof Number;
       case STRING -> v instanceof String;

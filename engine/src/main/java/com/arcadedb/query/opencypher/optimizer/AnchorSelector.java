@@ -639,13 +639,10 @@ public class AnchorSelector {
         extractEqualityPredicatesFromExpression(variable, logical.getRight(), predicates);
       } else if (logical.getOperator() == LogicalExpression.Operator.NOT) {
         // NOT (n.k <> v) holds exactly where n.k = v does, and is null with it when n.k is null: the same seek, under the
-        // WHERE that stays above the anchor (issue #12281)
-        BooleanExpression negated = logical.getLeft();
-        while (negated instanceof BooleanWrapperExpression wrapper)
-          negated = wrapper.getBooleanExpression();
-        if (negated instanceof ComparisonExpression inequality && inequality.getOperator() == ComparisonExpression.Operator.NOT_EQUALS)
-          extractEqualityPredicatesFromExpression(variable,
-              new ComparisonExpression(inequality.getLeft(), ComparisonExpression.Operator.EQUALS, inequality.getRight()), predicates);
+        // WHERE that stays above the anchor (issue #12281). MatchNodeStep reads the same shape for a MATCH after an UNWIND
+        final ComparisonExpression inequality = logical.getNegatedInequality();
+        if (inequality != null)
+          seedFromEquality(variable, inequality.getLeft(), inequality.getRight(), predicates);
       }
       return;
     }
@@ -657,9 +654,12 @@ public class AnchorSelector {
     if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
       return;
 
-    final Expression left = comparison.getLeft();
-    final Expression right = comparison.getRight();
+    seedFromEquality(variable, comparison.getLeft(), comparison.getRight(), predicates);
+  }
 
+  /** The seek an equality of {@code left} and {@code right} gives the property of {@code variable} it reads, on either side. */
+  private static void seedFromEquality(final String variable, final Expression left, final Expression right,
+      final Map<String, Object> predicates) {
     // Check if left side is a property access on our variable
     if (left instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable))
       putSeekValue(predicates, propAccess.getPropertyName(), right);

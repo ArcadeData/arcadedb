@@ -603,7 +603,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * Structural (not value-resolving) mirror of {@link #extractEqualityPredicates}'s predicate recognition:
    * true if {@code expr}'s top-level AND-chain contains a {@code variable.property = <expr>} (or reversed)
    * comparison against this step's own {@link #variable}, regardless of whether that expression could
-   * actually be resolved for any given row. Recursing through AND only (not OR/NOT/XOR) matches
+   * actually be resolved for any given row. Recursing through AND only (not OR/XOR, and NOT only over an
+   * inequality, which is the equality it negates) matches
    * {@code extractEqualityPredicates} exactly: a predicate {@code extractEqualityPredicates} can never reach
    * is not something {@code tryFindAndUseIndexFromWhere} can act on either, so it must not disqualify caching.
    */
@@ -613,9 +614,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       return isPropertyAccessOnOwnVariable(comp.getLeft()) || isPropertyAccessOnOwnVariable(comp.getRight());
     }
-    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND)
-      return whereFilterHasEqualityPredicateOnOwnVariable(logical.getLeft())
-          || whereFilterHasEqualityPredicateOnOwnVariable(logical.getRight());
+    if (expr instanceof LogicalExpression logical) {
+      if (logical.getOperator() == LogicalExpression.Operator.AND)
+        return whereFilterHasEqualityPredicateOnOwnVariable(logical.getLeft())
+            || whereFilterHasEqualityPredicateOnOwnVariable(logical.getRight());
+      // NOT (variable.property <> v), the equality extractEqualityPredicates reads from it (issue #12281)
+      final ComparisonExpression inequality = logical.getNegatedInequality();
+      return inequality != null && (isPropertyAccessOnOwnVariable(inequality.getLeft())
+          || isPropertyAccessOnOwnVariable(inequality.getRight()));
+    }
     return false;
   }
 
@@ -1399,7 +1406,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
   /**
    * Extracts equality predicates of the form variable.property = value from a boolean expression.
-   * Supports AND conjunctions. Resolves dynamic expressions against the current input result.
+   * Supports AND conjunctions and a conjunct NOT (variable.property &lt;&gt; value). Resolves dynamic expressions against the
+   * current input result.
    */
   private void extractEqualityPredicates(final BooleanExpression expr,
       final Map<String, Object> predicates, final Result currentInputResult) {
@@ -1408,44 +1416,57 @@ public class MatchNodeStep extends AbstractExecutionStep {
       if (comp.getOperator() != ComparisonExpression.Operator.EQUALS)
         return;
 
-      // Check for pattern: variable.property = <expression>
-      String propertyName = null;
-      Expression valueExpr = null;
-
-      if (comp.getLeft() instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getLeft();
-        if (variable.equals(propAccess.getVariableName())) {
-          propertyName = propAccess.getPropertyName();
-          valueExpr = comp.getRight();
-        }
-      }
-      // Also check reversed: <expression> = variable.property
-      if (propertyName == null && comp.getRight() instanceof PropertyAccessExpression) {
-        final PropertyAccessExpression propAccess = (PropertyAccessExpression) comp.getRight();
-        if (variable.equals(propAccess.getVariableName())) {
-          propertyName = propAccess.getPropertyName();
-          valueExpr = comp.getLeft();
-        }
-      }
-
-      if (propertyName != null && valueExpr != null) {
-        // Resolve the value expression. Literals and $parameters resolve without an input row; a
-        // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
-        // be resolved and is skipped for index selection - the query then falls back to the full
-        // scan + row-level whereFilter, which is always correct (issue #5107).
-        try {
-          final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
-          if (resolvedValue != null)
-            predicates.put(propertyName, resolvedValue);
-        } catch (final Exception e) {
-          // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
-        }
-      }
+      extractEqualityOperands(comp.getLeft(), comp.getRight(), predicates, currentInputResult);
     } else if (expr instanceof LogicalExpression) {
       final LogicalExpression logical = (LogicalExpression) expr;
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
         extractEqualityPredicates(logical.getLeft(), predicates, currentInputResult);
         extractEqualityPredicates(logical.getRight(), predicates, currentInputResult);
+      } else if (logical.getOperator() == LogicalExpression.Operator.NOT) {
+        // NOT (variable.property <> v) holds exactly where variable.property = v does, and is null with it where the property is
+        // null: the same lookup, under the whereFilter that still decides every row (issue #12281). The optimizer's
+        // AnchorSelector reads the same shape
+        final ComparisonExpression inequality = logical.getNegatedInequality();
+        if (inequality != null)
+          extractEqualityOperands(inequality.getLeft(), inequality.getRight(), predicates, currentInputResult);
+      }
+    }
+  }
+
+  /** The lookup an equality of {@code left} and {@code right} gives the property of this step's variable it reads, on either side. */
+  private void extractEqualityOperands(final Expression left, final Expression right, final Map<String, Object> predicates,
+      final Result currentInputResult) {
+    // Check for pattern: variable.property = <expression>
+    String propertyName = null;
+    Expression valueExpr = null;
+
+    if (left instanceof PropertyAccessExpression) {
+      final PropertyAccessExpression propAccess = (PropertyAccessExpression) left;
+      if (variable.equals(propAccess.getVariableName())) {
+        propertyName = propAccess.getPropertyName();
+        valueExpr = right;
+      }
+    }
+    // Also check reversed: <expression> = variable.property
+    if (propertyName == null && right instanceof PropertyAccessExpression) {
+      final PropertyAccessExpression propAccess = (PropertyAccessExpression) right;
+      if (variable.equals(propAccess.getVariableName())) {
+        propertyName = propAccess.getPropertyName();
+        valueExpr = left;
+      }
+    }
+
+    if (propertyName != null && valueExpr != null) {
+      // Resolve the value expression. Literals and $parameters resolve without an input row; a
+      // predicate referencing an unbound variable (e.g. a leading MATCH with no input row) cannot
+      // be resolved and is skipped for index selection - the query then falls back to the full
+      // scan + row-level whereFilter, which is always correct (issue #5107).
+      try {
+        final Object resolvedValue = evaluator.evaluate(valueExpr, currentInputResult, context);
+        if (resolvedValue != null)
+          predicates.put(propertyName, resolvedValue);
+      } catch (final Exception e) {
+        // Unresolvable predicate value: skip it for index selection (correctness preserved by whereFilter).
       }
     }
   }
