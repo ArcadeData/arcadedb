@@ -902,7 +902,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * replicated apply of a replica does not take (#11755). The last resort cannot deadlock, also for a reader inside a transaction
    * that holds file locks (explicit {@code LOCK}, or writes): a committer held off took every file lock it needs and the
    * page-manager lock before it waits for the hold and acquires none after, so it never waits for the locks this reader holds;
-   * and the read under the hold loads pages and records, which waits on no committer.
+   * and the read under the hold loads pages and records, which waits on no committer. The database read lock is the exception it
+   * takes, and {@link ConsistentKeyLookup#readAgainstOneCommit} owns it before the hold, so the load re-enters it (#13112).
    */
   private ArrayDeque<Result> loadPointLookup(final CommandContext context, final FetchFromIndexStep indexStep, final int nRecords,
       final WorkGuard guard) {
@@ -928,7 +929,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           indexStep.indexName, MAX_RECONCILE_ATTEMPTS);
       // and not once they are held off: every commit would wait for a statement that is going to fail anyway
       guard.check();
-      return ConsistentKeyLookup.readAgainstOneCommit(pageManager, () -> {
+      return ConsistentKeyLookup.readAgainstOneCommit(database, () -> {
         restartLookup(database, indexStep);
         return readAndLoad(context, indexStep, nRecords, guard);
       }, "Point lookup on index '" + indexStep.indexName + "'");
@@ -1021,7 +1022,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         return found;
     }
     guard.check();
-    return ConsistentKeyLookup.readAgainstOneCommit(pageManager,
+    return ConsistentKeyLookup.readAgainstOneCommit(database,
         () -> loadEntryAgain(database, indexStep, key, missing, context, guard),
         "Index entry " + missing + " of index '" + indexStep.indexName + "'");
   }
