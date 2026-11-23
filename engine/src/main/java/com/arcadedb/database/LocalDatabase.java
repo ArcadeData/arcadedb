@@ -2851,7 +2851,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
-                  + "boundary, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
+                  + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
           throw e;

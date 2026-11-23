@@ -463,7 +463,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               tx.collectWrittenRecordIds(committedWrites);
             }
           }
-          database.commit();
+          commitBatch();
         } catch (final TimeoutException e) {
           // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
@@ -543,10 +543,13 @@ public class SubqueryStep extends AbstractExecutionStep {
    * <p>
    * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
    * <p>
+   * The commit lands on the transaction context a retry loop sampled (the same context is begun again), so its commit count moves:
+   * the HTTP, gRPC and MCP auto-commit wrappers, {@code Database.transaction()} and the asynchronous executor do not replay a request
+   * whose writes before the CALL are durable, the conflict reaches the caller instead (issue #13223).
+   * <p>
    * Known gaps, tracked on their own: a record the prefix left provisional under a deferred existence check is committed here, so
-   * the check at the end of the statement cannot remove it although its message says so (#13221); in a Postgres pipeline's implicit
-   * block this also commits the earlier statements of the block (#13222); and a server wrapper that retries the request replays
-   * the writes committed here (#13223).
+   * the check at the end of the statement cannot remove it although its message says so (#13221); and in a Postgres pipeline's
+   * implicit block this also commits the earlier statements of the block (#13222).
    *
    * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
    */
@@ -566,6 +569,24 @@ public class SubqueryStep extends AbstractExecutionStep {
     database.begin(isolationLevel);
     database.getTransaction().setImplicit(true);
     return written;
+  }
+
+  /**
+   * Commits the transaction of one batch, and reports the commit to the transaction under it (issue #13223). A batch runs in a
+   * transaction nested in the statement's, which its commit pops: the retry loop around the request - the HTTP, gRPC and MCP
+   * auto-commit wrappers, {@code Database.transaction()}, the asynchronous executor - sampled the statement's transaction and would
+   * not see that anything is durable, so a conflict after the batch replayed the request and applied the batch twice. Reported as
+   * {@code BATCH n} reports its boundary ({@code BatchStep}), the loop hands the conflict to the caller instead. When the batch
+   * began the only transaction of the thread, its commit already moved the counter of that very context. A batch that wrote
+   * nothing (a MATCH ... SET that matched no node) leaves nothing durable, so it is not reported and the block stays replayable.
+   */
+  private void commitBatch() {
+    final TransactionContext batch = database.getTransactionIfExists();
+    final boolean wroteSomething = batch != null && !batch.hasChangedNothing();
+    database.commit();
+    final TransactionContext survivor = database.getTransactionIfExists();
+    if (wroteSomething && survivor != null && survivor != batch)
+      survivor.reportBatchBoundaryOfNestedTransaction();
   }
 
   /**
