@@ -35,12 +35,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * index fetch, $current was the index entry ({key, rid}), so {@code $parent.$current.id} was null and every LET found nothing.
  */
 class Issue12301LetParentAfterIndexFetchTest extends TestHelper {
-  private static final int    RECORDS        = 3_000;
-  // what the plan of an index fetch says about how its rows were loaded: nothing when no fallback was planned
-  private static final String INDEX_ORDER    = null;
-  private static final String PHYSICAL_ORDER = "physical order";
-  private static final String FULL_SCAN      = "full scan";
-  private static final String SELECT         = "SELECT id, $n AS nxt FROM T LET $n = (SELECT name FROM T WHERE id = $parent.$current.id + 1) ";
+  /** How the rows of an index fetch were loaded, as the executed plan says it. */
+  private enum Served {
+    /** The planner built no fallback: the records are loaded as the index entries come, and the plan says nothing. */
+    INDEX_ORDER,
+    /** The index entries were all read first, then the records loaded in physical order by the calling thread. */
+    PHYSICAL_ORDER,
+    /** The same load, shared by the workers of a parallel scan. */
+    PARALLEL_PHYSICAL_ORDER,
+    /** The range holds a large share of the type: a scan of the type filtered by the key condition. */
+    FULL_SCAN
+  }
+
+  private static final int    RECORDS = 3_000;
+  private static final String SELECT  = "SELECT id, $n AS nxt FROM T LET $n = (SELECT name FROM T WHERE id = $parent.$current.id + 1) ";
 
   @Override
   protected void beginTest() {
@@ -57,40 +65,41 @@ class Issue12301LetParentAfterIndexFetchTest extends TestHelper {
 
   @Test
   void anIndexedWhereGivesTheLetItsOuterRecord() {
-    assertRows("WHERE id < 40", i -> i < 40, false, INDEX_ORDER);
-    assertRows("WHERE id = 10", i -> i == 10, false, INDEX_ORDER);
-    assertRows("WHERE id IN [5, 10, 2999]", i -> i == 5 || i == 10 || i == 2999, false, INDEX_ORDER);
+    assertRows("WHERE id < 40", i -> i < 40, false, Served.INDEX_ORDER);
+    assertRows("WHERE id = 10", i -> i == 10, false, Served.INDEX_ORDER);
+    assertRows("WHERE id IN [5, 10, 2999]", i -> i == 5 || i == 10 || i == 2999, false, Served.INDEX_ORDER);
     // most of the type, but nothing re-sorts the rows: the planner offers the physical-order load and the scan only to an
     // aggregation or to an ORDER BY the index does not serve, so this stays in index order
-    assertRows("WHERE id >= 5", i -> i >= 5, false, INDEX_ORDER);
+    assertRows("WHERE id >= 5", i -> i >= 5, false, Served.INDEX_ORDER);
   }
 
   @Test
   void anIndexOrderedWalkGivesTheLetItsOuterRecord() {
-    assertRows("ORDER BY id LIMIT 30", i -> i < 31, true, INDEX_ORDER);
-    assertRows("WHERE id < 100 ORDER BY id DESC", i -> i < 100, true, INDEX_ORDER);
+    assertRows("ORDER BY id LIMIT 30", i -> i < 31, true, Served.INDEX_ORDER);
+    assertRows("WHERE id < 100 ORDER BY id DESC", i -> i < 100, true, Served.INDEX_ORDER);
   }
 
   @Test
   void aSequentialPhysicalOrderLoadGivesTheLetItsOuterRecord() {
-    // ORDER BY name is not served by the index, so the records are loaded in physical order: here by the sequential load, which
-    // reads every index entry before it loads the first record
+    // ORDER BY name is not served by the index, so the records are loaded in physical order. With parallel scans off it is the
+    // calling thread that loads them, after it read every index entry
     withParallelScan(false, () -> {
-      assertRows("WHERE id < 40 ORDER BY name", i -> i < 40, false, PHYSICAL_ORDER);
-      assertRows("WHERE id < 800 ORDER BY name", i -> i < 800, false, PHYSICAL_ORDER);
+      assertRows("WHERE id < 40 ORDER BY name", i -> i < 40, false, Served.PHYSICAL_ORDER);
+      assertRows("WHERE id < 800 ORDER BY name", i -> i < 800, false, Served.PHYSICAL_ORDER);
     });
   }
 
   @Test
-  void aPhysicalOrderLoadWithTheDefaultSettingsGivesTheLetItsOuterRecord() {
-    // the load may be shared by the workers of a parallel scan, depending on the cores of the machine: either way it is physical order
-    assertRows("WHERE id < 40 ORDER BY name", i -> i < 40, false, PHYSICAL_ORDER);
+  void aParallelPhysicalOrderLoadGivesTheLetItsOuterRecord() {
+    // Default settings: the load is shared by the workers of a parallel scan as soon as the range spans two buckets, whatever the
+    // cores of the machine (the entries of a bucket are one slice). The rows are handed to the calling thread, which sets $current
+    assertRows("WHERE id < 40 ORDER BY name", i -> i < 40, false, Served.PARALLEL_PHYSICAL_ORDER);
   }
 
   @Test
   void aFullScanFallbackGivesTheLetItsOuterRecord() {
     // a range this wide gives way to a scan of the type, which sets $current itself
-    assertRows("WHERE id >= 5 ORDER BY name", i -> i >= 5, false, FULL_SCAN);
+    assertRows("WHERE id >= 5 ORDER BY name", i -> i >= 5, false, Served.FULL_SCAN);
   }
 
   @Test
@@ -108,25 +117,24 @@ class Issue12301LetParentAfterIndexFetchTest extends TestHelper {
     }
   }
 
-  /**
-   * The strategy the fetch picks is decided on the first pull and shown by the executed plan. A statement the planner built no
-   * fallback for ({@link #INDEX_ORDER}) shows none.
-   */
-  private void assertServedBy(final String tail, final String strategy) {
+  /** The strategy the fetch picks is decided on the first pull and shown by the executed plan. */
+  private void assertServedBy(final String tail, final Served served) {
     try (final ResultSet rs = database.query("sql", "PROFILE " + SELECT + tail)) {
       while (rs.hasNext())
         rs.next();
       final String plan = rs.getExecutionPlan().map(p -> p.prettyPrint(0, 2)).orElse("");
       assertThat(plan).as(tail).contains("EXTRACT VALUE FROM INDEX ENTRY");
-      if (strategy == INDEX_ORDER)
-        assertThat(plan).as(tail).doesNotContain("served by");
-      else
-        assertThat(plan).as(tail).contains("served by " + strategy);
+      switch (served) {
+      case INDEX_ORDER -> assertThat(plan).as(tail).doesNotContain("served by");
+      case PHYSICAL_ORDER -> assertThat(plan).as(tail).contains("served by physical order").doesNotContain("loaded in parallel");
+      case PARALLEL_PHYSICAL_ORDER -> assertThat(plan).as(tail).contains("served by physical order").contains("loaded in parallel");
+      case FULL_SCAN -> assertThat(plan).as(tail).contains("served by full scan");
+      }
     }
   }
 
-  private void assertRows(final String tail, final IntPredicate outer, final boolean ordered, final String strategy) {
-    assertServedBy(tail, strategy);
+  private void assertRows(final String tail, final IntPredicate outer, final boolean ordered, final Served served) {
+    assertServedBy(tail, served);
     final List<String> actual = rows(SELECT + tail);
     final List<String> expected = new ArrayList<>();
     for (int i = 0; i < RECORDS; i++)
