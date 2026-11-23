@@ -31,6 +31,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -516,5 +517,56 @@ class BenchRunnerTest {
   void aNegativeCaseCapIsRefused() {
     assertThatThrownBy(() -> new BenchRunner(1, 0, Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(-1)))
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("case timeout");
+  }
+
+  /** A runner whose clocks move by the given amounts between the start and the end of a case. */
+  private static List<CaseResult> runWithClockMoves(final long wallMillis, final long monoNanos, final boolean fail) {
+    final Fake w = new Fake() {
+      @Override
+      public List<String> cases() {
+        return List.of("a");
+      }
+
+      @Override
+      public Measurement measure(final WorkloadContext ctx, final String caseName) {
+        if (fail)
+          throw new IllegalStateException("boom");
+        return m(1);
+      }
+    };
+    final AtomicLong wall = new AtomicLong(1_000_000L);
+    final AtomicLong mono = new AtomicLong(0L);
+    final AtomicInteger wallReads = new AtomicInteger();
+    final AtomicInteger monoReads = new AtomicInteger();
+    // the first read is the case start, the second the case end
+    final BenchRunner.ClockPair clocks = new BenchRunner.ClockPair(
+        () -> wallReads.getAndIncrement() == 0 ? wall.get() : wall.addAndGet(wallMillis),
+        () -> monoReads.getAndIncrement() == 0 ? mono.get() : mono.addAndGet(monoNanos));
+    return new BenchRunner(1, 0, Duration.ofSeconds(10), Duration.ofSeconds(10), Duration.ZERO, Duration.ofSeconds(5), clocks)
+        .run(w, CTX, null);
+  }
+
+  @Test
+  void clockJumpMarksHostNotQuiet() {
+    final CaseResult r = runWithClockMoves(5_000, 1_000_000_000L, false).get(0);
+    assertThat(r.notes().getString("hostNotQuiet", "")).contains("4000 ms");
+  }
+
+  @Test
+  void smallDriftIsQuiet() {
+    final CaseResult r = runWithClockMoves(1_900, 1_000_000_000L, false).get(0);
+    assertThat(r.notes().has("hostNotQuiet")).isFalse();
+  }
+
+  @Test
+  void noteDoesNotChangeStatus() {
+    assertThat(runWithClockMoves(5_000, 1_000_000_000L, false).get(0).status()).isEqualTo(CaseResult.Status.OK);
+  }
+
+  @Test
+  void theNoteIsAddedToAFailedCaseToo() {
+    final CaseResult r = runWithClockMoves(5_000, 1_000_000_000L, true).get(0);
+    assertThat(r.status()).isEqualTo(CaseResult.Status.FAILED);
+    assertThat(r.notes().has("hostNotQuiet")).isTrue();
   }
 }

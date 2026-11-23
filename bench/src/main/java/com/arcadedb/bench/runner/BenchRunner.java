@@ -39,6 +39,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 
 /**
@@ -58,6 +59,16 @@ public final class BenchRunner {
   // zero = no cap over the whole case
   private final Duration caseTimeout;
   private final Duration interruptGrace;
+
+  /** The wall clock stepping this far ahead of the monotonic one during a case means the host slept or was suspended. */
+  private static final long HOST_NOT_QUIET_MILLIS = 1000;
+
+  /** The two clocks read at the start and end of each case; replaceable so a test can fake a sleeping host. */
+  record ClockPair(LongSupplier wallMillis, LongSupplier monoNanos) {
+    static final ClockPair SYSTEM = new ClockPair(System::currentTimeMillis, System::nanoTime);
+  }
+
+  private final ClockPair clocks;
 
   private static final String WORKER_STILL_RUNNING = "teardown skipped: worker still running";
 
@@ -87,6 +98,11 @@ public final class BenchRunner {
 
   BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
       final Duration caseTimeout, final Duration interruptGrace) {
+    this(reps, warmup, stepTimeout, prepareTimeout, caseTimeout, interruptGrace, ClockPair.SYSTEM);
+  }
+
+  BenchRunner(final int reps, final int warmup, final Duration stepTimeout, final Duration prepareTimeout,
+      final Duration caseTimeout, final Duration interruptGrace, final ClockPair clocks) {
     if (reps < 1)
       throw new IllegalArgumentException("reps must be at least 1, got " + reps);
     if (warmup < 0)
@@ -103,6 +119,7 @@ public final class BenchRunner {
     this.prepareTimeout = prepareTimeout;
     this.caseTimeout = caseTimeout;
     this.interruptGrace = interruptGrace;
+    this.clocks = clocks;
   }
 
   /** The step the worker is in, when it started and how long it may take; replaced by the worker as it moves on. */
@@ -134,7 +151,15 @@ public final class BenchRunner {
         result = result(w, ctx, caseName, List.of(), CaseResult.Status.FAILED,
             "not started: the worker of case '" + abandoned + "' is still running");
       else {
-        result = runCase(w, ctx, caseName);
+        final long wallStart = clocks.wallMillis().getAsLong();
+        final long monoStart = clocks.monoNanos().getAsLong();
+        final CaseResult ran = runCase(w, ctx, caseName);
+        final long wallDelta = clocks.wallMillis().getAsLong() - wallStart;
+        final long monoDeltaMillis = TimeUnit.NANOSECONDS.toMillis(clocks.monoNanos().getAsLong() - monoStart);
+        final long ahead = wallDelta - monoDeltaMillis;
+        result = ahead > HOST_NOT_QUIET_MILLIS ?
+            ran.withNote("hostNotQuiet", "wall clock ran " + ahead + " ms ahead of the monotonic clock") :
+            ran;
         if (!lastWorkerStopped)
           abandoned = caseName;
       }
