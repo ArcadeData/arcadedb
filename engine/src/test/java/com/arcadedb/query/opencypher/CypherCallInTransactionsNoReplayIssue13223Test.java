@@ -117,6 +117,24 @@ class CypherCallInTransactionsNoReplayIssue13223Test extends TestHelper {
     assertThat(count("B13223")).isEqualTo(2);
   }
 
+  /** Batches that wrote nothing leave nothing durable: a conflict after them is still retried, and the retry succeeds. */
+  @Test
+  void batchesThatWroteNothingDoNotStopTheRetry() {
+    final AtomicInteger attempts = new AtomicInteger();
+
+    database.transaction(() -> {
+      ((DatabaseInternal) database).getTransaction().setImplicit(true);
+      database.command("opencypher", "UNWIND range(1, 3) AS i "//
+          + "CALL { WITH i MATCH (n:B13223 {i: i}) SET n.seen = true } IN TRANSACTIONS OF 1 ROWS");
+      if (attempts.incrementAndGet() == 1)
+        throw new ConcurrentModificationException("simulated conflict after batches that wrote nothing");
+      database.command("opencypher", "CREATE (:Pre13223)");
+    }, false, 3);
+
+    assertThat(attempts.get()).isEqualTo(2);
+    assertThat(count("Pre13223")).isEqualTo(1);
+  }
+
   /** What the HTTP auto-commit wrapper does around every command it runs. */
   private void serverWrapper(final AtomicInteger attempts, final int retries, final String statement) {
     database.transaction(() -> {

@@ -542,12 +542,18 @@ public class SubqueryStep extends AbstractExecutionStep {
    * replay ({@code TransactionContext.isPartiallyCommitted}, #7916) and hands the conflict to the caller. The commit of the
    * statement's own writes before a batch ({@link #commitStatementWrites}) lands on that implicit transaction itself, which counts
    * it already.
+   * <p>
+   * A batch that wrote nothing (a body that only reads, or a {@code MATCH ... SET} that matched no node) is not reported: nothing
+   * of it is durable, so a replay applies nothing twice and the wrapper keeps its retry.
    */
   private void commitBatch() {
     final TransactionContext committed = database.getTransactionIfExists();
+    final boolean wroteSomething = committed != null && !committed.hasChangedNothing();
 
     database.commit();
 
+    if (!wroteSomething)
+      return;
     final TransactionContext survivor = database.getTransactionIfExists();
     if (survivor != null && survivor != committed)
       survivor.reportBatchBoundaryOfNestedTransaction();
