@@ -51,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ul>
  * <li>a request that resolved a session before the sweep ended it runs nothing in it afterwards;</li>
  * <li>the sweep leaves a session that another request already ended to that request;</li>
+ * <li>a database counts as in use by its expired session until the sweep has finished rolling that session back;</li>
  * <li>{@link HttpSessionManager#removeSessionsForUser} leaves none of the user's sessions resolvable.</li>
  * </ul>
  */
@@ -118,16 +119,42 @@ class Issue12115SessionLookupWithoutManagerLockTest {
       final HttpSession begun = withoutWaiting(() -> sessionManager.createSession(user, null));
       assertThat(withoutWaiting(() -> sessionManager.removeSession(begun.id))).isSameAs(begun);
 
-      // and the expired one is already gone: it was unregistered before its rollback started
-      assertThat(withoutWaiting(() -> sessionManager.getSessionById(user, expiring.id))).isNull();
-      assertThat(withoutWaiting(() -> sessionManager.isSessionRegistered(expiring.id))).isFalse();
+      // and the expired one is still registered, read without waiting: its transaction is on no thread, so until the rollback
+      // is over the registration is what keeps the idle-database closer away from the database
+      assertThat(withoutWaiting(() -> sessionManager.isSessionRegistered(expiring.id))).isTrue();
     } finally {
       expiringTx.releaseRollback.countDown();
     }
 
     assertThat(sweep.get(HANG_SECONDS, TimeUnit.SECONDS)).as("sessions the sweep ended").isEqualTo(1);
     assertThat(expiringTx.isActive()).isFalse();
+    assertThat(sessionManager.getSessionById(user, expiring.id)).isNull();
+    assertThat(sessionManager.isSessionRegistered(expiring.id)).isFalse();
     assertThat(sessionManager.getSessions()).containsExactly(live);
+  }
+
+  @Test
+  void databaseCountsAsInUseUntilTheSweepHasRolledTheExpiredSessionBack() throws Exception {
+    openDatabase();
+    final ParkingRollbackTransaction tx = beginParking();
+    final HttpSession session = sessionManager.createSession(user("alice"), tx);
+    makeLookExpired(session);
+
+    final Future<Integer> sweep = executor.submit(sessionManager::checkSessionsValidity);
+    assertThat(tx.rollbackEntered.await(HANG_SECONDS, TimeUnit.SECONDS)).as("the sweep reached the rollback").isTrue();
+
+    try {
+      // What the server closing idle databases asks before it closes one: the rollback is still running on this database
+      assertThat(withoutWaiting(() -> sessionManager.hasSessionOnDatabase(database.getName()))).isTrue();
+      assertThat(withoutWaiting(sessionManager::getSessionDatabaseNames)).containsExactly(database.getName());
+    } finally {
+      tx.releaseRollback.countDown();
+    }
+
+    assertThat(sweep.get(HANG_SECONDS, TimeUnit.SECONDS)).isEqualTo(1);
+    assertThat(tx.isActive()).isFalse();
+    assertThat(sessionManager.hasSessionOnDatabase(database.getName())).isFalse();
+    assertThat(sessionManager.getSessionDatabaseNames()).isEmpty();
   }
 
   @Test

@@ -36,9 +36,11 @@ import java.util.logging.Level;
  * sessions most requests parked on it behind a queued writer. What needs more than one map operation to stay true is kept true
  * without a manager-wide lock:
  * <ul>
- * <li>an expired session is unregistered and rolled back under its own session lock ({@link HttpSession#cancelIfIdle}), so a
- * request that resolved it before the sweep and takes the session lock after it finds it unregistered and runs nothing
- * ({@link HttpSession#execute} re-checks {@link #isSessionRegistered} under that lock);</li>
+ * <li>an expired session is rolled back and then unregistered under its own session lock ({@link HttpSession#cancelIfIdle}), so
+ * a request that resolved it before the sweep and takes the session lock after it finds it unregistered and runs nothing
+ * ({@link HttpSession#execute} re-checks {@link #isSessionRegistered} under that lock), and the session stays registered
+ * until its rollback is over, so {@link #hasSessionOnDatabase} never calls a database free while the sweep is still rolling
+ * a transaction back on it;</li>
  * <li>the sessions of a dropped or re-passworded user are each removed with a conditional remove before their transaction is
  * rolled back, so none of them is resolvable once {@link #removeSessionsForUser} returns;</li>
  * <li>the committed sessions remembered for a retried `/commit` (issue #10164) form an ordered, capped map, guarded by its own
@@ -109,8 +111,8 @@ public class HttpSessionManager {
     int expired = 0;
     for (final HttpSession session : sessions.values()) {
       if (session.elapsedFromLastUpdate() > transactionTimeoutInMs) {
-        // ONLY END THE SESSION IF IT'S ACTUALLY IDLE (NO COMMAND CURRENTLY EXECUTING ON IT): cancelIfIdle() UNREGISTERS IT AND ROLLS
-        // IT BACK UNDER THE SESSION LOCK. A BUSY SESSION IS LEFT ALONE FOR THIS SWEEP AND RE-EVALUATED ON THE NEXT TICK, ONE ANOTHER
+        // ONLY END THE SESSION IF IT'S ACTUALLY IDLE (NO COMMAND CURRENTLY EXECUTING ON IT): cancelIfIdle() ROLLS IT BACK AND
+        // UNREGISTERS IT UNDER THE SESSION LOCK. A BUSY SESSION IS LEFT ALONE FOR THIS SWEEP AND RE-EVALUATED ON THE NEXT TICK, ONE ANOTHER
         // REQUEST ENDED MEANWHILE (COMMIT, ROLLBACK, TERMINATE) IS THAT REQUEST'S BUSINESS
         final HttpSession.IdleCancelOutcome outcome = session.cancelIfIdle();
         if (outcome == HttpSession.IdleCancelOutcome.ROLLED_BACK)

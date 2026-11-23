@@ -189,9 +189,15 @@ public class HttpSession implements QuerySession {
    * just-nulled transaction field (issue #4857). If a command is in-flight, this is a no-op; the session is re-evaluated on the
    * sweep's next tick once the command finishes and refreshes {@link #lastUpdate}.
    * <p>
-   * The unregistration happens under the session lock, before the rollback (issue #12115): a request that resolved the session
-   * before the sweep and takes the lock after it finds the session unregistered in {@link #execute} and runs nothing, the same
-   * guarantee the manager's write lock gave when it covered the whole sweep.
+   * Both happen under the session lock (issue #12115): a request that resolved the session before the sweep and takes the lock
+   * after it finds the session unregistered in {@link #execute} and runs nothing, the same guarantee the manager's write lock
+   * gave when it covered the whole sweep.
+   * <p>
+   * The rollback comes first, the unregistration after it, on purpose: a transaction session's transaction is attached to no
+   * thread, so the registration is all that tells the server closing idle databases
+   * ({@link HttpSessionManager#hasSessionOnDatabase}) that the database is still in use. Unregistering first would let it close
+   * the database while this rollback is still running on it. The session goes in a {@code finally}, so one whose rollback
+   * fails is not left registered either.
    *
    * @return {@link IdleCancelOutcome#BUSY} if a command is currently in-flight and the sweep must retry
    * later, {@link IdleCancelOutcome#ENDED} if another request (commit, rollback, close, terminate) already unregistered the
@@ -203,11 +209,18 @@ public class HttpSession implements QuerySession {
       return IdleCancelOutcome.BUSY;
 
     try {
-      if (!manager.unregister(this))
+      // Whoever unregistered it ends its transaction too. Every request of the session that unregisters it holds this lock or
+      // waits for it before it touches the transaction, so the answer cannot turn under the rollback below
+      if (!manager.isSessionRegistered(id))
         return IdleCancelOutcome.ENDED;
-      // ends the session's transaction: what a bounded cancel that gave up asked for is done here (issue #9774)
-      rollbackOnRelease = false;
-      return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
+      try {
+        // ends the session's transaction: what a bounded cancel that gave up asked for is done here (issue #9774)
+        rollbackOnRelease = false;
+        return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
+      } finally {
+        // AFTER the rollback: until here the idle-database check still sees a session on the database (issue #12115)
+        manager.unregister(this);
+      }
     } finally {
       lock.unlock();
     }
