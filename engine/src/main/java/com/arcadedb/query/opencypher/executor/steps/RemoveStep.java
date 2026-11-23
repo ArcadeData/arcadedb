@@ -235,9 +235,14 @@ public class RemoveStep extends AbstractExecutionStep {
       if (item.getType() == RemoveClause.RemoveItem.RemoveType.LABELS) {
         if (phase1 == null)
           phase1 = new Object[items.size()];
+        SetClauseApplier.requireGraphElement(result.getProperty(item.getVariable()), true);
         phase1[i] = resolveLabels(item, result);
         continue;
       }
+      // #13228: a plain variable that holds a map, a list, a scalar or a path is refused before anything is removed, as an
+      // expression target is (#11693), instead of being skipped
+      if (item.getTargetExpression() == null && item.getVariable() != null)
+        SetClauseApplier.requireGraphElement(result.getProperty(item.getVariable()), false);
       if (item.getTargetExpression() != null) {
         if (phase1 == null)
           phase1 = new Object[items.size()];

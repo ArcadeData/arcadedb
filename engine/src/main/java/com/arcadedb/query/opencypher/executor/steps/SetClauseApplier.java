@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -229,6 +230,8 @@ public final class SetClauseApplier {
       case PROPERTY:
         // Resolve the latest doc first so self-referential reads across row fanout (e.g. via UNWIND) observe
         // prior-row writes, then snapshot target + key + value.
+        if (item.getTargetExpression() == null && item.getVariable() != null)
+          requireGraphElement(result.getProperty(item.getVariable()), false);
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         if (item.getTargetExpression() != null) {
@@ -263,6 +266,8 @@ public final class SetClauseApplier {
         break;
       case REPLACE_MAP:
       case MERGE_MAP:
+        if (item.getVariable() != null)
+          requireGraphElement(result.getProperty(item.getVariable()), false);
         if (reload)
           reloadTarget(item.getVariable(), result, writtenDocs);
         // Materialise the properties HERE, not at write time: an entity right-hand side evaluates to the live record,
@@ -276,10 +281,30 @@ public final class SetClauseApplier {
         // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the pre-clause
         // state like every other right-hand side, and it is validated here so an unusable label rejects the clause
         // before any of it has been written (issue #7059).
+        requireGraphElement(result.getProperty(item.getVariable()), true);
         values[i] = resolveLabels(item, result);
         break;
       }
     }
+  }
+
+  /**
+   * #13228: a SET or REMOVE whose target is a plain variable writes to a node or a relationship (a label, to a node). A map, a list,
+   * a scalar or a path in that variable is refused with the type error Neo4j raises, before any item of the clause is written,
+   * as {@code SET (expr).p} is since #11693, instead of being skipped as if the write had happened. A null (an OPTIONAL MATCH that
+   * found nothing), a record that a DELETE of the statement replaced with its marker (refused where it is read, #5795) and what
+   * the row holds as a record identity or a result row are left to the write.
+   *
+   * @param label true for a label write, which only a node takes
+   */
+  static void requireGraphElement(final Object bound, final boolean label) {
+    if (bound == null || bound instanceof Result || bound instanceof DeletedEntityMarker)
+      return;
+    // an unresolved record identity is left to the write; a record is a node or a relationship, and only a node takes a label
+    if (bound instanceof Document ? !label || bound instanceof Vertex : bound instanceof Identifiable)
+      return;
+    throw new TypeMismatchException("TypeError: Type mismatch: expected " + (label ? "Node" : "Node or Relationship") + " but was "
+        + CypherFunctionHelper.cypherTypeName(bound));
   }
 
   /**
