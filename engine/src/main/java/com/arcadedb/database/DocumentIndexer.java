@@ -33,6 +33,7 @@ import com.arcadedb.schema.Schema;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -599,11 +600,16 @@ public class DocumentIndexer {
           values.put(key, copyForSnapshot(value));
       }
     }
+    // The key the record was placed with is the baseline's, not the pending one: the transaction may have written it before any index
+    // was there to check it
+    final List<String> partitionProperties = partitionPropertiesOf(pending);
+    if (partitionProperties != null)
+      keepPartitionKey(partitionProperties, baseline, values);
     tx.setLastIndexedSnapshot(rid, new DetachedDocument(pending, values));
   }
 
   /**
-   * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
+   * Defensive copy for a snapshot value: immutable scalar values are stored as-is; a {@link Date} is cloned, and containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
    * <p>
@@ -626,6 +632,10 @@ public class DocumentIndexer {
     }
     if (value instanceof EmbeddedDocument embedded)
       return embedded.detach();
+    if (value instanceof Date date)
+      // mutable, and what a DATETIME is read back as under arcadedb.dateTimeImplementation=java.util.Date: the clone keeps the
+      // runtime class (a Timestamp is one), and an in-place change of the record's value cannot move the baseline with it
+      return date.clone();
     if (value instanceof Set<?> set) {
       // A Set is not an expected indexed shape (the serializer produces scalar/List/Map), but copy it anyway
       // rather than store it aliased: an in-place mutation of an aliased snapshot value would hide an index
@@ -639,8 +649,35 @@ public class DocumentIndexer {
       // Same reasoning for arrays: unexpected as an indexed value, but never stored aliased. (Array equals is
       // identity-based, so the diff already treats any deserialized array as changed; the copy doesn't worsen that.)
       return Arrays.copyOf(array, array.length);
-    // Remaining values (String, numbers, dates, RIDs) are immutable: store by reference.
+    // Remaining values (String, numbers, java.time dates, RIDs) are immutable: store by reference.
     return value;
+  }
+
+  /**
+   * @return the partition properties of the type of {@code record} when its bucket selection is partitioned, {@code null} when it
+   *     is not. One volatile read and a type test for a type that is not, which is the case of nearly every update.
+   */
+  private static List<String> partitionPropertiesOf(final Document record) {
+    return record.getType().getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy strategy ?
+        strategy.getProperties() :
+        null;
+  }
+
+  /**
+   * Keeps the partition key in an indexed-state snapshot whether or not an index covers it. The check of the next update of the
+   * record in the transaction reads the key from that snapshot, and a snapshot holds only what the indexes key: a partitioned
+   * type outlives the unique index it was assigned against (nothing re-checks it, and the loader keeps the strategy), so its key
+   * can be in no index at all and would read as {@code null} from the snapshot, a change of a key that never moved.
+   *
+   * @param source the record whose partition key is the one the record was placed with: the one the check just compared against
+   *     the original, or the diff source an index build starts from
+   */
+  private static void keepPartitionKey(final List<String> partitionProperties, final Document source, final Map<String, Object> values) {
+    for (int i = 0; i < partitionProperties.size(); ++i) {
+      final String name = partitionProperties.get(i);
+      if (!values.containsKey(name))
+        values.put(name, copyForSnapshot(getPropertyValue(source, name)));
+    }
   }
 
   /**
@@ -648,11 +685,8 @@ public class DocumentIndexer {
    * key would require moving it to another bucket under a new RID: refused. Any other property, indexed or not, may change
    * (issue #12961: every changed index key used to be refused, because the check compared the wrong lists).
    */
-  private static void checkPartitionKeyUnchanged(final Document originalRecord, final Document modifiedRecord) {
-    if (!(modifiedRecord.getType().getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy strategy))
-      return;
-
-    final List<String> partitionProperties = strategy.getProperties();
+  private static void checkPartitionKeyUnchanged(final List<String> partitionProperties, final Document originalRecord,
+      final Document modifiedRecord) {
     for (int i = 0; i < partitionProperties.size(); ++i) {
       final String name = partitionProperties.get(i);
       if (!sameKeyValue(getPropertyValue(modifiedRecord, name), getPropertyValue(originalRecord, name)))
@@ -692,7 +726,10 @@ public class DocumentIndexer {
       // RECORD IS NOT PERSISTENT
       return null;
 
-    checkPartitionKeyUnchanged(originalRecord, modifiedRecord);
+    final List<String> partitionProperties = partitionPropertiesOf(modifiedRecord);
+    if (partitionProperties != null)
+      // BEFORE ANY INDEX ENTRY IS QUEUED: A REFUSED KEY LEAVES NOTHING TO UNDO
+      checkPartitionKeyUnchanged(partitionProperties, originalRecord, modifiedRecord);
 
     final int totalIndexes = indexes.size();
     // Retained per index for the snapshot build below, so the values extracted for the diff are reused.
@@ -774,6 +811,8 @@ public class DocumentIndexer {
               newKeyValues != null ? newKeyValues[i] : getPropertyValue(modifiedRecord, propertyNames[i])));
       }
     }
+    if (partitionProperties != null)
+      keepPartitionKey(partitionProperties, modifiedRecord, values);
     return new DetachedDocument(modifiedRecord, values);
   }
 
