@@ -10203,7 +10203,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Issue #13262: this value is read before the read lock and is only the bound of the allow-list's copy below. A commit can land
       // between here and the lock, so as the k of the search it was short of the live count, and an exhaustive search (k at or above
       // the live count) answered the nearest k rows and silently left the farthest live ones out. The search takes its k again under
-      // the read lock, where no writer can move the counts.
+      // the read lock, where no writer can move the counts. The bound of the allow-list's copy may then be lower than the live count
+      // (the count grew since): allowListShare keeps a list with more members here than the bound as it is instead of copying it,
+      // so a lower bound costs a copy, never a row of the answer.
       // The overlay's rows count toward the addressable candidates too: without them a search inside a transaction
       // that wrote the only rows there are would clamp k to zero and return nothing.
       //
