@@ -27,6 +27,8 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReopeningException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.ForwardedRequestIdContext;
@@ -35,6 +37,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.UnstartedHttpServers;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.security.ServerSecurityDatabaseUser;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderMap;
@@ -57,7 +60,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -66,6 +68,21 @@ import static org.mockito.Mockito.when;
  * is durable on the leader, so a retryable refusal in its place makes the client replay it, and the replay applies it twice.
  */
 class DatabaseAbstractHandlerLeaderAnswerTest {
+
+  /**
+   * A real server user, allowed on every database, bound to no server so it answers no database user: the request runs as the
+   * engine does when no user is bound (a hand-written fake rather than a mock of the server type, issue #9464).
+   */
+  private static final class UnboundUser extends ServerSecurityUser {
+    UnboundUser() {
+      super(null, new JSONObject().put("name", "tester").put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray().put("admin"))));
+    }
+
+    @Override
+    public ServerSecurityDatabaseUser getDatabaseUser(final Database database) {
+      return null;
+    }
+  }
 
   @AfterEach
   void clearContext() {
@@ -166,9 +183,7 @@ class DatabaseAbstractHandlerLeaderAnswerTest {
       server.database("ha", new ServerDatabase(server, haDatabase));
       server.database("plain", new ServerDatabase(server, database));
       httpServer = HTTP_SERVERS.of(server);
-      // Bound to no server, so it answers no database user: the request runs as the engine does when no user is bound
-      user = mock(ServerSecurityUser.class);
-      when(user.canAccessToDatabase(anyString())).thenReturn(true);
+      user = new UnboundUser();
       publishes = 1;
       refusedForwardsAfter = 0;
       executedLocally = false;
