@@ -47,8 +47,6 @@ public class TextRpad extends AbstractTextFunction {
     return "Right pad string to the specified length with the specified character";
   }
 
-  private static final int MAX_STRING_LENGTH = 10 * 1024 * 1024; // 10MB max string length
-
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     final String str = asString(args[0]);
@@ -62,9 +60,9 @@ public class TextRpad extends AbstractTextFunction {
       throw new IllegalArgumentException("Invalid length: " + length + " (must be non-negative)");
     }
 
-    if (length > MAX_STRING_LENGTH) {
+    if (length > MAX_RESULT_LENGTH) {
       throw new IllegalArgumentException(
-          "Padding length exceeds maximum allowed (" + MAX_STRING_LENGTH + "): " + length);
+          "Padding length exceeds maximum allowed (" + MAX_RESULT_LENGTH + "): " + length);
     }
 
     final String padStr = asString(args[2]);

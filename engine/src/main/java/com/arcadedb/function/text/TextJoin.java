@@ -22,10 +22,11 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.StringJoiner;
 
 /**
- * text.join(list, delimiter) - Join list elements into a string.
+ * text.join(list, delimiter) - Join list elements into a string, as {@code apoc.text.join} does ({@code String.join}, issue #12104):
+ * a null element is written as {@code null}, and a null delimiter answers null.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -47,24 +48,22 @@ public class TextJoin extends AbstractTextFunction {
 
   @Override
   public String getDescription() {
-    return "Join list elements into a string with the specified delimiter";
+    return "Join list elements into a string with the specified delimiter, a null element written as null";
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null)
       return null;
 
     // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES is a primitive array, and is the same LIST to every list function (issue #11582)
     final List<Object> list = CypherFunctionHelper.asListOrNull(args[0]);
-    if (list == null) {
+    if (list == null)
       throw new IllegalArgumentException("text.join() first argument must be a list");
-    }
-    final String delimiter = asString(args[1]);
 
-    return list.stream()
-        .map(item -> item == null ? "" : item.toString())
-        .collect(Collectors.joining(delimiter == null ? "" : delimiter));
+    final StringJoiner joined = new StringJoiner(args[1].toString());
+    for (final Object item : list)
+      joined.add(String.valueOf(item));
+    return joined.toString();
   }
 }

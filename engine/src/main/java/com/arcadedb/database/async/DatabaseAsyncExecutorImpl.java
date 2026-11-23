@@ -39,7 +39,9 @@ import com.arcadedb.engine.timeseries.TimeSeriesStorableRows;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
@@ -360,6 +362,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     private          TransactionContext         taskBatchTx              = null;
     /** #7667: {@link #taskBatchTx}'s commit count at the moment it was handed to the running task. */
     private          long                       taskBatchTxCommitCount   = 0;
+    // #12635: the shared batch's count of writes another node committed, sampled with taskBatchTxCommitCount
+    private          long                       taskBatchTxForwardedWrites = 0;
     /**
      * #11201: the root epoch of the task this worker is working for, inherited by every task it schedules meanwhile (a cascade):
      * the task it is executing, from its {@code execute()} to its {@code completed()}, or the buffered task it is replaying or
@@ -410,7 +414,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * @return true if the snapshotted shared batch transaction has been committed since the running task was handed it
      */
     private boolean sharedBatchCommittedDuringTask() {
-      return taskBatchTx != null && taskBatchTx.getCommitCount() != taskBatchTxCommitCount;
+      // Local commits only: a write the task forwarded to the leader (issue #12635) left the batch's own writes uncommitted
+      return taskBatchTx != null && taskBatchTx.getLocalCommitCount() != taskBatchTxCommitCount;
+    }
+
+    /**
+     * Whether the running task had a write committed by another node: a statement this replica forwarded to the leader, which
+     * answered it (issue #12635). The write is durable there, so the task must not be replayed by {@link #commitBatch}, while the
+     * writes the batch buffered before it are still this node's, uncommitted, and keep their bookkeeping.
+     */
+    private boolean taskWroteThroughAnotherNode() {
+      return taskBatchTx != null && taskBatchTx.getWritesCommittedByAnotherNode() != taskBatchTxForwardedWrites;
     }
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -620,7 +634,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // commit site clears the buffers).
         if (!nested) {
           taskBatchTx = database.isTransactionActive() ? database.getTransaction() : null;
-          taskBatchTxCommitCount = taskBatchTx != null ? taskBatchTx.getCommitCount() : 0;
+          taskBatchTxCommitCount = taskBatchTx != null ? taskBatchTx.getLocalCommitCount() : 0;
+          taskBatchTxForwardedWrites = taskBatchTx != null ? taskBatchTx.getWritesCommittedByAnotherNode() : 0;
         }
 
         message.execute(this, database);
@@ -661,7 +676,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // AsyncResultsetCallback's javadoc, not as a verdict on this command's own writes.
             if (message instanceof final DatabaseAsyncCommand command ? !command.idempotent : message.writesToSharedBatch())
               pendingUnreplayableTasks.add(message);
-          } else if (message instanceof final DatabaseAsyncCommand command) {
+          } else if (taskWroteThroughAnotherNode())
+            // #12635: durable on the leader, so never replayed; the writes buffered ahead of it stay tracked as they were
+            pendingUnreplayableTasks.add(message);
+          else if (message instanceof final DatabaseAsyncCommand command) {
             if (!command.idempotent)
               pendingBatchCommands.add(command);
             // idempotent (a query): wrote nothing, batch replayability unaffected either way.
@@ -2130,21 +2148,39 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           backPressurePercentage);
     else {
       // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION
-      // VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
+      // VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED). EACH SLOT IS THE SINGLE WRITER OF ITS OWN
+      // VERTICES, SO THE FIRST TASK WIRES ONLY THE OUT SIDE OF A BIDIRECTIONAL EDGE: IT USED TO WIRE BOTH, AND THE
+      // CASCADE THEN APPENDED THE EDGE A SECOND TIME TO THE IN LIST OF THE DESTINATION (issue #12602)
       scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, light,
-          (newEdge, createdSourceVertex, createdDestinationVertex) -> {
-            if (bidirectional) {
-              scheduleTask(destinationSlot,
-                  new CreateIncomingEdgeAsyncTask(sourceVertex.getIdentity(), destinationVertexRID, newEdge,
-                      (newEdge1, createdSourceVertex1, createdDestinationVertex1) -> {
-                        if (callback != null)
-                          callback.call(newEdge1, createdSourceVertex1, createdDestinationVertex1);
-                      }), true, 0);
-            } else if (callback != null)
+          bidirectional, (newEdge, createdSourceVertex, createdDestinationVertex) -> {
+            if (bidirectional)
+              wireIncomingSideOfCrossSlotEdge(newEdge, callback);
+            else if (callback != null)
               callback.call(newEdge, createdSourceVertex, createdDestinationVertex);
 
           }), true, backPressurePercentage);
     }
+  }
+
+  /**
+   * The second half of a cross-slot bidirectional edge, called from the callback of the task that created it on the worker of the
+   * source's slot: appends the edge to the IN list of the vertex it ends at, from the worker that owns that vertex.
+   * <p>
+   * The vertex is the one the edge RECORD names, which an {@code @in} (or {@code @out}) among the properties makes another one than
+   * the vertices given to {@code newEdge} (issue #12247): the slot is that vertex's, and the far end of the entry is the vertex the
+   * record names as its source. A destination that turns out to belong to the calling worker is wired right here, never through
+   * its own queue: a worker that offers into a full queue of its own would only be waiting for itself.
+   */
+  private void wireIncomingSideOfCrossSlotEdge(final Edge edge, final NewEdgeCallback callback) {
+    final RID destination = edge.getIn();
+    final CreateIncomingEdgeAsyncTask incoming = new CreateIncomingEdgeAsyncTask(edge.getOut(), destination, edge, callback);
+
+    final int destinationSlot = getSlot(destination.getBucketId());
+    final AsyncThread[] threads = executorThreads;
+    if (threads != null && destinationSlot < threads.length && threads[destinationSlot] == Thread.currentThread())
+      incoming.connectIncomingSide(database);
+    else
+      scheduleTask(destinationSlot, incoming, true, 0);
   }
 
   @Override
@@ -2193,10 +2229,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (sourceRID == null && destinationRID == null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source and destination vertices with respectively key " + Arrays.toString(sourceVertexKeyNames) + "="
                 + Arrays.toString(sourceVertexKeyValues) + " and " + Arrays.toString(destinationVertexKeyNames) + "="
-                + Arrays.toString(destinationVertexKeyValues));
+                + Arrays.toString(destinationVertexKeyValues), null);
 
       // SOURCE AND DESTINATION VERTICES BOTH DON'T EXIST: CREATE 2 VERTICES + EDGE IN THE SAME TASK PICKING THE BEST
       // SLOT
@@ -2209,9 +2245,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     } else if (sourceRID != null && destinationRID == null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find destination vertex with key " + Arrays.toString(destinationVertexKeyNames) + "=" + Arrays.toString(
-                destinationVertexKeyValues));
+                destinationVertexKeyValues), null);
 
       // ONLY SOURCE VERTEX EXISTS, CREATE DESTINATION VERTEX + EDGE IN SOURCE'S SLOT
       scheduleTask(getSlot(sourceRID.getBucketId()),
@@ -2222,9 +2258,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     } else if (sourceRID == null && destinationRID != null) {
 
       if (!createVertexIfNotExist)
-        throw new IllegalArgumentException(
+        throw new RecordNotFoundException(
             "Cannot find source vertex with key " + Arrays.toString(sourceVertexKeyNames) + "=" + Arrays.toString(
-                sourceVertexKeyValues));
+                sourceVertexKeyValues), null);
 
       // ONLY DESTINATION VERTEX EXISTS
       scheduleTask(getSlot(destinationRID.getBucketId()),

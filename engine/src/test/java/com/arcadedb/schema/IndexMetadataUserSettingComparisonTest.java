@@ -137,6 +137,7 @@ class IndexMetadataUserSettingComparisonTest {
     samples.put("similarity", new Object[] { "BM25", "CLASSIC" });
     samples.put("bm25_k1", new Object[] { 1.2f, 1.5f });
     samples.put("bm25_b", new Object[] { 0.75f, 0.5f });
+    samples.put("fuzzyMaxExpansions", new Object[] { 50, 10 });
 
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("Doc", PROPERTIES, -1);
     assertEverySettingIsComparable(metadata, samples, Schema.INDEX_TYPE.FULL_TEXT);

@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.EdgeConstraint;
 import com.arcadedb.query.opencypher.executor.steps.ShortestPathStep.HopBounds;
@@ -85,6 +86,13 @@ public class ShortestPathExpression implements Expression {
     return paths;
   }
 
+  private static boolean endpointMatches(final NodePattern node, final Vertex vertex, final Result result,
+      final CommandContext context) {
+    if (node.hasLabels() && !Labels.matches(vertex, node.getLabels(), node.isLabelDisjunction()))
+      return false;
+    return !node.hasWhereExpression() || node.getWhereExpression().evaluate(result, context);
+  }
+
   /** The {@code [v0, e0, v1, ...]} elements of the shortest path, the list of them for all of them, or null for none. */
   private Object findElements(final Result result, final CommandContext context) {
     // Get the start and end vertices from the bound variables
@@ -128,6 +136,11 @@ public class ShortestPathExpression implements Expression {
 
     final Vertex startVertex = (Vertex) startValue;
     final Vertex endVertex = (Vertex) endValue;
+
+    // The endpoints are bound already, so their labels are a condition on the row, not a scan: (b:C) or (b:$('C')) on a
+    // vertex without the label has no path, as the MATCH form answers (issue #11776)
+    if (!endpointMatches(startNode, startVertex, result, context) || !endpointMatches(endNode, endVertex, result, context))
+      return null;
 
     final RelationshipPattern relationship = pathPattern.getRelationships().size() == 1 ?
         pathPattern.getRelationships().get(0) :

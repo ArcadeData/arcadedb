@@ -111,6 +111,8 @@ public class IndexNestedLoopJoin extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // A user who may not read the label is refused whatever the keys are, as the walk of its buckets does (issue #11904)
+    requireReadable(context, label);
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
 
     return new ResultSet() {

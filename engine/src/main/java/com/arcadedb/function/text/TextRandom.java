@@ -56,6 +56,10 @@ public class TextRandom extends AbstractTextFunction {
     if (length <= 0)
       return "";
 
+    // A length is a few characters of query text: past the ceiling it is refused, not allocated (issue #12727)
+    if (length > MAX_RESULT_LENGTH)
+      throw new IllegalArgumentException("Length exceeds maximum allowed (" + MAX_RESULT_LENGTH + "): " + length);
+
     final String chars = args.length > 1 ? asString(args[1]) : DEFAULT_CHARS;
     final String charSet = chars != null && !chars.isEmpty() ? chars : DEFAULT_CHARS;
 

@@ -55,6 +55,10 @@ public class ChainedPropertyAccessExpression implements PropertyReadExpression {
     return baseExpression;
   }
 
+  public String getPropertyName() {
+    return propertyName;
+  }
+
   /** {@code a.link.v} and {@code properties(n).v} read the property {@code v} of the record the base evaluates to. */
   @Override
   public PropertyRead propertyRead(final Result row, final CommandContext context) {

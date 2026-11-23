@@ -23,9 +23,9 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.WorkGuard;
 
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -34,8 +34,8 @@ import java.util.stream.Stream;
  * <p>
  * Computes the Jaccard similarity between the given source node and every other vertex in the
  * graph: {@code |N(src) ∩ N(v)| / |N(src) ∪ N(v)|}. Only pairs with similarity &gt; cutoff
- * (default 0.0) are returned. Uses BitSet neighbor sets for O(degree) intersection with no
- * per-pair heap allocation.
+ * (default 0.0) are returned. Only the nodes two hops away can share a neighbour with the source,
+ * so only their rows are read (issue #12176). Results are listed in RID order.
  * </p>
  * <p>
  * Example:
@@ -87,36 +87,30 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
     final double cutoff       = optionalNumberArg(args, 3, "cutoff", 0.0).doubleValue();
 
     final Database db = context.getDatabase();
+    final WorkGuard guard = newWorkGuard(context);
 
-    final GraphData graph = loadGraph(db, null, relTypes, context);
+    // Only a node two hops away shares a neighbour with the source, so only those are read: no view, no loading of the whole
+    // graph (issue #12176)
+    final Neighbourhood graph = openNeighbourhood(db, relTypes, context, sourceVertex.getIdentity());
 
-
-    final int n = graph.nodeCount;
-    if (n == 0)
-      return Stream.empty();
-    final int[][] adj = graph.adjacency(dir, relTypes);
-
-    final int srcIdx = graph.indexOf(sourceVertex.getIdentity());
+    final int srcIdx = graph.nodeOf(sourceVertex.getIdentity());
     if (srcIdx < 0)
       return Stream.empty();
+    final int srcDeg = graph.distinctDegree(srcIdx, dir);
 
-    // Build source neighbor BitSet
-    final BitSet srcNeighbors = new BitSet(n);
-    for (final int j : adj[srcIdx])
-      srcNeighbors.set(j);
-    final int srcDeg = adj[srcIdx].length;
+    // count = |N(src) ∩ N(v)|: the distinct neighbours of v that are neighbours of the source
+    final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> 0.0, guard);
 
+    // A node sharing no neighbour scores 0, and is listed only when the cutoff admits 0 (a negative one)
+    final boolean everyNode = cutoff < 0.0 || Double.isNaN(cutoff);
     final List<Result> results = new ArrayList<>();
-    for (int v = 0; v < n; v++) {
-      if (v == srcIdx)
-        continue;
-      // Count intersection without allocation: iterate adj[v] and check BitSet
-      int intersection = 0;
-      for (final int w : adj[v]) {
-        if (srcNeighbors.get(w))
-          intersection++;
-      }
-      final int union = srcDeg + adj[v].length - intersection;
+    int candidate = 0;
+    for (final int v : candidateNodes(db, graph, shared, srcIdx, everyNode)) {
+      // Every candidate advances the checkpoint, not only the accepted ones: a cutoff that rejects most of them must not skip it
+      guard.checkPeriodically(candidate++);
+      final int slot = shared.slotOf(v);
+      final int intersection = slot >= 0 ? shared.count(slot) : 0;
+      final int union = srcDeg + graph.distinctDegree(v, dir) - intersection;
       if (union == 0)
         continue;
       final double similarity = (double) intersection / union;
@@ -124,7 +118,7 @@ public class AlgoJaccardSimilarity extends AbstractAlgoProcedure {
         continue;
       final ResultInternal r = new ResultInternal();
       r.setProperty("node1", sourceVertex.getIdentity());
-      r.setProperty("node2", graph.getRID(v));
+      r.setProperty("node2", graph.ridOf(v));
       r.setProperty("similarity", similarity);
       results.add(r);
     }

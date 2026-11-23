@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -32,6 +34,7 @@ import java.time.OffsetTime;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Expression representing an arithmetic operation.
@@ -82,7 +85,31 @@ public class ArithmeticExpression implements Expression {
     this.left = left;
     this.operator = operator;
     this.right = right;
-    this.text = left.getText() + " " + operator.getSymbol() + " " + right.getText();
+    this.text = operandText(left, operator, false) + " " + operator.getSymbol() + " " + operandText(right, operator, true);
+  }
+
+  /**
+   * The text of an operand, in parentheses where printing it bare would read as another expression: the parser keeps the tree of
+   * {@code 2.0 * (1.0 - s)} but not its parentheses, and the text built from the tree read {@code 2.0 * 1.0 - s}, which is what
+   * EXPLAIN and PROFILE printed for it (issue #11820). A right operand of the same precedence is parenthesized too:
+   * {@code 10 - (4 - 1)}.
+   */
+  private static String operandText(final Expression operand, final Operator parent, final boolean rightSide) {
+    if (operand instanceof ArithmeticExpression child) {
+      final int childPrecedence = precedence(child.operator);
+      final int parentPrecedence = precedence(parent);
+      if (childPrecedence < parentPrecedence || (rightSide && childPrecedence == parentPrecedence))
+        return "(" + child.getText() + ")";
+    }
+    return operand.getText();
+  }
+
+  private static int precedence(final Operator operator) {
+    return switch (operator) {
+      case ADD, SUBTRACT, CONCAT -> 1;
+      case MULTIPLY, DIVIDE, MODULO -> 2;
+      case POWER -> 3;
+    };
   }
 
   public ArithmeticExpression(final Expression left, final Operator operator, final Expression right, final String text) {
@@ -148,8 +175,16 @@ public class ArithmeticExpression implements Expression {
     }
 
     // String concatenation for + operator
-    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String))
+    if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String)) {
+      // A map has no string form a query can rely on: Neo4j refuses to concatenate one, and ArcadeDB used to answer
+      // the Java Map.toString() form, which prints the internal keys of a point (srid included) in a shape no point
+      // constructor or toString() accepts (issue #12397).
+      final Object other = leftValue instanceof String ? rightValue : leftValue;
+      if (other instanceof Map<?, ?> map)
+        throw new TypeMismatchException(
+            "Type mismatch: expected Float, Integer, String or List<T> but was " + (CypherValues.isPointShaped(map) ? "Point" : "Map"));
       return leftValue.toString() + rightValue.toString();
+    }
 
     // Numeric operations. Temporal arithmetic - date/time ± duration, duration ± duration, duration * number -
     // is tried first, but only when an operand is not a Number: no temporal type is a Number, so every temporal

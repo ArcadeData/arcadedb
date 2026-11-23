@@ -19,25 +19,33 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.function.Function;
+import com.arcadedb.function.FunctionArity;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.function.sql.graph.SQLFunctionCypherRID;
 import com.arcadedb.function.sql.math.SQLFunctionEval;
 import com.arcadedb.function.sql.text.SQLFunctionSearchFieldsMore;
 import com.arcadedb.function.sql.text.SQLFunctionSearchIndexMore;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorDequantizeInt8;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.security.CodeSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -45,6 +53,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -289,8 +298,41 @@ class SqlParserRobustnessTest {
               SQLFunctionSearchIndexMore.NAME.toLowerCase(Locale.ROOT));
       assertThat(declared).as("the census reaches DefaultSQLFunctionFactory's class-registered (stateful) functions")
           .containsKey(SQLFunctionEval.NAME);
+      final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
       assertThat(declared.keySet()).as("the census reaches every name DefaultSQLFunctionFactory registers")
-          .containsAll(DefaultSQLFunctionFactory.getInstance().getFunctionNames());
+          .containsAll(factory.getFunctionNames().stream().filter(name -> !isDefinedByTheTestSources(factory.getFunctionInstance(name)))
+              .map(name -> name.toLowerCase(Locale.ROOT)).toList());
+      assertThat(declared).as("the census reaches more than a handful of the engine's own functions").hasSizeGreaterThan(300);
+    }
+
+    /**
+     * The control for the filter above: a function another test class left in the shared registry, with an arity its
+     * execute() does not honour, is not read as one of the engine's, while the registry still answers it.
+     */
+    @Test
+    void aFunctionAnotherTestLeftInTheRegistryIsNotCounted() {
+      final String name = "leftbyanothertest";
+      final SQLFunctionAbstract leftOver = new SQLFunctionAbstract(name) {
+        @Override
+        public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+            final CommandContext context) {
+          return params[0];
+        }
+
+        @Override
+        public String getSyntax() {
+          return name + "(<value>)";
+        }
+      };
+      ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(leftOver);
+      try {
+        assertThat(FunctionRegistry.get(name)).as("the registry holds the left-over function").isSameAs(leftOver);
+        assertThat(declaredFunctions()).as("a function compiled from the test sources is not one the engine declares")
+            .doesNotContainKey(name);
+      } finally {
+        ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().unregister(name);
+        FunctionRegistry.unregister(name);
+      }
     }
 
     /** Issue #11927: the arity these functions enforce is the arity they declare, so the parse-time gate and the registry agree. */
@@ -313,20 +355,194 @@ class SqlParserRobustnessTest {
     }
 
     /**
+     * Issue #11944: the functions that declared 0..MAX but counted their arguments by hand inside execute(). Each row is
+     * {name, min, max}; the declared bounds are what the gate enforces, and one argument outside them is the uniform
+     * "expects" semantic error.
+     */
+    @Test
+    void issue11944FunctionsDeclareTheArityTheyEnforce() {
+      final int unbounded = Integer.MAX_VALUE;
+      final Object[][] arities = { { "circle", 3, 3 }, { "rectangle", 4, 4 }, { "bellmanFord", 3, 4 }, { "randomInt", 1, 1 },
+          { "duration", 1, 2 }, { "ts.timeBucket", 2, 3 }, { "vector.add", 2, 2 }, { "vector.subtract", 2, 2 },
+          { "vector.approxDistance", 2, 3 }, { "vector.avg", 1, 1 }, { "vector.boost", 2, 2 }, { "vector.clip", 3, 3 },
+          { "vector.cosineSimilarity", 2, 2 }, { "vector.denseToSparse", 1, 2 }, { "vector.dequantizeBinary", 1, 3 },
+          { "vector.dequantizeInt8", 1, 3 }, { "vector.dimension", 1, 1 }, { "vector.discover", 3, 4 }, { "vector.dotProduct", 2, 2 },
+          { "vector.fuse", 1, unbounded }, { "vector.hasInf", 1, 1 }, { "vector.hasNaN", 1, 1 }, { "vector.hasNull", 1, 1 },
+          { "vector.hybridScore", 3, 3 }, { "vector.isNormalized", 1, 2 }, { "vector.l1Distance", 2, 2 }, { "vector.l1Norm", 1, 1 },
+          { "vector.l2Distance", 2, 2 }, { "vector.lInfNorm", 1, 1 }, { "vector.magnitude", 1, 1 }, { "vector.max", 1, 1 },
+          { "vector.min", 1, 1 }, { "vector.mmr", 2, 3 }, { "vector.multiply", 2, 2 }, { "vector.multiScore", 2, 3 },
+          { "vector.neighbors", 3, 4 }, { "vector.normalize", 1, 1 }, { "vector.normalizeScores", 1, 1 }, { "vector.quantizeBinary", 1, 1 },
+          { "vector.quantizeInt8", 1, 1 }, { "vector.recommend", 4, 5 }, { "vector.rerank", 4, 4 }, { "vector.rrfScore", 1, unbounded },
+          { "vector.scale", 2, 2 }, { "vector.scoreTransform", 2, 2 }, { "vector.sparseCreate", 2, 3 }, { "vector.sparseDot", 2, 2 },
+          { "vector.sparseNeighbors", 4, 5 }, { "vector.sparseToDense", 1, 1 }, { "vector.sparsity", 1, 3 }, { "vector.stdDev", 1, 1 },
+          { "vector.sum", 1, 1 }, { "vector.toString", 1, 2 }, { "vector.variance", 1, 1 } };
+
+      final Map<String, Function> declared = declaredFunctions();
+      for (final Object[] row : arities) {
+        final String name = (String) row[0];
+        final int min = (Integer) row[1];
+        final int max = (Integer) row[2];
+        final Function function = declared.get(name.toLowerCase(Locale.ROOT));
+        assertThat(function).as("the census reaches " + name).isNotNull();
+        assertThat(function.getMinArgs()).as(name + " declared minimum").isEqualTo(min);
+        assertThat(function.getMaxArgs()).as(name + " declared maximum").isEqualTo(max);
+
+        final List<Integer> outside = new ArrayList<>();
+        if (min > 0)
+          outside.add(min - 1);
+        if (max != unbounded)
+          outside.add(max + 1);
+        for (final int count : outside) {
+          final String call = name + "(" + IntStream.range(0, count).mapToObj(i -> "1").collect(Collectors.joining(", ")) + ")";
+          assertThatThrownBy(() -> drain("sql", "SELECT " + call + " AS r")).as("sql " + call).isInstanceOf(CommandSemanticException.class)
+              .hasMessageContaining("expects");
+        }
+      }
+    }
+
+    /**
+     * Issue #11944: vector.dequantizeInt8 accepts one argument (a quantized result) or three (bytes, min, max), never two. The
+     * declared range is 1..3, so the gap is still rejected inside execute(), with the same "expects" wording as the gate.
+     */
+    @Test
+    void dequantizeInt8RejectsTwoArgumentsAsAnArityError() {
+      assertThatThrownBy(() -> drain("sql", "SELECT vector.dequantizeInt8([1, 2], 0.5) AS r")).isInstanceOf(CommandSemanticException.class)
+          .hasMessageContaining("expects 1 or 3 arguments").hasMessageContaining("got 2");
+      // the counts outside the declared 1..3 read the same: the gate must not advertise "1-3 arguments", which includes 2
+      for (final String call : new String[] { "vector.dequantizeInt8()", "vector.dequantizeInt8([1, 2], 0.5, 1.0, 2.0)" })
+        assertThatThrownBy(() -> drain("sql", "SELECT " + call + " AS r")).as(call).isInstanceOf(CommandSemanticException.class)
+            .hasMessageContaining("expects 1 or 3 arguments").hasMessageNotContaining("1-3");
+    }
+
+    /**
+     * Issue #11944 (adversarial pass): ensureLabelTypes declared 0..MAX, refused no arguments inside execute() with an
+     * IllegalArgumentException and silently ignored every argument after the first. It now declares exactly one.
+     */
+    @Test
+    void ensureLabelTypesDeclaresTheOneArgumentItReads() {
+      final Function function = declaredFunctions().get("ensurelabeltypes");
+      assertThat(function).as("the census reaches ensureLabelTypes").isNotNull();
+      assertThat(function.getMinArgs()).isEqualTo(1);
+      assertThat(function.getMaxArgs()).isEqualTo(1);
+      for (final String call : new String[] { "ensureLabelTypes()", "ensureLabelTypes(['A11944'], ['B11944'])" })
+        assertThatThrownBy(() -> drain("sql", "SELECT " + call + " AS r")).as(call).isInstanceOf(CommandSemanticException.class)
+            .hasMessageContaining("expects 1 argument");
+      // an empty list is still refused, as a value error rather than a count error
+      assertThatThrownBy(() -> drain("sql", "SELECT ensureLabelTypes([]) AS r")).hasStackTraceContaining("non-empty list of labels");
+    }
+
+    /**
+     * Issue #11944: a count inside the declared range is never rejected FOR ITS COUNT, whatever the exception type. The bounds
+     * census above only recognises the gate's own "expects" message, so a function declaring 0..MAX and counting by hand inside
+     * execute() (an IllegalArgumentException, a CommandSQLParsingException carrying the syntax, an index past the end of the
+     * array) was invisible to it. This one probes every count from the declared minimum up to three above it.
+     */
+    @Test
+    void countsInsideTheDeclaredRangeAreNeverRejectedForTheirCount() {
+      final List<String> offenders = new ArrayList<>();
+      final List<String> probed = new ArrayList<>();
+      for (final Map.Entry<String, Function> entry : declaredFunctions().entrySet()) {
+        final String name = entry.getKey();
+        final Function function = entry.getValue();
+        final String lower = name.toLowerCase();
+        if (name.indexOf('.') != name.lastIndexOf('.') || lower.contains("sleep") || lower.contains("load") || lower.contains("cypher.run"))
+          continue;
+        final int min = function.getMinArgs();
+        final int max = FunctionArity.effectiveMax(function.getMaxArgs());
+        final int upper = (int) Math.min(max, (long) min + 3);
+        for (int count = min; count <= upper; count++) {
+          // the one non-contiguous arity: 1 or 3, never 2 (see dequantizeInt8RejectsTwoArgumentsAsAnArityError)
+          if (function instanceof SQLFunctionVectorDequantizeInt8 && count == 2)
+            continue;
+          final String args = IntStream.range(0, count).mapToObj(i -> "1").collect(Collectors.joining(", "));
+          probed.add(name);
+          try {
+            drain("sql", "SELECT " + name + "(" + args + ") AS r");
+          } catch (final Throwable t) {
+            if (isArityShaped(t, function))
+              offenders.add(name + "(" + count + " args, declared " + FunctionArity.describe(min, max) + "): " + t);
+          }
+        }
+      }
+      assertThat(offenders).as("functions rejecting a count inside their declared arity").isEmpty();
+      assertThat(probed).as("the census reaches DefaultSQLFunctionFactory's functions, the ones issue #11944 named among them")
+          .contains("circle", "vector.dotproduct", "ts.timebucket", "duration", "randomint", "bellmanford");
+    }
+
+    /** The control for the census above: every shape issue #11944 found is recognised as an arity rejection, and a plain value error is not. */
+    @Test
+    void theArityShapeDetectorRecognisesTheShapesTheIssueNamed() {
+      final Function circle = declaredFunctions().get("circle");
+      assertThat(isArityShaped(new CommandSQLParsingException(circle.getSyntax()), circle)).isTrue();
+      assertThat(isArityShaped(new IllegalArgumentException("circle() requires 3 parameters: circle(<center-x>, <center-y>, <distance>)"),
+          circle)).isTrue();
+      assertThat(isArityShaped(new IllegalArgumentException("bellmanFord() requires at least 3 parameters: source, destination"), circle))
+          .isTrue();
+      assertThat(isArityShaped(new InvalidArgumentException("duration() expects an ISO-8601 duration, but received 3 arguments"), circle))
+          .isTrue();
+      assertThat(isArityShaped(new CommandSQLParsingException("Expected maximum value in function"), circle)).isTrue();
+      assertThat(isArityShaped(FunctionArity.mismatch("circle", "3 arguments", 2), circle)).isTrue();
+      assertThat(isArityShaped(new CommandExecutionException("wrapped", new ArrayIndexOutOfBoundsException("Index 1 out of bounds for length 1")),
+          circle)).isTrue();
+      assertThat(isArityShaped(new IllegalArgumentException("Unsupported timestamp for time_bucket: '1'"), circle)).isFalse();
+      assertThat(isArityShaped(new CommandSemanticException("Type mismatch: expects a vector"), circle)).isFalse();
+    }
+
+    /** Whether a failure, anywhere in its cause chain, is a rejection of the argument COUNT rather than of an argument's value. */
+    private boolean isArityShaped(final Throwable failure, final Function function) {
+      final String syntax = function.getSyntax();
+      for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
+        if (t instanceof ArrayIndexOutOfBoundsException)
+          return true;
+        final String message = t.getMessage();
+        if (message == null)
+          continue;
+        if (message.startsWith("Type mismatch"))
+          return false;
+        if (syntax != null && message.equals(syntax))
+          return true;
+        if (ARITY_MESSAGE.matcher(message).find())
+          return true;
+      }
+      return false;
+    }
+
+    private static final Pattern ARITY_MESSAGE = Pattern.compile(
+        "(?i)(\\b(requires|expects|expected)\\b[^.]*\\b\\d+\\s+(parameters?|arguments?)\\b)|(\\breceived \\d+ arguments?\\b)"
+            + "|(\\bexpects .*\\bbut got \\d+)|(^Expected maximum value in function$)");
+
+    /**
      * Every function SQL can call, keyed by the lower-case name it answers to: the shared {@link FunctionRegistry} plus every name
      * of {@link DefaultSQLFunctionFactory}, so a test that cleared the registry earlier in the same JVM cannot shrink the census.
+     */
+    /**
+     * The functions the engine declares. A function some other test class registered for itself (a {@code tick6304} that burns
+     * CPU, a {@code throwCME} that always throws) stays in the shared {@link FunctionRegistry} for the rest of the fork, because
+     * the SQL factory's {@code unregister} keeps the registry entry: it is no function of the engine's, and it is told apart by
+     * being compiled from the test sources.
      */
     private Map<String, Function> declaredFunctions() {
       final Map<String, Function> declared = new TreeMap<>();
       for (final String name : FunctionRegistry.getFunctionNames()) {
         final Function function = FunctionRegistry.get(name);
-        if (function != null)
+        if (function != null && !isDefinedByTheTestSources(function))
           declared.put(name, function);
       }
       final DefaultSQLFunctionFactory factory = DefaultSQLFunctionFactory.getInstance();
-      for (final String name : factory.getFunctionNames())
-        declared.putIfAbsent(name.toLowerCase(Locale.ROOT), factory.getFunctionInstance(name));
+      for (final String name : factory.getFunctionNames()) {
+        final Function function = factory.getFunctionInstance(name);
+        if (!isDefinedByTheTestSources(function))
+          declared.putIfAbsent(name.toLowerCase(Locale.ROOT), function);
+      }
       return declared;
+    }
+
+    private static boolean isDefinedByTheTestSources(final Function function) {
+      if (function == null)
+        return false;
+      final CodeSource tests = SqlParserRobustnessTest.class.getProtectionDomain().getCodeSource();
+      final CodeSource origin = function.getClass().getProtectionDomain().getCodeSource();
+      return tests != null && origin != null && tests.getLocation().equals(origin.getLocation());
     }
 
     private void drain(final String language, final String query) {

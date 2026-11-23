@@ -44,7 +44,7 @@ import java.util.logging.Level;
  * {@link MethodHandles#privateLookupIn}, the JDK's supported way to read another class's private state, which neither
  * alters any member's accessibility nor costs a reflective call per request. Should a later Undertow rename
  * them, the reset falls back to {@code CANCEL}, which still stops the body - the server-side half of the guarantee -
- * and {@code Issue7772ChunkedBodySizeLimitTest} fails on the client-side half, so the upgrade cannot pass unnoticed.
+ * and {@code HttpBodySizeLimitTest} fails on the client-side half, so the upgrade cannot pass unnoticed.
  * <p>
  * <b>The connection's flow-control window is credited for the stream as well.</b> Undertow returns connection-level
  * window to the client only as the application READS a stream ({@code Http2StreamSourceChannel.updateFlowControlWindow}),
