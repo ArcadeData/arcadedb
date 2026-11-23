@@ -130,8 +130,9 @@ class CypherApocAggregatesTest {
       try (final ResultSet rs = database.query("opencypher", """
           UNWIND [] AS x
           RETURN apoc.agg.first(x) AS first, apoc.agg.slice(x) AS slice, apoc.agg.median(x) AS median, apoc.agg.product(x) AS product,
-                 apoc.agg.statistics(x) AS stats, apoc.agg.maxItems(x, x) AS items""")) {
+                 apoc.agg.statistics(x) AS stats, apoc.agg.maxItems(x, x) AS items, apoc.agg.percentiles(x) AS percentiles""")) {
         final Result row = rs.next();
+        assertThat(row.<List<Object>>getProperty("percentiles")).hasSize(5).containsOnlyNulls();
         assertThat(row.<Object>getProperty("first")).isNull();
         assertThat(row.<List<Object>>getProperty("slice")).isEmpty();
         assertThat(row.<Object>getProperty("median")).isNull();

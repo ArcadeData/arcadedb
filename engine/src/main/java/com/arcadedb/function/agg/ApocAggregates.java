@@ -51,7 +51,7 @@ public final class ApocAggregates {
   public static final String PREFIX = "apoc.agg.";
 
   /** APOC's default percentiles of {@code apoc.agg.percentiles} and {@code apoc.agg.statistics}. */
-  private static final List<Double> DEFAULT_PERCENTILES = List.of(0.5, 0.75, 0.9, 0.95, 0.99);
+  private static final double[] DEFAULT_PERCENTILES = { 0.5, 0.75, 0.9, 0.95, 0.99 };
 
   private static final String NUMBER = "an INTEGER or a FLOAT";
 
@@ -172,7 +172,8 @@ public final class ApocAggregates {
     /** The percentiles of the first row, APOC's default when the call omits them. */
     static double[] percentiles(final Object[] args, final int index, final String name) {
       if (args.length <= index)
-        return DEFAULT_PERCENTILES.stream().mapToDouble(Double::doubleValue).toArray();
+        // SHARED: NO AGGREGATOR WRITES TO ITS PERCENTILES, AND A GROUP SHOULD NOT COST A COPY
+        return DEFAULT_PERCENTILES;
       final List<Object> list = CypherFunctionHelper.asListOrNull(args[index]);
       if (list == null)
         throw new InvalidArgumentException(name + "() argument <percentiles> must be a LIST<FLOAT>");
@@ -440,7 +441,7 @@ public final class ApocAggregates {
     @Override
     public Object getAggregatedResult() {
       releaseHeld();
-      final int count = percentiles != null ? percentiles.length : DEFAULT_PERCENTILES.size();
+      final int count = percentiles != null ? percentiles.length : DEFAULT_PERCENTILES.length;
       final List<Object> result = new ArrayList<>(count);
       if (size == 0) {
         for (int i = 0; i < count; i++)
