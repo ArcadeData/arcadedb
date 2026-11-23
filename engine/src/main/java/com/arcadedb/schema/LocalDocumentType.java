@@ -596,7 +596,7 @@ public class LocalDocumentType implements DocumentType {
         throw e;
       }
       // issue #12031: the views reading the former super type lost this subtree's records
-      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, former);
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, this, former);
       return null;
     });
     return this;
@@ -3610,7 +3610,7 @@ public class LocalDocumentType implements DocumentType {
         throw e;
       }
       // issue #12031: the views reading the super type gained this subtree's records
-      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, embeddedSuperType);
+      MaterializedViewRefresher.refreshViewsOverHierarchyChange(schema, this, embeddedSuperType);
 
       return null;
     });
