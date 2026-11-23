@@ -303,7 +303,7 @@ public class OrderByStep extends AbstractExecutionStep {
         final PriorityQueue<Keyed> topK = new PriorityQueue<>(initialHeapCapacity(k), comparator.reversed());
 
         // Pull all results and maintain a top-K heap
-        final int batchSize = (int) Math.min(Math.max(1000L, k * 10L), Integer.MAX_VALUE);
+        final int batchSize = pullBatchSize(k);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();
@@ -698,6 +698,18 @@ public class OrderByStep extends AbstractExecutionStep {
   /** The starting capacity of a top-K heap: k + 1 up to 1000. Computed in long, since k + 1 wraps for LIMIT 2147483647 (issue #13230). */
   private static int initialHeapCapacity(final int k) {
     return (int) Math.min(k + 1L, 1000L);
+  }
+
+  /** The most rows the sequential top-K asks its input for in one batch, whatever the LIMIT (issue #13230). */
+  static final int MAX_PULL_BATCH = 100_000;
+
+  /**
+   * The pull batch of the sequential top-K: ten times the LIMIT, at least 1000, at most {@link #MAX_PULL_BATCH}. Computed in long:
+   * k * 10 wrapped for a large LIMIT, and saturating it at Integer.MAX_VALUE would make LIMIT 2147483647 ask for the whole input in
+   * one batch, which the step upstream buffers (issue #8591).
+   */
+  static int pullBatchSize(final int k) {
+    return (int) Math.min(Math.max(1000L, k * 10L), MAX_PULL_BATCH);
   }
 
   /** One worker's top K rows of a parallel scan (issue #11873). Not thread-safe: one worker fills it, the caller merges it after. */
