@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -259,28 +258,23 @@ public class TraverseExecutionPlanner {
   }
 
   private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext context) {
-    final Database db = context.getDatabase();
     if (clusters.size() == 1) {
-      final Bucket bucket = clusters.getFirst();
-      Integer bucketId = bucket.getBucketNumber();
-      if (bucketId == null)
-        bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-
-      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, context);
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketIdOf(clusters.getFirst(), context), context);
       plan.chain(step);
     } else {
       final int[] bucketIds = new int[clusters.size()];
-      for (int i = 0; i < clusters.size(); i++) {
-        final Bucket bucket = clusters.get(i);
-        Integer bucketId = bucket.getBucketNumber();
-        if (bucketId == null)
-          bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getFileId();
-
-        bucketIds[i] = bucketId;
-      }
+      for (int i = 0; i < clusters.size(); i++)
+        bucketIds[i] = bucketIdOf(clusters.get(i), context);
       final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, context, null);
       plan.chain(step);
     }
+  }
+
+  /** The id of the bucket a target names, by number, by name or by input parameter (FROM bucket::name, FROM bucket:?) (#12480). */
+  private static int bucketIdOf(final Bucket bucket, final CommandContext context) {
+    if (bucket.getBucketNumber() != null)
+      return bucket.getBucketNumber();
+    return context.getDatabase().getSchema().getBucketByName(bucket.resolveName(context.getInputParameters())).getFileId();
   }
 
   private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext context) {
