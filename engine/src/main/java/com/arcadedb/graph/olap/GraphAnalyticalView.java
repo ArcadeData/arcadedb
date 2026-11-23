@@ -258,6 +258,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // knows (a CSR restored from disk)
     final long                           uncoveredWritesMark;
     final IntHashSet                     uncoveredEdgeBuckets;
+    // The buckets each concrete edge type the scan materialized owned as it started, by the type's name, sorted (issue #12507): what a
+    // slice is made of, and what tells the type it was scanned from from another that took its name later. The name alone cannot: a
+    // type dropped and created again, or one renamed over another, answers to the name of the slice with other buckets, and file ids
+    // are not reused. The object identity of the type cannot either, a follower reloads every type instance for each replicated DDL
+    // statement. Null when nobody knows (a legacy snapshot), which falls back to the name
+    final Map<String, int[]>             edgeTypeBuckets;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
@@ -284,7 +290,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
-          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null);
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null, null);
     }
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
@@ -294,7 +300,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
         final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
-        final IntHashSet uncoveredEdgeBuckets) {
+        final IntHashSet uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) {
+      this.edgeTypeBuckets = edgeTypeBuckets;
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
       this.uncoveredWritesMark = uncoveredWritesMark;
@@ -319,7 +326,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
           vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes, uncoveredWritesMark,
-          uncoveredEdgeBuckets);
+          uncoveredEdgeBuckets, edgeTypeBuckets);
     }
 
   }
@@ -1645,17 +1652,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * met none of its buckets among the edges it did not materialize, and none was written while the type was not covered since the
    * scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record, and a transaction still open
    * holds edges no count shows yet.
+   * <p>
+   * A type the scan materialized is not held on its name alone (issue #12507): it may have left the filter since (detached from the
+   * listed type) and been written to there, an edge no listener of the view heard, before it was attached again.
    */
   private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
     final String name = type.getName();
+    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
-      return true;
+      // THE SCAN READ A TYPE OF THIS NAME, BUT AN EDGE WRITTEN SINCE, WHILE THE TYPE WAS NOT COVERED, WAS HEARD BY NOBODY: A TYPE
+      // DETACHED, WRITTEN TO AND ATTACHED AGAIN HOLDS AN EDGE THE CSR LACKS (#12507). A MARK THAT IS NOT KNOWN PROVES NOTHING
+      return written == null || (snap.uncoveredWritesMark >= 0 && written.lastWrite.get() <= snap.uncoveredWritesMark);
     if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null || edgeTypesWhenArmed.contains(name))
       return false;
     for (final int bucketId : type.getBucketIds(false))
       if (snap.uncoveredEdgeBuckets.contains(bucketId))
         return false;
-    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
@@ -1669,9 +1681,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
    * decision that finds a slice left behind dispatches the rebuild.
    * <p>
-   * Known limit (issue #12507): a slice is looked up by its NAME, so a name that resolves to another type after two DDL
-   * statements with no read of the view between them (a type dropped and created again, a rename swap) is not seen, nor is a type
-   * detached, written to and attached again.
+   * A slice is identified by the buckets of the type it was scanned from, not by its name alone (issue #12507): a name that
+   * resolves to another type after two DDL statements with no read of the view between them, a type dropped and created again or a
+   * rename swap, owns other buckets, and file ids are not reused. A type that owns more than the slice was scanned from (ALTER TYPE
+   * ... BUCKET +) still holds it. A type detached, written to and attached again is not seen here, its slice is still its own: see
+   * {@link #holdsJoinedEdgeType}.
    */
   private boolean holdsOnlyCoveredEdgeTypes() {
     final Snapshot snap = snapshot;
@@ -1688,13 +1702,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // The slices of the base, then the ones only the overlay holds: no merged set is built per decision (a snapshot a commit
     // replaces is decided again)
-    String left = firstLeftEdgeSlice(snap.csrPerType.keySet());
+    String left = firstLeftEdgeSlice(snap, snap.csrPerType.keySet(), null);
     if (left == null && snap.overlay != null)
-      left = firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes());
+      left = firstLeftEdgeSlice(snap, snap.overlay.getAddedEdgeTypes(), snap.overlay);
     // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
     if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
-          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
+          + "', which the view's edge types no longer cover (dropped, renamed, detached from a listed type or replaced by another type of "
+          + "that name)",
           unlessRebuiltSince(snap));
     return left == null;
   }
@@ -1720,14 +1735,40 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap == null ? () -> false : unlessRebuiltSince(snap);
   }
 
-  /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */
-  private String firstLeftEdgeSlice(final Collection<String> slices) {
+  /**
+   * The first of {@code slices} that is no longer the edge type the filter covers that it was scanned from, or null when all still
+   * are: no type of that name, not an edge type, not covered, or another type that owns other buckets (issue #12507).
+   *
+   * @param overlay the overlay the slices are the added edge types of, null for the slices of the base: the slice of a type the scan
+   *                did not read has no scanned buckets, and is told by the buckets of the edges the overlay holds for it
+   */
+  private String firstLeftEdgeSlice(final Snapshot snap, final Collection<String> slices, final DeltaOverlay overlay) {
     for (final String slice : slices) {
       final DocumentType type = database.getSchema().getTypeOrNull(slice);
-      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type))
+      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type) || !ownsSliceBuckets(snap,
+          overlay, type))
         return slice;
     }
     return null;
+  }
+
+  /**
+   * Whether {@code type}, the type now holding the name of a slice, owns every bucket the slice was scanned from, or written to when
+   * the scan did not read the type. A subset, not an equality: a type given another bucket keeps its slice, and the edges written
+   * to that bucket are heard like any other of a covered type. Without a record of the buckets (a legacy snapshot), the name stands.
+   */
+  private static boolean ownsSliceBuckets(final Snapshot snap, final DeltaOverlay overlay, final DocumentType type) {
+    final String slice = type.getName();
+    int[] recorded = snap.edgeTypeBuckets != null ? snap.edgeTypeBuckets.get(slice) : null;
+    if (recorded == null && overlay != null)
+      recorded = overlay.getAddedEdgeBuckets(slice);
+    if (recorded == null)
+      return true;
+    final List<Integer> owned = type.getBucketIds(false);
+    for (final int bucketId : recorded)
+      if (!owned.contains(bucketId))
+        return false;
+    return true;
   }
 
   /** Whether the snapshot is known to hold an edge slice its types no longer cover: see {@link #holdsOnlyCoveredEdgeTypes}. */
@@ -4319,7 +4360,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
         builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
-        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets());
+        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets(), result.getEdgeTypeBuckets());
   }
 
   /**
@@ -4386,7 +4427,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
           snap.edgePropertyFilter, snap, snap.scannedEdgeTypes != null ? snap.scannedEdgeTypes.toArray(new String[0]) : null,
-          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null);
+          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null,
+          snap.edgeTypeBuckets);
     } catch (final OutOfMemoryError | Exception e) {
       // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
       // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
