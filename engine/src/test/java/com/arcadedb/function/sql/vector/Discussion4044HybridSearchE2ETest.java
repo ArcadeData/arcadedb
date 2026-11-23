@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -224,6 +225,7 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
     final Set<String>             seenSources = new HashSet<>();
     final Map<String, String>     firstVariantPerSource = new LinkedHashMap<>();
     final Map<String, Float>      firstScorePerSource   = new HashMap<>();
+    final Map<String, RID>        firstRidPerSource     = new HashMap<>();
     String topSource = null;
     String topVariant = null;
     float  topScore = Float.NEGATIVE_INFINITY;
@@ -247,6 +249,7 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
       }
       firstVariantPerSource.put(sourceFile, variant);
       firstScorePerSource.put(sourceFile, score);
+      firstRidPerSource.put(sourceFile, (RID) row.getProperty("@rid"));
       rank++;
     }
 
@@ -257,6 +260,12 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
     //    and second in the other (dense alone ties them, sparse prefers doc_0 because it contains «процентов» (token 11)
     //    and doc_1 contains «баллов» (token 13)), so their RRF scores are exactly equal: what puts doc_0 first is the
     //    tie-break of `vector.fuse` (equal scores by RID ascending), and doc_0 has the lower RID.
+    //    The premise of that tie-break, asserted so that the test fails if the fixture stops producing the tie:
+    assertThat(firstScorePerSource).as("the two best chunks are in the answer").containsKeys("doc_0.xml", "doc_1.xml");
+    assertThat(firstScorePerSource.get("doc_0.xml")).as("doc_0 and doc_1 have the same fused score")
+        .isEqualTo(firstScorePerSource.get("doc_1.xml"));
+    assertThat(firstRidPerSource.get("doc_0.xml").compareTo(firstRidPerSource.get("doc_1.xml"))).as("doc_0 has the lower RID")
+        .isNegative();
     assertThat(topSource).as("top source").isEqualTo("doc_0.xml");
     assertThat(topVariant).as("top variant").isEqualTo("interest_rates");
     assertThat(topScore).as("top score is positive").isPositive();

@@ -18,20 +18,23 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.engine.PageId;
+import com.arcadedb.graph.LightEdgeRID;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.IntSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /**
  * The hash codes of the keys the engine puts in its hash tables must spread over a table's bins. A {@code HashMap} picks the bin
  * from the low bits of the hash, so a hash that only adds the parts of a key (bucket * 31 + offset) leaves most bins empty when
  * the offsets are what a bucket really assigns: page * 2048 + slot, with a few dozen slots in use per page. The bins that remain
  * hold dozens of keys and the table turns them into trees; a full-text search builds one such map of RIDs per bucket and term.
+ * <p>
+ * The hash of a {@code PageId} has the same shape and its test is in {@code PageIdHashCodeTest}.
  */
 class RIDHashCodeTest {
   private static final int TABLE = 1 << 16;
@@ -95,21 +98,54 @@ class RIDHashCodeTest {
     assertThat(new RID(7, 123456L)).isEqualTo(new RID(7, 123456L)).isNotEqualTo(new RID(8, 123456L));
   }
 
+  /**
+   * A record-less RID (a lightweight edge) has the same bucket and offset for every edge of its type: the endpoints are what
+   * tells two of them apart, in {@code equals()} and so in the hash too.
+   */
   @Test
-  void thePagesOfAFileSpreadOverTheBinsOfAHashMap() {
-    final BasicDatabase database = mock(BasicDatabase.class);
-    // a page cache holds the pages of every file of a database: 16 files of 3,000 pages
-    final IntSupplier[] hashes = new IntSupplier[16 * 3000];
+  void aLightweightEdgeHashesByItsEndpoints() {
+    final int edgeBucket = 9;
+    final Set<Integer> hashes = new HashSet<>();
+    final int vertices = 60;
+    for (int out = 0; out < vertices; out++)
+      for (int in = 0; in < vertices; in++) {
+        final LightEdgeRID edge = new LightEdgeRID(null, edgeBucket, new RID(4, out * 2048L + 5), new RID(5, in * 2048L + 5));
+        final LightEdgeRID same = new LightEdgeRID(null, edgeBucket, new RID(4, out * 2048L + 5), new RID(5, in * 2048L + 5));
+
+        assertThat(edge).isEqualTo(same);
+        assertThat(edge.hashCode()).as("the same endpoints hash the same").isEqualTo(same.hashCode());
+        hashes.add(edge.hashCode());
+      }
+
+    assertThat(hashes.size()).as("distinct hashes of %d lightweight edges that share one bucket and offset", vertices * vertices)
+        .isGreaterThan(vertices * vertices * 99 / 100);
+  }
+
+  @Test
+  void aLightweightEdgeDoesNotHashLikeItsReverse() {
+    final RID a = new RID(4, 2048L * 3 + 1);
+    final RID b = new RID(5, 2048L * 7 + 2);
+
+    final LightEdgeRID forward = new LightEdgeRID(null, 9, a, b);
+    final LightEdgeRID reverse = new LightEdgeRID(null, 9, b, a);
+
+    assertThat(forward).isNotEqualTo(reverse);
+    assertThat(forward.hashCode()).isNotEqualTo(reverse.hashCode());
+  }
+
+  @Test
+  void theLightweightEdgesOfOneTypeSpreadOverTheBinsOfAHashMap() {
+    final IntSupplier[] hashes = new IntSupplier[100 * 100];
     int i = 0;
-    for (int file = 100; file < 116; file++)
-      for (int page = 0; page < 3000; page++) {
-        final PageId id = new PageId(database, file, page);
-        hashes[i++] = id::hashCode;
+    for (int out = 0; out < 100; out++)
+      for (int in = 0; in < 100; in++) {
+        final LightEdgeRID edge = new LightEdgeRID(null, 9, new RID(4, out * 2048L + 3), new RID(4, in * 2048L + 3));
+        hashes[i++] = edge::hashCode;
       }
 
     final Spread spread = spread(hashes);
 
     assertThat(spread.treeBins()).as("bins that would become trees").isLessThan(32);
-    assertThat(spread.usedBins()).as("bins in use out of %d for %d keys", TABLE, hashes.length).isGreaterThan(TABLE / 3);
+    assertThat(spread.usedBins()).as("bins in use out of %d for %d keys", TABLE, hashes.length).isGreaterThan(TABLE / 8);
   }
 }

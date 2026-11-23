@@ -3282,6 +3282,11 @@ public class ChunkedRecordStorageTest {
      * The holes are smaller than the growth, so the record still has to spill - but they are far more than the few bytes
      * a chunk header needs, so it spills into a chunk chain of its own instead of borrowing a pointer's bytes from a
      * neighbour: no live record is moved off its page when packing the page was enough.
+     * <p>
+     * The outcome depends on the order the commit applies the two updates in: the hole must be applied before the growth, as the
+     * growth then finds it packed. That order is the iteration order of a map keyed by RID, so it follows {@code RID.hashCode()}:
+     * the test picks the filler to empty with {@code appliedFirstAtCommit}, which reproduces that map, and asserts the
+     * premise, so a change of the hash cannot flip the scenario without the test saying so.
      */
     @Test
     void holesSmallerThanTheGrowthStillSpareANeighbourTheMove() {
