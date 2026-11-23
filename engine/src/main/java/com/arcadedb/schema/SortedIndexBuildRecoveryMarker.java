@@ -155,7 +155,10 @@ public final class SortedIndexBuildRecoveryMarker {
       throws IOException {
     final JSONObject marker;
     try {
-      marker = new JSONObject(Files.readString(markerPath, StandardCharsets.UTF_8));
+      // Decoded leniently on purpose: Files.readString refuses a tail cut inside a multibyte character (a non-ASCII type name or path)
+      // with a CharacterCodingException, which is an IOException and would fail the open as the parse error this branch handles does.
+      // A lenient decode turns that tail into a replacement character, and the manifest then fails to parse like any other cut one
+      marker = new JSONObject(new String(Files.readAllBytes(markerPath), StandardCharsets.UTF_8));
     } catch (final JSONException e) {
       // create() writes the marker and forces it to disk BEFORE the build creates its first component file or spill workspace, so a
       // marker that does not parse (empty, or cut short: a crash between creating the file and writing it, or a power loss that kept the
