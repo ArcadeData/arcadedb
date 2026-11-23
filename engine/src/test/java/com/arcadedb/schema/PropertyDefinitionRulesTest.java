@@ -665,7 +665,7 @@ class PropertyDefinitionRulesTest {
 
       // the stored value is checked against the new bound, and a value that is no array is reported, not a crash
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.p ARRAY_OF_FLOATS (max 3)")).isInstanceOf(
-          CommandExecutionException.class).hasMessageContaining("not an array");
+          ValidationException.class).hasMessageContaining("not an array");
       assertThat(database.getSchema().getType("T").existsProperty("p")).isFalse();
     }
 
@@ -692,7 +692,7 @@ class PropertyDefinitionRulesTest {
       database.command("sql", "CREATE PROPERTY T.p ARRAY_OF_INTEGERS");
       database.transaction(() -> database.newDocument("T").set("p", new int[] { 1, 2, 3 }).save());
 
-      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.p MAX 2")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY T.p MAX 2")).isInstanceOf(ValidationException.class);
       assertThat(database.getSchema().getType("T").getProperty("p").getMax()).isNull();
 
       database.command("sql", "ALTER PROPERTY T.p MAX 3");

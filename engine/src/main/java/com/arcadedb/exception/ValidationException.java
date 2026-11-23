@@ -82,8 +82,12 @@ public class ValidationException extends ArcadeDBException {
   }
 
   public ValidationException(final String message, final Throwable cause) {
+    this(null, message, cause);
+  }
+
+  public ValidationException(final Kind kind, final String message, final Throwable cause) {
     super(message, cause);
-    this.kind = null;
+    this.kind = kind;
   }
 
   public ValidationException(final Throwable cause) {
