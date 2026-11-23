@@ -20,14 +20,17 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -42,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Oracle tests for the batched {@code UNWIND $rows ... MERGE ... SET ... FOREACH ... REMOVE} upsert shapes of a bulk ingest. Every
  * expected value is what Neo4j 5.26 answers to the same statement and parameters (checked against a Neo4j container, and by a
  * metamorphic harness that applies one batch as one UNWIND, one statement per row, two halves and a replay and compares each against
- * Neo4j). Each shape runs with and without a UNIQUE index on the merge key, because the index changes the MERGE access path.
+ * Neo4j). Each shape runs with and without a UNIQUE index on the merge key, because the index changes the MERGE access path (the
+ * test of a key of mixed numeric kinds runs without one: an index is typed).
  */
 class CypherIngestUpsertOracleTest {
   private static final String ENTITY_UPSERT =
@@ -60,7 +64,10 @@ class CypherIngestUpsertOracleTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/cypher-ingest-upsert-oracle").create();
+    final String path = "./target/databases/cypher-ingest-upsert-oracle";
+    // a database left behind by a crashed run would make create() fail
+    FileUtils.deleteRecursively(new File(path));
+    database = new DatabaseFactory(path).create();
   }
 
   @AfterEach
@@ -248,7 +255,9 @@ class CypherIngestUpsertOracleTest {
         "rows", rows);
     assertThat(returned).extracting(r -> r.get("c")).containsExactly(3L, 3L, 1L, 3L);
     // The rows answer after the whole batch has written (the write is a barrier for the RETURN, as Neo4j's Eager is): the three rows
-    // of key "a" all read c = 3. ON MATCH SET q = NULL removes q (row 2) and the next match sets it again
+    // of key "a" all read c = 3. This pins the Neo4j contract; an executor that streamed the rows would fail here for a reason the
+    // contract may not intend, which is why the expectation is spelled out. ON MATCH SET q = NULL removes q (row 2) and the next match
+    // sets it again
     assertThat(node("E", "k", "a")).isEqualTo(map("k", "a", "c", 3L, "p", 1L, "q", 4L));
     assertThat(node("E", "k", "b")).isEqualTo(map("k", "b", "c", 1L, "p", 3L));
   }
@@ -259,14 +268,15 @@ class CypherIngestUpsertOracleTest {
     schema(unique, "E", "k");
     final List<Map<String, Object>> rows = List.of(map("k", "a"), map("k", "b"), map("k", null), map("k", "c"));
     assertThatThrownBy(() -> command("UNWIND $rows AS row MERGE (n:E {k: row.k}) RETURN n.k AS k", "rows", rows))
-        .hasStackTraceContaining("null");
+        .isInstanceOf(InvalidArgumentException.class)
+        .hasMessageContaining("cannot be used with a graph element property value that is null");
     assertThat(count("MATCH (n:E)")).isZero();
   }
 
-  @ParameterizedTest
-  @ValueSource(booleans = { false, true })
-  void mergeKeyOfAnotherNumericKindMatchesTheStoredNode(final boolean unique) {
-    // 1 = 1.0 under Cypher equality, so one node, whichever kind came first
+  @Test
+  void mergeKeyOfAnotherNumericKindMatchesTheStoredNode() {
+    // 1 = 1.0 under Cypher equality, so one node, whichever kind came first. Not parameterized on a UNIQUE index: an index needs a typed
+    // property, and keys of mixed numeric and string kinds cannot live in one typed property, so there is no indexed variant to run
     schema(false, "N", "j");
     final List<Map<String, Object>> rows = List.of(map("j", 1L), map("j", 1.0), map("j", 2.0), map("j", 2L), map("j", "1"));
     command("UNWIND $rows AS row MERGE (n:N {j: row.j}) RETURN n.j AS j", "rows", rows);
@@ -291,7 +301,8 @@ class CypherIngestUpsertOracleTest {
     assertThat(count("MATCH (:E {k: 'x'})-[r:WEIGHTED]->(:E {k: 'y'})")).isEqualTo(2);
     // MERGE with a null relationship property raises, as for a node
     assertThatThrownBy(() -> command("UNWIND [{a: 'x', b: 'y', w: null}] AS row MATCH (a:E {k: row.a}), (b:E {k: row.b}) MERGE (a)-[r:WEIGHTED {w: row.w}]->(b)"))
-        .hasStackTraceContaining("null");
+        .isInstanceOf(InvalidArgumentException.class)
+        .hasMessageContaining("cannot be used with a graph element property value that is null");
   }
 
   @ParameterizedTest
