@@ -111,6 +111,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   static final int            MAX_TRACKED_RIDS_PER_KEY = 1 << 18;
   // The served set of the previous key is cleared for the next one up to this size, and replaced past it
   private static final int    MAX_REUSED_SERVED_SET    = 64;
+  // The entries a SKIP asks the index step for at once, see skipUnloaded()
+  private static final int    SKIP_BATCH               = 1_000;
 
   private final List<Integer> filterBucketIds;
   private final ScanFallback  scanFallback;
@@ -160,6 +162,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   private boolean                     parallelDecided;
   private ParallelTypeScan            parallelRound;
   private int                         parallelRounds;
+  // The entries ran out while a SKIP passed over them, see skipUnloaded()
+  private boolean                     skipRanOut;
   // A physical-order load reads every entry before it loads a record (issue #11790): the condition of the seek a loaded record
   // is held to once a commit published since the entries were read, null when it cannot be checked on the record, and the
   // publication sequence the entries were read from
@@ -495,6 +499,66 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         }
       }
     };
+  }
+
+  /**
+   * Passes over up to {@code n} of the rows this step serves next without loading their records, for a SKIP that throws them away
+   * (issue #11954). Only a range read in index order: a point lookup settles its entries against one committed state
+   * ({@link #loadPointLookup}), and a physical-order load or a scan serves the rows in another order than the entries. Each entry is
+   * judged by {@link IndexEntrySkip}; the first one it cannot judge without its record stops the skip and is served as before, the
+   * caller discarding what is left of the SKIP from the rows.
+   *
+   * @param typeName the type the rows must be an instance of, as the FILTER ITEMS BY TYPE after this step checks, or null
+   *
+   * @return the rows passed over
+   */
+  int skipUnloaded(final CommandContext context, final int n, final String typeName) {
+    final ExecutionStepInternal prevStep = checkForPrevious();
+    if (strategy == null)
+      chooseStrategy(context, prevStep);
+    if (strategy != Strategy.INDEX_ORDER || !(prevStep instanceof FetchFromIndexStep indexStep) || indexStep.isPointLookup()
+        || !recovered.isEmpty() || rereadCandidates != null)
+      return 0;
+
+    final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    try {
+      final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+      final IndexEntrySkip judge = new IndexEntrySkip(context.getDatabase(), typeName);
+      int skipped = 0;
+      for (int entries = 0; skipped < n; ++entries) {
+        guard.checkPeriodically(entries);
+        final Result entry = nextEntry(context, prevStep, Math.min(n - skipped, SKIP_BATCH));
+        if (entry == null) {
+          skipRanOut = true;
+          break;
+        }
+        final Object value = entry.getProperty("rid");
+        if (!passesBucketFilter(value))
+          continue;
+        IndexEntrySkip.Verdict verdict = value instanceof RID rid ? judge.verdict(rid) : IndexEntrySkip.Verdict.LOAD;
+        // Once a commit published since the scan began, an entry may name a record that commit moved out of the range (issue
+        // #11790): only its record can tell, so it is loaded and held to the range as the rows are. Asked AFTER the slot was read,
+        // as the load path asks it after the record was loaded: a commit that lands between the two leaves the record there, and
+        // asked before, the entry would be counted as a row
+        if (verdict != IndexEntrySkip.Verdict.LOAD && !noCommitSince((DatabaseInternal) context.getDatabase(), indexStep.entriesSequence()))
+          verdict = IndexEntrySkip.Verdict.LOAD;
+        if (verdict == IndexEntrySkip.Verdict.LOAD) {
+          pendingEntries.addFirst(entry);
+          break;
+        }
+        if (verdict == IndexEntrySkip.Verdict.ROW)
+          ++skipped;
+      }
+      return skipped;
+    } finally {
+      if (context.isProfiling())
+        cost += System.nanoTime() - begin;
+    }
+  }
+
+  /** Whether the entries ran out during {@link #skipUnloaded}, rather than the skip stopping at an entry to load. */
+  boolean skipRanOut() {
+    return skipRanOut;
   }
 
   /** The next index entry: one set aside first, then the previous step's, or null once both ran out. */
@@ -1121,6 +1185,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     strategy = null;
     matchedEntries = 0;
     parallelDecided = false;
+    skipRanOut = false;
     parallelRounds = 0;
     loadSeekCheck = null;
     releaseRuntimeSteps();
