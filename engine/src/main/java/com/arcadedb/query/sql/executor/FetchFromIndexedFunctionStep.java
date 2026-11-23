@@ -44,7 +44,7 @@ import java.util.logging.Level;
 /**
  * Created by luigidellaquila on 06/08/16.
  */
-public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implements IndexedMatchSource {
+public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implements IndexedMatchSource, RowCapAwareStep {
   private final BinaryCondition functionCondition;
   private final FromClause      queryTarget;
   /**
@@ -52,6 +52,11 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
    * are the first rows of the function's own best-first order (issue #9895).
    */
   private final int                           limit;
+  // ISSUE #12016: THE SKIP THE CALLER'S ROW CAP IS COUNTED AFTER, SET BY THE PLANNER WHEN THE STATEMENT HAS NO LIMIT OF ITS OWN AND
+  // NOTHING AFTER THE FETCH CAN DROP, ADD OR REORDER A ROW (-1: THE CAP DOES NOT BOUND THE FUNCTION), AND THE CAP ITSELF (0: NONE).
+  // THE FUNCTION THEN PRODUCES ONLY THE FIRST SKIP + CAP ROWS OF ITS OWN BEST-FIRST ORDER, AS IT DOES FOR SKIP + LIMIT
+  private       int                           capSkip = -1;
+  private       int                           rowCap;
   /**
    * The {@code @rid} conjuncts of the block, decided by the function on its candidates' RIDs before any record is loaded,
    * or null for none (issue #9909). Resolved at every execution, since they can read parameters and variables.
@@ -112,6 +117,21 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
 
   public int getLimit() {
     return limit;
+  }
+
+  /** The function produces the rows the caller reads only: {@code skip} plus the cap, when the caller sets one. */
+  void boundByRowCap(final int skip) {
+    this.capSkip = skip;
+  }
+
+  @Override
+  public void applyRowCap(final int rowCap) {
+    this.rowCap = rowCap;
+  }
+
+  /** How many rows of the function's answer this execution consumes: the bound the planner gave, else SKIP + the cap (issue #12016); -1 for all. */
+  private int rowsNeeded() {
+    return limit > -1 ? limit : RowCapAwareStep.bound(capSkip, rowCap);
   }
 
   @Override
@@ -211,7 +231,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
           fullResult = Collections.emptyIterator();
         else
           fullResult = functionCondition.executeIndexedFunction(queryTarget, context,
-              new IndexedFunctionPushdown(limit, ridFilter, order, filtered)).iterator();
+              new IndexedFunctionPushdown(rowsNeeded(), ridFilter, order, filtered)).iterator();
       } finally {
         if (context.isProfiling()) {
           cost += System.nanoTime() - begin;
@@ -246,8 +266,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep implemen
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
     if (order != IndexedFunctionPushdown.Order.FUNCTION)
       result += " ORDER BY @rid " + (order == IndexedFunctionPushdown.Order.RID_ASC ? "ASC" : "DESC");
-    if (limit > -1)
-      result += order == IndexedFunctionPushdown.Order.FUNCTION ? " (best " + limit + " needed)" : " (first " + limit + " needed)";
+    final int needed = rowsNeeded();
+    if (needed > -1)
+      result += order == IndexedFunctionPushdown.Order.FUNCTION ? " (best " + needed + " needed)" : " (first " + needed + " needed)";
     if (ridConditions != null)
       result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  RID FILTER (" + conditionsToString(ridConditions) + ")";
     if (recordConditions != null)

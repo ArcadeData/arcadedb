@@ -676,9 +676,12 @@ public class LocalSchema implements Schema {
         if (file != null)
           if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
             loadedDictionary = (Dictionary) componentFactory.createComponent(file, mode);
-            // On a reload of a live database the new instance counted its pages from the file, which lags a commit
-            // until the flush thread writes the page (see Dictionary.reload()): a committed page still queued is
-            // invisible to it. Take the committed count of the instance it replaces BEFORE anything reads the names
+            // On a reload of a live database the new instance counts the pages of the file, which lags a commit until
+            // the flush thread writes the page (see Dictionary.reload()), and the committed pages the flush queue holds
+            // past its end (issue #12101, see PaginatedComponent). A committed page it can still miss: one past a gap
+            // in the queue (a page number reserved by a transaction that did not commit), or one the file does not
+            // hold for another reason (emptied behind the committed count, see SchemaReloadDictionaryPagesNotFlushedTest).
+            // Take the committed count of the instance it replaces BEFORE anything reads the names
             // or decides that the header page is missing, or the names on that page are silently dropped (a new name
             // then reuses their ids) and, for page 0 of a young database, createHeaderPageIfMissing() writes a fresh
             // page 0 over the committed one and fails its commit with a ConcurrentModificationException. The barrier
@@ -1631,7 +1634,7 @@ public class LocalSchema implements Schema {
    * ({@code DatabaseFactory.setReplicatedNode}), and the settings are read too, on the rule the HA plugin starts on (the flag, or
    * a server list alone), for a node configured JVM-wide.
    */
-  private boolean isReplicatedNode() {
+  boolean isReplicatedNode() {
     if (database.getEmbedded() instanceof LocalDatabase local && local.isReplicatedNode())
       return true;
     final ContextConfiguration configuration = database.getConfiguration();
@@ -2446,6 +2449,13 @@ public class LocalSchema implements Schema {
     final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
+      // Again under the write lock, which the check above does not hold (issue #12715): a type rename claims the names it moves
+      // its buckets to under this lock, and so does a concurrent creation of the same name, so the one that comes second is
+      // refused here instead of registering a second bucket under a name the first one holds
+      if (lookupBucket(bucketName) != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot create bucket '" + bucketName + "' because already exists");
+
       try {
         final File parent = new File(dir);
         if (!parent.exists() && !parent.mkdirs())
@@ -3016,7 +3026,8 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * The recovery an open owes the per-record materialized views (issue #11550), called once the open has replayed the WAL. Their
+   * The recovery an open owes the per-record materialized views (issue #11550), and the grouped ones maintained by delta (issue
+   * #11937), called once the open has replayed the WAL. Their
    * pending delta and recovery mark live in memory only, so a view persisted VALID by a process that crashed may be missing the
    * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
    * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
@@ -3050,7 +3061,7 @@ public class LocalSchema implements Schema {
     int asked = 0;
     for (final MaterializedView v : getMaterializedViews()) {
       final MaterializedViewImpl view = (MaterializedViewImpl) v;
-      if (!view.isPerRecord() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
+      if (!view.tracksPendingDelta() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
         continue;
       if (!everyView && !view.owesRecoveryPass())
         continue;
@@ -5043,8 +5054,20 @@ public class LocalSchema implements Schema {
       // RESTORE THE INHERITANCE
       for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
         final LocalDocumentType type = getType(entry.getKey());
-        for (final String p : entry.getValue())
-          type.addSuperType(getType(p), false);
+        for (final String p : entry.getValue()) {
+          final LocalDocumentType parent = getType(p);
+          // A schema saved with a cycle (issue #12028: a refused ALTER TYPE ... SUPERTYPE + used to leave it in memory, for the next schema
+          // save to write) cannot be linked as written: every polymorphic walk would recurse until the stack overflows. The link that
+          // would close the cycle is left out, so the database opens. The types are compared by identity: two types whose names differ
+          // only by case are two types, and the link between them is no cycle
+          if (parent.isSameOrSubTypeOf(type)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Type '%s' is declared a sub type of '%s', which is the type itself or already one of its sub types: the link is left out "
+                    + "because a type hierarchy cannot have a cycle", type.getName(), parent.getName());
+            continue;
+          }
+          type.addSuperType(parent, false);
+        }
       }
 
       warnAboutTypesThatCannotHoldRecords(types.keySet());
@@ -5293,7 +5316,11 @@ public class LocalSchema implements Schema {
                       // whole definition lives in schema.json - a vector index with its dimensions, similarity and
                       // quantization - comes up empty when its file is relinked under a new name after a compaction:
                       // with dimensions still 0 the component skips loading its vectors at the end of this load.
-                      index.setMetadata(entry.getValue());
+                      // The entry names the type where the by-name path above read the kind of the index (the orphan pass replaced it): the
+                      // kind it declared is given back for this call, or an LSM_TREE index an older build wrote would read as another kind
+                      // and lose the keys it holds under their old spelling (issues #12160 and #12233)
+                      final String declaredKind = orphanIndexKinds.get(entry.getKey());
+                      index.setMetadata(declaredKind != null ? entry.getValue().copy().put("type", declaredKind) : entry.getValue());
                     } catch (final RuntimeException e) {
                       // Refused like on the by-name path above (issue #11568), and left out the same way. The definition is kept
                       // with the index kind it declared, not the component's: a full-text index relinks as its LSM-tree file.
@@ -5713,8 +5740,10 @@ public class LocalSchema implements Schema {
             view.setStatus(MaterializedViewStatus.STALE);
 
           // A per-record view loaded non-VALID may be missing the records of a failed or interrupted pass, and the recovery mark
-          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass
-          if (view.isPerRecord() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
+          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass. A grouped
+          // view maintained by delta (issue #11937) rebuilds its in-memory state at its first pass anyway; the mark also recovers it
+          // at the open
+          if (view.tracksPendingDelta() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
             view.requestFullPass(true);
         } catch (final Exception e) {
           ++failures;
@@ -7450,7 +7479,8 @@ public class LocalSchema implements Schema {
 
   /**
    * Whether an INCREMENTAL materialized view listens on the trigger registries of its source types (issue #10205): the records
-   * of their subtypes reach it through the same lineage walk the triggers use, for the AFTER write events only.
+   * of their subtypes reach it through the same lineage walk the triggers use, for the write events only (the AFTER ones, and the
+   * BEFORE UPDATE / DELETE a grouped view maintained by delta takes, issue #11937).
    */
   public boolean hasPolymorphicViewListeners() {
     return polymorphicViewListeners.get() > 0;

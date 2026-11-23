@@ -646,22 +646,37 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final List<RemoveClause.RemoveItem> items = new ArrayList<>();
 
     for (final Cypher25Parser.RemoveItemContext itemCtx : ctx.removeItem()) {
-      if (itemCtx instanceof Cypher25Parser.RemovePropContext) {
-        // REMOVE n.property
-        final Cypher25Parser.RemovePropContext propCtx = (Cypher25Parser.RemovePropContext) itemCtx;
-        final String propExpr = propCtx.propertyExpression().getText();
-
-        // Parse property expression: variable.property
-        if (propExpr.contains(".")) {
-          final String[] parts = propExpr.split("\\.", 2);
-          items.add(new RemoveClause.RemoveItem(parts[0], parts[1]));
+      if (itemCtx instanceof Cypher25Parser.RemovePropContext propCtx) {
+        // REMOVE n.property / REMOVE (expr).property. The base is read from the parse tree, as SET reads it: splitting
+        // the source text on its first '.' named a variable "(head(ns))" for REMOVE (head(ns)).s, which no row binds, so
+        // the clause silently did nothing (issue #11754)
+        final Cypher25Parser.PropertyExpressionContext propExprCtx = propCtx.propertyExpression();
+        final StringBuilder propertyName = new StringBuilder();
+        for (final Cypher25Parser.PropertyContext prop : propExprCtx.property()) {
+          if (!propertyName.isEmpty())
+            propertyName.append('.');
+          propertyName.append(stripBackticks(prop.propertyKeyName().getText()));
         }
+        final Cypher25Parser.Expression1Context baseExpr1 = propExprCtx.expression1();
+        final Expression target = removeTarget(baseExpr1);
+        if (target == null)
+          items.add(new RemoveClause.RemoveItem(stripBackticks(baseExpr1.variable().getText()), propertyName.toString()));
+        else if (target instanceof VariableExpression variable)
+          items.add(new RemoveClause.RemoveItem(variable.getVariableName(), propertyName.toString()));
+        else
+          items.add(new RemoveClause.RemoveItem(null, target, propertyName.toString(), null));
       } else if (itemCtx instanceof Cypher25Parser.RemoveDynamicPropContext dynCtx) {
-        // REMOVE n[keyExpr] — dynamic property removal (issue #5141)
+        // REMOVE n[keyExpr] — dynamic property removal (issue #5141), or REMOVE (expr)[keyExpr] (issue #11754)
         final Cypher25Parser.DynamicPropertyExpressionContext dynPropExpr = dynCtx.dynamicPropertyExpression();
-        final String variable = dynPropExpr.expression1().getText();
+        final Cypher25Parser.Expression1Context baseExpr1 = dynPropExpr.expression1();
         final Expression keyExpr = expressionBuilder.parseExpression(dynPropExpr.dynamicProperty().expression());
-        items.add(new RemoveClause.RemoveItem(variable, keyExpr));
+        final Expression target = removeTarget(baseExpr1);
+        if (target == null)
+          items.add(new RemoveClause.RemoveItem(stripBackticks(baseExpr1.variable().getText()), keyExpr));
+        else if (target instanceof VariableExpression variable)
+          items.add(new RemoveClause.RemoveItem(variable.getVariableName(), keyExpr));
+        else
+          items.add(new RemoveClause.RemoveItem(null, target, null, keyExpr));
       } else if (itemCtx instanceof Cypher25Parser.RemoveLabelsContext labelsCtx) {
         // REMOVE n:Label / REMOVE n:$(expr)
         final List<String> labels = new ArrayList<>();
@@ -680,6 +695,19 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     return new RemoveClause(items);
+  }
+
+  /**
+   * The target of a REMOVE property item, read the way {@link #visitSetClause} reads the target of a SET property item:
+   * null for a plain variable ({@code REMOVE n.p}), otherwise the expression - a {@link VariableExpression} when a
+   * parenthesised one is only a variable ({@code REMOVE (n).p}).
+   */
+  private Expression removeTarget(final Cypher25Parser.Expression1Context baseExpr1) {
+    if (baseExpr1.variable() != null)
+      return null;
+    if (baseExpr1.parenthesizedExpression() != null)
+      return expressionBuilder.parseExpression(baseExpr1.parenthesizedExpression().expression());
+    return expressionBuilder.parseExpressionFromText(baseExpr1);
   }
 
   @Override
@@ -859,7 +887,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // n.id > 1), so it still matches a projected expression written the same way
     WhereClause whereClause = null;
     if (ctx.whereClause() != null) {
-      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parseBooleanExpression(ctx.whereClause().expression()),
+      final BooleanExpression parsed = ProjectedOrderByNormalizer.normalizeWhere(booleans.parsePredicate(ctx.whereClause().expression()),
           items, distinct || aggregating);
       whereClause = new WhereClause((BooleanExpression) AST_REWRITER.rewrite(parsed));
     }
@@ -1018,7 +1046,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
   public WhereClause visitWhereClause(final Cypher25Parser.WhereClauseContext ctx) {
     // Parse the WHERE condition as a boolean expression, check its operands, then simplify boolean constants
-    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parsePredicate(ctx.expression());
     BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
@@ -1032,7 +1060,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
    */
   public WhereClause visitFilterClause(final Cypher25Parser.FilterClauseContext ctx) {
     // Grammar: FILTER WHERE? expression
-    final BooleanExpression parsed = booleans.parseBooleanExpression(ctx.expression());
+    final BooleanExpression parsed = booleans.parsePredicate(ctx.expression());
     BooleanOperandValidator.validateConditionOperands(parsed);
     final BooleanExpression condition = (BooleanExpression) AST_REWRITER.rewrite(parsed);
     return new WhereClause(condition);
@@ -1265,7 +1293,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // by the grammar but silently discarded, so the predicate never filtered anything.
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = booleans.parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction,
@@ -1343,7 +1371,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Inline WHERE predicate (e.g., [r:KNOWS WHERE r.since < 2019])
     BooleanExpression whereExpression = null;
     if (ctx.expression() != null)
-      whereExpression = booleans.parseBooleanExpression(ctx.expression());
+      whereExpression = booleans.parsePredicate(ctx.expression());
     whereExpression = ParserUtils.andLabelCheck(labelCheck, whereExpression);
 
     return new RelationshipPattern(variable, types, direction, properties, propertiesParameterName, minHops, maxHops,

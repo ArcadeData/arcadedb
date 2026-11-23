@@ -19,10 +19,12 @@
 package com.arcadedb.remote.grpc.utils;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.server.grpc.GrpcArrayCodec;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -49,6 +51,7 @@ import java.util.logging.Level;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class ProtoUtils {
@@ -293,6 +296,15 @@ public class ProtoUtils {
           .build());
     }
 
+    // A record that has an identity (a persistent document, vertex or edge set as a value) is a link, as the embedded engine
+    // stores it. Before this branch it fell through every other one to the String.valueOf() fallback below and was stored as
+    // its toString(), "#1:0@Doc[name=target]" (issue #12197). A document without identity is an embedded one (next branch).
+    if (value instanceof Identifiable identifiable && identifiable.getIdentity() != null) {
+      return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder()
+          .setLinkValue(GrpcLink.newBuilder().setRid(identifiable.getIdentity().toString()).build()).setLogicalType("rid")
+          .build());
+    }
+
     if (value instanceof BigDecimal v) {
       return dbgEnc("toGrpcValue", value,
           GrpcValue.newBuilder().setDecimalValue(toGrpcDecimal(v)).setLogicalType("decimal").build());
@@ -389,8 +401,15 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, tsToMillis(ts));
     }
     case LIST_VALUE: {
-      var out = new ArrayList<>();
-      for (GrpcValue e : v.getListValue().getValuesList())
+      final List<GrpcValue> values = v.getListValue().getValuesList();
+      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it. Decoded
+      // straight from the wire values: no list of boxed numbers is built first
+      final Object array = GrpcArrayCodec.toArray(values, v.getLogicalType());
+      if (array != null)
+        return dbgDec("fromGrpcValue", v, array);
+
+      var out = new ArrayList<>(values.size());
+      for (GrpcValue e : values)
         out.add(fromGrpcValue(e));
       return dbgDec("fromGrpcValue", v, out);
     }
@@ -407,7 +426,12 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, out);
     }
     case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
+      // A RID, as the embedded engine answers a link and the HTTP driver answers a LINK column: the rid TEXT read a link back
+      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195).
+      // A plain RID on purpose: this decoder is static, with no database to bind it to, and the HTTP driver's links are plain
+      // RIDs too (Type.convertOrKeep with no database). Binding them is a change of both clients (issue #12603). The rid text is
+      // always RID.toString() of the server, so a malformed one is a server bug and fails here instead of reading back as text.
+      return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()));
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
       return dbgDec("fromGrpcValue", v, toBigDecimal(d));

@@ -691,14 +691,42 @@ public class CSRBuilder {
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {
     final Map<String, Column.Type> result = new HashMap<>();
+    // A name whose types differ across two edge types stays out: a later type declaring it again must not bring it back
+    final Set<String> conflicting = new HashSet<>();
     for (final String typeName : concreteEdgeTypes(edgeTypes))
-      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result);
+      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result, conflicting);
     return result;
   }
 
-  private void collectEdgeSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
+  /**
+   * The names of the edge property filter a build over {@code edgeTypes} stores no column for, sorted: declared on none of the
+   * edge types it covers, declared only with a type no column holds, or declared with types that differ across them. A view
+   * holds no value of such a property, and every weighted read of it falls back to the edge records (issue #12177). Edge types
+   * the schema does not hold are left out.
+   */
+  List<String> edgePropertiesWithoutColumn(final String[] edgeTypes) {
+    if (edgePropertyFilterSet == null)
+      return List.of();
+    final boolean allTypes = edgeTypes == null || edgeTypes.length == 0;
+    final String[] existing = allTypes ? null :
+        Arrays.stream(edgeTypes).filter(database.getSchema()::existsType).toArray(String[]::new);
+    if (!allTypes && existing.length == 0)
+      return List.of();
+    final Map<String, Column.Type> stored = detectEdgePropertyTypesFromSchema(existing);
+    final List<String> missing = new ArrayList<>();
+    for (final String name : edgePropertyFilterSet)
+      if (!stored.containsKey(name))
+        missing.add(name);
+    Collections.sort(missing);
+    return missing;
+  }
+
+  private void collectEdgeSchemaProperties(final DocumentType type, final Map<String, Column.Type> result,
+      final Set<String> conflicting) {
     for (final Property prop : type.getProperties()) {
       if (edgePropertyFilterSet != null && !edgePropertyFilterSet.contains(prop.getName()))
+        continue;
+      if (conflicting.contains(prop.getName()))
         continue;
       final Column.Type colType = schemaTypeToColumnType(prop.getType());
       if (colType == null)
@@ -712,6 +740,7 @@ public class CSRBuilder {
             "Edge property '%s' excluded from columnar storage: type conflict (%s vs %s) across edge types",
             prop.getName(), existing, colType);
         result.remove(prop.getName());
+        conflicting.add(prop.getName());
       }
     }
   }

@@ -283,7 +283,7 @@ class WholeNumberArgumentsTest {
 
     @Test
     void textHexValueRefusesAFraction() {
-      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("ff");
+      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("00FF");
       assertThatThrownBy(() -> new TextHexValue().execute(new Object[] { 255.9 }, null))
           .isInstanceOf(CommandSemanticException.class).hasMessageContaining("<value>");
     }
@@ -550,8 +550,9 @@ class WholeNumberArgumentsTest {
         Map.entry("function/sql/math/NumericSum#get: l2i", 3),
         Map.entry("function/sql/math/NumericSum#get: i2b", 1),
         Map.entry("function/sql/math/NumericSum#get: i2s", 1),
-        // round(value) IS the rounding the function is asked for
-        Map.entry("function/math/RoundFunction#execute: java/lang/Math.round", 1),
+        // round(value) IS the rounding the function is asked for, and it is only reached below 2^52, where Math.round cannot
+        // saturate (issue #11627); round(value) and round(value, 0) share it since issue #12398
+        Map.entry("function/math/RoundFunction#roundToNearestInteger: java/lang/Math.round", 1),
         // a list index computed from the size of the collected values, never from an argument
         Map.entry("function/sql/math/SQLFunctionPercentile#evaluate: d2i", 2),
         Map.entry("function/sql/time/SQLFunctionTsPercentile#getResult: d2i", 2),
@@ -562,6 +563,12 @@ class WholeNumberArgumentsTest {
         // a list index computed from the size of the collected values and clamped to it; and a value known to be Long/Integer
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: d2i", 1),
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: java/lang/Number.longValue", 1),
+        // the APOC aggregates (#12102): longValue() of a value tested to be a Long/Integer/Short/Byte first, and a nearest-rank
+        // index computed from the number of collected values and clamped to it
+        Map.entry("function/agg/ApocAggregates#accumulate: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#add: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: d2l", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: l2i", 1),
         // an index or a bound read strictly as a long, tested against or clamped to the size of the list before the cast
         Map.entry("function/agg/AggNth#execute: l2i", 1),
         Map.entry("function/agg/AggSlice#execute: l2i", 2),
@@ -570,6 +577,11 @@ class WholeNumberArgumentsTest {
         Map.entry("function/path/PathSlice#execute: l2i", 2),
         // the cardinality, refused above Integer.MAX_VALUE before the cast
         Map.entry("function/coll/RangeFunction#execute: l2i", 1),
+        // a code point read strictly as a long and tested to be in [0, 0x10FFFF] before the cast (issue #12104)
+        Map.entry("function/text/TextCode#execute: l2i", 1),
+        // a whole number tested to fit 16 or 32 bits before it is written as its 4 or 8 hex digits (issue #12104)
+        Map.entry("function/text/TextHexValue#execute: i2s", 1),
+        Map.entry("function/text/TextHexValue#execute: l2i", 2),
         // a length or a start read strictly as a long, clamped to the int range a string fits in (past it is past the end)
         Map.entry("function/text/LeftFunction#execute: l2i", 1),
         Map.entry("function/text/RightFunction#execute: l2i", 1),
@@ -595,7 +607,7 @@ class WholeNumberArgumentsTest {
         Map.entry("function/vector/VectorCreateFunction#toShorts: l2i", 1),
         Map.entry("function/vector/VectorCreateFunction#wholeCoordinate: d2l", 1),
         // the srid, tested to be a whole number in [0, Integer.MAX_VALUE] before the cast
-        Map.entry("function/geo/CypherPointFunction#execute: d2i", 1),
+        Map.entry("function/geo/CypherPointFunction#fromXY: d2i", 1),
         // hashCode() of a double pair
         Map.entry("function/sql/geo/LightweightPoint#hashCode: l2i", 2),
         // the bucket id unpacked from the high bits of an encoded id, not a read of a number
@@ -606,9 +618,12 @@ class WholeNumberArgumentsTest {
         // a value already known to be Long/Integer/Short/Byte: widening, nothing to lose
         Map.entry("function/math/AbsFunction#execute: java/lang/Number.longValue", 1),
         Map.entry("function/number/NumberFormat#execute: java/lang/Number.longValue", 1),
-        // toInteger()/convert.toInteger(): truncating a FLOAT IS the conversion (toInteger(2.9) is 2 in Neo4j too)
-        Map.entry("function/convert/ToIntegerFunction#execute: d2l", 1),
+        // toInteger()/convert.toInteger(): truncating a FLOAT IS the conversion (toInteger(2.9) is 2 in Neo4j too). The text parser
+        // no longer narrows a double (it reads a BigDecimal, #12400), so the d2l of the old String branch is gone
         Map.entry("function/convert/ToIntegerFunction#execute: java/lang/Number.longValue", 1),
+        // toInteger() of a text: the number is range-checked against the long limits just before, so nothing wraps, and truncating
+        // a fraction towards zero IS the conversion (toInteger('12.5') is 12 in Neo4j too)
+        Map.entry("function/convert/ToIntegerFunction#parseInteger: java/math/BigDecimal.longValue", 1),
         Map.entry("function/convert/ConvertToInteger#execute: d2l", 1),
         Map.entry("function/convert/ConvertToInteger#execute: java/lang/Number.longValue", 1),
         // toBoolean(): FLOAT and DOUBLE are refused before it, the integral value is tested against zero

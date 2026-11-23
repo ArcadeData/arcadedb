@@ -719,6 +719,13 @@ public class EdgeLinkedList {
     if (tx != null && tx.getWrittenRecord(chunkRID) instanceof EdgeSegment written)
       return written;
     final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(chunkRID.getBucketId());
+    // #12644: a chunk the committed page has and the transaction's own image of its page does not (the image predates the commit
+    // that created it) can be read, but not written: the write goes through that image. Refused here, at the statement, rather
+    // than at the commit, and with the reason: a retry starts from the current page
+    if (bucket.isRecordHiddenByOwnPageImage(chunkRID))
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " chunk " + chunkRID + " of vertex " + vertex.getIdentity()
+              + " is not in the transaction's own copy of its page, which predates the commit that created it. Please retry the operation");
     try {
       bucket.fetchPageInTransaction(chunkRID);
       // Read THROUGH the anchored page, bypassing the record cache: a cached copy read before the anchor can be

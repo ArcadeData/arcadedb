@@ -735,7 +735,7 @@ abstract class PostgresCatalogExpression {
      * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
      * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
      * statement's work budget, which every re-parse is charged to (pinned by
-     * {@code Issue10228PsqlOdbcCatalogShapesTest.aBacktrackingRegularExpressionIsBounded}). Like {@link #compiled} it is
+     * {@code PostgresCatalogRelationsTest.PsqlOdbcCatalogShapes.aBacktrackingRegularExpressionIsBounded}). Like {@link #compiled} it is
      * per-statement state: a tree is parsed for one statement, evaluated by the one thread answering it, and never
      * cached or reused, so a spent budget cannot carry into another statement.
      */

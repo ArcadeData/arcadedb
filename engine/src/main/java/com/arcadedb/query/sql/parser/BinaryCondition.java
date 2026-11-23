@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
@@ -58,11 +59,40 @@ public class BinaryCondition extends BooleanExpression {
   /**
    * A comparison with a null operand is unknown (null), not false, so {@code NOT (k = 5)} and {@code k <> 5} leave out a record
    * with no {@code k}, as {@code k NOT IN [5]} does (issue #8979).
+   * <p>
+   * Two values of one class that has no order, such as two rows compared with {@code <}, make an ordering operator throw
+   * ClassCastException (the contract the operator tests pin). That is the statement's mistake, so it is reported as a type
+   * mismatch, a client error, rather than a server fault (issue #11893). A ClassCastException from any other operator is not
+   * that mistake, it is a fault, and keeps its type.
    */
   private Boolean compare(final CommandContext context, final Object leftVal, final Object rightVal) {
     if ((leftVal == null || rightVal == null) && operator.isUnknownOnNull())
       return null;
-    return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    try {
+      return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal);
+    } catch (final ClassCastException e) {
+      if (!operator.isRangeOperator())
+        throw e;
+      throw noOrder(leftVal, rightVal, operator.toString(), e);
+    }
+  }
+
+  /**
+   * The refusal of an ordering comparison between two values that have no order. Shared with {@code BETWEEN}, which compares as
+   * {@code >=} and {@code <=} do (issue #11893).
+   */
+  static TypeMismatchException noOrder(final Object leftVal, final Object rightVal, final String operator,
+      final ClassCastException cause) {
+    return new TypeMismatchException(
+        "Cannot compare " + kindOf(leftVal) + " with " + kindOf(rightVal) + " using '" + operator + "': the values have no order", cause);
+  }
+
+  private static String kindOf(final Object value) {
+    if (value == null)
+      return "null";
+    if (value instanceof Result || value instanceof Identifiable)
+      return "a record";
+    return value.getClass().getSimpleName();
   }
 
   /**

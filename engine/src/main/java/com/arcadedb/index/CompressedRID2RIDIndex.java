@@ -41,12 +41,19 @@ import java.util.logging.Level;
  * compressed RID. Another slot is kept to point to the previous entry. The hash table always points to the last element
  * with a linked list in the only direction of the previous.
  * <p>
+ * The hash table doubles its slots whenever the entries outnumber them (see {@link #growHashTable()}), so the number of slots
+ * passed to the constructor is a starting size, not a limit. Growing replaces the chunk, so an {@link EntryIterator} must not be
+ * kept open across a {@link #put}.
+ * <p>
  * TODO support up to 4GB by using unsigned int
  */
 public class CompressedRID2RIDIndex {
+  /** The largest Binary the positions of this index (ints) and the JVM (arrays) can address. */
+  private static final long MAX_CHUNK_SIZE = Integer.MAX_VALUE - 8;
+
   protected final Database         database;
   protected final BinarySerializer serializer;
-  protected final int              keys;
+  protected       int              keys;
   private         boolean          readOnly = false;
 
   private Thread lastThreadAccessed = null;
@@ -211,6 +218,9 @@ public class CompressedRID2RIDIndex {
     if (valueRID == null)
       throw new IllegalArgumentException("Source vertex RID is null");
 
+    if (totalEntries >= keys)
+      growHashTable();
+
     final int hash = (key.hashCode() & 0x7fffffff) % keys;
 
     final int pos = chunk.getInt(hash * Binary.INT_SERIALIZED_SIZE);
@@ -276,6 +286,66 @@ public class CompressedRID2RIDIndex {
     }
 
     ++totalEntries;
+  }
+
+  /**
+   * Doubles the slots of the hash table and rebuilds the chains into a new chunk. The table used to keep the slot count it was
+   * built with for its whole life, so a caller that cannot know its entry count up front (the JSONL importer builds it with
+   * 1,000 slots) walked chains of entries / 1,000 on every put() and get(), and a restore took time quadratic in the size of
+   * the database (issue #12048). Called when the entries reach the slots: one pass over the entries per doubling keeps the total
+   * linear, and the chains as short as the hash allows. {@link RID#hashCode()} is {@code bucketId * 31 + position}, so the keys
+   * of RIDs spread over B buckets share a hash value B at a time and a chain holds about B entries at any table size: a
+   * constant, not a length that grows with the record count.
+   * <p>
+   * Entries are appended to the tail of their new chain, so a chain still only moves forward in the chunk (the invariant the
+   * chain walks of {@link #get} and {@link #put} assert). A table whose doubled form would not fit an int-addressed chunk keeps
+   * its slots: longer chains, never a failed put().
+   */
+  private void growHashTable() {
+    final long newKeys = (long) keys * 2;
+    final long entriesSize = chunk.size() - (long) keys * Binary.INT_SERIALIZED_SIZE;
+    if (newKeys * Binary.INT_SERIALIZED_SIZE + entriesSize > MAX_CHUNK_SIZE)
+      return;
+
+    final int newSlots = (int) newKeys;
+    final Binary newChunk = new Binary((int) (newKeys * Binary.INT_SERIALIZED_SIZE + entriesSize));
+    newChunk.setAllocationChunkSize(chunk.getAllocationChunkSize());
+    newChunk.fill((byte) 0, newSlots * Binary.INT_SERIALIZED_SIZE);
+
+    // POSITION OF THE NEXT-ENTRY FIELD OF THE LAST ENTRY OF EACH NEW CHAIN (0 = EMPTY SLOT): APPENDS IN CONSTANT TIME
+    final int[] chainTails = new int[newSlots];
+    int usedSlots = 0;
+
+    for (int slot = 0; slot < keys; ++slot) {
+      int pos = chunk.getInt(slot * Binary.INT_SERIALIZED_SIZE);
+      while (pos > 0) {
+        chunk.position(pos);
+        final RID key = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
+        final int nextPos = chunk.getInt();
+        final RID value = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
+
+        final int newSlot = (key.hashCode() & 0x7fffffff) % newSlots;
+        final int entryPosition = newChunk.size();
+        newChunk.position(entryPosition);
+        serializer.serializeValue(database, newChunk, BinaryTypes.TYPE_COMPRESSED_RID, key);
+        final int nextFieldPosition = newChunk.position();
+        newChunk.putInt(0);
+        serializer.serializeValue(database, newChunk, BinaryTypes.TYPE_COMPRESSED_RID, value);
+
+        if (chainTails[newSlot] == 0) {
+          newChunk.putInt(newSlot * Binary.INT_SERIALIZED_SIZE, entryPosition);
+          ++usedSlots;
+        } else
+          newChunk.putInt(chainTails[newSlot], entryPosition);
+        chainTails[newSlot] = nextFieldPosition;
+
+        pos = nextPos;
+      }
+    }
+
+    chunk = newChunk;
+    keys = newSlots;
+    totalUsedSlots = usedSlots;
   }
 
   public int getKeys() {

@@ -21,6 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
@@ -30,6 +31,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
+import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -719,7 +721,8 @@ public class DocumentIndexer {
         if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy strategy) {
           if (!List.of(strategy.getProperties())
               .equals(index.getPropertyNames()))
-            throw new IndexException("Cannot modify primary key when the bucket selection is partitioned");
+            // a refusal of the write, not a fault of the index: answered as the client's request, like a declared constraint (issue #12037)
+            throw new ValidationException("Cannot modify primary key when the bucket selection is partitioned");
         }
 
         // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
@@ -761,6 +764,135 @@ public class DocumentIndexer {
       }
     }
     return new DetachedDocument(modifiedRecord, values);
+  }
+
+  /**
+   * Queues on {@code tx} the index changes that bring the indexes to the values {@code document} holds now, which is what an update
+   * of a record does when it is saved in a transaction. They are diffed against the state an earlier update of the record in the same
+   * transaction left (its indexed snapshot, issue #4935) and against the committed buffer when there is none: the buffer stays
+   * frozen until the commit, because the serialization is deferred, so diffing against it would leak an entry for every intermediate
+   * value. The refreshed snapshot is recorded only when an index changed: otherwise the diff source it had still describes the indexed
+   * state, and an update that touches no indexed property costs no snapshot.
+   *
+   * @param indexes the indexes {@link #getInvolvedIndexes} answered for {@code document}, not empty
+   */
+  public void updateDocumentInTransaction(final TransactionContext tx, final Document document, final List<IndexInternal> indexes) {
+    final RID rid = document.getIdentity();
+    final Document previous = tx.getLastIndexedSnapshot(rid);
+    final Document refreshedSnapshot = updateDocument(previous != null ? previous : database.getOriginalDocument(document), document,
+        indexes);
+    if (refreshedSnapshot != null)
+      tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
+  }
+
+  /**
+   * Puts back, on a record the transaction has queued for its commit, the indexed values an index has just refused (issue #13130).
+   * <p>
+   * A save that an index refuses leaves the indexes as they were (the entries it queued are taken back by the caller), but the values it
+   * assigned are on the instance, and the commit writes that very instance and indexes whatever was assigned to it after its last accepted
+   * save (#11751): it would meet the refused value again, fail with it, and take every valid write of the transaction down. A record that
+   * was not queued before the refused save is taken out of the queue instead, so this is only for the one that was.
+   * <p>
+   * The values restored are the ones the indexes hold, the source {@link #updateDocumentInTransaction} diffs against: the snapshot of the
+   * last indexed state of the record in this transaction, and the committed buffer when there is none. Only the properties an index keys
+   * are touched, and only when they differ from it: the other properties assigned by the refused call stay on the record, as does
+   * anything assigned to a queued record without a save, which the commit writes as it is.
+   *
+   * @param indexes the indexes {@link #getInvolvedIndexes} answered for {@code document}
+   *
+   * @return true when every indexed property of the record is what the indexes hold again, and the commit has nothing to re-index: false
+   *     when a value could not be put back (the state the indexes hold is not kept as a whole property, as for the nested path of an
+   *     embedded document or map, or there is nothing to read it from), and the caller has to refuse the commit instead of storing a value
+   *     no index describes
+   */
+  public boolean restoreIndexedValues(final TransactionContext tx, final MutableDocument document, final List<IndexInternal> indexes) {
+    final List<IndexInternal> maintained = maintainedInTransaction(indexes);
+    if (maintained == null || maintained.isEmpty())
+      return true;
+
+    Document baseline = tx.getLastIndexedSnapshot(document.getIdentity());
+    if (baseline == null)
+      try {
+        baseline = database.getOriginalDocument(document);
+      } catch (final IllegalStateException e) {
+        // No buffer to read: nothing says what the indexes hold
+        return false;
+      }
+
+    for (final IndexInternal index : maintained) {
+      final List<String> keyNames = index.getPropertyNames();
+      final String[] propertyNames = new String[keyNames.size()];
+      final KeyExpansion[] expansions = detectExpansions(keyNames, propertyNames);
+
+      for (int i = 0; i < propertyNames.length; ++i) {
+        // the keys the snapshot of the indexed state is stored under, see updateDocument(): the root of a list read per item, the map as
+        // a whole, the value (a nested path resolved) otherwise
+        final KeyExpansion expansion = expansions[i];
+        final String key;
+        if (expansion == KeyExpansion.LIST_ITEM) {
+          final int dot = propertyNames[i].indexOf('.');
+          key = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+        } else
+          key = propertyNames[i];
+
+        final boolean asProperty = expansion != KeyExpansion.NONE;
+        final Object indexed = asProperty ? baseline.get(key) : getPropertyValue(baseline, key);
+        if (sameKeyValue(asProperty ? document.get(key) : getPropertyValue(document, key), indexed))
+          continue;
+
+        // a nested path (the value is part of a property, which the snapshot does not keep), record metadata, and a value that holds
+        // embedded documents (detached in the snapshot) cannot be given back as a property
+        if (key.isEmpty() || key.charAt(0) == '@' || (!asProperty && key.indexOf('.') >= 0 && !document.has(key)) || holdsDocument(indexed))
+          return false;
+
+        if (indexed == null)
+          document.remove(key);
+        else
+          document.set(key, copyForRestore(indexed));
+      }
+    }
+    return true;
+  }
+
+  private static boolean holdsDocument(final Object value) {
+    if (value instanceof Document)
+      return true;
+    if (value instanceof Collection<?> collection) {
+      for (final Object element : collection)
+        if (element instanceof Document)
+          return true;
+    } else if (value instanceof Map<?, ?> map)
+      for (final Object element : map.values())
+        if (element instanceof Document)
+          return true;
+    return false;
+  }
+
+  /**
+   * The value to assign to the record from what the snapshot holds: the snapshot keeps its arrays and, for the ones of a primitive type
+   * (the {@code float[]} of a vector), by reference, so the record is given its own, or a later change to one would change the other.
+   */
+  private static Object copyForRestore(final Object value) {
+    final Class<?> type = value.getClass();
+    if (type.isArray() && type.getComponentType().isPrimitive()) {
+      final int length = Array.getLength(value);
+      final Object copy = Array.newInstance(type.getComponentType(), length);
+      System.arraycopy(value, 0, copy, 0, length);
+      return copy;
+    }
+    return copyForSnapshot(value);
+  }
+
+  /**
+   * Indexes what was assigned to a record after the last {@code save()} that queued it for the commit (issue #11751). That save brought
+   * the indexes to the values the record held then, and the commit writes the record as it is when it runs, so a later assignment
+   * reaches the record and would never reach the indexes. Queues the difference, which is empty when the assignment put back what the
+   * save had left. Only while the transaction is {@code BEGUN}, the one state an index queues an entry instead of writing it.
+   */
+  public void updateDocumentAssignedAfterSave(final TransactionContext tx, final Document document) {
+    final List<IndexInternal> indexes = getInvolvedIndexes(document);
+    if (indexes != null && !indexes.isEmpty())
+      updateDocumentInTransaction(tx, document, indexes);
   }
 
   public void deleteDocument(final Document record) {

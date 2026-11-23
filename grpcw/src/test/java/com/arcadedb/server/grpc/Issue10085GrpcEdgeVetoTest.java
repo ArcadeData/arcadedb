@@ -190,8 +190,9 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
   }
 
   /**
-   * Under an externally managed transaction nothing of the refused edge is left in it: the create is atomic, so the client's commit
-   * afterwards does not carry a half-initialised edge wired to the vertices.
+   * Under an externally managed transaction nothing of the refused edge is left: the refusal ends the client's transaction, as any
+   * failed statement does (issue #11961), so the commit afterwards answers {@code committed=false} and no half-initialised edge is
+   * wired to the vertices.
    */
   @Test
   void aRefusedEdgeLeavesNothingInAnExternalTransaction() {
@@ -205,7 +206,7 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
 
     assertThat(stub.commitTransaction(CommitTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build())
-        .getCommitted()).isTrue();
+        .getCommitted()).isFalse();
 
     assertThat(count(EDGE)).isEqualTo(1L);
     assertThat(edgeCountOf(from)).isEqualTo(1L);
@@ -214,7 +215,8 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
 
   /**
    * An initializer that fails part way (a property the schema type cannot convert) leaves nothing in an externally managed
-   * transaction either: the edge is neither saved nor wired, so the client's commit afterwards carries nothing of it.
+   * transaction either: the failure ends the transaction (issue #11961), so the client's commit afterwards answers
+   * {@code committed=false} and the edge is neither saved nor wired.
    */
   @Test
   void aFailingPropertyLeavesNothingInAnExternalTransaction() {
@@ -229,7 +231,7 @@ public class Issue10085GrpcEdgeVetoTest extends BaseGrpcServerTest {
         .setType(EDGE).setRecord(row).setTransaction(transaction).build())).isInstanceOf(StatusRuntimeException.class);
 
     assertThat(stub.commitTransaction(CommitTransactionRequest.newBuilder().setCredentials(credentials()).setTransaction(transaction).build())
-        .getCommitted()).isTrue();
+        .getCommitted()).isFalse();
 
     assertThat(count(EDGE)).isEqualTo(1L);
     assertThat(edgeCountOf(from)).isEqualTo(1L);

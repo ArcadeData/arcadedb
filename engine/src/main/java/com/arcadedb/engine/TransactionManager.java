@@ -30,6 +30,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.exception.WALVersionGapException;
+import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.index.fulltext.FullTextCorpusDeltas;
 import com.arcadedb.index.sparsevector.SparsePostingLog;
@@ -309,22 +310,44 @@ public class TransactionManager {
   }
 
   /**
+   * Why {@link #vertexChangeSince} cannot rule out that the vertex a transaction read alive was replaced under its RID (#11592). A
+   * commit refused for it is retried the same way whatever the cause; the cause only words the refusal, so whoever reads it is pointed
+   * at what happened (#12123).
+   */
+  public enum VertexChange {
+    /** Nothing since the sequence was taken: the vertex is the one the transaction read. */
+    NONE,
+    /** A commit deleted a vertex with this RID, or one sharing its stripe. */
+    DELETED,
+    /** The bucket of the RID is gone, and the vertex with it. */
+    BUCKET_DROPPED,
+    /**
+     * A replicated apply wrote the page of the RID (or one sharing its stripe), or is writing it now. The entry carries page images,
+     * not the records it deleted, so the vertex may be the same one or a new one under its RID: nothing tells the two apart.
+     */
+    PAGE_REPLICATED
+  }
+
+  /**
    * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken, or a
    * replicated apply wrote the page of the RID (or one sharing its stripe) after it or is writing it now. The RID can be holding a
-   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592).
+   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592). A delete is reported
+   * before a replicated write, so a vertex both deleted and on a replicated page reads as deleted.
+   *
+   * @return {@link VertexChange#NONE} when neither happened, otherwise which one did
    */
-  public boolean wasVertexDeletedSince(final RID rid, final long sequence) {
+  public VertexChange vertexChangeSince(final RID rid, final long sequence) {
     final AtomicLongArray deletedAt = vertexDeletedAt;
     if (deletedAt != null && deletedAt.get(vertexDeleteStripe(rid.getBucketId(), rid.getPosition())) > sequence)
-      return true;
+      return VertexChange.DELETED;
     final ReplicatedVertexPages replicated = replicatedVertexPages;
     if (replicated == null)
-      return false;
+      return VertexChange.NONE;
     // a bucket that is gone took the vertex with it
     if (!(database.getSchema().getFileByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
-      return true;
+      return VertexChange.BUCKET_DROPPED;
     return replicated.writtenSince(vertexDeleteStripe(rid.getBucketId(), rid.getPosition() / bucket.getMaxRecordsInPage()),
-        sequence);
+        sequence) ? VertexChange.PAGE_REPLICATED : VertexChange.NONE;
   }
 
   /**
@@ -1850,6 +1873,29 @@ public class TransactionManager {
    */
   public boolean applyChanges(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
+    final int applied;
+    try {
+      applied = applyChangesUnderLocks(tx, bucketRecordDelta, corpusDeltas, ignoreErrors);
+    } catch (final RuntimeException | Error e) {
+      // The pages of an entry are written one by one, so one that fails part-way may have published some: the views hear of it as of
+      // an entry that advanced a page, which costs one rebuild at most. The failure that propagates is the apply's own
+      try {
+        GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+      } catch (final RuntimeException notifyFailure) {
+        e.addSuppressed(notifyFailure);
+      }
+      throw e;
+    }
+    // An entry applied as pages runs no record listener, so the graph analytical views hear of it here: after every lock is
+    // released, and before the caller reports the entry applied (issue #12250). An entry already held changes nothing they serve
+    if ((applied & APPLIED_NEW_CONTENT) != 0)
+      GraphAnalyticalViewRegistry.onTransactionApplied(database, tx);
+    return (applied & APPLIED_PAGES) != 0;
+  }
+
+  /** The apply itself, under the shared apply lock and the locks of the buckets with an unknown counter: what it did, as {@code APPLIED_*} bits. */
+  private int applyChangesUnderLocks(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+      final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     applyLock.readLock().lock();
     final Object requester = Thread.currentThread();
     BucketLocks bucketLocks = null;
@@ -2076,7 +2122,11 @@ public class TransactionManager {
     return applyLock;
   }
 
-  private boolean applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+  // What applyChangesPages() did with an entry: wrote a page, and wrote one at a version newer than the database held
+  private static final int APPLIED_PAGES       = 1;
+  private static final int APPLIED_NEW_CONTENT = 2;
+
+  private int applyChangesInternal(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors) {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
@@ -2144,7 +2194,7 @@ public class TransactionManager {
    *                skipped as strictly older too (the mark goes before the skip, spec 6.2: a replay of an entry a crash interrupted
    *                after its pages were written still marks them), as well as a page refused for a version gap
    */
-  private boolean applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
+  private int applyChangesPages(final WALFile.WALTransaction tx, final Map<Integer, Integer> bucketRecordDelta,
       final List<FullTextCorpusDeltas.CorpusDelta> corpusDeltas, final boolean ignoreErrors, final ReachedPages reached) {
     final boolean recovery = Thread.currentThread().equals(ownWALReplayThread);
     boolean changed = false;
@@ -2483,7 +2533,7 @@ public class TransactionManager {
     // A REPLICATED OR RECOVERED TRANSACTION CHANGES THE FILES WITHOUT GOING THROUGH ANY RECORD PATH (#8400)
     if (changed && database instanceof LocalDatabase localDatabase)
       localDatabase.markModified();
-    return changed;
+    return (changed ? APPLIED_PAGES : 0) | (versionAdvanced ? APPLIED_NEW_CONTENT : 0);
   }
 
   public void kill() {

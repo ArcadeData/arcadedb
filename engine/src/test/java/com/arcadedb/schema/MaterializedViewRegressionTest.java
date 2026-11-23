@@ -916,10 +916,12 @@ class MaterializedViewRegressionTest {
     @Test
     void aFailedCreationLeavesNoBackingTypeBehind() {
       database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE) SHARDS 1");
-      insert(H0 + 1_000, "not a number", 1);
+      insert(H0 + 1_000, "a", 1);
 
+      // an unknown digest algorithm is the statement's mistake whatever the data holds, so the first refresh fails for sure (a
+      // non-numeric text no longer does: asLong() answers null for it, issue #12527)
       final Throwable failure = catchThrowable(() -> database.command("sql",
-          "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h.asLong() AS n, sum(v) AS total FROM S GROUP BY hr, n"));
+          "CREATE CONTINUOUS AGGREGATE A AS SELECT ts.timeBucket('1h', ts) AS hr, h.hash('NO-SUCH-DIGEST') AS n, sum(v) AS total FROM S GROUP BY hr, n"));
 
       assertThat(failure).as("the first refresh has to fail, or this test proves nothing").isNotNull();
       assertThat(database.getSchema().existsContinuousAggregate("A")).isFalse();
@@ -1601,6 +1603,181 @@ class MaterializedViewRegressionTest {
   }
 
   /**
+   * Regression for #12252: a schema save made while a refresh ran (any DDL, a continuous aggregate's late-sample record) wrote the
+   * in-memory BUILDING of the running pass, which a schema load turns into STALE (the crash-recovery rule). The pass then ended VALID
+   * without saving again, because it started VALID. Under HA the saved document is what the followers load, so they reported STALE a
+   * view or aggregate the leader reported VALID over the same rows; a reopen loads it the same way, which is what these tests check.
+   */
+  @Nested
+  class StatusSavedDuringRefresh extends TestHelper {
+
+    @Test
+    void aSchemaSaveDuringAViewPassKeepsTheStatusItStartedFrom() {
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH INCREMENTAL");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+
+      // the next pass saves the schema from inside, as a DDL committed by another client while it runs does
+      final AtomicReference<String> statusDuringPass = new AtomicReference<>();
+      final AtomicReference<String> savedDuringPass = new AtomicReference<>();
+      final AtomicBoolean saved = new AtomicBoolean();
+      final DocumentType backingType = database.getSchema().getType("MG");
+      backingType.getEvents().registerListener(
+          (BeforeRecordCreateListener) record -> saveOnce(saved, statusDuringPass, savedDuringPass, "MG"));
+      backingType.getEvents().registerListener(
+          (BeforeRecordUpdateListener) record -> saveOnce(saved, statusDuringPass, savedDuringPass, "MG"));
+
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'b'"));
+
+      assertThat(saved.get()).as("the schema was saved during the pass").isTrue();
+      assertThat(statusDuringPass.get()).as("the pass reports BUILDING while it runs").isEqualTo("BUILDING");
+      assertThat(savedDuringPass.get()).as("the save made during the pass writes the status the pass started from")
+          .isEqualTo("VALID");
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+
+      reopenDatabase();
+
+      assertThat(status("materializedViews", "MG")).isEqualTo("VALID");
+    }
+
+    @Test
+    void aSchemaSaveDuringAnAggregateRefreshKeepsTheStatusItStartedFrom() {
+      database.command("sql", "CREATE TIMESERIES TYPE S TIMESTAMP ts TAGS (h STRING) FIELDS (v DOUBLE) SHARDS 1");
+      database.transaction(() -> database.command("sql", "INSERT INTO S SET ts = ?, h = 's1', v = 1.0", 1700000000000L));
+      database.command("sql", "CREATE CONTINUOUS AGGREGATE ca AS SELECT ts.timeBucket('1h', ts) AS hr, sum(v) AS total FROM S GROUP BY hr");
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+
+      // a refresh that does not move the watermark saves nothing at its end: the save made while it runs is the last one
+      final AtomicReference<String> statusDuringRefresh = new AtomicReference<>();
+      final AtomicReference<String> savedDuringRefresh = new AtomicReference<>();
+      ContinuousAggregateRefresher.TEST_AFTER_IN_FLIGHT_READ_HOOK = () -> {
+        statusDuringRefresh.set(database.getSchema().getContinuousAggregate("ca").getStatus());
+        ((LocalSchema) database.getSchema()).saveConfiguration();
+        savedDuringRefresh.set(savedStatus("continuousAggregates", "ca"));
+      };
+      try {
+        database.command("sql", "REFRESH CONTINUOUS AGGREGATE ca").close();
+      } finally {
+        ContinuousAggregateRefresher.TEST_AFTER_IN_FLIGHT_READ_HOOK = null;
+      }
+
+      assertThat(statusDuringRefresh.get()).as("the refresh reports BUILDING while it runs").isEqualTo("BUILDING");
+      assertThat(savedDuringRefresh.get()).as("the save made during the refresh writes the status it started from")
+          .isEqualTo("VALID");
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+
+      reopenDatabase();
+
+      assertThat(status("continuousAggregates", "ca")).isEqualTo("VALID");
+    }
+
+    @Test
+    void theBuildingMarkOfACreationIsStillSaved() {
+      // the BUILDING a creation sets is the crash-recovery mark, and it is saved: only the BUILDING of a later pass is not
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH MANUAL");
+      final MaterializedViewImpl view = (MaterializedViewImpl) database.getSchema().getMaterializedView("MG");
+      view.setStatus(MaterializedViewStatus.BUILDING);
+
+      assertThat(savedStatus("materializedViews", "MG")).isEqualTo("BUILDING");
+    }
+
+    /**
+     * An ALTER that replaces a grouped view while its pass runs copies the status the pass started from (found in review). The pass
+     * then fails: its rows are rolled back, so the replacement holds the rows from before the pass and must not stay VALID.
+     */
+    @Test
+    void aGroupedViewReplacedWhileItsPassFailsIsNotLeftValid() {
+      database.command("sql", "CREATE DOCUMENT TYPE P");
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'a'"));
+      database.command("sql", "CREATE MATERIALIZED VIEW MG AS SELECT cat, count(*) AS c FROM P GROUP BY cat REFRESH MANUAL");
+      // a manual view: the row of b reaches it only through a pass
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'b'"));
+      final LocalSchema schema = (LocalSchema) database.getSchema();
+      final MaterializedViewImpl registered = (MaterializedViewImpl) schema.getMaterializedView("MG");
+      assertThat(registered.isPerRecord()).isFalse();
+      assertThat(registered.getStatus()).isEqualTo("VALID");
+
+      final AtomicReference<Throwable> alterFailure = new AtomicReference<>();
+      // armed once the instance is registered: the registration reads the backing type name too
+      final AtomicBoolean armed = new AtomicBoolean(false);
+      final Thread passThread = Thread.currentThread();
+      // Read by the pass first, before its transaction and outside any database lock: the whole ALTER runs here, then the pass fails
+      final MaterializedViewImpl running = new MaterializedViewImpl(database, registered.getName(), registered.getQuery(),
+          registered.getBackingTypeName(), registered.getSourceTypeNames(), registered.getRefreshMode(), registered.isSimpleQuery(),
+          registered.getRefreshInterval()) {
+        @Override
+        public String getBackingTypeName() {
+          if (Thread.currentThread() == passThread && armed.compareAndSet(true, false)) {
+            final Thread alterThread = new Thread(() -> {
+              try {
+                database.command("sql", "ALTER MATERIALIZED VIEW MG REFRESH INCREMENTAL").close();
+              } catch (final Throwable e) {
+                alterFailure.set(e);
+              }
+            }, "mv-alter-during-grouped-pass");
+            alterThread.start();
+            try {
+              alterThread.join(60_000);
+            } catch (final InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            assertThat(alterThread.isAlive()).as("the ALTER completed during the pass").isFalse();
+            throw new IllegalStateException("simulated failure of the pass the ALTER replaced");
+          }
+          return super.getBackingTypeName();
+        }
+      };
+      synchronized (schema) {
+        schema.materializedViews.put("MG", running);
+      }
+      armed.set(true);
+
+      assertThatThrownBy(() -> MaterializedViewRefresher.refreshAfterCommit(database, running))
+          .hasStackTraceContaining("simulated failure of the pass the ALTER replaced");
+
+      assertThat(armed.get()).as("the ALTER ran during the pass").isFalse();
+      assertThat(alterFailure.get()).isNull();
+      final MaterializedViewImpl replacement = (MaterializedViewImpl) schema.getMaterializedView("MG");
+      assertThat(replacement).isNotSameAs(running);
+      assertThat(replacement.getStatus()).as("the replacement holds the rows from before the failed pass")
+          .isNotEqualTo("VALID");
+      assertThat(savedStatus("materializedViews", "MG")).isNotEqualTo("VALID");
+
+      // the next pass of the replacement settles it
+      database.transaction(() -> database.command("sql", "INSERT INTO P SET cat = 'c'"));
+      Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+          .until(() -> "VALID".equals(status("materializedViews", "MG")));
+      try (final ResultSet rs = database.query("sql", "SELECT sum(c) AS s FROM MG")) {
+        assertThat(rs.next().<Number>getProperty("s").longValue()).isEqualTo(3L);
+      }
+    }
+
+    private boolean saveOnce(final AtomicBoolean saved, final AtomicReference<String> statusDuringPass,
+        final AtomicReference<String> savedDuringPass, final String viewName) {
+      if (saved.compareAndSet(false, true)) {
+        statusDuringPass.set(database.getSchema().getMaterializedView(viewName).getStatus());
+        ((LocalSchema) database.getSchema()).saveConfiguration();
+        savedDuringPass.set(savedStatus("materializedViews", viewName));
+      }
+      return true;
+    }
+
+    private String status(final String schemaTable, final String name) {
+      try (final ResultSet rs = database.query("sql", "SELECT status FROM schema:" + schemaTable + " WHERE name = ?", name)) {
+        return rs.next().getProperty("status");
+      }
+    }
+
+    /** The status the schema document carries, as a save writes it and an HA follower loads it. */
+    private String savedStatus(final String section, final String name) {
+      return ((LocalSchema) database.getSchema()).toJSON().getJSONObject(section).getJSONObject(name).getString("status");
+    }
+  }
+
+  /**
    * Regression for #11020: {@code TRUNCATE TYPE} on the backing type of a continuous aggregate emptied it and left its watermark where it was,
    * so the next refresh recomputed only the buckets at or after the watermark: every bucket behind it was lost for good, with the
    * aggregate reporting VALID. A materialized view truncated the same way answered no rows while reporting VALID, and a row
@@ -2166,7 +2343,7 @@ class MaterializedViewRegressionTest {
    * These are the engine-side half of the acceptance criteria: that executing the rendered SQL yields the same
    * declaration as calling {@code create()} on the very same builder state - the local-to-local parity the remote path
    * rides on - and that a state the grammar cannot express fails at build time rather than as invalid DDL on the server.
-   * The end-to-end embedded-vs-remote comparison lives in {@code Issue7688RemoteViewBuildersIT}.
+   * The end-to-end embedded-vs-remote comparison lives in {@code RemoteViewBuildersIT.ViewBuilders}.
    */
   @Nested
   class ViewBuilderSQL extends TestHelper {

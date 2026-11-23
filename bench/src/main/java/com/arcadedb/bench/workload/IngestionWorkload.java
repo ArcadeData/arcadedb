@@ -202,7 +202,7 @@ public class IngestionWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("records_per_s", "records/s", (double) perThread * threads / seconds));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   private static String[] buildScripts(final long seed, final int rows) {

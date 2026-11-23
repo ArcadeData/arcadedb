@@ -60,6 +60,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public static final int DEFAULT_FUZZY_MAX_EXPANSIONS = 50;
 
   /**
+   * The most a fuzzy clause may be set to expand to (issue #12505): Lucene's default max clause count
+   * ({@code IndexSearcher.getMaxClauseCount()}), which its FuzzyQuery clamps {@code maxExpansions} to, so ArcadeDB and Lucene
+   * answer the same for every accepted setting. A larger value is refused when an index is defined, and one persisted before
+   * this bound existed is read as this bound.
+   */
+  public static final int MAX_FUZZY_MAX_EXPANSIONS = 1024;
+
+  /**
    * BM25 similarity: ranks with term-frequency, inverse document frequency and document-length normalization. Default for newly
    * created full-text indexes.
    */
@@ -94,8 +102,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   private static final String UNBOUND_LENGTH_RULE = "-";
 
-  private static final String ANALYZER_SUFFIX = "_analyzer";
-  private static final String BOOST_SUFFIX    = "_boost";
+  private static final String ANALYZER_SUFFIX         = "_analyzer";
+  private static final String BOOST_SUFFIX            = "_boost";
+  private static final String FIELD_ANALYZERS_APPLIED = "ft_fieldAnalyzersApplied";
 
   /**
    * Fixed keys a user may write in {@code METADATA}. The key space is not closed: {@code <field>_analyzer} and
@@ -118,6 +127,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Per-field maps are concurrent: they are populated at index creation but read on the query path (getFieldBoost,
   // getAnalyzerClass) and iterated by writeToJSON on schema save, so a HashMap could throw ConcurrentModificationException.
   private final    Map<String, String> fieldAnalyzers       = new ConcurrentHashMap<>();
+  // Whether the postings of a property with an analyzer of its own were written with it (issue #12163). An index of a version that
+  // stored the per-field analyzers without applying them wrote every posting with the analyzer of the index, and goes on doing so,
+  // queries included, until a rebuild writes them again: persisted as ft_fieldAnalyzersApplied, absent on such an index
+  private          boolean             fieldAnalyzersApplied = true;
 
   // BM25 SCORING CONFIGURATION
   private String             similarity  = SIMILARITY_BM25;
@@ -230,6 +243,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     copy.bm25K1 = bm25K1;
     copy.bm25B = bm25B;
     copy.fieldBoosts.putAll(fieldBoosts);
+    copy.fieldAnalyzersApplied = fieldAnalyzersApplied;
     return copy;
   }
 
@@ -253,8 +267,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
 
-    // Set directly, as defaultOperator is: a persisted definition was validated when it was written
-    this.fuzzyMaxExpansions = metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS);
+    // Set directly, as defaultOperator is: a persisted definition was validated when it was written. A value above the bound was
+    // accepted before it existed (issue #12505): clamp it as Lucene's FuzzyQuery does rather than refuse to open the index
+    this.fuzzyMaxExpansions = Math.min(metadata.getInt("fuzzyMaxExpansions", DEFAULT_FUZZY_MAX_EXPANSIONS), MAX_FUZZY_MAX_EXPANSIONS);
 
     // An index persisted before BM25 support has no "similarity" key: keep it on CLASSIC so an upgrade does not silently change
     // ranking. Route an explicit value through the validating setter so an unknown similarity in METADATA {...} is rejected.
@@ -292,6 +307,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+    // A missing key is NOT the field's default of true: a definition written before per-field analyzers were applied (issue #12163)
+    // has no such key, and its postings were not written with them, so it is read as the legacy mode until a rebuild writes them
+    this.fieldAnalyzersApplied = metadata.getBoolean(FIELD_ANALYZERS_APPLIED, false);
   }
 
   @Override
@@ -453,6 +471,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     for (final Map.Entry<String, String> entry : fieldAnalyzers.entrySet())
       metadata.put(entry.getKey() + ANALYZER_SUFFIX, entry.getValue());
+    if (!fieldAnalyzers.isEmpty() && fieldAnalyzersApplied)
+      metadata.put(FIELD_ANALYZERS_APPLIED, true);
 
     metadata.put("similarity", similarity);
     if (isBM25()) {
@@ -568,13 +588,18 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Sets the most indexed terms a fuzzy clause expands to: the best ones are kept, as Lucene's FuzzyQuery keeps its
    * {@code maxExpansions} best ones.
    *
-   * @param fuzzyMaxExpansions a positive number of terms
+   * @param fuzzyMaxExpansions a positive number of terms, at most {@link #MAX_FUZZY_MAX_EXPANSIONS}
    *
-   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too
+   * @throws IllegalArgumentException if it is not positive, which Lucene's FuzzyQuery refuses too, or if it is above
+   *                                  {@link #MAX_FUZZY_MAX_EXPANSIONS}, which Lucene's FuzzyQuery clamps to (issue #12505)
    */
   public void setFuzzyMaxExpansions(final int fuzzyMaxExpansions) {
     if (fuzzyMaxExpansions < 1)
       throw new IllegalArgumentException("Full-text fuzzyMaxExpansions must be positive, got: " + fuzzyMaxExpansions);
+    if (fuzzyMaxExpansions > MAX_FUZZY_MAX_EXPANSIONS)
+      throw new IllegalArgumentException(
+          "Full-text fuzzyMaxExpansions must be at most " + MAX_FUZZY_MAX_EXPANSIONS + " (Lucene's max clause count), got: "
+              + fuzzyMaxExpansions);
     this.fuzzyMaxExpansions = fuzzyMaxExpansions;
   }
 
@@ -585,6 +610,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public Map<String, String> getFieldAnalyzers() {
     return CollectionUtils.immutableMap(fieldAnalyzers);
+  }
+
+  /**
+   * Whether the postings of the properties with an analyzer of their own ({@link #getFieldAnalyzers()}) were written with it (issue
+   * #12163). False on an index written by a version that stored the per-field analyzers without applying them: such an index keeps
+   * analyzing every property with the analyzer of the index, writes and queries alike, until it is rebuilt.
+   */
+  public boolean isFieldAnalyzersApplied() {
+    return fieldAnalyzersApplied;
+  }
+
+  /** Marks the postings as written with the per-field analyzers, as a rebuild writes them. */
+  public void setFieldAnalyzersApplied(final boolean applied) {
+    this.fieldAnalyzersApplied = applied;
   }
 
   /**
