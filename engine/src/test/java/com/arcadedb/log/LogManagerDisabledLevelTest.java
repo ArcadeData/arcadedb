@@ -46,24 +46,24 @@ class LogManagerDisabledLevelTest {
 
   /** Every overload of {@code LogManager.log}, as a call at the given level. Its message names the overload. */
   private static final List<BiConsumer<LogManager, Level>> OVERLOADS = List.of(//
-      (log, level) -> log.log(REQUESTER, level,"none"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable", FAILURE), //
-      (log, level) -> log.log(REQUESTER, level,"varargs-8 %s%s%s%s%s%s%s%s", "a", "b", "c", "d", "e", "f", "g", "h"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-varargs-8 %s%s%s%s%s%s%s%s", FAILURE, "a", "b", "c", "d", "e", "f", "g",
+      (log, level) -> log.log(REQUESTER, level, "none"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable", FAILURE), //
+      (log, level) -> log.log(REQUESTER, level, "varargs-8 %s%s%s%s%s%s%s%s", "a", "b", "c", "d", "e", "f", "g", "h"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-varargs-8 %s%s%s%s%s%s%s%s", FAILURE, "a", "b", "c", "d", "e", "f", "g",
           "h"), //
-      (log, level) -> log.log(REQUESTER, level,"one", "a"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-one", FAILURE, "a"), //
-      (log, level) -> log.log(REQUESTER, level,"two", "a", "b"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-two", FAILURE, "a", "b"), //
-      (log, level) -> log.log(REQUESTER, level,"three", "a", "b", "c"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-three", FAILURE, "a", "b", "c"), //
-      (log, level) -> log.log(REQUESTER, level,"four", "a", "b", "c", "d"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-four", FAILURE, "a", "b", "c", "d"), //
-      (log, level) -> log.log(REQUESTER, level,"five", "a", "b", "c", "d", "e"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-five", FAILURE, "a", "b", "c", "d", "e"), //
-      (log, level) -> log.log(REQUESTER, level,"six", "a", "b", "c", "d", "e", "f"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-six", FAILURE, "a", "b", "c", "d", "e", "f"), //
-      (log, level) -> log.log(REQUESTER, level,"throwable-seven", FAILURE, "a", "b", "c", "d", "e", "f", "g"));
+      (log, level) -> log.log(REQUESTER, level, "one", "a"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-one", FAILURE, "a"), //
+      (log, level) -> log.log(REQUESTER, level, "two", "a", "b"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-two", FAILURE, "a", "b"), //
+      (log, level) -> log.log(REQUESTER, level, "three", "a", "b", "c"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-three", FAILURE, "a", "b", "c"), //
+      (log, level) -> log.log(REQUESTER, level, "four", "a", "b", "c", "d"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-four", FAILURE, "a", "b", "c", "d"), //
+      (log, level) -> log.log(REQUESTER, level, "five", "a", "b", "c", "d", "e"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-five", FAILURE, "a", "b", "c", "d", "e"), //
+      (log, level) -> log.log(REQUESTER, level, "six", "a", "b", "c", "d", "e", "f"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-six", FAILURE, "a", "b", "c", "d", "e", "f"), //
+      (log, level) -> log.log(REQUESTER, level, "throwable-seven", FAILURE, "a", "b", "c", "d", "e", "f", "g"));
 
   /** What each overload must hand the logger: the form reached, whether it carried the exception, and the arguments. */
   private static final List<String> EXPECTED_AT_WARNING = List.of(//
