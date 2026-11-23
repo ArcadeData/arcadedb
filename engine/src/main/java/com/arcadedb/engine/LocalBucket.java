@@ -226,6 +226,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * anything more.
    */
   private static final   int                       CHAIN_TRACE_STRIDE               = 5;
+  /** Chunks of a chain the walk of {@link #loadMultiPageRecord} keeps as views of their pages instead of copying them out. */
+  private static final   int                       UNCOPIED_CHUNK_VIEWS             = 4;
   private static final   int                       CHAIN_TRACE_PAGE_NUMBER          = 0;
   private static final   int                       CHAIN_TRACE_PAGE_VERSION         = 1;
   private static final   int                       CHAIN_TRACE_SLOT                 = 2;
@@ -6847,7 +6849,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     for (int retry = 0; retry <= maxRetries; retry++) {
       // Trace of the chunks this attempt consumed, in chain order: where each one was, at which version of its page,
       // and how long it was. Sized for the chains that exist in practice and grown only by a record that has more.
-      long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 8];
+      long[] chainTrace = new long[CHAIN_TRACE_STRIDE * 2];
       int chunks = 0;
       // The continuation pointer the LAST traced chunk carried, so a chain the walk could not finish can be validated
       // too: for a chain walked to its end this is NO_NEXT_CHUNK, which is what the last chunk really holds.
@@ -6881,7 +6883,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       // The chunks are kept as views of their pages and copied once, into a buffer of the record's exact size, when the walk
       // is over (issue #12370). Appended one at a time, the buffer grew half again at each overflow, so a record of a few
       // pages was allocated and copied about three times over.
-      Binary[] chunkViews = new Binary[8];
+      Binary[] chunkViews = new Binary[2];
       long recordSize = 0;
       try {
         BasePage page = firstPage;
@@ -6902,7 +6904,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             throw new IllegalArgumentException("Binary objects cannot be larger than 2GB");
           if (chunks == chunkViews.length)
             chunkViews = Arrays.copyOf(chunkViews, chunks * 2);
-          chunkViews[chunks] = keptChunk(chunk);
+          // The first UNCOPIED_CHUNK_VIEWS chunks stay views: they are copied once, into the record, when the walk is over, and the
+          // pages they pin are those of a chain this short. keptChunk copies each chunk past them, which a long chain needs (#12370)
+          // and a chain of a head and a tail, the shape a record that outgrew its page takes, does not: it was copied twice
+          chunkViews[chunks] = chunks < UNCOPIED_CHUNK_VIEWS ? chunk : keptChunk(chunk);
           recordSize += chunkSize;
 
           if (chunks * CHAIN_TRACE_STRIDE == chainTrace.length)
