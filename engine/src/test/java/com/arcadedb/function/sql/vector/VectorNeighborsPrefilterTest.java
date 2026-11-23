@@ -381,6 +381,29 @@ class VectorNeighborsPrefilterTest {
       assertThat(calls.get()).as("the two-row subquery ran once for the call, not once per candidate").isEqualTo(2);
     }
 
+    /**
+     * Issue #13179: a subquery compared with {@code =} (or any operator but {@code IN}) was not lifted, so the {@code where}
+     * condition still ran it once per candidate.
+     */
+    @Test
+    void aSubqueryComparedWithEqualsRunsOncePerCallToo() {
+      final Map<String, Object> params = Map.of("q", QUERY);
+      final List<Result> byFilter = query("""
+          SELECT expand(`vector.neighbors`('Passage[embedding]', :q, 10,
+            { filter: (SELECT @rid FROM Passage WHERE space = 'a').@rid }))""", params);
+
+      calls.set(0);
+      final List<Result> byWhere = query("""
+          SELECT expand(`vector.neighbors`('Passage[embedding]', :q, 10,
+            { where: 'space = (SELECT issue12112Counted(name) AS name FROM Allowed WHERE name = "a").name[0]' }))""", params);
+
+      assertThat(byWhere).hasSize(10);
+      for (final Result r : byWhere)
+        assertThat(r.<String>getProperty("space")).isEqualTo("a");
+      assertThat(rids(byWhere)).containsExactlyElementsOf(rids(byFilter));
+      assertThat(calls.get()).as("the one-row subquery ran once for the call, not once per candidate").isEqualTo(1);
+    }
+
     @Test
     void eachCallReadsItsOwnSubqueryNotTheEnclosingStatementsOne() {
       // The enclosing SELECT lifts its own subquery under the same generated alias the condition's subquery gets: each must

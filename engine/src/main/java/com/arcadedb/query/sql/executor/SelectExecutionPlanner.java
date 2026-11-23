@@ -1850,11 +1850,31 @@ public class SelectExecutionPlanner {
     for (final Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
-      if (query.refersToParent())
+      if (query.refersToParent() || readsAPerRecordLet(query, info))
         addRecordLevelLet(info, alias, query, -1);
       else
         addGlobalLet(info, alias, query, -1);
     }
+  }
+
+  /**
+   * Whether a subquery lifted out of the WHERE, the projection, the ORDER BY or the GROUP BY reads a variable this
+   * statement's per-record LET computes ({@code SELECT FROM P LET $a = year WHERE year = (SELECT ... WHERE x = $a)}).
+   * Such a subquery is correlated without naming {@code $parent}: evaluated in place it saw each row's value, and a
+   * global LET would run it once, before any row set the variable (issue #13179). Read from the rendered statement, so
+   * the answer can only be too generous, which costs the once-per-execution evaluation and never a row.
+   */
+  private static boolean readsAPerRecordLet(final Statement query, final QueryPlanningInfo info) {
+    final LetClause letClause = info.perRecordLetClause;
+    if (letClause == null || letClause.getItems() == null || letClause.getItems().isEmpty())
+      return false;
+
+    for (final String name : variableNamesIn(query.toString()))
+      for (final LetItem item : letClause.getItems())
+        if (name.equals(withoutSigil(item.getVarName().getStringValue())))
+          return true;
+
+    return false;
   }
 
   private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Expression exp) {
