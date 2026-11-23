@@ -215,7 +215,9 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
    */
   public boolean isBuiltInDeterministic(final String lowercaseName) {
     final Object deterministic = deterministicBuiltInMethods.get(lowercaseName);
-    return deterministic != null && deterministic == methods.get(lowercaseName);
+    // THE BUILT-IN IS THE RECEIVER: NONE OF THEM OVERRIDES equals(), SO THIS IS THE SAME INSTANCE TEST AS isBuiltIn(), AND A
+    // REPLACEMENT CANNOT CLAIM TO BE THE BUILT-IN BY OVERRIDING equals() ITSELF
+    return deterministic != null && deterministic.equals(methods.get(lowercaseName));
   }
 
   public Map<String, Object> getMethods() {
