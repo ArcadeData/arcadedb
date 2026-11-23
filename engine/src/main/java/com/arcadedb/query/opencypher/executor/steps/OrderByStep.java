@@ -302,8 +302,9 @@ public class OrderByStep extends AbstractExecutionStep {
         // rows already kept, so the later rows won far more often than the earlier ones (issue #12341)
         final PriorityQueue<Keyed> topK = new PriorityQueue<>((int) Math.min((long) k + 1, 1000), comparator.reversed());
 
-        // Pull all results and maintain a top-K heap
-        final int batchSize = (int) Math.min(Math.max(1000L, (long) k * 10), Integer.MAX_VALUE);
+        // Pull all results and maintain a top-K heap; cap the pull batch so large LIMIT
+        // values do not force upstream steps to materialize unbounded buffers.
+        final int batchSize = (int) Math.min(Math.max(1000L, (long) k * 10), 10_000L);
         final ResultSet prevResults = prev.syncPull(context, batchSize);
         final WorkGuard guard = WorkGuard.forCommandDeadline(context);
         final boolean charging = heapLimit.isCharging();

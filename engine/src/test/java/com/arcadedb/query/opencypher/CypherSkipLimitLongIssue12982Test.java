@@ -68,6 +68,12 @@ class CypherSkipLimitLongIssue12982Test extends TestHelper {
   }
 
   @Test
+  void orderBySkipPlusLimitOverflowReturnsRemainingRows() {
+    assertThat(queryValues("MATCH (n:N) RETURN n.i AS i ORDER BY i SKIP 2 LIMIT 3000000000", Map.of()))
+        .containsExactly(3L, 4L, 5L);
+  }
+
+  @Test
   void withClauseSkipLimitAboveIntMax() {
     assertThat(queryValues("MATCH (n:N) WITH n ORDER BY n.i LIMIT 3000000000 RETURN n.i AS i", Map.of()))
         .containsExactly(1L, 2L, 3L, 4L, 5L);
