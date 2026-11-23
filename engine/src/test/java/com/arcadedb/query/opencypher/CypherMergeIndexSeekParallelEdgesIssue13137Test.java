@@ -77,7 +77,8 @@ class CypherMergeIndexSeekParallelEdgesIssue13137Test extends TestHelper {
   void aSelfLoopIsOneMatchWhateverTheDirection() {
     for (final String t : new String[] { "F", "E" })
       assertThat(ints("MATCH (c:" + t + " {k: 'kc'}) MERGE (c)-[r:R" + t + "]->(d:" + t + " {k: 'kc'}) RETURN r.i AS v")).as(t).containsExactlyInAnyOrder(4L, 5L);
-    // the undirected pattern meets a self-loop from both sides: one match each (the walk of an unindexed end does too, #13117)
+    // the undirected pattern meets a self-loop from both sides: one match each. Only the indexed end is asserted: the walk of an
+    // unindexed end answers a self-loop twice until #13122 (issue #13117) is merged
     assertThat(ints("MATCH (c:E {k: 'kc'}) MERGE (c)-[r:RE]-(d:E {k: 'kc'}) RETURN r.i AS v")).containsExactlyInAnyOrder(4L, 5L);
   }
 
@@ -98,6 +99,18 @@ class CypherMergeIndexSeekParallelEdgesIssue13137Test extends TestHelper {
 
       ints("MATCH (a:" + t + " {k: 'ka'}) MERGE (a)-[r:R" + t + "]->(b:" + t + " {k: 'kb'}) SET r.s = 2 RETURN r.i AS v");
       assertThat(ints("MATCH ()-[r:R" + t + "]->() WHERE r.s = 2 RETURN r.i AS v")).as(t).containsExactlyInAnyOrder(1L, 2L);
+    }
+  }
+
+  @Test
+  void anEndSharedByTheParallelMatchesSeesTheWriteOfThePreviousOne() {
+    database.transaction(() -> {
+      database.command("opencypher", "MATCH (b:E {k: 'kb'}) SET b.hits = 0");
+      database.command("opencypher", "MATCH (b:F {k: 'kb'}) SET b.hits = 0");
+    });
+    for (final String t : new String[] { "F", "E" }) {
+      ints("MATCH (a:" + t + " {k: 'ka'}) MERGE (a)-[r:R" + t + "]->(b:" + t + " {k: 'kb'}) ON MATCH SET b.hits = b.hits + 1 RETURN r.i AS v");
+      assertThat(ints("MATCH (b:" + t + " {k: 'kb'}) RETURN b.hits AS v")).as(t).containsExactly(2L);
     }
   }
 
