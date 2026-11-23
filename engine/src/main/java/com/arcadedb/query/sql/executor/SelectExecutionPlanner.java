@@ -53,8 +53,12 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BetweenCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.ContainsAllCondition;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
 import com.arcadedb.query.sql.parser.ContainsCondition;
+import com.arcadedb.query.sql.parser.ContainsKeyOperator;
 import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.ContainsValueCondition;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FacetItem;
@@ -6583,6 +6587,18 @@ public class SelectExecutionPlanner {
         descriptors = uniqueKeyDescriptors;
     }
 
+    // A lookup of keys - equalities, IN lists, CONTAINS... - reads the entries of the keys it names; a range reads every entry
+    // between its bounds, and an open one (score > 1) up to the whole index. Among indexes covering as many conditions, the
+    // lookup is preferred before the cost ranking below, whose statistics are not recorded: every candidate then costs the same
+    // and the first index the type listed won, so `cat = 'rare' AND score > 1` read the whole range of score (issue #12282)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> keyLookupDescriptors = descriptors.stream()
+          .filter(SelectExecutionPlanner::isKeyLookup)
+          .toList();
+      if (!keyLookupDescriptors.isEmpty() && keyLookupDescriptors.size() < descriptors.size())
+        descriptors = keyLookupDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
@@ -6612,6 +6628,26 @@ public class SelectExecutionPlanner {
       if (!(block instanceof InCondition)
           && !(block instanceof BinaryCondition condition && condition.getOperator() instanceof EqualsCompareOperator))
         return false;
+    return true;
+  }
+
+  /**
+   * Whether {@code desc} looks up whole keys: every condition of its key names the values to find (an equality, an IN list, a
+   * CONTAINS family condition or an IS NULL) and none of them is a range. Anything else, a condition added later included, counts
+   * as a range, so a new shape of condition can never win over a lookup by mistake.
+   */
+  private static boolean isKeyLookup(final IndexSearchDescriptor desc) {
+    if (desc.additionalRangeCondition != null)
+      return false;
+    for (final BooleanExpression block : desc.getSubBlocks()) {
+      if (block instanceof BinaryCondition condition) {
+        final BinaryCompareOperator operator = condition.getOperator();
+        if (!(operator instanceof EqualsCompareOperator) && !(operator instanceof ContainsKeyOperator))
+          return false;
+      } else if (!(block instanceof InCondition) && !(block instanceof ContainsCondition) && !(block instanceof ContainsAnyCondition)
+          && !(block instanceof ContainsAllCondition) && !(block instanceof ContainsValueCondition) && !(block instanceof IsNullCondition))
+        return false;
+    }
     return true;
   }
 
