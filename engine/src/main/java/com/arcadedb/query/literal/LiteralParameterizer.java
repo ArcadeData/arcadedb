@@ -21,6 +21,7 @@ package com.arcadedb.query.literal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.SegmentedLRUCache;
 
+import java.lang.ref.SoftReference;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
@@ -59,11 +60,23 @@ public abstract class LiteralParameterizer<S> {
   public static final byte LANGUAGE   = 4;
 
   private static final byte[] KEEP_ALL     = new byte[0];
-  /** Beyond this many literals a text is keyed as written: the shape records literal positions in one character each. */
+  /**
+   * Beyond this many literals a text is keyed as written: the shape records literal positions in one character each. Such a
+   * text is the data of a bulk write written in, and only an exact resend would share its entry, so it is not cached either, on
+   * any path (see {@link #parseAsWritten}): its parse tree holds a node chain per literal, 17 to 34 times the text, for as long
+   * as the entry lives (issue #12350).
+   */
   private static final int    MAX_LITERALS = 4096;
 
   private final SegmentedLRUCache<String, Lookup<S>> statements;
   private final SegmentedLRUCache<String, byte[]>    policies;
+  /**
+   * The lookup of the last text too big to cache (see {@link #MAX_LITERALS}), so a caller that analyzes a statement before it
+   * executes it - classifying it as DDL or as read-only, which the statement cache makes free for every other text - does not
+   * parse a bulk text twice. One entry, held softly: it is replaced by the next bulk text and gives way to the heap before
+   * anything else does, so it never grows into the retention it exists to avoid.
+   */
+  private volatile SoftReference<Lookup<S>>          lastBulk;
   /**
    * Texts whose literals were extracted, by the text as written: the generated key and the extracted values (issue #9714). Kept
    * apart from {@link #statements}, so the one-off texts of a workload that writes its values in never push out the statements
@@ -144,7 +157,10 @@ public abstract class LiteralParameterizer<S> {
     synchronized (statements) {
       cached = statements.get(text);
     }
-    return cached != null ? cached : parseAsWritten(text);
+    if (cached != null)
+      return cached;
+    final Lookup<S> bulk = recentBulk(text);
+    return bulk != null ? bulk : parseAsWritten(text);
   }
 
   /**
@@ -176,12 +192,19 @@ public abstract class LiteralParameterizer<S> {
       // the map is filled outside the lock: the remembered values are never modified after they were remembered
       return new Lookup<>(cached.statement(), extracted.cacheKey(), extracted.newParameters());
 
+    final Lookup<S> bulk = recentBulk(text);
+    if (bulk != null)
+      return bulk;
+
     if (!parameterize || !LiteralScan.isEligible(text))
       return parseAsWritten(text);
 
+    // from here on the scan has counted the literals: no path below counts them again
     final LiteralScan scan = scan(text);
-    if (scan == null || scan.size() == 0 || scan.size() > MAX_LITERALS)
-      return parseAsWritten(text);
+    if (scan == null || scan.size() == 0)
+      return parseAndCache(text);
+    if (scan.size() > MAX_LITERALS)
+      return parseBulk(text);
 
     final String shape = scan.getShape();
     byte[] policy;
@@ -213,13 +236,13 @@ public abstract class LiteralParameterizer<S> {
       // reuses. The second text of the shape builds it.
       return new Lookup<>(classified.statement(), text, null);
     } else if (policy == KEEP_ALL)
-      return parseAsWritten(text);
+      return parseAndCache(text);
 
     final Map<String, Object> values = new HashMap<>();
     final String key = buildKey(scan, policy, values);
     if (key == null)
       // A VALUE THE LANGUAGE CANNOT REPRESENT (AN OVERFLOW): THE TEXT AS WRITTEN RAISES THE PARSER'S OWN ERROR
-      return parseAsWritten(text);
+      return parseAndCache(text);
 
     synchronized (statements) {
       cached = statements.get(key);
@@ -235,7 +258,7 @@ public abstract class LiteralParameterizer<S> {
         synchronized (policies) {
           policies.put(shape, KEEP_ALL);
         }
-        return parseAsWritten(text);
+        return parseAndCache(text);
       }
       cached = cache(key, template);
     }
@@ -267,6 +290,7 @@ public abstract class LiteralParameterizer<S> {
     synchronized (policies) {
       policies.clear();
     }
+    lastBulk = null;
   }
 
   /** Empties the cache, as {@link #clear()}, and bounds it to {@code size} statements from now on (issue #10155). */
@@ -278,6 +302,7 @@ public abstract class LiteralParameterizer<S> {
     synchronized (policies) {
       policies.resize(size);
     }
+    lastBulk = null;
   }
 
   /** The text with the stripped literals replaced by parameter references, filling {@code values}; null if a value fails. */
@@ -326,8 +351,42 @@ public abstract class LiteralParameterizer<S> {
     return key.append(text, last, text.length()).toString();
   }
 
+  /**
+   * Parses a text whose literals have not been counted, and caches it as written unless it is a bulk text (see
+   * {@link #parseBulk}). The count costs one lex of the text, paid only by a text longer than the limit: a literal takes a
+   * character at least, so a shorter one cannot exceed it.
+   */
   private Lookup<S> parseAsWritten(final String text) {
+    if (text.length() > MAX_LITERALS) {
+      final LiteralScan scan = scan(text);
+      if (scan != null && scan.size() > MAX_LITERALS)
+        return parseBulk(text);
+    }
+    return parseAndCache(text);
+  }
+
+  private Lookup<S> parseAndCache(final String text) {
     return cache(text, parse(text));
+  }
+
+  /**
+   * Parses a text with more literals than {@link #MAX_LITERALS}, keyed as written and not cached: it is the data of a bulk write,
+   * which only an exact resend would share, and its parse tree is a multiple of its size (issue #12350). The lookup is kept as
+   * {@link #lastBulk} for the caller that asks for the same text again at once.
+   */
+  private Lookup<S> parseBulk(final String text) {
+    final Lookup<S> lookup = new Lookup<>(parse(text), text, null);
+    lastBulk = new SoftReference<>(lookup);
+    return lookup;
+  }
+
+  /** The lookup of {@code text} when it is the last bulk text parsed and the heap still holds it, or null. */
+  private Lookup<S> recentBulk(final String text) {
+    final SoftReference<Lookup<S>> reference = lastBulk;
+    if (reference == null)
+      return null;
+    final Lookup<S> lookup = reference.get();
+    return lookup != null && lookup.cacheKey().equals(text) ? lookup : null;
   }
 
   private Lookup<S> cache(final String key, final S statement) {

@@ -843,4 +843,40 @@ class PropertyDefinitionRulesTest {
       database.transaction(() -> database.newDocument("T").set("p", 1).set("d", "2026-10-03 10:00:00").save());
     }
   }
+
+  /**
+   * Regression for #12958: a CREATE PROPERTY refused for its OF type registered the property name in the dictionary first (a
+   * commit of its own), so the refused statement still changed the database: an append-only dictionary entry no type declares,
+   * and on a Raft leader a page change that quarantined the node. The OF type is now checked before the name is registered.
+   */
+  @Nested
+  class RefusedOfTypeRegistersNoName extends TestHelper {
+
+    @Test
+    void aPropertyOfAMissingTypeIsRefusedBeforeItsNameReachesTheDictionary() {
+      final DocumentType doc = database.getSchema().createDocumentType("Doc12958");
+
+      assertThatThrownBy(() -> doc.createProperty("emb12958", Type.EMBEDDED, "NoSuchType12958")).isInstanceOf(SchemaException.class)
+          .hasMessageContaining("NoSuchType12958");
+      assertThatThrownBy(() -> doc.createProperty("link12958", Type.LINK, "NoSuchType12958")).isInstanceOf(SchemaException.class);
+      assertThatThrownBy(() -> doc.createProperty("list12958", Type.LIST, "NoSuchType12958")).isInstanceOf(SchemaException.class);
+      assertThatThrownBy(() -> doc.createProperty("map12958", Type.MAP, "NoSuchType12958")).isInstanceOf(SchemaException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY Doc12958.sql12958 EMBEDDED OF NoSuchType12958"))
+          .hasStackTraceContaining("NoSuchType12958");
+
+      for (final String name : new String[] { "emb12958", "link12958", "list12958", "map12958", "sql12958" }) {
+        assertThat(doc.existsProperty(name)).as("property %s", name).isFalse();
+        assertThat(database.getSchema().getDictionary().getIdByName(name, false)).as("dictionary entry of %s", name).isEqualTo(-1);
+      }
+    }
+
+    @Test
+    void aScalarOfIsStillNormalisedAndAnExistingTypeStillAccepted() {
+      final DocumentType doc = database.getSchema().createDocumentType("Doc12958");
+      database.getSchema().createDocumentType("Sub12958");
+
+      assertThat(doc.createProperty("tags", Type.LIST, "string").getOfType()).isEqualTo("STRING");
+      assertThat(doc.createProperty("sub", Type.EMBEDDED, "Sub12958").getOfType()).isEqualTo("Sub12958");
+    }
+  }
 }

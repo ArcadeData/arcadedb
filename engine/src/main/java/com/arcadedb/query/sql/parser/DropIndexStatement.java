@@ -94,16 +94,16 @@ public class DropIndexStatement extends DDLStatement {
       final MultiTypeIndexes.Entry logical = schema.existsIndex(indexName) ? null : MultiTypeIndexes.find(schema, indexName);
       if (logical != null)
         MultiTypeIndexes.drop(schema, logical);
-      else {
-        if (!schema.existsIndex(indexName) && !ifExists)
-          throw new SchemaException("Index not found: " + indexName);
-
+      else if (schema.existsIndex(indexName)) {
         // dropping a member alone would leave the logical index naming it, and covering fewer types than it says
         MultiTypeIndexes.requireNotMember(schema, indexName);
         // the bucket index of a type index goes with the type index, never alone (#11303)
         TypeIndex.requireNotABucketIndex(schema, indexName);
         schema.dropIndex(indexName);
-      }
+      } else if (!ifExists)
+        throw new SchemaException("Index not found: " + indexName);
+      // IF EXISTS on an index that does not exist changes nothing: dropIndex() still opened a schema session, saved schema.json and,
+      // on an HA cluster, shipped a schema entry every follower applied (issue #11815)
 
       final ResultInternal result = new ResultInternal();
       result.setProperty("operation", "drop index");

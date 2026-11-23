@@ -44,7 +44,9 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -201,6 +203,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /** Live vectors {@link #deriveDimensionsFromData} reads at most before it gives up looking for the size of an index. */
   private static final int    DIMENSIONS_DERIVATION_LIMIT     = 1000;
+
+  /**
+   * The key {@link #removalKey} queues a {@code REMOVE} under when the caller has no usable vector (issue #12822): one shared,
+   * zero-length instance, so such a removal costs the same whatever the dimensions of the index. It used to be a new all-zero
+   * vector of {@code dimensions} floats per removal, which the transaction then compared component by component against every
+   * other placeholder of the lane.
+   */
+  private static final ComparableVector NO_VECTOR_REMOVAL_KEY = new ComparableVector(new float[0]);
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -456,6 +466,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // The build cache the last graph build ran with, in vectors (issue #11497): reported by getStats(), so a build the heap
   // gate cut down to a smaller cache can be told apart from one that ran with what the configuration asks for.
   private volatile int     lastGraphBuildCacheSize = 0;
+  // The heap the cache of the graph build running on this index plans on, 0 when none runs (issue #12544): the float build
+  // cache, or the quantized rows and the small float cache next to them. The cache is local to the build and preloaded in
+  // place, and the available-heap reading does not show it before a collection of the old generation, so the search caches
+  // and the other builds of the database are charged this figure instead, through the database's
+  // VectorGraphBuildCacheLedger. Set and charged once the cache is sized, released when the build ends, whether it
+  // succeeded or not. One build runs at a time on an index (graphBuildLock).
+  private volatile long    graphBuildCachePlannedBytes = 0L;
   // Whether a refusal of a search-decided build has been logged since a build last got through the heap gate: one
   // WARNING per streak (issue #11497), since every query that reaches the missing graph is refused the same way while the
   // heap stays that full, and the second line of a streak tells the operator nothing the first did not.
@@ -1196,6 +1213,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else if (replaced.isDeleted(id))
             rebuilt.addOrUpdate(id, false, 0L, null, true);
         }
+    // An id below the snapshot that the pages did not yield either: a commit that had replayed its index operations (handing out
+    // the id and recording its location) when the snapshot was taken, and had not yet written its pages when they were read, which
+    // is what a page reader sees of a commit until its second phase. The loop above starts at the snapshot and cannot know it, so
+    // the record would be left with no location while the pages hold its vector (issue #12828). Only a live location of a record the
+    // rebuilt index has no live id for is taken over: an id the pages answered for, or one a record left out of the pages on purpose
+    // shares with another, is never one of those.
+    if (replaced != null) {
+      final int below = Math.min(Math.max(0, idsFrom), nextId.get());
+      final PrimitiveIterator.OfInt replacedLive = replaced.getAllVectorIds().iterator();
+      while (replacedLive.hasNext()) {
+        final int id = replacedLive.nextInt();
+        if (id >= below)
+          break;
+        if (rebuilt.isLive(id) || rebuilt.isDeleted(id))
+          continue;
+        final long offsetAndFlag = replaced.getOffsetAndFlag(id);
+        final RID rid = replaced.getRid(id);
+        if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null && rebuilt.getVectorIdsForRid(rid).length == 0)
+          rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag), rid,
+              false);
+      }
+    }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
     // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,
@@ -3540,6 +3579,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst, buildCacheCapacityCap);
         } finally {
+          // The build cache was local to the build, so it is garbage now, whether the build succeeded or not (issue #12544)
+          releaseGraphBuildCacheCharge();
           releaseCompactionFileLock();
         }
       }
@@ -3928,21 +3969,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // A cap is the heap gate's answer for a search-decided build that does not fit with the full cache (issue #11497).
       // Applied as a ceiling on the size computed here, never as the size itself: the corpus can have shrunk since the
       // gate measured it, and the cap is the most the heap allowed, not an amount the build has to claim.
-      final int computedBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
-      final int graphBuildCacheSize = buildCacheCapacityCap > 0 ?
-          Math.min(computedBuildCacheSize, buildCacheCapacityCap) : computedBuildCacheSize;
+      //
+      // Sized and charged in one step, under the lock every search cache sizes itself under (issue #12544): a search cache
+      // published between the reading this size is taken of and the charge would plan on the same heap as the build. The
+      // allocations and the preload stay outside, so a search waits for arithmetic only.
+      final int graphBuildCacheSize;
+      final int quantizedCapacity;
+      synchronized (SEARCH_CACHE_SIZING_LOCK) {
+        final int computedBuildCacheSize = computeGraphBuildCacheCapacity(expectedSize);
+        graphBuildCacheSize = buildCacheCapacityCap > 0 ?
+            Math.min(computedBuildCacheSize, buildCacheCapacityCap) : computedBuildCacheSize;
+
+        // Issue #10543: an INT8/BINARY corpus that this budget cannot hold as float vectors is kept as the quantized rows
+        // the pages store, which are a quarter (INT8) to a thirty-second (BINARY) of the size, and the build reads the
+        // rest from the pages into a scratch vector. Floats are the worse use of the same budget for a corpus that does
+        // not fit: a miss dequantized into a new array that was published into the cache, evicting another, and at
+        // 13.8M x 768 that churn pinned the heap at 17-24 GB and slowed the build to one vector every five seconds.
+        // A corpus the float cache does hold is left alone: its vectors are read with no dequantization at all.
+        quantizedCapacity = inlineQuantization && graphBuildCacheSize < expectedSize
+            ? quantizedBuildCapacity(graphBuildCacheSize, expectedSize) : 0;
+
+        // Published before the preload below fills the cache, so a search cache sized or grown on another index of the
+        // database from now on is charged what this build is about to take
+        chargeGraphBuildCache(graphBuildCachePlannedBytes(graphBuildCacheSize, quantizedCapacity, expectedSize));
+      }
       lastGraphBuildCacheSize = graphBuildCacheSize;
       // Never preload more than the cache can hold: the surplus used to be read, boxed and then dropped.
       final int preloadBudget = Math.min(expectedSize, graphBuildCacheSize);
 
-      // Issue #10543: an INT8/BINARY corpus that this budget cannot hold as float vectors is kept as the quantized rows
-      // the pages store, which are a quarter (INT8) to a thirty-second (BINARY) of the size, and the build reads the
-      // rest from the pages into a scratch vector. Floats are the worse use of the same budget for a corpus that does
-      // not fit: a miss dequantized into a new array that was published into the cache, evicting another, and at
-      // 13.8M x 768 that churn pinned the heap at 17-24 GB and slowed the build to one vector every five seconds.
-      // A corpus the float cache does hold is left alone: its vectors are read with no dequantization at all.
-      final int quantizedCapacity = inlineQuantization && graphBuildCacheSize < expectedSize
-          ? quantizedBuildCapacity(graphBuildCacheSize, expectedSize) : 0;
       if (quantizedCapacity > 0)
         quantizedBuildStore = QuantizedBuildVectors.create(metadata.quantizationType, metadata.dimensions, quantizedCapacity);
       // Reused by every candidate that does not end up in the store, and for the reconstruction that checks one
@@ -7611,9 +7665,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return cached;
 
     final DeltaPayloadBudget computed = computeDeltaPayloadBudget(VectorHeapBudget.maxHeapBytes(),
-        VectorHeapBudget.availableHeapBytes(), now);
+        availableHeapNetOfVectorCaches(VectorHeapBudget.availableHeapBytes()), now);
     deltaPayloadBudget = computed;
     return computed;
+  }
+
+  /**
+   * The available-heap reading less what the database's search caches and the caches of its running graph builds, this
+   * index's own included, plan on (issue #12544): the heap the delta payloads may size their budget against. Both kinds of
+   * cache take their room at once and show in the reading only after a collection of the old generation, so a budget taken
+   * of the raw reading planned on bytes they had just taken. A database that is closed or fenced refuses the walk over its
+   * schema: the statistics still read this budget there, and are answered the raw reading, as before.
+   *
+   * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
+   *
+   * @return the bytes, never negative
+   */
+  long availableHeapNetOfVectorCaches(final long availableHeap) {
+    try {
+      return Math.max(0L, availableHeap - searchCachesPlannedBytes() - graphBuildCachesPlannedBytes(true));
+    } catch (final DatabaseIsClosedException | DatabaseOperationException e) {
+      return availableHeap;
+    }
   }
 
   /**
@@ -7631,7 +7704,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * reading, so within one TTL window both can size themselves against heap the other is about to take. What makes
    * it converge is that a payload kept here becomes live heap, which lowers the next reading for both. The percents
    * are a margin against that lag, not a partition of the heap - which is why the default is a modest 10 and why the
-   * ceiling that matters is the one an operator sets when they know what else is running.
+   * ceiling that matters is the one an operator sets when they know what else is running. What the search caches and a
+   * running build's cache PLAN on, though, is known, and {@link #deltaPayloadBudget()} takes it off the reading it passes
+   * here (issue #12544, {@link #availableHeapNetOfVectorCaches(long)}): those caches take their room in one go, and the
+   * reading shows it only after a collection of the old generation.
    * <p>
    * <b>The heap share is the database's, not the index's (issue #12379).</b> A type has one vector index per bucket,
    * so a schema with a few vector properties on bucketed types has dozens of them, and each one used to plan on the
@@ -8086,6 +8162,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long budget = (long) Math.max(0, floatCacheCapacity) * VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
     final long affordable = budget / QuantizedBuildVectors.bytesPerVector(metadata.quantizationType, metadata.dimensions);
     return (int) Math.min(Math.min(affordable, Math.max(0, expectedSize)), Integer.MAX_VALUE / 2);
+  }
+
+  /**
+   * The heap a graph build's cache plans on (issue #12544), as the build allocates it: the float cache of
+   * {@code floatCacheCapacity} vectors, or, when the build keeps quantized rows, those rows and the small float cache the
+   * persistence reads through. A float cache holds no more vectors than the build walks, so a capacity past the corpus is not
+   * charged.
+   *
+   * @param floatCacheCapacity the float vectors the build cache was sized to, see {@link #computeGraphBuildCacheCapacity}
+   * @param quantizedCapacity  the rows of the quantized store, 0 when the build keeps none
+   * @param expectedSize       the vectors the build will walk
+   *
+   * @return the bytes, never negative
+   */
+  long graphBuildCachePlannedBytes(final int floatCacheCapacity, final int quantizedCapacity, final int expectedSize) {
+    final long bytesPerVector = VectorHeapBudget.bytesPerCachedVector(metadata.dimensions);
+    if (quantizedCapacity > 0)
+      return quantizedCapacity * QuantizedBuildVectors.bytesPerVector(metadata.quantizationType, metadata.dimensions)
+          + SMALL_BUILD_CACHE_SIZE * bytesPerVector;
+    final int capacity = floatCacheCapacity <= 0 ? ArcadePageVectorValues.DEFAULT_CACHE_SIZE : floatCacheCapacity;
+    return Math.min(capacity, Math.max(0, expectedSize)) * bytesPerVector;
+  }
+
+  /** The ledger the graph builds of this index's database charge their caches to (issue #12544). */
+  private VectorGraphBuildCacheLedger graphBuildCacheLedger() {
+    // Not through getSchema(), which refuses a closed or fenced database: a build that ends while the database closes still
+    // gives its charge back
+    return ((LocalDatabase) mutable.getDatabase().getEmbedded()).getVectorGraphBuildCacheLedger();
+  }
+
+  /** Charges the cache of the build running on this index to the database's ledger, until {@link #releaseGraphBuildCacheCharge()}. */
+  private void chargeGraphBuildCache(final long plannedBytes) {
+    // A build that charged already (none does today) gives that back first, so the ledger never holds more than one charge
+    // per index
+    releaseGraphBuildCacheCharge();
+    graphBuildCachePlannedBytes = plannedBytes;
+    graphBuildCacheLedger().charge(plannedBytes);
+  }
+
+  /** Gives back what the build of this index charged, once: called when the build ends, whether it succeeded or not. */
+  private void releaseGraphBuildCacheCharge() {
+    final long charged = graphBuildCachePlannedBytes;
+    if (charged == 0L)
+      return;
+    graphBuildCachePlannedBytes = 0L;
+    graphBuildCacheLedger().release(charged);
   }
 
   /**
@@ -11666,7 +11788,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // index, not size the index a second time (issue #10993). Outside the decision lock: it reads records
         deriveDimensionsFromData();
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, !replay);
       }
 
       if (vector.length != metadata.dimensions)
@@ -11766,14 +11888,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * learn it from this call, nor from a schema the leader ships (a commit of records ships none, only a schema change does): it
    * learns it from the vectors it replicates ({@link #deriveDimensionsFromData}), before its first search, graph build or put.
    *
-   * @param length the length of the vector being put
+   * <p>
+   * A first vector wider than {@code arcadedb.vectorIndex.maxDimensions} is refused like the same number declared when the
+   * index is created (issue #12822), and the index goes on waiting for its size. Only where the vector is first offered: a
+   * replayed one was accepted already, here or on another node, and {@link #deriveDimensionsFromData} takes whatever the
+   * records hold, so an index that got its size before the bound existed, or while it was higher, keeps it.
+   *
+   * @param length       the length of the vector being put
+   * @param checkedBound whether the length is held to the bound: false on a replay
    */
-  private void sizeOnVector(final int length) {
+  private void sizeOnVector(final int length, final boolean checkedBound) {
     synchronized (dimensionsDecisionLock()) {
       if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
         return;
       if (length < 1)
         throw new IllegalArgumentException("A vector must have at least one component to size index '" + indexName + "'");
+      if (checkedBound)
+        LSMVectorIndexMetadata.checkDimensionsBound(length, getDatabase().getConfiguration());
       decideDimensions(length);
     }
   }
@@ -12225,8 +12356,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
         // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+        // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
+        // the index on, or the copy of one another node accepted
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, false);
 
         if (vector.length != metadata.dimensions) {
           LogManager.instance().log(this, Level.WARNING,
@@ -12275,8 +12408,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * be read from the key it passed (issue #7971).
    * <p>
    * The removal itself never needed a key - {@link #remove(Object[], Identifiable, boolean)} resolves what to
-   * tombstone through the RID reverse index and ignores the key entirely - so this used to queue an all-zero
-   * placeholder. That placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
+   * tombstone through the RID reverse index and ignores the key entirely - so this used to queue a placeholder. That
+   * placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
    * {@code TransactionIndexContext}'s per-key dedup never collapsed the pair, and a transaction that rewrote one
    * record's embedding twice left TWO live {@code ADD} entries behind, under two different keys.
    * <p>
@@ -12291,10 +12424,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * {@code DocumentIndexer.updateDocument} already hands the previous key tuple to {@code remove()}, so the
    * truthful key is right there. Queuing it lets the existing dedup retire the superseding {@code ADD} exactly the
-   * way it does for every other index. The placeholder stays as the fallback for the callers that have no usable
-   * old value (a property that was not set, an unconvertible one): the {@code REMOVE} must still be queued, it just
-   * has nothing to coalesce with, and {@code TransactionIndexContext.commit()} drops the superseded entries by
-   * write order anyway.
+   * way it does for every other index. The placeholder, {@link #NO_VECTOR_REMOVAL_KEY}, stays as the fallback for the
+   * callers that have no usable old value (a property that was not set, an unconvertible one): the {@code REMOVE} must
+   * still be queued, it just has nothing to coalesce with, and {@code TransactionIndexContext.commit()} drops the
+   * superseded entries by write order anyway. The transaction keeps one entry per (key, RID) on this non-unique index,
+   * so the removals of different records under the shared placeholder stay distinct, and the placeholder is zero
+   * floats long, so it can never equal the key of an {@code ADD}, which always carries {@code dimensions} of them.
    */
   private ComparableVector removalKey(final Object[] keys) {
     if (keys != null && keys.length > 0 && keys[0] != null) {
@@ -12317,7 +12452,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // some future encoding therefore costs the dedup, not the delete.
         }
     }
-    return new ComparableVector(new float[metadata.dimensions]);
+    return NO_VECTOR_REMOVAL_KEY;
   }
 
   @Override
@@ -14113,7 +14248,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The transaction keeps one entry per (key, RID), so a {@code REMOVE} queued under the same key as the {@code ADD} that
    * follows it is displaced by that {@code ADD} and never reaches the index. The record's own vector is therefore the
-   * wrong key, and so is {@link #removalKey}'s all-zero placeholder: an all-zero vector is a valid embedding under
+   * wrong key, and so would an all-zero one be: an all-zero vector is a valid embedding under
    * EUCLIDEAN (issue #8962). NaN components are refused by {@code put()} before anything is queued, so no {@code ADD}
    * key can equal this one. The key is otherwise unused: {@code remove()} resolves what to tombstone by RID alone.
    */
@@ -14863,6 +14998,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * other figure this method can trust, so a credit would count it twice. The filled part of the others' caches is thus
    * charged twice instead - once as missing from the available heap, once in their plan - which errs toward smaller caches.
    * <p>
+   * The cache of a graph build running on any vector index of the database is charged the same way (issue #12544): the build
+   * sizes it against what the search caches leave ({@link #availableHeapNetOfSearchCaches(long)}) and preloads it at once, and
+   * a search cache sized next to it used to plan on the very bytes the build had just taken. A database with a build running
+   * therefore has no "first cache" either: the floor below applies only when nothing else plans on the budget.
+   * <p>
    * {@code MIN_SEARCH_CACHE_SIZE} is the floor of the database's first cache only, so that a small index is still fully
    * resident from its first query on a small heap. Applied to every one of dozens of bucket indexes, the floor alone was
    * 25 MB each at 768 dimensions; past the first, an index gets what the shared budget leaves, and none when it leaves
@@ -14894,6 +15034,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (codes != null && (owner != this || !sizingCodes))
         othersPlan += codes.capacity() * BinaryCodeCache.bytesPerCode(owner.metadata.dimensions);
     }
+    // The graph builds running on any index of the database, this one included: a build's cache is preloaded as soon as it
+    // is sized, before any collection can show it in the available-heap reading (issue #12544). Read from the database's
+    // ledger rather than from the indexes walked above, which no longer list an index a schema reload has replaced while its
+    // build still runs
+    othersPlan += graphBuildCachesPlannedBytes(true);
     final long budget = VectorHeapBudget.budgetBytes(heapPercent, availableHeap);
     if (othersPlan == 0L)
       return Math.max(MIN_SEARCH_CACHE_SIZE, budget / bytesPerEntry);
@@ -14931,16 +15076,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * The heap the caches of the graph builds running on the database's vector indexes plan on (issue #12544), see
+   * {@link #graphBuildCachePlannedBytes(int, int, int)}: the database's {@link VectorGraphBuildCacheLedger}, which still
+   * counts the build of an index a schema reload has replaced.
+   *
+   * @param includingThis whether the build of this index is charged too: never when this index is the one sizing a build, since
+   *                      a build must not charge itself
+   *
+   * @return the bytes, 0 when no build runs
+   */
+  long graphBuildCachesPlannedBytes(final boolean includingThis) {
+    final long all = graphBuildCacheLedger().bytes();
+    return includingThis ? all : Math.max(0L, all - graphBuildCachePlannedBytes);
+  }
+
+  /**
    * The available-heap reading less what the database's search caches plan on ({@link #searchCachesPlannedBytes()}): the
    * heap a graph build and its cache may size themselves against without landing on bytes a search is about to fill
-   * (issue #12511).
+   * (issue #12511). The cache of a build running on ANOTHER vector index of the database is taken off too (issue #12544):
+   * it is preloaded as soon as it is sized, and the reading shows it only after a collection of the old generation.
    *
    * @param availableHeap the heap available now, as {@link VectorHeapBudget#availableHeapBytes()} reads it
    *
    * @return the bytes, never negative
    */
   long availableHeapNetOfSearchCaches(final long availableHeap) {
-    return Math.max(0L, availableHeap - searchCachesPlannedBytes());
+    return Math.max(0L, availableHeap - searchCachesPlannedBytes() - graphBuildCachesPlannedBytes(false));
   }
 
   /**

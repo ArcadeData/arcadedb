@@ -214,8 +214,8 @@ public class RetryStep extends AbstractExecutionStep {
 
     LogManager.instance().log(this, Level.WARNING,
         "COMMIT RETRY block committed part of its work before failing on attempt %d of %d (a statement with a BATCH "
-            + "boundary): NOT retrying, because replaying it would apply the already durable half a second time. "
-            + "Propagating %s to the caller", attempt + 1, retries, ex.getClass().getSimpleName());
+            + "boundary, or a write forwarded to the leader): NOT retrying, because replaying it would apply the already durable "
+            + "half a second time. Propagating %s to the caller", attempt + 1, retries, ex.getClass().getSimpleName());
     return true;
   }
 

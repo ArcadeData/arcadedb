@@ -301,7 +301,10 @@ public final class CypherVariableUsage {
 
   private static boolean removeReadsVariable(final RemoveClause removeClause, final String variable) {
     for (final RemoveClause.RemoveItem item : removeClause.getItems())
-      if (variable.equals(item.getVariable()) || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
+      if (variable.equals(item.getVariable())
+          || expressionReferencesVariable(item.getTargetExpression(), variable)
+          || expressionReferencesVariable(item.getKeyExpression(), variable)
+          || labelExpressionsReferenceVariable(item.getLabelExpressions(), variable))
         return true;
     return false;
   }

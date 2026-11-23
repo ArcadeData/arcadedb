@@ -18,14 +18,16 @@
  */
 package com.arcadedb.function.node;
 
-import com.arcadedb.graph.IncomingEdgeLookup;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collection;
-
 /**
  * node.relationship.exists(node, [relTypes], [direction]) - Check if a node has relationships.
+ * <p>
+ * {@code relTypes} is APOC's relationship pattern ({@code 'KNOWS>|<LIKES'}, {@code '>'}, a blank one for every relationship,
+ * issue #12103). {@code direction}, which APOC does not have, narrows the pattern to that direction: an alternative without a
+ * marker is followed in it, and a marked one that points the other way ({@code 'KNOWS>'} with {@code 'IN'}) names no
+ * relationship. The answer is the first alternative that has a relationship, the ones behind it are not counted.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -55,37 +57,6 @@ public class NodeRelationshipExists extends AbstractNodeFunction {
     final Vertex vertex = toVertex(args[0]);
     if (vertex == null)
       return false;
-
-    final String[] relTypes = extractRelTypes(args);
-    final Vertex.DIRECTION direction = args.length > 2 && args[2] != null
-        ? parseDirection(args[2].toString())
-        : Vertex.DIRECTION.BOTH;
-
-    // The incoming side of a unidirectional edge type is counted from the edges that end in the node (issue #8629)
-    if (relTypes != null && relTypes.length > 0) {
-      for (final String relType : relTypes) {
-        if (IncomingEdgeLookup.countEdges(context, vertex, direction, relType) > 0)
-          return true;
-      }
-      return false;
-    } else {
-      return IncomingEdgeLookup.countEdges(context, vertex, direction) > 0;
-    }
-  }
-
-  @SuppressWarnings("unchecked")
-  private String[] extractRelTypes(final Object[] args) {
-    if (args.length < 2 || args[1] == null)
-      return null;
-
-    if (args[1] instanceof String)
-      return new String[] { (String) args[1] };
-
-    if (args[1] instanceof Collection) {
-      final Collection<?> coll = (Collection<?>) args[1];
-      return coll.stream().map(Object::toString).toArray(String[]::new);
-    }
-
-    return new String[] { args[1].toString() };
+    return hasEdges(context, vertex, patternArgument(args, 1), directionArgument(args, 2));
   }
 }
