@@ -6433,13 +6433,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Converts a Result to GrpcRecord, preserving all properties including aliases.
    * This method works at the Result level (not Record level) to maintain alias information.
+   * Package-private so a test can convert a row it built, without a query behind it.
    *
    * @param result           the Result object from a query execution
    * @param db               the database instance
    * @param projectionConfig optional projection configuration
    * @return GrpcRecord with all properties and aliases preserved
    */
-  private GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
+  GrpcRecord convertResultToGrpcRecord(Result result, Database db, ProjectionConfig projectionConfig) {
     GrpcRecord.Builder builder = GrpcRecord.newBuilder();
 
     // The record attributes a SELECT *, !@rid projection excluded stay excluded: the row still wraps the record, but the
@@ -6459,12 +6460,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    // HA-forwarded rows are non-element projections; recover the type from the @type property. Not for a row with a column that
-    // holds a record (SELECT @rid, @type, @this): that row is a projection the query made, which a forwarded record never is, and
-    // typing it turned it into a record whose only property was the column (issue #12196)
-    if (builder.getType().isEmpty()) {
+    // A row a follower rebuilt from the JSON its leader answered a forwarded command with is a non-element projection: recover the
+    // record type from its @type property (issue #4688). Only for such a row, which the follower marked where it built it. A local
+    // projection with a column of that name (SELECT @type, name FROM P) has the same shape and is not a record: typing it turned it
+    // into a record of that type without the column (issues #12196, #12519)
+    if (builder.getType().isEmpty() && result.getMetadata(ResultInternal.FORWARDED_ROW_METADATA) != null) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
-      if (typeProperty instanceof String typeName && !typeName.isEmpty() && !holdsRecordColumn(result))
+      if (typeProperty instanceof String typeName && !typeName.isEmpty())
         builder.setType(typeName);
     }
 
@@ -6543,17 +6545,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
 
     builder.putProperties(propertyName, gv);
-  }
-
-  /**
-   * Whether a column of {@code result} holds a record, a document with an identity (issue #12196). It walks the columns, but is asked
-   * only for a row with no type of its own that has a String {@code @type} column: a plain projection row never reaches it.
-   */
-  private static boolean holdsRecordColumn(final Result result) {
-    for (final String name : result.getPropertyNames())
-      if (result.getProperty(name) instanceof Document document && document.getIdentity() != null)
-        return true;
-    return false;
   }
 
   private static boolean isExcluded(final Set<String> excluded, final String name) {

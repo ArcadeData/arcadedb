@@ -41,6 +41,17 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * Created by luigidellaquila on 06/07/16.
  */
 public class ResultInternal implements Result {
+  /**
+   * The metadata key that marks a row a follower rebuilt from the JSON its leader answered a forwarded command with (issue
+   * #12519). Such a row is a plain projection made of the JSON map, whatever it stood for on the leader, so the record it was
+   * (its {@code @type} column) can no longer be told from a projection that only has a column of that name, except by this mark.
+   * The value is {@link Boolean#TRUE}.
+   * <p>
+   * The name starts with {@code @}, which no variable of a statement can: the metadata of a row is also where {@code LET} and
+   * the traversal depth ({@code $depth}) keep theirs, and a query must never read or shadow this one.
+   */
+  public static final String FORWARDED_ROW_METADATA = "@forwardedRow";
+
   // A new field that carries row state must also be checked by rewrapElement() and rebindSingleProperty(), or a filtered scan
   // moves it to another record
   protected final Database database;
