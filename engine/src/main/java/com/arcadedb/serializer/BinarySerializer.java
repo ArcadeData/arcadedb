@@ -450,6 +450,11 @@ public class BinarySerializer {
       final Dictionary dictionary = database.getSchema().getDictionary();
       for (int i = 0; i < fieldNames.length; ++i)
         fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
+      // A wide filter (every property of a wide record but the few a projection excludes, issue #12558) is searched, not
+      // scanned, so the filter does not cost the number of properties times the number of names
+      final boolean searchFilter = fieldIds.length > 8;
+      if (searchFilter)
+        Arrays.sort(fieldIds);
 
       // RESOLVED ONCE PER RECORD, NOT PER PROPERTY (#9997): THE OWNER AND THE TYPE THAT DECIDES WHETHER ITS STRINGS ARE
       // CONVERTED (#8572) ARE THE SAME FOR EVERY PROPERTY OF THE RECORD
@@ -463,13 +468,19 @@ public class BinarySerializer {
         final int lastHeaderPosition = buffer.position();
 
         if (fieldIds.length > 0) {
-          boolean found = false;
-          // FILTER BY FIELD
-          for (final int f : fieldIds)
-            if (f == nameId) {
-              found = true;
-              break;
-            }
+          final boolean found;
+          if (searchFilter)
+            found = Arrays.binarySearch(fieldIds, nameId) >= 0;
+          else {
+            boolean scanned = false;
+            // FILTER BY FIELD
+            for (final int f : fieldIds)
+              if (f == nameId) {
+                scanned = true;
+                break;
+              }
+            found = scanned;
+          }
 
           if (!found)
             continue;
@@ -978,6 +989,7 @@ public class BinarySerializer {
       final byte[] keyTypes = new byte[mapSize];
       final byte[] valueTypes = new byte[mapSize];
       int validCount = 0;
+      boolean characterKey = false;
       for (final Map.Entry<Object, Object> entry : map.entrySet()) {
         try {
           Object entryKey = entry.getKey();
@@ -1001,13 +1013,17 @@ public class BinarySerializer {
             entryValue = null;
           }
 
-          if (entryKey != null && entryKeyType == BinaryTypes.TYPE_STRING) {
-            final int id = dictionary.getIdByName((String) entryKey, false);
-            if (id > -1) {
-              // COMPRESSED STRING AS MAP KEY
-              entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
-              entryKey = id;
-            }
+          // NOT EVERY KEY LABELLED TYPE_STRING IS A String: A Character IS TOO, AND IT IS WRITTEN AS ITS TEXT (ISSUE #12021)
+          if (entryKeyType == BinaryTypes.TYPE_STRING) {
+            if (entryKey instanceof String stringKey) {
+              final int id = dictionary.getIdByName(stringKey, false);
+              if (id > -1) {
+                // COMPRESSED STRING AS MAP KEY
+                entryKeyType = BinaryTypes.TYPE_COMPRESSED_STRING;
+                entryKey = id;
+              }
+            } else
+              characterKey = true;
           }
 
           keys[validCount] = entryKey;
@@ -1022,6 +1038,8 @@ public class BinarySerializer {
               "Error on serializing map value for key '" + entry.getKey() + "' = '" + entry.getValue() + "'", e);
         }
       }
+      if (characterKey)
+        checkCharacterKeysDoNotCollide(map);
       content.putUnsignedNumber(validCount);
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
@@ -1145,6 +1163,20 @@ public class BinarySerializer {
         serialized.putBytes(dataEncryption.encrypt(content.toByteArray()));
       }
     }
+  }
+
+  /**
+   * A Character key is stored as its one-character text, the same key a String of that text is: a map holding both would be
+   * read back with one of the two values, so it is refused instead of losing one silently (issue #12021). Only a map that
+   * has a Character key pays this pass, and it never calls {@code containsKey()}, which a sorted map of one key class refuses
+   * for the other.
+   */
+  private static void checkCharacterKeysDoNotCollide(final Map<Object, Object> map) {
+    final Set<String> texts = new HashSet<>();
+    for (final Object key : map.keySet())
+      if ((key instanceof String || key instanceof Character) && !texts.add(key.toString()))
+        throw new SerializationException("Cannot serialize a map with a Character key and a String key of the same text '" + key
+            + "': a Character is stored as its text");
   }
 
   /**

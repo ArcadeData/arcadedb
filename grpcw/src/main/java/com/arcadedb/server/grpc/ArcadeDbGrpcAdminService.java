@@ -794,6 +794,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void listBackups(final ListBackupsRequest req, final StreamObserver<ListBackupsResponse> resp) {
     respond(resp, "listBackups", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("ListBackups");
 
       final JSONObject result = controlPlane.listBackups(req.getDatabase());
       final ListBackupsResponse.Builder builder = ListBackupsResponse.newBuilder()
@@ -820,6 +822,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void triggerBackup(final TriggerBackupRequest req, final StreamObserver<TriggerBackupResponse> resp) {
     respond(resp, "triggerBackup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("TriggerBackup");
 
       final JSONObject result = controlPlane.triggerBackup(req.getDatabase());
       return TriggerBackupResponse.newBuilder().setBackupFile(result.getString("backupFile", "")).build();
@@ -830,6 +834,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void deleteBackup(final DeleteBackupRequest req, final StreamObserver<DeleteBackupResponse> resp) {
     respond(resp, "deleteBackup", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
+      // The leader's backup directory is the one RestoreBackup reads (issue #12417)
+      requireLeader("DeleteBackup");
 
       controlPlane.deleteBackup(req.getDatabase(), req.getFileName());
       return DeleteBackupResponse.newBuilder().build();
@@ -1400,6 +1406,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * the leader - the pattern {@code graphBatchLoad} already established on this transport (issues #6091 and #6183).
    * Without it, {@code createUserClusterWide} would reach {@code HAServerPlugin.replicateSecurityUsers} on a follower,
    * which is exactly the state the HTTP path never gets into.
+   * <p>
+   * The backup RPCs take the same gate for a different reason (issue #12417): a backup directory is local to its
+   * node and {@code RestoreBackup} reads the leader's, so an archive triggered, listed or deleted on a follower is
+   * one no restore can reach.
    * <p>
    * A server with HA inactive is always allowed: there is no leader to be, and {@code getHA()} is null.
    */

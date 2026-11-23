@@ -49,6 +49,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -1018,11 +1019,10 @@ class PeerCapabilityProbeTest {
     // Regression for #7549: concurrent starts create exactly one monitor
     @Test
     void concurrentStartsCreateExactlyOneMonitor() throws Exception {
-      // The count below is JVM-wide (threads are found by name), so a monitor another test in the same fork is still
-      // winding down would be counted as this one's. Start from none.
-      Awaitility.await().atMost(10, TimeUnit.SECONDS)
-          .untilAsserted(() -> assertThat(liveCapabilityMonitorThreads())
-              .as("no capability monitor left over from an earlier test").isZero());
+      // Threads are found by name, JVM-wide, so a monitor another test in the same fork left running (or is still winding
+      // down) would be counted as this one's. Waiting for none failed whenever an earlier test leaked one for good: count
+      // only the monitors that did not exist before this test started any.
+      final Set<Thread> earlier = capabilityMonitorThreads();
 
       final RaftHAServer raft = newDetachedServer();
       raft.setCapabilityProber((peerId, http, https, token) -> {
@@ -1051,7 +1051,7 @@ class PeerCapabilityProbeTest {
         go.countDown();
         assertThat(done.await(30, TimeUnit.SECONDS)).as("every starter finished").isTrue();
 
-        assertThat(liveCapabilityMonitorThreads())
+        assertThat(capabilityMonitorThreadsStartedSince(earlier))
             .as("eight concurrent starts must leave one monitor, not eight")
             .isEqualTo(1);
       } finally {
@@ -1060,16 +1060,21 @@ class PeerCapabilityProbeTest {
 
       // The one that was created is also the one that can be stopped, which is the half a leaked executor fails.
       Awaitility.await().atMost(10, TimeUnit.SECONDS)
-          .untilAsserted(() -> assertThat(liveCapabilityMonitorThreads())
+          .untilAsserted(() -> assertThat(capabilityMonitorThreadsStartedSince(earlier))
               .as("and stopping it leaves none behind").isZero());
     }
 
-    /** How many capability-monitor threads this JVM currently has, by the name the factory gives them. */
-    private static long liveCapabilityMonitorThreads() {
+    /** The capability-monitor threads this JVM currently has, by the name the factory gives them. */
+    private static Set<Thread> capabilityMonitorThreads() {
       return Thread.getAllStackTraces().keySet().stream()
           .filter(Thread::isAlive)
           .filter(t -> "arcadedb-raft-capability-monitor".equals(t.getName()))
-          .count();
+          .collect(Collectors.toSet());
+    }
+
+    /** How many live capability-monitor threads are not among {@code earlier}. */
+    private static long capabilityMonitorThreadsStartedSince(final Set<Thread> earlier) {
+      return capabilityMonitorThreads().stream().filter(t -> !earlier.contains(t)).count();
     }
 
     private static RaftHAServer newDetachedServer() {

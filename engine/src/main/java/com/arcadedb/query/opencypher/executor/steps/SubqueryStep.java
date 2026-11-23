@@ -660,6 +660,10 @@ public class SubqueryStep extends AbstractExecutionStep {
     // gone one (issue #6977).
     LabelReplacements.of(context).redirect(outerRow);
     refreshDocumentBindings(outerRow);
+    // The records the outer row holds in a list or a map, and the members of its paths, follow the body's writes too:
+    // WITH n, collect(n) AS ns CALL (n) { SET n.v = 31 } RETURN head(ns).v read the value from before the body (issue
+    // #11754). The same walk as before the body, with the same rule: only what the transaction wrote replaces a record
+    refreshWrittenBindings(outerRow);
   }
 
   /**

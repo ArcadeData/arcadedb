@@ -90,7 +90,7 @@ public class AnchorSelector {
    *
    * @param plan               the logical plan to analyze
    * @param excludedVariables  node variables to skip when choosing the anchor
-   * @return anchor selection with the best starting node
+   * @return anchor selection with the best starting node, or null when every node left is unlabelled
    */
   public AnchorSelection selectAnchor(final LogicalPlan plan, final Set<String> excludedVariables) {
     if (plan.getNodes().isEmpty()) {
@@ -113,6 +113,10 @@ public class AnchorSelector {
     // no named node at all keeps falling back the way count push-down expects.
     for (final LogicalNode node : plan.getPatternNodes().values()) {
       if (excludedVariables.contains(node.getVariable()))
+        continue;
+      // A node with no label is reached by an expansion, which accepts any vertex, and never starts the pattern: no anchor
+      // operator scans every vertex type (issue #11904)
+      if (node.getLabels().isEmpty())
         continue;
 
       final AnchorSelection candidate = evaluateNode(node, plan);

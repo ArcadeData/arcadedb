@@ -23,9 +23,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 import java.util.Locale;
-import java.util.regex.Pattern;
 
 /**
+ * Capitalizes every word of the text: the first letter of a word goes to title case and the rest of the word to lower case,
+ * everything between words is copied as it is.
+ *
  * @author Christian Himpe (gramian)
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -39,10 +41,67 @@ public class SQLMethodCapitalize extends AbstractSQLMethod {
 
   @Override
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    return value != null ? Pattern.compile("\\b(.)(.*?)\\b")
-                                     .matcher(value.toString())
-                                     .replaceAll(match -> match.group(1).toUpperCase(Locale.ENGLISH) +
-                                                          match.group(2).toLowerCase(Locale.ENGLISH))
-                            : null;
+    return value != null ? capitalize(value.toString()) : null;
+  }
+
+  /**
+   * One pass over the code points, with no regular expression (issue #12869). The regex this replaces cut words at the ASCII-only
+   * {@code \b}, so {@code "café"} became {@code "CafÉ"} and Cyrillic words were left untouched, and it handed the built text to
+   * {@code Matcher.replaceAll} as a replacement string, where a {@code $} or a backslash of the data threw. Here nothing is ever
+   * parsed as syntax. A word is lower-cased as a whole, so a context-sensitive mapping such as the Greek final sigma still sees
+   * the letters before it ({@code "ΟΣ"} is {@code "Ος"}), and its first letter is title-cased by code point, so the {@code ǆ}
+   * digraph becomes {@code ǅ}, {@code ß} is not expanded to {@code SS} and a letter outside the BMP is not split in two.
+   */
+  private static String capitalize(final String text) {
+    final int length = text.length();
+    final StringBuilder result = new StringBuilder(length);
+    int i = 0;
+    while (i < length) {
+      final int first = text.codePointAt(i);
+      if (!isWordCharacter(first)) {
+        result.appendCodePoint(first);
+        i += Character.charCount(first);
+        continue;
+      }
+
+      int end = i + Character.charCount(first);
+      while (end < length) {
+        final int cp = text.codePointAt(end);
+        if (!isWordCharacter(cp))
+          break;
+        end += Character.charCount(cp);
+      }
+
+      result.appendCodePoint(Character.toTitleCase(first));
+      final String lower = text.substring(i, end).toLowerCase(Locale.ENGLISH);
+      result.append(lower, lowerCaseLength(first), lower.length());
+      i = end;
+    }
+    return result.toString();
+  }
+
+  /**
+   * The same set as {@code \w} under {@code Pattern.UNICODE_CHARACTER_CLASS}: letters, marks, decimal digits, connector
+   * punctuation and the joiners, so a combining accent stays in its word and {@code _} keeps joining words as it always did.
+   */
+  private static boolean isWordCharacter(final int codePoint) {
+    if (codePoint < 0x80)
+      return (codePoint >= 'a' && codePoint <= 'z') || (codePoint >= 'A' && codePoint <= 'Z') || (codePoint >= '0' && codePoint <= '9')
+          || codePoint == '_';
+    if (Character.isAlphabetic(codePoint) || Character.isDigit(codePoint) || codePoint == 0x200C || codePoint == 0x200D)
+      return true;
+    return switch (Character.getType(codePoint)) {
+      case Character.NON_SPACING_MARK, Character.ENCLOSING_MARK, Character.COMBINING_SPACING_MARK, Character.CONNECTOR_PUNCTUATION -> true;
+      default -> false;
+    };
+  }
+
+  /**
+   * How many chars the first code point of a word takes once the word is lower-cased under {@code Locale.ENGLISH}. The only
+   * code point whose lower case is not a single code point there is {@code İ} (capital I with dot above), which becomes
+   * {@code "i̇"}; skipping a single char would leave its dot behind.
+   */
+  private static int lowerCaseLength(final int codePoint) {
+    return codePoint == 0x130 ? 2 : Character.charCount(Character.toLowerCase(codePoint));
   }
 }

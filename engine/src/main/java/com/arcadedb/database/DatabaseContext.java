@@ -79,6 +79,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     final String key = database.getDatabasePath();
 
     DatabaseContextTL current;
+    boolean created = false;
 
     if (map == null) {
       // CONCURRENT MAP BECAUSE removeAllContexts() (DATABASE CLOSE/DROP ON ANOTHER THREAD) MUTATES THIS MAP
@@ -88,11 +89,13 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       set(map);
       current = new DatabaseContextTL();
       map.put(key, current);
+      created = true;
     } else {
       current = map.get(key);
       if (current == null) {
         current = new DatabaseContextTL();
         map.put(key, current);
+        created = true;
       } else {
         if (!current.transactions.isEmpty()) {
           // ROLLBACK PREVIOUS TXS
@@ -116,9 +119,21 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     if (registered == null || registered.contexts != map)
       CONTEXTS.put(currentThread.threadId(), new ThreadContexts(currentThread, map));
 
-    if (current.transactions.isEmpty())
-      current.transactions.add(
-          firstTransaction != null ? firstTransaction : new TransactionContext(database.getWrappedDatabaseInstance()));
+    if (current.transactions.isEmpty()) {
+      final TransactionContext first;
+      try {
+        first = firstTransaction != null ? firstTransaction : new TransactionContext(database.getWrappedDatabaseInstance());
+      } catch (final RuntimeException e) {
+        // A context left registered without its transaction is found by getContext(), whose callers read the last transaction:
+        // every later statement of this thread on this database failed with a NullPointerException, even once the cause (a
+        // setting the construction could not read) was fixed (issue #12817). Only one this call registered: an older one carries
+        // state its owner set (the current user), which a fresh context would silently drop
+        if (created)
+          map.remove(key, current);
+        throw e;
+      }
+      current.transactions.add(first);
+    }
 
     return current;
   }
@@ -562,6 +577,20 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     /** How many transactions are stacked on this thread, the inactive ones on top included. */
     public int getTransactionDepth() {
       return transactions.size();
+    }
+
+    /**
+     * Records on EVERY transaction stacked on this thread a write another node committed on their behalf: a statement a replica
+     * forwarded to the leader, which answered it (issue #12635). See {@link TransactionContext#reportWriteCommittedByAnotherNode()}.
+     * <p>
+     * All of them, not only the innermost: a retry loop samples the context that was open when its block started, and a block that
+     * opened its own transaction runs the forward one level down, where an inner {@code commit()} pops the context that was marked.
+     * Unlike the housekeeping commits {@link TransactionContext#reportBatchBoundaryOfNestedTransaction()} must not carry up, a
+     * forwarded write is the caller's own and no enclosing rollback takes it back, so no enclosing block may replay it.
+     */
+    public void reportWriteCommittedByAnotherNode() {
+      for (int i = 0; i < transactions.size(); ++i)
+        transactions.get(i).reportWriteCommittedByAnotherNode();
     }
 
     /** Whether any transaction stacked on this thread is still active. */

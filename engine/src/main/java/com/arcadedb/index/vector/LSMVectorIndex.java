@@ -28,6 +28,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.DatabaseRID;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.Record;
@@ -203,6 +204,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   /** Live vectors {@link #deriveDimensionsFromData} reads at most before it gives up looking for the size of an index. */
   private static final int    DIMENSIONS_DERIVATION_LIMIT     = 1000;
+
+  /**
+   * The key {@link #removalKey} queues a {@code REMOVE} under when the caller has no usable vector (issue #12822): one shared,
+   * zero-length instance, so such a removal costs the same whatever the dimensions of the index. It used to be a new all-zero
+   * vector of {@code dimensions} floats per removal, which the transaction then compared component by component against every
+   * other placeholder of the lane.
+   */
+  private static final ComparableVector NO_VECTOR_REMOVAL_KEY = new ComparableVector(new float[0]);
 
   // Page header layout constants
   public static final int OFFSET_FREE_CONTENT = 0;  // 4 bytes
@@ -417,8 +426,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private       boolean       searchRebuildPending   = false;
   private final Condition     searchRebuildPublished = graphBuildLock.newCondition();
 
-  // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
-  // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
+  // Set only inside flush()'s three SKIP branches (issue #6657: released resources and a large index; issue #12120: a close
+  // for reopen) - never by the branch that actually attempts a synchronous build, successfully or not - so
+  // releaseBackgroundResources()'s recheck of the same flag (see
   // there) can tell "flush() chose not to pay for a rebuild" apart from "flush() tried and either failed or got
   // re-mutated mid-build", which also leaves graphState at MUTABLE but is a different story the recheck must not
   // relabel as a deferral. Reset at the top of every flush(), so a stale true from an earlier close on this same
@@ -1205,6 +1215,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else if (replaced.isDeleted(id))
             rebuilt.addOrUpdate(id, false, 0L, null, true);
         }
+    // An id below the snapshot that the pages did not yield either: a commit that had replayed its index operations (handing out
+    // the id and recording its location) when the snapshot was taken, and had not yet written its pages when they were read, which
+    // is what a page reader sees of a commit until its second phase. The loop above starts at the snapshot and cannot know it, so
+    // the record would be left with no location while the pages hold its vector (issue #12828). Only a live location of a record the
+    // rebuilt index has no live id for is taken over: an id the pages answered for, or one a record left out of the pages on purpose
+    // shares with another, is never one of those.
+    if (replaced != null) {
+      final int below = Math.min(Math.max(0, idsFrom), nextId.get());
+      final PrimitiveIterator.OfInt replacedLive = replaced.getAllVectorIds().iterator();
+      while (replacedLive.hasNext()) {
+        final int id = replacedLive.nextInt();
+        if (id >= below)
+          break;
+        if (rebuilt.isLive(id) || rebuilt.isDeleted(id))
+          continue;
+        final long offsetAndFlag = replaced.getOffsetAndFlag(id);
+        final RID rid = replaced.getRid(id);
+        if (offsetAndFlag != VectorLocationIndex.ABSENT && rid != null && rebuilt.getVectorIdsForRid(rid).length == 0)
+          rebuilt.addOrUpdate(id, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag), rid,
+              false);
+      }
+    }
     // The rebuilt index only knows the ids that are still live, so its high-water mark can be lower than the one
     // already handed out. Carry the sequence over, or the next insert would reuse an id a tombstone still refers to.
     // A renumbering compaction (issue #5870) already reset `nextId` to the dense live count before calling this,
@@ -11758,7 +11790,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // index, not size the index a second time (issue #10993). Outside the decision lock: it reads records
         deriveDimensionsFromData();
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, !replay);
       }
 
       if (vector.length != metadata.dimensions)
@@ -11858,14 +11890,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * learn it from this call, nor from a schema the leader ships (a commit of records ships none, only a schema change does): it
    * learns it from the vectors it replicates ({@link #deriveDimensionsFromData}), before its first search, graph build or put.
    *
-   * @param length the length of the vector being put
+   * <p>
+   * A first vector wider than {@code arcadedb.vectorIndex.maxDimensions} is refused like the same number declared when the
+   * index is created (issue #12822), and the index goes on waiting for its size. Only where the vector is first offered: a
+   * replayed one was accepted already, here or on another node, and {@link #deriveDimensionsFromData} takes whatever the
+   * records hold, so an index that got its size before the bound existed, or while it was higher, keeps it.
+   *
+   * @param length       the length of the vector being put
+   * @param checkedBound whether the length is held to the bound: false on a replay
    */
-  private void sizeOnVector(final int length) {
+  private void sizeOnVector(final int length, final boolean checkedBound) {
     synchronized (dimensionsDecisionLock()) {
       if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
         return;
       if (length < 1)
         throw new IllegalArgumentException("A vector must have at least one component to size index '" + indexName + "'");
+      if (checkedBound)
+        LSMVectorIndexMetadata.checkDimensionsBound(length, getDatabase().getConfiguration());
       decideDimensions(length);
     }
   }
@@ -12317,8 +12358,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
         // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+        // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
+        // the index on, or the copy of one another node accepted
         if (metadata.dimensions < 1)
-          sizeOnVector(vector.length);
+          sizeOnVector(vector.length, false);
 
         if (vector.length != metadata.dimensions) {
           LogManager.instance().log(this, Level.WARNING,
@@ -12367,8 +12410,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * be read from the key it passed (issue #7971).
    * <p>
    * The removal itself never needed a key - {@link #remove(Object[], Identifiable, boolean)} resolves what to
-   * tombstone through the RID reverse index and ignores the key entirely - so this used to queue an all-zero
-   * placeholder. That placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
+   * tombstone through the RID reverse index and ignores the key entirely - so this used to queue a placeholder. That
+   * placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
    * {@code TransactionIndexContext}'s per-key dedup never collapsed the pair, and a transaction that rewrote one
    * record's embedding twice left TWO live {@code ADD} entries behind, under two different keys.
    * <p>
@@ -12383,10 +12426,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * {@code DocumentIndexer.updateDocument} already hands the previous key tuple to {@code remove()}, so the
    * truthful key is right there. Queuing it lets the existing dedup retire the superseding {@code ADD} exactly the
-   * way it does for every other index. The placeholder stays as the fallback for the callers that have no usable
-   * old value (a property that was not set, an unconvertible one): the {@code REMOVE} must still be queued, it just
-   * has nothing to coalesce with, and {@code TransactionIndexContext.commit()} drops the superseded entries by
-   * write order anyway.
+   * way it does for every other index. The placeholder, {@link #NO_VECTOR_REMOVAL_KEY}, stays as the fallback for the
+   * callers that have no usable old value (a property that was not set, an unconvertible one): the {@code REMOVE} must
+   * still be queued, it just has nothing to coalesce with, and {@code TransactionIndexContext.commit()} drops the
+   * superseded entries by write order anyway. The transaction keeps one entry per (key, RID) on this non-unique index,
+   * so the removals of different records under the shared placeholder stay distinct, and the placeholder is zero
+   * floats long, so it can never equal the key of an {@code ADD}, which always carries {@code dimensions} of them.
    */
   private ComparableVector removalKey(final Object[] keys) {
     if (keys != null && keys.length > 0 && keys[0] != null) {
@@ -12409,7 +12454,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // some future encoding therefore costs the dedup, not the delete.
         }
     }
-    return new ComparableVector(new float[metadata.dimensions]);
+    return NO_VECTOR_REMOVAL_KEY;
   }
 
   @Override
@@ -13126,6 +13171,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
             indexName, vectorIndex().size(), ASYNC_REBUILD_MIN_GRAPH_SIZE);
         flushDeferredRebuild = true;
         markCloseTimeRebuildDeferred(gf);
+      } else if (needsBuild && getDatabase().getEmbedded() instanceof LocalDatabase local && local.isClosedForReopen()) {
+        // A close for reopen (HA snapshot install, idle close) refuses begin(), which the from-scratch build needs: the
+        // build would burn its whole CPU cost and then fail with DatabaseIsReopeningException, logging two SEVERE traces
+        // and persisting nothing. Defer to the next search on the reopened index instead, as the large-index arm does.
+        LogManager.instance().log(this, Level.FINE,
+            "Deferring graph build on close for index %s: the database is closing for reopen and refuses the build's transaction",
+            indexName);
+        flushDeferredRebuild = true;
+        markCloseTimeRebuildDeferred(gf);
       } else if (needsBuild) {
         try {
           LogManager.instance()
@@ -13371,7 +13425,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // closeDeferredRebuild=false via markUnusable()) or because new mutations arrived mid-build. Neither of those
     // is "flush() chose to defer", and rechecking unconditionally would overwrite that correct false with a
     // misleading true - mislabeling "close attempted a rebuild and it failed" as "close skipped the rebuild for
-    // performance". flushDeferredRebuild is set only inside flush()'s two skip branches and reset at the top of
+    // performance". flushDeferredRebuild is set only inside flush()'s three skip branches and reset at the top of
     // every flush(), so it answers exactly the question this recheck needs: did THIS close's flush() skip, not
     // just "is a rebuild still owed for some reason". As a side effect this also keeps the recheck from ever
     // firing on a path that never called flush() at all - LocalDatabase.closeInternal(true) (whole-database
@@ -14205,7 +14259,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * <p>
    * The transaction keeps one entry per (key, RID), so a {@code REMOVE} queued under the same key as the {@code ADD} that
    * follows it is displaced by that {@code ADD} and never reaches the index. The record's own vector is therefore the
-   * wrong key, and so is {@link #removalKey}'s all-zero placeholder: an all-zero vector is a valid embedding under
+   * wrong key, and so would an all-zero one be: an all-zero vector is a valid embedding under
    * EUCLIDEAN (issue #8962). NaN components are refused by {@code put()} before anything is queued, so no {@code ADD}
    * key can equal this one. The key is otherwise unused: {@code remove()} resolves what to tombstone by RID alone.
    */

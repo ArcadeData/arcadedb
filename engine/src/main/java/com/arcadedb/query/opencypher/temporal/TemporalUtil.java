@@ -598,6 +598,52 @@ public final class TemporalUtil {
   }
 
   /**
+   * The text openCypher {@code toString()} gives a temporal, as Neo4j 5 prints it (issue #11912): a time always carries its
+   * seconds ({@code 10:00:00}, where Java's {@code LocalTime.toString()} gives {@code 10:00}) and a fraction of a second has
+   * its trailing zeros removed ({@code .5}, where Java gives {@code .500}). Dates, offsets, zone ids and durations print as
+   * their {@code toString()}. Only the Cypher string conversion uses this: the values' own {@code toString()}, which the
+   * HTTP JSON serialization and the SQL conversions use, is unchanged.
+   */
+  public static String toCypherString(final CypherTemporalValue value) {
+    return switch (value) {
+      case CypherLocalTime t -> formatTime(t.getValue());
+      case CypherTime t -> formatTime(t.getValue().toLocalTime()) + t.getValue().getOffset();
+      case CypherLocalDateTime t -> t.getValue().toLocalDate() + "T" + formatTime(t.getValue().toLocalTime());
+      case CypherDateTime t -> {
+        final ZonedDateTime zoned = t.getValue();
+        final String base = zoned.toLocalDate() + "T" + formatTime(zoned.toLocalTime()) + zoned.getOffset();
+        yield zoned.getZone() instanceof ZoneOffset ? base : base + "[" + zoned.getZone().getId() + "]";
+      }
+      default -> value.toString();
+    };
+  }
+
+  /** {@code HH:mm:ss}, then the fraction of a second without trailing zeros, if any (up to 9 digits). */
+  private static String formatTime(final LocalTime time) {
+    final StringBuilder text = new StringBuilder(18);
+    appendTwoDigits(text, time.getHour()).append(':');
+    appendTwoDigits(text, time.getMinute()).append(':');
+    appendTwoDigits(text, time.getSecond());
+    int nano = time.getNano();
+    if (nano > 0) {
+      int digits = 9;
+      while (nano % 10 == 0) {
+        nano /= 10;
+        digits--;
+      }
+      final String fraction = Integer.toString(nano);
+      text.append('.').repeat('0', digits - fraction.length()).append(fraction);
+    }
+    return text.toString();
+  }
+
+  private static StringBuilder appendTwoDigits(final StringBuilder text, final int value) {
+    if (value < 10)
+      text.append('0');
+    return text.append(value);
+  }
+
+  /**
    * The value a temporal stands for in duplicate elimination ({@code DISTINCT}, {@code GROUP BY}, {@code UNION}), so that two
    * temporals which {@code =} reports equal share a key whatever Java class holds them (issue #10526): {@code LocalDateTime.equals}
    * is false against a {@code ZonedDateTime} for every pair, however equal the instants. The rule is the one of

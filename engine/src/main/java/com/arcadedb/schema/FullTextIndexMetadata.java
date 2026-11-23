@@ -102,8 +102,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   private static final String UNBOUND_LENGTH_RULE = "-";
 
-  private static final String ANALYZER_SUFFIX = "_analyzer";
-  private static final String BOOST_SUFFIX    = "_boost";
+  private static final String ANALYZER_SUFFIX         = "_analyzer";
+  private static final String BOOST_SUFFIX            = "_boost";
+  private static final String FIELD_ANALYZERS_APPLIED = "ft_fieldAnalyzersApplied";
 
   /**
    * Fixed keys a user may write in {@code METADATA}. The key space is not closed: {@code <field>_analyzer} and
@@ -126,6 +127,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // Per-field maps are concurrent: they are populated at index creation but read on the query path (getFieldBoost,
   // getAnalyzerClass) and iterated by writeToJSON on schema save, so a HashMap could throw ConcurrentModificationException.
   private final    Map<String, String> fieldAnalyzers       = new ConcurrentHashMap<>();
+  // Whether the postings of a property with an analyzer of its own were written with it (issue #12163). An index of a version that
+  // stored the per-field analyzers without applying them wrote every posting with the analyzer of the index, and goes on doing so,
+  // queries included, until a rebuild writes them again: persisted as ft_fieldAnalyzersApplied, absent on such an index
+  private          boolean             fieldAnalyzersApplied = true;
 
   // BM25 SCORING CONFIGURATION
   private String             similarity  = SIMILARITY_BM25;
@@ -238,6 +243,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     copy.bm25K1 = bm25K1;
     copy.bm25B = bm25B;
     copy.fieldBoosts.putAll(fieldBoosts);
+    copy.fieldAnalyzersApplied = fieldAnalyzersApplied;
     return copy;
   }
 
@@ -301,6 +307,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
         setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+    // A missing key is NOT the field's default of true: a definition written before per-field analyzers were applied (issue #12163)
+    // has no such key, and its postings were not written with them, so it is read as the legacy mode until a rebuild writes them
+    this.fieldAnalyzersApplied = metadata.getBoolean(FIELD_ANALYZERS_APPLIED, false);
   }
 
   @Override
@@ -462,6 +471,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     for (final Map.Entry<String, String> entry : fieldAnalyzers.entrySet())
       metadata.put(entry.getKey() + ANALYZER_SUFFIX, entry.getValue());
+    if (!fieldAnalyzers.isEmpty() && fieldAnalyzersApplied)
+      metadata.put(FIELD_ANALYZERS_APPLIED, true);
 
     metadata.put("similarity", similarity);
     if (isBM25()) {
@@ -599,6 +610,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public Map<String, String> getFieldAnalyzers() {
     return CollectionUtils.immutableMap(fieldAnalyzers);
+  }
+
+  /**
+   * Whether the postings of the properties with an analyzer of their own ({@link #getFieldAnalyzers()}) were written with it (issue
+   * #12163). False on an index written by a version that stored the per-field analyzers without applying them: such an index keeps
+   * analyzing every property with the analyzer of the index, writes and queries alike, until it is rebuilt.
+   */
+  public boolean isFieldAnalyzersApplied() {
+    return fieldAnalyzersApplied;
+  }
+
+  /** Marks the postings as written with the per-field analyzers, as a rebuild writes them. */
+  public void setFieldAnalyzersApplied(final boolean applied) {
+    this.fieldAnalyzersApplied = applied;
   }
 
   /**
