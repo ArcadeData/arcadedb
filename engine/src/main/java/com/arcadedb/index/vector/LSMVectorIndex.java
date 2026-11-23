@@ -10154,8 +10154,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
           }
         }
 
-        // Merge with delta vectors inserted since last graph rebuild
-        mergeWithDeltaScan(scorer, k, allowedRIDs, results, overlay, guard);
+        // Merge with delta vectors inserted since last graph rebuild. The buffer is taken once: the shortfall check below
+        // counts its rows again, and has to count the ones this merge saw
+        final List<DeltaVectorEntry> deltaView = mergedDelta(overlay);
+        mergeWithDeltaScan(scorer, k, allowedRIDs, results, deltaView, guard);
 
         // Issue #3722: if graph search + delta merge could not fill the request, fall back to a brute-force scan.
         // This handles degraded graph quality after rebuilds with corrupted pages.
@@ -10167,29 +10169,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // does. On a bounded backend it is a lower bound, so this would under-estimate the budget and could leave the
         // fallback unfired when it should run - acceptable, since an evicting location map already makes the whole
         // index approximate, and the same assumption is what the auto-compaction ratio rests on.
-        // It also counts vectors still in the delta buffer, which the scan below cannot reach because it walks graph
-        // ordinals - mergeWithDeltaScan has already covered those. So a search left short only by delta vectors can
-        // still pay for a scan that finds nothing new. Bounded, rare, and now visible through bruteForceScans.
         //
         // Issue #8057: the rows the calling transaction removed or rewrote are still in vectorIndex().size() - the
         // tombstones are written only when commit() replays the queued REMOVEs - but the walk, the loop above and the
         // scan below all exclude them, so counting them expected rows no search can return, and every search of the
         // transaction paid a full scan that found nothing and logged a WARNING about a healthy graph. They are netted
-        // out only once a shortfall is seen, so a search that is not short never pays for resolving them.
-        int availableVectors = Math.min(ordinalMap.length, vectorIndex().size());
-        int expectedResults = Math.min(k, availableVectors);
+        // out only once a shortfall is seen, so a search that is not short never pays for resolving them. The rows the
+        // transaction wrote are added to the budget in the same step: the merge above returns them, so leaving them out
+        // lets each one hide a row of the graph the walk did not reach.
+        //
+        // Issue #13128: the live count also holds the vectors still in the delta buffer that no graph build has absorbed
+        // (no ordinal), which the scan below cannot reach - it walks graph ordinals, and the merge above has already
+        // covered the buffer. The budget used to be capped by the number of ordinals to keep a search left short only by
+        // delta vectors from paying for a scan that finds nothing new, but the cap also let each delta-only row, which the
+        // answer does count, hide a node of the graph the walk had not reached: an exhaustive search answered one record
+        // short after one insert. The cap is now the ordinals plus the delta-only rows the search can return, which is
+        // what the answer can hold when the graph is complete, and it is worked out only once the answer is short of
+        // the live count, so a search that is not short pays nothing for it.
+        final int live = vectorIndex().size();
+        final int pending = pendingCount(overlay);
+        int availableVectors = live + pending;
+        int requested = Math.min(k, availableVectors);
+        int expectedResults = capByAllowList(requested, allowedRIDs);
         if (results.size() < expectedResults && overlay != null) {
           // Counting stops at the rows the answer is short of: past that the netted budget can no longer exceed it
-          final int live = vectorIndex().size();
-          availableVectors = Math.min(ordinalMap.length, live - countSupersededLive(overlay, live - results.size()));
-          expectedResults = Math.min(k, availableVectors);
+          availableVectors = live + pending - countSupersededLive(overlay, live + pending - results.size());
+          requested = Math.min(k, availableVectors);
+          expectedResults = capByAllowList(requested, allowedRIDs);
         }
-        // A plain allow-list answers with no more rows than it holds (issue #11765). The search narrowed it to the members in
-        // this bucket (allowListShare), so a filter spread over a type's buckets no longer leaves every sub-index short of the
-        // rows that are in the other buckets, with a scan of every bucket after its walk and a WARNING about a healthy graph
-        final int requested = expectedResults;
-        if (allowedRIDs != null && !allowedRIDs.isEmpty() && !(allowedRIDs instanceof PredicateRidSet))
-          expectedResults = Math.min(expectedResults, allowedRIDs.size());
+        if (results.size() < expectedResults) {
+          // Still short of the rows the index holds: the scan can complete only the nodes of the graph, so the budget
+          // is what the graph and the buffer can hold between them
+          availableVectors = Math.min(availableVectors, ordinalMap.length + countDeltaOnlyRows(deltaView, ordinalMap, guard));
+          requested = Math.min(k, availableVectors);
+          expectedResults = capByAllowList(requested, allowedRIDs);
+        }
         if (results.size() < expectedResults) {
           logShortfallCompletion(results.size(), expectedResults, availableVectors, allowedRIDs, requested);
           metrics.incrementBruteForceScans();
@@ -11745,6 +11759,52 @@ public class LSMVectorIndex implements Index, IndexInternal {
       count += vectorIndex().getVectorIdsForRid(rid).length;
     }
     return count;
+  }
+
+  /**
+   * Issue #13128: how many rows of {@code delta}, the buffer as a search merged it, the search can return although the graph
+   * {@code ordinalMap} describes has no node for them - the rows the delta merge contributes and the brute-force completion
+   * cannot, because it walks graph ordinals only. Together with the ordinals they are the most the graph and the buffer can
+   * answer between them, which is the budget the shortfall fallback has to be judged against.
+   * <p>
+   * Not counted: a row with an ordinal (a node of the graph, which a build left unreachable queued again in the buffer), a row
+   * tombstoned since it was queued, and a row whose vector the similarity cannot score (the all-zero one under COSINE), which no
+   * search returns, so the answer is not short of it. A row whose payload the buffer declined is counted: reading it back to ask
+   * would cost a page per row. A pending row of the calling transaction has no id and no ordinal, and counts like any other.
+   * <p>
+   * Linear in the buffer, with a binary search per row, so the caller asks only once the answer is short of the live count.
+   *
+   * @param guard the bound of the search, or {@code null}
+   */
+  int countDeltaOnlyRows(final List<DeltaVectorEntry> delta, final int[] ordinalMap, final WorkGuard guard) {
+    final VectorLocationIndex locations = vectorIndex();
+    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    final boolean anyDeleted = locations.getDeletedCount() > 0;
+    int count = 0;
+    int scanned = 0;
+    for (final DeltaVectorEntry entry : delta) {
+      if (guard != null)
+        guard.checkPeriodically(++scanned);
+      if (entry.vectorId != TransactionVectorOverlay.PENDING_VECTOR_ID && ((anyDeleted && locations.isDeleted(entry.vectorId))
+          || ordinalMapHolds(ordinalMap, lookup, entry.vectorId)))
+        continue;
+      if (entry.vector != null && isUnscorable(entry.vector))
+        continue;
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * A plain allow-list answers with no more rows than it holds (issue #11765). The search narrowed it to the members in this
+   * bucket (allowListShare), so a filter spread over a type's buckets no longer leaves every sub-index short of the rows that are
+   * in the other buckets, with a scan of every bucket after its walk and a WARNING about a healthy graph. A predicate says
+   * nothing about how many rows it accepts, so it caps nothing.
+   */
+  private static int capByAllowList(final int expectedResults, final Set<RID> allowedRIDs) {
+    if (allowedRIDs != null && !allowedRIDs.isEmpty() && !(allowedRIDs instanceof PredicateRidSet))
+      return Math.min(expectedResults, allowedRIDs.size());
+    return expectedResults;
   }
 
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
@@ -14453,10 +14513,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Whether the resident graph has a node for {@code vectorId}. */
   private boolean graphHolds(final int vectorId) {
     final int[] ordinalMap = ordinalToVectorId;
-    if (ordinalMap == null)
-      return false;
-    // A map a renumbering compaction translated holds -1 entries and is not sorted (issue #9241)
-    final OrdinalLookup lookup = renumberedLookups.get(ordinalMap);
+    return ordinalMap != null && ordinalMapHolds(ordinalMap, renumberedLookups.get(ordinalMap), vectorId);
+  }
+
+  /**
+   * Whether {@code ordinalMap} has an ordinal for {@code vectorId}. {@code lookup} is the one of {@code ordinalMap} when a
+   * renumbering compaction translated it, {@code null} otherwise: such a map holds -1 entries and is not sorted, so it cannot be
+   * binary searched (issue #9241).
+   */
+  private static boolean ordinalMapHolds(final int[] ordinalMap, final OrdinalLookup lookup, final int vectorId) {
     return (lookup != null ? lookup.ordinalOf(vectorId) : Arrays.binarySearch(ordinalMap, vectorId)) >= 0;
   }
 
