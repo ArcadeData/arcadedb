@@ -1219,7 +1219,8 @@ public class SelectExecutionPlanner {
         // same condition: the cap does not bound a statement that sorts or deduplicates its groups (issue #12016). The plan of an
         // aggregation is kept in the plan cache under the text of the statement, so the SKIP it is bounded by must be the one the text
         // says: a SKIP given as a parameter is another value for the next execution
-        if (info.orderBy == null && !info.distinct && (info.skip == null || info.skip.num != null))
+        // An expand() or an UNWIND after it can drop a group, so the first groups would not be the rows the caller reads
+        if (info.orderBy == null && !info.distinct && !info.expand && info.unwind == null && (info.skip == null || info.skip.num != null))
           aggregation.boundByRowCap(rowCapSkip(info, context));
         result.chain(aggregation);
         if (info.groupBy == null && hasAggregateItem(info.aggregateProjection, context)) {

@@ -202,6 +202,15 @@ class ResultRowCapTest extends TestHelper {
   }
 
   @Test
+  void aGroupByThatUnwindsItsGroupsIsNotBoundedByTheGroups() {
+    createFixture();
+    // AN UNWIND AFTER THE AGGREGATION MAKES THE ROWS OF A GROUP ANY NUMBER, NONE FOR AN EMPTY LIST: THE FIRST GROUPS ARE NOT THE ROWS
+    // THE CALLER READS
+    final String sql = "SELECT grp, list(id) AS ids FROM T GROUP BY grp UNWIND ids";
+    assertThat(run(sql, CAP).rows()).hasSize(ROWS);
+  }
+
+  @Test
   void aGroupByWithAnOrderByIsNotBoundedByTheGroups() {
     createFixture();
     // THE SORT NEEDS EVERY GROUP TO KNOW WHICH ARE THE FIRST: ONLY ITS OWN TOP-K IS BOUNDED

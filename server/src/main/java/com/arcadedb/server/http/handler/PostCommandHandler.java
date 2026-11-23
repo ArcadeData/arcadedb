@@ -135,6 +135,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * does not parse is left to the execution, which reports its error. A script is parsed only when it holds the word of a query: it
    * has no statement cache, and the statements of a bulk script are the engine's to parse once.
    *
+   * @param command  the command, already trimmed as in {@link #execute}
    * @param database the database the command runs against, used only to parse a script with its own parser configuration;
    *                 {@code null} parses with the defaults
    */
