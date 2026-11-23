@@ -60,7 +60,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * What it costs and what it trades:
  * <ul>
- * <li>a transaction that never matched-or-created a relationship pays one volatile read at begin, and nothing at commit;</li>
+ * <li>a transaction that never matched-or-created a relationship pays one volatile read at begin, and nothing at commit, unless it
+ * created a relationship of a type with an exact-key index (issue #12483): a MERGE between two bound nodes answers its existence
+ * check from such an index and reads no edge list, so the commit of every relationship of the type marks the key of each of its
+ * exact-key indexes (the pair, the index and the values committed), which that MERGE checks;</li>
  * <li>two keys that share their 64 bits, or a transaction that began before the table of committed keys last started over and finds
  * its stripe moved, refuse a commit that did not conflict: a retry, never a wrong answer;</li>
  * <li>two transactions creating the same relationship at the same moment: the second to reach its commit is refused, never both,
@@ -219,6 +222,11 @@ public final class MergedEdgeRegistry {
   /** How many committed keys the exact table holds, for the tests. */
   synchronized int exactKeys() {
     return committedKeys != null ? committedKeys.size() : 0;
+  }
+
+  /** Whether {@code key} was committed after {@code since}, as a commit that began at {@code since} is told, for the tests. */
+  synchronized boolean isCommittedSince(final long key, final long since) {
+    return lastCommit != null && lastCommit[stripeOf(key)] > since && committedSince(key, since);
   }
 
   /** How many commits are writing {@code key} now, for the tests. */

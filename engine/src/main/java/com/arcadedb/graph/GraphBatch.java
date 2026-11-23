@@ -534,7 +534,7 @@ public class GraphBatch implements AutoCloseable {
       savedThreadWALFlush = tx.getThreadWALFlush();
     } else {
       savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
-      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration());
       savedThreadUseWAL = null;
       savedThreadWALFlush = null;
     }
