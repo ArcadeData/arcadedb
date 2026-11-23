@@ -127,10 +127,16 @@ public class DeleteStep extends AbstractExecutionStep {
    *   <li>a {@code DETACH DELETE} behind a fixed-length relationship pattern (see
    *       {@code EagerBarriers.detachDeleteNeedsEagerRead()}): the MATCH walks the edge list of a node while its rows are
    *       still being produced, and the first row's DETACH removes the relationships of that list the walk has not
-   *       reached, so the rows they would have produced are lost without an error (issue #12254).</li>
+   *       reached, so the rows they would have produced are lost without an error (issue #12254);</li>
+   *   <li>a DELETE of a relationship that an expansion starting after the delete reads again (see
+   *       {@code EagerBarriers.relationshipsMayBeReadAgain()}): a second relationship pattern, a relationship without a
+   *       direction, or an UNWIND, LOAD CSV, CALL or earlier segment ahead of the pattern, so the expansion of a later row
+   *       no longer finds the relationship an earlier row deleted and the rows it would have produced are lost without an
+   *       error (issue #12521).</li>
    * </ul>
    * A fixed-length connected pattern read by a DELETE without DETACH, or by a DETACH DELETE that removes only the
-   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, so
+   * relationship the walk stands on, binds each row's variables independently and loses nothing to the rows before it, as
+   * long as it is one relationship of one direction fed by the scan of the MATCH alone, which reaches each relationship once:
    * it is left on the cheaper streaming path.
    * <p>
    * The cost of this path is the whole upstream row set held in memory at once (see
