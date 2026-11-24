@@ -58,6 +58,11 @@ final class TrafficReadiness {
     final RaftServer server = ha.raftServer;
     if (server == null || ha.shutdownRequested)
       return false;
+    // Issue #12552: a dead StateMachineUpdater, a close of the old Ratis server that never ended, or a dead or stalled
+    // health monitor. The division can still report RUNNING with a leader and no lag through all three, because every
+    // field read below keeps its last value once nothing applies or recovers any more.
+    if (ha.getReplicationFailureReason() != null)
+      return false;
     // Read BEFORE the applied index below (issue #7619): the applied index only grows, so pairing it with a
     // leader figure taken no later than itself can only under-state the lag, never over-state it.
     final long leaderCommitIndex = ha.leaderReportedCommitIndex;

@@ -38,6 +38,7 @@ import com.arcadedb.query.opencypher.optimizer.RangePredicate;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexEntrySkip;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.ParallelRecordScan;
 import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
@@ -192,7 +193,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         return null;
       filter = new LogicalExpression(LogicalExpression.Operator.AND, filter, extra);
     }
-    try (final RangeRows rows = open(context, 0)) {
+    try (final RangeRows rows = open(context, 0, 0)) {
       return rows.planParallelLabelScan(filter);
     }
   }
@@ -266,7 +267,17 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
-    return open(context, nRecords);
+    return open(context, nRecords, 0);
+  }
+
+  /**
+   * Executes the scan with its first {@code skip} rows passed over, for the SKIP of a plan whose steps between this scan and the
+   * SKIP make one row of each row and read nothing of the vertex (issue #11954). The row of an index entry is counted without
+   * loading its vertex when {@link IndexEntrySkip} can tell that it is one and no pushed predicate has to read it; the others, and
+   * the vertices with a null key a scan of the label reads, are loaded and dropped once they make a row.
+   */
+  public ResultSet execute(final CommandContext context, final int nRecords, final int skip) {
+    return open(context, nRecords, skip);
   }
 
   /** The rows of one execution, which can also plan the parallel label scan of {@link #planParallelRows}. */
@@ -275,7 +286,7 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     ParallelRecordScan planParallelLabelScan(BooleanExpression filter);
   }
 
-  private RangeRows open(final CommandContext context, final int nRecords) {
+  private RangeRows open(final CommandContext context, final int nRecords, final int skip) {
     // A user who may not read the label is refused whatever the bounds are, as the walk of its buckets does (issue #11904)
     requireReadable(context, label);
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
@@ -317,6 +328,9 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       // The arrays are charged to the heap budget all queries share (issue #9792), as SQL's MaterializeRecordsStep charges
       // its addresses: not capped in number, since reading them first is what makes the write correct
       private OperationHeapLimit heapLimit;
+      // The rows still to pass over, and what tells whether an entry is a row without loading its vertex
+      private int toSkip = skip;
+      private IndexEntrySkip skipJudge;
 
       @Override
       public boolean hasNext() {
@@ -699,6 +713,15 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           collect(identifiable);
           return null;
         }
+        // A skipped row is counted from its entry, unloaded, when nothing but the label decides whether the vertex is a row
+        if (toSkip > 0 && filter == null && identifiable instanceof RID rid) {
+          if (skipJudge == null)
+            skipJudge = new IndexEntrySkip(context.getDatabase(), null);
+          if (skipJudge.verdict(rid) == IndexEntrySkip.Verdict.ROW) {
+            --toSkip;
+            return null;
+          }
+        }
         return identifiable.asVertex();
       }
 
@@ -708,8 +731,13 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
           return;
         }
         final Result row = rows.map(vertex, context);
-        if (row != null)
-          buffer.add(row);
+        if (row == null)
+          return;
+        if (toSkip > 0) {
+          --toSkip;
+          return;
+        }
+        buffer.add(row);
       }
 
       @Override

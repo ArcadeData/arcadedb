@@ -19,6 +19,7 @@
 package com.arcadedb.graph.olap;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.IntIntHashMap;
 import com.arcadedb.utility.LongObjectHashMap;
 
@@ -1076,6 +1077,37 @@ class DeltaOverlay {
   /** The edge types this overlay holds added edges for, which need not have a slice in the base snapshot. */
   Set<String> getAddedEdgeTypes() {
     return addedEdgesPerType.keySet();
+  }
+
+  /**
+   * The buckets of the edges this overlay holds for {@code edgeType}, or null when it holds none (issue #12507). What identifies the
+   * slice of a type created after the base was scanned, which has no scanned buckets to be told by: a type of the same name that
+   * does not own them is not the one the edges were written to. A lightweight edge is keyed by a RID of one of the type's buckets
+   * too (see {@link TxDelta#lightEdgeKey}). Walks the edges the type holds here, so it is asked once per decision, not per read.
+   */
+  int[] getAddedEdgeBuckets(final String edgeType) {
+    final Map<RID, AddedEdge> added = addedEdgesPerType.get(edgeType);
+    if (added == null || added.isEmpty())
+      return null;
+    final IntHashSet buckets = new IntHashSet();
+    for (final RID rid : added.keySet())
+      buckets.add(rid.getBucketId());
+    return buckets.toArray();
+  }
+
+  /**
+   * The buckets of the live vertices this overlay holds beyond the base, or null when it holds none (issue #12549). What tells the
+   * vertices of a type created after the base was scanned, which the base's node mapping does not name: a bucket no covered vertex type
+   * owns any more holds vertices that left the view. Walks the overflow vertices, so it is asked once per decision, not per read.
+   */
+  int[] getOverflowVertexBuckets() {
+    if (getOverflowCount() == 0)
+      return null;
+    final IntHashSet buckets = new IntHashSet();
+    for (int i = 0; i < overflowIdToRID.length; i++)
+      if (!deletedOverflowNodes.get(i))
+        buckets.add(overflowIdToRID[i].getBucketId());
+    return buckets.toArray();
   }
 
   int getDeltaEdgeCount() {

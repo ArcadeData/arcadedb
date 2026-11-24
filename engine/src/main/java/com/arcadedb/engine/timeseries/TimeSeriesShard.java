@@ -73,6 +73,21 @@ public class TimeSeriesShard implements AutoCloseable {
   private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
   /**
+   * The longest a compaction waits, at each of its commits of the header page, for an entry of another node to be applied here
+   * (issue #12470). The entry holds a version of the page from its validation by the leader until its apply, one Raft round
+   * trip: milliseconds on a healthy cluster, so this is a generous multiple of it, and short enough that a request nothing will
+   * ever apply (the ledger sweeps it only after several client timeouts) costs a few seconds of a maintenance pass and not more.
+   */
+  static final long RESERVATION_WAIT_MS = 1_000L;
+
+  /**
+   * How many samples of the mutable pages a compaction reads, sorts and compresses at a time: two sealed blocks' worth
+   * ({@link #SEALED_BLOCK_SIZE}). The pages are compacted window by window, so this, and not the size of the mutable bucket,
+   * is what a compaction holds in heap.
+   */
+  static final int COMPACTION_WINDOW_SAMPLES = 2 * 65_536;
+
+  /**
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
    * have left them. Public only because the test that sets it is an HA integration test in another module
@@ -100,19 +115,19 @@ public class TimeSeriesShard implements AutoCloseable {
   // The mutual exclusion of EVERY operation that rewrites this shard's sealed file (issue #9771):
   //  - compact()             (Phases 3 and 4b are lock-free, and they own .ts.sealed.tmp)
   //  - mergeSmallBlocks()    (its own .ts.sealed.merge.tmp, but it installs a directory planned against a snapshot)
-  //  - runSealedRewrite()    (retention and downsampling, through TimeSeriesEngine: truncateBefore() and downsampleBlocks()
-  //                           use .ts.sealed.tmp as well)
+  //  - runSealedRewrite()    (retention and delete, through TimeSeriesEngine: truncateBefore() uses .ts.sealed.tmp as well)
+  //  - downsample()          (its own .ts.sealed.downsample.tmp, written outside the compaction lock like a merge's, issue #12610)
   // All of them either share that one temp path or install a block directory computed from a snapshot of the live store, so
   // two of them overlapping corrupt each other's temp file or silently undo each other's result (a retention pass inside a
   // compaction's window put the retired blocks back). compactionLock is NOT this lock: compaction deliberately does not hold
   // it for the long part of its work. Lock order: compactionMutex first, then compactionLock.
-  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact() and mergeSmallBlocks() take
-  // the mutex and then open the session, retention and downsampling open one session for all shards and take each shard's mutex
-  // inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
+  // The HA replication session (runWithCompactionReplication) is not a lock in this order: compact(), mergeSmallBlocks() and
+  // downsample() take the mutex and then open the session, retention and delete open one session for all shards and take each
+  // shard's mutex inside it. That cannot invert into a deadlock because opening a session never waits: FileManager.startRecordingChanges()
   // answers false when one is already active and the wrapper then returns false without running the work (a deferred pass). A
   // thread holding a session and waiting for the mutex is waited for by nobody who holds the mutex and wants a session.
-  // runSealedRewrite() must not be called while holding compactionLock (a read lock cannot be upgraded); its only caller,
-  // TimeSeriesEngine.runSealedMaintenanceReplicated(), holds none.
+  // runSealedRewrite() and downsample() must not be called while holding compactionLock (a read lock cannot be upgraded); their
+  // callers in TimeSeriesEngine hold none.
   private final ReentrantLock          compactionMutex = new ReentrantLock();
   // Serializes concurrent appendSamples() calls on this shard.
   // Multiple threads routing to the same shard via round-robin would otherwise produce
@@ -241,6 +256,8 @@ public class TimeSeriesShard implements AutoCloseable {
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
                          final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion, final long typeOwner)
       throws IOException {
+    // the name of every file of the shard starts with the name of the type
+    LocalTimeSeriesType.checkValidName(baseName);
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -883,8 +900,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * <b>What the window does NOT freeze is the sealed store's block directory</b> (issue #8052; since issue #9420 the
    * same holds for {@link #iterateRange}, which reads the sealed layer through the same walk). The sealed walk takes {@code directoryLock} one block at
    * a time and holds nothing of this shard's in between, so a pass that rewrites the sealed file - a retention
-   * {@code truncateBefore} or {@code downsampleBlocks}, both of which run under
-   * {@code TimeSeriesEngine.runSealedMaintenanceReplicated} holding this shard's compaction WRITE lock, or an HA
+   * {@code truncateBefore} or a downsample, both of which install their file holding this shard's compaction WRITE lock, or an HA
    * follower installing the leader's sealed file - can land between two of this walk's blocks instead of waiting
    * behind the whole of it. Taking the compaction write lock does not serialize it against this method, because
    * this method no longer holds the read lock once the snapshot is taken; that is the trade issue #7897 made, and
@@ -1175,13 +1191,15 @@ public class TimeSeriesShard implements AutoCloseable {
    *       N and persist the crash-recovery flag.  The write lock guarantees that no concurrent
    *       {@link #appendSamples} can modify page-0 during this TX, so the commit always
    *       succeeds.</li>
+   *   <li><b>Phase 3</b> (lock-free, no TX): copy the existing sealed blocks to {@code .ts.sealed.tmp}, one block at a
+   *       time. Concurrent queries still read from the live sealed file; no double-counting.</li>
    *   <li><b>Phase 1</b> (no lock, read-only TX then rollback): read full/immutable pages
-   *       1..N-1 via a short read-only transaction that is immediately rolled back.  These pages
+   *       1..N-1 via short read-only transactions that are immediately rolled back.  These pages
    *       are permanently full — {@link #appendSamples} always writes to the LAST page — so
    *       their content is stable and no MVCC conflict is possible.</li>
-   *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data.</li>
-   *   <li><b>Phase 3</b> (lock-free, no TX): write all sealed blocks to {@code .ts.sealed.tmp}.
-   *       Concurrent queries still read from the live sealed file; no double-counting.</li>
+   *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data, and append its blocks to the temp file.
+   *       Phases 1 and 2 run one window of {@link #COMPACTION_WINDOW_SAMPLES} samples at a time, so the heap a compaction
+   *       needs does not grow with the number of samples in the mutable bucket.</li>
    *   <li><b>Phase 4</b> (brief write lock + brief TX): read any remaining partial pages,
    *       merge with Phase-2 spill if present, compress, atomically swap the temp file,
    *       clear the compacted mutable bucket, and reset the crash-recovery flag.  The write
@@ -1250,7 +1268,7 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
-   * Runs a rewrite of this shard's sealed file that is not a compaction - retention, downsampling - with the exclusion every
+   * Runs a rewrite of this shard's sealed file that is not a compaction - retention, delete - with the exclusion every
    * such rewrite needs (issue #9771): the {@link #compactionMutex} that keeps it off a compaction or a merge that is between
    * its snapshot and its swap, then the compaction write lock that keeps readers off the files while they are swapped.
    * <p>
@@ -1265,11 +1283,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * bounded by that compaction.
    */
   void runSealedRewrite(final SealedRewrite rewrite) throws IOException {
-    // A read lock cannot be upgraded: taking the write lock below while this thread holds the read lock would wait for itself
-    // forever. Said out loud, before the mutex is taken, instead of as a hung maintenance thread.
-    if (compactionLock.getReadHoldCount() > 0)
-      throw new IllegalStateException("A rewrite of the sealed file of shard " + shardIndex + " of type '" + typeName
-          + "' was started while holding the compaction read lock, which would wait for itself to release it");
+    refuseRewriteUnderCompactionReadLock();
     compactionMutex.lock();
     try {
       compactionLock.writeLock().lock();
@@ -1277,6 +1291,90 @@ public class TimeSeriesShard implements AutoCloseable {
         rewrite.run();
       } finally {
         compactionLock.writeLock().unlock();
+      }
+    } finally {
+      compactionMutex.unlock();
+    }
+  }
+
+  /**
+   * A read lock cannot be upgraded: taking the compaction write lock while this thread holds the read lock would wait for itself
+   * forever. Said out loud, before the mutex is taken, instead of as a hung maintenance thread.
+   */
+  private void refuseRewriteUnderCompactionReadLock() {
+    if (compactionLock.getReadHoldCount() > 0)
+      throw new IllegalStateException("A rewrite of the sealed file of shard " + shardIndex + " of type '" + typeName
+          + "' was started while holding the compaction read lock, which would wait for itself to release it");
+  }
+
+  /**
+   * Downsamples the sealed blocks of this shard older than {@code cutoffTs} to {@code granularityMs} on the grid shifted by
+   * {@code gridOffsetMs} ({@link TimeSeriesSealedStore#downsampleBlocks}), and ships the rewritten file in a replication session of
+   * its own. Answers whether the sealed file was rewritten. Does nothing on a follower, which receives the leader's file.
+   * <p>
+   * Shaped like the merge of small blocks, not like {@link #runSealedRewrite} (issue #12610): the selection, the decoding and
+   * folding of the history and the writing of the temp file ({@link TimeSeriesSealedStore#prepareDownsample}) hold no lock a query
+   * or an append of the shard waits for, and run before the replication session is opened, which on a leader every commit of the
+   * database waits for. The session and the compaction write lock are held only to install the file and to capture it for the
+   * replication, as long as a compaction's swap. Before, the whole pass ran under both, so on a type with a long history the first
+   * pass after a tier was added kept every query and every append of the shard waiting for as long as it took to decode and
+   * re-encode that history.
+   * <p>
+   * The {@link #compactionMutex} is held for the whole pass, which keeps it apart from a compaction, a merge, a retention pass, a
+   * delete and a rename (issue #9771), as before: they write the same temp file or install a directory planned against a snapshot.
+   * The lock order is the one a compaction and a merge follow: the mutex, then the session. What can still move the directory between
+   * the prepare and the commit is an install of a file shipped by another node, which takes only the directory lock of the store (a
+   * node that was the leader when the pass started); the commit then finds the directory changed and drops the pass. A pass that is
+   * dropped, or whose session is deferred (another one is in progress, or this node is no longer the leader), deletes its temp file,
+   * and the next maintenance tick downsamples the store as it is.
+   */
+  boolean downsample(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
+      final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+    refuseRewriteUnderCompactionReadLock();
+    // the session below would skip the commit on a follower anyway: this spares it the fold of the history
+    if (database.isFollower())
+      return false;
+
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
+    compactionMutex.lock();
+    try {
+      final ReentrantLock downsampleLock = sealedStore.getDownsampleLock();
+      downsampleLock.lock();
+      try {
+        final TimeSeriesSealedStore.DownsamplePlan plan = sealedStore.prepareDownsample(cutoffTs, granularityMs, gridOffsetMs,
+            tsColIdx, tagColIndices, numericColIndices);
+        if (plan == null || plan.directoryMoved())
+          return false;
+
+        final boolean[] installed = new boolean[1];
+        try {
+          db.runWithCompactionReplication(() -> {
+            // As retention and the merge do: the local swap lands first and the replication record follows it, so a failure between
+            // the two is repaired by the next sealed change shipped for this shard. Only a pass that rewrote the file ships it: a
+            // downsample only rewrites blocks that hold two samples of one (tag values, bucket), so a steady-state pass, which finds
+            // nothing to fold, never opens a session at all (issue #11984)
+            compactionLock.writeLock().lock();
+            try {
+              if (!sealedStore.commitDownsample(plan))
+                return false;
+              installed[0] = true;
+              db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+              return true;
+            } finally {
+              compactionLock.writeLock().unlock();
+            }
+          });
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IOException("Downsampling interrupted for shard " + shardIndex, e);
+        } finally {
+          // a session that never ran the commit, or a commit that failed before the swap, leaves no temp file behind (issue #9770)
+          if (!installed[0])
+            sealedStore.deleteDownsampleTempFileIfExists();
+        }
+        return installed[0];
+      } finally {
+        downsampleLock.unlock();
       }
     } finally {
       compactionMutex.unlock();
@@ -1309,11 +1407,14 @@ public class TimeSeriesShard implements AutoCloseable {
     if (deleted > 0L)
       sealedDeleteUnpublished = true;
     if (sealedDeleteUnpublished)
-      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      recordSealedChange(db, typeName, shardIndex, sealedStore);
 
     // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
-    // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read
+    // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read. So
+    // can an entry of another node that a replicated leader has accepted and not applied yet (issue #12470): it holds a version of
+    // page 0, which every commit of this one is refused for until the entry is applied, so each attempt waits for the page to be free
     for (int attempt = 3; attempt > 0; attempt--) {
+      awaitHeaderPageApplied();
       final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         final long removed = mutableBucket.deleteSamples(fromTs, toTs, tagFilter);
@@ -1362,6 +1463,24 @@ public class TimeSeriesShard implements AutoCloseable {
     void run() throws IOException;
   }
 
+  /**
+   * Waits up to {@link #RESERVATION_WAIT_MS} for the header page of the mutable bucket to be free of the entries of other nodes
+   * that a replicated leader has accepted and not applied yet (issue #12470), which is what a commit of the page is refused for
+   * meanwhile. Returns at once everywhere else. It only spares a refusal, so it never fails the compaction itself: giving up
+   * leaves the commit that follows to meet the refusal, and a header page that cannot be read fails that commit with its own error.
+   */
+  private void awaitHeaderPageApplied() {
+    try {
+      if (!mutableBucket.awaitHeaderPageApplied(RESERVATION_WAIT_MS))
+        LogManager.instance().log(this, Level.FINE,
+            "Compaction of shard %d of type '%s' gave up waiting %d ms for an entry in flight on the header page", shardIndex,
+            typeName, RESERVATION_WAIT_MS);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the header page of shard %d of type '%s' to wait for it: %s",
+          shardIndex, typeName, e.getMessage());
+    }
+  }
+
   private boolean mergeSmallBlocksInternal(final int minBlocksSaved) throws IOException {
     final TimeSeriesSealedStore.MergePlan plan = sealedStore.prepareMerge(SEALED_BLOCK_SIZE, compactionBucketIntervalMs,
         minBlocksSaved);
@@ -1375,7 +1494,7 @@ public class TimeSeriesShard implements AutoCloseable {
     try {
       if (!sealedStore.commitMerge(plan))
         return false;
-      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      recordSealedChange(db, typeName, shardIndex, sealedStore);
       return true;
     } catch (final IOException | RuntimeException e) {
       sealedStore.deleteMergeTempFileIfExists();
@@ -1399,16 +1518,25 @@ public class TimeSeriesShard implements AutoCloseable {
     // (one that released compactionLock.readLock() before its own commit, per the fix for
     // issue #4458) may still be executing its DB-level commit concurrently. If that commit
     // applies page-0 between Phase 0's begin and commit, Phase 0 gets a
-    // ConcurrentModificationException. A brief retry inside the same write lock ensures
-    // Phase 0 always sees the latest page-0 version and commits without conflict. Since
+    // ConcurrentModificationException. A brief retry with the write lock taken again ensures
+    // Phase 0 sees the latest page-0 version and commits without conflict. Since
     // appendLock serializes appends one at a time, at most one in-flight commit can be
     // outstanding, so one retry is sufficient in practice; the loop uses 3 for safety.
+    //
+    // On a replicated leader the conflict can also be a RESERVATION (issue #12470): an entry of another node that the
+    // leader validated and appended but has not applied yet holds a version of page 0, and every check of the page is
+    // refused until it is applied, which takes a Raft round trip. Three attempts back to back all meet it, so each
+    // attempt is preceded by a wait for the page to be free, and the wait is NOT under the write lock: it is the round trip
+    // of someone else's entry, which blocks nothing of this shard but the local appends the lock would hold up for no reason.
+    // Each attempt is self-contained (it begins its own transaction and reads the page count inside it), so letting go of
+    // the lock between two of them changes nothing.
     final int snapshotDataPageCount;
-    compactionLock.writeLock().lock();
-    try {
-      int capturedPageCount = -1;
-      // Count down to mirror the retry convention used in appendSamples().
-      for (int attempt = 3; attempt > 0; attempt--) {
+    int capturedPageCount = -1;
+    // Count down to mirror the retry convention used in appendSamples().
+    for (int attempt = 3; attempt > 0 && capturedPageCount < 0; attempt--) {
+      awaitHeaderPageApplied();
+      compactionLock.writeLock().lock();
+      try {
         // Tracked, like every other transaction this class begins for itself: compactAll() is public API and
         // nothing stops an embedded caller from running it inside a transaction of their own, which is the
         // caller a bare isTransactionActive() would have rolled back after a failed commit (issue #7732).
@@ -1448,63 +1576,33 @@ public class TimeSeriesShard implements AutoCloseable {
           mutableBucket.setCompactionWatermark(initialBlockCount);
           tx.commit();
           capturedPageCount = pageCount;
-          break;
         } catch (final ConcurrentModificationException e) {
           tx.rollbackIfMine();
           if (attempt == 1)
             throw new IOException("Compaction failed in phase 0 after retries", e);
-          // An in-flight append committed page-0 between begin and commit; retry with the
-          // latest version.
+          // An in-flight append committed page-0 between begin and commit, or an entry of another node holds a
+          // reserved version of it: the next attempt waits for the entry and retries with the latest version.
         } catch (final Exception e) {
           tx.rollbackIfMine();
           throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
         }
+      } finally {
+        compactionLock.writeLock().unlock();
       }
-      // Every loop iteration that does not break either returns or throws, so a successful exit
-      // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
-      // which is disabled by default in production) so a future regression cannot silently propagate
-      // a -1 page count into Phase 4.
-      if (capturedPageCount < 0)
-        throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
-      snapshotDataPageCount = capturedPageCount;
-    } finally {
-      compactionLock.writeLock().unlock();
     }
+    // Every loop iteration that does not capture the count either returns or throws, so a successful exit
+    // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
+    // which is disabled by default in production) so a future regression cannot silently propagate
+    // a -1 page count into Phase 4.
+    if (capturedPageCount < 0)
+      throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
+    snapshotDataPageCount = capturedPageCount;
 
     // Pages 1..lastFullPage are FULL (immutable): appendSamples() never writes to full pages
     // — it always appends to the LAST page.  These are safe to read without the write lock.
-    // Page snapshotDataPageCount is the current partial last page; it will be read in Phase 4
-    // under the write lock together with any new pages created between Phase 0 and Phase 4.
+    // Page snapshotDataPageCount is the current partial last page; it will be read in Phase 4, lock-free in 4b once newer pages
+    // made it full, otherwise under the write lock in 4c together with any new pages created meanwhile.
     final int lastFullPage = snapshotDataPageCount - 1;
-
-    // Shared output lists for compressed blocks built in Phases 1+2.
-    final List<byte[][]> allCompressedList = new ArrayList<>();
-    final List<long[]> allMetaList = new ArrayList<>();
-    final List<TimeSeriesSealedStore.BlockStats> allStatsList = new ArrayList<>();
-    final List<String[][]> allTagDVList = new ArrayList<>();
-
-    // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
-    // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX
-    // is always conflict-free.  Roll it back immediately — nothing is modified.
-    // phase2Spill holds the raw samples of the last partial chunk from Phase 2 (if any).
-    // These samples are merged with Phase 4's partial-page data to avoid splitting a single
-    // sealed block across the Phase-2/Phase-4 page boundary.
-    Object[] phase2Spill = null;
-    if (lastFullPage > 0) {
-      final OwnTransaction snapshot = OwnTransaction.begin(db);
-      try {
-        final Object[] snapshotData = mutableBucket.readFullPagesForCompaction(lastFullPage);
-        if (snapshotData != null)
-          // ── Phase 2 (lock-free, no TX): sort + compress immutable page data ─────────────
-          // returnSpill=true: the last partial chunk is returned as raw data instead of being
-          // emitted as a block, so Phase 4 can merge it with the partial-page samples and
-          // produce a single correctly-sized block.
-          phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allStatsList,
-              allTagDVList, true);
-      } finally {
-        snapshot.rollbackIfMine(); // read-only: rollback is always safe, and only ever of our own
-      }
-    }
 
     // The temp file exists from Phase 3 until Phase 4c swaps it in, and Phases 3 to 4b are the part of the compaction that is
     // lock-free and owns it. Whatever fails in that window (an MVCC conflict reading the pages, an IO error, a data-dependent
@@ -1513,41 +1611,43 @@ public class TimeSeriesShard implements AutoCloseable {
     // file of unbounded age at its path.
     final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
     final int phase4aPageCount;
-    Object[] phase4bSpill = null;
+    Object[] spill = null;
     boolean readyForPhase4c = false;
     try {
-      // ── Phase 3 (lock-free, no TX): write existing sealed + Phase 2 blocks to temp file ─────
-      // Concurrent queries still read from the CURRENT sealed file — no double-counting.
-      // The temp file is created even when allCompressedList is empty so that Phase 4 can
-      // append the partial page's data and then swap atomically in one shot.
+      // ── Phase 3 (lock-free, no TX): copy the existing sealed blocks to the temp file ────────
+      // Concurrent queries still read from the CURRENT sealed file — no double-counting. It runs first so that every phase
+      // after it appends its blocks to the temp file as soon as it built them, instead of holding them until the end. The
+      // retained blocks therefore come first in the file, which is what the crash recovery's "first N blocks in file order"
+      // counts (the watermark set in Phase 0).
       try {
-        newBlockDirectory = sealedStore.writeTempCompactionFile(
-            allCompressedList, allMetaList, allStatsList, allTagDVList);
+        newBlockDirectory = sealedStore.writeTempCompactionFile(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
+            new ArrayList<>());
       } catch (final Exception e) {
         // the temp file and the crash-recovery flag are cleaned up by the finally below
         throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
       }
 
-      // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
-      // Grab the write lock just long enough to snapshot the current page count and read the
-      // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
-      // while we sort + compress (Phase 4b).
+      // ── Phases 1 + 2 (no lock, read-only TX per window): read, sort and compress full pages ──
+      // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX is always conflict-free.
+      // The pages are taken a window at a time (compactFullPages), so the heap holds one window of samples whatever the size
+      // of the mutable bucket. The spill is the raw samples of the last partial chunk, carried into the next window and in
+      // the end into Phase 4c, so a sealed block is never split across a window or phase boundary.
+      if (lastFullPage > 0)
+        spill = compactFullPages(db, 1, lastFullPage, null, newBlockDirectory);
+
+      // ── Phase 4a (brief writeLock + read-only TX): snapshot the page count ───────────────
+      // Grab the write lock just long enough to snapshot the current page count.  Release the lock immediately so appends
+      // can resume while the pages accumulated since Phase 0 are compressed (Phase 4b).
       //
-      // IMPORTANT: do NOT read the last page (phase4aPageCount) here.  Phase 4b runs lock-free,
-      // so concurrent appendSamples() calls may add samples to page phase4aPageCount between now
-      // and Phase 4c.  Deferring the read of page phase4aPageCount to Phase 4c (under writeLock)
-      // guarantees we capture those extra samples and do not lose them when clearDataPages() runs.
-      Object[] phase4aData;
+      // IMPORTANT: do NOT read the last page (phase4aPageCount) before Phase 4c.  Phase 4b runs lock-free, so concurrent
+      // appendSamples() calls may add samples to page phase4aPageCount between now and Phase 4c.  Deferring the read of page
+      // phase4aPageCount to Phase 4c (under writeLock) guarantees we capture those extra samples and do not lose them when
+      // clearDataPages() runs. The pages before it are full, so immutable, as the pages of Phase 1 are.
       compactionLock.writeLock().lock();
       try {
         final OwnTransaction snapshot = OwnTransaction.begin(db);
         try {
           phase4aPageCount = mutableBucket.getDataPageCount();
-          if (phase4aPageCount > lastFullPage + 1)
-            // Read only up to phase4aPageCount - 1; the last page is read in Phase 4c.
-            phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount - 1);
-          else
-            phase4aData = null;
         } finally {
           snapshot.rollbackIfMine(); // read-only snapshot
         }
@@ -1555,31 +1655,14 @@ public class TimeSeriesShard implements AutoCloseable {
         compactionLock.writeLock().unlock();
       }
 
-      // ── Phase 4b (lock-free, no TX): compress remaining pages + write to temp file ────────
-      // Merge Phase-2 spill with the Phase-4a snapshot, then compress and append to the temp
-      // file.  Concurrent appends proceed freely during this CPU/IO-intensive step.
+      // ── Phase 4b (lock-free, read-only TX per window): compress remaining full pages ──────
+      // Same as Phases 1 + 2 over the pages accumulated since Phase 0, carrying the spill along. The last partial chunk is
+      // held back for Phase 4c, where it can be merged with any tail pages created during Phase 4b.
       final Runnable prePhase4bHook = TEST_PRE_PHASE4B_HOOK;
       if (prePhase4bHook != null)
         prePhase4bHook.run();
-      final Object[] toCompress4b;
-      if (phase2Spill != null && phase4aData != null)
-        toCompress4b = mergeCompactionData(phase2Spill, phase4aData);
-      else if (phase2Spill != null)
-        toCompress4b = phase2Spill;
-      else
-        toCompress4b = phase4aData;
-
-      // Use returnSpill=true so the last partial chunk is held back for Phase 4c,
-      // where it can be merged with any tail pages created during Phase 4b.
-      if (toCompress4b != null) {
-        final List<byte[][]> remCompressed = new ArrayList<>();
-        final List<long[]> remMeta = new ArrayList<>();
-        final List<TimeSeriesSealedStore.BlockStats> remStats = new ArrayList<>();
-        final List<String[][]> remTagDV = new ArrayList<>();
-        phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remStats, remTagDV, true);
-        if (!remCompressed.isEmpty())
-          sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remStats, remTagDV, newBlockDirectory);
-      }
+      if (phase4aPageCount - 1 > lastFullPage)
+        spill = compactFullPages(db, lastFullPage + 1, phase4aPageCount - 1, spill, newBlockDirectory);
 
       readyForPhase4c = true;
     } finally {
@@ -1597,6 +1680,14 @@ public class TimeSeriesShard implements AutoCloseable {
       prePhase4cHook.run();
     compactionLock.writeLock().lock();
     try {
+      // On a replicated leader an entry of another node, validated and appended but not applied yet, holds a version of
+      // page 0 (issue #12470), and the commit below would be refused for it: the swap is not repeatable, so the refusal
+      // throws the whole compaction away (see the catch below). Waited for here, before the transaction begins, so the tail
+      // read below sees the samples of that entry once it is applied, and under the lock, so no append of this node can put
+      // another one in flight meanwhile (an entry of another node is not stopped by it, and one validated after this wait
+      // still ends the compaction as before). The cost is bounded and paid only while an entry is in flight, against a
+      // compaction thrown away.
+      awaitHeaderPageApplied();
       final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         final int finalPageCount = mutableBucket.getDataPageCount();
@@ -1608,27 +1699,15 @@ public class TimeSeriesShard implements AutoCloseable {
         // lock-free Phase 4b would otherwise be lost when clearDataPages() runs.
         // phase4aPageCount is always >= lastFullPage + 1 (Phase 0 returns early when there are
         // no data pages), and finalPageCount is always >= phase4aPageCount (pages only grow),
-        // so the range starting at phase4aPageCount is always valid.
-        final Object[] tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount, finalPageCount);
-
-        // Merge Phase 4b spill with tail data
-        final Object[] toCompressFinal;
-        if (phase4bSpill != null && tailData != null)
-          toCompressFinal = mergeCompactionData(phase4bSpill, tailData);
-        else if (phase4bSpill != null)
-          toCompressFinal = phase4bSpill;
-        else
-          toCompressFinal = tailData;
-
-        if (toCompressFinal != null) {
-          final List<byte[][]> tailCompressed = new ArrayList<>();
-          final List<long[]> tailMeta = new ArrayList<>();
-          final List<TimeSeriesSealedStore.BlockStats> tailStats = new ArrayList<>();
-          final List<String[][]> tailTagDV = new ArrayList<>();
-          buildCompressedBlocks(toCompressFinal, tailCompressed, tailMeta, tailStats, tailTagDV, false);
-          if (!tailCompressed.isEmpty())
-            sealedStore.appendBlocksToTempFile(tailCompressed, tailMeta, tailStats, tailTagDV, newBlockDirectory);
+        // so the range starting at phase4aPageCount is always valid. Read a window at a time, as the phases before.
+        final int pagesPerWindow = pagesPerCompactionWindow();
+        for (int windowStart = phase4aPageCount; windowStart <= finalPageCount; windowStart += pagesPerWindow) {
+          final int windowEnd = Math.min(finalPageCount, windowStart + pagesPerWindow - 1);
+          spill = compressToTempFile(concatCompactionData(spill, mutableBucket.readPagesRangeForCompaction(windowStart, windowEnd)),
+              windowEnd < finalPageCount, newBlockDirectory);
         }
+        // whatever is left becomes blocks now
+        compressToTempFile(spill, false, newBlockDirectory);
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
         sealedStore.commitTempCompactionFile(newBlockDirectory);
@@ -1636,9 +1715,8 @@ public class TimeSeriesShard implements AutoCloseable {
         // Capture the rewritten sealed-store bytes so the HA layer can ship them to followers in the
         // SAME replication unit as the mutable-bucket clear below. The sealed store is not a paginated
         // component, so it does not replicate via the page WAL; recording it here keeps the sealed
-        // blocks and the clear atomic. No-op on a standalone database.
-        db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(),
-            sealedStore.readWholeSealedFile());
+        // blocks and the clear atomic. Skipped on a standalone database.
+        recordSealedChange(db, typeName, shardIndex, sealedStore);
 
         final Runnable afterSwapHook = TEST_PHASE4C_AFTER_SWAP_HOOK;
         if (afterSwapHook != null)
@@ -1765,7 +1843,7 @@ public class TimeSeriesShard implements AutoCloseable {
           final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
           for (int i = chunkStart; i < chunkEnd; i++) {
             final Object val = sortedColArrays[c][i];
-            distinctSet.add(val != null ? val.toString() : "");
+            distinctSet.add(TimeSeriesNaN.dictionaryText(val));
           }
           chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
         }
@@ -1821,6 +1899,80 @@ public class TimeSeriesShard implements AutoCloseable {
       result[i] = merged;
     }
     return result;
+  }
+
+  /** {@link #mergeCompactionData} where either side may be {@code null}, meaning no samples. */
+  private static Object[] concatCompactionData(final Object[] a, final Object[] b) {
+    if (a == null)
+      return b;
+    if (b == null)
+      return a;
+    return mergeCompactionData(a, b);
+  }
+
+  /**
+   * How many data pages one compaction window reads: as many as hold {@link #COMPACTION_WINDOW_SAMPLES} samples, at least one.
+   */
+  private int pagesPerCompactionWindow() {
+    return Math.max(1, COMPACTION_WINDOW_SAMPLES / Math.max(1, mutableBucket.getMaxSamplesPerPage()));
+  }
+
+  /**
+   * Compacts the full (immutable) data pages {@code [fromPage, toPage]} into the temp file, one window of pages at a time: each
+   * window is read in a read-only transaction of its own, merged with the spill of the window before, sorted, compressed and
+   * appended to the temp file before the next one is read. The heap therefore holds one window of samples and the blocks built
+   * from it, never the whole range.
+   * <p>
+   * Each window is sorted on its own, so samples that arrive out of order across windows can end up in blocks that overlap in
+   * time, which the sealed store accepts (a later compaction pass produces the same shape).
+   *
+   * @return the spill of the last window: the raw samples of its last partial chunk, for the caller to carry on, or {@code null}
+   */
+  private Object[] compactFullPages(final DatabaseInternal db, final int fromPage, final int toPage, Object[] spill,
+      final List<TimeSeriesSealedStore.BlockEntry> blockDirectory) throws IOException {
+    final int pagesPerWindow = pagesPerCompactionWindow();
+    for (int windowStart = fromPage; windowStart <= toPage; windowStart += pagesPerWindow) {
+      final int windowEnd = Math.min(toPage, windowStart + pagesPerWindow - 1);
+      final Object[] windowData;
+      final OwnTransaction snapshot = OwnTransaction.begin(db);
+      try {
+        windowData = mutableBucket.readPagesRangeForCompaction(windowStart, windowEnd);
+      } finally {
+        snapshot.rollbackIfMine(); // read-only: rollback is always safe, and only ever of our own
+      }
+      spill = compressToTempFile(concatCompactionData(spill, windowData), true, blockDirectory);
+    }
+    return spill;
+  }
+
+  /**
+   * Sorts and compresses {@code data} with {@link #buildCompressedBlocks} and appends the blocks to the temp file at once.
+   *
+   * @return the spill when {@code returnSpill} is {@code true}, otherwise {@code null}
+   */
+  private Object[] compressToTempFile(final Object[] data, final boolean returnSpill,
+      final List<TimeSeriesSealedStore.BlockEntry> blockDirectory) throws IOException {
+    if (data == null)
+      return null;
+    final List<byte[][]> compressed = new ArrayList<>();
+    final List<long[]> meta = new ArrayList<>();
+    final List<TimeSeriesSealedStore.BlockStats> stats = new ArrayList<>();
+    final List<String[][]> tagDV = new ArrayList<>();
+    final Object[] spill = buildCompressedBlocks(data, compressed, meta, stats, tagDV, returnSpill);
+    if (!compressed.isEmpty())
+      sealedStore.appendBlocksToTempFile(compressed, meta, stats, tagDV, blockDirectory);
+    return spill;
+  }
+
+  /**
+   * Hands the rewritten sealed file of a shard to the replication of the current maintenance session. Only a replicated database
+   * ships it, so only a replicated database reads it: the file is read whole into one array, which a standalone database would
+   * allocate for nothing on every compaction, merge, retention pass and delete.
+   */
+  static void recordSealedChange(final DatabaseInternal db, final String typeName, final int shardIndex,
+      final TimeSeriesSealedStore sealedStore) throws IOException {
+    if (db.isReplicated())
+      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
   }
 
   /**
@@ -2178,6 +2330,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * one until {@link #setTypeName} is called with the rename published.
    */
   void renameFiles(final String newTypeName) throws IOException {
+    LocalTimeSeriesType.checkValidName(newTypeName);
     compactionMutex.lock();
     try {
       mutableBucket.rename(newTypeName + "_shard_" + shardIndex);

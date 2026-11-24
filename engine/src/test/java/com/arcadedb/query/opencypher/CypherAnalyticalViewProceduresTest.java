@@ -34,6 +34,7 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
@@ -57,7 +58,8 @@ class CypherAnalyticalViewProceduresTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createVertexType("City");
-    database.getSchema().createEdgeType("ROAD");
+    // the view's edge property and hierarchy weight: a view refuses an edge property the schema does not declare (issue #12177)
+    database.getSchema().createEdgeType("ROAD").createProperty("distance", Type.DOUBLE);
     database.getSchema().createDocumentType("Note");
     database.transaction(() -> {
       final MutableVertex rome = database.newVertex("City").set("name", "Rome").save();

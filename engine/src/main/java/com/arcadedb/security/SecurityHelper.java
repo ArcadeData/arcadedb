@@ -59,6 +59,30 @@ public final class SecurityHelper {
   }
 
   /**
+   * Throws a {@link SecurityException} if the current user (if any) may not read the records of {@code type}, or of one of the
+   * types under it: the refusal a walk of {@code type} and its subtypes makes when it opens their buckets. A {@code null} type is
+   * a no-op, as for {@link #checkAccessOnType}.
+   * <p>
+   * For a caller that reads the records of a type through an index instead of a walk. A bucket refuses the user who may not read it
+   * when it is opened, whatever the key is, while an index read loads a record only when the index holds the key, so left to
+   * itself it would refuse only for a key the type holds and tell the user whether it holds one (the per-type ACL is enforced in
+   * the bucket, GHSA-2c8m). The index of a type holds the records of its subtypes too, which may carry an access of their own, so
+   * every bucket of the hierarchy is asked: unlike the buckets of one type, those of a type and of its subtypes need not carry the
+   * same access.
+   */
+  public static void checkReadOnTypeAndSubTypes(final DatabaseInternal database, final DocumentType type) {
+    if (type == null)
+      return;
+
+    final List<Integer> bucketIds = type.getBucketIds(true);
+    if (bucketIds.isEmpty())
+      database.checkPermissionsOnType(type.getName(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+    else
+      for (int i = 0; i < bucketIds.size(); i++)
+        database.checkPermissionsOnFile(bucketIds.get(i), SecurityDatabaseUser.ACCESS.READ_RECORD);
+  }
+
+  /**
    * Same as {@link #checkAccessOnType(DatabaseInternal, DocumentType, SecurityDatabaseUser.ACCESS)}, resolving the
    * type that owns {@code index} first. A manual index (bound to no type) is a no-op: there is no type to gate.
    */
