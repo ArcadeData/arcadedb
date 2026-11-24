@@ -1823,26 +1823,39 @@ public class LocalDocumentType implements DocumentType {
     }
   }
 
+  private static final int KEPT_SAME_KIND  = 1;
+  private static final int KEPT_OTHER_KIND = 2;
+
   /**
-   * Whether a super type of this type, reached without going through {@code excluded}, declares {@code propertyName} with the type and
-   * the OF type of {@code declaration}, the declaration {@code excluded} is changing ({@code false} when there is none). Each type is
-   * visited once, so a lattice of diamonds costs its size.
+   * Whether this type keeps a declaration of {@code propertyName} once {@code declaration}, the one {@code excluded} is changing, is
+   * gone, and every declaration it keeps has its type and OF type ({@code false} when there is no declaration to compare with). Every
+   * kept declaration has to agree, not only one: which of them the type resolves the name to depends on the order of its super types,
+   * and a database written before #12732 can hold some of another kind. Each type is visited once, so a lattice of diamonds costs its
+   * size.
    */
   private boolean keepsDeclarationOfTheSameKind(final String propertyName, final LocalDocumentType excluded, final Property declaration,
       final Set<LocalDocumentType> visited) {
-    if (declaration == null || !visited.add(this))
-      return false;
+    return declaration != null && keptDeclarationKinds(propertyName, excluded, declaration, visited) == KEPT_SAME_KIND;
+  }
+
+  /** The kinds of the declarations of {@code propertyName} the super types of this type keep without {@code excluded}, as flags. */
+  private int keptDeclarationKinds(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return 0;
+    int kinds = 0;
     for (final LocalDocumentType superType : superTypes) {
       if (superType == excluded)
         continue;
       final Property declared = superType.properties.get(propertyName);
-      if (declared != null) {
-        if (declared.getType() == declaration.getType() && Objects.equals(declared.getOfType(), declaration.getOfType()))
-          return true;
-      } else if (superType.keepsDeclarationOfTheSameKind(propertyName, excluded, declaration, visited))
-        return true;
+      if (declared != null)
+        kinds |= declared.getType() == declaration.getType() && Objects.equals(declared.getOfType(), declaration.getOfType()) ?
+            KEPT_SAME_KIND :
+            KEPT_OTHER_KIND;
+      else
+        kinds |= superType.keptDeclarationKinds(propertyName, excluded, declaration, visited);
     }
-    return false;
+    return kinds;
   }
 
   /**
