@@ -148,7 +148,7 @@ class CypherSetWriteTargetsTest extends TestHelper {
     } finally {
       // Interrupt the workers still running after a failure or a timeout and wait for them, so the teardown never drops the database under a write
       executor.shutdownNow();
-      executor.awaitTermination(30, TimeUnit.SECONDS);
+      assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).as("the workers ended before the teardown").isTrue();
     }
   }
 }
