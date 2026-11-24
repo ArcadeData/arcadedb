@@ -18,6 +18,8 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.NeedRetryException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -136,6 +138,54 @@ class Issue12615RemoteBeginFailoverTest {
     assertThat(liveReplica.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
   }
 
+  /**
+   * Connected to a replica, whose topology names that replica too. With the reload failing, a walk that ignored what it had tried
+   * started on the replica that had just failed and spent the whole budget of two attempts on it, never reaching the live one.
+   */
+  @Test
+  void beginDoesNotRetryTheReplicaThatJustFailedWhenTheReloadFails() throws Exception {
+    final Node leader = node();
+    final Node connected = node();
+    final Node liveReplica = node();
+
+    connected.answer(cluster(leader.address(), connected.address(), liveReplica.address()));
+    final ContextConfiguration configuration = new ContextConfiguration();
+    configuration.setValue(GlobalConfiguration.HA_ERROR_RETRIES, 2);
+    database = connect(connected, RemoteHttpComponent.CONNECTION_STRATEGY.ROUND_ROBIN, configuration);
+
+    connected.stop();
+    leader.stop();
+
+    database.begin();
+    database.rollback();
+
+    assertThat(liveReplica.requestsTo(BEGIN_ROUTE)).isEqualTo(1);
+    assertThat(liveReplica.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
+  }
+
+  /**
+   * Every replica is down and the leader, the one live node, refuses the topology. The walk of the replica list never named the leader,
+   * so the default budget (every known server once) went to the replicas, one of them twice, and the begin failed.
+   */
+  @Test
+  void beginReachesTheLeaderOnceEveryReplicaWasTried() throws Exception {
+    final Node leader = node();
+    final Node connected = node();
+    final Node otherReplica = node();
+
+    connected.answer(cluster(leader.address(), otherReplica.address(), connected.address()));
+    database = connect(connected, RemoteHttpComponent.CONNECTION_STRATEGY.ROUND_ROBIN);
+
+    connected.stop();
+    otherReplica.stop();
+
+    database.begin();
+    database.rollback();
+
+    assertThat(leader.requestsTo(BEGIN_ROUTE)).isEqualTo(1);
+    assertThat(leader.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
+  }
+
   /** FIXED means the same server, as it does for every other request: a stopped one is reported, not routed around. */
   @Test
   void fixedStrategyDoesNotLeaveTheServer() throws Exception {
@@ -170,7 +220,12 @@ class Issue12615RemoteBeginFailoverTest {
   }
 
   private RemoteDatabase connect(final Node node, final RemoteHttpComponent.CONNECTION_STRATEGY strategy) {
-    final RemoteDatabase remote = new RemoteDatabase("127.0.0.1", node.port(), DATABASE, "root", "test");
+    return connect(node, strategy, new ContextConfiguration());
+  }
+
+  private RemoteDatabase connect(final Node node, final RemoteHttpComponent.CONNECTION_STRATEGY strategy,
+      final ContextConfiguration configuration) {
+    final RemoteDatabase remote = new RemoteDatabase("127.0.0.1", node.port(), DATABASE, "root", "test", configuration);
     remote.setConnectionStrategy(strategy);
     return remote;
   }

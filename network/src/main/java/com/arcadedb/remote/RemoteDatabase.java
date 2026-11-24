@@ -71,6 +71,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,6 +79,7 @@ import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -524,6 +526,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     boolean failedOver = false;
     // Once a reload found no server able to answer, asking them all again on every attempt only multiplies the timeouts
     boolean reloadFailed = false;
+    // The servers this begin could not reach, so the walk tries every known server once before it revisits one
+    Set<Pair<String, Integer>> unreachable = null;
 
     for (int attempt = 1; ; attempt++) {
       final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
@@ -547,7 +551,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         if (!reloadFailed)
           reloadFailed = !reloadClusterConfiguration();
 
-        final Pair<String, Integer> next = nextFailoverServer(target, false);
+        if (unreachable == null)
+          unreachable = new HashSet<>();
+        unreachable.add(target);
+        final Pair<String, Integer> next = nextFailoverServer(target, false, unreachable);
         if (next == null)
           throw e;
 

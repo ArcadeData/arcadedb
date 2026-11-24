@@ -74,6 +74,7 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -81,6 +82,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -389,15 +391,22 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * The server a request that failed over goes to next, once the caller has run {@link #reloadClusterConfiguration()}: the leader
-   * when the request prefers it, else the server that answered the reload, else the next known replica. Shared by
+   * when the request prefers it, else the server that answered the reload, else the next known server not tried yet. Shared by
    * {@code httpCommand()} and {@code RemoteDatabase.begin()} so the two failover paths cannot drift (issue #12615). The advertised
    * leader is not trusted otherwise: during an election the server that answered can still name the stopped node as leader.
+   * <p>
+   * Without an answer to the reload the replicas are walked first, then the leader, which can still accept requests while it
+   * refuses the topology, skipping every server this call already tried; only once each known server was tried does the walk
+   * revisit them. A walk that ignored the attempts could start on the server that just failed (the replica list names it too when
+   * the client was connected to a replica) and never reach the leader at all.
    *
-   * @param failed the server the last attempt could not reach
+   * @param failed    the server the last attempt could not reach
+   * @param attempted every server this call could not reach so far, {@code failed} included
    *
    * @return the server to try next, or {@code null} when none is known
    */
-  Pair<String, Integer> nextFailoverServer(final Pair<String, Integer> failed, final boolean leaderIsPreferable) {
+  Pair<String, Integer> nextFailoverServer(final Pair<String, Integer> failed, final boolean leaderIsPreferable,
+      final Set<Pair<String, Integer>> attempted) {
     final Pair<String, Integer> snapshotLeader = leaderServer;
     if (leaderIsPreferable && snapshotLeader != null && !failed.equals(snapshotLeader))
       return snapshotLeader;
@@ -407,6 +416,16 @@ public class RemoteHttpComponent extends RWLockContext {
     if (answeringServer != null && !answeringServer.equals(failed))
       return answeringServer;
 
+    for (int i = 0, known = replicaServerList.size(); i < known; i++) {
+      final Pair<String, Integer> replica = getNextReplicaAddress();
+      if (replica != null && !attempted.contains(replica))
+        return replica;
+    }
+
+    if (snapshotLeader != null && !attempted.contains(snapshotLeader))
+      return snapshotLeader;
+
+    // EVERY KNOWN SERVER WAS TRIED: WALK THEM AGAIN, AS THE BUDGET MAY OUTLAST ONE ROUND
     return getNextReplicaAddress();
   }
 
@@ -577,6 +596,8 @@ public class RemoteHttpComponent extends RWLockContext {
     final Map<String, String> instancesAtStart = requestId != null ? new HashMap<>(serverReplayInstances) : Map.of();
     // Once a reload found no server able to answer, asking them all again on every retry only multiplies the timeouts of a dead cluster
     boolean reloadFailed = false;
+    // The servers this call could not reach, so a failover walks the ones not tried yet first: allocated on the first failover only
+    Set<Pair<String, Integer>> unreachable = null;
 
     for (int retry = 0; retry < maxAttempts && connectToServer != null; ++retry) {
       server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
@@ -724,7 +745,10 @@ public class RemoteHttpComponent extends RWLockContext {
             reloadFailed = !reloadClusterConfiguration();
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
-          connectToServer = nextFailoverServer(currentConnectToServer, leaderIsPreferable);
+          if (unreachable == null)
+            unreachable = new HashSet<>();
+          unreachable.add(currentConnectToServer);
+          connectToServer = nextFailoverServer(currentConnectToServer, leaderIsPreferable, unreachable);
 
           if (connectToServer != null)
             LogManager.instance()
