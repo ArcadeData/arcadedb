@@ -28,6 +28,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
 import com.arcadedb.exception.AlreadyExistsException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
@@ -1716,6 +1717,155 @@ class TypeRenameTest {
       assertThat(database.getSchema().existsType(type)).isTrue();
       assertThat(database.getSchema().getType(type).getBuckets(false)).extracting(Bucket::getName).containsExactly(ownBucket);
       assertThat(database.countType(type, true)).isEqualTo(records);
+    }
+  }
+
+  /**
+   * Regression for #12758: while {@code ALTER TYPE T NAME Tr} ran, a {@code SELECT FROM T WHERE id = ?} answered no rows for a row
+   * that exists, and an UPDATE of it changed none. The rename moves the buckets under their new names one at a time and publishes
+   * the new type name while the type still answers to the old one, and a plan built in between compared names read at different
+   * moments: the bucket names it collected with the ones the steps read a moment later (no bucket left to read), and the type
+   * name the statement used with the name the records' type had by then (no record of the type). A statement on a name the type
+   * answers to finds the row; one on a name it no longer answers to is refused, never answered with nothing.
+   * <p>
+   * The {@code @Timeout} is a hang detector only.
+   */
+  @Nested
+  class QueriesWhileTheTypeIsRenamed extends TestHelper {
+    private static final int ROWS    = 999; // A MULTIPLE OF READERS: EACH THREAD KEEPS TO ITS OWN ROWS
+    private static final int RENAMES = 100;
+    private static final int READERS = 3;
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAUniqueIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByANotUniqueIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("NOTUNIQUE", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAHashIndexNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE_HASH", false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void aSelectServedByAScanNeverAnswersNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming(null, false);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void anUpdateServedByAUniqueIndexNeverChangesNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming("UNIQUE", true);
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    void anUpdateServedByAScanNeverChangesNothing() throws Exception {
+      assertNoEmptyAnswerWhileRenaming(null, true);
+    }
+
+    /** The rows the statement on the row {@code id} found (a SELECT) or changed (an UPDATE). */
+    private long rowsOf(final String typeName, final int id, final boolean update) {
+      if (update) {
+        database.begin();
+        try {
+          final long changed;
+          try (final ResultSet rs = database.command("sql", "UPDATE `" + typeName + "` SET hits = hits + 1 WHERE id = ?", id)) {
+            changed = rs.hasNext() ? ((Number) rs.next().getProperty("count")).longValue() : 0L;
+          }
+          database.commit();
+          return changed;
+        } finally {
+          if (database.isTransactionActive())
+            database.rollback();
+        }
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT FROM `" + typeName + "` WHERE id = ?", id)) {
+        return rs.stream().count();
+      }
+    }
+
+    private void assertNoEmptyAnswerWhileRenaming(final String indexKind, final boolean update) throws Exception {
+      database.command("sql", "CREATE DOCUMENT TYPE T12758");
+      database.command("sql", "CREATE PROPERTY T12758.id INTEGER");
+      if (indexKind != null)
+        database.command("sql", "CREATE INDEX ON T12758 (id) " + indexKind);
+      database.transaction(() -> {
+        for (int i = 0; i < ROWS; i++)
+          database.newDocument("T12758").set("id", i).set("hits", 0).save();
+      });
+
+      final AtomicReference<String> currentName = new AtomicReference<>("T12758");
+      final AtomicBoolean stop = new AtomicBoolean();
+      final AtomicLong found = new AtomicLong();
+      final AtomicLong refused = new AtomicLong();
+      final AtomicLong empty = new AtomicLong();
+      final AtomicReference<String> firstEmpty = new AtomicReference<>();
+      final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+      final List<Thread> readers = new ArrayList<>();
+      for (int r = 0; r < READERS; r++) {
+        // EACH THREAD ITS OWN ROWS: TWO UPDATES OF ONE ROW WOULD CONFLICT, WHICH IS NOT WHAT THIS TEST IS ABOUT
+        final int first = r;
+        final Thread reader = new Thread(() -> {
+          int id = first;
+          while (!stop.get()) {
+            id = (id + READERS) % ROWS;
+            final String typeName = currentName.get();
+            try {
+              final long rows = rowsOf(typeName, id, update);
+              if (rows == 1)
+                found.incrementAndGet();
+              else if (empty.incrementAndGet() == 1)
+                firstEmpty.set(rows + " rows for the row " + id + " of '" + typeName + "'");
+            } catch (final SchemaException e) {
+              // THE NAME WAS STALE: THE TYPE NO LONGER ANSWERS TO IT
+              refused.incrementAndGet();
+            } catch (final NeedRetryException e) {
+              // A WRITE THAT MET THE RENAME OF ITS FILES: RETRYABLE, NOT AN ANSWER
+              refused.incrementAndGet();
+            } catch (final Throwable t) {
+              unexpected.compareAndSet(null, t);
+            }
+          }
+        });
+        reader.start();
+        readers.add(reader);
+      }
+
+      try {
+        for (int i = 0; i < RENAMES; i++) {
+          final String from = currentName.get();
+          final String to = from.equals("T12758") ? "Tr12758" : "T12758";
+          database.command("sql", "ALTER TYPE `" + from + "` NAME `" + to + "`");
+          currentName.set(to);
+        }
+      } finally {
+        stop.set(true);
+        for (final Thread reader : readers)
+          reader.join();
+      }
+
+      assertThat(unexpected.get()).isNull();
+      assertThat(found.get()).isGreaterThan(0L);
+      assertThat(empty.get()).as("empty answers (found %d, refused %d), first: %s", found.get(), refused.get(), firstEmpty.get())
+          .isZero();
+
+      for (int i = 0; i < ROWS; i += 97)
+        assertThat(rowsOf(currentName.get(), i, false)).isEqualTo(1L);
+      if (update)
+        // EVERY UPDATE THAT ANSWERED ONE ROW CHANGED ONE, AND NO OTHER DID
+        try (final ResultSet rs = database.query("sql", "SELECT sum(hits) AS total FROM `" + currentName.get() + "`")) {
+          assertThat(((Number) rs.next().getProperty("total")).longValue()).isEqualTo(found.get());
+        }
     }
   }
 }

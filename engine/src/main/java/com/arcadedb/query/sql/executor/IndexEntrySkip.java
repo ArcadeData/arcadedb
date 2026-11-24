@@ -62,6 +62,8 @@ public final class IndexEntrySkip {
 
   private final DatabaseInternal database;
   private final String           typeName;
+  // the filter after the scan, which decides instead of typeName when there is one (issue #12758)
+  private final FilterByTypeStep typeFilter;
   private       byte[]           kinds   = new byte[32];
   // the bucket of the ids whose kind is IS_ROW or IS_NOT_A_ROW
   private       Bucket[]         buckets = new Bucket[32];
@@ -71,8 +73,21 @@ public final class IndexEntrySkip {
    *                 names is a row
    */
   public IndexEntrySkip(final DatabaseInternal database, final String typeName) {
+    this(database, typeName, null);
+  }
+
+  private IndexEntrySkip(final DatabaseInternal database, final String typeName, final FilterByTypeStep typeFilter) {
     this.database = database;
     this.typeName = typeName;
+    this.typeFilter = typeFilter;
+  }
+
+  /**
+   * A judge whose rows are the records {@code typeFilter} keeps, decided as that filter decides them, or every record the index
+   * names when it is null.
+   */
+  static IndexEntrySkip of(final DatabaseInternal database, final FilterByTypeStep typeFilter) {
+    return new IndexEntrySkip(database, null, typeFilter);
   }
 
   public Verdict verdict(final RID rid) {
@@ -97,7 +112,8 @@ public final class IndexEntrySkip {
     if (bucket == null)
       return kinds[bucketId] = MUST_LOAD;
     buckets[bucketId] = bucket;
-    return kinds[bucketId] = typeName == null || type.isSubTypeOf(typeName) ? IS_ROW : IS_NOT_A_ROW;
+    final boolean isRow = typeFilter != null ? typeFilter.accepts(type) : typeName == null || type.isSubTypeOf(typeName);
+    return kinds[bucketId] = isRow ? IS_ROW : IS_NOT_A_ROW;
   }
 
   private void grow(final int bucketId) {

@@ -435,16 +435,15 @@ public class FacetCollectStep extends AbstractExecutionStep {
         return false;
       for (final ExecutionStepInternal filter : bucketFilters)
         if (filter instanceof FilterByClustersStep clusters ? !clusters.acceptsBucket(bucketId)
-            : !acceptsType(((FilterByTypeStep) filter).getTypeName(), bucketId))
+            : !acceptsType((FilterByTypeStep) filter, bucketId))
           return false;
       return true;
     };
   }
 
   /** Whether the records of the bucket are instances of the type, as {@link FilterByTypeStep} decides for a row. */
-  private boolean acceptsType(final String typeName, final int bucketId) {
-    final DocumentType type = database.getSchema().getTypeByBucketId(bucketId);
-    return type != null && type.isSubTypeOf(typeName);
+  private boolean acceptsType(final FilterByTypeStep filter, final int bucketId) {
+    return filter.accepts(database.getSchema().getTypeByBucketId(bucketId));
   }
 
   /**
