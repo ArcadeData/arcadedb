@@ -62,7 +62,7 @@ public class CastExpression extends MathExpression {
       Map.entry("BOOL", Type.BOOLEAN), Map.entry("DATE", Type.DATE), Map.entry("TIMESTAMP", Type.DATETIME),
       Map.entry("DATETIME", Type.DATETIME));
 
-  private static final Pattern ISO_DATE_TIME = Pattern.compile("^(\\d{4})-(\\d{2})-(\\d{2})(?:[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?)?");
+  private static final Pattern ISO_DATE_TIME = Pattern.compile("^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[ T](\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}))?)?");
 
   public Expression operand;
   public Type       type;

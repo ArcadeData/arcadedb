@@ -194,6 +194,26 @@ class CastExpressionTest extends TestHelper {
     assertThat(value("'2020-02-29 23:59:59'::TIMESTAMP")).isInstanceOf(Date.class);
   }
 
+  /** The engine reads a date text with one or two digits in a field (2020-2-3), so the calendar check has to as well. */
+  @Test
+  void aNonPaddedDateOrTimestampTextWithAnImpossibleFieldRaises() {
+    for (final String text : List.of("2020-2-30", "2021-2-29", "2020-4-31", "2020-13-1", "2020-02-30", "2020-0-10", "2020-1-0"))
+      assertThatThrownBy(() -> value("'" + text + "'::DATE")).as(text + " as DATE").isInstanceOf(CommandExecutionException.class);
+    for (final String text : List.of("2020-1-2 25:0:0", "2020-1-2 4:60:0", "2020-1-2 4:5:61", "2021-2-29 4:5:6", "2020-02-3 24:00:00"))
+      assertThatThrownBy(() -> value("'" + text + "'::TIMESTAMP")).as(text + " as TIMESTAMP")
+          .isInstanceOf(CommandExecutionException.class);
+  }
+
+  @Test
+  void aValidNonPaddedDateOrTimestampTextKeepsItsValue() {
+    // what the engine read before the cast existed is read the same: the leap day, and a field with one digit
+    assertThat(value("'2020-2-29'::DATE")).isEqualTo(value("'2020-02-29'::DATE"));
+    assertThat(value("'2020-2-3'::DATE")).isEqualTo(value("'2020-02-03'::DATE"));
+    assertThat(value("'2020-02-3'::DATE")).isEqualTo(value("'2020-02-03'::DATE"));
+    assertThat(value("'2020-02-03 4:5:6'::TIMESTAMP")).isEqualTo(value("'2020-02-03 04:05:06'::TIMESTAMP"));
+    assertThat(value("'2020-2-3 4:5:6'::TIMESTAMP")).isEqualTo(value("'2020-02-03 04:05:06'::TIMESTAMP"));
+  }
+
   @Test
   void aDateHasNoTimeOfDayAndATimestampKeepsIt() {
     final Object timestamp = value("CAST('2020-01-02 12:34:56' AS TIMESTAMP)");
