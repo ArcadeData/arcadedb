@@ -819,6 +819,9 @@ public enum Type {
 
     try {
       if (targetClass.equals(String.class)) {
+        // A value read from text whose type the client left unspecified is that text as a STRING (issue #12711)
+        if (value instanceof SourceText source)
+          return source.sourceText();
         // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
         // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
         // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
@@ -2354,7 +2357,8 @@ public enum Type {
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
-        left = left.byteValue();
+        // the byte widens: narrowing the short to a byte wraps every value outside -128..127 (issue #12681)
+        right = right.shortValue();
       else if (right instanceof BigInteger bigInteger1) {
         // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
         // operands promote to BigDecimal (issue #7669).

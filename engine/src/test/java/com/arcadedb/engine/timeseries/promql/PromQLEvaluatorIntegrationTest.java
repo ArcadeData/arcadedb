@@ -443,6 +443,36 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     });
   }
 
+  /**
+   * Issue #12680: a regex written in backticks reaches the matcher as written, and an escape in a quoted string is read as Go reads
+   * it, so the matcher selects the series the PromQL text names (the backtick form used to lose its backslashes: {@code a\d}
+   * selected the series {@code ad}).
+   */
+  @Test
+  void aMatcherStringIsReadAsPromQLReadsIt() {
+    final String typeName = "promql_string_escapes";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      int ts = 1000;
+      for (final String host : new String[] { "a1", "ad", "a.b", "aXb", "A" })
+        database.command("sql", "INSERT INTO " + typeName + " SET ts = " + ts++ + ", host = '" + host + "', value = 1.0");
+    });
+
+    assertThat(hostsOf(typeName + "{host=~`a\\d`}")).containsExactly("a1");
+    assertThat(hostsOf(typeName + "{host=~\"a\\\\d\"}")).containsExactly("a1");
+    assertThat(hostsOf(typeName + "{host=~`a\\.b`}")).containsExactly("a.b");
+    assertThat(hostsOf(typeName + "{host=~\"a\\\\.b\"}")).containsExactly("a.b");
+    assertThat(hostsOf(typeName + "{host=\"\\x41\"}")).containsExactly("A");
+    assertThat(hostsOf(typeName + "{host=\"\\u0041\"}")).containsExactly("A");
+    assertThat(hostsOf(typeName + "{host!~`a\\d|A`}")).containsExactlyInAnyOrder("ad", "a.b", "aXb");
+  }
+
+  private List<String> hostsOf(final String query) {
+    final PromQLResult result = new PromQLEvaluator(getDatabaseInternal()).evaluateInstant(new PromQLParser(query).parse(), 6000L);
+    assertThat(result).isInstanceOf(PromQLResult.InstantVector.class);
+    return ((PromQLResult.InstantVector) result).samples().stream().map(s -> s.labels().get("host")).toList();
+  }
+
   private void createTypeWithTags(final String typeName) {
     database.command("sql",
         "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");

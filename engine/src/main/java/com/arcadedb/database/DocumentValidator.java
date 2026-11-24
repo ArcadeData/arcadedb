@@ -39,6 +39,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1021,13 +1022,86 @@ public class DocumentValidator {
         final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded();
         final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
-        if (!sameReadonlyValue(fieldValue, originalFieldValue))
+        if (!sameReadonlyValue(fieldValue, originalFieldValue) && !isReadonlyValueOfDeferredWrite(embedded, document, p, fieldValue))
           throwValidationException(document.getType(), p, ValidationException.Kind.READONLY,
               "is immutable and cannot be altered. Field value is: " + printableValue(fieldValue));
       }
     }
 
     return deferred;
+  }
+
+  private static boolean isReadonlyValueOfDeferredWrite(final LocalDatabase database, final MutableDocument document, final Property p,
+      final Object fieldValue) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isActive() && tx.isReadonlyValueOfDeferredWrite(document.getIdentity(), p.getName(), fieldValue);
+  }
+
+  /**
+   * Called by an update the transaction has just queued for its commit (issue #12612): the READONLY properties a deferral scope of the
+   * calling thread opened for this very {@code document} were written by this update as the second half of the record's creation
+   * ({@link #deferReadonlyChecks}), so the values it wrote stay allowed for the rest of the transaction, the commit included, as well
+   * as the stored ones. Only a write that completed is remembered: one a later check, a listener or an index refused leaves nothing. A
+   * snapshot of the value is kept, so that changing a container in place afterwards does not change what is allowed. Costs one volatile
+   * read unless a restore holds a deferral open.
+   */
+  static void rememberReadonlyValuesOfDeferredWrite(final TransactionContext tx, final MutableDocument document) {
+    if (READONLY_DEFERRING_THREADS.get() == 0 || document.getIdentity() == null)
+      return;
+    for (ReadonlyScope scope = READONLY_DEFERRALS.get(); scope != null; scope = scope.enclosing)
+      if (scope.document == document)
+        for (final String name : scope.properties) {
+          final Property p = document.getType().getPolymorphicPropertyIfExists(name);
+          if (p != null && p.isReadonly())
+            tx.setReadonlyValueOfDeferredWrite(document.getIdentity(), name, readonlySnapshot(document.get(name)));
+        }
+  }
+
+  /**
+   * A copy of {@code value} that compares as it does with {@link #sameReadonlyValue} and that no change made in place to the original
+   * reaches: arrays, lists, maps and embedded documents are copied, recursively. Everything else is kept as it is.
+   */
+  static Object readonlySnapshot(final Object value) {
+    return switch (value) {
+      case null -> null;
+      case Object[] array -> {
+        final Object[] copy = array.clone();
+        for (int i = 0; i < copy.length; i++)
+          copy[i] = readonlySnapshot(copy[i]);
+        yield copy;
+      }
+      case byte[] array -> array.clone();
+      case short[] array -> array.clone();
+      case int[] array -> array.clone();
+      case long[] array -> array.clone();
+      case float[] array -> array.clone();
+      case double[] array -> array.clone();
+      case boolean[] array -> array.clone();
+      case char[] array -> array.clone();
+      case List<?> list -> {
+        final List<Object> copy = new ArrayList<>(list.size());
+        for (final Object item : list)
+          copy.add(readonlySnapshot(item));
+        yield copy;
+      }
+      case Map<?, ?> map -> {
+        final Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+        for (final Map.Entry<?, ?> entry : map.entrySet())
+          copy.put(entry.getKey(), readonlySnapshot(entry.getValue()));
+        yield copy;
+      }
+      case EmbeddedDocument embedded -> {
+        // a document of its own, holding no buffer and bound to no record: only compared, never saved
+        final MutableEmbeddedDocument copy = new MutableEmbeddedDocument(embedded.getDatabase(), embedded.getType(), null);
+        final Map<String, Object> properties = embedded.toMap(false);
+        final Map<String, Object> copied = new LinkedHashMap<>(properties.size());
+        for (final Map.Entry<String, Object> entry : properties.entrySet())
+          copied.put(entry.getKey(), readonlySnapshot(entry.getValue()));
+        copy.map = copied;
+        yield copy;
+      }
+      default -> value;
+    };
   }
 
   /**
