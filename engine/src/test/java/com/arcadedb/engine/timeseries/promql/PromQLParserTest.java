@@ -505,10 +505,42 @@ class PromQLParserTest {
         "m{l=\"\\U00110000\"}", // beyond the Unicode range
         "m{l=\"\\ud800\"}", // a surrogate half
         "m{l=\"\\400\"}", // octal above 255
-        "m{l=\"\\18\"}", // short octal
+        "m{l=\"\\18\"}", // 8 is not an octal digit
+        "m{l=\"\\1\"}", // short octal
         "m{l=\"abc\\\"}" // the escape is cut by the end of the string
     })
       assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // #12680
+  @Test
+  void aLineBreakInsideAQuotedStringIsRefused() {
+    // Prometheus: "unterminated quoted string". Only a backtick string spans lines, the escape \n is how a quoted one holds one
+    for (final String query : new String[] { "m{l=\"a\nb\"}", "m{l='a\nb'}", "\"a\nb\"" })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Unterminated quoted string");
+    assertThat(matcherValue("m{l=\"a\\nb\"}")).isEqualTo("a\nb");
+    assertThat(matcherValue("m{l=`a\nb`}")).isEqualTo("a\nb");
+  }
+
+  // #12680
+  @Test
+  void escapedBytesThatAreNotUtf8AreRefused() {
+    // Go keeps the raw bytes, a Java string cannot: refusing beats matching against U+FFFD, a value the query never wrote
+    for (final String query : new String[] { //
+        "m{l=\"\\xff\"}", // never a UTF-8 byte
+        "m{l=\"\\xc3\"}", // a lead byte with no continuation
+        "m{l=\"\\xc3a\"}", // ... cut by a plain character
+        "m{l=\"\\xc3\\n\"}", // ... or by another escape
+        "m{l=\"\\xc3\\u00a9\"}", //
+        "m{l=\"\\251\"}", // a continuation byte alone
+        "m{l=\"\\xed\\xa0\\x80\"}" // a surrogate half spelled in bytes
+    })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("not valid UTF-8");
+    // a run that is valid text is one, wherever it stands
+    assertThat(matcherValue("m{l=\"a\\xc3\\xa9b\\xe4\\xb8\\xad\"}")).isEqualTo("a\u00e9b\u4e2d");
+    assertThat(matcherValue("m{l=\"\\xf0\\x9f\\x98\\x80\"}")).isEqualTo(new String(Character.toChars(0x1F600)));
   }
 
   // #12680

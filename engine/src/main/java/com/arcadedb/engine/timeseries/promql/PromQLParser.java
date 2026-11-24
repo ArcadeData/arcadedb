@@ -33,6 +33,9 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.UnaryExpr;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -547,7 +550,7 @@ public class PromQLParser {
      * Reads a string literal the way PromQL does (issue #12680). Inside backticks nothing is escaped, a newline included. In single
      * or double quotes a backslash starts a Go escape: {@code \a \b \f \n \r \t \v \\}, the string's own quote, octal {@code \nnn},
      * hexadecimal {@code \xnn} and the Unicode forms of four and eight hexadecimal digits. Any other escape is an error, as is an
-     * unterminated string.
+     * unterminated string, a line break inside quotes and a run of escaped bytes that is not valid UTF-8.
      */
     String readString() {
       skipWhitespace();
@@ -565,12 +568,16 @@ public class PromQLParser {
       }
 
       final StringBuilder sb = new StringBuilder();
-      // the bytes of \xnn and \nnn escapes: a run of them is UTF-8 text, as in Go, so \xc3\xa9 is one character
-      final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      // the bytes of \xnn and \nnn escapes: a run of them is UTF-8 text, as in Go, so \xc3\xa9 is one character. Created by the
+      // first such escape: most strings have none
+      ByteArrayOutputStream bytes = null;
       while (pos < input.length() && input.charAt(pos) != quote) {
         final char c = input.charAt(pos++);
+        if (c == '\n')
+          // only a backtick string spans lines: Prometheus answers "unterminated quoted string" here
+          throw new IllegalArgumentException("Unterminated quoted string: line break at position " + (pos - 1));
         if (c != '\\') {
-          flushBytes(sb, bytes);
+          flushBytes(sb, bytes, pos - 1);
           sb.append(c);
           continue;
         }
@@ -579,16 +586,22 @@ public class PromQLParser {
         final int escapeStart = pos - 1;
         final char escape = input.charAt(pos++);
         switch (escape) {
-        case 'x' -> bytes.write(readEscapeNumber(2, 16, escapeStart));
+        case 'x' -> {
+          if (bytes == null)
+            bytes = new ByteArrayOutputStream(8);
+          bytes.write(readEscapeNumber(2, 16, escapeStart));
+        }
         case '0', '1', '2', '3', '4', '5', '6', '7' -> {
           pos--;
           final int value = readEscapeNumber(3, 8, escapeStart);
           if (value > 255)
             throw new IllegalArgumentException("Octal escape value " + value + " > 255 at position " + escapeStart);
+          if (bytes == null)
+            bytes = new ByteArrayOutputStream(8);
           bytes.write(value);
         }
         default -> {
-          flushBytes(sb, bytes);
+          flushBytes(sb, bytes, escapeStart);
           switch (escape) {
           case 'a' -> sb.append((char) 7);
           case 'b' -> sb.append('\b');
@@ -615,16 +628,26 @@ public class PromQLParser {
       }
       if (pos >= input.length())
         throw new IllegalArgumentException("Unterminated string");
+      flushBytes(sb, bytes, pos);
       pos++; // closing quote
-      flushBytes(sb, bytes);
       return sb.toString();
     }
 
-    private static void flushBytes(final StringBuilder sb, final ByteArrayOutputStream bytes) {
-      if (bytes.size() > 0) {
-        sb.append(bytes.toString(StandardCharsets.UTF_8));
-        bytes.reset();
+    /**
+     * Appends the pending run of escaped bytes, which ends at {@code runEnd}, as the UTF-8 text it spells. A run that is not
+     * valid UTF-8 is refused: Go keeps such bytes as they are, a Java string cannot, and replacing them with U+FFFD would make
+     * the matcher compare against a value the query never wrote.
+     */
+    private static void flushBytes(final StringBuilder sb, final ByteArrayOutputStream bytes, final int runEnd) {
+      if (bytes == null || bytes.size() == 0)
+        return;
+      try {
+        sb.append(StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes.toByteArray())));
+      } catch (final CharacterCodingException e) {
+        throw new IllegalArgumentException("The escaped bytes ending at position " + runEnd + " are not valid UTF-8");
       }
+      bytes.reset();
     }
 
     /** Reads exactly {@code digits} digits of {@code radix} at the current position, as the number of a string escape. */
