@@ -28,7 +28,9 @@ import org.apache.tinkerpop.gremlin.process.traversal.Text;
 import org.apache.tinkerpop.gremlin.process.traversal.TextP;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
+import org.apache.tinkerpop.gremlin.process.traversal.lambda.PredicateTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.step.HasContainerHolder;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.BranchStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.finalization.ProfileStrategy;
@@ -37,6 +39,10 @@ import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.process.traversal.util.OrP;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 
+import org.javatuples.Pair;
+
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -59,13 +65,14 @@ import java.util.Set;
  * traversal times are the final ones.
  * <p>
  * Where the predicates are: every step field of type {@link P} (a {@code is()}, a {@code where(P)}, an {@code any()}, {@code all()}
- * or {@code none()}, and whatever step a later TinkerPop adds with one) and the containers of every {@link HasContainerHolder} (a
- * {@code has()}), read from the declared fields of the step class since TinkerPop gives no accessor for some of them. The predicates a
- * caller passes in are never modified: a replacement is a new object, set in the field of the step of this traversal, so a predicate
- * a caller keeps and uses again starts each statement with a full budget. Through {@link ConnectiveP} ({@code and()}/{@code or()})
- * and {@link NotP} the replacement is rebuilt around the same structure.
+ * or {@code none()}, and whatever step a later TinkerPop adds with one), read from the declared fields of the step class since
+ * TinkerPop gives no accessor for some of them; the containers of every {@link HasContainerHolder} (a {@code has()}); and the options
+ * of a {@link BranchStep} ({@code choose().option(P, ...)}), whose predicate sits in a {@link PredicateTraversal} with no step. The
+ * predicates a caller passes in are never modified: a replacement is a new object, set in the field of the step of this traversal, so
+ * a predicate a caller keeps and uses again starts each statement with a full budget. Through {@link ConnectiveP}
+ * ({@code and()}/{@code or()}) and {@link NotP} the replacement is rebuilt around the same structure.
  * <p>
- * Whatever steps the traversal has beyond those, {@code GremlinPredicateHoldersTest} fails when a TinkerPop upgrade brings a step
+ * Whatever steps the traversal has beyond those, {@code GremlinPredicateHoldersTest} fails when a TinkerPop upgrade brings a class
  * that holds a predicate in a shape this class does not read.
  *
  * @author lvca (l.garulli@arcadedata.com)
@@ -76,18 +83,25 @@ public final class ArcadeRegexStrategy extends AbstractTraversalStrategy<Travers
   private static final ArcadeRegexStrategy                                          INSTANCE = new ArcadeRegexStrategy();
   private static final Set<Class<? extends TraversalStrategy.FinalizationStrategy>> POSTS    = Set.of(ProfileStrategy.class);
 
-  /** The fields of a class (and its super classes) that hold a predicate, made accessible once. */
-  private static final ClassValue<Field[]> PREDICATE_FIELDS = new ClassValue<>() {
+  /** The handles to the fields of a class (and its super classes) that hold a predicate, opened once. */
+  private static final ClassValue<VarHandle[]> PREDICATE_FIELDS = new ClassValue<>() {
     @Override
-    protected Field[] computeValue(final Class<?> type) {
-      final List<Field> fields = new ArrayList<>();
-      for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass())
-        for (final Field field : c.getDeclaredFields())
-          if (!Modifier.isStatic(field.getModifiers()) && P.class.isAssignableFrom(field.getType())) {
-            field.setAccessible(true);
-            fields.add(field);
-          }
-      return fields.toArray(new Field[0]);
+    protected VarHandle[] computeValue(final Class<?> type) {
+      final List<VarHandle> handles = new ArrayList<>();
+      try {
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+          MethodHandles.Lookup lookup = null;
+          for (final Field field : c.getDeclaredFields())
+            if (!Modifier.isStatic(field.getModifiers()) && P.class.isAssignableFrom(field.getType())) {
+              if (lookup == null)
+                lookup = MethodHandles.privateLookupIn(c, MethodHandles.lookup());
+              handles.add(lookup.unreflectVarHandle(field));
+            }
+        }
+      } catch (final IllegalAccessException e) {
+        throw new IllegalStateException("Cannot read the predicates of " + type.getName(), e);
+      }
+      return handles.toArray(new VarHandle[0]);
     }
   };
 
@@ -109,7 +123,7 @@ public final class ArcadeRegexStrategy extends AbstractTraversalStrategy<Travers
         local :
         null;
     final Rewriter rewriter = new Rewriter(database);
-    TraversalHelper.applyTraversalRecursively(rewriter::rewrite, traversal);
+    TraversalHelper.applyTraversalRecursively(child -> rewriter.rewrite(child), traversal);
   }
 
   @Override
@@ -132,19 +146,39 @@ public final class ArcadeRegexStrategy extends AbstractTraversalStrategy<Travers
         if (step instanceof HasContainerHolder<?, ?> holder)
           for (final HasContainer container : holder.getHasContainers())
             replaceIn(container);
+        if (step instanceof BranchStep<?, ?, ?> branch)
+          replaceInOptions(branch);
       }
     }
 
     private void replaceIn(final Object holder) {
-      for (final Field field : PREDICATE_FIELDS.get(holder.getClass()))
-        try {
-          final P<?> predicate = (P<?>) field.get(holder);
-          final P<?> replacement = predicate != null ? replace(predicate) : null;
-          if (replacement != null)
-            field.set(holder, replacement);
-        } catch (final IllegalAccessException e) {
-          throw new IllegalStateException("Cannot read the predicate of " + holder.getClass().getSimpleName(), e);
+      for (final VarHandle field : PREDICATE_FIELDS.get(holder.getClass())) {
+        final P<?> predicate = (P<?>) field.get(holder);
+        final P<?> replacement = predicate != null ? replace(predicate) : null;
+        if (replacement != null)
+          field.set(holder, replacement);
+      }
+    }
+
+    /**
+     * The predicate of an {@code option(P, ...)} of a {@code choose()} is the one kept by a {@link PredicateTraversal}, which evaluates
+     * it itself and has no step: it is a child traversal of the branch step, so the pair that holds it is replaced by one that holds a
+     * new traversal around the replacement.
+     */
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private void replaceInOptions(final BranchStep<?, ?, ?> branch) {
+      final List<Pair> options = (List) branch.getTraversalOptions();
+      for (int i = 0; i < options.size(); i++) {
+        final Pair option = options.get(i);
+        if (option.getValue0() instanceof PredicateTraversal<?> pick && pick.getPredicate() instanceof P<?> predicate) {
+          final P<?> replacement = replace(predicate);
+          if (replacement != null) {
+            final PredicateTraversal fresh = new PredicateTraversal(replacement);
+            branch.integrateChild(fresh);
+            options.set(i, Pair.with(fresh, option.getValue1()));
+          }
         }
+      }
     }
 
     /** The predicate with its regular expressions replaced, or null when it holds none that is not already bounded. */

@@ -118,6 +118,21 @@ class GremlinRegexTimeoutTest {
   }
 
   @Test
+  void aSlowPatternInAChoiceStopsAtTheTimeout() {
+    // THE PICK OF AN option() IS KEPT BY A TRAVERSAL OF ITS OWN, WITH NO STEP
+    assertTimesOut(() -> g().inject(INPUT).choose(__.identity()).option(TextP.regex(SLOW), __.constant(1)).toList());
+    assertTimesOut(() -> g().inject(INPUT).choose(__.identity()).option(TextP.notRegex(SLOW), __.constant(1)).toList());
+    assertTimesOut(
+        () -> g().inject(INPUT).choose(__.identity()).option(TextP.regex(SLOW).and(TextP.containing("a")), __.constant(1)).toList());
+    assertTimesOut(() -> g().inject(INPUT).choose(__.identity()).option(P.not(TextP.regex(SLOW)), __.constant(1)).toList());
+    assertTimesOut(() -> g().inject(INPUT).choose(TextP.regex(SLOW), __.constant(1), __.constant(2)).toList());
+    assertTimesOut(() -> g().inject(INPUT).choose(TextP.regex(SLOW), __.constant(1)).toList());
+
+    final String statement = "g.inject('" + INPUT + "').choose(__.identity()).option(TextP.regex('" + SLOW + "'), __.constant(1))";
+    assertThatThrownBy(() -> graph.gremlin(statement).execute().stream().count()).hasStackTraceContaining(SETTING);
+  }
+
+  @Test
   void aSlowPatternInAWherePredicateStopsAtTheTimeout() {
     // where(P) names the label of the value it compares: here the one the traverser itself carries
     assertTimesOut(() -> g().inject(INPUT).as(SLOW).where(TextP.regex(SLOW)).toList());
@@ -190,6 +205,11 @@ class GremlinRegexTimeoutTest {
     assertThat(g().inject("abc").as("b").where(TextP.regex("b")).toList()).containsExactly("abc");
     assertThat(g().inject("abc").as("a", "c").where("a", TextP.notRegex("c")).toList()).isEmpty();
     assertThat(g().inject("abc").as("a", "c").where("a", TextP.regex("c")).toList()).containsExactly("abc");
+    assertThat(g().V().values("name").choose(__.identity()).option(TextP.regex("^al"), __.constant("A"))
+        .option(TextP.regex("^b"), __.constant("B")).toList()).containsExactlyInAnyOrder(INPUT, "A", "B");
+    assertThat(g().inject("alice", "bob", "carol").choose(TextP.regex("^al"), __.constant("yes"), __.constant("no")).toList())
+        .containsExactlyInAnyOrder("yes", "no", "no");
+    assertThat(g().inject("alice", "bob").choose(TextP.regex("^al"), __.constant("yes")).toList()).containsExactlyInAnyOrder("yes", "bob");
     assertThat(g().inject(List.of("alice", "bob")).any(TextP.regex("^b")).toList()).hasSize(1);
     assertThat(g().inject(List.of("alice", "bob")).all(TextP.regex("^b")).toList()).isEmpty();
     assertThat(g().inject(List.of("alice", "bob")).none(TextP.regex("^c")).toList()).hasSize(1);
