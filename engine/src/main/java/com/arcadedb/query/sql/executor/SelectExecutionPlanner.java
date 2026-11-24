@@ -236,6 +236,8 @@ public class SelectExecutionPlanner {
     // cached Statement to whichever type the first execution resolved $var to - and racing any concurrent first
     // execution on the same node.
     info.target = this.statement.getTarget() == null ? null : this.statement.getTarget().copy();
+    if (info.target != null)
+      rewriteInformationSchemaTarget(info.target.getItem(), context);
     info.whereClause = this.statement.getWhereClause() == null ? null : this.statement.getWhereClause().copy();
     info.perRecordLetClause = this.statement.getLetClause() == null ? null : this.statement.getLetClause().copy();
     info.groupBy = this.statement.getGroupBy() == null ? null : this.statement.getGroupBy().copy();
@@ -2418,6 +2420,34 @@ public class SelectExecutionPlanner {
     return null;
   }
 
+  /**
+   * Turns the target {@code information_schema.tables} (an identifier and a modifier, which every later step of the planning would
+   * read as a type and a field of it) into the schema target of the relation, as {@code schema:types} is, so it is planned and
+   * fetched like the other catalogs of the engine. Any other target is left as it is. A type of that name keeps its meaning, so a
+   * database that has one reads as it did before.
+   */
+  private static void rewriteInformationSchemaTarget(final FromItem target, final CommandContext context) {
+    final Identifier identifier = target.getIdentifier();
+    final Modifier modifier = target.getModifier();
+    if (identifier == null || modifier == null || modifier.next != null || modifier.suffix == null
+        || modifier.suffix.identifier == null
+        || !FetchFromInformationSchemaStep.INFORMATION_SCHEMA.equalsIgnoreCase(identifier.getStringValue()) || context == null
+        || context.getDatabase() == null || context.getDatabase().getSchema().existsType(identifier.getStringValue()))
+      return;
+
+    final String name = modifier.suffix.identifier.getStringValue();
+    final FetchFromInformationSchemaStep.Relation relation = FetchFromInformationSchemaStep.Relation.byName(name);
+    if (relation == null)
+      throw new SchemaException(
+          "Invalid information_schema relation: " + name + " (the SQL engine serves tables, columns and schemata)");
+
+    final SchemaIdentifier schemaTarget = new SchemaIdentifier();
+    schemaTarget.name = FetchFromInformationSchemaStep.INFORMATION_SCHEMA + "." + relation.getRelationName();
+    target.setIdentifier(null);
+    target.setModifier(null);
+    target.setSchema(schemaTarget);
+  }
+
   private void handleSchemaAsTarget(final SelectExecutionPlan plan, final SchemaIdentifier metadata, final CommandContext context) {
     switch (metadata.getName().toLowerCase(Locale.ROOT)) {
     case "types" -> plan.chain(new FetchFromSchemaTypesStep(context));
@@ -2432,7 +2462,11 @@ public class SelectExecutionPlanner {
     case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));
     default -> {
       final String name = metadata.getName().toLowerCase(Locale.ROOT);
-      if (name.startsWith("bucket:"))
+      if (name.startsWith(FetchFromInformationSchemaStep.INFORMATION_SCHEMA + "."))
+        plan.chain(new FetchFromInformationSchemaStep(
+            FetchFromInformationSchemaStep.Relation.byName(name.substring(FetchFromInformationSchemaStep.INFORMATION_SCHEMA.length() + 1)),
+            context));
+      else if (name.startsWith("bucket:"))
         plan.chain(new FetchFromSchemaBucketDetailStep(metadata.getName().substring("bucket:".length()), context));
       else if (name.startsWith("index:"))
         plan.chain(new FetchFromSchemaIndexDetailStep(metadata.getName().substring("index:".length()), context));
