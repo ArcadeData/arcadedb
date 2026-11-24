@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,6 +64,14 @@ class Issue12780BinaryToStringTest extends TestHelper {
   void toStringOrNullAnswersNullForABinaryValue() {
     assertThat(evaluate("MATCH (n:Blob) RETURN toStringOrNull(n.bin) AS v")).isNull();
     assertThat(evaluate("RETURN toStringOrNull($b) AS v")).isNull();
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void toStringListAnswersNullForABinaryElement() {
+    // toStringList() converts each element through toString() and answers null for one it cannot convert
+    assertThat((List<Object>) evaluate("MATCH (n:Blob) RETURN toStringList([n.bin, 7]) AS v")).containsExactly(null, "7");
+    assertThat((List<Object>) evaluate("RETURN toStringList([$b]) AS v")).containsExactly((Object) null);
   }
 
   @Test
