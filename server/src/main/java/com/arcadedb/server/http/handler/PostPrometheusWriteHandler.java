@@ -191,8 +191,8 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // Per-type ACL preflight, before the first append and before getOrCreateType() can mutate the schema:
     // TimeSeriesShard.appendSamples commits its own shard transaction, so a denial discovered mid-loop would
     // return 403 with the earlier series already durable. Checked by NAME so a denied metric is refused without
-    // its type being auto-created first; an unknown name has no entry in the permission map and stays allowed,
-    // which is what keeps auto-create working for a brand-new metric.
+    // its type being auto-created first; an unknown name is answered from the group definitions as the type will
+    // be once created, so auto-create works for a principal granted createRecord on that name or on "*".
     for (final TimeSeries ts : writeRequest.getTimeSeries()) {
       final String metricName = ts.getMetricName();
       if (metricName == null || metricName.isEmpty())

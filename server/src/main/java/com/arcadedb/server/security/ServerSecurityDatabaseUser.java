@@ -20,14 +20,18 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -39,12 +43,14 @@ import java.util.logging.Level;
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",
       new JSONObject().put(SecurityManager.ANY, new JSONObject().put("access", new JSONArray())));
+  // SHARED, NEVER WRITTEN: the answer for a principal no group configuration restricts
+  private static final boolean[]   ALL_ACCESS        = { true, true, true, true };
   private final        String      databaseName;
   private final        String      userName;
   private              String[]    groups;
 
   private static final AccessSnapshot NO_CONFIGURATION = new AccessSnapshot(
-      new boolean[DATABASE_ACCESS.values().length], null, null, -1, -1);
+      new boolean[DATABASE_ACCESS.values().length], null, null, -1, -1, null, null, -1);
   // The whole permission state of this (user, database) pair, published as ONE immutable value. See
   // AccessSnapshot below for the invariant it carries.
   private volatile     AccessSnapshot access = NO_CONFIGURATION;
@@ -63,13 +69,26 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
    * the authorization checks below are deliberately unsynchronized (they run on every record access), so
    * "each field is volatile" bought visibility but not a consistent view across fields.
    *
-   * @param databaseAccess indexed by {@link DATABASE_ACCESS#ordinal()}
-   * @param fileAccess     indexed by bucket file id; {@code null} means "not configured yet, allow"
-   * @param typeAccess     keyed by type name, the only way to gate a type that owns no bucket (a TimeSeries
-   *                       type); {@code null} means "not configured yet, allow"
+   * <p>
+   * The per-type/per-bucket half is derived from the schema, which changes without this principal being told: a
+   * principal built for one request (an API token) is never reached by {@code ServerSecurity.updateSchema}, and a
+   * schema change made inside a transaction postpones that refresh to the commit. So the snapshot remembers what it
+   * was derived from ({@code schema}, {@code configuredGroups}) and the schema's types change serial at that moment,
+   * and every per-type/per-bucket check first compares that serial with the schema's current one: a different value
+   * rebuilds the half from the same group definitions before the check is answered (see {@link #accessForCurrentSchema}).
+   *
+   * @param databaseAccess   indexed by {@link DATABASE_ACCESS#ordinal()}
+   * @param fileAccess       indexed by bucket file id; {@code null} means "not configured yet, allow"
+   * @param typeAccess       keyed by type name, the only way to gate a type that owns no bucket (a TimeSeries
+   *                         type); {@code null} means "not configured yet, allow"
+   * @param schema           the schema the two maps were built from, weakly held so a cached principal does not keep a
+   *                         closed database reachable; {@code null} when the maps were never built
+   * @param configuredGroups the group definitions the two maps were built from
+   * @param typesSerial      {@link LocalSchema#getTypesChangeSerial()} read before the two maps were built
    */
   record AccessSnapshot(boolean[] databaseAccess, boolean[][] fileAccess, Map<String, boolean[]> typeAccess,
-                        long resultSetLimit, long readTimeout) {
+                        long resultSetLimit, long readTimeout, WeakReference<LocalSchema> schema,
+                        JSONObject configuredGroups, long typesSerial) {
   }
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
@@ -138,29 +157,19 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (denyAll)
       return false;
 
-    final boolean[][] currentMap = this.access.fileAccess();
+    final AccessSnapshot snapshot = accessForCurrentSchema();
+    final boolean[][] currentMap = snapshot.fileAccess();
     if (currentMap == null)
       return true;
 
-    if (fileId >= currentMap.length) {
-      // The file was just created but the security map has not been refreshed yet.
-      // Allow access (same as null-permissions default) — the map will be updated
-      // on the next schema operation. #5269: log at most once per fileId and at FINE, otherwise under write
-      // load this branch emitted the same INFO line on every access, rotating the container logs in seconds.
-      if (warnedNotRegisteredFiles.add(fileId))
-        LogManager.instance().log(this, Level.FINE,
-            "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
-            fileId, currentMap.length);
-      return true;
-    }
-
-    final boolean[] permissions = currentMap[fileId];
+    final boolean[] permissions = fileId < currentMap.length ? currentMap[fileId] : fileNotInSnapshot(snapshot, fileId);
     final int index = access.ordinal();
     if (permissions != null) {
       if (index >= permissions.length)
         throw new ServerSecurityException("Attempt to access to a profiled resources while the security map was refreshing");
       return permissions[index];
     }
+    // A FILE NO TYPE OWNS OR INVOLVES (A BUCKET OF NO TYPE, AN INDEX FILE) IS RESTRICTED BY NO TYPE
     return true;
   }
 
@@ -169,13 +178,89 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     if (denyAll)
       return false;
 
-    final Map<String, boolean[]> currentMap = this.access.typeAccess();
+    final AccessSnapshot snapshot = accessForCurrentSchema();
+    final Map<String, boolean[]> currentMap = snapshot.typeAccess();
     if (currentMap == null)
       return true;
 
-    final boolean[] permissions = currentMap.get(typeName);
-    // Not (yet) in the map: same default-allow policy as requestAccessOnFile() for an unregistered file id.
-    return permissions == null || permissions[access.ordinal()];
+    boolean[] permissions = currentMap.get(typeName);
+    if (permissions == null)
+      permissions = typeNotInSnapshot(snapshot, typeName);
+    return permissions[access.ordinal()];
+  }
+
+  /**
+   * The current permission state, rebuilt first when the schema's types changed since it was built. The common case is
+   * one volatile read of the schema's serial and a comparison: no lock, no allocation.
+   */
+  private AccessSnapshot accessForCurrentSchema() {
+    final AccessSnapshot snapshot = this.access;
+    final WeakReference<LocalSchema> schemaRef = snapshot.schema();
+    if (schemaRef == null)
+      return snapshot;
+    final LocalSchema schema = schemaRef.get();
+    if (schema == null || schema.getTypesChangeSerial() == snapshot.typesSerial())
+      return snapshot;
+    return rebuildForSchemaChange(schema);
+  }
+
+  /**
+   * Rebuilds the per-type/per-bucket half for the current schema from the group definitions the published snapshot was
+   * built from, and publishes it. Under this object's monitor, as {@link #refresh} is, so it cannot interleave with a
+   * refresh: one that published in the meantime is the one rebuilt, and its newer group definitions are kept.
+   */
+  private synchronized AccessSnapshot rebuildForSchemaChange(final LocalSchema schema) {
+    final AccessSnapshot current = this.access;
+    if (current.typesSerial() == schema.getTypesChangeSerial() || current.configuredGroups() == null)
+      return current;
+    final AccessSnapshot rebuilt = withFileAccess(current, schema, current.configuredGroups());
+    this.access = rebuilt;
+    return rebuilt;
+  }
+
+  /**
+   * The access to a file id the snapshot has no slot for: a file created after the snapshot was built and before the
+   * schema change that made it was counted. Resolved from the type the live schema says involves the file, with the group
+   * definitions of the snapshot; {@code null} when no type does.
+   */
+  private boolean[] fileNotInSnapshot(final AccessSnapshot snapshot, final int fileId) {
+    final LocalSchema schema = snapshot.schema() != null ? snapshot.schema().get() : null;
+    final DocumentType type = schema != null ? schema.getInvolvedTypeByBucketId(fileId) : null;
+    if (type == null) {
+      // #5269: log at most once per fileId and at FINE, otherwise under write load this branch emitted the same INFO line
+      // on every access, rotating the container logs in seconds.
+      if (warnedNotRegisteredFiles.add(fileId))
+        LogManager.instance().log(this, Level.FINE,
+            "Requesting access to fileId %d which is not yet in security configuration (registeredFiles=%d), allowing by default",
+            fileId, snapshot.fileAccess().length);
+      return null;
+    }
+    return fileAccessOfType(type, fileId, snapshot.configuredGroups());
+  }
+
+  /**
+   * The access to a type name the snapshot has no entry for: a type created or renamed after the snapshot was built, an
+   * alias, or a name no type has yet (a type about to be created under it). Resolved from the group definitions of the
+   * snapshot, under the type's own name when the live schema knows the name, so the answer is the one the type will have
+   * once it is in the snapshot.
+   */
+  private boolean[] typeNotInSnapshot(final AccessSnapshot snapshot, final String typeName) {
+    String name = typeName;
+    final LocalSchema schema = snapshot.schema() != null ? snapshot.schema().get() : null;
+    if (schema != null) {
+      final DocumentType type = schema.getTypeOrNull(typeName);
+      if (type != null) {
+        name = type.getName();
+        final boolean[] permissions = snapshot.typeAccess().get(name);
+        if (permissions != null)
+          return permissions;
+      }
+    }
+    final JSONObject configuredGroups = snapshot.configuredGroups();
+    if (configuredGroups == null)
+      return ALL_ACCESS;
+    final JSONObject defaultGroupTypes = defaultGroupTypes(configuredGroups);
+    return resolveTypeAccess(name, configuredGroups, defaultGroupTypes, defaultGroupTypes.getJSONObject(SecurityManager.ANY));
   }
 
   /**
@@ -211,7 +296,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     final boolean[] newDatabaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
     if (configuredGroups == null)
-      return new AccessSnapshot(newDatabaseAccessMap, current.fileAccess(), current.typeAccess(), -1, -1);
+      return new AccessSnapshot(newDatabaseAccessMap, current.fileAccess(), current.typeAccess(), -1, -1, current.schema(),
+          current.configuredGroups(), current.typesSerial());
 
     JSONArray access = null;
     for (final String groupName : groups) {
@@ -266,44 +352,56 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     }
 
     return new AccessSnapshot(newDatabaseAccessMap, current.fileAccess(), current.typeAccess(), resultSetLimit,
-        readTimeout);
+        readTimeout, current.schema(), current.configuredGroups(), current.typesSerial());
   }
 
   public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
     this.access = withFileAccess(this.access, database, configuredGroups);
   }
 
-  /**
-   * Returns {@code current} with its per-bucket and per-type maps rebuilt from {@code configuredGroups},
-   * leaving the database-level half as it was. Pure, for the same reason as
-   * {@link #withDatabaseConfiguration}.
-   */
   private AccessSnapshot withFileAccess(final AccessSnapshot current, final DatabaseInternal database,
       final JSONObject configuredGroups) {
     if (configuredGroups == null)
       return current;
+    final Schema schema = database.getSchema();
+    return withFileAccess(current, schema, database.getFileManager(), schema.getEmbedded(), configuredGroups);
+  }
 
-    final List<ComponentFile> files = database.getFileManager().getFiles();
+  private AccessSnapshot withFileAccess(final AccessSnapshot current, final LocalSchema schema,
+      final JSONObject configuredGroups) {
+    return withFileAccess(current, schema, ((DatabaseInternal) schema.getDatabase()).getFileManager(), schema,
+        configuredGroups);
+  }
+
+  /**
+   * Returns {@code current} with its per-bucket and per-type maps rebuilt from {@code configuredGroups},
+   * leaving the database-level half as it was. Pure, for the same reason as
+   * {@link #withDatabaseConfiguration}.
+   *
+   * @param changes the schema whose types change serial the result is checked against, {@code null} for none
+   */
+  private AccessSnapshot withFileAccess(final AccessSnapshot current, final Schema schema, final FileManager fileManager,
+      final LocalSchema changes, final JSONObject configuredGroups) {
+    if (configuredGroups == null)
+      return current;
+
+    // READ BEFORE THE MAPS: A CHANGE MADE WHILE THEY ARE BUILT MOVES THE SERIAL PAST THIS VALUE AND THE NEXT CHECK REBUILDS
+    final long typesSerial = changes != null ? changes.getTypesChangeSerial() : -1;
+
+    final List<ComponentFile> files = fileManager.getFiles();
 
     // WORK ON A COPY AND SWAP IT AT THE END
     final boolean[][] newFileAccessMap = new boolean[files.size()][];
 
-    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ?
-        configuredGroups.getJSONObject(SecurityManager.ANY) :
-        NO_ACCESS_GROUP;
-
-    final JSONObject defaultGroupTypes = defaultGroup.getJSONObject("types");
+    final JSONObject defaultGroupTypes = defaultGroupTypes(configuredGroups);
     final JSONObject defaultType = defaultGroupTypes.getJSONObject(SecurityManager.ANY);
 
     for (int i = 0; i < newFileAccessMap.length; ++i) {
-      final DocumentType type = database.getSchema().getInvolvedTypeByBucketId(i);
+      final DocumentType type = schema.getInvolvedTypeByBucketId(i);
       if (type == null)
         continue;
 
-      final boolean[] typeAccess = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
-      newFileAccessMap[i] = type instanceof LocalDocumentType localType && localType.isExternalBucket(i) ?
-          externalBucketAccess(typeAccess) :
-          typeAccess;
+      newFileAccessMap[i] = fileAccessOfType(type, i, configuredGroups, defaultGroupTypes, defaultType);
     }
 
     // #5269: the refreshed map may now cover files previously reported as missing; reset the throttle so a genuinely
@@ -315,11 +413,40 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     // just bucket-less ones, so requestAccessOnType() stays consistent with requestAccessOnFile() for a type that
     // does have buckets too.
     final Map<String, boolean[]> newTypeAccessMap = new HashMap<>();
-    for (final DocumentType type : database.getSchema().getTypes())
+    for (final DocumentType type : schema.getTypes())
       newTypeAccessMap.put(type.getName(), resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType));
 
+    final WeakReference<LocalSchema> schemaRef;
+    if (changes == null)
+      schemaRef = null;
+    else if (current.schema() != null && current.schema().get() == changes)
+      schemaRef = current.schema();
+    else
+      schemaRef = new WeakReference<>(changes);
     return new AccessSnapshot(current.databaseAccess(), newFileAccessMap, newTypeAccessMap, current.resultSetLimit(),
-        current.readTimeout());
+        current.readTimeout(), schemaRef, configuredGroups, typesSerial);
+  }
+
+  /** The {@code "types"} of the configuration's default group, or of a group granting nothing when it has none. */
+  private static JSONObject defaultGroupTypes(final JSONObject configuredGroups) {
+    final JSONObject defaultGroup = configuredGroups.has(SecurityManager.ANY) ?
+        configuredGroups.getJSONObject(SecurityManager.ANY) :
+        NO_ACCESS_GROUP;
+    return defaultGroup.getJSONObject("types");
+  }
+
+  private boolean[] fileAccessOfType(final DocumentType type, final int fileId, final JSONObject configuredGroups) {
+    final JSONObject defaultGroupTypes = defaultGroupTypes(configuredGroups);
+    return fileAccessOfType(type, fileId, configuredGroups, defaultGroupTypes, defaultGroupTypes.getJSONObject(SecurityManager.ANY));
+  }
+
+  /** The access array of the file {@code fileId} that {@code type} owns or involves. */
+  private boolean[] fileAccessOfType(final DocumentType type, final int fileId, final JSONObject configuredGroups,
+      final JSONObject defaultGroupTypes, final JSONObject defaultType) {
+    final boolean[] typeAccess = resolveTypeAccess(type.getName(), configuredGroups, defaultGroupTypes, defaultType);
+    return type instanceof LocalDocumentType localType && localType.isExternalBucket(fileId) ?
+        externalBucketAccess(typeAccess) :
+        typeAccess;
   }
 
   /**

@@ -7740,6 +7740,9 @@ public class LocalSchema implements Schema {
 
     published = new SchemaState(published.types(), maps[0], maps[1]);
     bucketTypeMapsStale = false;
+    // AGAIN ONCE THE MAPS ARE VISIBLE: AN ANSWER DERIVED FROM THE PREVIOUS MAPS AFTER THE FIRST MOVE (THE PER-BUCKET
+    // PERMISSIONS OF A PRINCIPAL) WOULD OTHERWISE CARRY THE CURRENT SERIAL AND NEVER BE DERIVED AGAIN
+    typesChanged();
     ++bucketTypeMapRebuilds;
     requestColumnarReconcile();
   }
