@@ -69,36 +69,6 @@ import java.util.logging.Level;
  */
 public final class RaftLogCompactionScheduler {
 
-  /**
-   * Minimal surface of {@link RaftHAServer} the scheduler depends on. Kept small for testing.
-   */
-  public interface CompactionTarget {
-    boolean isShutdownRequested();
-
-    /**
-     * Requests a snapshot of the local Ratis server, skipped by Ratis when fewer than
-     * {@code creationGap} entries have been applied since the last snapshot.
-     *
-     * @return the resulting snapshot index, or a negative value when no snapshot was taken
-     */
-    long triggerSnapshot(long creationGap);
-
-    /**
-     * Free bytes on the volume hosting the Raft storage directory, or a non-positive value when it
-     * cannot be determined.
-     */
-    long getRaftStorageUsableSpaceBytes();
-
-    /**
-     * Total bytes of the volume hosting the Raft storage directory, or a non-positive value when it
-     * cannot be determined.
-     */
-    long getRaftStorageTotalSpaceBytes();
-
-    /** Human-readable Raft storage location, used only in log messages. */
-    String getRaftStorageDescription();
-  }
-
   /** Creation gap used once the Raft storage volume is under disk pressure: purge as far as possible. */
   static final long DISK_PRESSURE_CREATION_GAP = 1L;
 
@@ -131,6 +101,36 @@ public final class RaftLogCompactionScheduler {
   private          boolean                  reportedCompaction = false;
   // Injectable for deterministic tests; defaults to the system clock.
   private          LongSupplier             clock             = System::currentTimeMillis;
+
+  /**
+   * Minimal surface of {@link RaftHAServer} the scheduler depends on. Kept small for testing.
+   */
+  public interface CompactionTarget {
+    boolean isShutdownRequested();
+
+    /**
+     * Requests a snapshot of the local Ratis server, skipped by Ratis when fewer than
+     * {@code creationGap} entries have been applied since the last snapshot.
+     *
+     * @return the resulting snapshot index, or a negative value when no snapshot was taken
+     */
+    long triggerSnapshot(long creationGap);
+
+    /**
+     * Free bytes on the volume hosting the Raft storage directory, or a non-positive value when it
+     * cannot be determined.
+     */
+    long getRaftStorageUsableSpaceBytes();
+
+    /**
+     * Total bytes of the volume hosting the Raft storage directory, or a non-positive value when it
+     * cannot be determined.
+     */
+    long getRaftStorageTotalSpaceBytes();
+
+    /** Human-readable Raft storage location, used only in log messages. */
+    String getRaftStorageDescription();
+  }
 
   public RaftLogCompactionScheduler(final CompactionTarget target, final long intervalMs, final long minEntries,
       final int minFreeSpacePerc) {
