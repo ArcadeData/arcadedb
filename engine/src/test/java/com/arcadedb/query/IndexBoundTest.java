@@ -852,7 +852,9 @@ class IndexBoundTest {
 
     @Test
     void descendingOrderAndInListsAgreeWithTheScan() {
-      for (final String where : new String[] { "d < ? ORDER BY d DESC", "d > ? ORDER BY d DESC", "d >= ? ORDER BY d", "d <= ? ORDER BY d" })
+      // ids 1 and 6 share d = -1.5: the id breaks the tie, the order of two equal keys is not specified
+      for (final String where : new String[] { "d < ? ORDER BY d DESC, id", "d > ? ORDER BY d DESC, id", "d >= ? ORDER BY d, id",
+          "d <= ? ORDER BY d, id" })
         for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN })
           assertThat(ordered("I", where, bound)).as(where + " with " + describe(bound)).isEqualTo(ordered("S", where, bound));
       for (final String field : INDEXED)
