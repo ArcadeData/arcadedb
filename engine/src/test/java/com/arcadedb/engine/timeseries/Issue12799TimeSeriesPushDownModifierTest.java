@@ -75,9 +75,41 @@ class Issue12799TimeSeriesPushDownModifierTest extends TestHelper {
 
   @Test
   void asStringOnLastPointAnswersAString() {
-    final List<Result> rows = query("SELECT ts.last(v, ts).asString() AS l FROM X");
+    final String sql = "SELECT ts.last(v, ts).asString() AS l FROM X";
+    final List<Result> rows = query(sql);
     assertThat(rows).hasSize(1);
     assertThat((Object) rows.get(0).getProperty("l")).isEqualTo("2.0");
+    // The method reshapes the aggregated value only: the newest row alone still answers, so the fetch stays newest-first
+    // and stops at one row instead of reading the whole series
+    assertThat(plan(sql)).contains("FETCH FROM TIMESERIES DESC X").contains("TOP 1");
+  }
+
+  @Test
+  void chainedMethodsOnLastPointKeepTheOneRowRead() {
+    final String sql = "SELECT ts.last(v, ts).asString().substring(0, 1) AS l FROM X";
+    final List<Result> rows = query(sql);
+    assertThat(rows).hasSize(1);
+    assertThat((Object) rows.get(0).getProperty("l")).isEqualTo("2");
+    assertThat(plan(sql)).contains("FETCH FROM TIMESERIES DESC X").contains("TOP 1");
+  }
+
+  @Test
+  void aggregateInsideTheLastPointModifierReadsEveryRow() {
+    // An aggregate in the method argument is about the whole input, so nothing proves the newest row alone answers it
+    assertThat(plan("SELECT ts.last(v, ts).append(count(*)) AS l FROM X")).doesNotContain("TOP 1");
+  }
+
+  @Test
+  void indexOrFieldModifierOnBucketOrAggregateAnswersAsTheParenthesisedSpelling() {
+    final String[][] spellings = {
+        { "SELECT ts.timeBucket('1h', ts) AS b, max(v)[0] AS m FROM X GROUP BY b",
+            "SELECT ts.timeBucket('1h', ts) AS b, (max(v))[0] AS m FROM X GROUP BY b" },
+        { "SELECT ts.timeBucket('1h', ts).time AS b, count(*) AS c FROM X GROUP BY b",
+            "SELECT (ts.timeBucket('1h', ts)).time AS b, count(*) AS c FROM X GROUP BY b" } };
+    for (final String[] pair : spellings) {
+      assertThat(plan(pair[0])).doesNotContain("AGGREGATE FROM TIMESERIES");
+      assertThat(rowsAsStrings(pair[0])).isEqualTo(rowsAsStrings(pair[1]));
+    }
   }
 
   @Test
@@ -93,6 +125,14 @@ class Issue12799TimeSeriesPushDownModifierTest extends TestHelper {
       while (rs.hasNext())
         rows.add(rs.next());
     }
+    return rows;
+  }
+
+  private List<String> rowsAsStrings(final String sql) {
+    final List<String> rows = new ArrayList<>();
+    for (final Result r : query(sql))
+      rows.add(new TreeMap<>(r.toMap()).toString());
+    rows.sort(null);
     return rows;
   }
 
