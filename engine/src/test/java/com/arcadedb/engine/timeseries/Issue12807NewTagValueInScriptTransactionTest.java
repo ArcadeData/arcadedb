@@ -24,9 +24,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #12807: a TIMESERIES sample carrying a tag value the type had never seen could not be written inside a script's
@@ -113,6 +115,39 @@ class Issue12807NewTagValueInScriptTransactionTest extends TestHelper {
 
     // Rolling the caller back does not take the samples nor their tag values (#7410): the append committed both on its own
     assertThat(tagsInTimestampOrder("X")).containsExactly("new-1", "new-2");
+  }
+
+  /**
+   * Interning now fails before the append transaction begins: a value past the length limit is still reported as a failed
+   * append, wrapping the dictionary's refusal as before, and leaves the caller's transactions as it found them, so a later
+   * append in the same caller transaction goes through.
+   */
+  @Test
+  void aTagValueThatCannotBeInternedFailsTheAppendAndLeavesTheCallerTransactionUsable() throws Exception {
+    createType();
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("X")).getEngine();
+    final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+    final String tooLong = "x".repeat(TimeSeriesBucket.MAX_STRING_BYTES + 1);
+
+    final int callerLevels = context.getMaxNested() - 1;
+    database.begin();
+    while (context.getTransactionDepth() < callerLevels)
+      database.begin();
+    try {
+      assertThatThrownBy(() -> engine.appendSamples(new long[] { 1L }, new Object[] { tooLong }, new Object[] { 1.0 }))
+          .isInstanceOf(IOException.class)
+          .hasMessage("Failed to append timeseries samples")
+          .hasCauseInstanceOf(IllegalArgumentException.class);
+      assertThat(context.getTransactionDepth()).isEqualTo(callerLevels);
+
+      engine.appendSamples(new long[] { 2L }, new Object[] { "ok" }, new Object[] { 2.0 });
+      assertThat(context.getTransactionDepth()).isEqualTo(callerLevels);
+    } finally {
+      while (database.isTransactionActive())
+        database.rollback();
+    }
+
+    assertThat(tagsInTimestampOrder("X")).containsExactly("ok");
   }
 
   @Test
