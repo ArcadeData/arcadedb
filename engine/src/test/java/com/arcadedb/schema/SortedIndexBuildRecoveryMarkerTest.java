@@ -23,14 +23,19 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
   @Test
@@ -92,6 +97,119 @@ class SortedIndexBuildRecoveryMarkerTest extends TestHelper {
     assertThat(index).isNotNull();
     assertThat(count(index.iterator(false))).isEqualTo(500);
     assertThat(recoveryMarkers()).isEmpty();
+  }
+
+  /**
+   * A process killed inside {@code create()} after the marker file exists and before its content is written leaves an EMPTY marker
+   * (what a power loss leaves too, when the file reached the directory and its data did not). The build had not started: the
+   * marker is forced to disk before the first index file or spill workspace is created. The open must remove it, not fail on it.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "", "{", "{\"version\":1,\"typeName\":\"TornBuild\",\"propertyNames\":[\"look" })
+  void aMarkerTornInsideCreateIsRemovedAndTheDatabaseOpens(final String tornContent) throws Exception {
+    final DocumentType type = database.getSchema().createDocumentType("TornBuild");
+    type.createProperty("lookupKey", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("TornBuild").set("lookupKey", i).save();
+    });
+    database.getSchema().buildTypeIndex("TornBuild", new String[] { "lookupKey" }).withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true)
+        .create();
+
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+    database = null;
+    Files.writeString(databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "6f1c1d0e-0000-4000-8000-000000000001.json"),
+        tornContent);
+
+    database = factory.open();
+
+    assertThat(recoveryMarkers()).as("the torn marker is gone").isEmpty();
+    assertThat(database.countType("TornBuild", false)).isEqualTo(100);
+    final TypeIndex index = database.getSchema().getType("TornBuild").getIndexByProperties("lookupKey");
+    assertThat(index).isNotNull();
+    assertThat(count(index.iterator(true))).isEqualTo(100);
+  }
+
+  /**
+   * The manifest holds the type name, which can be in any script, so a tear can fall INSIDE a multibyte character. The strict UTF-8
+   * decoder of {@code Files.readString} refuses such a tail with a {@code CharacterCodingException}, an {@code IOException} and not a
+   * parse error, so it must not be what keeps the database from opening.
+   */
+  @Test
+  void aMarkerCutInsideAMultibyteCharacterIsRemovedAndTheDatabaseOpens() throws Exception {
+    final byte[] head = "{\"version\":1,\"typeName\":\"Caf".getBytes(StandardCharsets.UTF_8);
+    final byte[] torn = Arrays.copyOf(head, head.length + 1);
+    torn[head.length] = (byte) 0xC3; // the first byte of the two-byte sequence of a lowercase e with an acute accent
+
+    openWithATornMarker("TornMultibyte", torn);
+
+    assertThat(database.countType("TornMultibyte", false)).isEqualTo(10);
+  }
+
+  /** A file that reached its length and not its data reads back as zeros (the metadata of a growing file is journaled before its blocks). */
+  @Test
+  void aMarkerFilledWithZerosIsRemovedAndTheDatabaseOpens() throws Exception {
+    openWithATornMarker("TornZeros", new byte[128]);
+
+    assertThat(database.countType("TornZeros", false)).isEqualTo(10);
+  }
+
+  /**
+   * The torn-manifest rule is for a manifest that cannot be read. One that parses and names another version is not ours to remove or
+   * to guess about.
+   */
+  @Test
+  void aReadableManifestOfAnUnsupportedVersionStillFailsTheOpenAndIsKept() throws Exception {
+    database.getSchema().createDocumentType("FutureBuild");
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+    database = null;
+    final Path marker = databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "6f1c1d0e-0000-4000-8000-000000000002.json");
+    Files.writeString(marker, "{\"version\":2}");
+
+    assertThatThrownBy(() -> factory.open()).hasStackTraceContaining("Unsupported sorted index build cleanup manifest version");
+    assertThat(marker).exists();
+
+    Files.delete(marker);
+    database = factory.open();
+    assertThat(database.getSchema().existsType("FutureBuild")).isTrue();
+  }
+
+  /** Manifests are recovered in name order: a torn one must not end the recovery before the complete manifest after it. */
+  @Test
+  void aTornManifestDoesNotStopTheRecoveryOfTheManifestAfterIt() throws Exception {
+    database.getSchema().createDocumentType("TwoMarkers").createProperty("lookupKey", Type.INTEGER);
+    SortedIndexBuildRecoveryMarker.create((DatabaseInternal) database, "TwoMarkers", List.of("lookupKey"), null);
+    final Path databasePath = Path.of(database.getDatabasePath());
+    assertThat(recoveryMarkers()).hasSize(1);
+    database.close();
+    database = null;
+    // the smallest name a random UUID manifest can have, so it is met first
+    Files.writeString(databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "00000000-0000-4000-8000-000000000000.json"),
+        "");
+
+    database = factory.open();
+
+    assertThat(recoveryMarkers()).as("the torn and the complete manifest are both gone").isEmpty();
+    assertThat(database.getSchema().existsType("TwoMarkers")).isTrue();
+  }
+
+  /** Fills a type with 10 documents, closes the database, leaves {@code content} as a recovery marker and reopens: it must clear it. */
+  private void openWithATornMarker(final String typeName, final byte[] content) throws Exception {
+    database.getSchema().createDocumentType(typeName).createProperty("lookupKey", Type.INTEGER);
+    database.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        database.newDocument(typeName).set("lookupKey", i).save();
+    });
+    final Path databasePath = Path.of(database.getDatabasePath());
+    database.close();
+    database = null;
+    Files.write(databasePath.resolve(SortedIndexBuildRecoveryMarker.FILE_PREFIX + "6f1c1d0e-0000-4000-8000-000000000004.json"), content);
+
+    database = factory.open();
+
+    assertThat(recoveryMarkers()).as("the torn marker is gone").isEmpty();
   }
 
   private List<Path> recoveryMarkers() throws Exception {

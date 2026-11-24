@@ -22,6 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.logging.Level;
@@ -114,10 +118,16 @@ final class AppliedIndexWaits {
    */
   void awaitAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout,
       final Database.READ_CONSISTENCY readConsistency) {
+    awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, readConsistency, ha.quorumTimeout);
+  }
+
+  /** As above, giving up after {@code timeoutMs} instead of the quorum timeout (issue #11739). */
+  void awaitAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout,
+      final Database.READ_CONSISTENCY readConsistency, final long timeoutMs) {
     if (targetIndex <= 0)
       return;
     try {
-      final long deadline = System.currentTimeMillis() + ha.quorumTimeout;
+      final long deadline = System.currentTimeMillis() + timeoutMs;
       // The configuration is read on entry, then whenever it changed, and once per recheck interval: not on every entry
       // applied, which wakes every waiter
       long membershipSeen = membershipChanges.get();
@@ -175,7 +185,7 @@ final class AppliedIndexWaits {
               LogManager.instance().log(ha, Level.WARNING,
                   "LINEARIZABLE read failed: local apply timeout applied=%d < readIndex=%d after %dms "
                       + "(staleSnapshotFloor=%d, database '%s' floor=%d, failing read)",
-                  ha.getTrustedAppliedIndex(databaseName), targetIndex, ha.quorumTimeout, getStaleSnapshotAppliedFloor(),
+                  ha.getTrustedAppliedIndex(databaseName), targetIndex, timeoutMs, getStaleSnapshotAppliedFloor(),
                   databaseName, getDatabaseAppliedFloor(databaseName));
               throw new ReplicationException(
                   "LINEARIZABLE read timed out waiting for local apply: applied=" + ha.getTrustedAppliedIndex(databaseName)
@@ -292,26 +302,51 @@ final class AppliedIndexWaits {
    */
   public long fetchReadIndex(final boolean expectSelfIsLeader) {
     try {
-      final RaftClientReply reply = ha.raftClient.io().sendReadOnly(Message.EMPTY);
-      if (reply.isSuccess())
-        return extractLeaderCommitIndex(reply);
-
-      final NotLeaderException nle = reply.getNotLeaderException();
-      if (nle != null) {
-        final var suggestedLeader = nle.getSuggestedLeader();
-        if (expectSelfIsLeader) {
-          final String leaderAddr = suggestedLeader != null ? suggestedLeader.getId().toString() : null;
-          throw new ReplicationException(
-              "Lost leadership during ReadIndex" + (leaderAddr != null ? ", new leader: " + leaderAddr : ""));
-        }
-        throw new ReplicationException("ReadIndex failed: leader unavailable");
-      }
-      throw new ReplicationException("ReadIndex failed: " + reply);
+      return readIndexOf(ha.raftClient.io().sendReadOnly(Message.EMPTY), expectSelfIsLeader);
     } catch (final ReplicationException e) {
       throw e;
     } catch (final IOException e) {
       throw new ReplicationException("ReadIndex RPC failed: " + e.getMessage(), e);
     }
+  }
+
+  /**
+   * As {@link #fetchReadIndex(boolean)}, for a caller that must not wait out the retry policy of the shared Raft client, which
+   * keeps asking for up to a minute when no leader answers (issue #11739): gives up with a {@link ReplicationException} once
+   * {@code timeoutMs} has passed. The request is sent unordered, so one that is still retrying holds no later request of the
+   * client back, and it is cancelled when the wait gives up.
+   */
+  public long fetchReadIndex(final boolean expectSelfIsLeader, final long timeoutMs) {
+    final CompletableFuture<RaftClientReply> request = ha.raftClient.async().sendReadOnlyUnordered(Message.EMPTY);
+    try {
+      return readIndexOf(request.get(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS), expectSelfIsLeader);
+    } catch (final TimeoutException e) {
+      request.cancel(true);
+      throw new ReplicationException("ReadIndex gave up after " + timeoutMs + "ms: no leader answered");
+    } catch (final InterruptedException e) {
+      request.cancel(true);
+      Thread.currentThread().interrupt();
+      throw new ReplicationException("ReadIndex interrupted", e);
+    } catch (final ExecutionException e) {
+      throw new ReplicationException("ReadIndex RPC failed: " + e.getCause(), e.getCause());
+    }
+  }
+
+  private long readIndexOf(final RaftClientReply reply, final boolean expectSelfIsLeader) {
+    if (reply.isSuccess())
+      return extractLeaderCommitIndex(reply);
+
+    final NotLeaderException nle = reply.getNotLeaderException();
+    if (nle != null) {
+      final var suggestedLeader = nle.getSuggestedLeader();
+      if (expectSelfIsLeader) {
+        final String leaderAddr = suggestedLeader != null ? suggestedLeader.getId().toString() : null;
+        throw new ReplicationException(
+            "Lost leadership during ReadIndex" + (leaderAddr != null ? ", new leader: " + leaderAddr : ""));
+      }
+      throw new ReplicationException("ReadIndex failed: leader unavailable");
+    }
+    throw new ReplicationException("ReadIndex failed: " + reply);
   }
 
   /**

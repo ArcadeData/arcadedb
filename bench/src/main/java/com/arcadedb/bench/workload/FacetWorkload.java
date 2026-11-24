@@ -132,7 +132,7 @@ public class FacetWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("queries_per_s", "queries/s", QUERIES_PER_REP / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /**
@@ -213,7 +213,7 @@ public class FacetWorkload implements Workload {
     metrics.addAll(Metrics.latencies(latencies));
     metrics.add(Metrics.rate("ingest_records_per_s", "records/s", ackedAtEnd / ingestSeconds));
     metrics.add(Metrics.of("facet_lag_ms", "ms", Metric.Better.LOWER, lagMs));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** True when the database holds exactly the baseline, after deleting what an earlier ingest case added. */
