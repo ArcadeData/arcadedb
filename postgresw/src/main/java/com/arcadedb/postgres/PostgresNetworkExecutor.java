@@ -64,6 +64,7 @@ import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.DeleteStatement;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
+import com.arcadedb.query.sql.parser.EmptyStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
@@ -4004,7 +4005,15 @@ public class PostgresNetworkExecutor extends Thread {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
               portal.sqlStatement = sqlEngine.parse(engineText, (DatabaseInternal) database);
               final PostgresPortal.TransactionControl transactionControl = transactionControlOf(portal.sqlStatement);
-              if (transactionControl != null) {
+              if (portal.sqlStatement instanceof EmptyStatement) {
+                // Only comments: an empty statement like the one above, registered, described as NoData and answered
+                // EmptyQueryResponse at Execute (issues #11028, #13380)
+                portal.sqlStatement = null;
+                portal.query = "";
+                portal.emptyQuery = true;
+                portal.isExpectingResult = false;
+                portal.ignoreExecution = true;
+              } else if (transactionControl != null) {
                 // A spelling the exact matchers above miss but the grammar accepts (issue #8273): recorded and
                 // applied exactly like the three above, never executed by the engine behind the block state. The
                 // query becomes the canonical keyword, which is what PostgresCommandTag reads the command tag from.

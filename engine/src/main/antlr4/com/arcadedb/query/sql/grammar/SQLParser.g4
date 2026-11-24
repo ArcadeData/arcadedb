@@ -35,10 +35,11 @@ options {
 // ============================================================================
 
 /**
- * Main entry point - parses a single SQL statement
+ * Main entry point - parses a single SQL statement, or no statement at all: an empty text, a lone ';' and a text that holds
+ * only comments (which the lexer hides) are an empty statement, as they are in PostgreSQL and MySQL
  */
 parse
-    : statement SEMICOLON? EOF
+    : statement? SEMICOLON? EOF
     ;
 
 /**

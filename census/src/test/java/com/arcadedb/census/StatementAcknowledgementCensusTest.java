@@ -80,7 +80,7 @@ class StatementAcknowledgementCensusTest {
     for (final String rows : List.of("SelectStatement", "SelectWithoutTargetStatement", "MatchStatement", "TraverseStatement",
         "ExplainStatement", "ProfileStatement", "FindReferencesStatement", "CheckDatabaseStatement", "AlignDatabaseStatement",
         "BackupDatabaseStatement", "ExportDatabaseStatement", "ImportDatabaseStatement", "MoveVertexStatement", "ExpressionStatement",
-        "ReturnStatement", "BreakStatement", "IfStatement", "ForEachBlock", "WhileBlock", "Statement"))
+        "ReturnStatement", "BreakStatement", "IfStatement", "ForEachBlock", "WhileBlock", "Statement", "EmptyStatement"))
       VERDICTS.put(rows, false);
   }
 

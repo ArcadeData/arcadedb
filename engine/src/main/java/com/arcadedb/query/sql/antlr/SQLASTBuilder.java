@@ -95,6 +95,7 @@ import com.arcadedb.query.sql.parser.DropMaterializedViewStatement;
 import com.arcadedb.query.sql.parser.DropPropertyStatement;
 import com.arcadedb.query.sql.parser.DropTriggerStatement;
 import com.arcadedb.query.sql.parser.DropTypeStatement;
+import com.arcadedb.query.sql.parser.EmptyStatement;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.ExplainStatement;
 import com.arcadedb.query.sql.parser.ExportDatabaseStatement;
@@ -454,7 +455,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public Statement visitParse(final SQLParser.ParseContext ctx) {
-    return (Statement) visit(ctx.statement());
+    // A text with no statement in it (empty, ';' or only comments) is an empty statement, which answers no rows
+    return ctx.statement() == null ? new EmptyStatement() : (Statement) visit(ctx.statement());
   }
 
   /**
