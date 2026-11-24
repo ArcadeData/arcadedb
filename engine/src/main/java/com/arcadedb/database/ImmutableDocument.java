@@ -189,7 +189,13 @@ public class ImmutableDocument extends BaseDocument {
   public void reload() {
     // THE RELOADED CONTENT COMES FROM THE BUCKET, NOT FROM A PAGE WHOSE VERSION THIS RECORD KNOWS
     contentPageVersion = -1;
+    // #12642: a reload reads the content again, from the transaction's own image of the page when it holds the page modified, and
+    // the record that tracks such reads must know it the same way it does for a lazy load (see readContentOfLazyRecord())
+    final TransactionContext tx = tracksReadsFromOwnImage() ? ((DatabaseInternal) database).getTransactionIfExists() : null;
+    final long ownImageReads = tx != null ? tx.getOwnImageReads() : 0L;
     super.reload();
+    if (tx != null && tx.getOwnImageReads() != ownImageReads)
+      contentReadFromOwnImage();
   }
 
   /**

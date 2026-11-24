@@ -3587,8 +3587,8 @@ public class TransactionContext implements Transaction {
    * it replaced. A read image that is no plain vertex record answers true, which keeps the conflict.
    */
   private boolean isOwnImageHeadReadStale(final LocalBucket bucket, final RID vertex, final byte[] committedImage) {
-    final boolean outRead = outHeadsReadFromOwnImage != null && outHeadsReadFromOwnImage.contains(vertex);
-    final boolean inRead = inHeadsReadFromOwnImage != null && inHeadsReadFromOwnImage.contains(vertex);
+    final boolean outRead = isHeadReadFromOwnImage(vertex, true);
+    final boolean inRead = isHeadReadFromOwnImage(vertex, false);
     if (!outRead && !inRead)
       return false;
     final MutablePage image = ownPageImageOf(bucket, vertex);
@@ -3601,10 +3601,7 @@ public class TransactionContext implements Transaction {
 
   /** Whether a traversal read a head of {@code vertex} off a vertex loaded from this transaction's own image of its page. */
   private boolean isEdgeListHeadRead(final MutableVertex vertex, final boolean out) {
-    if (vertex.isEdgeListHeadRead(out))
-      return true;
-    final RidHashSet read = out ? outHeadsReadFromOwnImage : inHeadsReadFromOwnImage;
-    return read != null && read.contains(vertex.getIdentity());
+    return vertex.isEdgeListHeadRead(out) || isHeadReadFromOwnImage(vertex.getIdentity(), out);
   }
 
   /** {@link #trackReadFromPage(BasePage, int)} for a read of the page as a whole, as a scan of it is (#11590). */

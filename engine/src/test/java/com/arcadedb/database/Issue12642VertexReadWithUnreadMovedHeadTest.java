@@ -20,6 +20,8 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -69,6 +71,110 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
     assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isNull();
   }
 
+  @Test
+  void aVertexReadForItsPropertiesIsCurrentWhenOnlyAnUnreadOutgoingHeadMoved() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    assertThat(valueOf("MATCH (a:V {id: 2}) RETURN a.id AS v")).isEqualTo(2);
+    // a concurrent transaction gives vertex 2 its first outgoing relationship: its OUT head moves
+    commitFromAnotherThread("MATCH (a:V {id: 2}), (b:V {id: 3}) CREATE (a)-[:E]->(b)");
+    database.commit();
+
+    assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isEqualTo(1L);
+    assertThat(valueOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS v")).isEqualTo(1L);
+  }
+
+  @Test
+  void aVertexWhoseMovedOutgoingHeadATraversalReadIsStillRefused() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    assertThat(valueOf("MATCH (a:V {id: 2})-[e:E]->() RETURN count(e) AS v")).isEqualTo(0L);
+    commitFromAnotherThread("MATCH (a:V {id: 2}), (b:V {id: 3}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isNull();
+  }
+
+  @Test
+  void anAppendToTheOtherListDoesNotMakeAnUnreadMovedHeadStale() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    // vertex 0 has an outgoing chunk with room: the new relationship is appended to it, the vertex itself is not written
+    database.command("opencypher", "MATCH (a:V {id: 0}), (b:V {id: 4}) CREATE (a)-[:E]->(b)").close();
+    // a concurrent transaction gives vertex 0 its first incoming relationship: its IN head moves, its OUT list nobody else touched
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 0}) CREATE (a)-[:E]->(b)");
+    database.commit();
+
+    assertThat(valueOf("MATCH (a:V {id: 1}) RETURN a.f AS v")).isEqualTo(1L);
+    assertThat(valueOf("MATCH (a:V {id: 0})-[e:E]->() RETURN count(e) AS v")).isEqualTo(2L);
+    assertThat(valueOf("MATCH (a:V {id: 0})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(1L);
+  }
+
+  @Test
+  void anAppendToTheOtherListDoesNotMakeATraversedMovedHeadCurrent() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    database.command("opencypher", "MATCH (a:V {id: 0}), (b:V {id: 4}) CREATE (a)-[:E]->(b)").close();
+    // the incoming list of vertex 0 is read: its outgoing appends do not make that read current
+    assertThat(valueOf("MATCH (b:V {id: 0})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(0L);
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 0}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valueOf("MATCH (a:V {id: 0})-[e:E]->() RETURN count(e) AS v")).isEqualTo(1L);
+  }
+
+  @Test
+  void aCountOfTheEdgesReadsTheHeadAndIsRefused() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    final Vertex vertex = vertexOf(2);
+    assertThat(vertex.countEdges(Vertex.DIRECTION.IN)).isZero();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+  }
+
+  @Test
+  void aTraversalOfAnUnsavedModifiedCopyReadsTheHeadAndIsRefused() throws Exception {
+    createGraph();
+
+    database.begin();
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    // the copy is built from the transaction's own image of the page, traversed, and never saved
+    final MutableVertex copy = vertexOf(2).modify();
+    assertThat(copy.countEdges(Vertex.DIRECTION.IN)).isZero();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+  }
+
+  @Test
+  void aTraversalOfAVertexReloadedFromTheOwnImageReadsTheHeadAndIsRefused() throws Exception {
+    createGraph();
+
+    database.begin();
+    // read before the transaction holds the page: the content is not the transaction's image of it
+    final Vertex vertex = vertexOf(2);
+    assertThat(vertex.getInteger("id")).isEqualTo(2);
+    database.command("opencypher", "MATCH (a:V {id: 1}) SET a.f = 1").close();
+    // reloaded now, from the transaction's own image of the page
+    vertex.reload();
+    assertThat(vertex.countEdges(Vertex.DIRECTION.IN)).isZero();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+  }
+
   private void createGraph() {
     database.transaction(() -> {
       // one bucket: every vertex is on the same page
@@ -79,6 +185,10 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
         database.newVertex("V").set("id", i).save();
       database.command("opencypher", "MATCH (a:V {id: 0}), (x:V {id: 5}) CREATE (a)-[:E]->(x)").close();
     });
+  }
+
+  private Vertex vertexOf(final int id) {
+    return database.lookupByKey("V", "id", id).next().getRecord().asVertex();
   }
 
   private Object valueOf(final String query) {
