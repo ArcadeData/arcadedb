@@ -479,6 +479,76 @@ class VectorGraphStalenessTest {
     }
 
     /**
+     * Issue #13343: the ordinal map of a graph without a manifest is derived by a walk over the live location index that runs
+     * without the index lock, and only its LENGTH is compared with the graph. A re-embed - a tombstone for the old id and a new
+     * id, so the count does not move - committed after the "nothing was deleted" check takes one id out of that walk and puts the
+     * new one at its end: every ordinal after the removed id would be paired with the id of the NEXT record. With the vectors
+     * stored in the graph a search then scores id L with the inline vector of ordinal L-1 and answers another record's distance.
+     * The load has to see the tombstone and rebuild instead. A follower reaches this state after every replicated COMPACT INDEX:
+     * the graph pages arrive, the sidecars never do, and the replicated re-embeds are applied while its first search loads the graph.
+     */
+    @Test
+    void aReEmbedCommittedWhileTheOrdinalMapOfAManifestlessGraphIsDerivedDoesNotShiftTheOrdinals() throws Exception {
+      createSchema(database, true);
+      insertDocs(database, 0, LIVE);
+      buildAndPersistGraph();
+
+      final String databasePath = database.getDatabasePath();
+      database.close();
+
+      final File[] sidecars = new File(databasePath).listFiles((dir, name) -> name.endsWith("." + LSMVectorIndexGraphManifest.FILE_EXT)
+          || name.endsWith("." + LSMVectorIndexOrdinalMapFile.FILE_EXT));
+      assertThat(sidecars).as("the manifest and the ordinal map the persist wrote").isNotNull().hasSize(2);
+      for (final File sidecar : sidecars)
+        assertThat(sidecar.delete()).as("remove %s: the state of a node that received only the graph pages", sidecar.getName()).isTrue();
+
+      database = factory.open();
+
+      // The record holding vector id 0: re-embedding it moves every ordinal after it by one if the walk misses it
+      final RID first = vectorIndex().getVectorIndex().getRid(0);
+      final String reEmbeddedId = database.lookupByRID(first, true).asDocument().getString("id");
+      final int reEmbedded = Integer.parseInt(reEmbeddedId.substring("doc".length()));
+      final float[] replacement = embedding(10_000);
+
+      final AtomicInteger fired = new AtomicInteger();
+      final ExecutorService writer = Executors.newSingleThreadExecutor();
+      try {
+        vectorIndex().setBeforeOrdinalWalkForTest(() -> {
+          fired.incrementAndGet();
+          vectorIndex().setBeforeOrdinalWalkForTest(null);
+          try {
+            writer.submit(() -> database.transaction(
+                () -> database.command("sql", "UPDATE Doc SET embedding = ? WHERE id = ?", replacement, reEmbeddedId))).get(60, TimeUnit.SECONDS);
+          } catch (final Exception e) {
+            throw new IllegalStateException(e);
+          }
+        });
+
+        final int[] found = { 0 };
+        database.transaction(() -> {
+          for (int doc = 0; doc < LIVE; doc++) {
+            final float[] query = doc == reEmbedded ? replacement : embedding(doc);
+            final ResultSet rs = database.query("sql", "SELECT `vector.neighbors`('Doc[embedding]', ?, 1) AS neighbors FROM schema:types LIMIT 1",
+                (Object) query);
+            assertThat(rs.hasNext()).isTrue();
+            final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
+            if (neighbors != null && !neighbors.isEmpty() && ("doc" + doc).equals(neighbors.getFirst().get("id")))
+              found[0]++;
+          }
+        });
+
+        assertThat(fired.get()).as("the load of the persisted graph reached the walk that derives the ordinal map").isEqualTo(1);
+        assertThat(found[0]).as("every record, the re-embedded one included, is its own nearest neighbour: %d of %d found", found[0], LIVE)
+            .isGreaterThanOrEqualTo(LIVE * 99 / 100);
+        assertThat(vectorIndex().getStats().get("graphRebuildCount"))
+            .as("a record was re-embedded after the check and before the walk: the persisted graph can no longer be paired with the derived map")
+            .isPositive();
+      } finally {
+        writer.shutdownNow();
+      }
+    }
+
+    /**
      * The sidecar sits next to the graph file and its name ends in the graph file's own extension plus one more, so
      * the only thing keeping the {@code FileManager} from opening it as a page-backed component is that the scan
      * matches on the LAST extension. Everything downstream of that rule - the backup enumeration, the HA
@@ -591,6 +661,10 @@ class VectorGraphStalenessTest {
     }
 
     private void createSchema(final Database db) {
+      createSchema(db, false);
+    }
+
+    private void createSchema(final Database db, final boolean storeVectorsInGraph) {
       db.transaction(() -> {
         db.command("sql", "CREATE DOCUMENT TYPE Doc");
         db.command("sql", "CREATE PROPERTY Doc.id STRING");
@@ -598,7 +672,7 @@ class VectorGraphStalenessTest {
 
         final TypeLSMVectorIndexBuilder builder = (TypeLSMVectorIndexBuilder) db.getSchema()
             .buildTypeIndex("Doc", new String[] { "embedding" }).withLSMVectorType();
-        builder.withDimensions(DIMENSIONS).withEfSearch(EF_SEARCH).create();
+        builder.withDimensions(DIMENSIONS).withEfSearch(EF_SEARCH).withStoreVectorsInGraph(storeVectorsInGraph).create();
       });
     }
 

@@ -577,6 +577,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile Runnable afterPagesParsedForTest;
   // Run by a storeVectorsInGraph build between publishing the on-heap graph and swapping in the on-disk one (issue #12380)
   private volatile Runnable beforeOnDiskGraphSwapForTest;
+  // Run by the load of a persisted graph between its "nothing was deleted" check and the walk that derives the ordinal map, so a
+  // test can commit a re-embed in between (issue #13343)
+  private volatile Runnable beforeOrdinalWalkForTest;
 
   /**
    * The most records {@link #removedDuringRebuild} holds. A rebuild that outlives more removals than this stops recording them and
@@ -2382,6 +2385,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (viaOrdinalMap != null)
       return viaOrdinalMap;
 
+    final Runnable beforeOrdinalWalk = beforeOrdinalWalkForTest;
+    if (beforeOrdinalWalk != null)
+      beforeOrdinalWalk.run();
+
     try {
       final var loadedGraph = gf.loadGraph();
 
@@ -2566,6 +2573,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int queuedUnreachable;
       lock.writeLock().lock();
       try {
+        // ISSUE #13343: the walk above ran without this lock, and the only guard against a tombstone sliding the ordinals down - the
+        // deleted count read at the top of this method - was read before it. A re-embed (a tombstone for the old id and a new id, so
+        // the count does not move) that landed in between leaves an array that lost that id and gained the new one at its end: the
+        // length of the graph, with every ordinal after the removed id paired with the id of the next record. Asked again here,
+        // where no writer can move it: a graph with a manifest is judged by the fingerprint above, a graph without one has nothing
+        // else to stand on, so it is rebuilt like any index that has a deleted vector. A location index replaced meanwhile (a
+        // compaction, issue #5568) is another generation of ids altogether.
+        if (validationLocations != vectorIndex() || validationLocations.getDeletedCount() > 0) {
+          LogManager.instance().log(this, Level.INFO,
+              "Persisted graph is not usable for index %s: a vector was deleted or the ids were renumbered while its ordinal map was "
+                  + "being derived - rebuilding from scratch (issue #13343)", indexName);
+          return PersistedGraphCheck.UNUSABLE;
+        }
         // In the same lock as the graph, so no search walks the new graph through codes built for another one, and the
         // codes that were built for it are bound to its map in the same step (issue #10786)
         if (pqMismatch != null)
@@ -14800,6 +14820,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   void setAfterLiveSetReadForTest(final Runnable hook) {
     afterLiveSetReadForTest = hook;
+  }
+
+  void setBeforeOrdinalWalkForTest(final Runnable hook) {
+    beforeOrdinalWalkForTest = hook;
   }
 
   void setAfterPagesParsedForTest(final Runnable hook) {
