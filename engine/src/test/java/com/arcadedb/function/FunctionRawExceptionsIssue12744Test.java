@@ -20,6 +20,7 @@ package com.arcadedb.function;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.function.text.TrimFunction;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -32,16 +33,24 @@ class FunctionRawExceptionsIssue12744Test extends TestHelper {
 
   @Test
   void aBadValueIsAClientErrorNotAServerFault() {
-    for (final String[] statement : new String[][] {
-        { "opencypher", "RETURN text.regexReplace('abc', 'b', '$2') AS v" },
-        { "opencypher", "RETURN datetime.fromepoch(9223372036854775807, 1) AS v" },
-        { "opencypher", "RETURN datetime.fromepoch(9223372036854775807, -1) AS v" },
-        { "sql", "SELECT circle(-1, -1, -1) AS v" },
-        { "sql", "SELECT circle(200, 0, 1) AS v" },
-        { "sql", "SELECT rectangle(200, 0, 201, 1) AS v" } }) {
-      final Throwable failure = failureOf(statement[0], statement[1]);
-      assertThat(failure).as(statement[1]).isNotNull();
-      assertThat(ErrorCategory.of(failure)).as(statement[1] + " -> " + failure).isNotEqualTo(ErrorCategory.SERVER);
+    // the exact category, not only "not SERVER": a regex or a shape the caller got wrong is VALIDATION, an instant past the
+    // java.time range is ARITHMETIC, as the date + duration range errors of #12706 are
+    for (final Object[] statement : new Object[][] {
+        { "opencypher", "RETURN text.regexReplace('abc', 'b', '$2') AS v", ErrorCategory.VALIDATION },
+        { "sql", "SELECT text.regexReplace('abc', 'b', '$2') AS v", ErrorCategory.VALIDATION },
+        { "opencypher", "RETURN text.regexReplace('abc', 'b', 'x$') AS v", ErrorCategory.VALIDATION },
+        { "opencypher", "RETURN datetime.fromepoch(9223372036854775807, 1) AS v", ErrorCategory.ARITHMETIC },
+        { "opencypher", "RETURN datetime.fromepoch(9223372036854775807, -1) AS v", ErrorCategory.ARITHMETIC },
+        { "opencypher", "RETURN datetime.fromepoch(-9223372036854775808, 0) AS v", ErrorCategory.ARITHMETIC },
+        { "sql", "SELECT circle(-1, -1, -1) AS v", ErrorCategory.VALIDATION },
+        { "sql", "SELECT circle(200, 0, 1) AS v", ErrorCategory.VALIDATION },
+        { "sql", "SELECT rectangle(200, 0, 201, 1) AS v", ErrorCategory.VALIDATION },
+        { "sql", "SELECT rectangle(0, 100, 1, 0) AS v", ErrorCategory.VALIDATION } }) {
+      final String language = (String) statement[0];
+      final String text = (String) statement[1];
+      final Throwable failure = failureOf(language, text);
+      assertThat(failure).as(text).isNotNull();
+      assertThat(ErrorCategory.of(failure)).as(text + " -> " + failure).isEqualTo(statement[2]);
     }
   }
 
@@ -51,6 +60,9 @@ class FunctionRawExceptionsIssue12744Test extends TestHelper {
     assertThat(single("opencypher", "RETURN trim(null, 'x', 'abc') AS v")).isNull();
     assertThat(single("opencypher", "RETURN btrim(null, 'x', 'abc') AS v")).isNull();
     assertThat(single("opencypher", "RETURN date.add(1000, null, 'ms') AS v")).isNull();
+    // openCypher trim()/btrim() resolve to CypherTrimFunction; the TrimFunction it reuses the strip helpers of answers the same
+    assertThat(new TrimFunction().execute(new Object[] { null, "x", "abc" }, null)).isNull();
+    assertThat(single("sql", "SELECT date.add(1000, null, 'ms') AS v")).isNull();
   }
 
   @Test
@@ -60,7 +72,8 @@ class FunctionRawExceptionsIssue12744Test extends TestHelper {
     assertThat(single("opencypher", "RETURN date.add(1000, 5, 'ms') AS v")).isEqualTo(1005L);
     assertThat(single("opencypher", "RETURN datetime.fromepoch(0, 1500000000).epochMillis AS v")).isEqualTo(1500L);
     assertThat(single("sql", "SELECT circle(10, 20, 5) AS v")).isNotNull();
-    // a top-left and a bottom-right corner (the larger Y first) is the same rectangle as the lower-left and upper-right one
+    // the try/catch around the shape factory keeps the Y ordering rectangle() already applied: a top-left and a bottom-right
+    // corner (the larger Y first) is the same rectangle as the lower-left and upper-right one
     assertThat(single("sql", "SELECT rectangle(-1, 1, 1, -1) AS v")).isNotNull();
     assertThat(String.valueOf(single("sql", "SELECT rectangle(-1, 1, 1, -1) AS v")))
         .isEqualTo(String.valueOf(single("sql", "SELECT rectangle(-1, -1, 1, 1) AS v")));
