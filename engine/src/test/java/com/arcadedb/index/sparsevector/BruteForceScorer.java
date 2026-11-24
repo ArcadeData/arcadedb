@@ -91,18 +91,24 @@ public final class BruteForceScorer {
         scores.merge(e.getKey(), qw * e.getValue(), Float::sum);
     }
 
-    final PriorityQueue<RidScore> heap = new PriorityQueue<>(k, Comparator.comparing(RidScore::score));
+    // The order BmwScorer hands back: best score first, ties by RID ascending. Equal scores must not fall back to the iteration
+    // order of a HashMap keyed by RID, which is whatever RID.hashCode() makes it.
+    final Comparator<RidScore> bestFirst = (a, b) -> {
+      final int c = Float.compare(b.score(), a.score());
+      return c != 0 ? c : SparseSegmentBuilder.compareRid(a.rid(), b.rid());
+    };
+    final PriorityQueue<RidScore> heap = new PriorityQueue<>(k, bestFirst.reversed());
     for (final var e : scores.entrySet()) {
       final RidScore rs = new RidScore(e.getKey(), e.getValue());
       if (heap.size() < k) {
         heap.add(rs);
-      } else if (rs.score() > heap.peek().score()) {
+      } else if (bestFirst.compare(rs, heap.peek()) < 0) {
         heap.poll();
         heap.add(rs);
       }
     }
     final List<RidScore> out = new ArrayList<>(heap);
-    out.sort((a, b) -> Float.compare(b.score(), a.score()));
+    out.sort(bestFirst);
     return out;
   }
 }

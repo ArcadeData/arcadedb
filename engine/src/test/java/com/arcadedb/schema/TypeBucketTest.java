@@ -21,7 +21,6 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -45,6 +44,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -502,20 +502,54 @@ class TypeBucketTest {
       assertThat(read.getInteger("v")).isEqualTo(1);
     }
 
+    /**
+     * Regression for #12959: a record of a type created in a bucket that belongs to no type was accepted, reported as the type, kept
+     * out of the type's indexes (a UNIQUE key the type already held was taken again) and out of every walk of the type, and read back
+     * with no type and no way to update it. Refused like a bucket another type owns (#11206).
+     */
     @Test
-    void aRecordSavedIntoABucketOfNoTypeReadsAndDeletesLikeTheOthers() {
-      // THE OTHER WAY TO MAKE ONE: SAVING INTO A FREE BUCKET IS ALLOWED, AND READ BACK THE RECORD HAS NO TYPE
-      final RID[] saved = new RID[1];
-      database.transaction(() -> {
-        final MutableDocument created = database.newDocument("A").set("id", 99);
-        created.save("x");
-        saved[0] = created.getIdentity();
-      });
+    void savingARecordOfATypeIntoABucketOfNoTypeIsRefused() {
+      database.transaction(() -> database.newDocument("A").set("id", 99).save());
 
-      assertThat(database.query("sql", "SELECT FROM " + saved[0]).next().toJSON().getInt("id")).isEqualTo(99);
+      assertThatThrownBy(() -> database.transaction(() -> database.newDocument("A").set("id", 99).save("x")))//
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Cannot create a record of type 'A' in bucket 'x', which belongs to no type");
+      assertThatThrownBy(() -> database.transaction(() -> database.newVertex("V1").set("id", 7).save("y")))//
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Cannot create a record of type 'V1' in bucket 'y', which belongs to no type");
 
-      database.transaction(() -> saved[0].asDocument().delete());
       assertThat(database.countBucket("x")).isEqualTo(1);
+      assertThat(database.countBucket("y")).isEqualTo(1);
+      assertThat(database.countType("A", false)).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = { "INSERT INTO A BUCKET x SET id = 99", "INSERT INTO A BUCKET x CONTENT { \"id\": 5 }", "CREATE VERTEX V1 BUCKET y SET id = 6",
+        "INSERT INTO BUCKET:x FROM SELECT FROM A" })
+    void sqlCreatingARecordOfATypeInABucketOfNoTypeIsRefused(final String create) {
+      database.transaction(() -> database.newDocument("A").set("id", 99).save());
+
+      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", create).close()))//
+          .hasMessageContaining("which belongs to no type");
+
+      assertThat(database.countBucket("x")).isEqualTo(1);
+      assertThat(database.countBucket("y")).isEqualTo(1);
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM A WHERE id = 99")) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+      }
+    }
+
+    @Test
+    void movingAVertexIntoABucketOfNoTypeIsRefusedAndKeepsTheVertex() {
+      final RID[] kept = new RID[1];
+      database.transaction(() -> kept[0] = database.newVertex("V1").set("id", 8).save().getIdentity());
+
+      assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "MOVE VERTEX " + kept[0] + " TO BUCKET:y").close()))//
+          .hasMessageContaining("which belongs to no type");
+
+      assertThat(kept[0].asVertex().getInteger("id")).isEqualTo(8);
+      assertThat(kept[0].asVertex().getTypeName()).isEqualTo("V1");
+      assertThat(database.countBucket("y")).isEqualTo(1);
     }
   }
 
@@ -675,6 +709,47 @@ class TypeBucketTest {
       assertThat(indexNames().stream().filter(n -> n.startsWith(bucketName + "_")).toList()).hasSize(1);
       assertThat(count("SELECT count(*) AS c FROM S WHERE k = 'y'")).isEqualTo(1L);
       assertCheckDatabaseClean();
+    }
+
+    @Test
+    void attachOfAPopulatedBucketOverADuplicateInsideACallerTransactionIsRefusedAndUndone() {
+      // ISSUE #11835: THE SUB-INDEXES OF AN ATTACH ARE CREATED IN A TRANSACTION OF THEIR OWN, NESTED IN THE CALLER'S (AN HTTP
+      // COMMAND ALWAYS RUNS IN ONE). THE REFUSAL TAKES BACK ONLY THAT NESTED LEVEL: THE CALLER'S TRANSACTION STAYS ALIVE WITH ITS
+      // EARLIER WORK, AND THE COMPONENTS THE ATTEMPT CREATED ARE DROPPED, NOT LEFT BEHIND AS FILES NO INDEX OWNS
+      createSuperTypeHolding("x");
+      final DocumentType a = database.getSchema().createDocumentType("A", 1);
+      final String bucketName = a.getBuckets(false).getFirst().getName();
+      database.transaction(() -> database.newDocument("A").set("k", "x").save());
+      a.removeBucket(database.getSchema().getBucketByName(bucketName));
+
+      database.begin();
+      try {
+        database.newDocument("S").set("k", "pending").save();
+
+        assertThatThrownBy(() -> database.command("sql", "ALTER TYPE S BUCKET +" + bucketName))//
+            .isInstanceOf(DuplicatedKeyException.class)//
+            .hasMessageContaining("x");
+
+        assertThat(database.isTransactionActive()).as("the caller's transaction survives the refusal").isTrue();
+        database.commit();
+      } finally {
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+
+      assertThat(database.getSchema().getType("S").getBuckets(false).stream().map(b -> b.getName()).toList()).doesNotContain(bucketName);
+      assertThat(indexNames().stream().filter(n -> n.startsWith(bucketName + "_")).toList()).isEmpty();
+      assertThat(filesOfTheBucketIndexes(bucketName)).as("no component file left behind by the refused attach").isEmpty();
+      assertThat(count("SELECT count() AS c FROM S WHERE k = 'pending'")).as("the caller's earlier work commits").isEqualTo(1L);
+      assertThat(count("SELECT count() AS c FROM S WHERE k = 'x'")).isEqualTo(1L);
+      assertThat(database.getSchema().getType("S").getPolymorphicIndexByProperties("k").countEntries()).isEqualTo(2L);
+      assertThat(database.getSchema().getType("S").isNeedsRepartition()).isFalse();
+      assertCheckDatabaseClean();
+    }
+
+    private List<String> filesOfTheBucketIndexes(final String bucketName) {
+      final String[] names = new File(database.getDatabasePath()).list();
+      return names == null ? List.of() : Arrays.stream(names).filter(n -> n.startsWith(bucketName + "_")).toList();
     }
 
     private void assertBucketNotAttached(final String bucketName) {

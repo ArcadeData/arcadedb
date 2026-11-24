@@ -24,6 +24,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.DatabaseIsReopeningException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.RunningQuery;
@@ -127,6 +129,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final DatabaseInternal database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
+    final int retries;
 
     DatabaseContext.DatabaseContextTL current;
 
@@ -148,73 +151,81 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         cleanTL(database, current);
       }
 
-      activeSession = setTransactionInThreadLocal(exchange, database, user);
-      if (activeSession == null)
-        // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
-        refuseOutsideSession(database, payload);
+      // EVERYTHING BETWEEN BINDING THE REQUEST TO THIS POOLED WORKER THREAD AND THE TRY BLOCK BELOW THAT ALWAYS UNBINDS IT RUNS HERE:
+      // A REQUEST REFUSED ON ANY VALUE OF ITS BODY LEAVES NOTHING OF ITSELF ON THE THREAD FOR THE NEXT ONE TO FIND
+      try {
+        activeSession = setTransactionInThreadLocal(exchange, database, user);
+        if (activeSession == null)
+          // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
+          refuseOutsideSession(database, payload);
 
-      // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
-      // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
-      // same context object for the next transaction and the counter is never reset. Sampled here, before a
-      // single byte of the body runs, and compared when the response is committed. A response-commit listener
-      // rather than the finally block below, so the answer is read at the last possible moment and the header
-      // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
-      // exactly as the read-your-writes bookmark does.
-      //
-      // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
-      // registration sits behind the activeSession null check rather than inside the listener: a request with
-      // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
-      // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
-      // survives a handler writing its own response, which the finally block cannot give: the alternative is a
-      // signal that is simply missing whenever the response was streamed. A session-bound request has already
-      // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
-      // (code review on PR #8138).
-      if (activeSession != null && reportsSessionPartialCommit()) {
-        final TransactionContext sessionTxAtStart = activeSession.transaction;
-        final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;
-        exchange.addResponseCommitListener(ex -> {
-          if (TransactionContext.isPartiallyCommitted(sessionTxAtStart, sessionCommitCountAtStart))
-            ex.getResponseHeaders().put(SESSION_PARTIAL_COMMIT_HEADER, "true");
-        });
-      }
-
-      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-      if (current == null)
-        // INITIALIZE THE DATABASE CONTEXT
-        current = DatabaseContext.INSTANCE.init(database);
-
-      final SecurityDatabaseUser currentUser = current.getCurrentUser();
-      if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
-        current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
-
-      // A session request attaches its QuerySession in setTransactionInThreadLocal above. A non-session
-      // request must never inherit a stale session from a thread-context reused on this pooled thread,
-      // which would leak another user's SESSION SET parameters into this request.
-      if (activeSession == null)
-        current.setQuerySession(null);
-
-      // Warn if autoCommit parameter conflicts with session
-      if (activeSession != null && payload != null && payload.has("autoCommit")) {
-        final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
-        if (explicitAutoCommit) {
-          LogManager.instance().log(this, Level.WARNING,
-            "autoCommit parameter 'true' ignored: session transaction is already active (session ID: %s)",
-            activeSession.id);
+        // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
+        // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
+        // same context object for the next transaction and the counter is never reset. Sampled here, before a
+        // single byte of the body runs, and compared when the response is committed. A response-commit listener
+        // rather than the finally block below, so the answer is read at the last possible moment and the header
+        // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
+        // exactly as the read-your-writes bookmark does.
+        //
+        // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
+        // registration sits behind the activeSession null check rather than inside the listener: a request with
+        // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
+        // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
+        // survives a handler writing its own response, which the finally block cannot give: the alternative is a
+        // signal that is simply missing whenever the response was streamed. A session-bound request has already
+        // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
+        // (code review on PR #8138).
+        if (activeSession != null && reportsSessionPartialCommit()) {
+          final TransactionContext sessionTxAtStart = activeSession.transaction;
+          final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;
+          exchange.addResponseCommitListener(ex -> {
+            if (TransactionContext.isPartiallyCommitted(sessionTxAtStart, sessionCommitCountAtStart))
+              ex.getResponseHeaders().put(SESSION_PARTIAL_COMMIT_HEADER, "true");
+          });
         }
+
+        current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+        if (current == null)
+          // INITIALIZE THE DATABASE CONTEXT
+          current = DatabaseContext.INSTANCE.init(database);
+
+        final SecurityDatabaseUser currentUser = current.getCurrentUser();
+        if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
+          current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+
+        // A session request attaches its QuerySession in setTransactionInThreadLocal above. A non-session
+        // request must never inherit a stale session from a thread-context reused on this pooled thread,
+        // which would leak another user's SESSION SET parameters into this request.
+        if (activeSession == null)
+          current.setQuerySession(null);
+
+        // Warn if autoCommit parameter conflicts with session
+        if (activeSession != null && payload != null && payload.has("autoCommit")) {
+          final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
+          if (explicitAutoCommit) {
+            LogManager.instance().log(this, Level.WARNING,
+                "autoCommit parameter 'true' ignored: session transaction is already active (session ID: %s)",
+                activeSession.id);
+          }
+        }
+
+        final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
+        atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
+        // THE WRAPPER IS OPENED ON THE CALLER'S BEHALF, SO A COMMAND THAT COMMITS ITS OWN BATCHES GOES WITHOUT IT UNLESS THE CALLER
+        // ASKED FOR IT: INSIDE IT A WHOLE IMPORT WAS ONE TRANSACTION HELD IN MEMORY TO THE END (ISSUE #11728)
+        if (atomicTransaction && explicitAutoCommit == null && managesItsOwnTransactions(database, payload))
+          atomicTransaction = false;
+
+        retries = resolveRetries(payload, database.getConfiguration());
+      } catch (final Throwable failure) {
+        releaseThreadContext(database, activeSession);
+        throw failure;
       }
 
-      final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
-      atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
-      // THE WRAPPER IS OPENED ON THE CALLER'S BEHALF, SO A COMMAND THAT COMMITS ITS OWN BATCHES GOES WITHOUT IT UNLESS THE CALLER
-      // ASKED FOR IT: INSIDE IT A WHOLE IMPORT WAS ONE TRANSACTION HELD IN MEMORY TO THE END (ISSUE #11728)
-      if (atomicTransaction && explicitAutoCommit == null && managesItsOwnTransactions(database, payload))
-        atomicTransaction = false;
-
-    } else
+    } else {
       database = null;
-
-    final int retries = resolveRetries(payload,
-        database != null ? database.getConfiguration() : httpServer.getServer().getConfiguration());
+      retries = resolveRetries(payload, httpServer.getServer().getConfiguration());
+    }
 
     // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
     final HAReplicatedDatabase haDbForRead = resolveHAReplicatedDatabase(database);
@@ -231,7 +242,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     QueryAdmissionGate.Ticket admission = null;
     RunningQuery runningQuery = null;
     HttpClientDisconnectWatch disconnectWatch = null;
+    boolean keepsTheLeadersAnswer = false;
     try {
+      // A write forwarded to the leader leaves its answer here (ForwardedRequestIdContext), for the catch below. Only an HA
+      // request outside a session forwards: a session's statements run on this node. And only a route whose body is one command: the
+      // leader's answer to the write it forwarded is the answer to that command, and to nothing else a request could ask for
+      keepsTheLeadersAnswer = haDbForRead != null && activeSession == null && commandForwardIsWholeRequest();
+      if (keepsTheLeadersAnswer)
+        ForwardedRequestIdContext.armCommittedWriteAnswer();
       // Set read consistency context for HA follower reads.
       // Must be inside the try block so the finally always clears the ThreadLocal.
       if (haDbForRead != null) {
@@ -306,7 +324,18 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // Emit bookmark header for read-your-writes consistency
       emitCommitIndexBookmark(exchange, haDbForRead);
 
+    } catch (final RuntimeException failure) {
+      // A write this request forwarded to the leader is durable there: a refusal the client is told to retry, raised by what this
+      // node does afterwards (its copy of the database replaced by an HA resync under the request, a commit gate refusing the empty
+      // transaction around the forward), must not be answered as one, because the retry would run the write a second time. Any
+      // other failure (a security or serialization error, a timeout, a cancel) is not a statement about the write and is raised.
+      // The error mapping decides what is a refusal to retry, so a failure it answers otherwise keeps its answer
+      if (!keepsTheLeadersAnswer || !isRetryableRefusal(failure) || !answerWithTheLeadersAnswer(response, failure))
+        throw failure;
     } finally {
+      // Whatever way the request ends, a pooled worker thread keeps no answer of this request (handleRequest clears the rest)
+      if (keepsTheLeadersAnswer)
+        ForwardedRequestIdContext.disarmCommittedWriteAnswer();
       try {
         if (haDbForRead != null) {
           // A request that left the try through an exception skipped the emit above and is answered after this block, by
@@ -345,6 +374,44 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     return response.get();
+  }
+
+  /**
+   * Whether a failure is one the client is told to retry: the error mapping ({@link #classifyError}) answers it 503 because of a
+   * {@link NeedRetryException} or a {@link DatabaseIsReopeningException}. Asked of the mapping itself rather than of the cause chain,
+   * so the two cannot disagree: an engine wrapper around the refusal (a transaction or command failure) is looked through exactly as
+   * the mapping looks through it, and a failure the mapping answers otherwise (a security refusal wrapping a retryable one is a 403)
+   * is not turned into a success.
+   */
+  boolean isRetryableRefusal(final Throwable failure) {
+    final ErrorClassification classification = classifyError(failure);
+    return classification.status() == 503
+        && (classification.reported() instanceof NeedRetryException || classification.reported() instanceof DatabaseIsReopeningException);
+  }
+
+  /**
+   * Settles a request that failed with a retryable refusal ({@link #isRetryableRefusal}) after the leader answered the write it
+   * forwarded: the answer of the request becomes the leader's own, unless the handler had rendered one already. Such a refusal can
+   * only be of what this node does with a write the leader has committed, so it says nothing about the write, and the 503 it maps to
+   * invites the replay that applies it twice.
+   * <p>
+   * Only when the leader's answer can stand for the whole request ({@link ForwardedRequestIdContext#takeCommittedWriteAnswer()}):
+   * one write forwarded, no forward that failed after it, no command executed on this node. The body is the leader's rendering of
+   * the forwarded statement, which is the client's own only when that forward was the client's whole request with its key relayed.
+   * Package-private for direct unit testing.
+   *
+   * @return true when the request has an answer now, false when the failure has to be raised as it is
+   */
+  static boolean answerWithTheLeadersAnswer(final AtomicReference<ExecutionResponse> response, final RuntimeException failure) {
+    final String leaderAnswer = ForwardedRequestIdContext.takeCommittedWriteAnswer();
+    if (leaderAnswer == null)
+      return false;
+    LogManager.instance().log(DatabaseAbstractHandler.class, Level.WARNING,
+        "Request failed with %s (%s) after the leader committed the write it forwarded: answering with the leader's answer",
+        failure.getClass().getSimpleName(), failure.getMessage());
+    if (response.get() == null)
+      response.set(new ExecutionResponse(200, leaderAnswer));
+    return true;
   }
 
   /**
@@ -475,20 +542,20 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
   }
 
-  private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {
-    if (current == null)
-      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-
-    if (current != null) {
-      TransactionContext tx;
-      while ((tx = current.popIfNotLastTransaction()) != null) {
-        if (tx.isActive())
-          tx.rollback();
-        else
-          break;
-      }
-
-      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+  /**
+   * Unbinds from this pooled worker thread what a request bound to it before it reached the try block of {@link #execute} that
+   * always does so. The transaction of a session belongs to the session, so it is only detached from the thread, exactly as when the
+   * request ends normally; a request outside a session leaves no transaction behind. Never throws: the failure of the request is
+   * the one the caller raises.
+   */
+  private void releaseThreadContext(final DatabaseInternal database, final HttpSession activeSession) {
+    try {
+      if (activeSession != null)
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      else
+        cleanTL(database, null);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on releasing the context of the thread after a refused request", e);
     }
   }
 
@@ -796,13 +863,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         throw new HttpSessionException("Remote transaction '" + session.id + "' was not begun on database '" + database.getName()
             + "' (or on the instance of it that is open now) and cannot run in it");
 
+      // Before the binding below, so that once the session's transaction is on the thread nothing is left to fail before the caller
+      // holds the session it has to release it with
+      exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
+
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database,
           session.transaction);
       // Attach the session to the thread context so the engine can reach it for GQL SESSION statements and
       // session-parameter merging.
       ctx.setQuerySession(session);
-      exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
 
       return session;
     }

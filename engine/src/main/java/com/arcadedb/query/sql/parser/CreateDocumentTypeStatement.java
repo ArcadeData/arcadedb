@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -31,6 +32,11 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
   @Override
   public String commandType() {
     return "create document type";
+  }
+
+  @Override
+  protected byte newTypeRecordKind() {
+    return Document.RECORD_TYPE;
   }
 
   @Override

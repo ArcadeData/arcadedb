@@ -75,6 +75,11 @@
 
     <dependencies>
         <dependency>
+            <groupId>org.hdrhistogram</groupId>
+            <artifactId>HdrHistogram</artifactId>
+            <version>2.2.2</version>
+        </dependency>
+        <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-network</artifactId>
             <version>${project.parent.version}</version>
