@@ -1520,15 +1520,16 @@ public class TimeSeriesEngine implements AutoCloseable {
       final long gridOffsetMs = TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs());
 
       // After a restart no block has been proved irreducible, and proving one reads it. That read is the history of the shard, so it
-      // is done here, before runSealedRewrite: inside it the compaction WRITE lock of the shard is held, and every append and every
-      // query of the shard would wait for it. The proof takes the directory read lock of the store a block at a time, as a walk
-      // does, and the rewrite below then reads only what landed since and what it is going to fold (issue #11984).
+      // is done here, before the pass takes the rewrite mutex of the shard, which keeps a compaction waiting. The proof takes the
+      // directory read lock of the store a block at a time, as a walk does, and the pass below then reads only what landed since and
+      // what it is going to fold (issue #11984).
       for (final TimeSeriesShard shard : shards)
         shard.getSealedStore().proveBlocksIrreducible(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices);
 
-      runSealedMaintenanceReplicated(
-          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices,
-              numericColIndices));
+      // Not through runSealedMaintenanceReplicated: the shard folds the history and writes the temp file holding neither the
+      // compaction write lock nor a replication session, and takes both only to install the file and ship it (issue #12610)
+      for (final TimeSeriesShard shard : shards)
+        shard.downsample(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
     }
   }
 
@@ -1560,10 +1561,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             final long samplesBefore = sealed.getTotalSampleCount();
             work.apply(shard);
             // Only ship when the file actually changed, so a steady-state no-op cycle (nothing old
-            // enough to trim/downsample) does not re-ship the whole sealed file every maintenance tick.
-            // The counts say so for every rewrite: retention drops blocks, and a downsample only rewrites blocks that hold
-            // two samples of one (tag values, bucket) that fold into one row (issue #11984; the mean row and the staleness
-            // marker row of a series that ended there are not, issue #12580), so it always leaves fewer samples than it found.
+            // enough to trim) does not re-ship the whole sealed file every maintenance tick.
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
               db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
                   sealed.readWholeSealedFile());

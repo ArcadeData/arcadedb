@@ -64,6 +64,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.UnaryOperator;
 import java.util.logging.Level;
@@ -205,6 +206,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #listSealedFiles} by the exact suffix match.
    */
   static final String MERGE_TEMP_SUFFIX = ".ts.sealed.merge.tmp";
+  /**
+   * The temp file of a downsampling pass (issue #12610). Its own, like a merge's: the pass writes it without the directory lock, so it
+   * must not be a file a retention or a compaction of the same store could open, truncate or install meanwhile.
+   */
+  static final String DOWNSAMPLE_TEMP_SUFFIX = ".ts.sealed.downsample.tmp";
 
   private static final File[] EMPTY_FILES = new File[0];
 
@@ -261,11 +267,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   static volatile boolean TEST_INTERRUPTIBLE_CHANNEL = false;
 
+  /**
+   * Test seam (issue #12610): when set, run by {@link #prepareDownsample} after each block it folds, holding no lock of the store, so
+   * a test can hold a downsampling pass in the middle of its sweep and see what the readers and the writers of the shard do meanwhile.
+   */
+  static volatile Runnable TEST_DOWNSAMPLE_SWEEP_HOOK = null;
+
   enum BlockMatchResult { SKIP, FAST_PATH, SLOW_PATH }
 
   // In-memory block directory (loaded at open) — protected by directoryLock
   private final List<BlockEntry>       blockDirectory = new ArrayList<>();
   private final ReentrantReadWriteLock directoryLock  = new ReentrantReadWriteLock();
+  // Held from the prepare to the commit of a downsampling pass (issue #12610): two passes prepared against one directory version
+  // would write the same temp file, and the first commit would install the bytes of the other with its own directory. Taken
+  // before the shard's compaction lock and before directoryLock, never while holding either
+  private final ReentrantLock          downsampleLock = new ReentrantLock();
   // Bumped, under the directory write lock, by every change to blockDirectory: what tells a cached view derived from it
   // (see maxTimestampPrefix) that it is stale
   private          int              directoryVersion;
@@ -275,8 +291,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private          boolean          headerDirty;
   /**
    * Counts how many times {@link #downsampleBlocks} actually rewrote the sealed file - i.e. selected at least one
-   * block to coarsen. Written under the directory WRITE lock and read under the read lock, so a walk that is
-   * between two blocks cannot see a torn value.
+   * block to coarsen. Written under the directory WRITE lock, by {@link #commitDownsample} in the same window that swaps the
+   * directory (issue #12610), and read under the read lock, so a walk that is between two blocks cannot see a torn value.
    * <p>
    * It answers two questions. Tests read it through {@link #getDownsampleRewriteCount()} to assert idempotency:
    * a steady-state maintenance cycle, with nothing new old enough to reduce, must not rewrite (issue #4599). And
@@ -289,7 +305,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * The most (tag set, bucket) accumulators the latest {@link #downsampleBlocks} pass that selected a block held at once (issue
    * #12586). It is what the heap of a pass is proportional to, and the tests read it through
    * {@link #getDownsamplePeakAccumulators()} to assert that the pass holds a block's worth of buckets and not the history's. Written
-   * under the directory WRITE lock and read under the read lock.
+   * under the directory WRITE lock when the pass is installed ({@link #commitDownsample}) and read under the read lock.
    */
   private          long             downsamplePeakAccumulators;
   /**
@@ -502,7 +518,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // on every pass for all of them but one. In-memory only, like the marker above: a restart, or an install of the file,
     // loses them, and the next pass proves it again by reading the timestamps and tags of the block, which costs a read and
     // never a rewrite. Replaced as a whole, never changed in place. Written by proveBlocksIrreducible, under the directory READ
-    // lock and before the rewrite window of the shard opens, and by the selection of downsampleBlocks, under the WRITE lock, and read
+    // lock and before the rewrite window of the shard opens, and by the selection of prepareDownsample, under the READ lock too, and read
     // by whichever rewrite copies the block, hence volatile. Two proofs at once (nothing but the maintenance thread runs one) could
     // lose a verdict of each other, which costs the block one more read and nothing else.
     volatile DownsampleGrid[] irreducibleOn = NO_GRIDS;
@@ -617,6 +633,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File mergeTmpFile = new File(basePath + MERGE_TEMP_SUFFIX);
     if (mergeTmpFile.exists() && !mergeTmpFile.delete())
       throw new IOException("Failed to delete stale temporary file: " + mergeTmpFile.getAbsolutePath());
+
+    final File downsampleTmpFile = new File(basePath + DOWNSAMPLE_TEMP_SUFFIX);
+    if (downsampleTmpFile.exists() && !downsampleTmpFile.delete())
+      throw new IOException("Failed to delete stale temporary file: " + downsampleTmpFile.getAbsolutePath());
 
     // Clean up a stale .incoming file left by an HA sealed-blob install that crashed before the
     // atomic move (issue #4382). The live .ts.sealed below is authoritative; the Raft entry that
@@ -3131,80 +3151,214 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * block is at or after the block's {@code minTimestamp}, so once block {@code k} is folded, every bucket that ends before the
    * {@code minTimestamp} of block {@code k + 1} is final. What the pass holds at once is the buckets one block adds plus those the
    * blocks that overlap it still reach into, not one accumulator per bucket of the whole history; the rows are compressed into the
-   * output blocks as they come out, so no list of every row exists either; and a block is decoded once. The rewrite is the same single
-   * atomic swap, under the same directory write lock, as it was.
+   * output blocks as they come out, so no list of every row exists either; and a block is decoded once.
+   * <p>
+   * The pass is the two halves {@link #prepareDownsample} and {@link #commitDownsample} (issue #12610): the selection, the sweep and
+   * the writing of the temp file run against a snapshot of the directory and hold its read lock one block at a time, so the readers of
+   * the store go on meanwhile, and only the swap takes the write lock. A pass whose directory changed before it was installed is
+   * dropped and run again on the directory as it now is, so what this method leaves behind is always the downsample of the live
+   * store. A store closed meanwhile is refused, as a rewrite of a closed store always was. The shard does not loop: it holds the
+   * mutex every other rewrite of the sealed file takes, and a pass it has to drop is picked up by the next maintenance tick
+   * ({@code TimeSeriesShard.downsample}).
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs, final long gridOffsetMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
+    downsampleLock.lock();
+    try {
+      while (true) {
+        final DownsamplePlan plan = prepareDownsample(cutoffTs, granularityMs, gridOffsetMs, tsColIdx, tagColIndices,
+            numericColIndices);
+        if (plan == null)
+          return;
+        if (!plan.directoryMoved() && commitDownsample(plan))
+          return;
+        refuseSwapOfClosedStore();
+      }
+    } finally {
+      downsampleLock.unlock();
+    }
+  }
+
+  /**
+   * The lock a caller of {@link #prepareDownsample} holds until it has committed or dropped the plan ({@code TimeSeriesShard}
+   * takes it after its compaction mutex): two plans prepared against one directory version would share the temp file.
+   */
+  ReentrantLock getDownsampleLock() {
+    return downsampleLock;
+  }
+
+  /**
+   * What {@link #prepareDownsample} wrote to {@link #DOWNSAMPLE_TEMP_SUFFIX} and {@link #commitDownsample} installs (issue #12610).
+   *
+   * @param newDirectory      the block directory of the temp file, {@code null} for {@link #DIRECTORY_MOVED}
+   * @param directoryVersion  the {@link #directoryVersion} the temp file was derived from: the commit installs it only if the live
+   *                          directory still is that one
+   * @param peakAccumulators  the most (tag set, bucket) accumulators the sweep held at once ({@link #getDownsamplePeakAccumulators})
+   */
+  record DownsamplePlan(List<BlockEntry> newDirectory, int directoryVersion, long peakAccumulators) {
+    /** The answer of a prepare that saw the directory change under it: nothing was kept, the temp file is gone. */
+    static final DownsamplePlan DIRECTORY_MOVED = new DownsamplePlan(null, -1, 0L);
+
+    boolean directoryMoved() {
+      return newDirectory == null;
+    }
+  }
+
+  /**
+   * The lock-free half of a downsampling pass (issue #12610): selects the blocks to fold, folds them and writes the temp file that
+   * holds the blocks kept and the blocks folded, all against a snapshot of the directory. Answers {@code null} when no block is to be
+   * folded (nothing is written), {@link DownsamplePlan#DIRECTORY_MOVED} when the directory changed while the pass was reading it (the
+   * temp file is deleted), and otherwise what {@link #commitDownsample} needs to install the temp file.
+   * <p>
+   * Every block is read under the directory READ lock, one at a time, and only if the directory still is the snapshot, as a merge of
+   * small blocks reads them ({@link #prepareMerge}): a store that a reader needs is never held for more than one block's read, and a
+   * rewrite that landed meanwhile is noticed at the next block. A block that is folded is CRC-checked before any byte of it is used,
+   * so a damaged block still fails the pass before anything is installed; a block that is kept is copied as it is, as every rewrite
+   * copies the blocks it keeps.
+   * <p>
+   * The verdicts that a block cannot be reduced are recorded as the blocks are read, and stay valid when the pass is dropped: they are
+   * a property of the samples, which a rewrite copies along with the verdict ({@link #writeRetainedBlock}).
+   * <p>
+   * The temp file is the pass's own ({@link #DOWNSAMPLE_TEMP_SUFFIX}), so no other kind of rewrite writes it; another downsampling
+   * pass of this store would, so the caller holds {@link #getDownsampleLock} until the plan is committed or dropped. The shard also
+   * serialises a pass with every other rewrite of the sealed file ({@code TimeSeriesShard.compactionMutex}), as it does a merge, so
+   * that a pass is not dropped for a directory that one of them moved.
+   */
+  DownsamplePlan prepareDownsample(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
+      final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
     final int[] tagCols = toIntArray(tagColIndices);
     final int[] numericCols = toIntArray(numericColIndices);
 
-    directoryLock.writeLock().lock();
+    final List<BlockEntry> snapshot;
+    final int version;
+    directoryLock.readLock().lock();
     try {
-      final List<BlockEntry> toDownsample = new ArrayList<>();
-      final List<BlockEntry> toKeep = new ArrayList<>();
+      snapshot = new ArrayList<>(blockDirectory);
+      version = directoryVersion;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
 
-      for (final BlockEntry entry : blockDirectory) {
-        if (entry.maxTimestamp >= cutoffTs) {
-          toKeep.add(entry);
-          continue;
-        }
-        // Check if block must be left untouched (idempotency).
-        // 1. A single-sample block can never be reduced further.
-        // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
-        //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
-        //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
-        //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
-        // 3. A block already found to hold no two samples of one (tag values, bucket) on this grid.
-        if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs || entry.isIrreducibleOn(grid)) {
-          toKeep.add(entry);
-          continue;
-        }
-        // Otherwise the samples say. What a block is rewritten for is to fold the samples that share a group into one, so a block
-        // is selected when some two of them do, and for no other reason (issue #11984). The average spacing of its samples is not
-        // that reason in either direction: it left a block whose samples share a bucket raw forever as soon as ONE of them was
-        // far from the others, and the marker alone, which a restart resets, would have rewritten every old block once again,
-        // an already coarse one onto a bucket of the next finer tier that is not nested in its own. A block this proves
-        // irreducible is remembered, so a pass reads it once.
-        // The caller that wants a restart not to keep the shard waiting for the history has had proveBlocksIrreducible read it
-        // before the write locks were taken (TimeSeriesEngine.applyDownsampling), and then what is read here is the blocks that
-        // landed since and the reducible ones, which the sweep below reads for good anyway. Any other caller pays the whole read here.
-        // A block that cannot be read (its CRC does not match) fails the pass, and that is on purpose: a rewrite copies the blocks it
-        // keeps and stamps a CRC computed over the bytes it copied, so a rewrite that went on around a damaged block would make the
-        // damage look like data from then on. The pass fails before anything is written, and says which block.
+    final List<BlockEntry> toDownsample = new ArrayList<>();
+    final List<BlockEntry> toKeep = new ArrayList<>();
+
+    for (final BlockEntry entry : snapshot) {
+      if (entry.maxTimestamp >= cutoffTs) {
+        toKeep.add(entry);
+        continue;
+      }
+      // Check if block must be left untouched (idempotency).
+      // 1. A single-sample block can never be reduced further.
+      // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
+      //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
+      //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
+      //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
+      // 3. A block already found to hold no two samples of one (tag values, bucket) on this grid.
+      if (entry.sampleCount <= 1 || entry.downsampledGranularityMs >= granularityMs || entry.isIrreducibleOn(grid)) {
+        toKeep.add(entry);
+        continue;
+      }
+      // Otherwise the samples say. What a block is rewritten for is to fold the samples that share a group into one, so a block
+      // is selected when some two of them do, and for no other reason (issue #11984). The average spacing of its samples is not
+      // that reason in either direction: it left a block whose samples share a bucket raw forever as soon as ONE of them was
+      // far from the others, and the marker alone, which a restart resets, would have rewritten every old block once again,
+      // an already coarse one onto a bucket of the next finer tier that is not nested in its own. A block this proves
+      // irreducible is remembered, so a pass reads it once.
+      // The engine has had proveBlocksIrreducible read the history before the pass (TimeSeriesEngine.applyDownsampling), and then
+      // what is read here is the blocks that landed since and the reducible ones, which the sweep below reads for good anyway.
+      // A block that cannot be read (its CRC does not match) fails the pass, and that is on purpose: a rewrite copies the blocks it
+      // keeps and stamps a CRC computed over the bytes it copied, so a rewrite that went on around a damaged block would make the
+      // damage look like data from then on. The pass fails before anything is written, and says which block.
+      directoryLock.readLock().lock();
+      try {
+        if (closed || directoryVersion != version)
+          return DownsamplePlan.DIRECTORY_MOVED;
         if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols, numericCols)) {
           entry.markIrreducibleOn(grid);
           toKeep.add(entry);
           continue;
         }
-        toDownsample.add(entry);
+      } finally {
+        directoryLock.readLock().unlock();
       }
+      toDownsample.add(entry);
+    }
 
-      if (toDownsample.isEmpty())
-        return;
+    if (toDownsample.isEmpty())
+      return null;
 
-      // The sweep needs the blocks in the order of their first sample. The directory is kept in that order, so this changes nothing,
-      // and a pass does not depend on it (the sort is stable: blocks that start together keep the order the directory has them in)
-      toDownsample.sort(Comparator.comparingLong(entry -> entry.minTimestamp));
+    // The sweep needs the blocks in the order of their first sample. The directory is kept in that order, so this changes nothing,
+    // and a pass does not depend on it (the sort is stable: blocks that start together keep the order the directory has them in)
+    toDownsample.sort(Comparator.comparingLong(entry -> entry.minTimestamp));
 
-      final DownsampleSweep sweep = new DownsampleSweep(granularityMs, gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
-      final DownsampledBlocks output = new DownsampledBlocks(tsColIdx, granularityMs);
-      final int last = toDownsample.size() - 1;
-      for (int b = 0; b <= last; b++) {
-        sweep.add(toDownsample.get(b));
-        if (b < last)
-          sweep.closeBucketsBefore(toDownsample.get(b + 1).minTimestamp, output.pending);
-        else
-          sweep.closeAllBuckets(output.pending);
-        output.sealFullBlocks();
+    final DownsampleSweep sweep = new DownsampleSweep(granularityMs, gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
+    final DownsampledBlocks output = new DownsampledBlocks(tsColIdx, granularityMs);
+    final int last = toDownsample.size() - 1;
+    for (int b = 0; b <= last; b++) {
+      final BlockEntry entry = toDownsample.get(b);
+      // CRC-checked before it is decoded: the blocks folded are re-encoded with a fresh CRC, which would launder a damaged one
+      final byte[][] bytes = readBlockColumnsIfUnchanged(entry, version, true);
+      if (bytes == null)
+        return DownsamplePlan.DIRECTORY_MOVED;
+      sweep.add(entry, bytes);
+      if (b < last)
+        sweep.closeBucketsBefore(toDownsample.get(b + 1).minTimestamp, output.pending);
+      else
+        sweep.closeAllBuckets(output.pending);
+      output.sealFullBlocks();
+
+      final Runnable hook = TEST_DOWNSAMPLE_SWEEP_HOOK;
+      if (hook != null)
+        hook.run();
+    }
+    output.sealRemainder();
+
+    // The temp file: toKeep blocks (raw copy) + new downsampled blocks
+    final List<BlockEntry> newDirectory;
+    try {
+      newDirectory = writeRewriteTempFile(toKeep, output, version);
+    } catch (final IOException e) {
+      // a store closed after its last block was read refuses the temp file (openTempFile()): dropped as at any other point
+      if (closed)
+        return DownsamplePlan.DIRECTORY_MOVED;
+      throw e;
+    }
+    if (newDirectory == null)
+      return DownsamplePlan.DIRECTORY_MOVED;
+    return new DownsamplePlan(newDirectory, version, sweep.peakAccumulators());
+  }
+
+  /**
+   * Installs the temp file {@link #prepareDownsample} wrote, if the store still is the one it was derived from; otherwise drops it and
+   * answers {@code false} (issue #12610). The same swap as a merge's, plus the marks a downsample leaves: {@link #downsampleEpoch},
+   * which a walk in flight reads to tell "coarsened" from "retired" (issue #8166) and which therefore moves exactly when the directory
+   * does, under the same write lock, and the peak the tests read.
+   * <p>
+   * The shard calls it holding its compaction write lock, which keeps appenders, queries and the HA install out for the duration of
+   * the swap, as it does for every other rewrite of the sealed file.
+   */
+  boolean commitDownsample(final DownsamplePlan plan) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      // a store dropped since the plan was made is not the one it was derived from either (issue #10867): installing the downsample
+      // would re-create the file the drop deleted, for the next type of that name to adopt
+      if (closed || directoryVersion != plan.directoryVersion()) {
+        // a no-op for a closed store, whose temp path may belong to a store created since (see openTempFile())
+        deleteDownsampleTempFileIfExists();
+        return false;
       }
-      output.sealRemainder();
-      downsamplePeakAccumulators = sweep.peakAccumulators();
-
-      // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-      downsampleEpoch++;
-      rewriteWithBlocks(toKeep, output);
+      try {
+        commitTempFile(plan.newDirectory(), basePath + DOWNSAMPLE_TEMP_SUFFIX, () -> {
+          downsampleEpoch++;
+          downsamplePeakAccumulators = plan.peakAccumulators();
+        });
+      } catch (final IOException | RuntimeException e) {
+        // a failed swap leaves no half-installed file for whoever rewrites next to find (issue #9770)
+        deleteDownsampleTempFileIfExists();
+        throw e;
+      }
+      return true;
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -3214,11 +3368,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Reads, a block at a time, every block older than {@code cutoffTs} that {@link #downsampleBlocks} would have to read to decide
    * about, and remembers on the ones that cannot be reduced on the grid ({@code granularityMs} and {@code gridOffsetMs}, as
    * {@link #downsampleBlocks} takes them) that they cannot. It is the one cost a restart adds to downsampling, since every verdict
-   * is lost with the process, and it is meant to be paid BEFORE the locks of a rewrite are taken: it needs only the directory READ
-   * lock, a block at a time, like a walk, so queries, appends and compactions go on between two blocks, where under the compaction
-   * write lock of the shard the whole history it reads would keep every one of them waiting ({@code TimeSeriesEngine.applyDownsampling}
-   * calls it so). It changes nothing a reader can see, and a pass that was not preceded by it decides every block itself, only later
-   * and under the write lock.
+   * is lost with the process, and it is meant to be paid BEFORE the pass takes the rewrite mutex of the shard: it needs only the
+   * directory READ lock, a block at a time, like a walk, so queries, appends and compactions go on between two blocks
+   * ({@code TimeSeriesEngine.applyDownsampling} calls it so). It changes nothing a reader can see, and a pass that was not preceded by
+   * it decides every block itself ({@link #prepareDownsample}), the same way, holding the mutex that keeps a compaction waiting.
    * <p>
    * Nothing is rewritten and no block is kept from the directory for more than its own read: the directory is looked at once to name
    * the candidates, and each of them is then found again in the live directory, as a walk does, under the read lock it is read with.
@@ -3599,10 +3752,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return peak;
     }
 
-    /** Folds every sample of {@code entry} into the accumulator of its (tag set, bucket). */
-    void add(final BlockEntry entry) throws IOException {
+    /**
+     * Folds every sample of {@code entry} into the accumulator of its (tag set, bucket), decoding the compressed columns {@code bytes}
+     * the pass read from it. Not through the decoded-column cache: the pass reads each block once, and the history it reads would
+     * push the blocks the queries are using out of the cache, which the swap then clears anyway.
+     */
+    void add(final BlockEntry entry, final byte[][] bytes) throws IOException {
       final int numFields = numericCols.length;
-      final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+      final long[] timestamps = DeltaOfDeltaCodec.decode(bytes[tsColIdx]);
 
       // Decompress tag columns THROUGH THE CODEC EACH WAS WRITTEN WITH (issue #7711). This used to decode only a
       // DICTIONARY column and yield an array of nulls for anything else - not a failure to read but a discard:
@@ -3612,16 +3769,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // rows, so it agreed with the damage and checkDictionaryColumn could not see it either.
       final Object[][] tagData = new Object[tagCols.length][];
       for (int t = 0; t < tagCols.length; t++)
-        tagData[t] = decodeColumn(tagDefs[t], readBytes(entry.columnOffsets[tagCols[t]], entry.columnSizes[tagCols[t]]));
+        tagData[t] = decodeColumn(tagDefs[t], bytes[tagCols[t]]);
 
       // Decompress numeric columns: an integral one as longs, nulls included
       final double[][] numData = new double[numFields][];
       final IntegralColumn[] intData = new IntegralColumn[numFields];
       for (int n = 0; n < numFields; n++) {
         if (integralField[n])
-          intData[n] = (IntegralColumn) rawColumnValues(entry, numericCols[n]);
+          intData[n] = (IntegralColumn) decodeRawColumn(numericCols[n], bytes[numericCols[n]]);
         else
-          numData[n] = decompressDoubleColumn(entry, numericCols[n]);
+          numData[n] = decompressDoubleColumnFromBytes(bytes[numericCols[n]], numericCols[n]);
       }
 
       // Group samples by (tag values, bucket). Consecutive samples of a block mostly belong to the group the previous one did, and
@@ -4025,11 +4182,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * would be laundered into a healthy-looking one.
    */
   private byte[][] readBlockColumnsIfUnchanged(final BlockEntry entry, final int version) throws IOException {
+    return readBlockColumnsIfUnchanged(entry, version, true);
+  }
+
+  /**
+   * @param validateCRC whether the block is CRC-checked first: always for a block that is decoded and re-encoded, not for one a
+   *                    rewrite copies as it is ({@link #writeRewriteTempFile}), which every rewrite has always copied unchecked
+   */
+  private byte[][] readBlockColumnsIfUnchanged(final BlockEntry entry, final int version, final boolean validateCRC)
+      throws IOException {
     directoryLock.readLock().lock();
     try {
-      if (directoryVersion != version)
+      // a store closed since the plan was made is dropped like one that moved, rather than read through its closed channel
+      if (closed || directoryVersion != version)
         return null;
-      validateBlockCRC(entry);
+      if (validateCRC)
+        validateBlockCRC(entry);
       final int colCount = columns.size();
       final byte[][] cols = new byte[colCount][];
       for (int c = 0; c < colCount; c++)
@@ -4174,13 +4342,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         deleteMergeTempFileIfExists();
         return false;
       }
-      commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX);
-      ++mergeEpoch;
-      // links before next: a walk that sees the new node must find the links of the merge that created it
-      final MergeLedger appended = new MergeLedger();
-      mergeLedger.links = plan.links();
-      mergeLedger.next = appended;
-      mergeLedger = appended;
+      // the epoch and the ledger move with the directory, even when the header write that follows the install fails
+      commitTempFile(plan.newDirectory(), basePath + MERGE_TEMP_SUFFIX, () -> {
+        ++mergeEpoch;
+        // links before next: a walk that sees the new node must find the links of the merge that created it
+        final MergeLedger appended = new MergeLedger();
+        mergeLedger.links = plan.links();
+        mergeLedger.next = appended;
+        mergeLedger = appended;
+      });
       return true;
     } finally {
       directoryLock.writeLock().unlock();
@@ -4232,45 +4402,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * reaches it, so it holds it for as long as it takes to write it and no longer.
    */
   private void rewriteWithBlocks(final List<BlockEntry> retained, final NewBlocks newBlocks) throws IOException {
-
-    final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
-
-    // Build a merged, minTimestamp-sorted write plan so that the on-disk layout is
-    // always in ascending order (required by binary search in iterateRange/scanRange).
-    // A negative index means a "new" (downsampled) block; non-negative means retained.
-    record WriteSpec(long minTs, boolean retained, int idx) {}
-    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newBlocks.size());
-    for (int i = 0; i < retained.size(); i++)
-      writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
-    for (int b = 0; b < newBlocks.size(); b++)
-      writeOrder.add(new WriteSpec(newBlocks.meta(b)[0], false, b));
-    writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
 
     // Build new directory in a local list — do NOT modify blockDirectory until after the
     // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
-    final List<BlockEntry> newDirectory = new ArrayList<>();
-    try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
-      // Write all blocks in ascending minTimestamp order
-      for (final WriteSpec spec : writeOrder) {
-        if (spec.retained()) {
-          copyBlockToFile(tempFile, retained.get(spec.idx()), colCount, newDirectory);
-        } else {
-          final int b = spec.idx();
-          final long[] meta = newBlocks.meta(b);
-          final NewBlock block = newBlocks.build(b);
-          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
-              colCount, block.tagDistinctValues(), newBlockId());
-          // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
-          entry.downsampledGranularityMs = block.granularityMs();
-          newDirectory.add(entry);
-        }
-      }
-    } catch (final IOException | RuntimeException e) {
-      // a failed write leaves no half-written file for whoever rewrites next to find (issue #9770)
-      deleteTempFileIfExists();
-      throw e;
-    }
+    // The caller holds the directory write lock, so the retained blocks are read as they are: nothing can move them
+    final int colCount = columns.size();
+    final List<BlockEntry> newDirectory = writeRewriteTempFile(retained, newBlocks, tempPath, this::deleteTempFileIfExists, entry -> {
+      final byte[][] compressedCols = new byte[colCount][];
+      for (int c = 0; c < colCount; c++)
+        compressedCols[c] = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      return compressedCols;
+    });
 
     refuseSwapOfClosedStore();
 
@@ -4312,6 +4455,78 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     indexFile = new RandomAccessFile(oldFile, "rw");
     indexChannel = channelOf(indexFile);
     rewriteHeader();
+  }
+
+  /** Reads the compressed columns of a block a rewrite keeps, or answers {@code null} when the rewrite has to be dropped. */
+  @FunctionalInterface
+  private interface RetainedBlockReader {
+    byte[][] read(BlockEntry entry) throws IOException;
+  }
+
+  /**
+   * {@link #writeRewriteTempFile(List, NewBlocks, RetainedBlockReader)} for a pass that does not hold the directory lock
+   * ({@link #prepareDownsample}, issue #12610): each block kept is read under the directory read lock and only if the directory
+   * still is the version {@code version} the pass was planned against. Answers {@code null}, the temp file deleted, when it moved.
+   */
+  private List<BlockEntry> writeRewriteTempFile(final List<BlockEntry> retained, final NewBlocks newBlocks, final int version)
+      throws IOException {
+    return writeRewriteTempFile(retained, newBlocks, basePath + DOWNSAMPLE_TEMP_SUFFIX, this::deleteDownsampleTempFileIfExists,
+        entry -> readBlockColumnsIfUnchanged(entry, version, false));
+  }
+
+  /**
+   * Writes the temp file of a rewrite of the sealed file: the blocks {@code retained} as they are and the blocks {@code newBlocks}
+   * builds, all in ascending minTimestamp order so that the on-disk layout matches the block directory (the binary search of
+   * iterateRange/scanRange needs it, after a restart too). Answers the directory of the temp file, or {@code null} when
+   * {@code reader} answered {@code null} for a block, and then no temp file is left behind, as none is by a write that fails
+   * (issue #9770).
+   */
+  private List<BlockEntry> writeRewriteTempFile(final List<BlockEntry> retained, final NewBlocks newBlocks, final String tempPath,
+      final Runnable deleteTempFile, final RetainedBlockReader reader) throws IOException {
+    final int colCount = columns.size();
+
+    // Build a merged, minTimestamp-sorted write plan so that the on-disk layout is
+    // always in ascending order (required by binary search in iterateRange/scanRange).
+    record WriteSpec(long minTs, boolean retained, int idx) {}
+    final List<WriteSpec> writeOrder = new ArrayList<>(retained.size() + newBlocks.size());
+    for (int i = 0; i < retained.size(); i++)
+      writeOrder.add(new WriteSpec(retained.get(i).minTimestamp, true, i));
+    for (int b = 0; b < newBlocks.size(); b++)
+      writeOrder.add(new WriteSpec(newBlocks.meta(b)[0], false, b));
+    writeOrder.sort(Comparator.comparingLong(WriteSpec::minTs));
+
+    final List<BlockEntry> newDirectory = new ArrayList<>(writeOrder.size());
+    boolean complete = false;
+    try {
+      try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
+        // Write all blocks in ascending minTimestamp order
+        for (final WriteSpec spec : writeOrder) {
+          if (spec.retained()) {
+            final BlockEntry oldEntry = retained.get(spec.idx());
+            final byte[][] compressedCols = reader.read(oldEntry);
+            if (compressedCols == null)
+              return null;
+            newDirectory.add(writeRetainedBlock(tempFile, oldEntry, compressedCols, colCount));
+          } else {
+            final int b = spec.idx();
+            final long[] meta = newBlocks.meta(b);
+            final NewBlock block = newBlocks.build(b);
+            final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
+                colCount, block.tagDistinctValues(), newBlockId());
+            // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
+            entry.downsampledGranularityMs = block.granularityMs();
+            newDirectory.add(entry);
+          }
+        }
+      }
+      // complete only once the handle is closed: a close that fails leaves a file nobody installs
+      complete = true;
+    } finally {
+      // a failed write leaves no half-written file for whoever rewrites next to find (issue #9770), and neither does a dropped one
+      if (!complete)
+        deleteTempFile.run();
+    }
+    return newDirectory;
   }
 
   private void copyBlockToFile(final RandomAccessFile tempFile, final BlockEntry oldEntry, final int colCount,
@@ -4695,6 +4910,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /** {@link #commitTempCompactionFile} for the temp file at {@code tempPath}. */
   private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath) throws IOException {
+    commitTempFile(newBlockDirectory, tempPath, null);
+  }
+
+  /**
+   * @param onInstalled run under the directory write lock as soon as {@code newBlockDirectory} is the live directory, before the
+   *                    header is rewritten: what a walk in flight reads to tell a replaced block from a retired one (the epochs
+   *                    of a downsample and of a merge) must move with the directory, even when the header write that follows
+   *                    fails (issue #12610). {@code null} for nothing
+   */
+  private void commitTempFile(final List<BlockEntry> newBlockDirectory, final String tempPath, final Runnable onInstalled)
+      throws IOException {
     directoryLock.writeLock().lock();
     try {
       refuseSwapOfClosedStore();
@@ -4720,9 +4946,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         throw moveEx;
       }
 
-      indexFile = new RandomAccessFile(sealedFile, "rw");
-      indexChannel = channelOf(indexFile);
-
+      // From the move on the file on disk is the new one, so the new directory is installed before anything else can fail: a reopen
+      // that fails below leaves the shared channel closed, and the next read reopens it at this path (readAfterChannelClosed), which
+      // has to find the offsets of the file there and not those of the file it replaced
       blockDirectory.clear();
       ++directoryVersion;
       decodedColumnCache.clear();
@@ -4741,6 +4967,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           globalMaxTs = e.maxTimestamp;
       }
 
+      if (onInstalled != null)
+        onInstalled.run();
+
+      indexFile = new RandomAccessFile(sealedFile, "rw");
+      indexChannel = channelOf(indexFile);
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -4885,6 +5116,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
       if (tmp.exists() && !tmp.delete())
         LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    }
+  }
+
+  /** Deletes the temp file of a downsampling pass ({@code .ts.sealed.downsample.tmp}) if it exists (issue #12610). */
+  void deleteDownsampleTempFileIfExists() {
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + DOWNSAMPLE_TEMP_SUFFIX);
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete temporary downsample file %s", tmp.getAbsolutePath());
     }
   }
 
@@ -6046,7 +6289,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * name finds none of them.
    */
   public static void deleteFiles(final String basePath) throws IOException {
-    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
+    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, DOWNSAMPLE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
       final File temp = new File(basePath + suffix);
       if (temp.exists() && !temp.delete())
         LogManager.instance().log(TimeSeriesSealedStore.class, Level.WARNING, "Could not delete the temp file '%s'", null,
@@ -6920,16 +7163,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private Object rawColumnValues(final BlockEntry entry, final int schemaColIdx) throws IOException {
     Object values = decodedColumnCache.get(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW);
     if (values == null) {
-      final byte[] compressed = readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]);
-      values = switch (columns.get(schemaColIdx).getCompressionHint()) {
-        case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
-        case SIMPLE8B -> IntegralColumn.decode(compressed);
-        case DICTIONARY -> DictionaryCodec.decode(compressed);
-        default -> null;
-      };
+      values = decodeRawColumn(schemaColIdx, readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]));
       decodedColumnCache.put(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW, values);
     }
     return values;
+  }
+
+  /** {@link #rawColumnValues} of the compressed bytes {@code compressed} of the column {@code schemaColIdx}, with no cache and no I/O. */
+  private Object decodeRawColumn(final int schemaColIdx, final byte[] compressed) throws IOException {
+    return switch (columns.get(schemaColIdx).getCompressionHint()) {
+      case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
+      case SIMPLE8B -> IntegralColumn.decode(compressed);
+      case DICTIONARY -> DictionaryCodec.decode(compressed);
+      default -> null;
+    };
   }
 
   /**
