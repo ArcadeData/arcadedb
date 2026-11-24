@@ -236,6 +236,33 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
   }
 
   @Test
+  void rowsOfOneBatchWithTheSameKeyEndWithTheLastRow() {
+    // SET n += row: the properties of every row accumulate, the last row's value of each key wins
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (int i = 0; i < 150; i++)
+      rows.add(i == 3 ? Map.of("uuid", "plus", "name", "n" + i, "only", "row3") : Map.of("uuid", "plus", "name", "n" + i));
+    database.transaction(() -> database.command("opencypher", "UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) SET n += row",
+        Map.of("rows", rows)).close());
+    assertThat(database.countType("Entity", false)).isEqualTo(1);
+    final Vertex node = database.query("sql", "SELECT FROM Entity WHERE uuid = 'plus'").next().getVertex().get();
+    assertThat(node.getString("name")).isEqualTo("n149");
+    assertThat(node.getString("only")).isEqualTo("row3");
+
+    // the relationship form: one relationship, holding the last row's map
+    database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a'}), (:Entity {uuid: 'b'})").close());
+    final List<Map<String, Object>> edges = new ArrayList<>();
+    for (int i = 0; i < 150; i++)
+      edges.add(i == 3 ? Map.of("uuid", "e", "source", "a", "target", "b", "fact", "f" + i, "only", "row3")
+          : Map.of("uuid", "e", "source", "a", "target", "b", "fact", "f" + i));
+    database.transaction(() -> database.command("opencypher", EDGE_UPSERT, Map.of("rows", edges)).close());
+    assertThat(database.countType("RELATES_TO", false)).isEqualTo(1);
+    final Edge edge = database.query("sql", "SELECT FROM RELATES_TO WHERE uuid = 'e'").next().getEdge().get();
+    assertThat(edge.getString("fact")).isEqualTo("f149");
+    // SET e = row replaces the map, so the key only row 3 carried is gone
+    assertThat(edge.has("only")).isFalse();
+  }
+
+  @Test
   void relationshipUpsertStoresEachNewRelationshipOnceAndUpdatesMatchedOnes() {
     // the same load through the SET step (the WITH keeps it one) writes every relationship a second time
     final long folded = loadRelationships(EDGE_UPSERT, "n");
