@@ -236,9 +236,10 @@ class GrpcTypeConverterArrayEncoderTest {
     final long perElement = (after - before) / rounds / dims;
 
     assertThat(sink).isEqualTo(dims * (3_000 + rounds));
-    // one message per element is the wire's shape (157 bytes per element before: the message, a builder, the boxed float read
-    // out of the array, and the boxed float the oneof holds)
-    assertThat(perElement).as("bytes allocated per element of a float[1024]").isLessThan(100L);
+    // One message per element is the wire's shape. Bytes per element, main -> this change, differ by JVM: JDK 21.0.13 G1: 157 -> 69;
+    // Temurin 25.0.4.1 ZGC with compact object headers: 217 -> 89. The bound sits between the two on both, so it separates the bug from
+    // the fix on either, and leaves the fix a quarter of margin where its figure is highest.
+    assertThat(perElement).as("bytes allocated per element of a float[1024]").isLessThan(120L);
   }
 
   private static float[] toFloatArray(final List<Float> list) {
