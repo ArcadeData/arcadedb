@@ -1435,8 +1435,13 @@ public class GraphBatch implements AutoCloseable {
       final Object value = props[p * 2 + 1];
       // A null carries the null tag: the declared tag would promise bytes that never follow
       byte type = value == null ? BinaryTypes.TYPE_NULL : template.typeFlags[p];
-      if (type == -1)
+      if (type == -1) {
         type = BinaryTypes.getTypeFromValue(value, null);
+        if (type == -1)
+          // A VALUE THE SERIALIZER CANNOT WRITE (getTypeFromValue LOGGED IT): THE PROPERTY IS ALREADY IN THE HEADER, SO IT IS STORED AS
+          // NULL, AS A LIST OR MAP ENTRY OF THAT KIND IS. WRITING THE -1 TAG LEFT A RECORD NO READ COULD DECODE (ISSUE #12624)
+          type = BinaryTypes.TYPE_NULL;
+      }
 
       // Write type tag + value
       buffer.putByte(type);
