@@ -115,6 +115,7 @@ import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -1623,6 +1624,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (target instanceof LocalBucket local && local.getPurpose() != LocalBucket.Purpose.PRIMARY)
           throw new IllegalArgumentException(
               "Bucket '" + bucketName + "' is internal (purpose=" + local.getPurpose() + ") and cannot be written to directly");
+        // The grant of the bucket asked for is checked before its owner is looked at (the grant of the type is checked below)
+        if (record instanceof Document)
+          checkPermissionsOnFile(target.getFileId(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
         // A record written into a bucket another type owns is read back as that type, so its own type's indexes and
         // listeners would answer for a record that is not theirs (issue #11206). INSERT INTO BUCKET:x already types the
         // record by the bucket's owner; this is the same rule for the API. A bucket no type owns is read back as no type at
@@ -1643,6 +1647,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
       }
     }
+
+    // THE CREATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.createRecord
+    // checks CREATE_RECORD too, but it is the last step of a create: the defaults, the constraints and the before-create
+    // listeners and triggers run before it. Every bucket of a type carries the same access array, so the first one answers for
+    // the type. A named bucket was checked above. Records that are not typed documents (edge segments and other engine-internal
+    // records) stay checked by their bucket
+    if (bucketName == null && security != null && record instanceof Document doc)
+      SecurityHelper.checkAccessOnType(this, doc.getType(), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     setDefaultValues(record);
 
@@ -2014,6 +2026,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     // only the refresh of a materialized view or a continuous aggregate writes its backing type (issue #11020)
     schema.checkBackingTypeWrite(record.getIdentity().getBucketId(), "update a record of");
+
+    // THE UPDATE GRANT IS CHECKED BEFORE THE RECORD IS EVALUATED, the order a delete follows (issue #9305). LocalBucket.updateRecord
+    // checks UPDATE_RECORD too, but an update queued in a transaction reaches it at the commit, after the constraints and the
+    // before-update listeners and triggers. Every bucket of a type carries the same access array, so the bucket of the record
+    // answers for the type. Records that are not typed documents (edge segments and other engine-internal records) stay checked
+    // by their bucket
+    if (record instanceof Document)
+      checkPermissionsOnFile(record.getIdentity().getBucketId(), SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
 
     try {
       if (record instanceof MutableDocument document) {
