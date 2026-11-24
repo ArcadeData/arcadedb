@@ -517,6 +517,7 @@ class NumberComparisonTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     void theOrderOfAShortAgainstAByteIsTheOrderOfTheNumbersAndIsAntisymmetric() {
       for (final short s : shorts)
         for (final byte b : bytes) {
@@ -569,6 +570,33 @@ class NumberComparisonTest {
       assertThat(idsOfParam("sh > ?", (byte) 5)).containsExactly(1, 3);
       assertThat(idsOfParam("sh < ?", (byte) 5)).containsExactly(2, 4);
       assertThat(idsOfParam("sh = ?", (byte) 0)).containsExactly(4);
+    }
+
+    /**
+     * min() and max() meet a Short and a Byte through the same {@link Type#castComparableNumber}: the short used to wrap, so
+     * max(0, 256) answered 0 and min(5, -32768) answered 0.
+     */
+    @Test
+    void sqlMinAndMaxOfAShortAndAByteCompareTheNumbers() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NarrowMinMax");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.id INTEGER");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.sh SHORT");
+        database.command("sql", "CREATE PROPERTY NarrowMinMax.bt BYTE");
+        database.command("sql", "INSERT INTO NarrowMinMax SET id = 1, sh = 256, bt = 0");
+        database.command("sql", "INSERT INTO NarrowMinMax SET id = 2, sh = -32768, bt = 5");
+      });
+
+      assertThat(minMax("max(bt, sh)", 1)).isEqualTo(256);
+      assertThat(minMax("max(sh, bt)", 1)).isEqualTo(256);
+      assertThat(minMax("min(bt, sh)", 2)).isEqualTo(-32768);
+      assertThat(minMax("min(sh, bt)", 2)).isEqualTo(-32768);
+    }
+
+    private int minMax(final String function, final int id) {
+      try (final ResultSet rs = database.query("sql", "SELECT " + function + " AS v FROM NarrowMinMax WHERE id = ?", id)) {
+        return rs.next().<Number>getProperty("v").intValue();
+      }
     }
 
     private List<Integer> ids(final String where) {
