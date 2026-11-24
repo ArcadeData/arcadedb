@@ -633,6 +633,11 @@ public class ComparisonExpression implements BooleanExpression {
 
   /** Cypher equality where a FLOAT also equals the double that narrows to it (issue #8882): 0 equals -0, NaN equals nothing. */
   public static boolean floatAwareEquals(final Number left, final Number right) {
+    // An integer past 2^53 (or a BigInteger, or a decimal) against a floating point number is read in exact arithmetic, as the
+    // comparison operators do: 2^53 + 1 and 2^53.0 collapse onto one double, and the inline maps of MERGE and of relationship
+    // patterns, which compare through here, took them for the same number
+    if (needsExactComparison(left, right))
+      return exactCompare(left, right) == 0;
     final double l = toComparableDouble(left);
     final double r = toComparableDouble(right);
     if (Double.isNaN(l) || Double.isNaN(r))
