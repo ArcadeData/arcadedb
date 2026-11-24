@@ -22,6 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -91,6 +92,10 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
     if (iValues.isEmpty())  // result set is empty
       return null;
 
+    // by value, not as doubles: an INTEGER past 2^53 is not the double it rounds to, and the first and last quantiles answer one
+    // of the values (issue #12699). Sorted once for every quantile asked
+    iValues.sort(BinaryComparator::compareNumbers);
+
     if (quantiles.size() > 1) {
       final List<Number> results = new ArrayList<Number>(this.quantiles.size());
       for (final Double q : this.quantiles)
@@ -102,12 +107,6 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
   }
 
   private Number evaluate(final List<Number> iValues, final double iQuantile) {
-    iValues.sort((o1, o2) -> {
-      final double d1 = o1.doubleValue();
-      final double d2 = o2.doubleValue();
-      return Double.compare(d1, d2);
-    });
-
     final double n = iValues.size();
     final double pos = iQuantile * (n + 1);
 
