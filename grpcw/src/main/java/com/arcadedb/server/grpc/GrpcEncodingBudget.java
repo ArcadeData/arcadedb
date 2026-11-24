@@ -28,7 +28,8 @@ import io.grpc.StatusRuntimeException;
  * encoders copy every element they reach, so what they build is measured as the client reads it. Every value is charged
  * {@link #VALUE_COST} and every text or byte string its length, and the encoding stops with {@code RESOURCE_EXHAUSTED} once the
  * total passes the ceiling, which is {@link GlobalConfiguration#GRPC_MAX_MESSAGE_SIZE}: a message larger than that is not one
- * the server's own limit accepts.
+ * the server's own limit accepts. The count is an approximation: a text is charged by its number of characters, not of UTF-8
+ * bytes, which is cheaper to take and within a small factor of it.
  * <p>
  * One budget covers one outgoing message (a unary response, a streamed batch, a materialized result), created where the message
  * starts and handed down the recursion. It is single-threaded and keeps no state besides its counter, so charging a value is a
@@ -89,8 +90,7 @@ final class GrpcEncodingBudget {
   }
 
   private StatusRuntimeException exceeded() {
-    return Status.RESOURCE_EXHAUSTED.withDescription(
-        "The result is too large to encode: it exceeds " + limitBytes / MEGABYTE + " MB (" + GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE.getKey()
-            + "); select fewer or smaller values").asRuntimeException();
+    return Status.RESOURCE_EXHAUSTED.withDescription("The result is too large to encode: it exceeds " + limitBytes / MEGABYTE + " MB ("
+        + GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE.getKey() + "); select fewer or smaller values").asRuntimeException();
   }
 }

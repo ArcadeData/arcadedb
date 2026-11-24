@@ -6555,7 +6555,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
       // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
       if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY) && !isExcluded(excluded, Property.CAT_PROPERTY))
-        builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(document instanceof Vertex ? "v" : document instanceof Edge ? "e" : "d", null, budget));
+        builder.putProperties(Property.CAT_PROPERTY,
+            toGrpcValue(document instanceof Vertex ? "v" : document instanceof Edge ? "e" : "d", null, budget));
     }
 
     // If this is an Edge and @out/@in are not already in properties, add them
@@ -6656,7 +6657,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // HTTP (issue #6404). Sending it removes the client's need to resolve the type through the remote schema -
       // RemoteGrpcDatabase.lookupByRID() has no result to fall back to when that resolution fails or lags.
       if (!builder.getPropertiesMap().containsKey(Property.CAT_PROPERTY))
-        builder.putProperties(Property.CAT_PROPERTY, toGrpcValue(dbRecord instanceof Vertex ? "v" : dbRecord instanceof Edge ? "e" : "d", null, budget));
+        builder.putProperties(Property.CAT_PROPERTY,
+            toGrpcValue(dbRecord instanceof Vertex ? "v" : dbRecord instanceof Edge ? "e" : "d", null, budget));
     }
 
     LogManager.instance().log(this, Level.FINE, "ENC-REC DONE rid=%s type=%s props=%s", builder.getRid(),
@@ -7047,7 +7049,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  /** {@code debug} is what {@link #toGrpcValue(Object, ProjectionConfig, GrpcEncodingBudget)} already asked the logger: once per value is enough. */
+  /**
+   * {@code debug} is what {@link #toGrpcValue(Object, ProjectionConfig, GrpcEncodingBudget)} already asked the logger: once per
+   * value is enough.
+   */
   private GrpcValue dbgEnc(final boolean debug, final Object in, final GrpcValue out) {
     if (debug)
       LogManager.instance().log(this, Level.FINE, "GRPC-ENC [toGrpcValue] in=%s -> out=%s", summarizeJava(in), summarizeGrpc(out));

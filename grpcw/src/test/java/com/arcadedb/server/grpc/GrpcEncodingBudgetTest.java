@@ -24,6 +24,7 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,7 +135,7 @@ class GrpcEncodingBudgetTest {
   void aLazySequenceLargerThanTheCeilingIsRefusedWhileItIsWalked() {
     // an Iterable that produces its elements on demand: the walk stops at the ceiling, it does not wait for the end
     final int[] produced = { 0 };
-    final Iterable<Integer> endless = () -> new java.util.Iterator<>() {
+    final Iterable<Integer> endless = () -> new Iterator<>() {
       @Override
       public boolean hasNext() {
         return true;

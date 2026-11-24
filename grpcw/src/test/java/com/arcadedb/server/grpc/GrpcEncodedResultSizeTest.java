@@ -136,13 +136,17 @@ class GrpcEncodedResultSizeTest extends BaseGrpcServerTest {
 
   @Test
   void executeQueryRefusesAListLargerThanTheCeiling() {
-    assertRefusedAsTooLarge(catchThrowableOfType(StatusRuntimeException.class, () -> stub.executeQuery(queryRequest(nestedListQuery(NESTING)))));
+    final ExecuteQueryRequest request = queryRequest(nestedListQuery(NESTING));
+
+    assertRefusedAsTooLarge(catchThrowableOfType(StatusRuntimeException.class, () -> stub.executeQuery(request)));
     assertServerStillAnswers();
   }
 
   @Test
   void executeQueryRefusesAMapLargerThanTheCeiling() {
-    assertRefusedAsTooLarge(catchThrowableOfType(StatusRuntimeException.class, () -> stub.executeQuery(queryRequest(nestedMapQuery(NESTING)))));
+    final ExecuteQueryRequest request = queryRequest(nestedMapQuery(NESTING));
+
+    assertRefusedAsTooLarge(catchThrowableOfType(StatusRuntimeException.class, () -> stub.executeQuery(request)));
     assertServerStillAnswers();
   }
 
