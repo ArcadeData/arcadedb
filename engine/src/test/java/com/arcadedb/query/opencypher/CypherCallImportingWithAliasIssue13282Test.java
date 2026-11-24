@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -42,7 +43,9 @@ class CypherCallImportingWithAliasIssue13282Test extends TestHelper {
         "UNWIND [1, 2] AS i CALL { WITH i AS q RETURN q AS j } RETURN i, j ORDER BY i",
         "UNWIND [1, 2] AS i CALL { WITH i + 1 AS q RETURN q AS j } RETURN i, j ORDER BY i",
         "UNWIND [1, 2] AS i CALL { WITH i AS q WITH q RETURN q AS j } RETURN i, j ORDER BY i",
-        "UNWIND [1, 2] AS i CALL { WITH i AS q RETURN q AS j UNION WITH i RETURN i AS j } RETURN i, j ORDER BY i, j"))
+        "UNWIND [1, 2] AS i CALL { WITH i AS q RETURN q AS j UNION WITH i RETURN i AS j } RETURN i, j ORDER BY i, j",
+        // a nested body the reference walk cannot follow: the outer name is read from its text
+        "UNWIND [1, 2] AS i CALL { WITH COLLECT { WITH * RETURN i } AS xs RETURN xs } RETURN i, xs ORDER BY i"))
       assertThatThrownBy(() -> drain(query), query).isInstanceOf(CommandParsingException.class)
           .hasMessageContaining("imports an outer variable only as a plain reference");
   }
@@ -71,11 +74,22 @@ class CypherCallImportingWithAliasIssue13282Test extends TestHelper {
     assertThat(drain("UNWIND [1, 2] AS i CALL { WITH 1 AS x RETURN x } RETURN i, x ORDER BY i")).containsExactly("1,1", "2,1");
   }
 
+  /** A name the leading WITH binds locally (comprehension, quantifier, reduce) is not a reference to the outer variable of that name. */
+  @Test
+  void aNameBoundLocallyInTheLeadingWithIsNotAReferenceToTheOuterOne() {
+    assertThat(drain("UNWIND [1, 2] AS x CALL { WITH [x IN [10, 20] | x + 1] AS l RETURN l } RETURN x, l ORDER BY x"))
+        .containsExactly("1,[11, 21]", "2,[11, 21]");
+    assertThat(drain("UNWIND [1, 2] AS x CALL { WITH any(x IN [10, 20] WHERE x > 15) AS b RETURN b } RETURN x, b ORDER BY x"))
+        .containsExactly("1,true", "2,true");
+    assertThat(drain("UNWIND [1, 2] AS x CALL { WITH reduce(x = 0, y IN [1, 2, 3] | x + y) AS s RETURN s } RETURN x, s ORDER BY x"))
+        .containsExactly("1,6", "2,6");
+  }
+
   private List<String> drain(final String query) {
     final List<String> rows = new ArrayList<>();
     try (final ResultSet rs = database.command("opencypher", query)) {
       while (rs.hasNext()) {
-        final var row = rs.next();
+        final Result row = rs.next();
         final List<String> cells = new ArrayList<>();
         for (final String name : row.getPropertyNames())
           cells.add(String.valueOf(row.<Object>getProperty(name)));

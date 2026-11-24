@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.*;
 import java.util.*;
+import java.util.regex.Pattern;
 
 /**
  * The scope phase of the semantic validation: every variable an expression reads must be in scope where it is read.
@@ -498,14 +499,23 @@ final class VariableScopeValidator {
     final Set<String> plainlyImported = new HashSet<>();
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       if (item.isStar())
-        return;
+        return; // WITH * imports every outer variable
       if (isPlainReference(item))
         plainlyImported.add(((VariableExpression) item.getExpression()).getVariableName());
     }
     for (final ReturnClause.ReturnItem item : withClause.getItems()) {
       if (isPlainReference(item))
         continue;
-      for (final String name : WhereClause.collectExpressionVariables(item.getExpression()))
+      final Expression expression = item.getExpression();
+      final Set<String> read = new HashSet<>(WhereClause.collectExpressionVariables(expression));
+      // A nested body the walk cannot follow (COLLECT { WITH * RETURN i }) leaves the names incomplete: read its text for the
+      // outer names too, as a bare word that is not a property, a label, a parameter or a map key
+      if (!CypherReferencedVariables.freeOf(expression).isComplete() && expression.getText() != null)
+        for (final String name : outerScope)
+          if (!read.contains(name) && Pattern.compile("(?<![\\w.:$])" + Pattern.quote(name) + "(?![\\w]|\\s*:)")
+              .matcher(expression.getText()).find())
+            read.add(name);
+      for (final String name : read)
         if (outerScope.contains(name) && !plainlyImported.contains(name))
           throw new CommandSemanticException("UndefinedVariable: Variable '" + name
               + "' not defined: the importing WITH of a CALL subquery imports an outer variable only as a plain reference"
@@ -536,9 +546,10 @@ final class VariableScopeValidator {
   /**
    * Follows {@code name} through the clauses of one branch: it starts as the outer variable when the explicit scope list imports
    * it, or when the branch opens with a {@code WITH} (the importing one, walked as the first clause). A {@code WITH} that does not
-   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so {@code WITH 1 AS z}
-   * or, in a later clause, {@code WITH b AS z} binds a value of the body's own, which is also what {@code SubqueryStep} imports at runtime. An
-   * {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name re-binds it too (issue #12387).
+   * forward it as itself ({@code WITH name}, {@code WITH name AS name}, {@code WITH *}) drops or replaces it, so
+   * {@code WITH 1 AS z} or, in a later clause, {@code WITH b AS z} binds a value of the body's own, which is also what
+   * {@code SubqueryStep} imports at runtime. An {@code UNWIND}, a {@code LOAD CSV} or a procedure {@code YIELD} under that name
+   * re-binds it too (issue #12387).
    */
   private static boolean keepsImportedBinding(final CypherStatement branch, final List<String> scopeVariables, final String name,
       final Set<String> outerScope) {
