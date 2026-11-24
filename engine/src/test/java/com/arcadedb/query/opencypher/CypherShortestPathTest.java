@@ -196,16 +196,18 @@ class CypherShortestPathTest {
 
     @Test
     void theMatchSpellingStillResolvesAnUnboundEndpoint() {
-      // The MATCH form is unaffected: the planner binds x with a scan and emits one row per candidate.
+      // The MATCH form is unaffected: the planner binds x with a scan and emits one row per candidate. The candidate that
+      // is a itself has only the zero-length path, which [*] (at least one hop) does not accept, so it has no row
+      // (issue #11913).
       final List<Result> result = rows(
           "MATCH p = shortestPath((a:A {v:1})-[*]->(x:A)) RETURN x.v AS xv ORDER BY xv");
-      assertThat(result).hasSize(3);
+      assertThat(result).hasSize(2);
       final List<Integer> targets = new ArrayList<>();
       for (final Result r : result) {
         final Number n = r.getProperty("xv");
         targets.add(n == null ? null : n.intValue());
       }
-      assertThat(targets).containsExactly(1, 2, 10);
+      assertThat(targets).containsExactly(2, 10);
     }
   }
 

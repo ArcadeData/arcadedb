@@ -41,6 +41,11 @@ public abstract class AbstractTextFunction implements StatelessFunction {
    * The longest regular expression a text function compiles, against patterns built to backtrack (ReDoS).
    */
   protected static final int    MAX_PATTERN_LENGTH = 500;
+  /**
+   * The longest string a text function that generates one from a length argument (pad, random) produces: a length is a few characters
+   * of query text and must not become a heap-sized allocation (issue #12727).
+   */
+  protected static final int    MAX_RESULT_LENGTH  = 10 * 1024 * 1024;
 
   /**
    * A pattern with the text it was compiled from. Immutable, so that the field below is read and replaced without a lock.

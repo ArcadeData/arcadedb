@@ -101,7 +101,8 @@ public final class PromQLFunctions {
 
   /**
    * Shared extrapolation logic for {@code rate()} and {@code increase()}, faithfully porting
-   * Prometheus' {@code extrapolatedRate}. The counter-reset-corrected total increase is scaled so it
+   * Prometheus' {@code extrapolatedRate} as it is since Prometheus 2.51 (prometheus/prometheus#13725, checked against
+   * v3.5.0 {@code promql/functions.go}). The counter-reset-corrected total increase is scaled so it
    * covers the full requested matrix window, with boundary handling that avoids over-extrapolating
    * beyond the available samples and prevents extrapolating a counter below zero.
    *
@@ -138,29 +139,29 @@ public final class PromQLFunctions {
       return TimeSeriesNaN.ABSENT;
 
     double durationToStart = (first[0] / 1000.0) - rangeStartSec;
-    final double durationToEnd = rangeEndSec - (last[0] / 1000.0);
+    double durationToEnd = rangeEndSec - (last[0] / 1000.0);
     final double averageDurationBetweenSamples = sampledInterval / (values.size() - 1);
 
-    // Counters can't be negative. If the counter has positive slope and a non-negative first value,
-    // extrapolate back only as far as the projected zero point to avoid producing negative values.
+    // A boundary farther than 10% past the average spacing means the series starts or ends inside the window: extrapolate
+    // only half a spacing toward it.
+    final double extrapolationThreshold = averageDurationBetweenSamples * 1.1;
+    if (durationToStart >= extrapolationThreshold)
+      durationToStart = averageDurationBetweenSamples / 2;
+
+    // Counters can't be negative. If the counter has positive slope and a non-negative first value, extrapolate back only as far
+    // as the projected zero point. AFTER the threshold, as Prometheus does since 2.51 (prometheus/prometheus#13725): the zero
+    // point used to be applied first, and a zero point under the threshold then extrapolated past the half spacing the series
+    // start had already been limited to (issue #11981)
     if (resultValue > 0 && first[1] >= 0) {
       final double durationToZero = sampledInterval * (first[1] / resultValue);
       if (durationToZero < durationToStart)
         durationToStart = durationToZero;
     }
 
-    final double extrapolationThreshold = averageDurationBetweenSamples * 1.1;
-    double extrapolateToInterval = sampledInterval;
+    if (durationToEnd >= extrapolationThreshold)
+      durationToEnd = averageDurationBetweenSamples / 2;
 
-    if (durationToStart < extrapolationThreshold)
-      extrapolateToInterval += durationToStart;
-    else
-      extrapolateToInterval += averageDurationBetweenSamples / 2;
-
-    if (durationToEnd < extrapolationThreshold)
-      extrapolateToInterval += durationToEnd;
-    else
-      extrapolateToInterval += averageDurationBetweenSamples / 2;
+    final double extrapolateToInterval = sampledInterval + durationToStart + durationToEnd;
 
     double factor = extrapolateToInterval / sampledInterval;
     if (isRate)

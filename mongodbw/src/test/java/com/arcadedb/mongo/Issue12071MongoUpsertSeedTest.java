@@ -241,13 +241,19 @@ class Issue12071MongoUpsertSeedTest {
   }
 
   @Test
-  void aRegularExpressionUnderEqIsAPatternAndIsNotSeeded() {
-    // this plugin's matcher reads a regular expression operand, under $eq too, as a pattern to match, never as a value to compare, so
-    // a regular expression it stored from the filter would not be matched by the filter that produced it: the next run would insert
-    // again, the very duplicate this issue is about. It stays what it has always been, left out of the inserted document
+  void aRegularExpressionUnderEqIsAValueAndIsSeeded() {
+    // $eq compares a regular expression operand with a stored regular expression (issue #12594): mongod seeds it, and the next run of
+    // the upsert matches the document the first one inserted
     final Document filter = new Document("a", new Document("$eq", new BsonRegularExpression("x", "i")));
-    upsert("C20", filter, new Document("$set", new Document("c", 1)));
-    assertThat(findAll("C20").getFirst()).doesNotContainKey("a").containsEntry("c", 1);
+    upsert("C20", filter, new Document("$inc", new Document("c", 1)));
+    final Document second = upsert("C20", filter, new Document("$inc", new Document("c", 1)));
+    assertThat(second.get("upserted")).isNull();
+    final List<Document> stored = findAll("C20");
+    assertThat(stored).hasSize(1);
+    assertThat(stored.getFirst()).containsEntry("c", 2);
+    final BsonRegularExpression seeded = (BsonRegularExpression) stored.getFirst().get("a");
+    assertThat(seeded.getPattern()).isEqualTo("x");
+    assertThat(seeded.getOptions()).isEqualTo("i");
   }
 
   @Test
