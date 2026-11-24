@@ -19,8 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ExternalResourceException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.LoadCSVRowContext;
 import com.arcadedb.query.opencypher.ast.Expression;

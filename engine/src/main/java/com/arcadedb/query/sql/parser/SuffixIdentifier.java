@@ -175,7 +175,9 @@ public class SuffixIdentifier extends SimpleNode {
       // Return null instead of the variable name for uninitialized variables (issue #1939)
       return null;
     }
-    if (recordAttribute != null) {
+    // No record, no attribute: null, as a property of no record is. The planner evaluates the arguments of an indexable function
+    // before any record is read, and `@type` dereferenced the missing record there (issue #12795)
+    if (recordAttribute != null && currentRecord != null) {
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
       else if (THIS_PROPERTY.equalsIgnoreCase(recordAttribute.name))

@@ -111,8 +111,14 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     final Schema schema = context.getDatabase().getSchema();
     // a logical index over several types (issue #11014) is searched through its members; a name that is an index is not a logical
     // one, so the walk of the types is paid only by a name that is not
-    if (!schema.existsIndex(indexName) && MultiTypeIndexes.find(schema, indexName) != null)
+    final boolean exists = schema.existsIndex(indexName);
+    if (!exists && MultiTypeIndexes.find(schema, indexName) != null)
       return true;
+
+    // A name built from the record (`@type + '[name]'`) resolves, with no record, to a name that is no index: the call is
+    // evaluated per record, where the name is the real one, instead of being refused here for a name nobody wrote (issue #12795)
+    if (!exists && !oExpressions[0].isEarlyCalculated(context))
+      return false;
 
     final Index index = schema.getIndexByName(indexName);
     return index instanceof TypeIndex;
@@ -226,7 +232,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   /**
-   * Resolves a function expression parameter to a string value while the plan is built, or null when it cannot be resolved there.
+   * Resolves a function expression parameter to a string value with no current record, or null when it has no value there.
    */
   static String resolveStringParam(final Expression expr, final CommandContext context) {
     final Object value = resolveParam(expr, context);
@@ -234,13 +240,12 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   /**
-   * Resolves a function expression parameter while the plan is built, with no current record, or null when it depends on the record
-   * ({@code @type}, a property): such a call cannot be answered by an index, and is evaluated per record like any other function
-   * call. Evaluating it without a record threw a {@code NullPointerException} from the planner (issue #12795).
+   * Resolves a function expression parameter with no current record, for the indexed fetch and for the planner that decides on
+   * it. What reads the record ({@code @type}, a property) is null there. No expression is turned away up front: a value known
+   * only when the statement runs and that is not read from the record, such as {@code $parent.$current.term} in a sub-query,
+   * resolves here and is answered by the index.
    */
   static Object resolveParam(final Expression expr, final CommandContext context) {
-    if (expr == null || !expr.isEarlyCalculated(context))
-      return null;
-    return expr.execute((Identifiable) null, context);
+    return expr != null ? expr.execute((Identifiable) null, context) : null;
   }
 }

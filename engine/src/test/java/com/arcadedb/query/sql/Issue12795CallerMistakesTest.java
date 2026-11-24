@@ -20,8 +20,8 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.InvalidArgumentException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -127,6 +127,35 @@ class Issue12795CallerMistakesTest extends TestHelper {
       assertThat(rs.next().<String>getProperty("name")).isEqualTo("a b");
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  @Test
+  void searchArgumentsReadFromTheParentRowOfASubQueryStillSearchTheIndex() {
+    // $parent.$current is known only when the sub-query runs, and is not a function of the record being searched: the call is
+    // still answered by the index, with the value of the parent row
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Q SET term = 'a', idx = 'P[name]', field = 'name'");
+      database.command("sql", "INSERT INTO Q SET term = 'zzz', idx = 'P[name]', field = 'name'");
+    });
+    for (final String call : new String[] { "SEARCH_INDEX('P[name]', $parent.$current.term)",
+        "SEARCH_INDEX($parent.$current.idx, $parent.$current.term)", "SEARCH_FIELDS(['name'], $parent.$current.term)",
+        "SEARCH_FIELDS($parent.$current.field, $parent.$current.term)" }) {
+      final String sql = "SELECT term, (SELECT name FROM P WHERE " + call + " = true) AS hits FROM Q ORDER BY term";
+      final List<Result> rows = drain(sql);
+      assertThat(rows).as(sql).hasSize(2);
+      assertThat(rows.get(0).<List<Object>>getProperty("hits")).as(sql).hasSize(1);
+      assertThat(rows.get(1).<List<Object>>getProperty("hits")).as(sql).isEmpty();
+    }
+  }
+
+  @Test
+  void aRecordAttributeEvaluatedWithNoRecordIsNull() {
+    // the root of the SEARCH_INDEX(@type, ...) failure: every record attribute dereferenced the record the planner does not have
+    for (final String attribute : new String[] { "@type", "@rid", "@cat", "@in", "@out" })
+      assertThatThrownBy(() -> drain("SELECT FROM P WHERE SEARCH_INDEX(" + attribute + ", 'a') = true")).as(attribute)
+          .isNotInstanceOf(NullPointerException.class);
+    // as the query, on the indexed path: no record, no text to search
+    assertThat(drain("SELECT FROM P WHERE SEARCH_INDEX('P[name]', @type) = true")).isEmpty();
   }
 
   @Test
