@@ -1332,6 +1332,17 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
+   * Waits, at most {@code timeoutMs}, until no entry of another node that the replication layer has accepted but this node has
+   * not applied yet holds a version of the header page (issue #12470): every append touches it, so a commit of it - the compaction
+   * flag - is refused for as long as one is in flight. See {@code PageManager.awaitReservedVersionApplied}.
+   *
+   * @return {@code false} when the wait gave up, {@code true} otherwise (always at once off a replicated leader)
+   */
+  boolean awaitHeaderPageApplied(final long timeoutMs) throws IOException {
+    return database.getPageManager().awaitReservedVersionApplied(new PageId(database, fileId, 0), pageSize, timeoutMs);
+  }
+
+  /**
    * Returns true if a compaction was in progress (crash recovery check). A file with no header page has
    * nothing to recover, so it answers false.
    */

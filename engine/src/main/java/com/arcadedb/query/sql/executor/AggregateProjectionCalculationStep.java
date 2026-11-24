@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Created by luigidellaquila on 12/07/16.
  */
-public class AggregateProjectionCalculationStep extends ProjectionCalculationStep {
+public class AggregateProjectionCalculationStep extends ProjectionCalculationStep implements RowCapAwareStep {
   // #8523: below this many groups across the partial aggregations, merging them on this thread is cheaper than handing
   // the merge to the pool
   private static final int PARALLEL_MERGE_MIN_GROUPS = 16_384;
@@ -62,6 +62,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final GroupBy                   groupBy;
   private final long                      timeoutMillis;
   private final long                      limit;
+  // ISSUE #12016: THE SKIP THE CALLER'S ROW CAP IS COUNTED AFTER, SET BY THE PLANNER WHEN THE STATEMENT HAS NO LIMIT OF ITS OWN AND
+  // NOTHING DOWNSTREAM CAN DROP OR REORDER A GROUP (-1: THE CAP DOES NOT BOUND THE GROUPS), AND THE CAP ITSELF (0: NONE)
+  private       int                       capSkip = -1;
+  private       int                       rowCap;
   // THE GROUPS HELD, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES (ISSUES #8585, #8591)
   private final OperationHeapLimit        groupsLimit;
   // #8591: THE PARTIAL AGGREGATIONS OF THE WORKERS OF A PARALLEL SCAN, SO A FAILURE CAN GIVE BACK WHAT THEY CHARGED
@@ -98,6 +102,24 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
     // Memory optimization: Enforce memory limits for GROUP BY operations
     this.groupsLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
+  }
+
+  /** The groups the aggregation keeps are the first ones the caller reads: {@code skip} plus the cap, when the caller sets one. */
+  void boundByRowCap(final int skip) {
+    this.capSkip = skip;
+  }
+
+  @Override
+  public void applyRowCap(final int rowCap) {
+    this.rowCap = rowCap;
+  }
+
+  /** The groups the aggregation keeps at most, first met first: SKIP + LIMIT, else SKIP + the cap of the caller; 0 for all of them. */
+  private long groupLimit() {
+    if (limit > 0)
+      return limit;
+    final int bound = RowCapAwareStep.bound(capSkip, rowCap);
+    return bound > 0 ? bound : 0L;
   }
 
   @Override
@@ -154,6 +176,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       }
       final AggregateRowEvaluator evaluator = new AggregateRowEvaluator(preProjection, projection, groupBy, true, null, context);
       final int groupOverhead = groupOverheadBytes(projection);
+      final long groupLimit = groupLimit();
 
       ResultSet lastRs = source.syncPull(context, nRecords);
       // The whole input is consumed inside this one pull, and the step below may check nothing (an UNWIND, a projection
@@ -165,7 +188,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         if (timeoutMillis > 0 && timeoutBegin + timeoutMillis < System.currentTimeMillis()) {
           sendTimeout();
         }
-        aggregate(evaluator, lastRs.next(), context, groupOverhead);
+        aggregate(evaluator, lastRs.next(), context, groupOverhead, groupLimit);
         if (!lastRs.hasNext()) {
           lastRs = source.syncPull(context, nRecords);
         }
@@ -182,7 +205,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   }
 
   private void aggregate(final AggregateRowEvaluator evaluator, final Result next, final CommandContext context,
-      final int groupOverhead) {
+      final int groupOverhead, final long groupLimit) {
     final long begin = context.isProfiling() ? System.nanoTime() : 0;
     try {
       evaluator.begin(next);
@@ -190,7 +213,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       Group group = aggregateResults.get(key);
       if (group == null) {
         // Query LIMIT optimization: stop processing once we have enough groups
-        if (limit > 0 && aggregateResults.size() >= limit)
+        if (groupLimit > 0 && aggregateResults.size() >= groupLimit)
           return;
 
         // Memory safety: enforce memory limit for GROUP BY operations
@@ -377,7 +400,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       checkGroupCount(groups.size() - 1);
 
       groups.sort(Comparator.comparingLong(g -> g.firstSeen));
-      final int size = limit > 0 ? (int) Math.min(limit, groups.size()) : groups.size();
+      final long groupLimit = groupLimit();
+      final int size = groupLimit > 0 ? (int) Math.min(groupLimit, groups.size()) : groups.size();
       // EVERY WORKER'S EVALUATOR MAKES THE SAME ROWS OF THE GROUPS: THE FIRST ONE'S. partials HOLDS THE WORKERS' OWN, NEVER
       // THE SHARED GROUPS (WHICH HAVE NO EVALUATOR), AND THE CALLER IS ALWAYS ONE OF THE WORKERS
       AggregateRowEvaluator finisher = null;
@@ -870,6 +894,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new AggregateProjectionCalculationStep(projection.copy(), groupBy == null ? null : groupBy.copy(), limit, context, timeoutMillis);
+    final AggregateProjectionCalculationStep copy = new AggregateProjectionCalculationStep(projection.copy(),
+        groupBy == null ? null : groupBy.copy(), limit, context, timeoutMillis);
+    copy.capSkip = capSkip;
+    copy.rowCap = rowCap;
+    return copy;
   }
 }

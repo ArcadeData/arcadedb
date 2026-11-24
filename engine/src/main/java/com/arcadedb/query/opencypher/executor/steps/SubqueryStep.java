@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -93,6 +94,8 @@ public class SubqueryStep extends AbstractExecutionStep {
   private boolean streamBody;
   // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
   private ResultSet streamedBody;
+  // THE BODY'S PLAN, BUILT ON THE FIRST OUTER ROW AND RUN FOR EVERY LATER ONE (ISSUE #12136)
+  private CypherExecutionPlan innerPlan;
   // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
   private String[] returnedColumns;
 
@@ -295,11 +298,12 @@ public class SubqueryStep extends AbstractExecutionStep {
               // The body reads as many rows at a time as this step was asked for, so a LIMIT after it bounds the body too
               final ResultSet body = executeBody(currentOuterRow, context,
                   Math.max(1, Math.min(nRecords, CypherExecutionPlan.SEEDED_BATCH_SIZE)));
+              // Registered before the first pull, so close() also reaches a body that fails on it
+              streamedBody = body;
               if (body.hasNext()) {
-                streamedBody = body;
                 currentInnerResults = body;
               } else {
-                body.close();
+                closeStreamedBody();
                 if (subqueryClause.isOptional())
                   buffer.add(withReturnedColumnsNull(currentOuterRow));
               }
@@ -431,6 +435,7 @@ public class SubqueryStep extends AbstractExecutionStep {
         // Execute the batch in its own transaction
         final List<List<Result>> innerResultsPerRow = new ArrayList<>(batch.size());
         final String transactionId = String.valueOf(++batchNumber);
+        committedWrites = commitStatementWrites(committedWrites);
         final boolean callerTransaction = database.isTransactionActive();
         final int nesting = database.getNestedTransactions();
         // A label the batch writes replaces the node by a new record, noted for the outer rows to follow: a batch that does not
@@ -461,7 +466,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               tx.collectWrittenRecordIds(committedWrites);
             }
           }
-          database.commit();
+          commitBatch();
         } catch (final TimeoutException e) {
           // The statement's deadline ends it whatever ON ERROR says
           database.rollbackAllNested();
@@ -527,6 +532,65 @@ public class SubqueryStep extends AbstractExecutionStep {
         SubqueryStep.this.close();
       }
     };
+  }
+
+  /**
+   * Commits what the statement wrote before a batch of {@code CALL { ... } IN TRANSACTIONS}, then begins its transaction again
+   * for the clauses that follow (issue #13172). The batch's own transaction does not see the statement's uncommitted writes, so a
+   * label written before the CALL left the body pointed at a record it could not find. IN TRANSACTIONS already gives up the
+   * statement's atomicity, so committing these writes is consistent with it. It runs before every batch: the outer rows of a later
+   * batch are produced after the earlier batches committed.
+   * <p>
+   * Only the implicit transaction at the first level is committed: a caller's transaction is refused with IN TRANSACTIONS before
+   * anything runs (issue #11588), and a deeper level belongs to someone else. A transaction a server shares between several
+   * statements stops being implicit once an earlier one wrote into it, so it is refused there too: the Postgres implicit block of
+   * a pipeline does so (issue #13222), and the multi-statement simple query declares its block the client's.
+   * <p>
+   * It runs outside the batch's error handling: a failed commit fails the statement whatever ON ERROR says, since no batch ran.
+   * <p>
+   * The commit lands on the transaction context a retry loop sampled (the same context is begun again), so its commit count moves:
+   * the HTTP, gRPC and MCP auto-commit wrappers, {@code Database.transaction()} and the asynchronous executor do not replay a request
+   * whose writes before the CALL are durable, the conflict reaches the caller instead (issue #13223).
+   * <p>
+   * Known gap, tracked on its own: a record the prefix left provisional under a deferred existence check is committed here, so
+   * the check at the end of the statement cannot remove it although its message says so (#13221).
+   *
+   * @return the set of the records the outer rows produced before must re-read, with what this commit wrote added to it
+   */
+  private RidHashSet commitStatementWrites(final RidHashSet committedWrites) {
+    if (database.getNestedTransactions() != 1)
+      return committedWrites;
+    final TransactionContext tx = database.getTransactionIfExists();
+    if (tx == null || !tx.isActive() || !tx.isImplicit() || tx.hasChangedNothing())
+      return committedWrites;
+
+    // The copies the outer rows produced so far hold are a version behind once this commits
+    final RidHashSet written = committedWrites != null ? committedWrites : new RidHashSet();
+    tx.collectWrittenRecordIds(written);
+
+    final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = tx.getIsolationLevel();
+    database.commit();
+    database.begin(isolationLevel);
+    database.getTransaction().setImplicit(true);
+    return written;
+  }
+
+  /**
+   * Commits the transaction of one batch, and reports the commit to the transaction under it (issue #13223). A batch runs in a
+   * transaction nested in the statement's, which its commit pops: the retry loop around the request - the HTTP, gRPC and MCP
+   * auto-commit wrappers, {@code Database.transaction()}, the asynchronous executor - sampled the statement's transaction and would
+   * not see that anything is durable, so a conflict after the batch replayed the request and applied the batch twice. Reported as
+   * {@code BATCH n} reports its boundary ({@code BatchStep}), the loop hands the conflict to the caller instead. When the batch
+   * began the only transaction of the thread, its commit already moved the counter of that very context. A batch that wrote
+   * nothing (a MATCH ... SET that matched no node) leaves nothing durable, so it is not reported and the block stays replayable.
+   */
+  private void commitBatch() {
+    final TransactionContext batch = database.getTransactionIfExists();
+    final boolean wroteSomething = batch != null && !batch.hasChangedNothing();
+    database.commit();
+    final TransactionContext survivor = database.getTransactionIfExists();
+    if (wroteSomething && survivor != null && survivor != batch)
+      survivor.reportBatchBoundaryOfNestedTransaction();
   }
 
   /**
@@ -678,12 +742,17 @@ public class SubqueryStep extends AbstractExecutionStep {
     return row;
   }
 
-  /** Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled. */
+  /**
+   * Runs the body seeded with the outer row, {@code batchSize} rows at a time, as far as the returned result set is pulled.
+   * The body is planned once for the step, and in a statement that cannot write its step chain is run again for each outer
+   * row (issue #12136).
+   */
   private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
     if (innerMayWrite)
       refreshWrittenBindings(outerRow);
-    final CypherExecutionPlan innerPlan = new CypherExecutionPlan(
-        database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(), null, expressionEvaluator);
+    if (innerPlan == null)
+      innerPlan = new CypherExecutionPlan(database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(),
+          null, expressionEvaluator);
     return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
   }
 

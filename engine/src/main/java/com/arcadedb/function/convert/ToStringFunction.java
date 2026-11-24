@@ -26,6 +26,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -59,9 +60,12 @@ public class ToStringFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof String || args[0] instanceof Number || args[0] instanceof Boolean)
       return args[0].toString();
-    // Temporal types
-    if (args[0] instanceof CypherTemporalValue)
-      return args[0].toString();
+    // Temporal types, in Neo4j's text: seconds always printed, no trailing zeros in the fraction (issue #11912). A
+    // native temporal (a java.time value, a java.util.Date or Calendar: a Bolt or Java API parameter) prints as the Cypher
+    // temporal it stands for, not as Java's own text.
+    final Object value = TemporalUtil.isNativeTemporal(args[0]) ? TemporalUtil.fromCoreJavaType(args[0]) : args[0];
+    if (value instanceof CypherTemporalValue temporal)
+      return TemporalUtil.toCypherString(temporal);
     // A point is a map at runtime: ArcadeDB has no dedicated geometry type yet (issue #4870), so point() builds a
     // map of coordinate keys. Neo4j renders a point as the point literal, and toString() must do the same instead of
     // refusing the value (issue #12397). A map that is not a point is still refused, as it is in Neo4j.

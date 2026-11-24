@@ -1170,6 +1170,107 @@ class PostgresTransactionControlIT extends PostgresWireProtocolTestBase {
     assertThat(getServerDatabase(0, getDatabaseName()).countType(type, false)).isZero();
   }
 
+  /*
+   * Issue #13222: the implicit block of a pipeline is shared by every statement of the pipeline, so once an earlier statement
+   * wrote into it, it is not the CALL statement's own transaction any more. The commit CALL { ... } IN TRANSACTIONS makes of the
+   * statement's writes before its first batch (#13172) also committed the earlier statements', and a later failure in the same
+   * pipeline could no longer take them back. The CALL is refused there instead, as inside a client's transaction (#11588).
+   */
+
+  // Regression: #13222
+  @Test
+  @DisplayName("[#13222] CALL IN TRANSACTIONS after a write in the same pipeline is refused, and the write is not committed")
+  void refusedAfterAnEarlierWriteOfTheSamePipeline() throws Exception {
+    final String label = "PgPipeline13222";
+    final String type = "PgPipelineDoc13222";
+    withConnection((out, in) -> {
+      createType(out, in, type);
+
+      parseBindExecute(out, "w", "INSERT INTO " + type + " SET id = 1");
+      parseBindExecute(out, "c", STATEMENT.formatted(label));
+      parseBindExecute(out, "bad", "INSERT INTO Issue13222NoSuchType SET id = 2");
+      sendSync(out);
+
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answers)).containsOnlyOnce('E');
+      assertThat(errorMessage(answers)).contains("can only be executed in an implicit transaction")
+          .as("the client opened no transaction, so the message names the earlier writes and the cure")
+          .contains("already holding the writes of earlier statements").contains("Sync");
+      assertThat(errorField(answers, 'C')).isEqualTo("25001");
+      assertThat(readyForQueryStatusOf(answers)).isEqualTo('I');
+    });
+
+    assertThat(count(label)).as("no batch ran").isZero();
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(type, false))
+        .as("the INSERT before the CALL stays atomic with the failed pipeline and is rolled back with it").isZero();
+  }
+
+  // Regression: #13222
+  @Test
+  @DisplayName("[#13222] a pipeline of two CALL IN TRANSACTIONS statements still runs both: the first leaves nothing pending")
+  void twoCallsInTheSamePipelineBothRun() throws Exception {
+    final String first = "PgPipelineFirst13222";
+    final String second = "PgPipelineSecond13222";
+    withConnection((out, in) -> {
+      parseBindExecute(out, "c1", STATEMENT.formatted(first));
+      parseBindExecute(out, "c2", STATEMENT.formatted(second));
+      sendSync(out);
+
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answers)).as(errorMessage(answers)).doesNotContain('E');
+      assertThat(readyForQueryStatusOf(answers)).isEqualTo('I');
+    });
+
+    assertThat(count(first)).isEqualTo(25);
+    assertThat(count(second)).isEqualTo(25);
+  }
+
+  // Regression: #13222
+  @Test
+  @DisplayName("[#13222] a pipeline whose first statement wrote nothing still runs CALL IN TRANSACTIONS")
+  void runsAfterAnEarlierStatementThatWroteNothing() throws Exception {
+    final String label = "PgPipelineNoWrite13222";
+    final String type = "PgPipelineNoWriteDoc13222";
+    withConnection((out, in) -> {
+      createType(out, in, type);
+
+      parseBindExecute(out, "u", "UPDATE " + type + " SET id = 3 WHERE id = -1");
+      parseBindExecute(out, "c", STATEMENT.formatted(label));
+      sendSync(out);
+
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answers)).as(errorMessage(answers)).doesNotContain('E');
+    });
+
+    assertThat(count(label)).isEqualTo(25);
+  }
+
+  // Regression: #13222
+  @Test
+  @DisplayName("[#13222] a simple query interleaved into a pipeline that wrote is refused, and the pipeline's write is not committed")
+  void simpleQueryInterleavedIntoAPipelineThatWroteIsRefused() throws Exception {
+    final String label = "PgInterleaved13222";
+    final String type = "PgInterleavedDoc13222";
+    withConnection((out, in) -> {
+      createType(out, in, type);
+
+      // The write opens the implicit block and no Sync ends it, so the 'Q' below runs inside it
+      parseBindExecute(out, "w", "INSERT INTO " + type + " SET id = 1");
+      sendSimpleQuery(out, STATEMENT.formatted(label));
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(answers)).containsOnlyOnce('E');
+      assertThat(errorMessage(answers)).contains("can only be executed in an implicit transaction")
+          .contains("already holding the writes of earlier statements");
+
+      sendSync(out);
+      readUntilReadyForQuery(in);
+    });
+
+    assertThat(count(label)).isZero();
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(type, false))
+        .as("the failed simple query discards the pipeline's pending write it was interleaved into").isZero();
+  }
+
   private static String errorMessage(final List<WireMessage> answers) {
     return errorField(answers, 'M');
   }

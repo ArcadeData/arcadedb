@@ -163,7 +163,7 @@ public class GraphOltpWorkload implements Workload {
     final List<Metric> metrics = new ArrayList<>();
     metrics.add(Metrics.rate("queries_per_s", "queries/s", queryIds.length / (latencies.totalNanos() / 1e9)));
     metrics.addAll(Metrics.latencies(latencies));
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   /** The {@code n} column of a case for each of the first {@code count} query ids, for comparing the two forms of a case. */

@@ -487,6 +487,8 @@ class CypherExpressionBuilder {
         return parseExpression(e1.parenthesizedExpression().expression());
       if (e1.shortestPathExpression() != null)
         return patterns.parseShortestPathExpression(e1.shortestPathExpression());
+      if (e1.patternExpression() != null)
+        return parsePatternPredicate(e1.patternExpression());
       if (e1.vectorFunction() != null)
         return parseVectorFunction(e1.vectorFunction());
       if (e1.vectorNormFunction() != null)
@@ -939,12 +941,8 @@ class CypherExpressionBuilder {
     if (!distinct && "exists".equalsIgnoreCase(functionName) && ctx.functionArgument().size() == 1) {
       final Cypher25Parser.ExpressionContext argExpr = ctx.functionArgument(0).expression();
       final Cypher25Parser.PatternExpressionContext patternExpr = ParseTreeSearch.findPatternExpressionRecursive(argExpr);
-      if (patternExpr != null) {
-        final PathPattern pathPattern = patterns.parsePathPatternNonEmpty(patternExpr.pathPatternNonEmpty());
-        final PatternPredicateExpression predicate = new PatternPredicateExpression(pathPattern, false,
-            CypherASTBuilder.getOriginalText(patternExpr));
-        return new BooleanWrapperExpression(predicate);
-      }
+      if (patternExpr != null)
+        return parsePatternPredicate(patternExpr);
     }
 
     // Parse arguments
@@ -960,6 +958,16 @@ class CypherExpressionBuilder {
     }
 
     return new FunctionCallExpression(functionName, arguments, distinct);
+  }
+
+  /**
+   * A pattern expression where a boolean is expected (a CASE WHEN condition, the WHERE of a comprehension or of a list
+   * predicate, the argument of {@code exists()}): true when the pattern has a match. The parser refuses a pattern expression
+   * of a WHERE in a position that is not a boolean (issue #11888).
+   */
+  Expression parsePatternPredicate(final Cypher25Parser.PatternExpressionContext ctx) {
+    final PathPattern pathPattern = patterns.parsePathPatternNonEmpty(ctx.pathPatternNonEmpty());
+    return new BooleanWrapperExpression(new PatternPredicateExpression(pathPattern, false, CypherASTBuilder.getOriginalText(ctx)));
   }
 
   /**

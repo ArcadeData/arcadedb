@@ -54,22 +54,28 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.index.ConsistentKeyLookup;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -118,6 +124,21 @@ public class MergeStep extends AbstractExecutionStep {
   // Display-only: the index the last node lookup read, for the profile (issue #11576). Written per row by the one thread running
   // the step, read by prettyPrint after it
   private       String              usedIndexName;
+  // THE ROWS A DRAINING WRITE HOLDS UNTIL IT HANDS THEM OUT, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES,
+  // AS EAGERSTEP HOLDS THEM (ISSUE #12656). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private       OperationHeapLimit  heapLimit;
+  // No clause after this one reads the rows: they are handed out as they are written, one pull batch at a time (issue #12656)
+  private       boolean             streamsRows;
+  // The index the last call of tryFindByIndex read, null when it read none. Set by every call, read right after it (issue #12483)
+  private       TypeIndex           lastLookupIndex;
+  // The index that answered the existence check of the path the last findAllMatchingPaths looked for, null when a walk did. Set by
+  // every call, read by mergePathAll right after it (issue #12483)
+  private       TypeIndex           existenceIndex;
+  // The type tryFindRelationshipByIndex last asked whether the user may read every record an index of it can load, the schema version
+  // of then, and the answer (issue #12483)
+  private       DocumentType        readCheckedType;
+  private       long                readCheckedSchemaVersion;
+  private       boolean             readCheckedAnswer;
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
@@ -167,6 +188,12 @@ public class MergeStep extends AbstractExecutionStep {
         // A LATER row of the same batch may have replaced a record this row holds after this row was merged: served with
         // the live records, not the deleted ones (issue #10614). Free while the statement replaced nothing
         labelReplacements.redirect(result);
+        if (heapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          releaseHeap();
+        }
         return result;
       }
 
@@ -180,24 +207,47 @@ public class MergeStep extends AbstractExecutionStep {
             prevResults = prev.syncPull(context, nRecords);
           }
 
-          while (buffer.size() < n && prevResults.hasNext()) {
-            final Result inputResult = prevResults.next();
-            final long begin = context.isProfiling() ? System.nanoTime() : 0;
-            try {
-              if (context.isProfiling())
-                rowCount++;
+          // A MERGE that writes properties runs for every row before it hands out the first one (issue #12656)
+          final boolean writesForEveryRowFirst = drainsBeforeHandingOut();
+          // The drain is one uninterrupted region the statement-level deadline check cannot reach, as in EagerStep (#6266)
+          final WorkGuard guard = writesForEveryRowFirst ? WorkGuard.forCommandDeadline(context) : null;
+          if (writesForEveryRowFirst)
+            heapLimit = OperationHeapLimit.of(context, "MERGE read/write barrier");
+          try {
+            while ((writesForEveryRowFirst || buffer.size() < n) && prevResults.hasNext()) {
+              if (guard != null)
+                guard.check();
+              final Result inputResult = prevResults.next();
+              final long begin = context.isProfiling() ? System.nanoTime() : 0;
+              try {
+                if (context.isProfiling())
+                  rowCount++;
 
-              final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
-              buffer.addAll(mergedResults);
-            } finally {
-              if (context.isProfiling())
-                cost += System.nanoTime() - begin;
+                final List<Result> mergedResults = executeMerge(inputResult, labelReplacements);
+                buffer.addAll(mergedResults);
+                if (heapLimit != null)
+                  for (final Result merged : mergedResults)
+                    heapLimit.add(buffer.size(), merged);
+              } finally {
+                if (context.isProfiling())
+                  cost += System.nanoTime() - begin;
+              }
             }
+          } catch (final RuntimeException | Error e) {
+            // A FAILED DRAIN HANDS OUT NOTHING: ITS ROWS AND THEIR CHARGE GO NOW, NOT WHEN THE QUERY IS CLOSED
+            buffer.clear();
+            releaseHeap();
+            throw e;
           }
 
           if (!prevResults.hasNext()) {
             finished = true;
           }
+          // When several rows bind the same node, the clauses after the MERGE read the ON CREATE / ON MATCH SET of every
+          // row, as on Neo4j (issue #12627): a row that created the pattern holds its own copy of a bound endpoint, which the
+          // write of a later row did not reach, so it is lined up with the copy the transaction wrote (issue #12656)
+          if (writesForEveryRowFirst)
+            WrittenCopy.resolveRows(context, buffer);
         } else {
           // Standalone MERGE: merge once
           if (!mergedStandalone) {
@@ -223,6 +273,16 @@ public class MergeStep extends AbstractExecutionStep {
         MergeStep.this.close();
       }
     };
+  }
+
+  /**
+   * Whether the MERGE runs for its whole input before it hands out a row: it writes properties or labels besides the pattern it
+   * merges (an ON CREATE SET, an ON MATCH SET or a SET it absorbed), and a clause after it reads its rows. As Neo4j's
+   * {@code Eager} does: a row is never read before a later row binding the same node has written it, however many pull batches
+   * the input takes (issue #12656). The plain MERGE, and one that ends the statement, keep streaming.
+   */
+  private boolean drainsBeforeHandingOut() {
+    return !streamsRows && (mergeClause.hasOnCreateSet() || mergeClause.hasOnMatchSet() || absorbedSet != null);
   }
 
   /**
@@ -411,12 +471,13 @@ public class MergeStep extends AbstractExecutionStep {
     final List<Result> found = findAllMatchingPaths(pathPattern, baseResult);
     if (!found.isEmpty())
       return found;
+    final TypeIndex answeredBy = existenceIndex;
 
     // Issue #4351: when path creation collides on a UNIQUE index (most often a
     // node endpoint already inserted earlier in the same batch), re-run the
     // path match so MERGE preserves its atomic match-or-create semantics.
     try {
-      return createNewPath(pathPattern, baseResult);
+      return createNewPath(pathPattern, baseResult, answeredBy);
     } catch (final DuplicatedKeyException e) {
       final List<Result> retry = findAllMatchingPaths(pathPattern, baseResult);
       if (retry.isEmpty())
@@ -447,6 +508,7 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
+    existenceIndex = null;
 
     final int anchorIdx = findBoundAnchorIndex(pathPattern, baseResult);
     if (anchorIdx < 0) {
@@ -459,6 +521,11 @@ public class MergeStep extends AbstractExecutionStep {
     // Prefer an index seek over the unbound endpoint when the schema offers
     // one; falls back to the anchor walk when no usable index exists.
     if (tryFindPathByIndexSeek(pathPattern, anchorIdx, baseResult, results))
+      return results;
+
+    // Both ends bound: the relationship's own index, when its type has one covering the pattern's properties (issue #12483)
+    existenceIndex = tryFindRelationshipByIndex(pathPattern, baseResult, results);
+    if (existenceIndex != null)
       return results;
 
     if (anchorIdx == 0) {
@@ -569,6 +636,132 @@ public class MergeStep extends AbstractExecutionStep {
       results.add(r);
     }
 
+    return true;
+  }
+
+  /**
+   * The existence check of a relationship between two bound nodes answered from an exact-key index of its type that the pattern's
+   * properties cover whole, instead of a walk of an edge list (issue #12483). The walk recorded a read of the head of the list it
+   * walked, and any relationship a concurrent transaction gave either node, to any other node, moved that head and refused the
+   * MERGE at commit (#12320): a bulk load of relationships with unique keys between shared vertices was refused about twice per
+   * committed batch, and eight writers loaded about four times slower than one. The index read leaves the lists alone.
+   * <p>
+   * What the walk's refusal protected, the same relationship created by a concurrent transaction, is kept by the registry of
+   * #11482: the commit of every relationship of a type with such an index marks its key, whatever statement created it and with
+   * the values it is committed with, and a relationship this MERGE creates checks that key ({@link #createPatternEdge}).
+   * <p>
+   * Not taken, and the walk answers: a prefix of an index (the registry key is the index's whole key), a null among the values
+   * (no relationship is indexed under it), a user who may not read the type (the walk refuses whether or not the value exists, a
+   * seek would refuse only when it does, see {@link SecurityHelper#canAccessType}).
+   *
+   * @return the index that answered, with every matching path added to {@code results}, or null when none did
+   */
+  private TypeIndex tryFindRelationshipByIndex(final PathPattern pathPattern, final ResultInternal baseResult,
+      final List<Result> results) {
+    if (pathPattern.getRelationshipCount() != 1)
+      return null;
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (!relPattern.hasTypes() || relPattern.getTypes().size() != 1 || !relPattern.hasProperties() || relPattern.isVariableLength())
+      return null;
+    final NodePattern leftPattern = pathPattern.getNode(0);
+    final NodePattern rightPattern = pathPattern.getNode(1);
+    if (leftPattern.getVariable() == null || rightPattern.getVariable() == null)
+      return null;
+    if (!(baseResult.getProperty(leftPattern.getVariable()) instanceof Vertex left) || left.getIdentity() == null
+        || !(baseResult.getProperty(rightPattern.getVariable()) instanceof Vertex right) || right.getIdentity() == null)
+      return null;
+
+    final String relType = relPattern.getFirstType();
+    final Schema schema = context.getDatabase().getSchema();
+    if (!schema.existsType(relType) || !(schema.getType(relType) instanceof EdgeType type))
+      return null;
+    // asked again only when the type or the schema changed: the user of a statement does not change while it runs, a hierarchy can
+    final long schemaVersion = schema.getEmbedded().getVersion();
+    if (type != readCheckedType || schemaVersion != readCheckedSchemaVersion) {
+      readCheckedType = type;
+      readCheckedSchemaVersion = schemaVersion;
+      readCheckedAnswer = canReadEveryRecordAnIndexOfCanAnswer(type);
+    }
+    if (!readCheckedAnswer)
+      return null;
+
+    final Map<String, Object> relProps = evaluateMatchProperties(relPattern.getProperties(), baseResult);
+    final Iterator<Identifiable> candidates = tryFindByIndex(type, relType, relProps, true);
+    if (candidates == null)
+      return null;
+    final TypeIndex index = lastLookupIndex;
+
+    if (!matchesNodePattern(left, leftPattern, baseResult) || !matchesNodePattern(right, rightPattern, baseResult))
+      // an end does not satisfy its own constraints: no path exists
+      return index;
+
+    final RID leftRid = left.getIdentity();
+    final RID rightRid = right.getIdentity();
+    final Direction dir = relPattern.getDirection();
+    while (candidates.hasNext()) {
+      final Identifiable identifiable = candidates.next();
+      if (identifiable == null)
+        continue;
+      final Edge edge;
+      try {
+        edge = identifiable.asEdge(true);
+      } catch (final RecordNotFoundException e) {
+        // an entry of a relationship deleted since the index was written: the walk would not reach it either
+        continue;
+      }
+      final boolean forward = leftRid.equals(edge.getOut()) && rightRid.equals(edge.getIn());
+      final boolean backward = rightRid.equals(edge.getOut()) && leftRid.equals(edge.getIn());
+      if (!(dir == Direction.OUT ? forward : dir == Direction.IN ? backward : forward || backward))
+        continue;
+      // the index covers the properties of its key, the pattern can name more
+      if (!matchesProperties(edge, relProps))
+        continue;
+
+      final ResultInternal r = copyResult(baseResult);
+      if (relPattern.getVariable() != null)
+        r.setProperty(relPattern.getVariable(), edge);
+      r.setProperty(WAS_CREATED, false);
+      final Object[] trace = newPathTrace(pathPattern);
+      tracePathElement(trace, 0, left);
+      tracePathElement(trace, 2, right);
+      tracePathElement(trace, 1, edge);
+      addPathBinding(r, pathPattern, trace);
+      results.add(r);
+    }
+    return index;
+  }
+
+  /**
+   * Whether the user may read every record an index lookup for {@code type} can load: those of the type and of its subtypes, and,
+   * through an index a super type declares, those of that super type and of every type under it, siblings included, which the lookup
+   * loads before it filters them by label. So the whole hierarchy under each root super type. Per type, so the answer does not
+   * depend on the value looked up.
+   */
+  private boolean canReadEveryRecordAnIndexOfCanAnswer(final DocumentType type) {
+    final List<DocumentType> superTypes = type.getSuperTypes();
+    if (superTypes.isEmpty())
+      return canReadTypeAndSubTypes(type);
+    for (final DocumentType superType : superTypes)
+      if (!canReadEveryRecordAnIndexOfCanAnswer(superType))
+        return false;
+    return true;
+  }
+
+  private boolean canReadTypeAndSubTypes(final DocumentType type) {
+    // every bucket, not one of them (SecurityHelper.canAccessType): a user may be granted some buckets of a type and not others, and
+    // the lookup loads a record from whichever bucket holds it
+    final List<Integer> bucketIds = type.getBucketIds(false);
+    if (bucketIds.isEmpty()) {
+      if (!SecurityHelper.canAccessType(context.getDatabase(), type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    } else
+      for (int i = 0; i < bucketIds.size(); i++)
+        if (!SecurityHelper.canAccessFile((DatabaseInternal) context.getDatabase(), bucketIds.get(i),
+            SecurityDatabaseUser.ACCESS.READ_RECORD))
+          return false;
+    for (final DocumentType subType : type.getSubTypes())
+      if (!canReadTypeAndSubTypes(subType))
+        return false;
     return true;
   }
 
@@ -1077,8 +1270,11 @@ public class MergeStep extends AbstractExecutionStep {
    * Creates all nodes and edges in the path that are not already bound from a
    * preceding MATCH.  Never calls {@code findNode()} — every missing node is
    * created fresh.
+   *
+   * @param answeredBy the index that answered the existence check of the single relationship of the path (issue #12483), whose key
+   *                   the commit of the relationship created checks, or null when a walk answered
    */
-  private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult) {
+  private List<Result> createNewPath(final PathPattern pathPattern, final ResultInternal baseResult, final TypeIndex answeredBy) {
     final List<Vertex> vertices = new ArrayList<>();
     // The nodes this MERGE creates. No other transaction can know them, but a relationship from an existing node to one of them
     // can still duplicate a concurrent MERGE's equivalent path from that node (issue #11660)
@@ -1117,7 +1313,8 @@ public class MergeStep extends AbstractExecutionStep {
       final Vertex toVertex = relPattern.getDirection() == Direction.IN
           ? vertices.get(i) : vertices.get(i + 1);
 
-      final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult, !createdHere[i] && !createdHere[i + 1], folded);
+      final Edge edge = createEdge(fromVertex, toVertex, relPattern, baseResult, !createdHere[i] && !createdHere[i + 1], answeredBy,
+          folded);
       if (createdHere[i] != createdHere[i + 1])
         registerMergedEdgeToCreatedNode(edge, relPattern, createdHere[i + 1] ? vertices.get(i) : vertices.get(i + 1),
             createdHere[i + 1] ? pathPattern.getNode(i + 1) : pathPattern.getNode(i), createdHere[i + 1] ? vertices.get(i + 1) : vertices.get(i),
@@ -1276,6 +1473,15 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private Iterator<Identifiable> tryFindByIndex(final DocumentType type, final String label,
       final Map<String, Object> evaluatedProperties) {
+    return tryFindByIndex(type, label, evaluatedProperties, false);
+  }
+
+  /**
+   * @param wholeKeyOnly only an index whose every property is bound to a non-null value answers, never a prefix (issue #12483)
+   */
+  private Iterator<Identifiable> tryFindByIndex(final DocumentType type, final String label,
+      final Map<String, Object> evaluatedProperties, final boolean wholeKeyOnly) {
+    lastLookupIndex = null;
     TypeIndex bestIndex = null;
     int bestMatchCount = 0;
     boolean bestWholeKey = false;
@@ -1298,7 +1504,7 @@ public class MergeStep extends AbstractExecutionStep {
 
       final boolean wholeKey = matchCount == indexProperties.size();
       // a whole key beats any prefix, a UNIQUE one included: it is an exact lookup rather than a range
-      if (bestWholeKey && !wholeKey)
+      if ((bestWholeKey || wholeKeyOnly) && !wholeKey)
         continue;
       if (!wholeKey) {
         try {
@@ -1334,7 +1540,7 @@ public class MergeStep extends AbstractExecutionStep {
       final Object stored = property != null ? InlineProperties.declaredValue(property, context.getDatabase(), value) : null;
       propertyValues[i] = stored != null ? stored : TemporalUtil.toIndexKey(value);
       // a prefix holding a null reaches no record of an index that skips the keys whose every column is null
-      if (!bestWholeKey && propertyValues[i] == null)
+      if ((!bestWholeKey || wholeKeyOnly) && propertyValues[i] == null)
         return null;
     }
 
@@ -1355,6 +1561,7 @@ public class MergeStep extends AbstractExecutionStep {
     }
     usedIndexName = bestIndex.getTypeName() + "[" + String.join(", ", bestWholeKey ? propertyNames :
         indexProperties.toArray(new String[0])) + "]" + (bestWholeKey ? "" : ", prefix: " + String.join(", ", propertyNames));
+    lastLookupIndex = bestIndex;
     return Labels.isInheritedIndex(bestIndex, label) ?
         Labels.filterByLabel(cursor, context.getDatabase(), label) :
         cursor;
@@ -1669,15 +1876,17 @@ public class MergeStep extends AbstractExecutionStep {
    * @param foldedSet            the SET items {@link #isRelationshipSetFoldable} accepted, written with the relationship, or null
    */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
-                          final Result result, final boolean betweenExistingNodes, final List<SetClause.SetItem> foldedSet) {
+                          final Result result, final boolean betweenExistingNodes, final TypeIndex answeredBy,
+                          final List<SetClause.SetItem> foldedSet) {
     try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
         (DatabaseInternal) context.getDatabase())) {
-      return createPatternEdge(fromVertex, toVertex, relPattern, result, betweenExistingNodes, foldedSet);
+      return createPatternEdge(fromVertex, toVertex, relPattern, result, betweenExistingNodes, answeredBy, foldedSet);
     }
   }
 
   private Edge createPatternEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
-                          final Result result, final boolean betweenExistingNodes, final List<SetClause.SetItem> foldedSet) {
+                          final Result result, final boolean betweenExistingNodes, final TypeIndex answeredBy,
+                          final List<SetClause.SetItem> foldedSet) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
@@ -1725,6 +1934,10 @@ public class MergeStep extends AbstractExecutionStep {
       if (tx != null) {
         // Also marks the keys a MERGE from either end that creates its far node checks (#11660)
         tx.addMergedEdgeBetweenExistingNodes(fromVertex.getIdentity(), toVertex.getIdentity(), edge.getTypeName(), evaluatedProperties);
+        if (answeredBy != null)
+          // No edge list was read, so no head read refuses the commit when a concurrent transaction creates this relationship by any
+          // other statement: the key of the index it looked it up by does, which the commit of every relationship of the type marks
+          tx.checkMergedEdgeByIndex(fromVertex.getIdentity(), toVertex.getIdentity(), answeredBy, edge);
       }
     }
 
@@ -1823,6 +2036,10 @@ public class MergeStep extends AbstractExecutionStep {
   /**
    * Every inline property of the MERGE pattern, node or relationship, is evaluated through here before anything is matched
    * or created with it, so a null that arrives at run time is refused here, as the validator refuses a literal one (#10191).
+   * <p>
+   * A value that is neither an {@link Expression} nor a {@link CypherASTBuilder.ParameterReference} is a literal the parser kept as
+   * its Java value, and stays what it is: a string is never read as the name of a variable or as {@code variable.property}
+   * (issue #13133).
    */
   private Map<String, Object> evaluateProperties(final Map<String, Object> properties, final Result result,
       final boolean keepTemporalWrapper) {
@@ -1841,37 +2058,6 @@ public class MergeStep extends AbstractExecutionStep {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         if (context.getInputParameters() != null)
           value = storageOrWrapper(context.getInputParameters().get(paramName), keepTemporalWrapper);
-      }
-      // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
-      // try to evaluate it against the current result context
-      else if (value instanceof String) {
-        final String strValue = (String) value;
-
-        // Check if it's a property access pattern: variable.property
-        if (strValue.contains(".") && !strValue.startsWith("'") && !strValue.startsWith("\"")) {
-          final String[] parts = strValue.split("\\.", 2);
-          if (parts.length == 2) {
-            final String variable = parts[0];
-            final String property = parts[1];
-
-            // Try to get the variable from the result
-            final Object obj = result.getProperty(variable);
-            if (obj != null) {
-              // If it's a map (like unwound data), get the property
-              if (obj instanceof Map) {
-                value = ((Map<?, ?>) obj).get(property);
-              } else if (obj instanceof Document) {
-                value = ((Document) obj).get(property);
-              }
-            }
-          }
-        } else if (!strValue.startsWith("'") && !strValue.startsWith("\"")) {
-          // It might be a simple variable reference
-          final Object obj = result.getProperty(strValue);
-          if (obj != null) {
-            value = obj;
-          }
-        }
       }
 
       WritePatternChecks.checkMergePropertyNotNull(key, value);
@@ -1920,6 +2106,24 @@ public class MergeStep extends AbstractExecutionStep {
     for (final SetClause setClause : setClauses)
       if (!setClause.isEmpty())
         setApplier.apply(setClause, result, written, labelReplacements);
+  }
+
+  /** Called when this step ends the statement: nothing reads its rows, so it does not hold them until every row has written. */
+  public void streamRows() {
+    streamsRows = true;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null) {
+      heapLimit.release();
+      heapLimit = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   /**

@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.IsolationLevels;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -40,12 +42,18 @@ public class BeginStatement extends SimpleExecStatement {
   public ResultSet executeSimple(final CommandContext context) {
     final DatabaseInternal database = context.getDatabase();
 
-    if (isolation != null)
-      // A level the engine cannot provide is refused, with the words every surface refuses it with (issue #10386)
-      database.begin(IsolationLevels.parse(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
-    else
-      // USE THE STANDARD ISOLATION LEVEL
-      database.begin();
+    try {
+      if (isolation != null)
+        // A level the engine cannot provide is refused, with the words every surface refuses it with (issue #10386)
+        database.begin(IsolationLevels.parse(isolation.getStringValue().toUpperCase(Locale.ENGLISH)));
+      else
+        // USE THE STANDARD ISOLATION LEVEL
+        database.begin();
+    } catch (final TransactionException e) {
+      // A BEGIN past the nested-transaction limit (one in a loop that never commits) is the script's mistake, not the server's
+      // (issue #11893)
+      throw new CommandSemanticException("Cannot execute BEGIN: " + e.getMessage(), e);
+    }
 
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal(database);

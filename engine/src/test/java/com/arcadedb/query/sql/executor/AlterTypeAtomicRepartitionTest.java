@@ -113,6 +113,58 @@ class AlterTypeAtomicRepartitionTest extends TestHelper {
         .hasMessageContaining("true or false");
   }
 
+  /**
+   * Regression for issue #12033: on a vertex or edge type the chained rebuild refuses a repartition, but the strategy and the bucket the
+   * statement's items set had already been applied behind the refusal.
+   */
+  @Test
+  void aRefusedRepartitionOfAVertexOrEdgeTypeChangesNothing() {
+    database.command("sql", "CREATE VERTEX TYPE PartV BUCKETS 4");
+    database.command("sql", "CREATE PROPERTY PartV.k INTEGER");
+    database.command("sql", "CREATE INDEX ON PartV (k) UNIQUE");
+    database.command("sql", "CREATE EDGE TYPE PartE BUCKETS 4");
+    database.command("sql", "CREATE PROPERTY PartE.k INTEGER");
+    database.command("sql", "CREATE INDEX ON PartE (k) UNIQUE");
+    database.transaction(() -> {
+      for (int i = 0; i < 8; i++)
+        database.command("sql", "INSERT INTO PartV SET k = ?", i);
+    });
+
+    for (final String typeName : new String[] { "PartV", "PartE" }) {
+      final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
+      final int buckets = type.getBuckets(false).size();
+
+      for (final String alter : new String[] { "BUCKETSELECTIONSTRATEGY `thread`", "BUCKETSELECTIONSTRATEGY `partitioned('k')`",
+          "BUCKET +" + typeName + "_extra" }) {
+        assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + typeName + " " + alter + " WITH repartition = true"))
+            .as(alter)
+            .hasMessageContaining("with repartition = true is not supported");
+
+        assertThat(type.getBucketSelectionStrategy().getName()).as(alter).isEqualTo("round-robin");
+        assertThat(type.isNeedsRepartition()).as(alter).isFalse();
+        assertThat(type.getBuckets(false)).as(alter).hasSize(buckets);
+      }
+    }
+    assertThat(database.getSchema().existsBucket("PartV_extra")).isFalse();
+  }
+
+  /** The other refusals of the trailing settings come before the items too (issue #12033). */
+  @Test
+  void aRefusedSettingLeavesTheItemsUnapplied() {
+    createPartitionedType();
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    final int buckets = type.getBuckets(false).size();
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + TYPE_NAME + " BUCKET +" + TYPE_NAME + "_u WITH foo = 'bar'"))
+        .hasMessageContaining("Unrecognized setting");
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE " + TYPE_NAME + " BUCKET +" + TYPE_NAME + "_l WITH lightweight = true"))
+        .hasMessageContaining("apply to edge types only");
+
+    assertThat(type.getBuckets(false)).hasSize(buckets);
+    assertThat(database.getSchema().existsBucket(TYPE_NAME + "_u")).isFalse();
+    assertThat(database.getSchema().existsBucket(TYPE_NAME + "_l")).isFalse();
+  }
+
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {

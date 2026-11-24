@@ -32,6 +32,7 @@ import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.GraphBatchInProgressException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryAdmissionException;
 import com.arcadedb.exception.QueryHeapBudgetExceededException;
@@ -39,6 +40,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TransactionOutcomeUnknownException;
 import com.arcadedb.exception.VectorGraphBuildRefusedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -62,6 +64,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.server.RequestTooBigException;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.Methods;
+import java.io.EOFException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -254,6 +257,12 @@ class HttpErrorStatusMappingTest {
         new MappedFailure("TransactionCommittedRemotelyException", 409,
             () -> new TransactionCommittedRemotelyException("committed cluster-wide, do not retry",
                 new IllegalStateException("simulated local apply failure"))),
+        // Issue #11887: a write handed on - by the leader to the replication, or by a follower to a leader whose connection was
+        // lost mid-request - whose outcome is unknown. It was a 500 "Error on transaction commit" naming the cause
+        // (java.io.EOFException on the follower), which a client cannot tell from a server fault.
+        new MappedFailure("TransactionOutcomeUnknownException", 504,
+            () -> new TransactionOutcomeUnknownException("The connection to the leader was lost before it answered",
+                new EOFException("EOF reached while reading"))),
         new MappedFailure("ServerIsNotTheLeaderException", 400,
             () -> new ServerIsNotTheLeaderException("Not the leader", "192.168.0.1:2480")),
         new MappedFailure("SecurityException", 403, () -> new SecurityException("Not allowed")),
@@ -279,7 +288,11 @@ class HttpErrorStatusMappingTest {
         // snapshot install). Rebuilt by the follower, it reached this chain as a plain TransactionException and left as
         // a 500 with no back-off, so the wrapped shapes are again the ones that matter.
         new MappedFailure("RetryLaterException", 503,
-            () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)));
+            () -> new RetryLaterException("Server is installing a snapshot, please retry", 5)),
+        // Issue #11907: a load refused because another GraphBatch is open on the database. Nothing of it ran and it succeeds once
+        // the other one is closed, but it answered the generic 500 "Internal error" with a logged stack trace.
+        new MappedFailure("GraphBatchInProgressException", 409,
+            () -> new GraphBatchInProgressException("A GraphBatch is already in progress on this database")));
 
     /**
      * The property itself: bare, wrapped in {@code TransactionException} (what the auto-commit wrapper produced),
@@ -630,6 +643,29 @@ class HttpErrorStatusMappingTest {
     }
 
     /**
+     * Issue #11907: the refusal of a second GraphBatch load is a conflict with work in progress, logged as a caller's error
+     * (message only, below WARNING) and not as an internal one with a stack trace, and its label names the condition, which is
+     * all production mode leaves of the answer. Bare, inside the auto-commit wrapper and inside a command planner alike.
+     */
+    @Test
+    void aGraphBatchAlreadyInProgressIsAConflictLoggedAsTheCallersError() {
+      for (final RuntimeException shape : List.<RuntimeException>of(
+          new GraphBatchInProgressException("A GraphBatch is already in progress on this database"),
+          new TransactionException("Error on executing command",
+              new GraphBatchInProgressException("A GraphBatch is already in progress on this database")),
+          new CommandExecutionException("Error on command execution",
+              new GraphBatchInProgressException("A GraphBatch is already in progress on this database")))) {
+        final AbstractServerHttpHandler.ErrorClassification classification = handler(shape).classifyError(shape);
+
+        assertThat(classification.status()).isEqualTo(409);
+        assertThat(classification.message()).isEqualTo("A GraphBatch load is already in progress on this database");
+        assertThat(classification.reported()).isInstanceOf(GraphBatchInProgressException.class);
+        assertThat(classification.logKind()).isEqualTo(AbstractServerHttpHandler.ErrorLogKind.USER);
+        assertThat(classification.retryAfter()).isNull();
+      }
+    }
+
+    /**
      * The Retry-After of every other failure. A retryable 503 states a back-off since issues #12440 and #12441: at once for a refusal
      * that clears by itself, one second for a server too busy to start the request. A database closed under the request states none,
      * since how long it stays closed is an operator's decision, and neither does any failure that is not retryable.
@@ -648,6 +684,23 @@ class HttpErrorStatusMappingTest {
           assertThat(handle(failure.factory().get()).responseHeaders.getFirst("Retry-After"))
               .as("the Retry-After of %s", failure.name())
               .isEqualTo(retryAfter.get(failure.name()));
+    }
+
+    /**
+     * Issue #11887: an outcome-unknown write is reported as itself with a label that says the write may have been applied, not
+     * as the transport failure under it, and without the Retry-After that would invite a blind retry.
+     */
+    @Test
+    void anOutcomeUnknownIsAGatewayTimeoutThatSaysTheWriteMayHaveBeenApplied() {
+      final HandledResponse sent = handle(new TransactionException("Error on executing command",
+          new TransactionOutcomeUnknownException("The connection to the leader was lost before it answered",
+              new EOFException("EOF reached while reading"))));
+      final JSONObject body = new JSONObject(sent.body);
+
+      assertThat(sent.statusCode).isEqualTo(504);
+      assertThat(body.getString("error")).contains("outcome unknown").contains("may have been applied");
+      assertThat(body.getString("exception")).isEqualTo(TransactionOutcomeUnknownException.class.getName());
+      assertThat(sent.responseHeaders.getFirst("Retry-After")).isNull();
     }
 
     /**
@@ -1046,7 +1099,7 @@ class HttpErrorStatusMappingTest {
   /**
    * Issue #7760 on the HTTP transport: production mode conceals the duplicated-key VALUES in {@code exceptionArgs}
    * (stored data), while the class, the index name and the RID stay so the remote driver can still rebuild a typed
-   * {@code DuplicatedKeyException}. The gRPC twin is {@code Issue7760GrpcDuplicatedKeyConcealmentTest}.
+   * {@code DuplicatedKeyException}. The gRPC twin is {@code GrpcErrorMapperTest}.
    *
    * @author Luca Garulli (l.garulli@arcadedata.com)
    */

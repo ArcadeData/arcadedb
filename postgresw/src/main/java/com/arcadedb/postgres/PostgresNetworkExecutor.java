@@ -1396,6 +1396,9 @@ public class PostgresNetworkExecutor extends Thread {
    * around a read in it costs nothing that matters.
    */
   private void beginSimpleQueryBlock() {
+    // A simple query interleaved into a pipeline's implicit block joins it, writes of the pipeline included (issue #13222)
+    if (database.isTransactionActive())
+      endImplicitOnceItHoldsEarlierWrites();
     if (!simpleQueryBlockContinues)
       return;
     if (!database.isTransactionActive())
@@ -5412,7 +5415,24 @@ public class PostgresNetworkExecutor extends Thread {
       // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
       // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
       ((DatabaseInternal) database).getTransaction().setImplicit(true);
-    }
+    } else
+      endImplicitOnceItHoldsEarlierWrites();
+  }
+
+  /**
+   * Stops treating the implicit block a statement is about to join as that statement's own transaction once an earlier
+   * statement of the block wrote into it (issue #13222). {@code CALL { ... } IN TRANSACTIONS} commits what its statement wrote
+   * before its first batch (#13172), and in a block shared by several statements that commit took the earlier statements'
+   * writes with it: a later failure in the same pipeline, which PostgreSQL rolls the whole block back for, could no longer
+   * undo them. Such a block is no longer implicit, so the statement is refused before anything runs, as inside a client's
+   * transaction (#11588). A block nothing has written into yet stays implicit: a lone CALL, or one following statements that
+   * wrote nothing - a read, an UPDATE matching no row, an earlier CALL whose batches committed on their own - keeps running.
+   * The block's own commit at Sync, or at the end of a simple query, is unchanged. Released with the transaction.
+   */
+  private void endImplicitOnceItHoldsEarlierWrites() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    if (tx.isImplicit() && !tx.hasChangedNothing())
+      tx.setImplicit(false);
   }
 
   /**

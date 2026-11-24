@@ -19,13 +19,17 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * elementId() function - returns the element ID of a node or relationship as a string.
  * In Neo4j 5+, this is the preferred way to get the ID (id() is deprecated).
- * In ArcadeDB, returns the RID as a string.
+ * In ArcadeDB, returns the RID as a string, except for a lightweight edge, whose RID is shared by every lightweight edge of its
+ * type: it answers {@link LightEdgeRID#toElementId()}, which names the edge (issue #12132).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,8 +54,18 @@ public class ElementIdFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Identifiable)
-      return ((Identifiable) args[0]).getIdentity().toString();
+    if (args[0] instanceof VirtualElement virtual)
+      return virtual.getVirtualElementId();
+    if (args[0] instanceof Identifiable identifiable)
+      return of(identifiable.getIdentity());
     return null;
+  }
+
+  /**
+   * The element id of the record or edge {@code rid} identifies: what this function and the Bolt wire hand out, so a client can
+   * send back either one in {@code WHERE elementId(r) = $id}.
+   */
+  public static String of(final RID rid) {
+    return rid instanceof LightEdgeRID light ? light.toElementId() : rid.toString();
   }
 }

@@ -19,6 +19,9 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -34,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
@@ -50,6 +54,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The test opens the window deterministically: it holds the leader's validation monitor of the database, so the
  * follower's append stops right after the leader read the local version, runs the compaction's phase 0 meanwhile, then
  * lets the validation go on. Whatever the outcome, no two entries of the log may claim the same version of a page.
+ * <p>
+ * Issue #12470 is what the compaction does with the entry it meets there: it used to retry its first commit three times back
+ * to back and give up ("Compaction failed in phase 0 after retries"), because the entry holds a version of the header page until
+ * it is applied, one Raft round trip, and its last commit did not retry at all. It now waits for the entry to be applied.
  */
 class CompactionPageVersionRaceIT extends BaseRaftHATest {
   private static final String TYPE = "Issue11921Ts";
@@ -187,7 +195,150 @@ class CompactionPageVersionRaceIT extends BaseRaftHATest {
     assertThat(compactionQueued).as("the compaction must reach its first version check and wait for the validation lock; "
         + "compaction failure: %s", compactionFailure).isTrue();
     assertThat(duplicates).as("append failure: %s, compaction failure: %s", appendFailure, compactionFailure).isEmpty();
+    // Issue #12470: whichever of the two got the lock first, the compaction waits for the entry instead of giving up on it
+    assertThat(compactionFailure).as("the compaction must not be refused by the entry of the follower append").isEmpty();
     assertClusterConsistency();
+  }
+
+  // Regression for #12470: phase 0 of a compaction waits for an entry of another node to be applied instead of retrying at once
+  @Test
+  void phase0WaitsForAnEntryOfAnotherNodeInFlightOnTheHeaderPage() throws Exception {
+    final int leader = requireLeaderIndex();
+    final Database leaderDb = getServerDatabase(leader, getDatabaseName());
+    final TimeSeriesShard shard = createTypeWithSamples(leader, leaderDb);
+    final ArcadeStateMachine stateMachine = getRaftPlugin(leader).getRaftHAServer().getStateMachine();
+
+    // The entry of a follower append between its validation by the leader and its apply there: it holds the next version of page 0
+    final PageVersionLedger.Pages reserved = reserveHeaderPage(stateMachine, shard);
+
+    final List<Throwable> compactionFailure = new ArrayList<>();
+    final Thread compactor = daemon(() -> compact(leaderDb, compactionFailure), "issue12470-compaction-phase0");
+    boolean waited = false;
+    try {
+      compactor.start();
+      waited = awaitSleepingIn(compactor, "awaitReservedVersionApplied");
+    } finally {
+      // The entry is applied: its reservation goes. In a finally so a failure above does not leave the compaction waiting
+      stateMachine.pageVersions.release(getDatabaseName(), reserved, null);
+      compactor.join(60_000);
+    }
+
+    assertThat(compactor.isAlive()).as("the compaction must have ended").isFalse();
+    assertThat(waited).as("the compaction must wait for the entry; failure: %s", compactionFailure).isTrue();
+    assertThat(compactionFailure).as("the compaction must succeed once the entry is applied").isEmpty();
+    assertCompacted(leaderDb, shard);
+    waitForAllServers();
+    assertClusterConsistency();
+  }
+
+  // Regression for #12470: phase 4c waits too, the swap cannot be repeated and a refusal there threw the whole compaction away
+  @Test
+  void phase4cWaitsForAnEntryOfAnotherNodeInFlightOnTheHeaderPage() throws Exception {
+    final int leader = requireLeaderIndex();
+    final Database leaderDb = getServerDatabase(leader, getDatabaseName());
+    final TimeSeriesShard shard = createTypeWithSamples(leader, leaderDb);
+    final ArcadeStateMachine stateMachine = getRaftPlugin(leader).getRaftHAServer().getStateMachine();
+
+    // Phase 0 is committed and published when this runs: the entry is validated now, before the swap and the clear
+    final AtomicReference<PageVersionLedger.Pages> reserved = new AtomicReference<>();
+    TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = () -> {
+      try {
+        reserved.set(reserveHeaderPage(stateMachine, shard));
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    };
+
+    final List<Throwable> compactionFailure = new ArrayList<>();
+    final Thread compactor = daemon(() -> compact(leaderDb, compactionFailure), "issue12470-compaction-phase4c");
+    boolean waited = false;
+    try {
+      compactor.start();
+      waited = awaitSleepingIn(compactor, "awaitReservedVersionApplied");
+    } finally {
+      final PageVersionLedger.Pages pages = reserved.get();
+      if (pages != null)
+        stateMachine.pageVersions.release(getDatabaseName(), pages, null);
+      compactor.join(60_000);
+    }
+
+    assertThat(compactor.isAlive()).as("the compaction must have ended").isFalse();
+    assertThat(reserved.get()).as("the compaction must have reached phase 4c").isNotNull();
+    assertThat(waited).as("the compaction must wait for the entry; failure: %s", compactionFailure).isTrue();
+    assertThat(compactionFailure).as("the compaction must succeed once the entry is applied").isEmpty();
+    assertCompacted(leaderDb, shard);
+    waitForAllServers();
+    assertClusterConsistency();
+  }
+
+  /** A shard with samples in its mutable bucket, and a leader that holds a ledger of the database (one append from a follower). */
+  private TimeSeriesShard createTypeWithSamples(final int leader, final Database leaderDb) throws Exception {
+    final Database followerDb = getServerDatabase(firstFollowerOf(leader), getDatabaseName());
+    leaderDb.command("sql", "CREATE TIMESERIES TYPE " + TYPE + " TIMESTAMP ts FIELDS (v LONG) SHARDS 1");
+    // The scheduler compacts the type 5 s after it is created: it would empty the mutable bucket under the test
+    leaderDb.getSchema().getEmbedded().getTimeSeriesMaintenanceScheduler().cancel(TYPE);
+    waitForAllServers();
+    for (int i = 0; i < 20; i++)
+      leaderDb.command("sql", "INSERT INTO " + TYPE + " SET ts = ?, v = ?", 1_000L + i, (long) i);
+    // One append from the follower: the leader validates it, which installs the reservations on its database
+    append(followerDb, 2_000L);
+    waitForAllServers();
+    return ((LocalTimeSeriesType) leaderDb.getSchema().getType(TYPE)).getEngine().getShard(0);
+  }
+
+  /** Reserves the next version of the header page of the shard in the ledger of the leader, as its validation of an entry does. */
+  private PageVersionLedger.Pages reserveHeaderPage(final ArcadeStateMachine stateMachine, final TimeSeriesShard shard)
+      throws IOException {
+    final TimeSeriesBucket bucket = shard.getMutableBucket();
+    final int version = PageManager.INSTANCE.getMostRecentVersionOfPage(new PageId(bucket.getDatabase(), bucket.getFileId(), 0),
+        bucket.getPageSize());
+    final PageVersionLedger.Pages pages = new PageVersionLedger.Pages(new int[] { bucket.getFileId() }, new int[] { 0 },
+        new int[] { version + 1 });
+    stateMachine.pageVersions.validateAndReserve(getDatabaseName(), pages, new PageVersionLedger.EntryId(this, 1L),
+        (fileId, pageNumber) -> version);
+    assertThat(stateMachine.pageVersions.reservedVersion(getDatabaseName(), bucket.getFileId(), 0)).isEqualTo(version + 1);
+    return pages;
+  }
+
+  private void assertCompacted(final Database leaderDb, final TimeSeriesShard shard) {
+    assertThat(shard.getSealedStore().getBlockCount()).as("the samples were sealed").isPositive();
+    final int[] mutablePages = new int[1];
+    leaderDb.transaction(() -> {
+      try {
+        mutablePages[0] = shard.getMutableBucket().getDataPageCount();
+      } catch (final IOException e) {
+        throw new RuntimeException(e);
+      }
+    });
+    assertThat(mutablePages[0]).as("the mutable bucket was cleared").isZero();
+  }
+
+  private static void compact(final Database leaderDb, final List<Throwable> failure) {
+    try {
+      ((LocalTimeSeriesType) leaderDb.getSchema().getType(TYPE)).getEngine().compactAll();
+    } catch (final Throwable t) {
+      failure.add(t);
+    }
+  }
+
+  /** A daemon, so a worker stuck past its join fails the test and does not keep the fork alive. */
+  private static Thread daemon(final Runnable work, final String name) {
+    final Thread thread = new Thread(work, name);
+    thread.setDaemon(true);
+    return thread;
+  }
+
+  /** Waits until the thread sleeps inside the named method of the page manager, or ends, or the time is up. */
+  private static boolean awaitSleepingIn(final Thread thread, final String method) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 30_000;
+    while (System.currentTimeMillis() < deadline && thread.isAlive()) {
+      if (thread.getState() == Thread.State.TIMED_WAITING)
+        for (final StackTraceElement frame : thread.getStackTrace())
+          if (frame.getClassName().equals(PageManager.class.getName()) && frame.getMethodName().equals(method))
+            return true;
+      Thread.sleep(2);
+    }
+    return false;
   }
 
   private void append(final Database db, final long ts) throws Exception {

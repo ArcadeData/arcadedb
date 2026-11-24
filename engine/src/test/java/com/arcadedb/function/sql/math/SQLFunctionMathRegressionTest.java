@@ -642,4 +642,104 @@ class SQLFunctionMathRegressionTest {
       });
     }
   }
+
+  /**
+   * Regression for #12569: percentile() and median() order their values exactly, not by what they read as a double.
+   * <p>
+   * The values were sorted by {@code doubleValue()}, which makes 2^53 and 2^53 + 1 equal: the stable sort then kept them in
+   * insertion order, and {@code percentile(v, 0)} / {@code percentile(v, 1)} answered the two endpoints swapped whenever the
+   * larger value came first. A quantile that lands exactly on one value (the median of an odd count) answered that value
+   * rounded to a double, a number no row holds.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class PercentileExactOrder {
+    private static final long TWO_POW_53 = 9007199254740992L;
+
+    @Test
+    void endpointsAreTheSmallestAndTheLargestValueInBothInsertionOrders() throws Exception {
+      for (final long[] order : new long[][] { { TWO_POW_53 + 1, TWO_POW_53 }, { TWO_POW_53, TWO_POW_53 + 1 } })
+        TestHelper.executeInNewDatabase("issue-12569-endpoints", db -> {
+          db.command("sql", "CREATE DOCUMENT TYPE Reading BUCKETS 1");
+          db.command("sql", "CREATE PROPERTY Reading.v LONG");
+          for (final long v : order)
+            db.command("sql", "INSERT INTO Reading SET v = ?", v);
+
+          try (final ResultSet rs = db.query("sql",
+              "SELECT min(v) AS lo, max(v) AS hi, percentile(v, 0) AS p0, percentile(v, 1) AS p100, percentile(v, 0, 1) AS both FROM Reading")) {
+            final Result row = rs.next();
+            assertThat(row.<Object>getProperty("lo")).isEqualTo(TWO_POW_53);
+            assertThat(row.<Object>getProperty("hi")).isEqualTo(TWO_POW_53 + 1);
+            assertThat(row.<Object>getProperty("p0")).isEqualTo(TWO_POW_53);
+            assertThat(row.<Object>getProperty("p100")).isEqualTo(TWO_POW_53 + 1);
+            assertThat(row.<List<Object>>getProperty("both")).containsExactly(TWO_POW_53, TWO_POW_53 + 1);
+          }
+        });
+    }
+
+    @Test
+    void aQuantileOnOneValueAnswersThatValue() throws Exception {
+      TestHelper.executeInNewDatabase("issue-12569-median", db -> {
+        db.command("sql", "CREATE DOCUMENT TYPE Reading BUCKETS 1");
+        db.command("sql", "CREATE PROPERTY Reading.v LONG");
+        for (final long v : new long[] { TWO_POW_53 + 2, TWO_POW_53 + 1, TWO_POW_53 })
+          db.command("sql", "INSERT INTO Reading SET v = ?", v);
+
+        try (final ResultSet rs = db.query("sql", "SELECT median(v) AS m, percentile(v, 0.25) AS q1, percentile(v, 0.75) AS q3 FROM Reading")) {
+          final Result row = rs.next();
+          // (n + 1) * q lands on an index: 2, 1 and 3
+          assertThat(row.<Object>getProperty("m")).isEqualTo(TWO_POW_53 + 1);
+          // 2^53 is a double exactly, so it keeps the double result such a quantile always had
+          assertThat(row.<Object>getProperty("q1")).isEqualTo((double) TWO_POW_53);
+          assertThat(row.<Object>getProperty("q3")).isEqualTo(TWO_POW_53 + 2);
+        }
+      });
+    }
+
+    @Test
+    void anInterpolationBetweenEqualValuesAnswersThatValue() {
+      final SQLFunctionMedian median = new SQLFunctionMedian();
+      for (final long v : new long[] { TWO_POW_53 + 1, TWO_POW_53 + 1 })
+        median.execute(null, null, null, new Object[] { v }, null);
+      assertThat(median.getResult()).isEqualTo(TWO_POW_53 + 1);
+    }
+
+    @Test
+    void mixedNumberClassesAreOrderedByValue() {
+      // the DOUBLE 2^53 is below the LONG 2^53 + 1, which reads as the same double
+      final SQLFunctionPercentile percentile = new SQLFunctionPercentile();
+      for (final Object v : new Object[] { TWO_POW_53 + 1, (double) TWO_POW_53, 7, new BigInteger("9007199254740994") })
+        percentile.execute(null, null, null, new Object[] { v, 0, 1 }, null);
+      assertThat((List<Object>) percentile.getResult()).containsExactly(7, new BigInteger("9007199254740994"));
+
+      final SQLFunctionPercentile lowest = new SQLFunctionPercentile();
+      for (final Object v : new Object[] { TWO_POW_53 + 1, (double) TWO_POW_53 })
+        lowest.execute(null, null, null, new Object[] { v, 0, 1 }, null);
+      assertThat((List<Object>) lowest.getResult()).containsExactly((double) TWO_POW_53, TWO_POW_53 + 1);
+    }
+
+    @Test
+    void valuesADoubleHoldsExactlyKeepTheirDoubleResult() {
+      // the result of a quantile that lands on one value stays a double when the double is that value (the contract before #12569)
+      final SQLFunctionMedian median = new SQLFunctionMedian();
+      for (final long v : new long[] { 3L, 1L, 2L })
+        median.execute(null, null, null, new Object[] { v }, null);
+      assertThat(median.getResult()).isEqualTo(2.0);
+    }
+
+    @Test
+    void aQuantileOnOneValueNextToAnInfinityIsNotNaN() {
+      // lower + 0 * (Infinity - lower) is NaN: a quantile on one value does not interpolate
+      final SQLFunctionMedian median = new SQLFunctionMedian();
+      for (final double v : new double[] { Double.POSITIVE_INFINITY, 1.0, 2.0 })
+        median.execute(null, null, null, new Object[] { v }, null);
+      assertThat(median.getResult()).isEqualTo(2.0);
+
+      final SQLFunctionMedian infinite = new SQLFunctionMedian();
+      for (final double v : new double[] { Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY })
+        infinite.execute(null, null, null, new Object[] { v }, null);
+      assertThat(infinite.getResult()).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+  }
 }
