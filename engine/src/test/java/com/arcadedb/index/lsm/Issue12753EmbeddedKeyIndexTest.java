@@ -20,6 +20,7 @@ package com.arcadedb.index.lsm;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -46,8 +47,8 @@ class Issue12753EmbeddedKeyIndexTest extends TestHelper {
   void sqlCreateIndexOnEmbeddedPropertyIsRefused() {
     embeddedOwner();
 
-    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON D (p) NOTUNIQUE")).hasMessageContaining("EMBEDDED")
-        .hasMessageContaining("LSM_TREE");
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON D (p) NOTUNIQUE")).isInstanceOf(IndexException.class)
+        .hasMessageContaining("EMBEDDED").hasMessageContaining("LSM_TREE");
     assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON D (p) UNIQUE")).hasMessageContaining("EMBEDDED");
 
     assertThat(database.getSchema().getType("D").getAllIndexes(true)).isEmpty();
@@ -75,6 +76,18 @@ class Issue12753EmbeddedKeyIndexTest extends TestHelper {
       database.transaction(() -> database.command("sql", "INSERT INTO D SET p = {'@type':'Emb','x':" + x + "}"));
     }
     assertThat(database.countType("D", false)).isEqualTo(3);
+  }
+
+  @Test
+  void byItemIndexOnAListOfEmbeddedDocumentsIsStillAccepted() {
+    // A BY ITEM index over a LIST of embedded documents is keyed by STRING, so the refusal of the EMBEDDED key type does not reach it
+    database.getSchema().createDocumentType("Emb");
+    database.getSchema().createDocumentType("L").createProperty("items", Type.LIST, "Emb");
+
+    database.command("sql", "CREATE INDEX ON L (items BY ITEM) NOTUNIQUE");
+
+    final TypeIndex index = database.getSchema().getType("L").getAllIndexes(true).iterator().next();
+    assertThat(index.getKeyTypes()).containsExactly(Type.STRING);
   }
 
   @Test
