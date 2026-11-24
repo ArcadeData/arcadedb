@@ -272,8 +272,7 @@ public class VarLengthExpand extends AbstractPhysicalOperator implements Distinc
           boundTarget = target instanceof Vertex vertex ? vertex : null;
           usedEdges = RelationshipBindings.collectEdgeIdentities(currentInput, sameClausePrecedingRelVars);
           currentEndpoints = null;
-          // A target an earlier OPTIONAL MATCH left null is bound, and a null vertex cannot be reached (#12728)
-          if (!(source instanceof Vertex vertex) || (target == null && currentInput.hasProperty(targetVariable)))
+          if (!(source instanceof Vertex vertex))
             currentPaths = null;
           else if (distinctEndpoints && !GraphTraverser.isBoundRelationshipList(currentInput, relationshipVariable)) {
             currentPaths = null;

@@ -37,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code x} (the source side and a bare {@code (x)} were already right, issues #11761 / #12562).
  */
 class CypherNullBoundHopTargetIssue12728Test {
+  /** Binds {@code a} to the one A vertex and leaves {@code x} null: A has no NOPE relationship. */
+  private static final String NULL_X = "MATCH (a:A) OPTIONAL MATCH (a)-[:NOPE]->(x) ";
+
   private Database database;
 
   @BeforeEach
@@ -61,8 +64,6 @@ class CypherNullBoundHopTargetIssue12728Test {
     return rows;
   }
 
-  private static final String NULL_X = "MATCH (a:A) OPTIONAL MATCH (a)-[:NOPE]->(x) ";
-
   @Test
   void matchedHopToNullTargetMatchesNothing() {
     assertThat(rows(NULL_X + "MATCH (a)-[:S]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
@@ -78,6 +79,8 @@ class CypherNullBoundHopTargetIssue12728Test {
     assertThat(rows(NULL_X + "MATCH (a)-[:S*1..2]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
     assertThat(rows(NULL_X + "MATCH (a)-[:S*]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
     assertThat(rows(NULL_X + "MATCH (a)-[:S*0..2]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
+    // Only the distinct end vertices are asked for: the expansion reports each one once, and still none for a null target
+    assertThat(((Number) single(NULL_X + "MATCH (a)-[:S*1..2]->(x) RETURN count(DISTINCT x) AS v")).longValue()).isZero();
   }
 
   @Test
@@ -103,5 +106,61 @@ class CypherNullBoundHopTargetIssue12728Test {
         "MATCH (a:A), (x:B {id: 2}) MATCH (a)-[:S]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
     assertThat(rows(
         "MATCH (a:A), (x:B {id: 1}) MATCH (a)-[:S]->(x) RETURN a.id AS a, x.id AS x")).hasSize(1);
+  }
+
+  @Test
+  void hopReversedOntoNullTargetMatchesNothing() {
+    // An unbound source and a bound target: the planner walks the hop from the target, which is the source side again
+    assertThat(rows(NULL_X + "MATCH (y)-[:S]->(x) RETURN y.id AS y, x.id AS x")).isEmpty();
+    final List<Result> rows = rows(NULL_X + "OPTIONAL MATCH (y)-[:S]->(x) RETURN y.id AS y, x.id AS x");
+    assertThat(rows).hasSize(1);
+    assertThat((Object) rows.getFirst().getProperty("y")).isNull();
+    assertThat((Object) rows.getFirst().getProperty("x")).isNull();
+  }
+
+  @Test
+  void quantifiedPathToNullTargetMatchesNothing() {
+    assertThat(rows(NULL_X + "MATCH (a) ((p)-[:S]->(q)){1,2} (x) RETURN a.id AS a, x.id AS x")).isEmpty();
+    assertThat(rows(NULL_X + "MATCH (a) ((p)-[:S]->(q))+ (x) RETURN a.id AS a, x.id AS x")).isEmpty();
+
+    final List<Result> rows = rows(NULL_X + "OPTIONAL MATCH (a) ((p)-[:S]->(q)){1,2} (x) RETURN a.id AS a, x.id AS x");
+    assertThat(rows).hasSize(1);
+    assertThat((Object) rows.getFirst().getProperty("x")).isNull();
+  }
+
+  @Test
+  void nullTargetCarriedByWithMatchesNothing() {
+    assertThat(rows(NULL_X + "WITH a, x MATCH (a)-[:S]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
+    assertThat(rows(NULL_X + "WITH a, x MATCH (a)-[:S*1..2]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
+    assertThat(rows(NULL_X + "WITH a, x MATCH (a)-[:S]->(y)-[:S]->(x) RETURN a.id AS a, x.id AS x")).isEmpty();
+  }
+
+  @Test
+  void subqueryBodySeededWithNullTargetMatchesNothing() {
+    // A body seeded straight from the outer row, with no leading WITH, plans with no names bound
+    assertThat(single(NULL_X + "RETURN EXISTS { MATCH (a)-[:S]->(x) } AS v")).isEqualTo(false);
+    assertThat(single(NULL_X + "RETURN EXISTS { MATCH (a)-[:S*1..2]->(x) } AS v")).isEqualTo(false);
+    assertThat(((Number) single(NULL_X + "RETURN COUNT { MATCH (a)-[:S]->(x) } AS v")).longValue()).isZero();
+    assertThat(((Number) single(NULL_X + "RETURN COUNT { MATCH (a)-[:S]-(x) } AS v")).longValue()).isZero();
+    assertThat(((Number) single(NULL_X + "RETURN COUNT { MATCH (a)-[:S*1..2]->(x) } AS v")).longValue()).isZero();
+    assertThat((List<?>) single(NULL_X + "RETURN COLLECT { MATCH (a)-[:S]->(x) RETURN x.id } AS v")).isEmpty();
+
+    // The pattern forms the issue reports as right already stay right
+    assertThat(single(NULL_X + "RETURN EXISTS { (a)-[:S]->(x) } AS v")).isEqualTo(false);
+    assertThat(((Number) single(NULL_X + "RETURN size([(a)-[:S]->(x) | 1]) AS v")).longValue()).isZero();
+  }
+
+  @Test
+  void importingSubqueryWithNullTargetMatchesNothing() {
+    // The body of a CALL that imports the null variable is planned on its own, with the imported names bound
+    assertThat(rows(NULL_X + "CALL { WITH x MATCH (s:A)-[:S*1..2]->(x:B) RETURN s.id AS s } RETURN s")).isEmpty();
+    assertThat(rows(NULL_X + "CALL { WITH x MATCH (s:A)-[:S]->(x:B) RETURN s.id AS s } RETURN s")).isEmpty();
+    assertThat(rows(NULL_X + "CALL { WITH a, x MATCH (a)-[:S*1..2]->(x) RETURN a.id AS s } RETURN s")).isEmpty();
+  }
+
+  private Object single(final String query) {
+    final List<Result> rows = rows(query);
+    assertThat(rows).hasSize(1);
+    return rows.getFirst().getProperty("v");
   }
 }
