@@ -355,10 +355,18 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   /**
    * The lock guarding the unique indexes of one collection of one database: shared by the writes that rely on them, exclusive for
-   * whoever creates one (and fills in the keys it is built on).
+   * whoever creates one (and fills in the keys it is built on). The registry keeps one entry per name asked for, so only a collection
+   * that exists (or the caller is about to create) is asked for.
    */
   static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
     return ID_INDEX_LOCKS.computeIfAbsent(idIndexKey(database, collectionName), k -> new ReentrantReadWriteLock());
+  }
+
+  /**
+   * Whether a lock is kept for the collection: a read of what the registry holds, for the tests.
+   */
+  static boolean hasIdIndexLock(final Database database, final String collectionName) {
+    return ID_INDEX_LOCKS.containsKey(idIndexKey(database, collectionName));
   }
 
   /**

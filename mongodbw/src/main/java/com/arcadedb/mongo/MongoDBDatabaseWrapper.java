@@ -1350,11 +1350,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         throw MongoTimeSeriesWrites.updateRefusal(timeSeries);
       }
       // a schema change cannot happen inside the transaction: an upsert creates the collection with its _id index up front
-      prepareUpsertIdIndex(collectionName, updates);
+      final boolean upserts = prepareUpsertIdIndex(collectionName, updates);
 
-      // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it
-      final Lock indexLock = MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock();
-      indexLock.lock();
+      // the transaction maintains the unique _id index, which must not be dropped and rebuilt under it. A collection that does not
+      // exist has none: its name is the client's, so it gets no lock, and its statements are only validated and answer nothing matched
+      final boolean locked = upserts || database.getSchema().existsType(collectionName);
+      final Lock indexLock = locked ? MongoDBCollectionWrapper.idIndexLock(database, collectionName).readLock() : null;
+      if (locked)
+        indexLock.lock();
       try {
         // FAST PATH: every statement in the command's OWN transaction, so a failure rolls back this one, never one the caller holds
         // (issue #9977)
@@ -1362,7 +1365,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final OwnTransaction tx = OwnTransaction.begin((DatabaseInternal) database);
         try {
           for (int i = 0; i < updates.size(); i++) {
-            final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+            final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted, locked);
             n += updated.matched();
             nModified += updated.modified();
           }
@@ -1390,7 +1393,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
             final int upsertedBefore = upserted.size();
             final OwnTransaction statementTx = OwnTransaction.begin((DatabaseInternal) database);
             try {
-              final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted);
+              final UpdateCount updated = executeUpdateStatement(collectionName, updates.get(i), i, budget, upserted, locked);
               statementTx.commit();
               n += updated.matched();
               nModified += updated.modified();
@@ -1410,7 +1413,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
           }
         }
       } finally {
-        indexLock.unlock();
+        if (locked)
+          indexLock.unlock();
       }
     }
 
@@ -1427,16 +1431,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * Runs one statement of an {@code update} command in the transaction the caller holds: the update of the documents its filter
-   * selects or, when it matched none and asks for it, the upsert, added to {@code upserted}.
+   * selects or, when it matched none and asks for it, the upsert, added to {@code upserted}. {@code locked} tells whether the caller
+   * holds the collection's lock: without it nothing is read or written, the statement is only validated.
    */
   private UpdateCount executeUpdateStatement(final String collectionName, final Document statement, final int index,
-      final MongoFilter.RegexBudget budget, final List<Document> upserted) {
+      final MongoFilter.RegexBudget budget, final List<Document> upserted, final boolean locked) {
     final Document q = (Document) statement.get("q");
     final Document u = updateOf(statement.get("u"));
     final boolean multi = Utils.isTrue(statement.get("multi"));
     final boolean upsert = Utils.isTrue(statement.get("upsert"));
 
-    final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget);
+    final UpdateCount updated = executeUpdate(collectionName, q, u, multi, budget, locked);
 
     // only a filter that matched nothing upserts: a match whose update a listener vetoed is not "no match", or the upsert would insert
     // a second document for it (issue #9974)
@@ -1521,15 +1526,18 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   /**
    * A schema change cannot happen inside the transaction, so an upsert creates the collection and its {@code _id} index up front.
+   *
+   * @return whether a statement asks for an upsert, in which case the collection exists now
    */
-  private void prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
+  private boolean prepareUpsertIdIndex(final String collectionName, final List<Document> updates) {
     for (final Document upd : updates)
       if (Utils.isTrue(upd.get("upsert"))) {
         database.getSchema().getOrCreateDocumentType(collectionName);
         if (!MongoDBCollectionWrapper.idIndexReady(database, collectionName))
           MongoDBCollectionWrapper.ensureIdIndexLocked(database, collectionName);
-        return;
+        return true;
       }
+    return false;
   }
 
   /**
@@ -1542,13 +1550,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private UpdateCount executeUpdate(final String collectionName, final Document q, final Document u, final boolean multi,
-      final MongoFilter.RegexBudget budget) {
+      final MongoFilter.RegexBudget budget, final boolean locked) {
     // built first: an invalid filter is an error whether or not the collection exists
     final MongoFilter filter = new MongoFilter(database, q, budget);
     // so is an invalid update, whether or not a document would be updated (issue #12070)
     if (u != null)
       checkUpdate(u);
-    if (!database.getSchema().existsType(collectionName) || u == null)
+    // no lock means the collection did not exist when the command started: one created meanwhile is not touched either
+    if (!locked || !database.getSchema().existsType(collectionName) || u == null)
       return UpdateCount.NONE;
 
     // Every update, with or without a filter, is applied to each record the filter selects (the matcher verifies the candidates, so
