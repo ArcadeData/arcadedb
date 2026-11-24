@@ -28,6 +28,8 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
+import com.arcadedb.index.fulltext.FullTextQueryParsers.RegexpClause;
+import com.arcadedb.index.fulltext.FullTextQueryParsers.WildcardClause;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.RIDFilter;
 import com.arcadedb.query.sql.executor.WorkGuard;
@@ -36,7 +38,6 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.TimeBoundRegex;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
-import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
@@ -46,9 +47,7 @@ import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
-import org.apache.lucene.search.RegexpQuery;
 import org.apache.lucene.search.TermQuery;
-import org.apache.lucene.search.WildcardQuery;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -217,9 +216,7 @@ public class FullTextQueryExecutor {
     // Restricted to some fields, an unqualified clause is expanded by Lucene's own parser into the OR of that clause over
     // each of them - a term, a phrase, a prefix, a wildcard and a fuzzy term alike - which the collectors below then look up
     // under the field-qualified keys the index stores for a multi-property index (issue #9910)
-    final QueryParser parser = restrictedFields != null ?
-        new MultiFieldQueryParser(restrictedFields, analyzer) :
-        new QueryParser(DEFAULT_FIELD, analyzer);
+    final QueryParser parser = FullTextQueryParsers.create(DEFAULT_FIELD, restrictedFields, analyzer);
     if (metadata != null) {
       parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
@@ -603,12 +600,12 @@ public class FullTextQueryExecutor {
       collectPhraseMatches(pq, scoreMap);
     } else if (query instanceof final PrefixQuery pq) {
       collectPrefixMatches(pq, scoreMap);
-    } else if (query instanceof final WildcardQuery wq) {
-      collectWildcardMatches(wq, scoreMap);
+    } else if (query instanceof final WildcardClause wc) {
+      collectWildcardMatches(wc, scoreMap);
     } else if (query instanceof final FuzzyQuery fq) {
       collectFuzzyMatches(fq, scoreMap);
-    } else if (query instanceof final RegexpQuery rq) {
-      collectRegexpMatches(rq, scoreMap);
+    } else if (query instanceof final RegexpClause rc) {
+      collectRegexpMatches(rc, scoreMap);
     }
     // Other Lucene query types (e.g., TermRangeQuery) are intentionally ignored.
   }
@@ -990,7 +987,7 @@ public class FullTextQueryExecutor {
     matchTokens(field, prefix, token -> true, scoreMap);
   }
 
-  private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
+  private void collectWildcardMatches(final WildcardClause query, final Map<RID, AtomicInteger> scoreMap) {
     final String field = query.getTerm().field();
     final String pattern = normalizeText(field, query.getTerm().text());
     if (pattern.isEmpty())
@@ -1251,9 +1248,9 @@ public class FullTextQueryExecutor {
     return previous[t.length];
   }
 
-  private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
-    final String field = query.getRegexp().field();
-    final String regexText = normalizeText(field, query.getRegexp().text());
+  private void collectRegexpMatches(final RegexpClause query, final Map<RID, AtomicInteger> scoreMap) {
+    final String field = query.getTerm().field();
+    final String regexText = normalizeText(field, query.getTerm().text());
     if (regexText.isEmpty())
       return;
 
