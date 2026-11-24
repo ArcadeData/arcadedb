@@ -274,6 +274,44 @@ class CypherMatchNodeRangeSeekIssue12664Test {
             Map.of("v", STORED.get(property)))).as("plan on %s", property).contains("[index: I_" + property + "[p], range");
   }
 
+  /**
+   * A bound the key type rounds would start or end the range one key off: {@code > 0.1000000001} sought as {@code > 0.1f} misses
+   * the vertex that holds 0.1f. Such a bound is left to the walk.
+   */
+  @Test
+  void aBoundTheKeyTypeRoundsIsNotSought() {
+    final Map<String, Object> stored = new LinkedHashMap<>();
+    stored.put("FLOAT", 0.1f);
+    stored.put("DOUBLE", 0.1d);
+    stored.put("DECIMAL", new BigDecimal("0.1"));
+    for (final Map.Entry<String, Object> entry : stored.entrySet())
+      for (final String prefix : new String[] { "I_", "N_" }) {
+        final String type = prefix + entry.getKey();
+        database.command("sql", "CREATE VERTEX TYPE " + type).close();
+        database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
+        database.command("sql", "CREATE PROPERTY " + type + ".p " + entry.getKey()).close();
+        if (prefix.equals("I_"))
+          database.command("sql", "CREATE INDEX ON " + type + " (p) NOTUNIQUE").close();
+        database.transaction(() -> database.newVertex(type).set("id", 1).set("p", entry.getValue()).save());
+      }
+
+    final List<Object> operands = List.of(0.1000000001d, 0.0999999999d, 0.1d, 0.1f, (double) 0.1f, Math.nextUp(0.1d),
+        Math.nextDown(0.1d), Math.nextUp(0.1f), Math.nextDown(0.1f), new BigDecimal("0.1"), new BigDecimal("0.1000000000000000001"),
+        new BigDecimal("0.0999999999999999999"), new BigDecimal(0.1d), new BigDecimal(0.1f), 0.5d, 0.5f, 1e300, 1);
+    final List<String> differences = new ArrayList<>();
+    for (final String property : stored.keySet())
+      for (final Object operand : operands)
+        for (final String operator : new String[] { ">", ">=", "<", "<=" }) {
+          final String statement = "WITH $x AS x MATCH (n:%s) WHERE n.p " + operator + " x RETURN n.id AS id";
+          final String indexed = run(String.format(statement, "I_" + property), Map.of("x", operand));
+          final String scanned = run(String.format(statement, "N_" + property), Map.of("x", operand));
+          if (!indexed.equals(scanned))
+            differences.add(property + " " + operator + " " + operand.getClass().getSimpleName() + " " + operand + " | " + indexed
+                + " | " + scanned);
+        }
+    assertThat(differences).as("property, operator and operand | with the index | without the index").isEmpty();
+  }
+
   @Test
   void aStatementThatWritesWhatItReadsMeetsEveryVertexOnce() {
     createNumbered();

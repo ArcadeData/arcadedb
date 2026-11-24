@@ -52,6 +52,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
+import java.math.BigDecimal;
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -918,7 +919,37 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     if (bound instanceof Double d && d.isNaN() || bound instanceof Float f && f.isNaN())
       return false; // compares with nothing, and no key range says so
     final int keyCategory = categoryOf(keyTypes[0]);
-    return keyCategory != 0 && keyCategory == categoryOfBound(bound) && boundMatchesIndexKey(keyTypes[0], bound);
+    return keyCategory != 0 && keyCategory == categoryOfBound(bound) && boundMatchesIndexKey(keyTypes[0], bound)
+        && isHeldExactly(keyTypes[0], bound);
+  }
+
+  /**
+   * Whether a fractional bound survives the conversion to a FLOAT, DOUBLE or DECIMAL key unchanged. One that does not is rounded
+   * onto a neighbouring key, and the range then starts or ends one key off: {@code n.f > 0.1000000001} on a FLOAT key is sought
+   * as {@code > 0.1f} and misses the vertex that holds 0.1f, which the comparison of the values accepts.
+   */
+  private static boolean isHeldExactly(final Type keyType, final Object bound) {
+    if (bound instanceof Double d) {
+      if (d.isInfinite())
+        return true;
+      if (keyType == Type.FLOAT)
+        return (double) d.floatValue() == d;
+      // a DECIMAL key is built from the shortest text of the double, which is its value only when both say the same number
+      return keyType != Type.DECIMAL || new BigDecimal(d).compareTo(BigDecimal.valueOf(d)) == 0;
+    }
+    if (bound instanceof Float f)
+      return f.isInfinite() || keyType != Type.DECIMAL || new BigDecimal(f).compareTo(new BigDecimal(f.toString())) == 0;
+    if (bound instanceof BigDecimal decimal) {
+      if (keyType == Type.DOUBLE) {
+        final double d = decimal.doubleValue();
+        return !Double.isInfinite(d) && new BigDecimal(d).compareTo(decimal) == 0;
+      }
+      if (keyType == Type.FLOAT) {
+        final float f = decimal.floatValue();
+        return !Float.isInfinite(f) && new BigDecimal(f).compareTo(decimal) == 0;
+      }
+    }
+    return true;
   }
 
   /** Opens an ascending pass over the keys between {@code bounds}, of which one at least is set. */

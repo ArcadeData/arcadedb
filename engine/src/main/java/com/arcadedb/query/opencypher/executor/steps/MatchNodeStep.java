@@ -1875,8 +1875,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (next == null)
+        // drained, or closed by the step: the addresses it holds are given back now, not when the statement ends
+        if (next == null && openRangeFetcher == fetcher) {
           next = fetcher.nextRecord(context.getDatabase());
+          if (next == null)
+            closeRangeFetcher();
+        }
         return next != null;
       }
 
