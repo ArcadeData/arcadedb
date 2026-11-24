@@ -49,8 +49,14 @@ public final class ApplyStall implements AutoCloseable {
   /** Stalls the apply position of the server of {@code plugin}; returns once the stall is in force. */
   public static ApplyStall on(final RaftHAPlugin plugin) throws InterruptedException {
     final ApplyStall stall = new ApplyStall(plugin.getRaftHAServer().getStateMachine());
-    if (!stall.held.await(10, TimeUnit.SECONDS))
-      throw new IllegalStateException("the apply position lock was not taken");
+    try {
+      if (!stall.held.await(10, TimeUnit.SECONDS))
+        throw new IllegalStateException("the apply position lock was not taken");
+    } catch (final InterruptedException | IllegalStateException e) {
+      // The caller never gets the stall to close: the holder must not keep the lock once it does take it
+      stall.release.countDown();
+      throw e;
+    }
     return stall;
   }
 
