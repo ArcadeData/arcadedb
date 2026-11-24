@@ -457,7 +457,7 @@ class InsertFromSelectTest extends TestHelper {
     // CANNOT MEET A ROW INSERTED BY THE STATEMENT: EXPLICIT RIDS, VARIABLES AND RESULT SETS COMPUTED BEFORE, THE SCHEMA, AND
     // THE EDGES OF A VERTEX, WHICH AN INSERT DOES NOT ADD
     final Set<String> unaffected = Set.of("FetchFromRidsStep", "FetchFromVariableStep", "FetchFromResultsetStep",
-        "FetchEdgesFromVertexStep");
+        "FetchEdgesFromVertexStep", "FetchFromInformationSchemaStep");
 
     final List<String> unknown = new ArrayList<>();
     try (final Stream<Path> files = Files.list(Path.of("src/main/java/com/arcadedb/query/sql/executor"))) {
