@@ -167,6 +167,44 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
   }
 
   /**
+   * A nested {@code CALL { ... } IN TRANSACTIONS} commits its batches in a transaction nested in the enclosing batch's, which does
+   * not see what the enclosing batch wrote: the inner commit point checks only the records of the inner batch, and the record the
+   * enclosing batch left incomplete is still refused when that batch commits. It used to be forgotten at the inner commit point (the
+   * inner transaction could not read it back), and the enclosing batch committed it incomplete.
+   */
+  @Test
+  void anIncompleteRecordOfAnEnclosingBatchSurvivesTheCommitOfANestedBatch() {
+    assertThatThrownBy(() -> drain("UNWIND [1] AS i CALL (i) { CREATE (p:Person {id: i}) WITH p, i "//
+        + "CALL (i) { CREATE (:T {id: i, m: 'y'}) } IN TRANSACTIONS } IN TRANSACTIONS"))
+        .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
+
+    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  /** The same when the nested batch fails and ON ERROR CONTINUE undoes it: only the nested batch's records go with it. */
+  @Test
+  void anIncompleteRecordOfAnEnclosingBatchSurvivesTheRollbackOfANestedBatch() {
+    assertThatThrownBy(() -> drain("UNWIND [1] AS i CALL (i) { CREATE (p:Person {id: i}) WITH p, i "//
+        + "CALL (i) { CREATE (:T {id: i}) } IN TRANSACTIONS ON ERROR CONTINUE } IN TRANSACTIONS"))
+        .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
+
+    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(incompleteTs()).isEmpty();
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  /** A record of the enclosing batch completed after the nested CALL is kept: the nested commit point does not judge it. */
+  @Test
+  void aRecordOfAnEnclosingBatchCompletedAfterANestedBatchIsKept() {
+    drain("UNWIND [1, 2] AS i CALL (i) { CREATE (p:Person {id: i}) WITH p, i "//
+        + "CALL (i) { CREATE (:T {id: i, m: 'y'}) } IN TRANSACTIONS SET p.name = 'a' } IN TRANSACTIONS");
+
+    assertThat(count("MATCH (n:Person {name: 'a'}) RETURN count(n) AS c")).isEqualTo(2L);
+    assertThat(ids()).containsExactly(1, 2);
+  }
+
+  /**
    * The statement failed on the existence constraint, and the message says the record is gone, which the caller then checks: the
    * message used to claim it although the record had been committed.
    */
