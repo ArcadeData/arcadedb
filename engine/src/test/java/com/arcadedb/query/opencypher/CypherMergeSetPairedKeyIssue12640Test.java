@@ -182,6 +182,19 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
   }
 
   @Test
+  void aNameBoundAnewLosesTheEntityKindAPatternGaveIt() {
+    final Vertex[] entity = new Vertex[1];
+    database.transaction(() -> entity[0] = database.newVertex("Entity").set("uuid", "u").save());
+    // r is a relationship for the MATCH, and a node of the list after the UNWIND: the SET of n can change what r.uuid reads for
+    // the next row
+    final String query = "EXPLAIN MATCH ()-[r:RELATES_TO]->() UNWIND $nodes AS r MATCH (n:Entity) WITH n, r, r.uuid AS id "
+        + "SET n.uuid = 'x' RETURN id";
+    try (final ResultSet rs = database.command("opencypher", query, Map.of("nodes", List.of(entity[0])))) {
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("EAGER");
+    }
+  }
+
+  @Test
   void aParameterHoldingARecordKeepsTheBarrier() {
     final Vertex[] entity = new Vertex[1];
     database.transaction(() -> entity[0] = database.newVertex("Entity").set("uuid", "u", "source", "a", "target", "b").save());

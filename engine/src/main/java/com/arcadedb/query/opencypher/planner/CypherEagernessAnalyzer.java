@@ -924,6 +924,7 @@ public final class CypherEagernessAnalyzer {
     case UNWIND -> {
       final UnwindClause unwind = entry.getTypedClause();
       rowUniqueVariables.clear();
+      forgetEntityKind(unwind.getVariable());
       if (cannotHoldRecord(unwind.getListExpression()) || parameterHoldsNoRecord(unwind.getListExpression()))
         nonRecordVariables.add(unwind.getVariable());
       else
@@ -931,6 +932,7 @@ public final class CypherEagernessAnalyzer {
     }
     case LOAD_CSV -> {
       rowUniqueVariables.clear();
+      forgetEntityKind(((LoadCSVClause) entry.getClause()).getVariable());
       nonRecordVariables.add(((LoadCSVClause) entry.getClause()).getVariable());
     }
     case CREATE -> {
@@ -949,17 +951,34 @@ public final class CypherEagernessAnalyzer {
       if (merged != null)
         observeEntityKinds(List.of(merged));
     }
-    case CALL -> rowUniqueVariables.clear(); // a procedure can yield several rows per row
+    case CALL -> {
+      rowUniqueVariables.clear(); // a procedure can yield several rows per row
+      // what it yields may shadow a name an earlier pattern bound to a node or a relationship
+      nodeVariables.clear();
+      relationshipVariables.clear();
+    }
     case SUBQUERY -> {
       // a unit subquery hands on each row once, one that returns can hand it on several times
       // (a UNION answers the RETURN of its first branch only, so it counts as returning)
       final CypherStatement body = ((SubqueryClause) entry.getClause()).getInnerStatement();
-      if (body instanceof UnionStatement || body.getReturnClause() != null)
+      if (body instanceof UnionStatement || body.getReturnClause() != null) {
         rowUniqueVariables.clear();
+        // what it returns may shadow a name an earlier pattern bound to a node or a relationship
+        nodeVariables.clear();
+        relationshipVariables.clear();
+      }
     }
     default -> {
       // SET, REMOVE, DELETE and FOREACH hand on the rows they receive
     }
+    }
+  }
+
+  /** A clause binds {@code variable} anew: the kind an earlier pattern gave the name no longer applies. */
+  private void forgetEntityKind(final String variable) {
+    if (variable != null) {
+      nodeVariables.remove(variable);
+      relationshipVariables.remove(variable);
     }
   }
 
