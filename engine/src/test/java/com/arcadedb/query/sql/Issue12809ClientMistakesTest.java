@@ -19,14 +19,19 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.schema.Type;
+import com.arcadedb.query.sql.parser.CreatePropertyAttributeStatement;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,6 +101,27 @@ class Issue12809ClientMistakesTest extends TestHelper {
         "MANDATORY takes true or false, not `-1`");
     assertThat(e).hasMessage("MANDATORY takes true or false, not `-1`").hasNoCause();
     assertThat(database.getSchema().getType("Q").existsProperty("p4")).isFalse();
+  }
+
+  /**
+   * The other half of the rule above: a fault of the server raised by a setter is not a refusal of the value, so it stays wrapped,
+   * with its message in the wrapper's text (what a client reads over HTTP) and itself as the cause.
+   */
+  @Test
+  void aServerFaultOfACreatePropertyAttributeStaysWrappedWithItsMessage() {
+    final IllegalStateException fault = new IllegalStateException("the schema file could not be written");
+    assertThat(ErrorCategory.of(fault)).isEqualTo(ErrorCategory.SERVER);
+    final Property failing = (Property) Proxy.newProxyInstance(Property.class.getClassLoader(), new Class<?>[] { Property.class },
+        (proxy, method, args) -> {
+          throw fault;
+        });
+    final CreatePropertyAttributeStatement attribute = new CreatePropertyAttributeStatement();
+    attribute.settingName = new Identifier("mandatory");
+
+    final Throwable e = catchThrowable(() -> attribute.setOnProperty(failing, null));
+    assertThat(e).isExactlyInstanceOf(CommandExecutionException.class)
+        .hasMessage("Cannot set attribute on property mandatory true: the schema file could not be written").hasCause(fault);
+    assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.SERVER);
   }
 
   @Test
@@ -194,6 +220,10 @@ class Issue12809ClientMistakesTest extends TestHelper {
     database.command("sqlscript", "LET $x = 1; CONSOLE.log $x; BEGIN; INSERT INTO Q SET k = 4, s = 'd'; COMMIT RETRY 1; RETURN 1;").close();
     assertThat(database.getSchema().getType("Q").getProperty("k").isMandatory()).isTrue();
     assertThat(database.getSchema().getType("Q").getCustomValue("x")).isEqualTo("y");
+    // a record attribute read where there IS a record is untouched by the refusal: projected, filtered on, and as a script variable
+    assertThat(database.query("sql", "SELECT @rid AS r, @type AS t FROM Q WHERE @rid IS NOT NULL").stream()
+        .filter(row -> row.getProperty("r") != null && "Q".equals(row.getProperty("t"))).count()).isEqualTo(4);
+    assertThat(database.command("sqlscript", "LET $r = SELECT @rid AS r FROM Q LIMIT 1; RETURN $r;").hasNext()).isTrue();
   }
 
   private Throwable assertRefused(final String language, final String statement, final Class<? extends Throwable> expectedType,
