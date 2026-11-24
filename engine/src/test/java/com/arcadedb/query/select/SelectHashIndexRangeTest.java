@@ -81,6 +81,33 @@ class SelectHashIndexRangeTest extends TestHelper {
   }
 
   @Test
+  void rangeOnAHashIndexIsAnsweredByTheScanNotByTheIndex() {
+    final SelectIterator<Document> gt = database.select().fromType("P").where().property("h").gt().value(7).documents();
+    assertThat(ids(gt, "h")).containsExactly(8, 9);
+    assertThat(gt.getMetrics().get("usedIndexes")).isEqualTo(0);
+
+    final SelectIterator<Document> between = database.select().fromType("P").where().property("u").between().values(3, 5).documents();
+    assertThat(ids(between, "u")).containsExactly(3, 4, 5);
+    assertThat(between.getMetrics().get("usedIndexes")).isEqualTo(0);
+
+    // an or with a hash range on one side cannot take the indexed side alone as the candidate set: both sides are scanned
+    final SelectIterator<Document> or = database.select().fromType("P").where().property("h").gt().value(7).or().property("l").eq()
+        .value(0).documents();
+    assertThat(ids(or, "plain")).containsExactly(0, 8, 9);
+    assertThat(or.getMetrics().get("usedIndexes")).isEqualTo(0);
+  }
+
+  @Test
+  void rangeOnAHashIndexWithOrderByAndLimit() {
+    final List<Integer> result = new ArrayList<>();
+    final SelectIterator<Document> iterator = database.select().fromType("P").where().property("h").ge().value(4).orderBy("h", false)
+        .limit(3).documents();
+    while (iterator.hasNext())
+      result.add(iterator.next().getInteger("h"));
+    assertThat(result).containsExactly(9, 8, 7);
+  }
+
+  @Test
   void rangeOnTheHashIndexUnderAnOrKeepsTheOtherBranch() {
     // the hash leaf is not answerable by an index, so the or must not take the LSM branch alone as the candidate set
     assertThat(ids(database.select().fromType("P").where().property("h").gt().value(7).or().property("l").eq().value(0).documents(),
