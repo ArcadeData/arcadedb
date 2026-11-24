@@ -275,8 +275,12 @@ class Issue12612PropertyAssignedAfterSaveValidationTest extends TestHelper {
       d.reload();
     });
 
-    final int stored = database.lookupByRID(person, true).asDocument().getInteger("age");
-    assertThat(stored).isIn(20, 30);
+    // the update is deferred to the commit, so the page the reload reads still holds the committed content: that is what is stored,
+    // without validating it again (the reloaded record is not dirty), and the index follows it
+    assertThat(database.lookupByRID(person, true).asDocument().getInteger("age")).isEqualTo(20);
+    final Index byAge = database.getSchema().getType("Person").getPolymorphicIndexByProperties("age");
+    assertThat(byAge.get(new Object[] { 20 }).next().getIdentity()).isEqualTo(person);
+    assertThat(byAge.get(new Object[] { 30 }).hasNext()).isFalse();
     assertCheckDatabaseFindsNoIndexDisagreement();
   }
 }
