@@ -199,12 +199,27 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         // handed to the caller like the error of a single socket, unless it has not consumed the previous one; either way a pause,
         // so a persistent failure (no file descriptors left) is not retried in a hot loop
         accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one: the backoff bounds the rate
-        try {
-          Thread.sleep(ERROR_BACKOFF_MS);
-        } catch (final InterruptedException ie) {
+        if (!pause())
           return;
-        }
+      } catch (final RuntimeException | Error e) {
+        // not an I/O failure, but no reason to stop accepting on this address either: nothing starts this thread again, so the
+        // address would stay closed while the others keep working
+        if (closed || socket.isClosed())
+          return;
+        accepted.offer(new IOException("Unable to accept a connection: " + e, e));
+        if (!pause())
+          return;
       }
+  }
+
+  /** Waits {@link #ERROR_BACKOFF_MS}; false when interrupted, which is how {@link #close()} stops the acceptors. */
+  private static boolean pause() {
+    try {
+      Thread.sleep(ERROR_BACKOFF_MS);
+      return true;
+    } catch (final InterruptedException e) {
+      return false;
+    }
   }
 
   /** Closes the connections accepted but never handed out. */

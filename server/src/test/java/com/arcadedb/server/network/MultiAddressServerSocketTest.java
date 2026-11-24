@@ -19,6 +19,7 @@
 package com.arcadedb.server.network;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.net.BindException;
@@ -29,6 +30,8 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -129,6 +132,41 @@ class MultiAddressServerSocketTest {
       } catch (final IOException e) {
         assertThat(e).isNotInstanceOf(SocketTimeoutException.class);
       }
+    }
+  }
+
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES) // hang detector only: an address that stopped accepting never hands out its connection
+  void anAddressKeepsAcceptingAfterItsAcceptorMetAnError() throws Exception {
+    assumeThat(MultiAddressServerSocket.resolveListenHosts("localhost").size()).isGreaterThan(1);
+    final AtomicBoolean failNext = new AtomicBoolean(true);
+    final ServerSocketFactory failingOnce = new ServerSocketFactory() {
+      @Override
+      public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
+        final ServerSocket socket = new ServerSocket() {
+          @Override
+          public Socket accept() throws IOException {
+            if (failNext.compareAndSet(true, false))
+              throw new OutOfMemoryError("start failed");
+            return super.accept();
+          }
+        };
+        socket.setReuseAddress(true);
+        socket.bind(new InetSocketAddress(ifAddress, port), backlog);
+        return socket;
+      }
+    };
+
+    try (final MultiAddressServerSocket socket = MultiAddressServerSocket.bind(failingOnce, "localhost", 0)) {
+      // the error reaches the caller as a failed accept, once, and no acceptor thread is lost to it
+      assertThatThrownBy(socket::accept).isInstanceOf(IOException.class).hasCauseInstanceOf(OutOfMemoryError.class);
+
+      for (final String host : MultiAddressServerSocket.resolveListenHosts("localhost"))
+        try (final Socket client = new Socket(InetAddress.getByName(host), socket.getLocalPort())) {
+          try (final Socket server = socket.accept()) {
+            assertThat(server.getLocalAddress()).isEqualTo(InetAddress.getByName(host));
+          }
+        }
     }
   }
 

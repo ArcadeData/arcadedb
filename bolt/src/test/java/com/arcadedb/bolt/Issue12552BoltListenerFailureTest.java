@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.FakeArcadeDBServer;
 import com.arcadedb.server.network.ServerSocketFactory;
 import org.junit.jupiter.api.Test;
@@ -31,37 +32,88 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test for issue #12552: an {@code OutOfMemoryError} ended the thread "n2 BOLT listening at 0.0.0.0:7687",
- * whose accept loop survives an exception but not an error, and the node went on with its Bolt port closed and nothing
- * but the log to show it. The plugin now reports the dead listener, which the readiness probe reads.
+ * and the node went on with its Bolt port closed and nothing but the log to show it. The accept loop now outlives an
+ * error as it does an exception, and the plugin still reports a listener thread that has ended anyway, which the
+ * readiness probe reads.
  *
  * @author robfrank (ro.franchini@gmail.com)
  */
 class Issue12552BoltListenerFailureTest {
 
+  /** A listener whose thread ends as soon as it starts, with the port still bound and the listener not closed. */
+  private static final class EndedListener extends BoltNetworkListener {
+    EndedListener(final ArcadeDBServer server, final ServerSocketFactory factory, final BoltSslHelper ssl) {
+      super(server, factory, ssl, "127.0.0.1", "0");
+    }
+
+    @Override
+    public void run() {
+      // ends here, which nothing short of close() does to the real accept loop
+    }
+  }
+
+  private static ServerSocketFactory plainFactory() {
+    return new ServerSocketFactory() {
+      @Override
+      public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
+        return new ServerSocket(port, backlog, ifAddress);
+      }
+    };
+  }
+
+  private static BoltProtocolPlugin pluginOf(final BoltNetworkListener listener) throws ReflectiveOperationException {
+    final BoltProtocolPlugin plugin = new BoltProtocolPlugin();
+    final Field field = BoltProtocolPlugin.class.getDeclaredField("listener");
+    field.setAccessible(true);
+    field.set(plugin, listener);
+    return plugin;
+  }
+
   // Regression for #12552
   @Test
   @Timeout(value = 2, unit = TimeUnit.MINUTES) // hang detector only
-  void aListenerThreadKilledByAnErrorIsReported() throws Exception {
+  void aListenerThreadThatEndedWhileListeningIsReported() throws Exception {
+    final FakeArcadeDBServer server = FakeArcadeDBServer.create(new ContextConfiguration());
+    final BoltSslHelper ssl = new BoltSslHelper(server.getConfiguration());
+    final EndedListener listener = new EndedListener(server, plainFactory(), ssl);
+    final BoltProtocolPlugin plugin = pluginOf(listener);
+    try {
+      listener.join(TimeUnit.SECONDS.toMillis(30));
+
+      assertThat(listener.isAlive()).as("the listener thread ended").isFalse();
+      assertThat(plugin.getListenerFailure()).isNotNull().contains(listener.getName()).contains("terminated");
+    } finally {
+      listener.close();
+    }
+    assertThat(plugin.getListenerFailure()).as("a listener closed on purpose is not a failure").isNull();
+  }
+
+  // Regression for #12552
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES) // hang detector only
+  void aListenerThreadThatMetAnErrorKeepsAcceptingAndIsNotReportedAsFailed() throws Exception {
     final CountDownLatch acceptReached = new CountDownLatch(1);
-    final CountDownLatch die = new CountDownLatch(1);
-    final ServerSocketFactory dyingOnAccept = new ServerSocketFactory() {
+    final CountDownLatch acceptedAgain = new CountDownLatch(1);
+    final AtomicInteger accepts = new AtomicInteger();
+    final ServerSocketFactory failingOnce = new ServerSocketFactory() {
       @Override
       public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
         return new ServerSocket(port, backlog, ifAddress) {
           @Override
           public Socket accept() throws IOException {
-            acceptReached.countDown();
-            try {
-              die.await();
-            } catch (final InterruptedException e) {
-              Thread.currentThread().interrupt();
+            final int call = accepts.incrementAndGet();
+            if (call == 1) {
+              acceptReached.countDown();
+              throw new OutOfMemoryError("Java heap space");
             }
-            throw new OutOfMemoryError("Java heap space");
+            acceptedAgain.countDown();
+            return super.accept();
           }
         };
       }
@@ -70,25 +122,17 @@ class Issue12552BoltListenerFailureTest {
     final FakeArcadeDBServer server = FakeArcadeDBServer.create(new ContextConfiguration());
     final BoltSslHelper ssl = new BoltSslHelper(server.getConfiguration());
     // Port 0: the operating system picks a free one
-    final BoltNetworkListener listener = new BoltNetworkListener(server, dyingOnAccept, ssl, "127.0.0.1", "0");
-    final BoltProtocolPlugin plugin = new BoltProtocolPlugin();
-    final Field field = BoltProtocolPlugin.class.getDeclaredField("listener");
-    field.setAccessible(true);
-    field.set(plugin, listener);
+    final BoltNetworkListener listener = new BoltNetworkListener(server, failingOnce, ssl, "127.0.0.1", "0");
+    final BoltProtocolPlugin plugin = pluginOf(listener);
     try {
       assertThat(acceptReached.await(30, TimeUnit.SECONDS)).isTrue();
-      assertThat(plugin.getListenerFailure()).as("the listener is accepting").isNull();
+      assertThat(acceptedAgain.await(30, TimeUnit.SECONDS)).as("the loop went back to accepting after the error").isTrue();
 
-      die.countDown();
-      listener.join(TimeUnit.SECONDS.toMillis(30));
-
-      assertThat(listener.isAlive()).as("the error ended the listener thread").isFalse();
-      assertThat(plugin.getListenerFailure()).isNotNull().contains(listener.getName()).contains("terminated");
+      assertThat(listener.isAlive()).as("the error did not end the listener thread").isTrue();
+      assertThat(plugin.getListenerFailure()).isNull();
     } finally {
-      die.countDown();
       listener.close();
     }
-    assertThat(plugin.getListenerFailure()).as("a listener closed on purpose is not a failure").isNull();
   }
 
   // Regression for #12552

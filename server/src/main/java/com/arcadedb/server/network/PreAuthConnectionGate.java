@@ -130,6 +130,20 @@ public class PreAuthConnectionGate {
       }
     }
 
+    /**
+     * For a connection whose thread could not be started: nothing will ever read from it, or hand its permit back, so the
+     * permit is returned and the socket this ticket was handed is closed. Safe to call after {@link #release()}.
+     */
+    public void abandon() {
+      release();
+      if (socket != null)
+        try {
+          socket.close();
+        } catch (final IOException e) {
+          // IGNORE IT: THE CONNECTION IS BEING DROPPED ANYWAY
+        }
+    }
+
     /** Whether the connection is past the pre-authentication phase: authenticated once, or gone. */
     public boolean isReleased() {
       return released.get();
