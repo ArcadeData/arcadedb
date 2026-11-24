@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The parsing, the bookmark and the clearing of {@link GrpcReadConsistencyInterceptor} without a cluster (issue #11948):
- * {@code Issue11948GrpcReadYourWritesIT} proves the follower read end to end, this pins the rules it relies on.
+ * {@code GrpcFollowerForwardingIT.ReadYourWrites} proves the follower read end to end, this pins the rules it relies on.
  */
 class GrpcReadConsistencyInterceptorTest {
 
