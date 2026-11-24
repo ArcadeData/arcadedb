@@ -122,10 +122,7 @@ public final class FacetSpecCompiler {
     if (predicate.test(type))
       return true;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType sub : TypeHierarchy.allSubTypes(type))
-      if (predicate.test(sub))
-        return true;
-    return false;
+    return TypeHierarchy.anySubType(type, predicate);
   }
 
   private static boolean isStatsType(final Type type) {

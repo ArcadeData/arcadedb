@@ -330,10 +330,7 @@ public class RemoteDocumentType implements DocumentType {
       return true;
     // the whole hierarchy, not only the direct parents: a property declared on a grandparent is inherited too (issue #10865), each
     // type once, whatever the number of paths that lead up to it
-    for (final DocumentType s : TypeHierarchy.allSuperTypes(this))
-      if (s.existsProperty(propertyName))
-        return true;
-    return false;
+    return TypeHierarchy.anySuperType(this, s -> s.existsProperty(propertyName));
   }
 
   @Override
@@ -342,9 +339,7 @@ public class RemoteDocumentType implements DocumentType {
       if (parentTypes.contains(type))
         return true;
 
-      for (final DocumentType s : TypeHierarchy.allSuperTypes(this))
-        if (s.getName().equals(type))
-          return true;
+      return TypeHierarchy.anySuperType(this, s -> s.getName().equals(type));
     }
     return false;
   }
@@ -426,13 +421,8 @@ public class RemoteDocumentType implements DocumentType {
     final TypeIndex index = getIndexByProperties(properties);
     if (index != null)
       return index;
-    // each type above once, whatever the number of paths that lead up to it
-    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this)) {
-      final TypeIndex inherited = superType.getIndexByProperties(properties);
-      if (inherited != null)
-        return inherited;
-    }
-    return null;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that has the index
+    return TypeHierarchy.findInSuperTypes(this, superType -> superType.getIndexByProperties(properties));
   }
 
   @Override
@@ -469,13 +459,8 @@ public class RemoteDocumentType implements DocumentType {
     final TypeIndex index = getColumnarIndex(property);
     if (index != null)
       return index;
-    // each type above once, whatever the number of paths that lead up to it
-    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this)) {
-      final TypeIndex inherited = superType.getColumnarIndex(property);
-      if (inherited != null)
-        return inherited;
-    }
-    return null;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that has the index
+    return TypeHierarchy.findInSuperTypes(this, superType -> superType.getColumnarIndex(property));
   }
 
   /** The type indexes the server lists for this type, the bucket indexes under them left out. */

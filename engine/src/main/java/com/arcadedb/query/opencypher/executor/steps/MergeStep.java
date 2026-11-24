@@ -745,20 +745,14 @@ public class MergeStep extends AbstractExecutionStep {
     if (superTypes.isEmpty())
       return canReadTypeAndSubTypes(type);
     // the root super types, each once: a type above this one reached through more than one path is asked once
-    for (final DocumentType superType : TypeHierarchy.allSuperTypes(type))
-      if (superType.getSuperTypes().isEmpty() && !canReadTypeAndSubTypes(superType))
-        return false;
-    return true;
+    return !TypeHierarchy.anySuperType(type, superType -> superType.getSuperTypes().isEmpty() && !canReadTypeAndSubTypes(superType));
   }
 
   private boolean canReadTypeAndSubTypes(final DocumentType type) {
     if (!canReadType(type))
       return false;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (!canReadType(subType))
-        return false;
-    return true;
+    return !TypeHierarchy.anySubType(type, subType -> !canReadType(subType));
   }
 
   /** Whether the user may read the records of the type itself, those of its subtypes not included. */

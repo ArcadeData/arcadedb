@@ -2916,10 +2916,7 @@ public class SelectExecutionPlanner {
     if (!canReadType(database, type))
       return false;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (!canReadType(database, subType))
-        return false;
-    return true;
+    return !TypeHierarchy.anySubType(type, subType -> !canReadType(database, subType));
   }
 
   private static boolean canReadType(final DatabaseInternal database, final DocumentType type) {
@@ -2942,10 +2939,7 @@ public class SelectExecutionPlanner {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
       return false;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (subType instanceof EdgeType edgeType && !edgeType.isBidirectional())
-        return false;
-    return true;
+    return !TypeHierarchy.anySubType(type, subType -> subType instanceof EdgeType edgeType && !edgeType.isBidirectional());
   }
 
   /**

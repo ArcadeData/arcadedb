@@ -85,9 +85,7 @@ public interface EdgeType extends DocumentType {
     if (type instanceof EdgeType edgeType && edgeType.isLightweight())
       return true;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (subType.getType() == Edge.RECORD_TYPE && subType instanceof EdgeType edgeType && edgeType.isLightweight())
-        return true;
-    return false;
+    return TypeHierarchy.anySubType(type,
+        subType -> subType.getType() == Edge.RECORD_TYPE && subType instanceof EdgeType edgeType && edgeType.isLightweight());
   }
 }

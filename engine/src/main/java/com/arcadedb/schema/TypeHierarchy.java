@@ -24,14 +24,18 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Walks over the type hierarchy that meet each type once, whatever the number of paths that lead to it. A type can have several
  * super types, so a hierarchy is a lattice and not a tree: a recursion over {@link DocumentType#getSuperTypes()} or
  * {@link DocumentType#getSubTypes()} meets a type once per path that leads to it, where these walks meet it once.
  * <p>
- * Types are told apart by name, which is unique in a schema, so the walks also work over the types of a remote schema. Neither
- * walk includes the type it starts from, and both end over a hierarchy that holds a cycle.
+ * Types are told apart by name, which is unique in a schema, so the walks also work over the types of a remote schema. No walk
+ * includes the type it starts from, and all of them end over a hierarchy that holds a cycle. The order is depth first: the direct
+ * types in their declared order, each followed by what is beyond it. The walks that look for something ({@link #findInSuperTypes},
+ * {@link #anySuperType} and their sub type twins) stop at the first type that answers, and do not read what is beyond it.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
@@ -44,7 +48,7 @@ public final class TypeHierarchy {
    * their declared order, each followed by what is below it.
    */
   public static List<DocumentType> allSubTypes(final DocumentType type) {
-    return walk(type, false);
+    return collect(type, false);
   }
 
   /**
@@ -52,16 +56,49 @@ public final class TypeHierarchy {
    * their declared order, each followed by what is above it.
    */
   public static List<DocumentType> allSuperTypes(final DocumentType type) {
-    return walk(type, true);
+    return collect(type, true);
   }
 
-  private static List<DocumentType> walk(final DocumentType start, final boolean up) {
+  /** The first non-null answer of {@code lookup} over the types above {@code type}, in the order of {@link #allSuperTypes}, or null. */
+  public static <T> T findInSuperTypes(final DocumentType type, final Function<DocumentType, T> lookup) {
+    return find(type, true, type.getSuperTypes(), lookup);
+  }
+
+  /** The first non-null answer of {@code lookup} over the types below {@code type}, in the order of {@link #allSubTypes}, or null. */
+  public static <T> T findInSubTypes(final DocumentType type, final Function<DocumentType, T> lookup) {
+    return find(type, false, type.getSubTypes(), lookup);
+  }
+
+  /** Whether {@code test} holds for any type above {@code type}, asked in the order of {@link #allSuperTypes}. */
+  public static boolean anySuperType(final DocumentType type, final Predicate<DocumentType> test) {
+    return find(type, true, type.getSuperTypes(), t -> test.test(t) ? Boolean.TRUE : null) != null;
+  }
+
+  /** Whether {@code test} holds for any type below {@code type}, asked in the order of {@link #allSubTypes}. */
+  public static boolean anySubType(final DocumentType type, final Predicate<DocumentType> test) {
+    return find(type, false, type.getSubTypes(), t -> test.test(t) ? Boolean.TRUE : null) != null;
+  }
+
+  private static List<DocumentType> collect(final DocumentType start, final boolean up) {
     final List<DocumentType> direct = up ? start.getSuperTypes() : start.getSubTypes();
     if (direct.isEmpty())
       // the common case: nothing to walk, nothing allocated
       return List.of();
 
     final List<DocumentType> result = new ArrayList<>();
+    find(start, up, direct, t -> {
+      result.add(t);
+      return null;
+    });
+    return result;
+  }
+
+  private static <T> T find(final DocumentType start, final boolean up, final List<DocumentType> direct,
+      final Function<DocumentType, T> lookup) {
+    if (direct.isEmpty())
+      // the common case: nothing to walk, nothing allocated
+      return null;
+
     final Set<String> visited = new HashSet<>();
     visited.add(start.getName());
     final ArrayDeque<Iterator<DocumentType>> pending = new ArrayDeque<>();
@@ -74,10 +111,13 @@ public final class TypeHierarchy {
       }
       final DocumentType next = level.next();
       if (visited.add(next.getName())) {
-        result.add(next);
+        final T found = lookup.apply(next);
+        if (found != null)
+          // what is beyond this type is never read
+          return found;
         pending.push((up ? next.getSuperTypes() : next.getSubTypes()).iterator());
       }
     }
-    return result;
+    return null;
   }
 }

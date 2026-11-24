@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -275,6 +276,50 @@ class TypeHierarchyWalkTest extends TestHelper {
     assertThat(schema.getType("D").isSubTypeOf("a")).isTrue();
     assertThat(schema.getType("A").isSuperTypeOf("d")).isTrue();
     assertThat(schema.getType("B").isSuperTypeOf("C")).isFalse();
+  }
+
+  /** A search over the types above or below a type asks each type once, and stops at the first one that answers. */
+  @Test
+  void aSearchOverTheHierarchyStopsAtTheFirstAnswer() {
+    database.command("sql", "CREATE VERTEX TYPE A");
+    database.command("sql", "CREATE VERTEX TYPE B EXTENDS A");
+    database.command("sql", "CREATE VERTEX TYPE C EXTENDS A");
+    database.command("sql", "CREATE VERTEX TYPE D EXTENDS B, C");
+
+    final Schema schema = database.getSchema();
+    final List<String> asked = new ArrayList<>();
+
+    assertThat(TypeHierarchy.anySuperType(schema.getType("D"), t -> {
+      asked.add(t.getName());
+      return false;
+    })).isFalse();
+    assertThat(asked).containsExactly("B", "A", "C");
+
+    asked.clear();
+    assertThat(TypeHierarchy.anySuperType(schema.getType("D"), t -> {
+      asked.add(t.getName());
+      return t.getName().equals("B");
+    })).isTrue();
+    assertThat(asked).containsExactly("B");
+
+    asked.clear();
+    assertThat(TypeHierarchy.anySubType(schema.getType("A"), t -> {
+      asked.add(t.getName());
+      return false;
+    })).isFalse();
+    assertThat(asked).containsExactly("B", "D", "C");
+
+    asked.clear();
+    final String found = TypeHierarchy.findInSubTypes(schema.getType("A"), t -> {
+      asked.add(t.getName());
+      return t.getName().equals("D") ? t.getName() : null;
+    });
+    assertThat(found).isEqualTo("D");
+    assertThat(asked).containsExactly("B", "D");
+
+    final String none = TypeHierarchy.findInSuperTypes(schema.getType("A"), DocumentType::getName);
+    assertThat(none).isNull();
+    assertThat(TypeHierarchy.anySubType(schema.getType("D"), t -> true)).isFalse();
   }
 
   private static Set<Integer> distinctFileIds(final List<Bucket> buckets) {

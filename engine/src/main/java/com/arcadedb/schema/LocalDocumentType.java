@@ -1685,10 +1685,7 @@ public class LocalDocumentType implements DocumentType {
       return tsType;
 
     // Each type once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (subType instanceof LocalTimeSeriesType tsType)
-        return tsType;
-    return null;
+    return TypeHierarchy.findInSubTypes(type, subType -> subType instanceof LocalTimeSeriesType tsType ? tsType : null);
   }
 
   /**
@@ -3603,10 +3600,7 @@ public class LocalDocumentType implements DocumentType {
     if (subTypes.isEmpty())
       return false;
     // each type below this one once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(this))
-      if (type.equalsIgnoreCase(subType.getName()))
-        return true;
-    return false;
+    return TypeHierarchy.anySubType(this, subType -> type.equalsIgnoreCase(subType.getName()));
   }
 
   @Override

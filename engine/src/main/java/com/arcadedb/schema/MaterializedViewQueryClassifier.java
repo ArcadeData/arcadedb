@@ -144,10 +144,7 @@ public class MaterializedViewQueryClassifier {
     if (declaresSourceRid(type))
       return true;
     // each type below once, whatever the number of paths that lead down to it
-    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
-      if (declaresSourceRid(subType))
-        return true;
-    return false;
+    return TypeHierarchy.anySubType(type, MaterializedViewQueryClassifier::declaresSourceRid);
   }
 
   private static boolean declaresSourceRid(final DocumentType type) {

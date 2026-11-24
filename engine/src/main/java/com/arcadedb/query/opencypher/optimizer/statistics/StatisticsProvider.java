@@ -278,11 +278,8 @@ public class StatisticsProvider {
    * Whether any of {@code type}'s supertypes, at any depth, is itself in {@code set}.
    */
   private static boolean hasAncestorIn(final DocumentType type, final Set<DocumentType> set) {
-    // each type above once, whatever the number of paths that lead up to it
-    for (final DocumentType superType : TypeHierarchy.allSuperTypes(type))
-      if (set.contains(superType))
-        return true;
-    return false;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that is in the set
+    return TypeHierarchy.anySuperType(type, set::contains);
   }
 
   /**

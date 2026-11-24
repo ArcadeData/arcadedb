@@ -304,14 +304,8 @@ public interface DocumentType {
     if (prop != null)
       return prop;
 
-    // each type above once, whatever the number of paths that lead up to it
-    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this)) {
-      final Property inherited = superType.getPropertyIfExists(propertyName);
-      if (inherited != null)
-        return inherited;
-    }
-
-    return null;
+    // each type above once, whatever the number of paths that lead up to it, up to the first that declares the property
+    return TypeHierarchy.findInSuperTypes(this, superType -> superType.getPropertyIfExists(propertyName));
   }
 
   Property getPropertyIfExists(String propertyName);
