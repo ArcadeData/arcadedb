@@ -1134,8 +1134,10 @@ public class SelectExecutor {
         // DROPPING IS NULL (#9331)
         TypeIndex propertyIndex = found != null && found.getPropertyNamesIfExactKeyLookup() != null ? found : null;
         // A COLLATE ci index holds lower-cased keys: a range over it is not the case sensitive range the leaf asks for and
-        // loses rows no residual filter can bring back, so the scan answers it (#9302)
-        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator) && SelectExecutionPlanner.holdsFoldedKeys(propertyIndex))
+        // loses rows no residual filter can bring back, so the scan answers it (#9302). A HASH index answers by key only and
+        // refuses a range, which is a scan as well (#12677)
+        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator)
+            && (!propertyIndex.supportsOrderedIterations() || SelectExecutionPlanner.holdsFoldedKeys(propertyIndex)))
           propertyIndex = null;
 
         if (propertyIndex != null)
