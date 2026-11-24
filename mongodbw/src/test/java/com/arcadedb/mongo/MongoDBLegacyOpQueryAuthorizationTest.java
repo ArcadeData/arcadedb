@@ -130,8 +130,11 @@ public class MongoDBLegacyOpQueryAuthorizationTest extends BaseMongoServerTest {
 
     final Document message = new Document("find", "Secret");
     message.put("$db", getDatabaseName());
-    assertThatThrownBy(() -> backend.handleMessage(new MongoMessage(channel, new MessageHeader(1, 0), message)))
-        .isInstanceOf(MongoServerError.class).hasMessageContaining("requires authentication");
+    // AN OP_MSG IS ANSWERED AS A REPLY DOCUMENT, NOT AS AN EXCEPTION
+    final Document refusal = backend.handleMessage(new MongoMessage(channel, new MessageHeader(1, 0), message));
+    assertThat(refusal.get("ok")).isEqualTo(0);
+    assertThat(refusal.get("code")).isEqualTo(13);
+    assertThat((String) refusal.get("errmsg")).contains("requires authentication");
 
     // "local" AND "config" ARE RESOLVED AS DATABASES BY THE LIBRARY: A DATABASE CALLED THAT GETS NO EXEMPTION
     assertThatThrownBy(() -> backend.handleCommand(channel, "local", "find", new Document("find", "Secret")))

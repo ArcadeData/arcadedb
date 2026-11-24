@@ -249,13 +249,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         return createIndexes(document);
       else {
         // a client's request, not a server fault: the operator learns which commands clients ask for, without the document, which can
-        // carry stored data
-        LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, command);
+        // carry stored data. The name is the client's own, shown with printable characters only
+        final String shown = MongoWireText.clean(command);
+        LogManager.instance().log(this, Level.INFO, "Received unsupported command '%s' from MongoDB client", null, shown);
         // what mongod answers a command it does not have, and what drivers detect a command missing from a server by (issue #11449)
-        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + command + "'");
+        throw new MongoServerError(COMMAND_NOT_FOUND, "CommandNotFound", "no such command: '" + shown + "'");
       }
     } catch (final Exception e) {
-      throw wireException("Error on executing MongoDB '" + command + "' command", e);
+      throw wireException("Error on executing MongoDB '" + MongoWireText.clean(command) + "' command", e);
     } finally {
       ProfiledLimitScope.exit();
     }
