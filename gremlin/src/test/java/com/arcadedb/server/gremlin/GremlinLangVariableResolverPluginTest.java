@@ -116,6 +116,25 @@ class GremlinLangVariableResolverPluginTest {
   }
 
   @Test
+  void resolverConfiguredInTheSettingsDoesNotReplaceIt() throws Exception {
+    // A RESOLVER THAT ANSWERS EVERY VARIABLE WITH NULL, CONFIGURED FOR THE ENGINE BEFORE THE PLUGIN IS REGISTERED: THE ENGINE TAKES THE FIRST ONE
+    final Settings settings = new Settings();
+    final Settings.ScriptEngineSettings engine = new Settings.ScriptEngineSettings();
+    engine.plugins.put(VariableResolverPlugin.class.getName(), Map.of("resolver", "NullVariableResolver"));
+    settings.scriptEngines.put("gremlin-lang", engine);
+
+    final GremlinExecutor executor = buildExecutor(settings);
+    try {
+      assertThat(catchThrowable(() -> executor.eval("g.V().has('name', registeredGraph)", "gremlin-lang", new HashMap<>()).get()))
+          .hasStackTraceContaining("No variable found for registeredGraph");
+      assertThat(catchThrowable(() -> executor.eval("g.V().has('name', missingName)", "gremlin-lang", new HashMap<>()).get()))
+          .hasStackTraceContaining("No variable found for missingName");
+    } finally {
+      executor.close();
+    }
+  }
+
+  @Test
   void valuesOfTheRequestAreVariablesOfAScript() throws Exception {
     final GremlinExecutor executor = buildExecutor(new Settings());
     try {

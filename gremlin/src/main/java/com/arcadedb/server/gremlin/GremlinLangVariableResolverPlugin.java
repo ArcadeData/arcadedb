@@ -47,7 +47,7 @@ import java.util.logging.Level;
  * @author lvca (l.garulli@arcadedata.com)
  */
 public final class GremlinLangVariableResolverPlugin extends AbstractGremlinPlugin {
-  static final String ENGINE_NAME = "gremlin-lang";
+  static final String ENGINE_NAME = ArcadeGremlinAuthorizer.GREMLIN_LANG;
 
   private static final String                             NAME     = "arcadedb.gremlinLangVariables";
   private static final GremlinLangVariableResolverPlugin INSTANCE = new GremlinLangVariableResolverPlugin();
