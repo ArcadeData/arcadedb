@@ -2888,8 +2888,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // from the same state as this one (#10135)
         rollbackLevelsAbove(callerLevels);
 
+        // Decided before the error callback runs, so the callback is told the failure the caller is (#13251)
+        final boolean partiallyCommitted = TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart);
+        final ArcadeDBException failure = partiallyCommitted ? TransactionContext.notReplayable(e, "Transaction block") : e;
+
         if (error != null)
-          error.call(e);
+          error.call(failure);
 
         // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
@@ -2897,13 +2901,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
         // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
         // it is, which every layer above would retry anyway (#13251)
-        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+        if (partiallyCommitted) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
                   + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw TransactionContext.notReplayable(e, "Transaction block");
+          throw failure;
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work

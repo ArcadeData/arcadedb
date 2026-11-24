@@ -1547,6 +1547,19 @@ public class TransactionRetryAndRollbackTest {
       assertThat(countRowsWithSeq(2)).as("no row may be incremented twice").isZero();
     }
 
+    /** Issue #13251: the error callback is told the failure the caller gets, not the retryable conflict under it. */
+    @Test
+    void theErrorCallbackIsToldTheBlockIsNotReplayable() {
+      final AtomicReference<Throwable> told = new AtomicReference<>();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
+        throw new ConcurrentModificationException("simulated conflict after the batch boundary");
+      }, true, 3, null, told::set)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+      assertNotReplayable(told.get());
+    }
+
     /**
      * Issue #13251: a block that joined the caller's transaction is not retried by this call, and its conflict goes to the caller
      * as it is - unless the block committed part of its work, which the caller must not replay either.
