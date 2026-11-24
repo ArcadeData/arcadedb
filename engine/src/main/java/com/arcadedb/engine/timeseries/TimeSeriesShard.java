@@ -81,6 +81,13 @@ public class TimeSeriesShard implements AutoCloseable {
   static final long RESERVATION_WAIT_MS = 1_000L;
 
   /**
+   * How many samples of the mutable pages a compaction reads, sorts and compresses at a time: two sealed blocks' worth
+   * ({@link #SEALED_BLOCK_SIZE}). The pages are compacted window by window, so this, and not the size of the mutable bucket,
+   * is what a compaction holds in heap.
+   */
+  static final int COMPACTION_WINDOW_SAMPLES = 2 * 65_536;
+
+  /**
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
    * have left them. Public only because the test that sets it is an HA integration test in another module
@@ -1159,12 +1166,6 @@ public class TimeSeriesShard implements AutoCloseable {
    * Maximum number of samples per sealed block. Keeps decompression cost bounded.
    */
   static final int SEALED_BLOCK_SIZE = 65_536;
-
-  /**
-   * How many samples of the mutable pages a compaction reads, sorts and compresses at a time: two sealed blocks' worth. The
-   * pages are compacted window by window, so this, and not the size of the mutable bucket, is what a compaction holds in heap.
-   */
-  static final int COMPACTION_WINDOW_SAMPLES = 2 * SEALED_BLOCK_SIZE;
 
   /**
    * Compacts mutable data into sealed columnar storage.
