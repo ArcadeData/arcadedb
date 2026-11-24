@@ -415,7 +415,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * used to run inside the append transaction and nest one level more, and a script's {@code BEGIN} under the transaction of the
    * HTTP command handler then went past the limit of 3 on the first sample carrying a value never seen before. It runs outside
    * {@link #appendLock} and {@link #compactionLock} too: the dictionary serializes itself, and under HA its commit passes the same
-   * recording-session gate as any other, which must not be waited on holding the compaction read lock (see above).
+   * recording-session gate as any other, which must not be waited on holding the compaction read lock (see above). The trade-off:
+   * an append that fails after interning (in the late-sample check, the append itself or its commit) leaves the values it interned
+   * as unused dictionary entries, which count toward the type's cardinality cap - the same tolerance the dictionary already has for
+   * a data transaction that rolls back after it committed its ids.
    * <p>
    * The source is read once per retry attempt, and its timestamps once more when the type has a continuous aggregate (issue
    * #10502): after the commit off HA, before it under HA (issue #10673), always under HA (issue #10940). It is never retained, and
