@@ -1504,12 +1504,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
       break;
     }
     case DROP_USER: {
-      if (admin.isIfExists()) {
+      if (!admin.isIfExists() && !security.existsUser(admin.getUserName()))
+        throw missingUser(admin.getUserName());
+      try {
         security.dropUser(admin.getUserName());
-      } else {
-        if (!security.existsUser(admin.getUserName()))
-          throw missingUser(admin.getUserName());
-        security.dropUser(admin.getUserName());
+      } catch (final IllegalArgumentException e) {
+        // A user the security manager refuses to drop (the server administrator, issue #12813): the caller's mistake, and
+        // the reason has to reach it. Left to the rewrap of command(), the message would be "Error executing Cypher command"
+        throw new CommandExecutionException(e.getMessage(), e);
       }
       break;
     }
