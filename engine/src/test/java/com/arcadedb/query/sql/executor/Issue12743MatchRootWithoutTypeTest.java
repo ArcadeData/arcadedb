@@ -120,6 +120,18 @@ class Issue12743MatchRootWithoutTypeTest extends TestHelper {
         RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("4-2"));
   }
 
+  /**
+   * An untyped source whose {@code where:} reads the target through {@code $matched} starts nothing before the target is
+   * bound, so the recursive edge must not wait for it: the walk from the target is what answers the match.
+   */
+  @Test
+  void recursiveEdgeDoesNotWaitForAnUntypedSourceThatReadsItsTarget() {
+    // VERTEX 3 IS THE ONLY MC REACHED THROUGH MR: FROM 1 (1 -> 2 -> 3) AND FROM 2
+    assertThat(pairs("""
+        MATCH {as: n0, where: (id < $matched.n1.id)}.out('MR'){type: MC, as: n1, while: (id < 9)}
+        RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("1-3", "2-3"));
+  }
+
   private long count(final String match) {
     try (final ResultSet rs = database.query("sql", match)) {
       return ((Number) rs.next().getProperty("c")).longValue();
