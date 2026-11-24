@@ -18,20 +18,24 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.File;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.file.Files;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Issue #12801: {@code create database} answered HTTP 500 for a name the caller got wrong when the name held a {@code *} (the engine
@@ -89,6 +93,29 @@ class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
   void theNameCheckSharedWithOpenAndDropHasNoLengthLimitOfItsOwn() {
     getServer(0).checkDatabaseNameIsValid("\u65e5".repeat(100));
     getServer(0).checkDatabaseNameIsValid("y".repeat(300));
+  }
+
+  /**
+   * A long name is not what failed when the database directory takes no new directory at all: that stays a server fault (500),
+   * whatever the length of the name.
+   */
+  @Test
+  void aLongNameIsNotBlamedWhenTheDatabaseDirectoryTakesNoNewDirectory() throws Exception {
+    final File databaseDirectory = new File(
+        getServer(0).getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+    assumeThat(databaseDirectory.setWritable(false)).as("the directory can be made read-only").isTrue();
+    try {
+      // Whoever ignores the permission (root) still creates the database, and there is no failure to classify
+      assumeThat(Files.isWritable(databaseDirectory.toPath())).isFalse();
+
+      for (final String name : new String[] { "x".repeat(256), "日".repeat(100) }) {
+        final HttpResponse<String> response = executeServerCommand("create database " + name);
+
+        assertThat(response.statusCode()).as("body=%s", response.body()).isEqualTo(500);
+      }
+    } finally {
+      databaseDirectory.setWritable(true);
+    }
   }
 
   @Test

@@ -91,6 +91,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -1849,19 +1850,33 @@ public class ArcadeDBServer {
   }
 
   /**
-   * Called when the engine could not create a database: when its directory is not there and the name is past the bytes a file
-   * name holds on the usual file systems, the name is what the file system refused, and that is the caller's mistake (400) and
-   * not a server fault (issue #12801). Decided from the failure and not ahead of it, because the limit is the file system's own:
-   * a name of 100 three-byte characters is refused by ext4 and accepted by APFS and NTFS. The message names neither the name
-   * nor the path, which the engine's own failure echoes whole.
+   * Called when the engine could not create a database: when the name is what the file system refused, that is the caller's
+   * mistake (400) and not a server fault (issue #12801). Decided from the failure and not ahead of it, because the limit is the
+   * file system's own: a name of 100 three-byte characters is refused by ext4 and accepted by APFS and NTFS.
+   * <p>
+   * The name is held responsible only when all of this holds: the directory is not there, the name is past the bytes a file name
+   * holds on the usual file systems, and the database directory does take a new directory of a short name right now. The last
+   * one is asked of the file system itself, with a directory created and deleted at once under a reserved name no listing shows:
+   * a database directory that is read-only, not writable by the server or out of space fails it, and that failure stays the
+   * server fault it is. The message names neither the name nor the path, which the engine's own failure echoes whole.
    */
-  private static void refuseNameTooLongForTheFileSystem(final String databaseName, final File databaseDirectory) {
+  private void refuseNameTooLongForTheFileSystem(final String databaseName, final File databaseDirectory) {
     if (databaseDirectory.exists())
       return;
     final int bytes = databaseName.getBytes(StandardCharsets.UTF_8).length;
-    if (bytes > MAX_DATABASE_NAME_BYTES)
-      throw new IllegalArgumentException(
-          "Database name is too long to be a directory name on this file system: " + bytes + " bytes");
+    if (bytes <= MAX_DATABASE_NAME_BYTES)
+      return;
+    final File parent = databaseDirectory.getAbsoluteFile().getParentFile();
+    if (parent == null || !parent.isDirectory())
+      return;
+    try {
+      Files.delete(Files.createTempDirectory(parent.toPath(), RESERVED_DATABASE_PREFIX + "name-probe"));
+    } catch (final IOException | RuntimeException e) {
+      // The file system does not take a short name either: not the name's fault
+      LogManager.instance().log(this, Level.FINE, "Database directory does not accept a new directory: %s", null, e.toString());
+      return;
+    }
+    throw new IllegalArgumentException("Database name is too long to be a directory name on this file system: " + bytes + " bytes");
   }
 
   /** The names of the databases open on this server now. {@link #getAvailableDatabaseNames()} adds the ones not open. */
