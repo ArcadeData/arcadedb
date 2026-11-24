@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -137,6 +138,28 @@ class HeapEstimatorNestedValuesTest {
 
     assertThat(bytes).isPositive();
     assertThat(bytes).as("every level that is followed is a list of one slot").isGreaterThan(1_000L * REFERENCE_BYTES);
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = { 0, 3, 10, 31, 32, 33, 100 })
+  void theKeyOfAMapIsChargedForItsSizeAtEveryLevel(final int levels) {
+    final Map<Object, Object> map = new LinkedHashMap<>();
+    map.put(new byte[1_000_000], 0L);
+
+    assertThat(HeapEstimator.estimate(row(wrap(map, levels)))).isGreaterThanOrEqualTo(1_000_000L);
+  }
+
+  @Test
+  @Timeout(60)
+  void aValueHoldingItselfIsCountedOnceHoweverManyTimesItIsHeld() {
+    final List<Object> cycle = new ArrayList<>();
+    cycle.add(cycle);
+    Object held = cycle;
+    for (int i = 0; i < 5; i++)
+      held = new ArrayList<>(Collections.nCopies(16, held));
+
+    assertThat(HeapEstimator.estimate(row(held))).as("each list that holds itself is counted for one round of its cycle").isPositive()
+        .isLessThan(1L << 34);
   }
 
   @Test

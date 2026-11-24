@@ -77,8 +77,8 @@ public final class HeapEstimator {
   static final         int DEEP_SAMPLED_ELEMENTS = 1;
   /** From this depth a value is not walked by recursion: the first element of each nested container is followed in a loop. */
   static final         int MAX_WALK_DEPTH   = 32;
-  /** The levels the loop that follows the nesting past {@link #MAX_WALK_DEPTH} goes down: it ends a cyclic value that holds itself. */
-  static final         int MAX_CHAIN_STEPS  = 1 << 16;
+  /** The levels the loop that follows the nesting past {@link #MAX_WALK_DEPTH} goes down, which bounds what one estimate of a shared value costs. */
+  static final         int MAX_CHAIN_STEPS  = 1 << 13;
   /** What an estimate is capped at (a petabyte): above it the sum of what is estimated could overflow a long. */
   static final         long MAX_ESTIMATE    = 1L << 50;
   /** A primitive array is remembered by a {@link Shared} from this many bytes: the entry that remembers it must be small beside it. */
@@ -403,8 +403,12 @@ public final class HeapEstimator {
     // The number of elements of this level the first one stands for: the product of the sizes of the levels above
     long weight = 1L;
     Object node = start;
+    // A value that holds itself is a cycle of the chain: it is met again at the checkpoint, which moves on at every power of two
+    Object checkpoint = start;
+    int sinceCheckpoint = 0;
+    int window = 1;
     for (int step = 0; step < MAX_CHAIN_STEPS && bytes < MAX_ESTIMATE; step++) {
-      final long own;
+      long own;
       final long size;
       final Object first;
       if (node instanceof Collection<?> collection) {
@@ -414,7 +418,16 @@ public final class HeapEstimator {
       } else if (node instanceof Map<?, ?> map) {
         size = map.size();
         own = MAP_BYTES + HASH_ENTRY_BYTES * size;
-        first = size == 0L ? null : firstOf(map.values());
+        if (size == 0L)
+          first = null;
+        else {
+          final Iterator<? extends Map.Entry<?, ?>> entries = map.entrySet().iterator();
+          final Map.Entry<?, ?> entry = entries.hasNext() ? entries.next() : null;
+          first = entry == null ? null : entry.getValue();
+          if (entry != null && !(entry.getKey() instanceof String))
+            // The key of each entry, as the walk above counts them: not followed, a container key counts as its slot
+            own += saturatedMultiply(size, isContainer(entry.getKey()) ? OBJECT_BYTES : estimate(entry.getKey(), MAX_WALK_DEPTH, null));
+        }
       } else if (node instanceof Object[] array) {
         size = array.length;
         own = ARRAY_BYTES + REFERENCE_BYTES * size;
@@ -428,8 +441,19 @@ public final class HeapEstimator {
         break;
       weight = saturatedMultiply(weight, size);
       node = first;
+      if (node == checkpoint)
+        break;
+      if (++sinceCheckpoint == window) {
+        checkpoint = node;
+        window <<= 1;
+        sinceCheckpoint = 0;
+      }
     }
     return Math.min(bytes, MAX_ESTIMATE);
+  }
+
+  private static boolean isContainer(final Object value) {
+    return value instanceof Collection<?> || value instanceof Map<?, ?> || value instanceof Object[];
   }
 
   private static Object firstOf(final Collection<?> collection) {
