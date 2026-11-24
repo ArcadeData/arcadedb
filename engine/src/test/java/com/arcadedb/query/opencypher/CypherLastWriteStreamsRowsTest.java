@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
@@ -41,6 +42,9 @@ class CypherLastWriteStreamsRowsTest extends TestHelper {
   private static final int  ROWS  = 30;
   private static final long LIMIT = 10;
 
+  private boolean limitWasExplicit;
+  private Object  previousLimit;
+
   @Override
   protected void beginTest() {
     database.transaction(() -> {
@@ -48,7 +52,20 @@ class CypherLastWriteStreamsRowsTest extends TestHelper {
       for (int i = 0; i < ROWS; i++)
         database.newVertex("N").set("id", i).set("grp", i).save();
     });
-    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, LIMIT);
+    final ContextConfiguration configuration = database.getConfiguration();
+    limitWasExplicit = configuration.hasValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+    previousLimit = configuration.getValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
+    configuration.setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, LIMIT);
+  }
+
+  /** Puts the per-database setting back as it was: the value when it was set explicitly, no entry at all when it was not. */
+  @Override
+  protected void endTest() {
+    final ContextConfiguration configuration = database.getConfiguration();
+    if (limitWasExplicit)
+      configuration.setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, previousLimit);
+    else
+      configuration.setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, null);
   }
 
   @Test
