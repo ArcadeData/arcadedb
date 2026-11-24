@@ -1565,8 +1565,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             // two samples of one (tag values, bucket) that fold into one row (issue #11984; the mean row and the staleness
             // marker row of a series that ended there are not, issue #12580), so it always leaves fewer samples than it found.
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
-              db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
-                  sealed.readWholeSealedFile());
+              TimeSeriesShard.recordSealedChange(db, typeName, shard.getShardIndex(), sealed);
           });
         }
         return true;

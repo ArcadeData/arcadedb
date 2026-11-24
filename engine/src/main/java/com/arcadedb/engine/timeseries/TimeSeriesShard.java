@@ -1161,6 +1161,12 @@ public class TimeSeriesShard implements AutoCloseable {
   static final int SEALED_BLOCK_SIZE = 65_536;
 
   /**
+   * How many samples of the mutable pages a compaction reads, sorts and compresses at a time: two sealed blocks' worth. The
+   * pages are compacted window by window, so this, and not the size of the mutable bucket, is what a compaction holds in heap.
+   */
+  static final int COMPACTION_WINDOW_SAMPLES = 2 * SEALED_BLOCK_SIZE;
+
+  /**
    * Compacts mutable data into sealed columnar storage.
    * Data is written in chunks of {@link #SEALED_BLOCK_SIZE} rows to keep
    * individual sealed blocks small for fast decompression during queries.
@@ -1171,13 +1177,15 @@ public class TimeSeriesShard implements AutoCloseable {
    *       N and persist the crash-recovery flag.  The write lock guarantees that no concurrent
    *       {@link #appendSamples} can modify page-0 during this TX, so the commit always
    *       succeeds.</li>
+   *   <li><b>Phase 3</b> (lock-free, no TX): copy the existing sealed blocks to {@code .ts.sealed.tmp}, one block at a
+   *       time. Concurrent queries still read from the live sealed file; no double-counting.</li>
    *   <li><b>Phase 1</b> (no lock, read-only TX then rollback): read full/immutable pages
-   *       1..N-1 via a short read-only transaction that is immediately rolled back.  These pages
+   *       1..N-1 via short read-only transactions that are immediately rolled back.  These pages
    *       are permanently full — {@link #appendSamples} always writes to the LAST page — so
    *       their content is stable and no MVCC conflict is possible.</li>
-   *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data.</li>
-   *   <li><b>Phase 3</b> (lock-free, no TX): write all sealed blocks to {@code .ts.sealed.tmp}.
-   *       Concurrent queries still read from the live sealed file; no double-counting.</li>
+   *   <li><b>Phase 2</b> (lock-free, no TX): sort and compress the snapshot data, and append its blocks to the temp file.
+   *       Phases 1 and 2 run one window of {@link #COMPACTION_WINDOW_SAMPLES} samples at a time, so the heap a compaction
+   *       needs does not grow with the number of samples in the mutable bucket.</li>
    *   <li><b>Phase 4</b> (brief write lock + brief TX): read any remaining partial pages,
    *       merge with Phase-2 spill if present, compress, atomically swap the temp file,
    *       clear the compacted mutable bucket, and reset the crash-recovery flag.  The write
@@ -1305,7 +1313,7 @@ public class TimeSeriesShard implements AutoCloseable {
     if (deleted > 0L)
       sealedDeleteUnpublished = true;
     if (sealedDeleteUnpublished)
-      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      recordSealedChange(db, typeName, shardIndex, sealedStore);
 
     // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
     // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read. So
@@ -1392,7 +1400,7 @@ public class TimeSeriesShard implements AutoCloseable {
     try {
       if (!sealedStore.commitMerge(plan))
         return false;
-      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
+      recordSealedChange(db, typeName, shardIndex, sealedStore);
       return true;
     } catch (final IOException | RuntimeException e) {
       sealedStore.deleteMergeTempFileIfExists();
@@ -1498,38 +1506,9 @@ public class TimeSeriesShard implements AutoCloseable {
 
     // Pages 1..lastFullPage are FULL (immutable): appendSamples() never writes to full pages
     // — it always appends to the LAST page.  These are safe to read without the write lock.
-    // Page snapshotDataPageCount is the current partial last page; it will be read in Phase 4
-    // under the write lock together with any new pages created between Phase 0 and Phase 4.
+    // Page snapshotDataPageCount is the current partial last page; it will be read in Phase 4, lock-free in 4b once newer pages
+    // made it full, otherwise under the write lock in 4c together with any new pages created meanwhile.
     final int lastFullPage = snapshotDataPageCount - 1;
-
-    // Shared output lists for compressed blocks built in Phases 1+2.
-    final List<byte[][]> allCompressedList = new ArrayList<>();
-    final List<long[]> allMetaList = new ArrayList<>();
-    final List<TimeSeriesSealedStore.BlockStats> allStatsList = new ArrayList<>();
-    final List<String[][]> allTagDVList = new ArrayList<>();
-
-    // ── Phase 1 (no lock, read-only TX): read full/immutable pages ───────────────────────────
-    // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX
-    // is always conflict-free.  Roll it back immediately — nothing is modified.
-    // phase2Spill holds the raw samples of the last partial chunk from Phase 2 (if any).
-    // These samples are merged with Phase 4's partial-page data to avoid splitting a single
-    // sealed block across the Phase-2/Phase-4 page boundary.
-    Object[] phase2Spill = null;
-    if (lastFullPage > 0) {
-      final OwnTransaction snapshot = OwnTransaction.begin(db);
-      try {
-        final Object[] snapshotData = mutableBucket.readFullPagesForCompaction(lastFullPage);
-        if (snapshotData != null)
-          // ── Phase 2 (lock-free, no TX): sort + compress immutable page data ─────────────
-          // returnSpill=true: the last partial chunk is returned as raw data instead of being
-          // emitted as a block, so Phase 4 can merge it with the partial-page samples and
-          // produce a single correctly-sized block.
-          phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allStatsList,
-              allTagDVList, true);
-      } finally {
-        snapshot.rollbackIfMine(); // read-only: rollback is always safe, and only ever of our own
-      }
-    }
 
     // The temp file exists from Phase 3 until Phase 4c swaps it in, and Phases 3 to 4b are the part of the compaction that is
     // lock-free and owns it. Whatever fails in that window (an MVCC conflict reading the pages, an IO error, a data-dependent
@@ -1538,41 +1517,43 @@ public class TimeSeriesShard implements AutoCloseable {
     // file of unbounded age at its path.
     final List<TimeSeriesSealedStore.BlockEntry> newBlockDirectory;
     final int phase4aPageCount;
-    Object[] phase4bSpill = null;
+    Object[] spill = null;
     boolean readyForPhase4c = false;
     try {
-      // ── Phase 3 (lock-free, no TX): write existing sealed + Phase 2 blocks to temp file ─────
-      // Concurrent queries still read from the CURRENT sealed file — no double-counting.
-      // The temp file is created even when allCompressedList is empty so that Phase 4 can
-      // append the partial page's data and then swap atomically in one shot.
+      // ── Phase 3 (lock-free, no TX): copy the existing sealed blocks to the temp file ────────
+      // Concurrent queries still read from the CURRENT sealed file — no double-counting. It runs first so that every phase
+      // after it appends its blocks to the temp file as soon as it built them, instead of holding them until the end. The
+      // retained blocks therefore come first in the file, which is what the crash recovery's "first N blocks in file order"
+      // counts (the watermark set in Phase 0).
       try {
-        newBlockDirectory = sealedStore.writeTempCompactionFile(
-            allCompressedList, allMetaList, allStatsList, allTagDVList);
+        newBlockDirectory = sealedStore.writeTempCompactionFile(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
+            new ArrayList<>());
       } catch (final Exception e) {
         // the temp file and the crash-recovery flag are cleaned up by the finally below
         throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed writing temp file", e);
       }
 
-      // ── Phase 4a (brief writeLock + read-only TX): snapshot remaining pages ──────────────
-      // Grab the write lock just long enough to snapshot the current page count and read the
-      // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
-      // while we sort + compress (Phase 4b).
+      // ── Phases 1 + 2 (no lock, read-only TX per window): read, sort and compress full pages ──
+      // Full pages are never written to by concurrent appendSamples(); the read-only snapshot TX is always conflict-free.
+      // The pages are taken a window at a time (compactFullPages), so the heap holds one window of samples whatever the size
+      // of the mutable bucket. The spill is the raw samples of the last partial chunk, carried into the next window and in
+      // the end into Phase 4c, so a sealed block is never split across a window or phase boundary.
+      if (lastFullPage > 0)
+        spill = compactFullPages(db, 1, lastFullPage, null, newBlockDirectory);
+
+      // ── Phase 4a (brief writeLock + read-only TX): snapshot the page count ───────────────
+      // Grab the write lock just long enough to snapshot the current page count.  Release the lock immediately so appends
+      // can resume while the pages accumulated since Phase 0 are compressed (Phase 4b).
       //
-      // IMPORTANT: do NOT read the last page (phase4aPageCount) here.  Phase 4b runs lock-free,
-      // so concurrent appendSamples() calls may add samples to page phase4aPageCount between now
-      // and Phase 4c.  Deferring the read of page phase4aPageCount to Phase 4c (under writeLock)
-      // guarantees we capture those extra samples and do not lose them when clearDataPages() runs.
-      Object[] phase4aData;
+      // IMPORTANT: do NOT read the last page (phase4aPageCount) before Phase 4c.  Phase 4b runs lock-free, so concurrent
+      // appendSamples() calls may add samples to page phase4aPageCount between now and Phase 4c.  Deferring the read of page
+      // phase4aPageCount to Phase 4c (under writeLock) guarantees we capture those extra samples and do not lose them when
+      // clearDataPages() runs. The pages before it are full, so immutable, as the pages of Phase 1 are.
       compactionLock.writeLock().lock();
       try {
         final OwnTransaction snapshot = OwnTransaction.begin(db);
         try {
           phase4aPageCount = mutableBucket.getDataPageCount();
-          if (phase4aPageCount > lastFullPage + 1)
-            // Read only up to phase4aPageCount - 1; the last page is read in Phase 4c.
-            phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount - 1);
-          else
-            phase4aData = null;
         } finally {
           snapshot.rollbackIfMine(); // read-only snapshot
         }
@@ -1580,31 +1561,14 @@ public class TimeSeriesShard implements AutoCloseable {
         compactionLock.writeLock().unlock();
       }
 
-      // ── Phase 4b (lock-free, no TX): compress remaining pages + write to temp file ────────
-      // Merge Phase-2 spill with the Phase-4a snapshot, then compress and append to the temp
-      // file.  Concurrent appends proceed freely during this CPU/IO-intensive step.
+      // ── Phase 4b (lock-free, read-only TX per window): compress remaining full pages ──────
+      // Same as Phases 1 + 2 over the pages accumulated since Phase 0, carrying the spill along. The last partial chunk is
+      // held back for Phase 4c, where it can be merged with any tail pages created during Phase 4b.
       final Runnable prePhase4bHook = TEST_PRE_PHASE4B_HOOK;
       if (prePhase4bHook != null)
         prePhase4bHook.run();
-      final Object[] toCompress4b;
-      if (phase2Spill != null && phase4aData != null)
-        toCompress4b = mergeCompactionData(phase2Spill, phase4aData);
-      else if (phase2Spill != null)
-        toCompress4b = phase2Spill;
-      else
-        toCompress4b = phase4aData;
-
-      // Use returnSpill=true so the last partial chunk is held back for Phase 4c,
-      // where it can be merged with any tail pages created during Phase 4b.
-      if (toCompress4b != null) {
-        final List<byte[][]> remCompressed = new ArrayList<>();
-        final List<long[]> remMeta = new ArrayList<>();
-        final List<TimeSeriesSealedStore.BlockStats> remStats = new ArrayList<>();
-        final List<String[][]> remTagDV = new ArrayList<>();
-        phase4bSpill = buildCompressedBlocks(toCompress4b, remCompressed, remMeta, remStats, remTagDV, true);
-        if (!remCompressed.isEmpty())
-          sealedStore.appendBlocksToTempFile(remCompressed, remMeta, remStats, remTagDV, newBlockDirectory);
-      }
+      if (phase4aPageCount - 1 > lastFullPage)
+        spill = compactFullPages(db, lastFullPage + 1, phase4aPageCount - 1, spill, newBlockDirectory);
 
       readyForPhase4c = true;
     } finally {
@@ -1641,27 +1605,15 @@ public class TimeSeriesShard implements AutoCloseable {
         // lock-free Phase 4b would otherwise be lost when clearDataPages() runs.
         // phase4aPageCount is always >= lastFullPage + 1 (Phase 0 returns early when there are
         // no data pages), and finalPageCount is always >= phase4aPageCount (pages only grow),
-        // so the range starting at phase4aPageCount is always valid.
-        final Object[] tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount, finalPageCount);
-
-        // Merge Phase 4b spill with tail data
-        final Object[] toCompressFinal;
-        if (phase4bSpill != null && tailData != null)
-          toCompressFinal = mergeCompactionData(phase4bSpill, tailData);
-        else if (phase4bSpill != null)
-          toCompressFinal = phase4bSpill;
-        else
-          toCompressFinal = tailData;
-
-        if (toCompressFinal != null) {
-          final List<byte[][]> tailCompressed = new ArrayList<>();
-          final List<long[]> tailMeta = new ArrayList<>();
-          final List<TimeSeriesSealedStore.BlockStats> tailStats = new ArrayList<>();
-          final List<String[][]> tailTagDV = new ArrayList<>();
-          buildCompressedBlocks(toCompressFinal, tailCompressed, tailMeta, tailStats, tailTagDV, false);
-          if (!tailCompressed.isEmpty())
-            sealedStore.appendBlocksToTempFile(tailCompressed, tailMeta, tailStats, tailTagDV, newBlockDirectory);
+        // so the range starting at phase4aPageCount is always valid. Read a window at a time, as the phases before.
+        final int pagesPerWindow = pagesPerCompactionWindow();
+        for (int windowStart = phase4aPageCount; windowStart <= finalPageCount; windowStart += pagesPerWindow) {
+          final int windowEnd = Math.min(finalPageCount, windowStart + pagesPerWindow - 1);
+          spill = compressToTempFile(concatCompactionData(spill, mutableBucket.readPagesRangeForCompaction(windowStart, windowEnd)),
+              windowEnd < finalPageCount, newBlockDirectory);
         }
+        // whatever is left becomes blocks now
+        compressToTempFile(spill, false, newBlockDirectory);
 
         // Atomically swap temp file into the sealed store; updates in-memory blockDirectory.
         sealedStore.commitTempCompactionFile(newBlockDirectory);
@@ -1669,9 +1621,8 @@ public class TimeSeriesShard implements AutoCloseable {
         // Capture the rewritten sealed-store bytes so the HA layer can ship them to followers in the
         // SAME replication unit as the mutable-bucket clear below. The sealed store is not a paginated
         // component, so it does not replicate via the page WAL; recording it here keeps the sealed
-        // blocks and the clear atomic. No-op on a standalone database.
-        db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(),
-            sealedStore.readWholeSealedFile());
+        // blocks and the clear atomic. Skipped on a standalone database.
+        recordSealedChange(db, typeName, shardIndex, sealedStore);
 
         final Runnable afterSwapHook = TEST_PHASE4C_AFTER_SWAP_HOOK;
         if (afterSwapHook != null)
@@ -1854,6 +1805,80 @@ public class TimeSeriesShard implements AutoCloseable {
       result[i] = merged;
     }
     return result;
+  }
+
+  /** {@link #mergeCompactionData} where either side may be {@code null}, meaning no samples. */
+  private static Object[] concatCompactionData(final Object[] a, final Object[] b) {
+    if (a == null)
+      return b;
+    if (b == null)
+      return a;
+    return mergeCompactionData(a, b);
+  }
+
+  /**
+   * How many data pages one compaction window reads: as many as hold {@link #COMPACTION_WINDOW_SAMPLES} samples, at least one.
+   */
+  private int pagesPerCompactionWindow() {
+    return Math.max(1, COMPACTION_WINDOW_SAMPLES / Math.max(1, mutableBucket.getMaxSamplesPerPage()));
+  }
+
+  /**
+   * Compacts the full (immutable) data pages {@code [fromPage, toPage]} into the temp file, one window of pages at a time: each
+   * window is read in a read-only transaction of its own, merged with the spill of the window before, sorted, compressed and
+   * appended to the temp file before the next one is read. The heap therefore holds one window of samples and the blocks built
+   * from it, never the whole range.
+   * <p>
+   * Each window is sorted on its own, so samples that arrive out of order across windows can end up in blocks that overlap in
+   * time, which the sealed store accepts (a later compaction pass produces the same shape).
+   *
+   * @return the spill of the last window: the raw samples of its last partial chunk, for the caller to carry on, or {@code null}
+   */
+  private Object[] compactFullPages(final DatabaseInternal db, final int fromPage, final int toPage, Object[] spill,
+      final List<TimeSeriesSealedStore.BlockEntry> blockDirectory) throws IOException {
+    final int pagesPerWindow = pagesPerCompactionWindow();
+    for (int windowStart = fromPage; windowStart <= toPage; windowStart += pagesPerWindow) {
+      final int windowEnd = Math.min(toPage, windowStart + pagesPerWindow - 1);
+      final Object[] windowData;
+      final OwnTransaction snapshot = OwnTransaction.begin(db);
+      try {
+        windowData = mutableBucket.readPagesRangeForCompaction(windowStart, windowEnd);
+      } finally {
+        snapshot.rollbackIfMine(); // read-only: rollback is always safe, and only ever of our own
+      }
+      spill = compressToTempFile(concatCompactionData(spill, windowData), true, blockDirectory);
+    }
+    return spill;
+  }
+
+  /**
+   * Sorts and compresses {@code data} with {@link #buildCompressedBlocks} and appends the blocks to the temp file at once.
+   *
+   * @return the spill when {@code returnSpill} is {@code true}, otherwise {@code null}
+   */
+  private Object[] compressToTempFile(final Object[] data, final boolean returnSpill,
+      final List<TimeSeriesSealedStore.BlockEntry> blockDirectory) throws IOException {
+    if (data == null)
+      return null;
+    final List<byte[][]> compressed = new ArrayList<>();
+    final List<long[]> meta = new ArrayList<>();
+    final List<TimeSeriesSealedStore.BlockStats> stats = new ArrayList<>();
+    final List<String[][]> tagDV = new ArrayList<>();
+    final Object[] spill = buildCompressedBlocks(data, compressed, meta, stats, tagDV, returnSpill);
+    if (!compressed.isEmpty())
+      sealedStore.appendBlocksToTempFile(compressed, meta, stats, tagDV, blockDirectory);
+    return spill;
+  }
+
+  /**
+   * Hands the rewritten sealed file of a shard to the replication of the current maintenance session. Only a replicated database
+   * ships it, so only a replicated database reads it: the file is read whole into one array, which a standalone database would
+   * allocate for nothing on every compaction, merge, retention pass and delete.
+   */
+  static void recordSealedChange(final DatabaseInternal db, final String typeName, final int shardIndex,
+      final TimeSeriesSealedStore sealedStore) throws IOException {
+    if (db.isReplicated())
+      db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
   }
 
   /**
