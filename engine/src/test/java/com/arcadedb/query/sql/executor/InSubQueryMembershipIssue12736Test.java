@@ -46,6 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class InSubQueryMembershipIssue12736Test extends TestHelper {
 
+  /** Rows of L besides 'a' and 'c': with them the sub-query is well past the size below which its rows are scanned. */
+  private static final int LARGE_PADDING_ROWS = 40;
+
   @Override
   protected void beginTest() {
     final DocumentType p = database.getSchema().createDocumentType("P");
@@ -64,6 +67,21 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
     database.getSchema().createDocumentType("SN").createProperty("sname", Type.STRING);
     database.getSchema().createDocumentType("SM");
     database.getSchema().createDocumentType("T").createProperty("tags", Type.LIST);
+
+    // Enough rows for the sub-query to be probed rather than scanned: S, SN, SM and T above stay below that size
+    final DocumentType l = database.getSchema().createDocumentType("L");
+    l.createProperty("lname", Type.STRING);
+    l.createProperty("lnull", Type.STRING);
+    l.createProperty("llong", Type.LONG);
+    l.createProperty("ldbl", Type.DOUBLE);
+
+    database.transaction(() -> {
+      for (int i = 0; i < LARGE_PADDING_ROWS; i++)
+        database.newDocument("L").set("lname", "pad" + i).set("lnull", i == 7 ? null : "pad" + i).set("llong", 1000L + i)
+            .set("ldbl", 1000.5 + i).save();
+      database.newDocument("L").set("lname", "a").set("lnull", "a").set("llong", 1L).set("ldbl", 1.0).save();
+      database.newDocument("L").set("lname", "c").set("lnull", "c").set("llong", 3L).set("ldbl", 2.5).save();
+    });
 
     database.transaction(() -> {
       final RID s1 = source("a", 1L, 1.0, 2);
@@ -93,6 +111,34 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
     assertThat(ids("SELECT id FROM P WHERE name IN (SELECT sname FROM S)")).containsExactly(1, 3);
     // The NULL name is UNKNOWN against a non-empty sub-query, so NOT IN leaves it out as well
     assertThat(ids("SELECT id FROM P WHERE name NOT IN (SELECT sname FROM S)")).containsExactly(2, 4, 6);
+  }
+
+  /**
+   * The answers of the small sub-queries above, over a sub-query large enough to be answered from the probe: a probe that
+   * disagreed with the scan would move them.
+   */
+  @Test
+  void aLargeSubQueryAnswersLikeTheScan() {
+    assertThat(ids("SELECT id FROM P WHERE name IN (SELECT lname FROM L)")).containsExactly(1, 3);
+    assertThat(ids("SELECT id FROM P WHERE name NOT IN (SELECT lname FROM L)")).containsExactly(2, 4, 6);
+
+    // INTEGER property against LONG rows, and against DOUBLE rows (1.0, 2.5, 1000.5, ...)
+    assertThat(ids("SELECT id FROM P WHERE num IN (SELECT llong FROM L)")).containsExactly(1, 3);
+    assertThat(ids("SELECT id FROM P WHERE num NOT IN (SELECT llong FROM L)")).containsExactly(2, 4, 6);
+    assertThat(ids("SELECT id FROM P WHERE num IN (SELECT ldbl FROM L)")).containsExactly(1);
+    assertThat(ids("SELECT id FROM P WHERE num NOT IN (SELECT ldbl FROM L)")).containsExactly(2, 3, 4, 6);
+    // DOUBLE property against LONG rows (1, 3, 1000, ...)
+    assertThat(ids("SELECT id FROM P WHERE dbl IN (SELECT llong FROM L)")).containsExactly(1, 3);
+    assertThat(ids("SELECT id FROM P WHERE dbl NOT IN (SELECT llong FROM L)")).containsExactly(2, 4, 6);
+
+    // A NULL row makes every miss UNKNOWN
+    assertThat(ids("SELECT id FROM P WHERE name IN (SELECT lnull FROM L)")).containsExactly(1, 3);
+    assertThat(ids("SELECT id FROM P WHERE name NOT IN (SELECT lnull FROM L)")).isEmpty();
+
+    // A bound left operand is converted to the row type, as for "="
+    assertThat(ids("SELECT id FROM P WHERE :v IN (SELECT llong FROM L)", Map.of("v", "3"))).containsExactly(1, 2, 3, 4, 5, 6);
+    assertThat(ids("SELECT id FROM P WHERE :v IN (SELECT llong FROM L)", Map.of("v", 4.0))).isEmpty();
+    assertThat(ids("SELECT id FROM P WHERE :v NOT IN (SELECT lname FROM L)", Map.of("v", "q"))).containsExactly(1, 2, 3, 4, 5, 6);
   }
 
   @Test
@@ -179,11 +225,18 @@ class InSubQueryMembershipIssue12736Test extends TestHelper {
     assertThat(ids(sql)).containsExactly(1, 3);
     database.transaction(() -> database.command("sql", "INSERT INTO S SET sname = 'd'"));
     assertThat(ids(sql)).containsExactly(1, 3, 4);
+
+    // The same over a probed sub-query: the probe of the first execution must not answer the second
+    final String large = "SELECT id FROM P WHERE name IN (SELECT lname FROM L)";
+    assertThat(ids(large)).containsExactly(1, 3);
+    database.transaction(() -> database.command("sql", "INSERT INTO L SET lname = 'e'"));
+    assertThat(ids(large)).containsExactly(1, 3, 6);
   }
 
   /**
    * The rows of an uncorrelated sub-query are read to build the membership, then never again: before the fix every outer row
-   * walked all of them. Counted on the rows themselves, so no timing is involved.
+   * walked all of them. Counted on the rows themselves, so no timing is involved. The list must stay at 32 rows or more: a
+   * shorter one is scanned on purpose, since building the probe would cost more than the scan it saves.
    */
   @Test
   void theRowsOfTheSameSubQueryAreNotReadAgainForEveryOuterRow() {
