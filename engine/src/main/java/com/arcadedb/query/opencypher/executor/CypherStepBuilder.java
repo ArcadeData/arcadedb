@@ -187,7 +187,7 @@ final class CypherStepBuilder {
     final List<MatchClause> currentSegmentMatchClauses = new ArrayList<>();
     // See buildExecutionStepsWithOrder(): the same read/write barrier analysis, over the same clause list
     // (issue #7171). This path never sees a CALL or a FOREACH, so only CREATE and MERGE are weighed here.
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
     final Set<String> optimizerBoundVariables = new HashSet<>();
     if (clausesInOrder != null) {
       for (final ClauseEntry entry : clausesInOrder) {
@@ -584,7 +584,7 @@ final class CypherStepBuilder {
 
     // Shape of everything read so far, weighed against each write clause's own shape to decide where an
     // eager read/write barrier has to go so the query never reads back what it just created (issue #7171).
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
 
     // Both count push-downs answer from the schema and the CSR arrays alone: they read the statement's patterns and
     // never look at the incoming rows. That makes the enumerating form of them wrong the moment the seed row binds
@@ -1833,7 +1833,7 @@ final class CypherStepBuilder {
     // single-segment by construction, so the whole MATCH list is the read footprint for both writes below.
     // legacyBoundVariables already holds every variable the MATCH clauses above bound, which is what tells a
     // CREATE/MERGE node that names an existing entity from one that creates a new one.
-    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement);
+    final CypherEagernessAnalyzer eagerness = CypherEagernessAnalyzer.forStatement(statement, parameters);
     for (final MatchClause matchClause : statement.getMatchClauses())
       eagerness.observeRead(matchClause);
 

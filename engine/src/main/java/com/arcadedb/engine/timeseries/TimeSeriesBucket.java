@@ -151,6 +151,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
   private int[]                   nullBits;
   // Per-row scratch for the null bitmap the append loop writes; a component is appended to by one transaction at a time.
   private byte[]                  nullBitmapScratch;
+  // The most samples one compaction read decoded at once (see getLargestCompactionRead). Written by the compaction of the shard,
+  // which compactionMutex serializes.
+  private volatile int            largestCompactionRead;
   // Indexed by the ordinal among non-timestamp columns: whether that column is a 4-byte dictionary id.
   private boolean[]                     dictEncoded;
   // The ordinals of the dictionary-encoded columns, so the ingest path can walk only those.
@@ -1396,8 +1399,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
   /**
    * Reads samples from data pages fromPage..toPage using the current transaction.
-   * Used by Phase 4 of lock-free compaction (under write lock) to read the partial
-   * last page(s) that arrived after the Phase 0 snapshot.
+   * Compaction calls it one window of pages at a time, so the caller decides how many samples it holds at once.
+   * The samples are decoded straight into the column arrays it returns, with no intermediate row per sample.
    *
    * @param fromPage first data page to read (inclusive, ≥ 1)
    * @param toPage   last data page to read (inclusive, ≥ fromPage)
@@ -1405,16 +1408,46 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * @return parallel arrays [long[] timestamps, Object[] col1, ...], or null if empty
    */
   public Object[] readPagesRangeForCompaction(final int fromPage, final int toPage) throws IOException {
-    final List<Object[]> allRows = new ArrayList<>();
+    if (toPage < fromPage)
+      return null;
+    final TransactionContext tx = database.getTransaction();
+    final BasePage[] pages = new BasePage[toPage - fromPage + 1];
+    int total = 0;
     for (int pageNum = fromPage; pageNum <= toPage; pageNum++) {
-      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
-      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
-      if (sampleCount == 0)
-        continue;
-      for (int row = 0; row < sampleCount; row++)
-        allRows.add(readRow(page, DATA_ROWS_OFFSET + row * rowSize, null));
+      final BasePage page = tx.getPage(new PageId(database, fileId, pageNum), pageSize);
+      pages[pageNum - fromPage] = page;
+      total += page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
     }
-    return allRows.isEmpty() ? null : rowsToCompactionArrays(allRows);
+    if (total == 0)
+      return null;
+    if (total > largestCompactionRead)
+      largestCompactionRead = total;
+
+    final int totalCols = columns.size();
+    final long[] timestamps = new long[total];
+    final Object[] result = new Object[totalCols];
+    result[0] = timestamps;
+    final Object[][] colArrays = new Object[totalCols - 1][];
+    for (int c = 0; c < colArrays.length; c++) {
+      colArrays[c] = new Object[total];
+      result[c + 1] = colArrays[c];
+    }
+
+    int index = 0;
+    for (final BasePage page : pages) {
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      for (int row = 0; row < sampleCount; row++)
+        readRowInto(page, DATA_ROWS_OFFSET + row * rowSize, timestamps, colArrays, index++);
+    }
+    return result;
+  }
+
+  /**
+   * The most samples one {@link #readPagesRangeForCompaction} call has decoded at once in the life of this bucket: what a
+   * compaction holds of the mutable pages at a time. Read by tests.
+   */
+  int getLargestCompactionRead() {
+    return largestCompactionRead;
   }
 
   /**
@@ -2009,6 +2042,24 @@ public class TimeSeriesBucket extends PaginatedComponent {
       }
     }
     return result;
+  }
+
+  /**
+   * {@link #readRow} of every column, written at {@code index} of the compaction column arrays instead of into a row of its own.
+   */
+  private void readRowInto(final BasePage page, final int rowOffset, final long[] timestamps, final Object[][] colArrays,
+      final int index) {
+    timestamps[index] = page.readLong(rowOffset);
+    int colOffset = rowOffset + valuesOffset;
+    int colIdx = 0;
+    for (int c = 0; c < columns.size(); c++) {
+      final ColumnDefinition col = columns.get(c);
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      colArrays[colIdx][index] = isNullAt(page, rowOffset, colIdx) ? null : readColumnValue(page, colOffset, col, colIdx);
+      colOffset += getColumnStorageSize(page, colOffset, col, colIdx);
+      colIdx++;
+    }
   }
 
   /**

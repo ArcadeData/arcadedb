@@ -209,27 +209,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
           if (statement.isReadOnly())
             return CollectionUtils.singletonSet(OperationType.READ);
 
+          // Every write the statement can run, read from the whole clause tree: what a subquery, a FOREACH body or a union branch
+          // writes counts as what the top-level clauses write. A schema-changing procedure is a SCHEMA operation as its SQL
+          // statement is, not the CREATE/UPDATE/DELETE fallback below; data writes next to it keep their own types (issue #11438)
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
-          // below; data writes next to it keep their own types (issue #11438)
-          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
-          if (schemaProcedureCall)
-            ops.add(OperationType.SCHEMA);
-          if (statement.hasCreate())
-            ops.add(OperationType.CREATE);
-          if (statement.hasMerge()) {
-            ops.add(OperationType.CREATE);
-            ops.add(OperationType.UPDATE);
-          }
-          if (statement.hasDelete())
-            ops.add(OperationType.DELETE);
-          if (statement.hasSet())
-            ops.add(OperationType.UPDATE);
-          if (statement.hasRemove())
-            ops.add(OperationType.UPDATE);
+          statement.collectWriteOperations(ops);
           if (ops.isEmpty())
             return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
+          return Set.copyOf(ops);
         }
       };
     } catch (final CommandParsingException e) {

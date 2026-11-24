@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.OperationType;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Cypher 25 conditional query (issue #9940):
@@ -44,7 +47,7 @@ public class ConditionalStatement implements CypherStatement {
   private final List<CypherStatement> branches;
   private final CypherStatement       elseBranch;
   private final List<CypherStatement> allBranches;
-  private final boolean               conditionCallsUnconfirmedFunction;
+  private final boolean               conditionsMayWrite;
 
   /**
    * @param conditions one condition per {@code WHEN} branch, in written order
@@ -68,13 +71,15 @@ public class ConditionalStatement implements CypherStatement {
     if (elseBranch != null)
       all.add(elseBranch);
     this.allBranches = Collections.unmodifiableList(all);
-    boolean unconfirmed = false;
+    // A condition is evaluated before any branch runs, so a function it calls that may run a body of its own counts as a write
+    // of the statement, as it does in a clause (issue #6418)
+    boolean mayWrite = false;
     for (final Expression condition : this.conditions)
-      if (SimpleCypherStatement.anyUnresolvedFunctionCall(condition)) {
-        unconfirmed = true;
+      if (SimpleCypherStatement.callsUnresolvedFunction(condition)) {
+        mayWrite = true;
         break;
       }
-    this.conditionCallsUnconfirmedFunction = unconfirmed;
+    this.conditionsMayWrite = mayWrite;
   }
 
   public List<Expression> getConditions() {
@@ -99,13 +104,9 @@ public class ConditionalStatement implements CypherStatement {
     return allBranches;
   }
 
-  /**
-   * A condition is evaluated before any branch is chosen, so a call in one that is not confirmed to be a built-in function
-   * makes the statement a write statement whatever its branches do, as such a call does in any other clause.
-   */
   @Override
   public boolean isReadOnly() {
-    if (conditionCallsUnconfirmedFunction)
+    if (conditionsMayWrite)
       return false;
     for (final CypherStatement branch : getAllBranches())
       if (!branch.isReadOnly())
@@ -115,7 +116,7 @@ public class ConditionalStatement implements CypherStatement {
 
   @Override
   public boolean hasUnconfirmedFunctionCall() {
-    if (conditionCallsUnconfirmedFunction)
+    if (conditionsMayWrite)
       return true;
     for (final CypherStatement branch : getAllBranches())
       if (branch.hasUnconfirmedFunctionCall())
@@ -178,6 +179,18 @@ public class ConditionalStatement implements CypherStatement {
       if (branch.hasSchemaProcedureCall())
         return true;
     return false;
+  }
+
+  /**
+   * The writes of every branch, the ones nested in a branch's subqueries and {@code FOREACH} bodies included, and every data
+   * write when a condition calls a function that may run a body of its own.
+   */
+  @Override
+  public void collectWriteOperations(final Set<OperationType> operations) {
+    if (conditionsMayWrite)
+      SimpleCypherStatement.addEveryDataWrite(operations);
+    for (final CypherStatement branch : getAllBranches())
+      branch.collectWriteOperations(operations);
   }
 
   private static void requireNotConditional(final CypherStatement branch) {
