@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
@@ -580,7 +581,7 @@ class SuperNodeStripingTest extends TestHelper {
     // name is one of its own and is not handed to another type
     database.transaction(() -> {
       database.getSchema().createVertexType("Src", 8);
-      final com.arcadedb.engine.Bucket collision = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
+      final Bucket collision =database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
       database.getSchema().getType("Src").addBucket(collision);
       database.getSchema().createVertexType("Hub", 1);
       database.getSchema().createEdgeType("LINK", 8);

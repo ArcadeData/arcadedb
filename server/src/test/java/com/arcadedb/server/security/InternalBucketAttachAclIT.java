@@ -116,6 +116,7 @@ class InternalBucketAttachAclIT extends BaseGraphServerTest {
     createSecretTypes();
     final String auth = basicAuth(SCOPED_USER, SCOPED_PWD);
 
+    // ALTER TYPE ... BUCKET +name creates the bucket when no bucket has that name, and a bucket of no type is attached as before
     assertThat(sql(auth, "command", "ALTER TYPE " + PUBLIC_DOC + " BUCKET +FreeBucket")).as(lastResponseBody).isEqualTo(200);
     assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getType(PUBLIC_DOC).hasBucket("FreeBucket")).isTrue();
     assertThat(sql(auth, "query", "SELECT FROM bucket:FreeBucket")).isEqualTo(200);
