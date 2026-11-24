@@ -314,22 +314,28 @@ class CypherMergeEdgeCommitConflictTest extends TestHelper {
         }
       });
       thread.start();
-      try {
-        thread.join();
-      } catch (final InterruptedException e) {
+      boolean interrupted = false;
+      while (thread.isAlive())
+        try {
+          thread.join();
+        } catch (final InterruptedException e) {
+          interrupted = true;
+        }
+      if (interrupted)
         Thread.currentThread().interrupt();
-      }
     });
     try {
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
       database.command("opencypher", statement, Map.of()).close();
-      database.commit();
+      try {
+        database.commit();
+      } catch (final RuntimeException e) {
+        for (Throwable t = e; t != null; t = t.getCause())
+          if (t instanceof ConcurrentModificationException)
+            return false;
+        throw e;
+      }
       return true;
-    } catch (final RuntimeException e) {
-      for (Throwable t = e; t != null; t = t.getCause())
-        if (t instanceof ConcurrentModificationException)
-          return false;
-      throw e;
     } finally {
       if (database.isTransactionActive())
         database.rollback();

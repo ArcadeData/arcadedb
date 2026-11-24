@@ -240,11 +240,15 @@ class CypherSetBuildsOnConcurrentCommitTest extends TestHelper {
         }
       });
       concurrent.start();
-      try {
-        concurrent.join();
-      } catch (final InterruptedException e) {
+      boolean interrupted = false;
+      while (concurrent.isAlive())
+        try {
+          concurrent.join();
+        } catch (final InterruptedException e) {
+          interrupted = true;
+        }
+      if (interrupted)
         Thread.currentThread().interrupt();
-      }
     });
     try {
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
