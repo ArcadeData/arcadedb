@@ -199,6 +199,7 @@ class MissingObjectRefusalCensusTest {
           "a column the YIELD names that the procedure (which exists) does not declare: the statement's own syntax error, worded "
               + "as Neo4j words it (Unknown procedure output), not a missing procedure (issue #11975)"),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkExpressionScope", VARIABLE),
+      Map.entry("query/opencypher/parser/VariableScopeValidator#checkImportingWithReferencesOnlyPlainNames", VARIABLE),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkPatternPredicateVariables", VARIABLE),
       Map.entry("query/opencypher/parser/VariableScopeValidator#checkVarNotShadowed", VARIABLE),
       Map.entry("query/opencypher/parser/VariableScopeValidator#validateDeleteClauseScope", VARIABLE),
