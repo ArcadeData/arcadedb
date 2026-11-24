@@ -22,9 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -62,9 +62,76 @@ class Issue12792CollectionIndexScalarKeyTest extends TestHelper {
       "li = 5", "li = true", "li IN [5, 6]", "li > 5", "li < 5", "li BETWEEN 1 AND 9", "li = date('2020-01-01', 'yyyy-MM-dd')", //
       "l = 5", "l = true", "l IN [5, 6]", "l > 5", "l BETWEEN 1 AND 9", //
       "m = 5", "m = 'a'", "m IN [5, 'a']", "m > 5", "m BETWEEN 1 AND 9", //
-      "li = [1, 2]", "li IN [[1, 2]]", "tags = ['a', 'b']", "m = {'a': 1}" })
+      "li = [1, 2]", "li IN [[1, 2]]", "li IN [1, 2]", "tags = ['a', 'b']", "m = {'a': 1}" })
   void selectAnswersAsWithoutTheIndex(final String where) {
     assertThat(sqlCount("SELECT FROM P WHERE " + where)).as(where).isEqualTo(sqlCount("SELECT FROM Q WHERE " + where));
+  }
+
+  /**
+   * SQL compares a scalar with a list as the singleton list it converts the scalar to, so {@code li = 5} matches a stored
+   * {@code [5]} (the list a LIST OF property stores for {@code SET li = 5}). Through the index the lookup has to find that row
+   * too. Type {@code S} carries the indexes, type {@code T} holds the same row without them.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { //
+      "li = 5", "li IN [5]", "li IN [5, 6]", "li = 6", "li = '5'", "li = 5.0", "li = 5.5", "li = 'x'", "li = true",
+      "li = date('2020-01-01', 'yyyy-MM-dd')", "li = [5]", "li IN [[5]]", //
+      "tags = 's'", "tags IN ['s', 't']", "tags = 't'", "tags = ['s']", "tags = 5", "tags = date('2020-01-01', 'yyyy-MM-dd')", //
+      "l = 9", "l IN [9]", "l = [9]", "l = 9.0", "l = 'x'", "l = true", "l = date('2020-01-01', 'yyyy-MM-dd')", //
+      "m = 2", "m = {'b': 2}" })
+  void singletonListAnswersAsWithoutTheIndex(final String where) {
+    createSingletonTypes();
+    final long scanned = sqlCount("SELECT FROM T WHERE " + where);
+    assertThat(sqlCount("SELECT FROM S WHERE " + where)).as(where).isEqualTo(scanned);
+  }
+
+  @Test
+  void singletonListScalarLookupUsesTheIndex() {
+    createSingletonTypes();
+    try (final ResultSet rs = database.query("sql", "SELECT FROM S WHERE li = 5")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("FETCH FROM INDEX S[li]");
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT FROM S WHERE li IN [5, 6]")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+    }
+    database.transaction(() -> {
+      assertThat(count(database.command("sql", "UPDATE S SET x = 1 WHERE li = 5"))).isEqualTo(1L);
+      assertThat(count(database.command("sql", "DELETE FROM S WHERE tags = 's'"))).isEqualTo(1L);
+    });
+    assertThat(sqlCount("SELECT FROM S")).isZero();
+  }
+
+  /** openCypher keeps a scalar apart from a list ({@code [5] = 5} is false): the index answers no row there, as the scan does. */
+  @Test
+  void cypherKeepsAScalarApartFromASingletonList() {
+    createSingletonTypes();
+    for (final Object p : List.of(5, "s", 9)) {
+      for (final String property : List.of("li", "tags", "l")) {
+        final long indexed = database.query("opencypher", "MATCH (n:S) WHERE n." + property + " = $p RETURN n", Map.of("p", p)).stream()
+            .count();
+        final long scanned = database.query("opencypher", "MATCH (n:T) WHERE n." + property + " = $p RETURN n", Map.of("p", p)).stream()
+            .count();
+        assertThat(indexed).as("%s = %s", property, p).isEqualTo(scanned).isZero();
+      }
+    }
+  }
+
+  private void createSingletonTypes() {
+    database.transaction(() -> {
+      for (final String type : List.of("S", "T")) {
+        database.command("sql", "CREATE VERTEX TYPE " + type);
+        database.command("sql", "CREATE PROPERTY " + type + ".tags LIST OF STRING");
+        database.command("sql", "CREATE PROPERTY " + type + ".li LIST OF INTEGER");
+        database.command("sql", "CREATE PROPERTY " + type + ".l LIST");
+        database.command("sql", "CREATE PROPERTY " + type + ".m MAP");
+        // li = 5 is stored as [5] (LIST OF coercion, #9028)
+        database.command("sql", "INSERT INTO " + type + " SET tags = ['s'], li = 5, l = [9], m = {'b': 2}");
+      }
+      for (final String property : List.of("tags", "li", "l", "m"))
+        database.command("sql", "CREATE INDEX ON S (" + property + ") NOTUNIQUE");
+    });
+    assertThat(sqlCount("SELECT FROM T WHERE li = [5]")).isEqualTo(1);
   }
 
   @Test
