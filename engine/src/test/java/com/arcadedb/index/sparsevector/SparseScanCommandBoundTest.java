@@ -31,6 +31,7 @@ import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.query.RunningQuery;
 import com.arcadedb.query.RunningQueryRegistry;
 import com.arcadedb.query.sql.executor.WorkGuard;
+import com.arcadedb.utility.StallAwareStopwatch;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -161,6 +162,31 @@ class SparseScanCommandBoundTest extends TestHelper {
         null, WorkGuard.forDeadline("the scan", System.currentTimeMillis() - 1))).isInstanceOf(TimeoutException.class);
     assertThat(opened.get()).as("cursor sets opened").isZero();
     assertThat(moves.get()).as("cursors started or moved").isZero();
+  }
+
+  @Test
+  void aWaitForTasksQueuedOnThePoolEndsWithTheDeadlineOfTheCommand() throws Exception {
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicInteger finished = new AtomicInteger();
+    final List<Callable<Integer>> tasks = new ArrayList<>();
+    for (int i = 0; i < 3; i++) {
+      final int id = i;
+      tasks.add(() -> {
+        release.await(60, TimeUnit.SECONDS);
+        finished.incrementAndGet();
+        return id;
+      });
+    }
+
+    try {
+      final StallAwareStopwatch watch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> SparseVectorScoringPool.runAll(tasks, false,
+          WorkGuard.forDeadline("the wait", System.currentTimeMillis() + 300))).isInstanceOf(TimeoutException.class);
+      watch.assertGaveUpWithin(30_000, "a wait honouring the deadline of the command against one that waits for the held tasks");
+      assertThat(finished.get()).as("the wait ended while the tasks were still held").isZero();
+    } finally {
+      release.countDown();
+    }
   }
 
   @Test

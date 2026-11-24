@@ -544,7 +544,8 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
     final long sliceNs = TimeUnit.MILLISECONDS.toNanos(GUARDED_WAIT_SLICE_MS);
     while (!future.isDone()) {
       guard.check();
-      long waitNs = sliceNs;
+      // A slice never outlasts the command's own deadline, so the wait ends when it passes, not up to a slice later
+      long waitNs = Math.min(sliceNs, TimeUnit.MILLISECONDS.toNanos(Math.max(1L, guard.millisToDeadline())));
       if (bounded) {
         final long remainingNs = deadlineNs - System.nanoTime();
         if (remainingNs <= 0L)
