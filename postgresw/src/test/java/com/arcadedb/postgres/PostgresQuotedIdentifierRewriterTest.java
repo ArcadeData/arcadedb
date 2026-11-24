@@ -419,12 +419,11 @@ class PostgresQuotedIdentifierRewriterTest {
     assertThat(on("SELECT E'abc\\'")).isEqualTo("SELECT E'abc\\'");
   }
 
-  /*
-   * A single-quoted literal is read with PostgreSQL's rules wherever it stands, inside an ArcadeDB JSON object included: a
-   * client that composes the statement text itself (psycopg2, pgjdbc with preferQueryMode=simple) writes a value as a
-   * PostgreSQL literal, so the three passes - identifiers, literals and statement splitting - must agree with it on where
-   * the literal ends.
-   */
+  // A single-quoted literal is read with PostgreSQL's rules wherever it stands, inside an ArcadeDB JSON object included: a
+  // client that composes the statement text itself (psycopg2, pgjdbc with preferQueryMode=simple) writes a value as a
+  // PostgreSQL literal, so the three passes - identifiers, literals and statement splitting - must agree with it on where
+  // the literal ends.
+
   /** The value written as a client composing the text writes it while standard_conforming_strings is on. */
   private static String clientLiteral(final String value) {
     return "'" + value.replace("'", "''") + "'";
