@@ -329,7 +329,7 @@ class SqlReadLaneOracleTest extends TestHelper {
   }
 
   @Test
-  void aRidListTargetReturnsARecordOncePerOccurrenceAndSkipsForeignAndDeletedRids() {
+  void aRidListTargetReturnsARecordOncePerOccurrenceAndSkipsForeignAndNeverExistingRids() {
     final String query = "alpha";
     final List<String> list = new ArrayList<>();
     final Set<String> wanted = new HashSet<>();
@@ -354,6 +354,36 @@ class SqlReadLaneOracleTest extends TestHelper {
       assertThat(number(r, "s")).isCloseTo(expected[rids.indexOf(r.getProperty("rid").toString())], within(1e-4));
     if (wanted.contains(duplicated))
       assertThat(seen.get(duplicated)).isEqualTo(2);
+  }
+
+  @Test
+  void aPlainRidListTargetSkipsADeletedAndANeverExistingRidAndKeepsDuplicatesAndOtherTypes() {
+    database.transaction(() -> database.command("sql", "DELETE FROM Chunk WHERE external_id = 'c4'"));
+    final List<String> list = new ArrayList<>(rids.subList(0, 10));
+    list.add(rids.get(2));
+    list.add(entityRids.get(0));
+    list.add("#999:1");
+    final String target = "[" + String.join(", ", list) + "]";
+
+    final List<String> expected = new ArrayList<>(list);
+    expected.remove(rids.get(4));
+    expected.remove("#999:1");
+    final List<String> got = new ArrayList<>();
+    rows("SELECT @rid AS rid FROM " + target, Map.of()).forEach(r -> got.add(r.getProperty("rid").toString()));
+    assertThat(got).containsExactlyElementsOf(expected);
+
+    final List<String> filtered = new ArrayList<>();
+    rows("SELECT @rid AS rid FROM " + target + " WHERE group_id = 'g1'", Map.of())
+        .forEach(r -> filtered.add(r.getProperty("rid").toString()));
+    final List<String> expectedFiltered = new ArrayList<>();
+    for (final String rid : expected)
+      if (rids.contains(rid) && groups.get(rids.indexOf(rid)).equals("g1"))
+        expectedFiltered.add(rid);
+    assertThat(filtered).isNotEmpty().containsExactlyElementsOf(expectedFiltered);
+
+    final List<String> paged = new ArrayList<>();
+    rows("SELECT @rid AS rid FROM " + target + " SKIP 3 LIMIT 4", Map.of()).forEach(r -> paged.add(r.getProperty("rid").toString()));
+    assertThat(paged).containsExactlyElementsOf(expected.subList(3, 7));
   }
 
   @Test
