@@ -129,6 +129,31 @@ class NegativeSkipTest extends TestHelper {
     }
   }
 
+  /**
+   * A MATCH on a type with no record is planned as an empty plan before any RETURN is looked at: the SKIP is still refused there, as
+   * a SELECT on an empty type or with a filter false by construction refuses it.
+   */
+  @Test
+  void negativeSkipOnAMatchOverAnEmptyTypeIsRefused() {
+    database.getSchema().createVertexType("NegSkipEmptyV");
+
+    assertThatThrownBy(() -> drain("MATCH {type: NegSkipEmptyV, as: a} RETURN $elements SKIP -1", Map.of())).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+    assertThatThrownBy(() -> drain("MATCH {type: NegSkipEmptyV, as: a} RETURN a SKIP -1", Map.of())).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+    assertThatThrownBy(() -> drain("SELECT FROM NegSkipEmptyV SKIP -1", Map.of())).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("negative SKIP");
+    assertThatThrownBy(() -> drain("SELECT FROM NegSkip WHERE 1 = 2 SKIP -1", Map.of())).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+
+    try (final ResultSet rs = database.query("sql", "MATCH {type: NegSkipEmptyV, as: a} RETURN $elements SKIP 1")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("sql", "MATCH {type: NegSkipEmptyV, as: a} RETURN a SKIP 0")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
   @Test
   void zeroAndPositiveSkipStillWork() {
     try (final ResultSet rs = database.query("sql", "SELECT id FROM NegSkip ORDER BY id SKIP 0")) {

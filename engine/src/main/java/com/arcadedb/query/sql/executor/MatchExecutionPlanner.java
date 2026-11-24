@@ -152,6 +152,9 @@ public class MatchExecutionPlanner {
     // AN OPTIONAL NODE WITH NOTHING TO MATCH IS BOUND TO null, IT DOES NOT EMPTY THE RESULT (ISSUE #12749)
     if (hasMandatoryEmptyAlias(estimatedRootEntries)) {
       result.chain(new EmptyStep(context));
+      // the SKIP step is what refuses a negative SKIP, also when no row can come (issue #12683), as on a SELECT folded empty
+      if (skip != null)
+        result.chain(new SkipExecutionStep(skip, context));
       return result;
     }
 
