@@ -6091,7 +6091,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void vectorSearch(final VectorSearchRequest request, final StreamObserver<VectorSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
         () -> readInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
-            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.search(db, request)),
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.search(db, request, newEncodingBudget())),
         e -> toSearchStatus("VectorSearch", e));
   }
 
@@ -6102,7 +6102,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void hybridSearch(final HybridSearchRequest request, final StreamObserver<HybridSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
         () -> readInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
-            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.hybridSearch(db, request)),
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.hybridSearch(db, request, newEncodingBudget())),
         e -> toSearchStatus("HybridSearch", e));
   }
 
@@ -6113,7 +6113,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void fullTextSearch(final FullTextSearchRequest request, final StreamObserver<FullTextSearchResponse> resp) {
     GrpcUnaryCall.respond(resp,
         () -> readInTransaction(request.hasTransaction() ? request.getTransaction().getTransactionId() : null,
-            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.fullTextSearch(db, request)),
+            request.getDatabase(), request.getCredentials(), db -> GrpcVectorSearch.fullTextSearch(db, request, newEncodingBudget())),
         e -> toSearchStatus("FullTextSearch", e));
   }
 

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -186,6 +187,16 @@ class GrpcEncodingBudgetTest {
     final GrpcEncodingBudget smallest = GrpcEncodingBudget.ofMegabytes(0);
     smallest.charge(ONE_MEGABYTE);
     assertThat(refusal(() -> smallest.charge(1)).getStatus().getCode()).isEqualTo(Status.Code.RESOURCE_EXHAUSTED);
+  }
+
+  @Test
+  void theDefaultCeilingIsTheDefaultOfTheMessageSizeSetting() {
+    final long defaultBytes = ((Number) GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE.getDefValue()).longValue() * ONE_MEGABYTE;
+    final GrpcEncodingBudget budget = GrpcEncodingBudget.ofDefault();
+
+    budget.charge(defaultBytes);
+
+    assertThat(refusal(() -> budget.charge(1)).getStatus().getCode()).isEqualTo(Status.Code.RESOURCE_EXHAUSTED);
   }
 
   @Test

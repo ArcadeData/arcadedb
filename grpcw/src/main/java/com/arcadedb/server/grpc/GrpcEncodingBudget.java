@@ -61,9 +61,9 @@ final class GrpcEncodingBudget {
     return ofMegabytes(configuration.getValueAsInteger(GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE));
   }
 
-  /** A budget for an encoder that has no server configuration at hand: the process-wide value of the setting. */
-  static GrpcEncodingBudget ofGlobalSetting() {
-    return ofMegabytes(GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE.getValueAsInteger());
+  /** A budget for an encoder that has no server configuration in reach: the default of the setting. */
+  static GrpcEncodingBudget ofDefault() {
+    return ofMegabytes(((Number) GlobalConfiguration.GRPC_MAX_MESSAGE_SIZE.getDefValue()).intValue());
   }
 
   /** Charges one value. */

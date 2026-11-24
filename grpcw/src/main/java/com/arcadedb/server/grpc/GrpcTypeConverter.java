@@ -147,7 +147,7 @@ class GrpcTypeConverter {
     final GrpcValue scalar = toGrpcScalar(o);
     if (scalar != null)
       return scalar;
-    return toGrpcValue(o, GrpcEncodingBudget.ofGlobalSetting());
+    return toGrpcValue(o, GrpcEncodingBudget.ofDefault());
   }
 
   /**
