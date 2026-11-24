@@ -63,13 +63,14 @@ public class MCPDispatcher {
   public static final  String    MCP_PROTOCOL_VERSION = "2025-03-26";
   /** The wire this surface is in {@link ProtocolContext}, in {@code list queries} and in the per-protocol metrics. */
   static final         String    MCP_PROTOCOL         = "mcp";
-  /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
-  static final         String    NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
   private static final JSONArray TOOLS_LIST;
   // Package-private, not private: MCPPromptsTest asserts that every tool a prompt's text names is a tool
   // this server actually registers, which is what makes a rename or a removal fail a test instead of
   // silently shipping a prompt that instructs the model to call something that no longer exists.
   static final Set<String> REGISTERED_TOOL_NAMES;
+
+  /** What a reply says about a value nested too deeply to be written out: the call fails, the transport goes on serving. */
+  static final String NESTING_TOO_DEEP_MESSAGE = "the value is nested too deeply to be processed";
 
   private static final String INSTRUCTIONS =
       """

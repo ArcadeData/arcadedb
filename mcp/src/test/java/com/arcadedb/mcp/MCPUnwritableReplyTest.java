@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class MCPUnwritableReplyTest extends BaseGraphServerTest {
   private static final String TYPE_NAME   = "LayeredValueHolder";
-  private static final int    LAYERS      = 4_000;
+  private static final int    LAYERS      = 20_000;
   private static final long   STACK_BYTES = 192L * 1024;
 
   private MCPConfiguration   config;
@@ -107,28 +107,31 @@ class MCPUnwritableReplyTest extends BaseGraphServerTest {
   }
 
   @Test
-  void aRequestWithAnOversizedArgumentIsAnsweredWithAnError() {
-    // Built in memory: a request read from the pipe or the socket is parsed with a depth limit of its own, so it never gets here
-    final JSONObject arguments = new JSONObject()
-        .put("database", getDatabaseName())
-        .put("language", "sql")
-        .put("query", "SELECT 1")
-        .put("extra", layeredJson(LAYERS));
-    final JSONObject request = new JSONObject()
-        .put("jsonrpc", "2.0")
-        .put("id", 7)
-        .put("method", "tools/call")
-        .put("params", new JSONObject().put("name", "query").put("arguments", arguments));
+  void aRequestWithAnOversizedArgumentIsAnsweredWithAnErrorOnBothTransports() {
+    // Built in memory: a request read from the pipe or the socket is parsed with a depth limit of its own, so it never gets here.
+    // Both transports route through the one dispatcher, which is what is under test, so each is named in turn
+    for (final String transport : new String[] { "stdio", "http" }) {
+      final JSONObject arguments = new JSONObject()
+          .put("database", getDatabaseName())
+          .put("language", "sql")
+          .put("query", "SELECT 1")
+          .put("extra", layeredJson(LAYERS));
+      final JSONObject request = new JSONObject()
+          .put("jsonrpc", "2.0")
+          .put("id", 7)
+          .put("method", "tools/call")
+          .put("params", new JSONObject().put("name", "query").put("arguments", arguments));
 
-    final AtomicReference<MCPDispatcher.MCPResponse> response = new AtomicReference<>();
-    runOnStack(() -> response.set(new MCPDispatcher(getServer(0), config, "stdio").dispatch(request, user, MCPStdioServer.STDIO_CLIENT)),
-        STACK_BYTES);
+      final AtomicReference<MCPDispatcher.MCPResponse> response = new AtomicReference<>();
+      runOnStack(() -> response.set(new MCPDispatcher(getServer(0), config, transport).dispatch(request, user, MCPStdioServer.STDIO_CLIENT)),
+          STACK_BYTES);
 
-    assertThat(response.get()).isNotNull();
-    final JSONObject json = response.get().json();
-    assertThat(json.opt("id")).isEqualTo(7);
-    assertThat(json.has("error")).isTrue();
-    assertThat(json.getJSONObject("error").getInt("code")).isEqualTo(-32603);
+      assertThat(response.get()).as(transport).isNotNull();
+      final JSONObject json = response.get().json();
+      assertThat(json.opt("id")).as(transport).isEqualTo(7);
+      assertThat(json.has("error")).as(transport).isTrue();
+      assertThat(json.getJSONObject("error").getInt("code")).as(transport).isEqualTo(-32603);
+    }
   }
 
   @Test
