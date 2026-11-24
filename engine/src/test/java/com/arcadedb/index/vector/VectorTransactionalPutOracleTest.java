@@ -65,7 +65,9 @@ class VectorTransactionalPutOracleTest extends VectorReuseOracleFixture {
     insertRows(rows);
     index().buildVectorGraphNow();
     assertThat(stat("graphState")).as("a graph is built and nothing is pending").isEqualTo(1L);
-    assertThat(stat("deltaVectorsCount")).isZero();
+    // The unreachable nodes of the build (a Vamana build orphans a few now and then, depending on how its threads interleave) are
+    // served from the delta buffer and are not pending work: the state is IMMUTABLE above and no mutation is owed below
+    assertThat(stat("deltaVectorsCount")).as("nothing but the nodes the build left unreachable is in the buffer").isEqualTo(orphans());
     assertThat(stat("mutationsSinceRebuild")).isZero();
   }
 
@@ -106,7 +108,8 @@ class VectorTransactionalPutOracleTest extends VectorReuseOracleFixture {
 
       // Before the commit: put does not wait for it
       assertThat(stat("graphState")).as("the first put moved the graph to MUTABLE").isEqualTo(2L);
-      assertThat(stat("deltaVectorsCount")).as("every put is in the buffer a search merges").isEqualTo(12L);
+      assertThat(stat("deltaVectorsCount")).as("every put is in the buffer a search merges, with the unreachable nodes of the build")
+          .isEqualTo(12L + orphans());
       assertThat(stat("mutationsSinceRebuild")).as("and is a mutation owed to the next rebuild").isEqualTo(12L);
       assertThat(stat("totalVectors")).isEqualTo(GRAPH_ROWS + 12);
       assertThat(stat("activeVectors")).isEqualTo(GRAPH_ROWS + 12);
@@ -268,7 +271,7 @@ class VectorTransactionalPutOracleTest extends VectorReuseOracleFixture {
     final List<RID> added = insertRows(12);
 
     assertThat(stat("graphState")).isEqualTo(2L);
-    assertThat(stat("deltaVectorsCount")).isEqualTo(12L);
+    assertThat(stat("deltaVectorsCount")).isEqualTo(12L + orphans());
     assertThat(stat("mutationsSinceRebuild")).isEqualTo(12L);
     assertThat(index().countEntries()).isEqualTo(GRAPH_ROWS + 12);
     assertEachFindsItself("committed", added);

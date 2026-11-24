@@ -270,7 +270,8 @@ class VectorGraphReuseDirectPutOracleTest extends VectorReuseOracleFixture {
     assertThat(stat("graphRebuildCount")).as("and not rebuilt before the answer").isZero();
     assertThat(stat("graphNodeCount")).as("the graph in use is the persisted one").isEqualTo(LARGE);
     assertThat(stat("graphState")).as("MUTABLE: it is behind the live set").isEqualTo(2L);
-    assertThat(stat("deltaVectorsCount")).as("the gap is served from the delta buffer").isEqualTo(40L);
+    assertThat(stat("deltaVectorsCount")).as("the gap is served from the delta buffer, with the nodes the old build left unreachable")
+        .isEqualTo(40L + orphans());
   }
 
   /** Deletions and later writes together: the ordinal map says which ordinals are dead, and the gap is read past it. */

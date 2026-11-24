@@ -97,6 +97,15 @@ abstract class VectorReuseOracleFixture extends TestHelper {
     return value;
   }
 
+  /**
+   * The nodes the last graph build left unreachable. A Vamana build orphans a few nodes now and then, and which ones depends on how
+   * the build's threads interleave, so it is not a number a test can fix; those vectors are served from the delta buffer (issue
+   * #7190), which therefore holds them on top of whatever was written after the build.
+   */
+  protected long orphans() {
+    return stat("unreachableGraphNodes");
+  }
+
   protected double tolerance() {
     return "NONE".equals(quantization) ? 2e-4 : 0.05;
   }
