@@ -99,6 +99,27 @@ class Issue12743MatchRootWithoutTypeTest extends TestHelper {
     assertThat(count("MATCH {as: n0} RETURN count(*) AS c")).isEqualTo(6L);
   }
 
+  /**
+   * An untyped node can now start a pattern, so it is a source the recursive edge that leads to a {@code $depth}-reading
+   * target has to wait for (issue #10216): started from the target, the edge is walked backwards and the target's
+   * {@code where:} is applied to the root scan, where no traversal has given {@code $depth} a value.
+   */
+  @Test
+  void recursiveEdgeIsWalkedFromItsUntypedSource() {
+    final List<String> expected = List.of("1-3", "4-2");
+    assertThat(pairs("""
+        MATCH {type: MA, as: n0}.out('MR'){as: n1, while: ($depth < 2), where: ($depth = 2)}
+        RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(expected);
+    // THE TARGET IS NAMED FIRST, SO IT IS THE FIRST START THE SCHEDULE CONSIDERS
+    assertThat(pairs("""
+        MATCH {as: n1}, {as: n0}.out('MR'){as: n1, while: ($depth < 2), where: ($depth = 2)}
+        RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(expected);
+    // A TYPED TARGET WAITS FOR ITS UNTYPED SOURCE TOO: IT USED TO START, FOR WANT OF ANOTHER ROOT. VERTEX 3 IS NOT AN MA
+    assertThat(pairs("""
+        MATCH {as: n0}.out('MR'){type: MA, as: n1, while: ($depth < 2), where: ($depth = 2)}
+        RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("4-2"));
+  }
+
   private long count(final String match) {
     try (final ResultSet rs = database.query("sql", match)) {
       return ((Number) rs.next().getProperty("c")).longValue();

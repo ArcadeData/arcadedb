@@ -585,7 +585,12 @@ public class MatchExecutionPlanner {
     // Add all the remaining aliases after all the suggested start points.
     remainingStarts.addAll(pattern.aliasToNode.keySet());
 
-    final Set<String> rootCandidates = estimatedRootEntries.keySet();
+    // A NODE WITH NO rid:, type: OR bucket: HAS NO ESTIMATE, BUT IT CAN START A PATTERN TOO, FROM EVERY VERTEX (ISSUE #12743): LEFT
+    // OUT, AN EDGE WALKED ONLY FORWARD WOULD NOT WAIT FOR SUCH A SOURCE AND WOULD BE WALKED BACKWARDS FROM ITS TARGET
+    final Set<String> rootCandidates = new HashSet<>(estimatedRootEntries.keySet());
+    for (final String alias : pattern.aliasToNode.keySet())
+      if (aliasRids.get(alias) == null && aliasTypes.get(alias) == null && aliasBuckets.get(alias) == null)
+        rootCandidates.add(alias);
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass. A node that an edge walked only forward leads to waits for that
