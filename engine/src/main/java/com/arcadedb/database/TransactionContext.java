@@ -167,6 +167,16 @@ public class TransactionContext implements Transaction {
   private static final int                           RECORDS_CACHE_CAPACITY = 1024;
   private static final int                           PAGES_CACHE_CAPACITY   = 64;
   private static final int                           DELETED_SET_CAPACITY   = 256;
+  // Transactions with a MERGE probe open, whichever thread runs them: one volatile read keeps the head reads of a vertex free while none is
+  private static final AtomicInteger                 OPEN_MERGE_PROBES      = new AtomicInteger();
+  // The reads a MERGE probe holds back, by kind (the low 3 bits of probeReadKinds, the argument above them)
+  private static final int                           PROBE_READ_PAGE        = 0;
+  private static final int                           PROBE_READ_HEAD_OUT    = 1;
+  private static final int                           PROBE_READ_HEAD_IN     = 2;
+  private static final int                           PROBE_READ_CHUNK       = 3;
+  private static final int                           PROBE_READ_VERTEX_OUT  = 4;
+  private static final int                           PROBE_READ_VERTEX_IN   = 5;
+  private static final int                           PROBE_READS_KEPT       = 4096;
   // #10315: the two counters of a lightweight edge entry in lightEdgeEntryChanges
   private static final int                           REMOVED                = 0;
   private static final int                           APPENDED               = 1;
@@ -246,10 +256,13 @@ public class TransactionContext implements Transaction {
   // beginEdgeAppend. They are recorded on their page when the outermost append ends, except a read of a chunk the append then
   // wrote in place: that one is the append's own, and the edge-append merge replays it onto whatever the chunk holds at commit.
   private       int                                  edgeAppendDepth;
-  private static final int                         SUSPENDED_PROBE_SHIFT = 16;
-  private static final int                         SUSPENDED_DEPTH_MASK  = (1 << SUSPENDED_PROBE_SHIFT) - 1;
+  // The existence probe of a MERGE (beginMergeProbe): its depth, the depth a listener callback suspended, and the reads it held back,
+  // in two parallel arrays (the target, and the kind of read with its argument) that are kept for the next probe
   private       int                                  probeDepth;
-  private       List<Runnable>                       probeReads;
+  private       int                                  suspendedProbeDepth;
+  private       Object[]                             probeReadTargets;
+  private       int[]                                probeReadKinds;
+  private       int                                  probeReads;
   private       MutablePage[]                        deferredReadPages;
   private       int[]                                deferredReadSlots;
   private       int                                  deferredReads;
@@ -3704,15 +3717,12 @@ public class TransactionContext implements Transaction {
     return (!outMoved || outAppended && !outRead) && (!inMoved || inAppended && !inRead);
   }
 
-  /** Probes open on any transaction of the process: the one volatile read that keeps the vertex head reads free outside a probe. */
-  private static final AtomicInteger OPEN_MERGE_PROBES = new AtomicInteger();
-
   /** Whether some transaction has a MERGE probe open: false in the common case, and then no transaction needs to be looked up. */
   public static boolean isAnyMergeProbeOpen() {
     return OPEN_MERGE_PROBES.get() > 0;
   }
 
-  /** True while a MERGE existence probe runs: the reads it makes are held back, see {@link #beginMergeProbe()}. */
+  /** True while a MERGE existence probe runs on this transaction: the reads it makes are held back, see {@link #beginMergeProbe()}. */
   public boolean isReadsExcused() {
     return probeDepth > 0;
   }
@@ -3720,21 +3730,11 @@ public class TransactionContext implements Transaction {
   /**
    * Opens the window of the existence probe of a MERGE (a walk of the edge lists of the relationship it looks for). The page, chunk
    * and edge-list-head reads it makes are held back, and {@link #endMergeProbe(boolean)} then either records them as the
-   * application's reads or drops them. A probe that finds nothing is followed by the creation of the relationship, which the
-   * {@link MergedEdgeRegistry} checks at commit against any concurrent MERGE of the same relationship, so the probe's read of a
-   * list a concurrent transaction appended to decides nothing that registry does not; dropping those reads keeps the edge-append
-   * and head merges from refusing every transaction that probed a hot list.
+   * application's reads or drops them. See the soundness argument on {@code MergeStep.findAllMatchingPathsDroppingReads}.
    */
   public void beginMergeProbe() {
     if (probeDepth++ == 0)
       OPEN_MERGE_PROBES.incrementAndGet();
-  }
-
-  /** Defers {@code read} to the end of the probe window, where it is recorded or dropped. */
-  public void deferProbeRead(final Runnable read) {
-    if (probeReads == null)
-      probeReads = new ArrayList<>();
-    probeReads.add(read);
   }
 
   /** Closes the window {@link #beginMergeProbe()} opened: the reads it held back are recorded when {@code keepReads}, else dropped. */
@@ -3744,11 +3744,56 @@ public class TransactionContext implements Transaction {
     if (--probeDepth > 0)
       return;
     OPEN_MERGE_PROBES.decrementAndGet();
-    final List<Runnable> reads = probeReads;
-    probeReads = null;
-    if (keepReads && reads != null)
-      for (final Runnable r : reads)
-        r.run();
+    final int reads = probeReads;
+    probeReads = 0;
+    if (reads == 0)
+      return;
+    final Object[] targets = probeReadTargets;
+    final int[] kinds = probeReadKinds;
+    if (keepReads)
+      for (int i = 0; i < reads; ++i)
+        replayProbeRead(targets[i], kinds[i]);
+    if (reads > PROBE_READS_KEPT) {
+      probeReadTargets = null;
+      probeReadKinds = null;
+    } else
+      Arrays.fill(targets, 0, reads, null);
+  }
+
+  /**
+   * Holds back the read of the head of {@code vertex}'s list that a traversal made off the instance itself (see
+   * {@code MutableVertex.getOutEdgesHeadChunk}) while a MERGE probe runs.
+   *
+   * @return whether it was held back: false outside a probe, where the caller records it
+   */
+  public boolean deferProbeHeadFlagRead(final MutableVertex vertex, final boolean out) {
+    if (probeDepth == 0)
+      return false;
+    holdBackProbeRead(vertex, out ? PROBE_READ_VERTEX_OUT : PROBE_READ_VERTEX_IN);
+    return true;
+  }
+
+  private void holdBackProbeRead(final Object target, final int kind) {
+    if (probeReadTargets == null) {
+      probeReadTargets = new Object[64];
+      probeReadKinds = new int[64];
+    } else if (probeReads == probeReadTargets.length) {
+      probeReadTargets = Arrays.copyOf(probeReadTargets, probeReads << 1);
+      probeReadKinds = Arrays.copyOf(probeReadKinds, probeReads << 1);
+    }
+    probeReadTargets[probeReads] = target;
+    probeReadKinds[probeReads++] = kind;
+  }
+
+  private void replayProbeRead(final Object target, final int kind) {
+    switch (kind & 7) {
+    case PROBE_READ_PAGE -> recordPageRead((MutablePage) target, kind >> 3);
+    case PROBE_READ_HEAD_OUT -> trackEdgeListHeadReadFromOwnImage((RID) target, true);
+    case PROBE_READ_HEAD_IN -> trackEdgeListHeadReadFromOwnImage((RID) target, false);
+    case PROBE_READ_CHUNK -> trackReadOfWrittenChunk((RID) target);
+    case PROBE_READ_VERTEX_OUT -> ((MutableVertex) target).markEdgeListHeadRead(true);
+    default -> ((MutableVertex) target).markEdgeListHeadRead(false);
+    }
   }
 
   /**
@@ -3762,14 +3807,19 @@ public class TransactionContext implements Transaction {
     if (page instanceof MutablePage mutable && isTrackingReadsFromOwnImage()) {
       ++ownImageReads;
       if (probeDepth > 0)
-        deferProbeRead(() -> trackReadFromPage(page, slot));
-      else if (edgeAppendDepth > 0)
-        deferRead(mutable, slot);
-      else if (slot < 0)
-        mutable.markWholePageRead();
+        holdBackProbeRead(mutable, PROBE_READ_PAGE | slot << 3);
       else
-        mutable.markSlotRead(slot);
+        recordPageRead(mutable, slot);
     }
+  }
+
+  private void recordPageRead(final MutablePage mutable, final int slot) {
+    if (edgeAppendDepth > 0)
+      deferRead(mutable, slot);
+    else if (slot < 0)
+      mutable.markWholePageRead();
+    else
+      mutable.markSlotRead(slot);
   }
 
   /**
@@ -3792,7 +3842,7 @@ public class TransactionContext implements Transaction {
     if (vertex == null || edgeAppendDepth > 0 || !isTrackingReadsFromOwnImage())
       return;
     if (probeDepth > 0) {
-      deferProbeRead(() -> trackEdgeListHeadReadFromOwnImage(vertex, out));
+      holdBackProbeRead(vertex, out ? PROBE_READ_HEAD_OUT : PROBE_READ_HEAD_IN);
       return;
     }
     if (out) {
@@ -3867,20 +3917,27 @@ public class TransactionContext implements Transaction {
    * reads, the chunk being appended to included, is recorded as a read of the application, as it is outside any append. An append
    * the listener makes opens a window of its own and, closing it, records the reads the suspended window deferred so far: that only
    * gives up the edge-append merge, never a read. The window of a MERGE probe is suspended with it ({@link #beginMergeProbe()}).
-   * The returned value packs both depths: the edge-append one in the low 16 bits, the probe one above them, non-zero when either was open.
+   * The returned token is not a depth: it is only to be handed back to {@link #resumeEdgeAppend(int)}, and is never negative.
    */
   public int suspendEdgeAppend() {
-    final int depth = edgeAppendDepth | probeDepth << SUSPENDED_PROBE_SHIFT;
+    final int depth = edgeAppendDepth;
     edgeAppendDepth = 0;
-    // a listener's reads are the application's, also inside a MERGE probe: recorded now, never held back to be dropped
+    if (probeDepth == 0)
+      return depth << 1;
+    // a listener's reads are the application's, also inside a MERGE probe: recorded now, never held back to be dropped. The probe
+    // stays counted in OPEN_MERGE_PROBES while it is suspended, so a reset in between still balances it
+    suspendedProbeDepth = probeDepth;
     probeDepth = 0;
-    return depth;
+    return depth << 1 | 1;
   }
 
-  /** Gives back the windows {@link #suspendEdgeAppend()} suspended (#11590). */
-  public void resumeEdgeAppend(final int depth) {
-    edgeAppendDepth = depth & SUSPENDED_DEPTH_MASK;
-    probeDepth = depth >>> SUSPENDED_PROBE_SHIFT;
+  /** Gives back the windows {@link #suspendEdgeAppend()} suspended, from the token it returned (#11590). */
+  public void resumeEdgeAppend(final int token) {
+    edgeAppendDepth = token >>> 1;
+    if ((token & 1) != 0) {
+      probeDepth = suspendedProbeDepth;
+      suspendedProbeDepth = 0;
+    }
   }
 
   /** Closes the window {@link #beginEdgeAppend()} opened (#11590). */
@@ -3913,10 +3970,16 @@ public class TransactionContext implements Transaction {
 
   private void resetEdgeAppendReads() {
     edgeAppendDepth = 0;
+    // the probe that was open, and the one a listener callback suspended, are each counted in OPEN_MERGE_PROBES
     if (probeDepth > 0)
       OPEN_MERGE_PROBES.decrementAndGet();
+    if (suspendedProbeDepth > 0)
+      OPEN_MERGE_PROBES.decrementAndGet();
     probeDepth = 0;
-    probeReads = null;
+    suspendedProbeDepth = 0;
+    probeReads = 0;
+    probeReadTargets = null;
+    probeReadKinds = null;
     deferredReadPages = null;
     deferredReadSlots = null;
     deferredReads = 0;
@@ -3980,7 +4043,7 @@ public class TransactionContext implements Transaction {
     if (!isTrackingReadsFromOwnImage())
       return;
     if (probeDepth > 0) {
-      deferProbeRead(() -> trackReadOfWrittenChunk(rid));
+      holdBackProbeRead(rid, PROBE_READ_CHUNK);
       return;
     }
     if (edgeAppendDepth == 0) {

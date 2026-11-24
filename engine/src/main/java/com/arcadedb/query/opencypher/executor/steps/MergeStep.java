@@ -483,25 +483,38 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * {@link #findAllMatchingPaths} for the existence probe of a MERGE, with the reads of its walk dropped when that is sound (issue #13225).
+   * {@link #findAllMatchingPaths} for the existence probe of a MERGE, with the reads its walk made dropped when nothing the MERGE
+   * writes rests on them (issue #13225). The walk of a hub's edge list reads the chunk, the page and the list head the transaction
+   * holds modified, and a commit-time merge (edge-append rebase, edge-list-head merge) declines a transaction whose read of them a
+   * concurrent append made stale: every transaction that probed a hot list was refused. Dropped, per outcome of the probe:
+   * <ul>
+   * <li><b>A miss</b>, when the pattern binds one endpoint and has one relationship: the relationship is created next, between two
+   * existing nodes or from one to a node the MERGE creates, and {@link TransactionContext#addMergedEdgeBetweenExistingNodes} /
+   * {@link #registerMergedEdgeToCreatedNode} (or the index of the relationship's type) make the commit refuse a concurrent MERGE of
+   * the same relationship. A concurrent plain CREATE of it is not refused: the serial order MERGE then CREATE leaves two, as it
+   * would had the CREATE committed after the MERGE.</li>
+   * <li><b>A hit</b>, only when nothing reads or writes it afterwards: no ON MATCH SET, no SET absorbed, and the step ends the
+   * statement ({@link #streamRows()}), so the matched relationship feeds no clause. It then decides nothing, and a concurrent
+   * DELETE of it has the serial order MERGE then DELETE. A hit with an ON MATCH SET, or one a later clause reads (for example a SET
+   * or an ON MATCH SET on the matched relationship or on its ends), keeps its reads: a write based on the match would otherwise
+   * commit over a list or a relationship a concurrent transaction changed, and what that does is not proven here.</li>
+   * <li>An error in the probe keeps the reads.</li>
+   * </ul>
+   * A path that creates every node, and one with more than one relationship, are not probed this way: no registry key covers them.
    */
   private List<Result> findAllMatchingPathsDroppingReads(final PathPattern pathPattern, final ResultInternal baseResult) {
-    // Only a single relationship with an endpoint the row already binds: its creation is either between two existing nodes or from
-    // one to a node it creates, which the merged-edge registry checks. A path that creates every node, or a longer one, has no such
-    // check once the probe's reads are dropped (the nodes it scans are read from pages the registry knows nothing of)
     final TransactionContext tx = pathPattern.getRelationshipCount() == 1 && findBoundAnchorIndex(pathPattern, baseResult) >= 0 ?
         ((DatabaseInternal) context.getDatabase()).getTransactionIfExists() : null;
     if (tx == null)
       return findAllMatchingPaths(pathPattern, baseResult);
     tx.beginMergeProbe();
-    List<Result> found = null;
+    boolean keepReads = true;
     try {
-      found = findAllMatchingPaths(pathPattern, baseResult);
+      final List<Result> found = findAllMatchingPaths(pathPattern, baseResult);
+      keepReads = !found.isEmpty() && !(streamsRows && !mergeClause.hasOnMatchSet() && absorbedSet == null);
       return found;
     } finally {
-      // dropped whatever the probe found: a hit decides nothing that a later write rests on (READ_COMMITTED), and a miss is
-      // followed by a creation the merged-edge registry checks. An error keeps the reads
-      tx.endMergeProbe(found == null);
+      tx.endMergeProbe(keepReads);
     }
   }
 

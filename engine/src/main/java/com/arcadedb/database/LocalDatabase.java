@@ -4342,18 +4342,22 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    *
    * @param listening whether a listener of the database or of the record's type is registered for the event
    *
-   * @return the depth of the suspended window, 0 when none was open
+   * @return the token to give to {@link TransactionContext#resumeEdgeAppend(int)}, -1 when nothing was suspended
    */
   private int suspendEdgeAppendForListeners(final boolean listening) {
     if (!listening)
-      return 0;
+      return -1;
     final TransactionContext tx = getTransactionIfExists();
-    return tx != null ? tx.suspendEdgeAppend() : 0;
+    return tx != null ? tx.suspendEdgeAppend() : -1;
   }
 
   private void resumeEdgeAppendAfterListeners(final int edgeAppend) {
-    if (edgeAppend > 0)
-      getTransactionIfExists().resumeEdgeAppend(edgeAppend);
+    if (edgeAppend < 0)
+      return;
+    // the callback may have ended the transaction
+    final TransactionContext tx = getTransactionIfExists();
+    if (tx != null)
+      tx.resumeEdgeAppend(edgeAppend);
   }
 
   private void lockDatabase() {

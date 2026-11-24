@@ -140,13 +140,16 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
     // one volatile read outside a MERGE probe, the common case: the transaction is looked up only while some probe is open
     if (TransactionContext.isAnyMergeProbeOpen()) {
       final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
-      if (tx != null && tx.isReadsExcused()) {
-        // a MERGE existence probe: recorded, or dropped, when the probe ends
-        tx.deferProbeRead(() -> edgeListHeadsRead |= bit);
+      // a MERGE existence probe: recorded, or dropped, when the probe ends
+      if (tx != null && tx.deferProbeHeadFlagRead(this, bit == OUT_HEAD_READ))
         return;
-      }
     }
     edgeListHeadsRead |= bit;
+  }
+
+  /** Records the read of a head that a MERGE probe held back and its transaction then decided to keep. */
+  public void markEdgeListHeadRead(final boolean out) {
+    edgeListHeadsRead |= out ? OUT_HEAD_READ : IN_HEAD_READ;
   }
 
   /** The head of the outgoing list, read by a traversal: recorded, see {@link #isEdgeListHeadRead(boolean)}. */

@@ -42,10 +42,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The existence probe of a MERGE walks the edge list of a hub. What a concurrent transaction appends to that list while the
- * probing transaction runs must not refuse it at commit: what it writes (one more relationship) does not rest on the probe, and
- * the merged-edge registry already refuses two MERGEs of the same relationship. The races that the probe's reads could have
- * mattered to (a plain CREATE of the same relationship, a DELETE of the one it matched) have an outcome in some serial order,
- * which these tests pin.
+ * probing transaction runs must not refuse the probing transaction at commit when nothing it writes rests on the probe. Every race
+ * is forced by latches (the first transaction writes and probes, the second commits, the first commits), so its outcome is exactly
+ * one serial order, which each test pins together with the number of times the first commit was refused: a miss and a hit that
+ * nothing reads are not refused, a hit that feeds a write is.
  */
 class MergeProbeOfHotListTest {
   private static final int HUB_DEGREE = 200;
@@ -91,79 +91,83 @@ class MergeProbeOfHotListTest {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) MERGE (h)-[:R {k: $k}]->(l)";
     final String other = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) MERGE (h)-[:R {k: $k}]->(l)";
-    final int[] attempts = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of("leaf", "l" + (HUB_DEGREE + 1), "k", 1000), other,
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of("leaf", "l" + (HUB_DEGREE + 1), "k", 1000), other,
         Map.of("leaf", "l" + (HUB_DEGREE + 2), "k", 1001));
-    assertThat(attempts[0]).as("the commit of the probing transaction was refused: " + lastRefusal).isZero();
+    assertThat(refused).as("the commit of the probing transaction was refused: " + lastRefusal).isZero();
     assertThat(count()).isEqualTo(HUB_DEGREE + 3);
   }
 
-  /** MERGE found nothing, a plain CREATE of the same relationship committed meanwhile: MERGE then CREATE is a serial order. */
+  /** MERGE found nothing, a plain CREATE of the same relationship committed meanwhile: MERGE then CREATE is the serial order, two are left. */
   @Test
-  void aMergeThatFoundNothingAndAConcurrentCreateOfTheSameRelationshipLeaveOneOrTwo() throws Exception {
+  void aMergeThatFoundNothingAndAConcurrentCreateOfTheSameRelationshipLeaveTwo() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) MERGE (h)-[:R {k: 7}]->(l)";
     final String create = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 7}]->(l)";
     final Map<String, Object> leaf = Map.of("leaf", "l" + HUB_DEGREE);
-    race(own, Map.of("leaf", "l" + (HUB_DEGREE + 1)), merge, leaf, create, leaf);
-    try (final ResultSet rs = database.query("opencypher", "MATCH (:Hub)-[r:R {k: 7}]->(:Leaf {id: $leaf}) RETURN count(r) AS c", leaf)) {
-      assertThat(((Number) rs.next().getProperty("c")).intValue()).isBetween(1, 2);
-    }
+    final int refused = race(own, Map.of("leaf", "l" + (HUB_DEGREE + 1)), merge, leaf, create, leaf);
+    assertThat(refused).as(lastRefusal).isZero();
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 7}]->(:Leaf {id: 'l" + HUB_DEGREE + "'}) RETURN count(r) AS c")).isEqualTo(2);
   }
 
-  /** MERGE matched a relationship that a concurrent DELETE removed: MERGE then DELETE is a serial order, so none is left. */
+  /** MERGE matched a relationship that nothing reads afterwards and a concurrent DELETE removed it: MERGE then DELETE, none is left. */
   @Test
   void aMergeThatMatchedARelationshipAConcurrentDeleteRemovedLeavesNone() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[:R {k: 3}]->(l)";
     final String delete = "MATCH (:Hub {id: 'h'})-[r:R {k: 3}]->(:Leaf {id: 'l3'}) DELETE r";
-    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
-    try (final ResultSet rs = database.query("opencypher", "MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")) {
-      assertThat(((Number) rs.next().getProperty("c")).intValue()).isBetween(0, 1);
-    }
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    assertThat(refused).as(lastRefusal).isZero();
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")).isZero();
+    assertThat(count()).isEqualTo(HUB_DEGREE);
   }
 
-  /** MERGE matched a relationship, ON MATCH SET wrote it, a concurrent DELETE removed it: the write must not resurrect or half-keep it. */
+  /**
+   * MERGE matched a relationship and an ON MATCH SET wrote it, a concurrent DELETE removed it: the match feeds a write, so the probe's
+   * reads are kept, the commit is refused, and the retry finds nothing and creates the relationship afresh (DELETE then MERGE).
+   */
   @Test
-  void aMergeThatMatchedAndSetARelationshipAConcurrentDeleteRemovedKeepsNoWrittenRelationship() throws Exception {
+  void aMergeThatMatchedAndSetARelationshipAConcurrentDeleteRemovedCreatesItAgainWithoutTheWrite() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[r:R {k: 3}]->(l) ON MATCH SET r.m = 1";
     final String delete = "MATCH (:Hub {id: 'h'})-[r:R {k: 3}]->(:Leaf {id: 'l3'}) DELETE r";
-    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
-    final int recreated = scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c");
-    // DELETE then MERGE: the relationship is created anew, without the ON MATCH write; MERGE then DELETE: none. Never the written one
-    assertThat(recreated).isBetween(0, 1);
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    assertThat(refused).as("the commit of the transaction that wrote the match was not refused").isEqualTo(1);
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")).isEqualTo(1);
     assertThat(scalar("MATCH ()-[r:R]->() WHERE r.m = 1 RETURN count(r) AS c")).isZero();
-    assertThat(count()).isEqualTo(HUB_DEGREE + 1 - 1 + recreated);
+    assertThat(count()).isEqualTo(HUB_DEGREE + 1);
   }
 
-  /** MERGE matched a relationship and SET a property of its end, a concurrent DELETE removed the relationship: the end keeps its write. */
+  /** MERGE matched a relationship and SET both of its ends, a concurrent DELETE removed the relationship: refused once, the ends keep the write. */
   @Test
-  void aMergeThatMatchedARelationshipAndSetItsEndKeepsTheWriteWhenAConcurrentDeleteRemovedTheRelationship() throws Exception {
+  void aMergeThatMatchedARelationshipAndSetItsEndsAConcurrentDeleteRemovedKeepsTheEndWrites() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[r:R {k: 3}]->(l) SET l.touched = true, h.touched = true";
     final String delete = "MATCH (:Hub {id: 'h'})-[r:R {k: 3}]->(:Leaf {id: 'l3'}) DELETE r";
-    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), delete, Map.of());
+    assertThat(refused).isEqualTo(1);
     assertThat(scalar("MATCH (l:Leaf {id: 'l3'}) WHERE l.touched = true RETURN count(l) AS c")).isEqualTo(1);
     assertThat(scalar("MATCH (h:Hub {id: 'h'}) WHERE h.touched = true RETURN count(h) AS c")).isEqualTo(1);
-    assertThat(scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")).isBetween(0, 1);
+    assertThat(scalar("MATCH (:Hub)-[r:R {k: 3}]->(:Leaf {id: 'l3'}) RETURN count(r) AS c")).isEqualTo(1);
   }
 
-  /** MERGE found nothing and so did a concurrent MERGE of the same relationship: exactly one is left (the merged-edge registry). */
+  /** MERGE found nothing and so did a concurrent MERGE of the same relationship: the registry refuses the later commit, one is left. */
   @Test
   void twoMergesOfTheSameMissingRelationshipLeaveOne() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) MERGE (h)-[:R {k: 7}]->(l)";
     final Map<String, Object> leaf = Map.of("leaf", "l" + HUB_DEGREE);
-    race(own, Map.of("leaf", "l" + (HUB_DEGREE + 1)), merge, leaf, merge, leaf);
+    final int refused = race(own, Map.of("leaf", "l" + (HUB_DEGREE + 1)), merge, leaf, merge, leaf);
+    assertThat(refused).isEqualTo(1);
     assertThat(scalar("MATCH (:Hub)-[r:R {k: 7}]->(:Leaf {id: 'l" + HUB_DEGREE + "'}) RETURN count(r) AS c")).isEqualTo(1);
   }
 
-  /** The same for a MERGE that creates the far node too: the registry's key covers the existing end and the created one's pattern. */
+  /** The same for a MERGE that creates the far node too: the key covers the existing end and the pattern of the created one. */
   @Test
   void twoMergesOfTheSameMissingRelationshipToANewNodeLeaveOne() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MATCH (h:Hub {id: 'h'}) MERGE (h)-[:R {k: 8}]->(:Leaf {id: 'fresh'})";
-    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    assertThat(refused).isEqualTo(1);
     assertThat(scalar("MATCH (:Hub)-[r:R {k: 8}]->(:Leaf {id: 'fresh'}) RETURN count(r) AS c")).isEqualTo(1);
     assertThat(scalar("MATCH (l:Leaf {id: 'fresh'}) RETURN count(l) AS c")).isEqualTo(1);
   }
@@ -173,60 +177,10 @@ class MergeProbeOfHotListTest {
   void twoMergesOfTheSameUnanchoredMissingPathLeaveOne() throws Exception {
     final String own = "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: $leaf}) CREATE (h)-[:R {k: 5000}]->(l)";
     final String merge = "MERGE (a:P {id: 'a'})-[:R {k: 9}]->(b:Q {id: 'b'})";
-    race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    final int refused = race(own, Map.of("leaf", "l" + HUB_DEGREE), merge, Map.of(), merge, Map.of());
+    assertThat(refused).isEqualTo(1);
     assertThat(scalar("MATCH (:P {id: 'a'})-[r:R {k: 9}]->(:Q {id: 'b'}) RETURN count(r) AS c")).isEqualTo(1);
     assertThat(scalar("MATCH (a:P {id: 'a'}) RETURN count(a) AS c")).isEqualTo(1);
-  }
-
-  /** A read listener fired while the probe runs is the application: its reads are recorded at once, the probe's own stay held back. */
-  @Test
-  void aReadListenerFiredDuringTheProbeIsNotInsideTheProbeWindow() {
-    final List<Boolean> excusedInListener = new ArrayList<>();
-    final AfterRecordReadListener listener = record -> {
-      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
-      excusedInListener.add(tx != null && tx.isReadsExcused());
-      return record;
-    };
-    database.getSchema().getType("R").getEvents().registerListener(listener);
-    try {
-      database.begin();
-      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
-      database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l" + HUB_DEGREE + "'}) CREATE (h)-[:R {k: 5000}]->(l)");
-      excusedInListener.clear();
-      database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[:R {k: 3}]->(l)");
-      assertThat(excusedInListener).as("the probe read relationships, so the listener ran").isNotEmpty();
-      assertThat(excusedInListener).doesNotContain(true);
-      assertThat(tx.isReadsExcused()).isFalse();
-      database.rollback();
-    } finally {
-      database.getSchema().getType("R").getEvents().unregisterListener(listener);
-    }
-  }
-
-  /** The window of the probe is suspended with the edge-append one, and given back whole. */
-  @Test
-  void suspendingTheEdgeAppendWindowSuspendsTheProbeWindowAndResumeGivesItBack() {
-    database.begin();
-    try {
-      final TransactionContext tx = ((DatabaseInternal) database).getTransactionIfExists();
-      assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
-      tx.beginMergeProbe();
-      tx.beginMergeProbe();
-      assertThat(TransactionContext.isAnyMergeProbeOpen()).isTrue();
-      assertThat(tx.isReadsExcused()).isTrue();
-      final int suspended = tx.suspendEdgeAppend();
-      assertThat(suspended).isNotZero();
-      assertThat(tx.isReadsExcused()).isFalse();
-      tx.resumeEdgeAppend(suspended);
-      assertThat(tx.isReadsExcused()).isTrue();
-      tx.endMergeProbe(false);
-      assertThat(tx.isReadsExcused()).isTrue();
-      tx.endMergeProbe(false);
-      assertThat(tx.isReadsExcused()).isFalse();
-      assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
-    } finally {
-      database.rollback();
-    }
   }
 
   private int scalar(final String query) {
@@ -246,7 +200,7 @@ class MergeProbeOfHotListTest {
    *
    * @return the number of times the first commit was refused (0 or 1; a refused commit is run again and must then succeed)
    */
-  private int[] race(final String own, final Map<String, Object> ownParams, final String probe, final Map<String, Object> probeParams,
+  private int race(final String own, final Map<String, Object> ownParams, final String probe, final Map<String, Object> probeParams,
       final String other, final Map<String, Object> otherParams) throws Exception {
     final CountDownLatch probed = new CountDownLatch(1);
     final CountDownLatch otherCommitted = new CountDownLatch(1);
@@ -283,7 +237,7 @@ class MergeProbeOfHotListTest {
     } finally {
       pool.shutdownNow();
     }
-    return refused;
+    return refused[0];
   }
 
   private static void await(final CountDownLatch latch) {
