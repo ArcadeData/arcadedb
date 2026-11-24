@@ -124,7 +124,7 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
     final float[] query = createIndexAndRecords(quantization, storeVectorsInGraph);
     // An approximate (PQ) search may miss a row on a healthy index, see aWarmProductSubIndexWhoseFilesWereRetiredStillAnswersEveryRecord
     assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once")
-        .isGreaterThanOrEqualTo("PRODUCT".equals(quantization) ? RECORDS - 1 : RECORDS);
+        .isBetween("PRODUCT".equals(quantization) ? RECORDS - 1 : RECORDS, RECORDS);
 
     // Reopened, then its locations are loaded and no search has loaded its graph: the first search has to read the graph from its
     // file or rebuild it from the data file, and with both gone it would build it from nothing
