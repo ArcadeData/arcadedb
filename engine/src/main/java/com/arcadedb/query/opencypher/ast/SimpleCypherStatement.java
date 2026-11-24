@@ -56,6 +56,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasDelete;
   private final boolean            hasRemove;
   private final boolean            readOnly;
+  private final boolean            unconfirmedFunctionCall;
   private final boolean            hasVariableLengthPath;
   private final boolean            hasUnwindBeforeMatch;
   private final boolean            hasWithBeforeMatch;
@@ -162,6 +163,7 @@ public class SimpleCypherStatement implements CypherStatement {
     final boolean writeSubquery = anyWriteSubquery(this.clausesInOrder);
     final boolean writeProcedureCall = anyWriteProcedureCall(this.callClauses);
     final boolean unresolvedFunctionCall = anyUnresolvedFunctionCall(this);
+    this.unconfirmedFunctionCall = unresolvedFunctionCall;
     this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach
         && (setClause == null || setClause.isEmpty()) && !writeSubquery && !writeProcedureCall && !unresolvedFunctionCall;
 
@@ -374,6 +376,15 @@ public class SimpleCypherStatement implements CypherStatement {
     return detector.found;
   }
 
+  /**
+   * The same question for one expression that belongs to no clause, such as the condition of a conditional query.
+   */
+  static boolean anyUnresolvedFunctionCall(final Expression expression) {
+    final UnresolvedFunctionCallDetector detector = new UnresolvedFunctionCallDetector();
+    CypherExpressionWalker.walk(expression, detector);
+    return detector.found;
+  }
+
   private static final class UnresolvedFunctionCallDetector implements CypherExpressionWalker.Visitor {
     private boolean found = false;
 
@@ -390,6 +401,11 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public boolean isReadOnly() {
     return readOnly;
+  }
+
+  @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    return unconfirmedFunctionCall;
   }
 
   /**

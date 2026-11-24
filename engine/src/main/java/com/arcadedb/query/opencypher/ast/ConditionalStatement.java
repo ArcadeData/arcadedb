@@ -44,6 +44,7 @@ public class ConditionalStatement implements CypherStatement {
   private final List<CypherStatement> branches;
   private final CypherStatement       elseBranch;
   private final List<CypherStatement> allBranches;
+  private final boolean               conditionCallsUnconfirmedFunction;
 
   /**
    * @param conditions one condition per {@code WHEN} branch, in written order
@@ -67,6 +68,13 @@ public class ConditionalStatement implements CypherStatement {
     if (elseBranch != null)
       all.add(elseBranch);
     this.allBranches = Collections.unmodifiableList(all);
+    boolean unconfirmed = false;
+    for (final Expression condition : this.conditions)
+      if (SimpleCypherStatement.anyUnresolvedFunctionCall(condition)) {
+        unconfirmed = true;
+        break;
+      }
+    this.conditionCallsUnconfirmedFunction = unconfirmed;
   }
 
   public List<Expression> getConditions() {
@@ -91,12 +99,28 @@ public class ConditionalStatement implements CypherStatement {
     return allBranches;
   }
 
+  /**
+   * A condition is evaluated before any branch is chosen, so a call in one that is not confirmed to be a built-in function
+   * makes the statement a write statement whatever its branches do, as such a call does in any other clause.
+   */
   @Override
   public boolean isReadOnly() {
+    if (conditionCallsUnconfirmedFunction)
+      return false;
     for (final CypherStatement branch : getAllBranches())
       if (!branch.isReadOnly())
         return false;
     return true;
+  }
+
+  @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    if (conditionCallsUnconfirmedFunction)
+      return true;
+    for (final CypherStatement branch : getAllBranches())
+      if (branch.hasUnconfirmedFunctionCall())
+        return true;
+    return false;
   }
 
   /**

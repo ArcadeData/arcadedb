@@ -103,6 +103,14 @@ public class UnionStatement implements CypherStatement {
   }
 
   @Override
+  public boolean hasUnconfirmedFunctionCall() {
+    for (final CypherStatement query : queries)
+      if (query.hasUnconfirmedFunctionCall())
+        return true;
+    return false;
+  }
+
+  @Override
   public boolean hasSubqueryInTransactions() {
     for (final CypherStatement query : queries)
       if (query.hasSubqueryInTransactions())
