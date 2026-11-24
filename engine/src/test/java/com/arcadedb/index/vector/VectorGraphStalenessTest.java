@@ -525,19 +525,20 @@ class VectorGraphStalenessTest {
         });
 
         final int[] found = { 0 };
+        final boolean[] reEmbeddedFound = { false };
         database.transaction(() -> {
           for (int doc = 0; doc < LIVE; doc++) {
             final float[] query = doc == reEmbedded ? replacement : embedding(doc);
-            final ResultSet rs = database.query("sql", "SELECT `vector.neighbors`('Doc[embedding]', ?, 1) AS neighbors FROM schema:types LIMIT 1",
-                (Object) query);
-            assertThat(rs.hasNext()).isTrue();
-            final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
-            if (neighbors != null && !neighbors.isEmpty() && ("doc" + doc).equals(neighbors.getFirst().get("id")))
+            if (isOwnNearestNeighbour(doc, query)) {
               found[0]++;
+              if (doc == reEmbedded)
+                reEmbeddedFound[0] = true;
+            }
           }
         });
 
         assertThat(fired.get()).as("the load of the persisted graph reached the walk that derives the ordinal map").isEqualTo(1);
+        assertThat(reEmbeddedFound[0]).as("the re-embedded record is found by its replacement vector").isTrue();
         assertThat(found[0]).as("every record, the re-embedded one included, is its own nearest neighbour: %d of %d found", found[0], LIVE)
             .isGreaterThanOrEqualTo(LIVE * 99 / 100);
         assertThat(vectorIndex().getStats().get("graphRebuildCount"))
@@ -546,6 +547,86 @@ class VectorGraphStalenessTest {
       } finally {
         writer.shutdownNow();
       }
+    }
+
+    /**
+     * Issue #13343, the follower variant the deleted count cannot see: a replicated re-embed is replayed (the old id
+     * tombstoned, a new id allocated) while the walk derives the ordinal map, and its transaction then aborts, so the undo
+     * forgets the new id and lifts the tombstone before the map is published. The deleted count is back to zero and the
+     * location index is the same instance, yet the walked array still lacks the old id and ends with the forgotten one:
+     * the shift of the committed re-embed, with nothing left that counts it. The load has to rebuild instead. The replay
+     * and its undo are driven on the location index with the very calls {@code put}/{@code remove} and
+     * {@code undoReplay} make, at the two points of the load a real abort can straddle.
+     */
+    @Test
+    void aReEmbedReplayedAndUndoneWhileTheOrdinalMapOfAManifestlessGraphIsDerivedDoesNotShiftTheOrdinals() throws Exception {
+      createSchema(database, true);
+      insertDocs(database, 0, LIVE);
+      buildAndPersistGraph();
+
+      final String databasePath = database.getDatabasePath();
+      database.close();
+
+      final File[] sidecars = new File(databasePath).listFiles((dir, name) -> name.endsWith("." + LSMVectorIndexGraphManifest.FILE_EXT)
+          || name.endsWith("." + LSMVectorIndexOrdinalMapFile.FILE_EXT));
+      assertThat(sidecars).as("the manifest and the ordinal map the persist wrote").isNotNull().hasSize(2);
+      for (final File sidecar : sidecars)
+        assertThat(sidecar.delete()).as("remove %s: the state of a node that received only the graph pages", sidecar.getName()).isTrue();
+
+      database = factory.open();
+
+      final VectorLocationIndex locations = vectorIndex().getVectorIndex();
+      final int replayedOut = 0;
+      final RID record = locations.getRid(replayedOut);
+      final long offsetAndFlag = locations.getOffsetAndFlag(replayedOut);
+      assertThat(offsetAndFlag).as("vector id 0 is live before the replay").isNotEqualTo(VectorLocationIndex.ABSENT);
+
+      final AtomicInteger fired = new AtomicInteger();
+      final int[] allocated = { -1 };
+      try {
+        vectorIndex().setBeforeOrdinalWalkForTest(() -> {
+          fired.incrementAndGet();
+          vectorIndex().setBeforeOrdinalWalkForTest(null);
+          // The replay: the old id tombstoned, a new id allocated for the same record
+          locations.markDeleted(replayedOut);
+          allocated[0] = locations.getNextId();
+          locations.addOrUpdate(allocated[0], VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag),
+              record, false);
+        });
+        vectorIndex().setAfterOrdinalWalkForTest(() -> {
+          vectorIndex().setAfterOrdinalWalkForTest(null);
+          // The abort: the allocation forgotten, the tombstone lifted
+          locations.forget(allocated[0]);
+          locations.addOrUpdate(replayedOut, VectorLocationIndex.isCompactedOf(offsetAndFlag), VectorLocationIndex.offsetOf(offsetAndFlag),
+              record, false);
+        });
+
+        final int[] found = { 0 };
+        database.transaction(() -> {
+          for (int doc = 0; doc < LIVE; doc++)
+            if (isOwnNearestNeighbour(doc, embedding(doc)))
+              found[0]++;
+        });
+
+        assertThat(fired.get()).as("the load of the persisted graph reached the walk that derives the ordinal map").isEqualTo(1);
+        assertThat(locations.getDeletedCount()).as("the undo left no tombstone behind, so the deleted count cannot tell").isZero();
+        assertThat(found[0]).as("every record is its own nearest neighbour: %d of %d found", found[0], LIVE)
+            .isGreaterThanOrEqualTo(LIVE * 99 / 100);
+        assertThat(vectorIndex().getStats().get("graphRebuildCount"))
+            .as("an id left the live set while the walk ran: the persisted graph can no longer be paired with the derived map")
+            .isPositive();
+      } finally {
+        vectorIndex().setBeforeOrdinalWalkForTest(null);
+        vectorIndex().setAfterOrdinalWalkForTest(null);
+      }
+    }
+
+    private boolean isOwnNearestNeighbour(final int doc, final float[] query) {
+      final ResultSet rs = database.query("sql", "SELECT `vector.neighbors`('Doc[embedding]', ?, 1) AS neighbors FROM schema:types LIMIT 1",
+          (Object) query);
+      assertThat(rs.hasNext()).isTrue();
+      final List<Map<String, Object>> neighbors = rs.next().getProperty("neighbors");
+      return neighbors != null && !neighbors.isEmpty() && ("doc" + doc).equals(neighbors.getFirst().get("id"));
     }
 
     /**

@@ -212,6 +212,10 @@ public class VectorLocationIndex {
   // Not an AtomicInteger any more: every mutation of it happens under `writeLock`, and the readers only need the
   // volatile read. Kept monotonic across a rebuild by LSMVectorIndex.publishLocationIndex.
   private volatile int     nextId;
+  // Times an id left the live set or came back into it (a tombstone, a forgotten allocation, a lifted tombstone, a
+  // clear). Never decremented, so a tombstone that is put down and lifted again still moves it, which the deleted
+  // count cannot tell (issue #13343). Written under writeLock, volatile for the lock-free reader.
+  private volatile long    removalGeneration;
 
   /**
    * One {@value #CHUNK_SIZE}-id slice of the location arrays. The arrays are final and full size, so a chunk is
@@ -627,6 +631,7 @@ public class VectorLocationIndex {
         // finding the id's pre-tombstone entry and resurrecting it.
         deletedIds.add(id);
         removeLocation(id);
+        removalGeneration++;
       } else {
         // LSM merge-on-read: a live entry read after a tombstone for the same id wins (it cannot happen through the
         // write path, which never reuses an id, but page order is the authority here).
@@ -639,8 +644,10 @@ public class VectorLocationIndex {
         // entry this call is installing - it is where the call came from - so a reader that falls through in the
         // window resolves to the same answer it would get after it. Ordering it the other way would be worse: a
         // location that is resident while the id still reads as deleted makes the delta scan skip a live vector.
-        if (deletedIds.contains(id))
+        if (deletedIds.contains(id)) {
           deletedIds.remove(id);
+          removalGeneration++;
+        }
 
         put(id, isCompacted, absoluteFileOffset, rid);
       }
@@ -971,6 +978,7 @@ public class VectorLocationIndex {
       // Tombstone bit first, location second - see addOrUpdate.
       deletedIds.add(vectorId);
       removeLocation(vectorId);
+      removalGeneration++;
     }
   }
 
@@ -999,7 +1007,10 @@ public class VectorLocationIndex {
    */
   public boolean forget(final int vectorId) {
     synchronized (writeLock) {
-      return removeLocation(vectorId);
+      final boolean removed = removeLocation(vectorId);
+      if (removed)
+        removalGeneration++;
+      return removed;
     }
   }
 
@@ -1020,6 +1031,16 @@ public class VectorLocationIndex {
    */
   public int getDeletedCount() {
     return deletedIds.size();
+  }
+
+  /**
+   * A counter that moves every time an id leaves the live set or comes back into it: a tombstone, a forgotten
+   * allocation, a lifted tombstone, a clear. It never moves back, so two equal reads prove nothing was removed in
+   * between even when {@link #getDeletedCount()} reads the same before and after, as it does across a replay that
+   * tombstones an id and is then undone (issue #13343). Adding a new id does not move it.
+   */
+  public long getRemovalGeneration() {
+    return removalGeneration;
   }
 
   /**
@@ -1136,6 +1157,7 @@ public class VectorLocationIndex {
       ridIndex.clear();
       deletedIds.clear();
       nextId = 0;
+      removalGeneration++;
     }
   }
 
