@@ -302,7 +302,7 @@ public class ArithmeticExpression implements Expression {
     try {
       return applyTemporalArithmetic(leftValue, rightValue, op);
     } catch (final DateTimeException | ArithmeticException e) {
-      throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage());
+      throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage(), e);
     }
   }
 
@@ -331,7 +331,7 @@ public class ArithmeticExpression implements Expression {
     // Instant ± duration is only defined for + and -; * / % are a type error and must fall through (issue #9338).
     // + is also defined with the duration on the left, since duration + instant is the same operation.
     if (op == Operator.ADD && leftValue instanceof CypherDuration && isInstant(rightValue))
-      return evaluateTemporalArithmetic(rightValue, leftValue, op);
+      return applyTemporalArithmetic(rightValue, leftValue, op);
     if (op != Operator.ADD && op != Operator.SUBTRACT)
       return null;
 

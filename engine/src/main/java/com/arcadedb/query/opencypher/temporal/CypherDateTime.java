@@ -228,7 +228,7 @@ public class CypherDateTime implements CypherTemporalValue {
     try {
       return value.toInstant().toEpochMilli();
     } catch (final ArithmeticException e) {
-      throw new ArithmeticErrorException("Temporal overflow: epochMillis of " + this + " does not fit a long");
+      throw new ArithmeticErrorException("Temporal overflow: epochMillis of " + this + " does not fit a long", e);
     }
   }
 
