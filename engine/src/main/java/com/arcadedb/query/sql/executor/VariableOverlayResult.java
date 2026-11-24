@@ -46,11 +46,17 @@ import static com.arcadedb.schema.Property.RID_PROPERTY;
  * {@code null} is not bound, so the enclosing row answers for it. Read-only.
  */
 public final class VariableOverlayResult implements Result {
-  private final Result outer;
-  private final String firstName;
-  private final String secondName;
-  private       Object firstValue;
-  private       Object secondValue;
+  private final Result  outer;
+  private final String  firstName;
+  private final String  secondName;
+  /**
+   * Whether {@link #outer} answers {@code getProperty()} for the names it lists and nothing else: a plain row with content,
+   * whose names are its content keys and which never falls back to its record then, a plain row with no record, and another
+   * overlay
+   */
+  private final boolean outerAnswersListedNamesOnly;
+  private       Object  firstValue;
+  private       Object  secondValue;
 
   /**
    * @param outer      the enclosing row, or {@code null} for none
@@ -61,6 +67,12 @@ public final class VariableOverlayResult implements Result {
     this.outer = outer;
     this.firstName = firstName;
     this.secondName = secondName;
+    this.outerAnswersListedNamesOnly = outer instanceof VariableOverlayResult || (outer != null && outer.getClass() == ResultInternal.class
+        && answersListedNamesOnly((ResultInternal) outer));
+  }
+
+  private static boolean answersListedNamesOnly(final ResultInternal row) {
+    return row.element == null || (row.content != null && !row.content.isEmpty());
   }
 
   public VariableOverlayResult(final Result outer, final String name) {
@@ -104,20 +116,33 @@ public final class VariableOverlayResult implements Result {
     return outer != null && outer.listsProperty(name);
   }
 
+  /**
+   * The enclosing row's value for {@code name}, stored and read back as the copy this row replaces stored it.
+   */
+  private Object outerValue(final String name) {
+    return ResultInternal.toPropertyValue(ResultInternal.toStoredValue(null, outer.getProperty(name)));
+  }
+
   @Override
   public <T> T getProperty(final String name) {
     if (bindsSecond(name))
       return (T) ResultInternal.toPropertyValue(secondValue);
     if (bindsFirst(name))
       return (T) ResultInternal.toPropertyValue(firstValue);
-    return outer != null ? outer.getProperty(name) : null;
+    if (outer == null)
+      return null;
+    // The copy held only the names the enclosing row lists, so any other name read null on it, even one the enclosing row
+    // resolves through a record it wraps. A row that answers its listed names only is read directly, without the test
+    if (!outerAnswersListedNamesOnly && !outer.listsProperty(name))
+      return null;
+    return (T) outerValue(name);
   }
 
   @Override
   public <T> T getProperty(final String name, final Object defaultValue) {
     if (bindsSecond(name) || bindsFirst(name))
       return getProperty(name);
-    return outerLists(name) ? outer.getProperty(name) : (T) defaultValue;
+    return outerLists(name) ? (T) outerValue(name) : (T) defaultValue;
   }
 
   @Override

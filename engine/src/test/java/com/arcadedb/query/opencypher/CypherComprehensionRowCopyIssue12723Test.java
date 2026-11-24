@@ -19,14 +19,31 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.opencypher.ast.AllReduceExpression;
+import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
+import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.ReduceExpression;
+import com.arcadedb.query.opencypher.ast.VariableExpression;
+import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -161,6 +178,121 @@ class CypherComprehensionRowCopyIssue12723Test extends TestHelper {
     final Result row = single("UNWIND [1, 2, 3] AS v WITH 10 AS k, v RETURN k, [x IN collect(v) WHERE x > 1 | x + k] AS r");
     assertThat(row.<Object>getProperty("k")).isEqualTo(10L);
     assertThat(row.<List<Object>>getProperty("r")).containsExactly(12L, 13L);
+  }
+
+  @Test
+  void subqueryExpressionsInsideAComprehensionReadEachElementBinding() {
+    // The body of a COUNT/COLLECT/EXISTS is seeded with the row the comprehension rebinds per element, and its step chain is
+    // run again for the next element: each run must read the element it was seeded with
+    assertThat(value("RETURN [x IN [1, 2, 3] | COUNT { UNWIND range(1, x) AS y RETURN y }] AS r")).isEqualTo(List.of(1L, 2L, 3L));
+    assertThat(value("RETURN [x IN [1, 2, 3] | COLLECT { UNWIND range(1, x) AS y RETURN y * 10 }] AS r"))
+        .isEqualTo(List.of(List.of(10L), List.of(10L, 20L), List.of(10L, 20L, 30L)));
+    assertThat(value("RETURN [x IN [0, 1, 2] WHERE EXISTS { UNWIND range(1, x) AS y RETURN y }] AS r")).isEqualTo(List.of(1L, 2L));
+    assertThat(value("RETURN reduce(s = 0, x IN [1, 2, 3] | s + COUNT { UNWIND range(1, x) AS y RETURN y }) AS r")).isEqualTo(6L);
+    assertThat(value("RETURN any(x IN [1, 2] WHERE COUNT { UNWIND range(1, x) AS y RETURN y } = 2) AS r")).isEqualTo(true);
+    // A body that matches against an outer node and the element
+    assertThat(value("MATCH (a:P {name: 'a'}) RETURN [n IN ['b', 'c', 'z'] | COUNT { MATCH (a)-[:K]->(m:P) WHERE m.name = n RETURN m }] AS r"))
+        .isEqualTo(List.of(1L, 1L, 0L));
+  }
+
+  @Test
+  void theOuterRowIsNotCopiedPerElement() {
+    // The defect: every element of the list copied every column of the outer row, which enumerated the outer row's names once
+    // per element. The row is now read through, so the names are not enumerated whatever the length of the list
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final ExpressionEvaluator evaluator = OpenCypherQueryEngine.getExpressionEvaluator();
+
+    final Expression list = longList(ELEMENTS);
+    final Expression x = new VariableExpression("x");
+    final Expression c1 = new VariableExpression("c1");
+
+    final ListComprehensionExpression comprehension = new ListComprehensionExpression("x", list,
+        new ComparisonExpressionWrapper(x, ComparisonExpression.Operator.GREATER_THAN, new LiteralExpression(0L, "0")),
+        new ArithmeticExpression(x, ArithmeticExpression.Operator.ADD, c1), "[x IN list WHERE x > 0 | x + c1]");
+    CountingRow row = wideRow();
+    final List<Object> expected = new ArrayList<>();
+    for (long i = 1; i <= ELEMENTS; i++)
+      expected.add(i + 1);
+    assertThat(evaluator.evaluate(comprehension, row, context)).isEqualTo(expected);
+    assertNotEnumeratedPerElement(row, "list comprehension");
+
+    // The comprehension of an aggregating projection, which the evaluator runs itself
+    row = wideRow();
+    evaluator.setAggregationOverrides(Map.of());
+    try {
+      assertThat(evaluator.evaluate(comprehension, row, context)).isEqualTo(expected);
+    } finally {
+      evaluator.clearAggregationOverrides();
+    }
+    assertNotEnumeratedPerElement(row, "list comprehension under aggregation");
+
+    final Expression s = new VariableExpression("s");
+    row = wideRow();
+    assertThat(evaluator.evaluate(new ReduceExpression("s", new LiteralExpression(0L, "0"), "x", list,
+        new ArithmeticExpression(s, ArithmeticExpression.Operator.ADD, x), "reduce(s = 0, x IN list | s + x)"), row, context))
+        .isEqualTo((long) ELEMENTS * (ELEMENTS + 1) / 2);
+    assertNotEnumeratedPerElement(row, "reduce()");
+
+    row = wideRow();
+    assertThat(evaluator.evaluate(new AllReduceExpression("s", new LiteralExpression(0L, "0"), "x", list,
+        new ArithmeticExpression(s, ArithmeticExpression.Operator.ADD, x),
+        new ComparisonExpressionWrapper(s, ComparisonExpression.Operator.GREATER_THAN, new LiteralExpression(0L, "0")),
+        "allReduce(s = 0, x IN list | s + x, s > 0)"), row, context)).isEqualTo(true);
+    assertNotEnumeratedPerElement(row, "allReduce()");
+
+    for (final ListPredicateExpression.PredicateType type : ListPredicateExpression.PredicateType.values()) {
+      row = wideRow();
+      // Always true for all() and never true for the others, so none of them stops before the last element
+      final Expression where = type == ListPredicateExpression.PredicateType.ALL ?
+          new ComparisonExpressionWrapper(x, ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL, c1) :
+          new ComparisonExpressionWrapper(x, ComparisonExpression.Operator.LESS_THAN, c1);
+      evaluator.evaluate(new ListPredicateExpression(type, "x", list, where, type + "(x IN list WHERE ...)"), row, context);
+      assertNotEnumeratedPerElement(row, type.name().toLowerCase() + "()");
+    }
+  }
+
+  private static final int ELEMENTS = 50;
+
+  private static void assertNotEnumeratedPerElement(final CountingRow row, final String what) {
+    assertThat(row.nameListings).as("%s over %d elements enumerated the outer row's names %d times", what, ELEMENTS,
+        row.nameListings).isLessThanOrEqualTo(1);
+  }
+
+  private static Expression longList(final int size) {
+    final List<Expression> elements = new ArrayList<>(size);
+    for (long i = 1; i <= size; i++)
+      elements.add(new LiteralExpression(i, Long.toString(i)));
+    return new ListExpression(elements, "list");
+  }
+
+  private static CountingRow wideRow() {
+    final Map<String, Object> columns = new LinkedHashMap<>();
+    for (int i = 1; i <= 13; i++)
+      columns.put("c" + i, (long) i);
+    return new CountingRow(columns);
+  }
+
+  /**
+   * An outer row that counts how often its names are enumerated, which a copy of it does once per copy.
+   */
+  private static final class CountingRow extends ResultInternal {
+    private int nameListings;
+
+    private CountingRow(final Map<String, Object> columns) {
+      super(columns);
+    }
+
+    @Override
+    public Set<String> getPropertyNames() {
+      ++nameListings;
+      return super.getPropertyNames();
+    }
+
+    @Override
+    public boolean listsProperty(final String name) {
+      return content.containsKey(name);
+    }
   }
 
   private Object value(final String query) {
