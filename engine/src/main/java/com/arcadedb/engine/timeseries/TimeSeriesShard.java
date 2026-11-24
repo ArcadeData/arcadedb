@@ -73,6 +73,14 @@ public class TimeSeriesShard implements AutoCloseable {
   private static final Runnable             NO_SCHEMA_CHANGE      = () -> { };
 
   /**
+   * The longest a compaction waits, at each of its commits of the header page, for an entry of another node to be applied here
+   * (issue #12470). The entry holds a version of the page from its validation by the leader until its apply, one Raft round
+   * trip: milliseconds on a healthy cluster, so this is a generous multiple of it, and short enough that a request nothing will
+   * ever apply (the ledger sweeps it only after several client timeouts) costs a few seconds of a maintenance pass and not more.
+   */
+  static final long RESERVATION_WAIT_MS = 1_000L;
+
+  /**
    * Test-only hook (issue #10673): when set, run on the appending thread once the samples have committed and before the late-sample
    * record is looked at again, so a test can observe what the followers hold at the point a leader lost right after the commit would
    * have left them. Public only because the test that sets it is an HA integration test in another module
@@ -241,6 +249,8 @@ public class TimeSeriesShard implements AutoCloseable {
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
                          final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion, final long typeOwner)
       throws IOException {
+    // the name of every file of the shard starts with the name of the type
+    LocalTimeSeriesType.checkValidName(baseName);
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -1298,8 +1308,11 @@ public class TimeSeriesShard implements AutoCloseable {
       db.recordTimeSeriesSealedChange(typeName, shardIndex, sealedStore.getSealedFileName(), sealedStore.readWholeSealedFile());
 
     // The mutable pages. An in-flight append of a replicated database may commit page 0 between the begin and the commit below
-    // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read
+    // (it releases the compaction read lock before its commit, see appendSamples()), so the conflict is retried on a fresh read. So
+    // can an entry of another node that a replicated leader has accepted and not applied yet (issue #12470): it holds a version of
+    // page 0, which every commit of this one is refused for until the entry is applied, so each attempt waits for the page to be free
     for (int attempt = 3; attempt > 0; attempt--) {
+      awaitHeaderPageApplied();
       final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         final long removed = mutableBucket.deleteSamples(fromTs, toTs, tagFilter);
@@ -1348,6 +1361,24 @@ public class TimeSeriesShard implements AutoCloseable {
     void run() throws IOException;
   }
 
+  /**
+   * Waits up to {@link #RESERVATION_WAIT_MS} for the header page of the mutable bucket to be free of the entries of other nodes
+   * that a replicated leader has accepted and not applied yet (issue #12470), which is what a commit of the page is refused for
+   * meanwhile. Returns at once everywhere else. It only spares a refusal, so it never fails the compaction itself: giving up
+   * leaves the commit that follows to meet the refusal, and a header page that cannot be read fails that commit with its own error.
+   */
+  private void awaitHeaderPageApplied() {
+    try {
+      if (!mutableBucket.awaitHeaderPageApplied(RESERVATION_WAIT_MS))
+        LogManager.instance().log(this, Level.FINE,
+            "Compaction of shard %d of type '%s' gave up waiting %d ms for an entry in flight on the header page", shardIndex,
+            typeName, RESERVATION_WAIT_MS);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read the header page of shard %d of type '%s' to wait for it: %s",
+          shardIndex, typeName, e.getMessage());
+    }
+  }
+
   private boolean mergeSmallBlocksInternal(final int minBlocksSaved) throws IOException {
     final TimeSeriesSealedStore.MergePlan plan = sealedStore.prepareMerge(SEALED_BLOCK_SIZE, compactionBucketIntervalMs,
         minBlocksSaved);
@@ -1385,16 +1416,25 @@ public class TimeSeriesShard implements AutoCloseable {
     // (one that released compactionLock.readLock() before its own commit, per the fix for
     // issue #4458) may still be executing its DB-level commit concurrently. If that commit
     // applies page-0 between Phase 0's begin and commit, Phase 0 gets a
-    // ConcurrentModificationException. A brief retry inside the same write lock ensures
-    // Phase 0 always sees the latest page-0 version and commits without conflict. Since
+    // ConcurrentModificationException. A brief retry with the write lock taken again ensures
+    // Phase 0 sees the latest page-0 version and commits without conflict. Since
     // appendLock serializes appends one at a time, at most one in-flight commit can be
     // outstanding, so one retry is sufficient in practice; the loop uses 3 for safety.
+    //
+    // On a replicated leader the conflict can also be a RESERVATION (issue #12470): an entry of another node that the
+    // leader validated and appended but has not applied yet holds a version of page 0, and every check of the page is
+    // refused until it is applied, which takes a Raft round trip. Three attempts back to back all meet it, so each
+    // attempt is preceded by a wait for the page to be free, and the wait is NOT under the write lock: it is the round trip
+    // of someone else's entry, which blocks nothing of this shard but the local appends the lock would hold up for no reason.
+    // Each attempt is self-contained (it begins its own transaction and reads the page count inside it), so letting go of
+    // the lock between two of them changes nothing.
     final int snapshotDataPageCount;
-    compactionLock.writeLock().lock();
-    try {
-      int capturedPageCount = -1;
-      // Count down to mirror the retry convention used in appendSamples().
-      for (int attempt = 3; attempt > 0; attempt--) {
+    int capturedPageCount = -1;
+    // Count down to mirror the retry convention used in appendSamples().
+    for (int attempt = 3; attempt > 0 && capturedPageCount < 0; attempt--) {
+      awaitHeaderPageApplied();
+      compactionLock.writeLock().lock();
+      try {
         // Tracked, like every other transaction this class begins for itself: compactAll() is public API and
         // nothing stops an embedded caller from running it inside a transaction of their own, which is the
         // caller a bare isTransactionActive() would have rolled back after a failed commit (issue #7732).
@@ -1434,28 +1474,27 @@ public class TimeSeriesShard implements AutoCloseable {
           mutableBucket.setCompactionWatermark(initialBlockCount);
           tx.commit();
           capturedPageCount = pageCount;
-          break;
         } catch (final ConcurrentModificationException e) {
           tx.rollbackIfMine();
           if (attempt == 1)
             throw new IOException("Compaction failed in phase 0 after retries", e);
-          // An in-flight append committed page-0 between begin and commit; retry with the
-          // latest version.
+          // An in-flight append committed page-0 between begin and commit, or an entry of another node holds a
+          // reserved version of it: the next attempt waits for the entry and retries with the latest version.
         } catch (final Exception e) {
           tx.rollbackIfMine();
           throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
         }
+      } finally {
+        compactionLock.writeLock().unlock();
       }
-      // Every loop iteration that does not break either returns or throws, so a successful exit
-      // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
-      // which is disabled by default in production) so a future regression cannot silently propagate
-      // a -1 page count into Phase 4.
-      if (capturedPageCount < 0)
-        throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
-      snapshotDataPageCount = capturedPageCount;
-    } finally {
-      compactionLock.writeLock().unlock();
     }
+    // Every loop iteration that does not capture the count either returns or throws, so a successful exit
+    // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
+    // which is disabled by default in production) so a future regression cannot silently propagate
+    // a -1 page count into Phase 4.
+    if (capturedPageCount < 0)
+      throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
+    snapshotDataPageCount = capturedPageCount;
 
     // Pages 1..lastFullPage are FULL (immutable): appendSamples() never writes to full pages
     // — it always appends to the LAST page.  These are safe to read without the write lock.
@@ -1583,6 +1622,14 @@ public class TimeSeriesShard implements AutoCloseable {
       prePhase4cHook.run();
     compactionLock.writeLock().lock();
     try {
+      // On a replicated leader an entry of another node, validated and appended but not applied yet, holds a version of
+      // page 0 (issue #12470), and the commit below would be refused for it: the swap is not repeatable, so the refusal
+      // throws the whole compaction away (see the catch below). Waited for here, before the transaction begins, so the tail
+      // read below sees the samples of that entry once it is applied, and under the lock, so no append of this node can put
+      // another one in flight meanwhile (an entry of another node is not stopped by it, and one validated after this wait
+      // still ends the compaction as before). The cost is bounded and paid only while an entry is in flight, against a
+      // compaction thrown away.
+      awaitHeaderPageApplied();
       final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         final int finalPageCount = mutableBucket.getDataPageCount();
@@ -1751,7 +1798,7 @@ public class TimeSeriesShard implements AutoCloseable {
           final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
           for (int i = chunkStart; i < chunkEnd; i++) {
             final Object val = sortedColArrays[c][i];
-            distinctSet.add(val != null ? val.toString() : "");
+            distinctSet.add(TimeSeriesNaN.dictionaryText(val));
           }
           chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
         }
@@ -2164,6 +2211,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * one until {@link #setTypeName} is called with the rename published.
    */
   void renameFiles(final String newTypeName) throws IOException {
+    LocalTimeSeriesType.checkValidName(newTypeName);
     compactionMutex.lock();
     try {
       mutableBucket.rename(newTypeName + "_shard_" + shardIndex);

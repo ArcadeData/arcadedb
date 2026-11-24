@@ -54,6 +54,35 @@ class CallInTransactionsHttpIssue11588Test extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #13172: a label written before the CALL replaces the node by a record the batch's own transaction could not see while
+   * the auto-commit transaction of the command handler held it uncommitted. That transaction is committed before the batch.
+   */
+  @Test
+  void batchSeesTheLabelWrittenBeforeTheCallInTheAutoCommitTransaction() throws Exception {
+    testEachServer(serverIndex -> {
+      final String label = "Probe13172_" + serverIndex;
+      getServerDatabase(serverIndex, "graph").transaction(() -> getServerDatabase(serverIndex, "graph").command("opencypher",
+          "CREATE (:" + label + " {id: 1})-[:R13172]->(:" + label + " {id: 2})"));
+
+      final HttpURLConnection connection = post(serverIndex, "command", null, cypher(("MATCH (a:%1$s)-[:R13172]->(b:%1$s) "
+          + "FOREACH (n IN [b] | SET n:TmpReview13172) FOREACH (n IN [b] | REMOVE n:TmpReview13172) "
+          + "CALL (b) { FOREACH (n IN [b] | SET n:TmpReview13172) FOREACH (n IN [b] | REMOVE n:TmpReview13172) RETURN 1 AS k } "
+          + "IN TRANSACTIONS OF 10 ROWS RETURN a.id AS a, b.id AS b, k").formatted(label)));
+      try {
+        final int status = connection.getResponseCode();
+        assertThat(status).as(status == 200 ? "" : readError(connection)).isEqualTo(200);
+        final JSONObject row = new JSONObject(readResponse(connection)).getJSONArray("result").getJSONObject(0);
+        assertThat(row.getInt("a")).isEqualTo(1);
+        assertThat(row.getInt("b")).isEqualTo(2);
+        assertThat(row.getInt("k")).isEqualTo(1);
+      } finally {
+        connection.disconnect();
+      }
+      assertThat(count(serverIndex, label)).isEqualTo(2);
+    });
+  }
+
   @Test
   void refusedInTheTransactionTheClientBegan() throws Exception {
     testEachServer(serverIndex -> {

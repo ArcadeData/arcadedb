@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
@@ -103,6 +104,8 @@ public class MatchStatement extends Statement {
 
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentcontext, final boolean usePlanCache) {
+    // The first thing, before anything this statement runs can start another one that would take it (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     this.database = db;
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
@@ -113,11 +116,13 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
     context.setInputParameters(args);
 
-    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context, rowCap);
   }
 
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentcontext, final boolean usePlanCache) {
+    // The first thing, before anything this statement runs can start another one that would take it (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     this.database = db;
     final BasicCommandContext context = new BasicCommandContext();
     if (parentcontext != null) {
@@ -128,7 +133,7 @@ public class MatchStatement extends Statement {
     context.setDatabase(db);
 
     context.setInputParameters(params);
-    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context);
+    return withProfilingConstraints((DatabaseInternal) database, context.getInputParameters()).openResultSet(context, rowCap);
   }
 
   /**
@@ -136,10 +141,10 @@ public class MatchStatement extends Statement {
    * does (see {@link #openResultSetPlanningAgainOnStaleIndex}). A correlated leg of a cartesian product is planned again for
    * every outer row, after rows were returned, so an index dropped under that one still reaches the caller.
    */
-  private ResultSet openResultSet(final CommandContext context) {
+  private ResultSet openResultSet(final CommandContext context, final int rowCap) {
     return openResultSetPlanningAgainOnStaleIndex(attempt -> attempt < STALE_INDEX_PLAN_MAX_ATTEMPTS ?
         createExecutionPlan(context) :
-        new MatchExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context));
+        new MatchExecutionPlanner(this).withoutKeyIndexes().createExecutionPlan(context), rowCap);
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {

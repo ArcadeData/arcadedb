@@ -2449,6 +2449,13 @@ public class LocalSchema implements Schema {
     final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
+      // Again under the write lock, which the check above does not hold (issue #12715): a type rename claims the names it moves
+      // its buckets to under this lock, and so does a concurrent creation of the same name, so the one that comes second is
+      // refused here instead of registering a second bucket under a name the first one holds
+      if (lookupBucket(bucketName) != null)
+        throw new AlreadyExistsException(AlreadyExistsException.Kind.BUCKET,
+            "Cannot create bucket '" + bucketName + "' because already exists");
+
       try {
         final File parent = new File(dir);
         if (!parent.exists() && !parent.mkdirs())
@@ -2955,10 +2962,11 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
+    // The trigger is a schema object too, so the schema permission is asked of the one that creates host code as well: the security
+    // permission is asked on top of it, never instead of it.
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
-    else
-      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
@@ -3019,42 +3027,43 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * The recovery an open owes the per-record materialized views (issue #11550), and the grouped ones maintained by delta (issue
-   * #11937), called once the open has replayed the WAL. Their
-   * pending delta and recovery mark live in memory only, so a view persisted VALID by a process that crashed may be missing the
-   * commits whose pass had not run yet: after an unclean shutdown every per-record view gets the recovery full pass, otherwise
-   * only the ones the load found owing it (persisted non-VALID). The passes run on the scheduler thread, so the open does not wait
-   * on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
-   * whether it leads: there the leader runs {@link #recoverPerRecordMaterializedViews()} when it takes the leadership, and for a
+   * The recovery an open owes the INCREMENTAL materialized views, called once the open has replayed the WAL. A per-record view's
+   * pending delta and recovery mark live in memory only (issue #11550), and a view refreshed as a whole is brought up to date by an
+   * after-commit callback that runs once the source commit is durable (issue #12220): a process that died in between leaves a view
+   * persisted VALID without the commits whose pass had not run yet. After an unclean shutdown every INCREMENTAL view gets the
+   * recovery full pass, otherwise only the ones the load found owing it (persisted non-VALID: a pass that failed, or one a close
+   * dropped, issue #11464). Each says STALE before the open returns, and the passes run on the scheduler thread, so the open does
+   * not wait on them. Not on an HA node, where the refresh is the leader's (issue #11031) and the open happens before the node knows
+   * whether it leads: there the leader runs {@link #recoverIncrementalMaterializedViews()} when it takes the leadership, and for a
    * database it opens only later, once the HA wrapper is installed on it (issue #11555).
    *
    * @param uncleanShutdown whether the open found the database not closed properly
    */
-  public void recoverPerRecordMaterializedViewsAfterOpen(final boolean uncleanShutdown) {
+  public void recoverIncrementalMaterializedViewsAfterOpen(final boolean uncleanShutdown) {
     if (database.getMode() != ComponentFile.MODE.READ_WRITE || isReplicatedNode())
       return;
-    recoverPerRecordMaterializedViews(uncleanShutdown);
+    recoverIncrementalMaterializedViews(uncleanShutdown);
   }
 
   /**
-   * Hands the recovery full pass of every per-record materialized view to the scheduler thread (issue #11550): what a node that
-   * has just become the leader of an HA cluster owes the views, whose pending deltas died with the previous leader. Each view
-   * says STALE until its pass ends. Returns the number of views asked.
+   * Hands the recovery full pass of every INCREMENTAL materialized view to the scheduler thread (issues #11550, #12220): what a
+   * node that has just become the leader of an HA cluster owes the views, whose pending deltas, and the after-commit refreshes not
+   * made yet, died with the previous leader. Each view says STALE until its pass ends. Returns the number of views asked.
    */
-  public int recoverPerRecordMaterializedViews() {
-    return recoverPerRecordMaterializedViews(true);
+  public int recoverIncrementalMaterializedViews() {
+    return recoverIncrementalMaterializedViews(true);
   }
 
   /**
-   * As {@link #recoverPerRecordMaterializedViews()}, or, with {@code everyView} false, for the views that owe the recovery full
+   * As {@link #recoverIncrementalMaterializedViews()}, or, with {@code everyView} false, for the views that owe the recovery full
    * pass only (persisted non-VALID): what an HA leader owes a database it opens again within the leadership that already
-   * recovered it (issue #11555). Returns the number of views asked.
+   * recovered it (issue #11555), and what a clean open owes. Returns the number of views asked.
    */
-  public int recoverPerRecordMaterializedViews(final boolean everyView) {
+  public int recoverIncrementalMaterializedViews(final boolean everyView) {
     int asked = 0;
     for (final MaterializedView v : getMaterializedViews()) {
       final MaterializedViewImpl view = (MaterializedViewImpl) v;
-      if (!view.tracksPendingDelta() || view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
+      if (view.getRefreshMode() != MaterializedViewRefreshMode.INCREMENTAL)
         continue;
       if (!everyView && !view.owesRecoveryPass())
         continue;
@@ -3781,6 +3790,7 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
         checkSubTypesCanBeReattached(type);
+        checkNoSubTypeIndexLosesItsProperty(type);
 
         // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
@@ -3828,8 +3838,11 @@ public class LocalSchema implements Schema {
     final List<Integer> filesOfTheDrop = new ArrayList<>();
     final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
     final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
-    if (backingType != null)
+    if (backingType != null) {
+      // #12318: a sub type linked to the backing type before #11204 can hold an index on a property only the backing type declares
+      checkNoSubTypeIndexLosesItsProperty(backingType);
       collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    }
     return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
   }
 
@@ -3852,6 +3865,60 @@ public class LocalSchema implements Schema {
               + "). Take the link out first with ALTER TYPE `" + sub.getName() + "` SUPERTYPE -`" + type.getName() + "`", e);
         }
       }
+  }
+
+  /**
+   * Refuses the drop of {@code type} while an index of a type below it stands on a property that type would stop inheriting: one
+   * that only {@code type} declares (issue #12318). {@code DROP PROPERTY} refuses the same declaration while such an index stands,
+   * and the drop left the index keyed on a property its type no longer declares, so later writes were judged by the index's stale
+   * key type. A property the sub type still has after the drop does not count: one it declares itself, one it reaches through
+   * another super type, or one declared above {@code type}, which the sub type inherits once it is linked to {@code type}'s super
+   * types. Asked before anything changes.
+   */
+  private static void checkNoSubTypeIndexLosesItsProperty(final LocalDocumentType type) {
+    final Map<LocalDocumentType, Set<String>> memo = new IdentityHashMap<>();
+    final Deque<LocalDocumentType> toVisit = new ArrayDeque<>(type.subTypes);
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    while (!toVisit.isEmpty()) {
+      final LocalDocumentType sub = toVisit.pop();
+      if (!visited.add(sub))
+        continue;
+      toVisit.addAll(sub.subTypes);
+
+      final Set<String> before = sub.getPolymorphicPropertyNames();
+      for (final TypeIndex index : sub.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          if (before.contains(property) && !propertyNamesWithout(sub, type, memo).contains(property))
+            throw new SchemaException(
+                "Cannot drop the type '" + type.getName() + "' because the property '" + property + "' that type '" + sub.getName()
+                    + "' would no longer inherit is used by index '" + index.getName() + "'. Drop the index first, or declare the"
+                    + " property on '" + sub.getName() + "'");
+        }
+    }
+  }
+
+  /**
+   * The polymorphic property names {@code sub} will have once {@code dropped} is gone and its sub types are linked to its super
+   * types, computed without changing anything. Memoized in {@code memo} per type: a type reached twice (a diamond) is asked once.
+   */
+  private static Set<String> propertyNamesWithout(final LocalDocumentType sub, final LocalDocumentType dropped,
+      final Map<LocalDocumentType, Set<String>> memo) {
+    final Set<String> known = memo.get(sub);
+    if (known != null)
+      return known;
+    // published before the walk up, so a hierarchy that holds a cycle (a schema written before cycles were refused) ends
+    final Set<String> names = new HashSet<>(sub.getPropertyNames());
+    memo.put(sub, names);
+    for (final LocalDocumentType parent : sub.superTypes)
+      if (parent == dropped)
+        for (final LocalDocumentType grandParent : dropped.superTypes)
+          names.addAll(grandParent.getPolymorphicPropertyNames());
+      else if (parent.isSubTypeOf(dropped.getName()))
+        names.addAll(propertyNamesWithout(parent, dropped, memo));
+      else
+        names.addAll(parent.getPolymorphicPropertyNames());
+    return names;
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
@@ -3886,8 +3953,19 @@ public class LocalSchema implements Schema {
     // DELETE ALL ASSOCIATED BUCKETS
     final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
     for (final Bucket b : buckets) {
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET OF A PRIMARY ONE GOES WITH IT, ITS FILE AND THE RECORDS OF EVERY EXTERNAL VALUE: IT IS NO
+      // BUCKET OF THE TYPE, SO THIS LOOP LEFT IT IN THE SCHEMA AND ON DISK, AND A TYPE CREATED LATER UNDER THE SAME NAME ADOPTED IT WITH
+      // THE RECORDS OF THE ONE DROPPED (issue #12995). Only the pair of a bucket the type OWNS: a bucket detached from the type earlier
+      // stays in the schema, and its records still point into its pair
+      final Integer externalBucketId = type.externalBucketIdByPrimaryBucketId.remove(b.getFileId());
       type.removeBucket(b);
       dropBucket(b.getName());
+
+      if (externalBucketId != null) {
+        final LocalBucket external = getBucketByIdIfExists(externalBucketId);
+        if (external != null)
+          dropBucket(external.getName());
+      }
     }
 
     if (type instanceof LocalTimeSeriesType tsType)
@@ -3967,6 +4045,11 @@ public class LocalSchema implements Schema {
             InternalBucketNaming.inEdgesBucketName(bucket.getName())))
           if (existsBucket(edgeBucketName))
             files.add(getBucketByName(edgeBucketName).getFileId());
+
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET IS NO BUCKET OF THE TYPE, IT BELONGS TO ITS PRIMARY ONE (issue #12995)
+      final Integer externalBucketId = type.getExternalBucketIdFor(bucket.getFileId());
+      if (externalBucketId != null)
+        files.add(externalBucketId);
     }
   }
 
@@ -4786,7 +4869,9 @@ public class LocalSchema implements Schema {
   private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
     try {
       tsType.initEngine();
-    } catch (final IOException e) {
+    } catch (final IOException | SchemaException e) {
+      // A SchemaException is the name of a stored type that the files of its engine cannot be built on (LocalTimeSeriesType.checkValidName),
+      // handled like the failure below.
       // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
       // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
       // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
@@ -5047,8 +5132,20 @@ public class LocalSchema implements Schema {
       // RESTORE THE INHERITANCE
       for (final Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
         final LocalDocumentType type = getType(entry.getKey());
-        for (final String p : entry.getValue())
-          type.addSuperType(getType(p), false);
+        for (final String p : entry.getValue()) {
+          final LocalDocumentType parent = getType(p);
+          // A schema saved with a cycle (issue #12028: a refused ALTER TYPE ... SUPERTYPE + used to leave it in memory, for the next schema
+          // save to write) cannot be linked as written: every polymorphic walk would recurse until the stack overflows. The link that
+          // would close the cycle is left out, so the database opens. The types are compared by identity: two types whose names differ
+          // only by case are two types, and the link between them is no cycle
+          if (parent.isSameOrSubTypeOf(type)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Type '%s' is declared a sub type of '%s', which is the type itself or already one of its sub types: the link is left out "
+                    + "because a type hierarchy cannot have a cycle", type.getName(), parent.getName());
+            continue;
+          }
+          type.addSuperType(parent, false);
+        }
       }
 
       warnAboutTypesThatCannotHoldRecords(types.keySet());
@@ -5536,6 +5633,12 @@ public class LocalSchema implements Schema {
       // holds this schema's monitor
       return restoreSchemaMembersFromJSONLocked(root, source);
 
+    // Every member of a file handed to the engine is a schema object, exactly as when it is created by hand, so the schema
+    // permission is asked before any of them is installed: a principal narrowed to leave the schema as it found it (or one that
+    // never had the permission) gets the members of a file refused as it gets each of them refused one by one. The members of host
+    // code are asked UPDATE_SECURITY on top of this, one by one, below
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
     // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json
     // only, and the followers never got the triggers, views, aggregates and function libraries.
@@ -5721,10 +5824,11 @@ public class LocalSchema implements Schema {
             view.setStatus(MaterializedViewStatus.STALE);
 
           // A per-record view loaded non-VALID may be missing the records of a failed or interrupted pass, and the recovery mark
-          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass. A grouped
-          // view maintained by delta (issue #11937) rebuilds its in-memory state at its first pass anyway; the mark also recovers it
-          // at the open
-          if (view.tracksPendingDelta() && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
+          // that said so lived in memory (issue #11475): its next pass must be the recovery full pass, not a delta pass
+          // A view refreshed as a whole and loaded non-VALID owes a pass too (issue #12220): its refresh after the source commit failed
+          // or a close dropped it (issue #11464), and the open recovers it rather than leaving it STALE until the next source commit
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL
+              && !MaterializedViewStatus.VALID.name().equals(view.getStatus()))
             view.requestFullPass(true);
         } catch (final Exception e) {
           ++failures;

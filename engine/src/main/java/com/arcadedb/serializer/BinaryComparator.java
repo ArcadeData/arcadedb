@@ -912,7 +912,7 @@ public class BinaryComparator {
       // A schemaless property mixes boxed widths routinely - any value read back from JSON, or written by a
       // client that does not pin the width - so two different Number subclasses have to widen and compare rather
       // than fall through to the cast below, which throws ClassCastException for any two classes (issue #7879).
-      return compareNumbers(numberA, numberB);
+      return compareMixedNumbers(numberA, numberB);
     else if (a instanceof Comparable) {
       // Some types compare across a class mismatch on purpose - RID#compareTo(Object) parses a String operand
       // as "#bucket:position" and Gt/Lt/Ge/LeOperator rely on exactly that (issue #6188), throwing their own
@@ -992,6 +992,25 @@ public class BinaryComparator {
   }
 
   /**
+   * Orders two numbers by their value, the order {@link #compareTo(Object, Object)} gives them, without walking its arms for
+   * every other kind first: a caller that already knows both operands are numbers (an aggregation, a sort comparator) pays one
+   * class test per pair of the common classes. Two operands of one class compare in that class, negative zero equal to zero
+   * ({@link #compareDoubles}); two of different classes widen as {@link #compareMixedNumbers} widens them, so an integer past
+   * 2^53 is never read as the double it rounds to. NaN sorts above every other number.
+   */
+  public static int compareNumbers(final Number a, final Number b) {
+    if (a instanceof Long longA && b instanceof Long longB)
+      return Long.compare(longA, longB);
+    if (a instanceof Double doubleA && b instanceof Double doubleB)
+      return compareDoubles(doubleA, doubleB);
+    if (a instanceof Integer intA && b instanceof Integer intB)
+      return Integer.compare(intA, intB);
+    if (a instanceof Float floatA && b instanceof Float floatB)
+      return Float.compare(floatA + 0.0f, floatB + 0.0f);
+    return compareMixedNumbers(a, b);
+  }
+
+  /**
    * Widens two {@link Number}s of different classes to a common precision and orders them - the value-side
    * counterpart of the numeric widening {@link #compare(Object, byte, Object, byte)} already applies to typed
    * operands. Two integral operands ({@code Byte}/{@code Short}/{@code Integer}/{@code Long}/{@code BigInteger})
@@ -1003,7 +1022,7 @@ public class BinaryComparator {
    * shortest decimal each reads as - unless either is NaN or infinite, where only {@code double} has an ordering
    * at all.
    */
-  private static int compareNumbers(final Number a, final Number b) {
+  private static int compareMixedNumbers(final Number a, final Number b) {
     final boolean integralA = isIntegral(a);
     final boolean integralB = isIntegral(b);
 
@@ -1041,7 +1060,7 @@ public class BinaryComparator {
       return BigDecimal.valueOf(a).compareTo(bigDecimal);
     if (Type.isExactAsDouble(a) || !Type.isFinite(b))
       // a Float reads as its shortest decimal (Type.widenFloat), as the typed path's toDouble() and every other arm of
-      // compareNumbers read it: its exact binary expansion can put an integer on the other side of the float and make
+      // compareMixedNumbers read it: its exact binary expansion can put an integer on the other side of the float and make
       // the order intransitive (issue #8252)
       return compareDoubles(a, b instanceof Float float1 ? Type.widenFloat(float1) : b.doubleValue());
     return BigDecimal.valueOf(a).compareTo(Type.floatingToBigDecimal(b));

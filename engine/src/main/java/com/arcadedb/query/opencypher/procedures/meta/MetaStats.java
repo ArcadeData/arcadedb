@@ -19,30 +19,36 @@
 package com.arcadedb.query.opencypher.procedures.meta;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.VertexType;
-import com.arcadedb.security.SecurityHelper;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.stream.Stream;
 
 /**
  * Procedure: meta.stats()
  * <p>
- * Returns statistics about the database including counts of nodes and relationships.
+ * Returns statistics about the database with APOC's columns: {@code labelCount}, {@code relTypeCount},
+ * {@code propertyKeyCount}, {@code nodeCount}, {@code relCount}, {@code labels} (nodes per label), {@code relTypes}
+ * (relationships per {@code ()-[:T]->()}, {@code (:L)-[:T]->()} and {@code ()-[:T]->(:L)} pattern), {@code relTypesCount}
+ * (relationships per type) and {@code stats} (the first seven in one map). {@code value} is kept for the callers written
+ * before these columns: a map of labelCount, relTypeCount, propertyKeyCount, nodeCount, relCount, labels and relTypes
+ * keyed by type.
+ * </p>
+ * <p>
+ * Cost: ArcadeDB keeps no per-label relationship counts, so the relationship records of every readable edge type are scanned
+ * once (linear in the number of relationships, where Neo4j reads its count store), and {@code propertyKeyCount} reads a sample
+ * of each vertex type. The scan stops at the command's timeout, on termination and on interrupt.
  * </p>
  * <p>
  * Example Cypher usage:
  * <pre>
  * CALL meta.stats()
- * YIELD value
+ * YIELD nodeCount, relCount, labels
  * </pre>
  * </p>
  *
@@ -73,42 +79,53 @@ public class MetaStats extends AbstractMetaProcedure {
 
   @Override
   public List<String> getYieldFields() {
-    return List.of("value");
+    return List.of("labelCount", "relTypeCount", "propertyKeyCount", "nodeCount", "relCount", "labels", "relTypes",
+        "relTypesCount", "stats", "value");
   }
 
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
     final Database database = context.getDatabase();
+    final MetaGraphCounts counts = new MetaGraphCounts(database, new MetaLabels(database), true, newWorkGuard(context));
 
-    final Map<String, Object> stats = new HashMap<>();
-
-    long totalNodes = 0;
-    long totalRelationships = 0;
-    final Map<String, Long> labelCounts = new HashMap<>();
-    final Map<String, Long> relTypeCounts = new HashMap<>();
-
-    for (final DocumentType type : SecurityHelper.readableTypes((DatabaseInternal) database)) {
-      final long count = database.countType(type.getName(), true);
-
-      if (type instanceof VertexType) {
-        totalNodes += count;
-        labelCounts.put(type.getName(), count);
-      } else if (type instanceof EdgeType) {
-        totalRelationships += count;
-        relTypeCounts.put(type.getName(), count);
-      }
+    // APOC's relTypes: every type under ()-[:T]->(), and once per label of a start or end node that has some
+    final Map<String, Long> relTypes = new TreeMap<>();
+    for (final Map.Entry<String, Long> type : counts.relTypes.entrySet()) {
+      final String typeName = type.getKey();
+      relTypes.put("()-[:" + typeName + "]->()", type.getValue());
+      for (final Map.Entry<String, Long> out : counts.outCounts.get(typeName).entrySet())
+        relTypes.put("(:" + out.getKey() + ")-[:" + typeName + "]->()", out.getValue());
+      for (final Map.Entry<String, Long> in : counts.inCounts.get(typeName).entrySet())
+        relTypes.put("()-[:" + typeName + "]->(:" + in.getKey() + ")", in.getValue());
     }
 
-    stats.put("labelCount", labelCounts.size());
-    stats.put("relTypeCount", relTypeCounts.size());
-    stats.put("nodeCount", totalNodes);
-    stats.put("relCount", totalRelationships);
-    stats.put("labels", labelCounts);
-    stats.put("relTypes", relTypeCounts);
+    final long labelCount = counts.labels.size();
+    final long relTypeCount = counts.relTypes.size();
+    final long propertyKeyCount = counts.propertyKeys.size();
+
+    final Map<String, Object> stats = new LinkedHashMap<>();
+    stats.put("labelCount", labelCount);
+    stats.put("relTypeCount", relTypeCount);
+    stats.put("propertyKeyCount", propertyKeyCount);
+    stats.put("nodeCount", counts.nodeCount);
+    stats.put("relCount", counts.relCount);
+    stats.put("labels", counts.labels);
+    stats.put("relTypes", relTypes);
+
+    final Map<String, Object> value = new LinkedHashMap<>(stats);
+    value.put("relTypes", counts.relTypes);
 
     final ResultInternal result = new ResultInternal();
-    result.setProperty("value", stats);
-
+    result.setProperty("labelCount", labelCount);
+    result.setProperty("relTypeCount", relTypeCount);
+    result.setProperty("propertyKeyCount", propertyKeyCount);
+    result.setProperty("nodeCount", counts.nodeCount);
+    result.setProperty("relCount", counts.relCount);
+    result.setProperty("labels", counts.labels);
+    result.setProperty("relTypes", relTypes);
+    result.setProperty("relTypesCount", counts.relTypes);
+    result.setProperty("stats", stats);
+    result.setProperty("value", value);
     return Stream.of(result);
   }
 }

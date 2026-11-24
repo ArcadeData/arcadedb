@@ -66,7 +66,7 @@ import java.util.logging.Level;
  * past the label, and the next {@link #view()} rebuilds (the ordering protocol of dirty pages, spec 6.2). A query needs a view at least
  * as new as the generation it read at start; the build is single-flight ({@link #buildLock}), in a READ_COMMITTED transaction of its
  * own (never the caller's: the shared view holds committed state only) and with no user (the shared view is every user's: a caller's
- * result-set limit or read timeout must not truncate it; access to the tag buckets is the facet layer's check). The READ triggers of
+ * read timeout must not cut it short; access to the tag buckets is the facet layer's check). The READ triggers of
  * the tag type therefore also run with no user during a shared build, as they do in the background rebuild (triggers are schema DDL,
  * so the querying user gains nothing from it; bypassing read events for the build is a tuning item). That transaction is
  * nested when the caller has one, so a caller already as deeply nested as allowed gets no view while the shared one needs a rebuild
@@ -75,7 +75,7 @@ import java.util.logging.Level;
  * normally find a fresh view; that rebuild counts as a running maintenance job of the database (its close waits for it, and it stops
  * at its next step once the manager is closed) and never waits for a build already running, which queues it again when it ends. A
  * caller whose own transaction changed a watched file gets a private view built through that transaction and the caller's user
- * (its result-set limit applies to it, and to it only), kept on that transaction while nothing it holds in the watched files changes ({@link TransactionContext#changeStamp}), never shared and never logging the cycle WARNING.
+ * (its read timeout applies to it, and to it only), kept on that transaction while nothing it holds in the watched files changes ({@link TransactionContext#changeStamp}), never shared and never logging the cycle WARNING.
  * <p>
  * <b>Sources.</b> The watched file set is recomputed at every rebuild (a stripe pool appears at a super-node's first promotion), when
  * the schema version moved, and on a {@code HIERARCHY_SOURCE_CHANGED} event naming {@code vertexType} or {@code parentEdge}; a change of
@@ -493,7 +493,7 @@ public final class HierarchyManager {
     final HierarchyView previous = current;
     final HierarchyView built = ColumnarApplier.inDatabaseContext(database, () -> {
       final DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
-      // no user: the view is every user's, so no user's result-set limit or read timeout may truncate it
+      // no user: the view is every user's, so no user's read timeout may cut it short
       final SecurityDatabaseUser user = context.getCurrentUser();
       context.setCurrentUser(null);
       try {

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
@@ -35,6 +36,13 @@ import com.arcadedb.serializer.json.JSONObject;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
+  /**
+   * Whether the dimensions were declared to this builder rather than taken over with the definition of an existing index, as
+   * in {@link TypeLSMVectorIndexBuilder}: only declared dimensions are held to {@code arcadedb.vectorIndex.maxDimensions}
+   * (issue #12822).
+   */
+  private boolean dimensionsDeclared;
+
   protected BucketLSMVectorIndexBuilder(final DatabaseInternal database, final String typeName, final String bucketName,
       final String[] propertyNames) {
     super(database, typeName, bucketName, propertyNames);
@@ -63,6 +71,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    */
   public BucketLSMVectorIndexBuilder withDimensions(final int dimensions) {
     vectorMetadata().dimensions = dimensions;
+    dimensionsDeclared = true;
     return this;
   }
 
@@ -265,8 +274,23 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
     return this;
   }
 
+  /**
+   * Refuses dimensions declared above {@code arcadedb.vectorIndex.maxDimensions} (issue #12822) before anything is created. The
+   * type-level builder asks the same of its own request and then creates each bucket index through the schema, not through
+   * this method; neither does the propagation of an existing index to a new bucket, which is why the bound is not asked in
+   * the index factory: an index persisted above the bound must keep following its type onto new buckets.
+   */
+  @Override
+  public Index create() {
+    if (dimensionsDeclared)
+      LSMVectorIndexMetadata.checkDimensionsBound(vectorMetadata().dimensions, database.getConfiguration());
+    return super.create();
+  }
+
   @Override
   public BucketLSMVectorIndexBuilder withMetadata(final IndexMetadata metadata) {
+    // the definition of an existing index, dimensions included: not a declaration
+    dimensionsDeclared = false;
     if (metadata instanceof LSMVectorIndexMetadata) {
       // Adopt the type-level instance instead of copying it field by field: that copy is what dropped four settings
       // on the floor (issue #5639). The index factory takes a copy() so the per-bucket index does not share the
@@ -293,6 +317,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    */
   public void withMetadata(final JSONObject metadata) {
     vectorMetadata().fromUserMetadata(metadata, Schema.INDEX_TYPE.LSM_VECTOR);
+    dimensionsDeclared = true;
   }
 
   /**

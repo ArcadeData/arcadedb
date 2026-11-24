@@ -23,6 +23,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
@@ -152,7 +153,23 @@ public final class SortedIndexBuildRecoveryMarker {
 
   private static void recoverMarker(final DatabaseInternal database, final Path databasePath, final Path markerPath)
       throws IOException {
-    final JSONObject marker = new JSONObject(Files.readString(markerPath, StandardCharsets.UTF_8));
+    final JSONObject marker;
+    try {
+      // Decoded leniently on purpose: Files.readString refuses a tail cut inside a multibyte character (a non-ASCII type name or path)
+      // with a CharacterCodingException, which is an IOException and would fail the open as the parse error this branch handles does.
+      // A lenient decode turns that tail into a replacement character, and the manifest then fails to parse like any other cut one
+      marker = new JSONObject(new String(Files.readAllBytes(markerPath), StandardCharsets.UTF_8));
+    } catch (final JSONException e) {
+      // create() writes the marker and forces it to disk BEFORE the build creates its first component file or spill workspace, so a
+      // marker that does not parse (empty, or cut short: a crash between creating the file and writing it, or a power loss that kept the
+      // directory entry and not the data) belongs to a build that had done nothing yet. There is nothing to clean up, and failing here
+      // would leave the database unopenable until somebody deletes the file by hand
+      LogManager.instance().log(database, Level.WARNING,
+          "Removing the unreadable sorted index build cleanup manifest '%s': the build was interrupted before it started", e, markerPath);
+      Files.deleteIfExists(markerPath);
+      return;
+    }
+
     if (marker.getInt("version") != 1)
       throw new IOException("Unsupported sorted index build cleanup manifest version in " + markerPath);
 

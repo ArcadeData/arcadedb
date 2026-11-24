@@ -102,6 +102,11 @@ public class RemoteHttpComponent extends RWLockContext {
   // HOW MUCH OF AN ERROR BODY THAT IS NOT JSON (A PROXY'S ERROR PAGE) GOES INTO THE EXCEPTION AND THE LOG (ISSUE #11387)
   static final         int    NON_JSON_BODY_EXCERPT_MAX = 256;
   /**
+   * The {@code limit} of a request that asks the server for every row (any value {@code <= 0} means unlimited): the
+   * server's hard ceiling {@code arcadedb.server.httpQueryMaxResultRows} still applies, and refuses rather than truncates.
+   */
+  static final         int    UNLIMITED_ROWS            = -1;
+  /**
    * The server's refusal of a request it did not run, with the back-off in {@code exceptionArgs}. Matched by name: the
    * class lives in the server module, which this client does not depend on.
    */
@@ -312,7 +317,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
   /**
    * Maximum number of rows the server is asked to serialize per command, or {@code null} (the default) to
-   * leave the decision to the server.
+   * leave the decision to the server. It governs the commands the application writes: the driver's own whole-result
+   * reads, {@code iterateType()} and {@code iterateBucket()}, ignore it and ask for every row (issue #12185).
    *
    * @see #setMaxResultRows(Integer)
    */
@@ -327,6 +333,12 @@ public class RemoteHttpComponent extends RWLockContext {
    * always honored as written, while a query stating none is capped by the server default
    * ({@code arcadedb.server.httpQueryDefaultLimit}) and the driver logs a warning when that cap drops rows
    * (issue #5711).
+   * <p>
+   * The cap applies to {@code query()}, {@code command()} and the streams ({@code queryStream()}, {@code commandStream()}).
+   * With {@code null} the buffered calls keep the server default, but a stream asks for every row, because it is the API
+   * for results too large to buffer (issue #12185). {@code iterateType()} and {@code iterateBucket()} ignore this setting
+   * altogether: their contract is the whole type or bucket, so a small cap must not hand the application a partial
+   * iteration that {@code countType()} contradicts.
    * <p>
    * Beware that removing the cap makes the server materialize the whole result set in memory before answering,
    * up to the server's hard ceiling ({@code arcadedb.server.httpQueryMaxResultRows}, 1,000,000 rows by
@@ -440,7 +452,25 @@ public class RemoteHttpComponent extends RWLockContext {
       final String errorOperation,
       final boolean replayable) {
     return httpCommand(method, extendedURL, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect,
-        callback, errorOperation, replayable, null);
+        callback, errorOperation, replayable, null, null);
+  }
+
+  /**
+   * Runs a query on {@code extendedURL} as {@link #httpCommand(String, String, String, String, String, Map, boolean, boolean,
+   * Callback)} runs one ({@code POST}, {@code query} route, any replica, reconnecting), sending {@code rowLimit} as the
+   * {@code limit} of the request instead of {@link #getMaxResultRows()}. For the driver's own reads whose contract is the
+   * whole result rather than a page of it ({@code iterateType()}, {@code iterateBucket()}): {@link #UNLIMITED_ROWS} asks
+   * for every row, and the server refuses (HTTP 413) a result above its hard ceiling instead of truncating it, so the read
+   * never ends short without saying so (issue #12185).
+   */
+  Object httpQueryWithRowLimit(final String extendedURL,
+      final String language,
+      final String query,
+      final Map<String, Object> params,
+      final Callback callback,
+      final int rowLimit) {
+    return httpCommand("POST", extendedURL, "query", language, query, params, false, true, callback, query,
+        isReplayable("POST", "query"), null, rowLimit);
   }
 
   /**
@@ -468,7 +498,7 @@ public class RemoteHttpComponent extends RWLockContext {
     // Leader-preferred like every server command (list databases included): that keeps the same-server retry budget, which
     // a read spread over a stale replica list would lose. isReplayable only looks at the method (GET); the path has a query string.
     return (JSONObject) httpCommand(method, null, path, null, null, null, true, true, (response, json) -> json, operation,
-        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard));
+        isReplayable(method, path), new ControlPlaneRequest(body, urlGuard), null);
   }
 
   private Object httpCommand(final String method,
@@ -482,7 +512,8 @@ public class RemoteHttpComponent extends RWLockContext {
       final Callback callback,
       final String errorOperation,
       final boolean replayable,
-      final ControlPlaneRequest controlPlane) {
+      final ControlPlaneRequest controlPlane,
+      final Integer rowLimit) {
 
     // The route of a control-plane request carries names and ids; messages and logs name the operation instead
     final String messageLabel = controlPlane != null ? errorOperation : operation;
@@ -591,8 +622,9 @@ public class RemoteHttpComponent extends RWLockContext {
           // non-element (projection/aggregate) column, opts in explicitly.
           jsonRequest.put("typeHints", true);
           jsonRequest.put("retries", txRetries);
-          if (maxResultRows != null)
-            jsonRequest.put("limit", maxResultRows);
+          final Integer limit = rowLimit != null ? rowLimit : maxResultRows;
+          if (limit != null)
+            jsonRequest.put("limit", limit);
 
           if (params != null)
             jsonRequest.put("params", new JSONObject(encodeParameters(params)));

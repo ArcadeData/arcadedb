@@ -102,6 +102,8 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
         }
       }
 
+      FetchFromSchemaIndexesStep.setIndexMetadata(r, indexInternal);
+
       // Read-only: it never runs the drift check, so a drift can be looked at before a query repairs it
       final Map<String, Object> bm25 = LSMTreeFullTextIndex.describeCorpusCounters(index);
       if (bm25 != null)
