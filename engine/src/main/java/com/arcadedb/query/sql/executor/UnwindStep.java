@@ -153,6 +153,9 @@ public class UnwindStep extends AbstractExecutionStep {
    * The rows one input row unwinds into, produced on demand: a list of a million elements costs a million rows only if the
    * caller reads them, so a {@code LIMIT 1} (or a timeout, or a closed result set) leaves the rest of the list unread and
    * unallocated, instead of building every row before the first one is returned.
+   * <p>
+   * The operand of the first item is evaluated when the input row is read; the list it answers, and the operands of the
+   * following items, are read as the rows are pulled.
    */
   private Iterator<Result> unwind(final Result doc, final int itemIndex, final CommandContext context) {
     if (itemIndex >= unwindFields.size())
@@ -194,20 +197,19 @@ public class UnwindStep extends AbstractExecutionStep {
       return unwind(unwindedDoc, nextFields, context);
     }
 
+    // At the last item each element is one row, handed out as it is built rather than through a one-row iterator per element
+    final boolean lastField = nextFields == unwindFields.size();
     return new Iterator<>() {
       private Iterator<Result> inner = Collections.emptyIterator();
 
       @Override
       public boolean hasNext() {
+        if (lastField)
+          return iterator.hasNext();
         while (!inner.hasNext()) {
           if (!iterator.hasNext())
             return false;
-          guard.checkPeriodically(++produced);
-          final Object o = iterator.next();
-          final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
-          copy(doc, unwindedDoc);
-          unwindedDoc.setProperty(firstField, o);
-          inner = unwind(unwindedDoc, nextFields, context);
+          inner = unwind(nextRow(), nextFields, context);
         }
         return true;
       }
@@ -216,7 +218,16 @@ public class UnwindStep extends AbstractExecutionStep {
       public Result next() {
         if (!hasNext())
           throw new NoSuchElementException();
-        return inner.next();
+        return lastField ? nextRow() : inner.next();
+      }
+
+      private ResultInternal nextRow() {
+        guard.checkPeriodically(++produced);
+        final Object o = iterator.next();
+        final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
+        copy(doc, unwindedDoc);
+        unwindedDoc.setProperty(firstField, o);
+        return unwindedDoc;
       }
     };
   }

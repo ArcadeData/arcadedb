@@ -131,6 +131,20 @@ class UnwindStepTest extends TestHelper {
     }
 
     assertThat(reads.get()).as("elements of the list read to answer LIMIT 3").isLessThan(100);
+
+    // the same holds for a list unwound under another item: the nested expansion is pulled too, not built per outer element
+    reads.set(0);
+    try (final ResultSet result = database.query("sql", "SELECT a, l FROM (SELECT [7, 8] AS a, :l AS l) UNWIND a, l LIMIT 3",
+        Map.of("l", big))) {
+      final List<String> values = new ArrayList<>();
+      while (result.hasNext()) {
+        final Result row = result.next();
+        values.add(row.getProperty("a") + ":" + row.getProperty("l"));
+      }
+      assertThat(values).containsExactly("7:0", "7:1", "7:2");
+    }
+
+    assertThat(reads.get()).as("elements of the nested list read to answer LIMIT 3").isLessThan(100);
   }
 
   @Test
