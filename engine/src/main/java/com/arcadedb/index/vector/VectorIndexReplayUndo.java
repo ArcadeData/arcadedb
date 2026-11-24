@@ -35,7 +35,7 @@ import java.util.List;
  * <p>
  * <b>Why this index publishes eagerly.</b> It is the EAGER half of {@link IndexReplayConclusion} - it writes during
  * the replay and takes it back on abort, so {@code publishIndexReplay()} has no work to publish, it only ends the in-flight
- * mark of the replay (issue #13323). Deferring
+ * marks of the records the replay put (issue #13323). Deferring
  * the way {@code LSMSparseVectorIndex} does (issue #7933) is not open to it: the replay allocates vector ids and
  * writes them ONTO the transaction's own index pages, so the allocation has to be decided while those pages are
  * being written, not after. The eager shape is workable here because everything it publishes stays reachable: the
@@ -73,6 +73,22 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   // dropped at the end.
   int[] allocatedIds = null;
   int   allocatedCount;
+
+  /**
+   * How many records one replay marks in flight one by one. Past it the replay marks the whole index instead, so a bulk load does
+   * not hold a map entry per record for the length of its commit: searches then read every record until it concludes, as they did
+   * before issue #10973.
+   */
+  static final int MAX_TRACKED_PUTS = 4096;
+
+  /**
+   * The records whose vector this replay put, marked in flight in the index until the transaction concludes (issue #13323), at
+   * most {@link #MAX_TRACKED_PUTS}. Held here so the conclusion ends exactly the marks this replay raised.
+   */
+  private RID[]   putRids = null;
+  private int     putCount;
+  /** Whether this replay put more records than it tracks, and marked the whole index in flight instead. */
+  private boolean bulkPut;
 
   int[]  tombstonedIds           = null;
   long[] tombstonedOffsetAndFlag = null;
@@ -144,6 +160,27 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
   }
 
   /**
+   * A record whose vector this replay is about to put: marked in flight in the index before the vector becomes visible, so a
+   * search that answers the vector before the record page is published reads the record instead of handing it on unread (issue
+   * #13323).
+   */
+  void recordPut(final RID rid) {
+    if (bulkPut)
+      return;
+    if (putCount == MAX_TRACKED_PUTS) {
+      bulkPut = true;
+      index.bulkPutInFlight();
+      return;
+    }
+    if (putRids == null)
+      putRids = new RID[8];
+    else if (putCount == putRids.length)
+      putRids = Arrays.copyOf(putRids, putCount * 2);
+    putRids[putCount++] = rid;
+    index.putInFlight(rid);
+  }
+
+  /**
    * An id this replay tombstoned, together with the location it held. Both are needed: {@code markDeleted} releases
    * the location, so un-tombstoning has to put the exact offset back rather than leave the id live-but-unaddressed.
    *
@@ -189,16 +226,17 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
     try {
       index.undoReplay(this);
     } finally {
-      index.commitReplayConcluded();
+      // After the vectors are taken back: a search that no longer finds a record marked finds its vector gone
+      index.putsConcluded(putRids, putCount, bulkPut);
     }
   }
 
   /**
    * The transaction's changes stand and its pages are published (the conclusion runs from {@code reset()}, after the 2nd phase): the
-   * replay is no longer in flight, a search answers the records it replayed from their pages (issue #13323).
+   * records this replay put are no longer in flight, a search hands them on unread again (issue #13323).
    */
   @Override
   public void publishIndexReplay() {
-    index.commitReplayConcluded();
+    index.putsConcluded(putRids, putCount, bulkPut);
   }
 }

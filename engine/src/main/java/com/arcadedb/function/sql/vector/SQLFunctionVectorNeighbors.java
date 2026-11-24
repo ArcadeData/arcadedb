@@ -488,12 +488,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * rows from the transaction, not from the committed locations. The permission to read the bucket is asked by
    * {@link #neighbourRecord} for each row it makes, as the read did, since no read will ask it for a row that is never loaded.
    * <p>
-   * The record is read as well for an index with a commit in flight ({@link LSMVectorIndex#hasCommitReplayInFlight}, issue #13323): the
-   * commit puts its vectors in the index before it publishes its record pages, so a vector the search answers can be of a record
-   * that cannot be read yet,
-   * which only the read tells from a record that is there. Read now, such a record is no row of the answer (it costs a candidate, as a
-   * committed delete does), and a row made without the read would answer it with no properties. The question is asked after the
-   * searches, so a vector found of a commit that concluded since is found published.
+   * A commit puts its vectors in the index before it publishes its record pages, so a vector the search answers can be of a record
+   * that cannot be read yet (issue #13323), and a row made without the read would answer it with no properties. The record of such a
+   * row is read when the row is made, see {@link #neighbourRecord}: only the rows of a commit in flight, every other row is still
+   * handed on unread.
    */
   private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
     if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
@@ -504,7 +502,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (int i = 0; i < vectorIndexes.size(); i++) {
       final LSMVectorIndex index = vectorIndexes.get(i);
       final int bucketId = index.getAssociatedBucketId();
-      if (bucketId < 0 || index.isWrittenByCurrentTransaction() || index.hasCommitReplayInFlight())
+      if (bucketId < 0 || index.isWrittenByCurrentTransaction())
         continue;
       if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
           || type.hasAfterReadListeners())
@@ -536,6 +534,11 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // The check the read makes (LocalBucket.getRecord), for the row being emitted only: a bucket the caller cannot read
       // fails the query when it contributes a row, not when it was merely searched
       ((DatabaseInternal) db).checkPermissionsOnFile(rid.getBucketId(), SecurityDatabaseUser.ACCESS.READ_RECORD);
+      // A record whose vector a commit in flight put may not be published yet (issue #13323): read now, one that cannot be read is no
+      // row of the answer (it costs a candidate, as a committed delete does). Asked first: once the commit concludes the mark goes, after
+      // the pages are published or the vector is taken back, so the vector of an unmarked record is live only when the record is there
+      if (deferredBy.isPutByCommitInFlight(rid))
+        return (Document) db.lookupByRID(rid, true);
       // Under REPEATABLE_READ the lookup reads the record all the same, and a record that is gone throws as it always did
       return deferredBy.hasLiveVector(rid) ? (Document) db.lookupByRID(rid, false) : null;
     } catch (final RecordNotFoundException e) {
