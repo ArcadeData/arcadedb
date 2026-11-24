@@ -20,6 +20,7 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 
@@ -49,10 +50,9 @@ class InSubQueryProbeTest extends TestHelper {
     database.getSchema().createDocumentType("Outer");
     database.getSchema().createDocumentType("Inner");
     database.transaction(() -> {
-      for (int i = 0; i < 100; i++) {
+      for (int i = 0; i < 100; i++)
         database.newDocument("Outer").set("id", i).set("s", "s" + i).save();
-        // 40 sub-query rows: the even numbers below 80, a long, a double, one string-valued row apart
-      }
+      // 40 sub-query rows, the even numbers below 80, held as integers, longs and doubles
       for (int i = 0; i < 40; i++)
         database.newDocument("Inner").set("n", i % 2 == 0 ? (Object) (i * 2) : i % 3 == 0 ? (Object) (long) (i * 2) : (Object) (double) (i * 2)).save();
     });
@@ -115,9 +115,79 @@ class InSubQueryProbeTest extends TestHelper {
   }
 
   @Test
+  void aCorrelatedSubQueryWhoseRowsRepeatForSomeOuterRowsAnswersPerRow() {
+    database.getSchema().createDocumentType("OuterR");
+    database.getSchema().createDocumentType("InnerR");
+    database.transaction(() -> {
+      // two outer rows per group, so a cached sub-query result may come back for the second row of a group before the group changes
+      for (int id = 0; id < 6; id++)
+        database.newDocument("OuterR").set("id", id).set("g", id / 2).save();
+      for (int g = 0; g < 3; g++)
+        for (int i = 0; i < 40; i++)
+          database.newDocument("InnerR").set("g", g).set("n", g * 1000 + i).save();
+    });
+
+    // every outer row finds its value among the rows of its own group (rows 2..5 would miss it in the rows of group 0), and a value
+    // past the 40 rows of each group matches nothing
+    assertThat(ids("SELECT id FROM OuterR WHERE (g * 1000 + id) IN (SELECT n FROM InnerR WHERE g = $parent.$current.g) ORDER BY id"))
+        .containsExactly(0, 1, 2, 3, 4, 5);
+    assertThat(ids("SELECT id FROM OuterR WHERE (g * 1000 + 40 + id) IN (SELECT n FROM InnerR WHERE g = $parent.$current.g) ORDER BY id"))
+        .isEmpty();
+    assertThat(ids("SELECT id FROM OuterR WHERE (g * 1000 + id) NOT IN (SELECT n FROM InnerR WHERE g = $parent.$current.g) ORDER BY id"))
+        .isEmpty();
+  }
+
+  @Test
+  void floatAndDoubleRowsAnswerAsTheScanDoes() {
+    database.getSchema().createDocumentType("OuterF").createProperty("f", Type.FLOAT);
+    database.getSchema().createDocumentType("InnerF").createProperty("d", Type.DOUBLE);
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("OuterF").set("id", i).set("f", i / 10f).save();
+      // 40 rows, split in two halves of 20, each one short enough to be scanned
+      for (int i = 0; i < 80; i += 2)
+        database.newDocument("InnerF").set("id", i).set("d", i / 10.0).set("half", i % 4 == 0 ? 0 : 1).save();
+    });
+
+    // a FLOAT property probed by DOUBLE rows, against the same rows in two scanned halves
+    final List<Integer> probed = ids("SELECT id FROM OuterF WHERE f IN (SELECT d FROM InnerF) ORDER BY id");
+    assertThat(probed).hasSize(40)
+        .isEqualTo(ids("SELECT id FROM OuterF WHERE f IN (SELECT d FROM InnerF WHERE half = 0) OR f IN (SELECT d FROM InnerF WHERE half = 1) ORDER BY id"));
+    assertThat(ids("SELECT id FROM OuterF WHERE f NOT IN (SELECT d FROM InnerF) ORDER BY id")).hasSize(60).isEqualTo(
+        ids("SELECT id FROM OuterF WHERE f NOT IN (SELECT d FROM InnerF WHERE half = 0) AND f NOT IN (SELECT d FROM InnerF WHERE half = 1) ORDER BY id"));
+
+    // a DOUBLE property probed by the 100 FLOAT rows, against the same rows in four scanned quarters
+    assertThat(ids("SELECT id FROM InnerF WHERE d IN (SELECT f FROM OuterF) ORDER BY id")).hasSize(40).isEqualTo(ids(
+        "SELECT id FROM InnerF WHERE d IN (SELECT f FROM OuterF WHERE id < 25) OR d IN (SELECT f FROM OuterF WHERE id >= 25 AND id < 50)"
+            + " OR d IN (SELECT f FROM OuterF WHERE id >= 50 AND id < 75) OR d IN (SELECT f FROM OuterF WHERE id >= 75) ORDER BY id"));
+  }
+
+  @Test
+  void aNullAmongStringRowsLeavesTheMissesOfNotInUnknown() {
+    database.getSchema().createDocumentType("OuterN");
+    database.getSchema().createDocumentType("InnerN");
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++)
+        database.newDocument("OuterN").set("id", i).set("s", "v" + i).save();
+      for (int i = 0; i < 80; i += 2)
+        database.newDocument("InnerN").set("t", "v" + i).save();
+      database.newDocument("InnerN").set("t", (Object) null).save();
+    });
+
+    final List<Integer> even = new ArrayList<>();
+    for (int i = 0; i < 80; i += 2)
+      even.add(i);
+    assertThat(ids("SELECT id FROM OuterN WHERE s IN (SELECT t FROM InnerN) ORDER BY id")).isEqualTo(even);
+    // a hit is not in the NOT IN, and a miss is unknown against the null row: nothing answers
+    assertThat(ids("SELECT id FROM OuterN WHERE s NOT IN (SELECT t FROM InnerN) ORDER BY id")).isEmpty();
+    assertThat(ids("SELECT id FROM OuterN WHERE s NOT IN (SELECT t FROM InnerN WHERE t IS NOT NULL) ORDER BY id")).hasSize(60);
+  }
+
+  @Test
   void aLargeSubQueryIsNotScannedOncePerOuterRow() {
     final int outer = 40_000;
-    final int inner = 8_000;
+    // measured on a laptop: the scan per outer row takes about 11 s, the probe about 0.2 s, the bound sits between them
+    final int inner = 20_000;
     database.getSchema().createDocumentType("OuterP");
     database.getSchema().createDocumentType("InnerP");
     database.transaction(() -> {
@@ -137,6 +207,6 @@ class InSubQueryProbeTest extends TestHelper {
     }
 
     assertThat(matched).isEqualTo(outer / 10);
-    watch.assertGaveUpWithin(5_000, "one probe of the sub-query rows from a scan of " + inner + " rows per outer row of " + outer);
+    watch.assertGaveUpWithin(2_000,"one probe of the sub-query rows from a scan of " + inner + " rows per outer row of " + outer);
   }
 }
