@@ -1062,9 +1062,10 @@ public final class CypherFunctionHelper {
     if (isTemporalTypeRank(rankA))
       return ((CypherTemporalValue) TemporalUtil.fromCoreJavaType(a)).compareTo((CypherTemporalValue) TemporalUtil.fromCoreJavaType(b));
     // Numbers by value: an INTEGER past 2^53 is not the double it rounds to, so reading both as double made 1500000000000000001 and
-    // 1500000000000000003 equal and min() / max() answered the first row (issue #12673)
+    // 1500000000000000003 equal and min() / max() answered the first row (issue #12673). The numeric entry point, not compareTo:
+    // this runs once per row of every min() / max(), and compareTo tests a dozen other kinds before it reaches the numbers
     if (a instanceof Number numberA && b instanceof Number numberB)
-      return BinaryComparator.compareTo(numberA, numberB);
+      return BinaryComparator.compareNumbers(numberA, numberB);
     if (a instanceof String && b instanceof String)
       return BinaryComparator.compareStrings((String) a, (String) b);
     if (a instanceof Boolean && b instanceof Boolean)

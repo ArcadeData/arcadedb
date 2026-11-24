@@ -613,6 +613,13 @@ public class OrderByStep extends AbstractExecutionStep {
         if (v1 instanceof byte[] b1 && v2 instanceof byte[] b2)
           return BinaryComparator.compareBytes(b1, b2);
 
+        // Numbers by value, whatever their classes: an INTEGER past 2^53 against a FLOAT is not the double it rounds to, and a Float
+        // is read through its decimal form, so the ordering agrees with what ComparisonExpression answers for the same pair
+        // (issues #7609, #12673). Every pair goes through this one comparator, the one min() / max() use, two of the same class
+        // included: Double.compareTo put -0.0 below 0.0 while an INTEGER 0 equals both, an order no sort can follow
+        if (v1 instanceof Number number1 && v2 instanceof Number number2)
+          return BinaryComparator.compareNumbers(number1, number2);
+
         // Same-type Comparable comparison
         if (v1.getClass().equals(v2.getClass()) && v1 instanceof Comparable) {
           try {
@@ -621,12 +628,6 @@ public class OrderByStep extends AbstractExecutionStep {
             // Fall through
           }
         }
-
-        // Cross-type number comparison, by value: an INTEGER past 2^53 against a FLOAT is not the double it rounds to, and a Float
-        // is read through its decimal form, so the ordering agrees with what ComparisonExpression answers for the same pair
-        // (issues #7609, #12673)
-        if (v1 instanceof Number number1 && v2 instanceof Number number2)
-          return BinaryComparator.compareTo(number1, number2);
 
         // Different types: order by type rank
         final int rank1 = typeRank(v1);
