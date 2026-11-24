@@ -1132,7 +1132,8 @@ public class MatchExecutionPlanner {
       final BucketList vertexBuckets = new BucketList();
       for (final DocumentType type : context.getDatabase().getSchema().getTypes())
         if (type instanceof VertexType)
-          for (final com.arcadedb.engine.Bucket bucket : type.getBuckets(false))
+          // var: THE ENGINE BUCKET SHARES ITS SIMPLE NAME WITH THE PARSER NODE IMPORTED ABOVE
+          for (final var bucket : type.getBuckets(false))
             vertexBuckets.buckets.add(new Identifier(bucket.getName()));
       if (vertexBuckets.buckets.isEmpty()) {
         final SelectExecutionPlan nothing = new SelectExecutionPlan(context, 0);
