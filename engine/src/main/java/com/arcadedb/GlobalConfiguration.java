@@ -1145,7 +1145,8 @@ public enum GlobalConfiguration {
       a SET value, a CREATE EDGE endpoint: its bytes are charged to the budget while the list is built, and given back when it is returned) and the rows of a user defined SQL function (against this cap only: no bytes are charged for \
       the body of a function), the records a MATCH prefetches, the vertices a MATCH while:/maxDepth: walk holds along its current path and the \
       values an aggregate that keeps them holds, like list(), set(), percentile() or the ts.* windows; in OpenCypher also the rows \
-      a Cartesian product or a hash join buffers, UNION, collect(), and the eager materialization ahead of a write). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
+      a Cartesian product or a hash join buffers, UNION, collect(), the eager materialization ahead of a write, and the rows the \
+      YIELD/WHERE clause of a SHOW command produces). If exceeded, the query fails with a CommandExecutionException. Negative number means no limit. \
       This setting is intended as a safety measure against excessive resource consumption from a single query (eg. prevent OutOfMemory). \
       When left at the default it auto-scales with the JVM max heap (roughly one element every 2KB of heap, never below 500000), so \
       large-cardinality analytical queries (eg. top-N-by-aggregate over millions of distinct keys) complete out of the box on servers \
@@ -1167,7 +1168,7 @@ public enum GlobalConfiguration {
       database: the rows an ORDER BY sorts, the keys a DISTINCT or a UNION remembers, the groups a GROUP BY keeps, the result \
       of a LET subquery, the records a TRAVERSE has visited and the rows it keeps queued to expand, the records a MATCH prefetches, the record addresses an UPDATE reads ahead \
       of its writes, the values an aggregate like list() or percentile() holds, and in OpenCypher also the values collect() gathers, the rows a Cartesian product or a hash join buffers and the eager \
-      materialization ahead of a write, or the record addresses an index range reads ahead of a write to its key. Every \
+      materialization ahead of a write, the rows the YIELD/WHERE clause of a SHOW command produces, or the record addresses an index range reads ahead of a write to its key. Every \
       buffer reserves its estimated size from this budget as it grows and gives it \
       back when it is released, so many large queries running together cannot exhaust the heap even when each one stays \
       below arcadedb.queryMaxHeapElementsAllowedPerOp. A query whose buffers would take the reservations past the budget \

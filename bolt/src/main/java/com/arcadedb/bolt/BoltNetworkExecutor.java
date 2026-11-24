@@ -895,7 +895,7 @@ public class BoltNetworkExecutor extends Thread {
       // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
       // every database on the server no matter what was bound.
       try {
-        applySystemQueryTail(query, params, stream);
+        applySystemQueryTail(query, params, stream, statementTimeoutMs);
       } catch (final CommandParsingException e) {
         stream.close(this, "RUN failure");
         // Through the category, which keeps a genuine parsing failure's own title (classifyParsingError) and lets a failure that
@@ -974,10 +974,7 @@ public class BoltNetworkExecutor extends Thread {
       // The budget the engine enforces on the statement (arcadedb.command.timeout), published right before the statement's
       // context is built - after the admission wait, which is not the statement's - so the rows a later PULL reads run against
       // the same deadline. The earlier of the two wins, as for Postgres statement_timeout
-      if (statementTimeoutMs > 0) {
-        final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
-        CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
-      }
+      publishStatementTimeout(statementTimeoutMs);
 
       // Use command() for writes, query() for reads.
       // An AUTO-COMMIT write commits here, at RUN, not at the end of its stream as the Bolt specification has it: a RESET or a
@@ -1646,21 +1643,52 @@ public class BoltNetworkExecutor extends Thread {
    * (see {@link ShowCommandTail}), including the client's own parameters.
    * <p>
    * A command with no tail - by far the common case - costs one lexer pass and nothing else.
+   * <p>
+   * A tail is a query of the engine, so it runs as the statements of the normal path do: after the admission gate, listed
+   * with the running statements where it can be terminated, and under the time budget of the statement.
    */
-  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
-    if (stream.syntheticResults == null || stream.fields == null)
+  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream,
+      final long statementTimeoutMs) {
+    if (stream.syntheticResults == null || stream.fields == null || !ShowCommandTail.hasTail(query))
       return;
 
-    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
-    // rather than after a hasTail() that would tokenize the query a second time.
-    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
-        params);
-    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
-      return;
+    final ShowCommandTail.Table table;
+    final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+    RunningQuery runningQuery = null;
+    RunningQuery.Binding binding = null;
+    try {
+      runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null, "bolt", null, null,
+          RunningQuery.Client.of(connectionId, socket.getRemoteSocketAddress()));
+      runningQuery.setStatement("opencypher", query);
+      binding = runningQuery.bind();
+      publishStatementTimeout(statementTimeoutMs);
+
+      table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults, params);
+    } finally {
+      CommandTimeoutOverride.clear();
+      if (binding != null)
+        binding.close();
+      admission.close();
+      if (runningQuery != null)
+        runningQuery.close();
+    }
 
     stream.fields = table.fields();
     // Copied into a list PULL may consume destructively: it removes each row as it sends it.
     stream.syntheticResults = new ArrayList<>(table.rows());
+  }
+
+  /**
+   * Publishes the budget the statement about to run may take, on this thread, for the engine to enforce on it: the earlier of
+   * the statement's own ({@code tx_timeout}, or what is left of the explicit transaction's) and the database's
+   * {@code arcadedb.command.timeout}, as for Postgres statement_timeout. Does nothing for a statement with no budget of its own.
+   * The caller clears it when the statement's work is over.
+   */
+  private void publishStatementTimeout(final long statementTimeoutMs) {
+    if (statementTimeoutMs > 0) {
+      final long databaseTimeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT);
+      CommandTimeoutOverride.set(databaseTimeout > 0 ? Math.min(databaseTimeout, statementTimeoutMs) : statementTimeoutMs);
+    }
   }
 
   /**
