@@ -528,9 +528,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     for (int attempt = 1; ; attempt++) {
       final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
           HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
-      final HttpResponse<String> response;
       try {
-        response = sendWithWatchdog(request);
+        final HttpResponse<String> response = sendWithWatchdog(request);
+        if (failedOver) {
+          // The server answered, so it is alive: the rest of the transaction goes where the session is
+          if (strategy == CONNECTION_STRATEGY.STICKY)
+            setStickyTransactionServer(target);
+          else {
+            currentServer = target.getFirst();
+            currentPort = target.getSecond();
+          }
+        }
+        return response;
       } catch (final IOException e) {
         if (attempt >= maxAttempts || !provablyNeverSent(e))
           throw e;
@@ -548,19 +557,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         target = next;
         failedOver = true;
-        continue;
       }
-
-      if (failedOver) {
-        // The server answered, so it is alive: the rest of the transaction goes where the session is
-        if (strategy == CONNECTION_STRATEGY.STICKY)
-          setStickyTransactionServer(target);
-        else {
-          currentServer = target.getFirst();
-          currentPort = target.getSecond();
-        }
-      }
-      return response;
     }
   }
 
