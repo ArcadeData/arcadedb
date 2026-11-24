@@ -2875,6 +2875,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         if (!createdNewTx) {
           // A level the block opened itself and left open is not the caller's: take it back, keep the caller's (#10135)
           rollbackLevelsAbove(callerLevels);
+          // The caller may be no retry loop of ours, but its own code or a client: a block that committed part of its work
+          // does not reach it as a retryable conflict either (#13251)
+          if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+            throw TransactionContext.notReplayable(e, "Transaction block");
           throw e;
         }
 

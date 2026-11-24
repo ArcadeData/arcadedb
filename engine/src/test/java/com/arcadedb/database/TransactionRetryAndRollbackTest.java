@@ -1548,6 +1548,31 @@ public class TransactionRetryAndRollbackTest {
     }
 
     /**
+     * Issue #13251: a block that joined the caller's transaction is not retried by this call, and its conflict goes to the caller
+     * as it is - unless the block committed part of its work, which the caller must not replay either.
+     */
+    @Test
+    void aJoinedBlockThatCommittedPartOfItsWorkReachesTheCallerAsNotReplayable() {
+      database.begin();
+      try {
+        assertThatThrownBy(() -> database.transaction(() -> {
+          database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
+          throw new ConcurrentModificationException("simulated conflict after the batch boundary");
+        }, true, 3, null, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
+
+        assertThatThrownBy(() -> database.transaction(() -> {
+          throw new ConcurrentModificationException("simulated conflict with nothing published");
+        }, true, 3, null, null)).as("nothing committed: the conflict reaches the caller as it is")
+            .isInstanceOf(ConcurrentModificationException.class);
+      } finally {
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+
+      assertThat(countRowsWithSeq(2)).as("no row may be incremented twice").isZero();
+    }
+
+    /**
      * The issue also named {@code TRUNCATE TYPE} and {@code REBUILD TYPE} as mid-statement committers. They are NOT,
      * at this HEAD: both suppress their batching when a caller transaction is active (issue #6220), so they join the
      * caller's unit and a rollback really does put the records back. The retry therefore stays available, and this
