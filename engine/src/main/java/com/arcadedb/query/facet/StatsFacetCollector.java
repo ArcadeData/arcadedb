@@ -58,7 +58,7 @@ import java.util.function.LongConsumer;
  * ({@link NumericSum#merge}). What SQL refuses makes the facet {@code unavailable}: a value that is no number and no date
  * ({@value #NOT_A_NUMBER_OR_DATE}), numbers and dates in one facet ({@value #MIXED_KINDS}).
  * <p>
- * Memory: the accumulators are reserved ({@value #STATE_BYTES} bytes, an upper bound of the sum, a widened decimal total and the
+ * Memory: the accumulators are reserved ({@link #STATE_BYTES} bytes, an upper bound of the sum, a widened decimal total and the
  * returned extremes) from {@link FacetMemoryBudget} at the first bucket, before they are allocated; a refusal makes the facet
  * {@code unavailable} ({@code memory budget}) and resets every accumulator. Not thread safe: driven by one query thread.
  */
@@ -68,8 +68,11 @@ public final class StatsFacetCollector implements FacetCollector {
   static final String NOT_A_NUMBER_OR_DATE = "not a number or a date";
   /** The reason of a facet that met numbers and dates: SQL's {@code min()} cannot compare them. */
   static final String MIXED_KINDS          = "numbers and dates mixed";
-  /** The heap of the accumulators: the {@link NumericSum}, a {@code BigDecimal} total, the boxed or temporal min and max. */
-  static final long   STATE_BYTES          = 256;
+  /**
+   * The heap of the accumulators: the {@link NumericSum} with the digits of a floating-point total at their largest, a
+   * {@code BigDecimal} total, the boxed or temporal min and max.
+   */
+  static final long   STATE_BYTES          = 256 + NumericSum.MAX_DIGITS_HEAP_BYTES;
 
   // how a column value feeds the sum
   private static final byte NONE   = 0;

@@ -115,6 +115,6 @@ public class CypherAvgFunction implements StatelessFunction {
     if (durationSum != null)
       return durationSum.divide(count);
     // + 0.0: THE SUM STARTED FROM 0.0 BEFORE #12696, SO A MEAN OF -0.0 VALUES STAYS 0.0
-    return (sum.doubleValue() + 0.0) / count;
+    return sum.doubleMean(count) + 0.0;
   }
 }

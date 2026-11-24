@@ -106,7 +106,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
       return null;
     // NOT A BigDecimal: THE MEAN IS THE double TOTAL OVER THE COUNT, WITHOUT BOXING THE TOTAL FIRST
     if (!sum.isDecimal())
-      return sum.doubleValue() / total;
+      return sum.doubleMean(total);
     return computeAverage(sum.get(), total, decimalInput);
   }
 
@@ -124,7 +124,7 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
     if (count == 0)
       return null;
     if (!sum.isDecimal())
-      return sum.doubleValue() / count;
+      return sum.doubleMean(count);
     return computeAverage(sum.get(), count, decimalInput);
   }
 

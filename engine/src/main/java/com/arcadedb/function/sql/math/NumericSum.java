@@ -21,6 +21,8 @@ package com.arcadedb.function.sql.math;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.MathContext;
 
 /**
  * The running total of {@code sum()} and {@code avg()}: the type of the total, and its value for integral and decimal
@@ -76,6 +78,15 @@ public final class NumericSum {
   private static final int  INTEGER_POSITION   = 1074;
   // ADDITIONS BETWEEN TWO CARRY PROPAGATIONS: A DIGIT THEN HOLDS LESS THAN (NORMALIZE_EVERY + 1) * 2^32 IN MAGNITUDE
   private static final int  NORMALIZE_EVERY    = 1 << 20;
+  // THE POSITION OF THE SMALLEST SUBNORMAL float, 2^-149
+  private static final int  FLOAT_MIN_POSITION = INTEGER_POSITION - 149;
+
+  /**
+   * An upper bound of the heap the digits of a floating-point total take: the digit indexes reach from -1 (one below the first
+   * value's) to 63 + 3 (the highest double's three digits and the carry digit above them), one more for a merge: 69 digits, 72 here,
+   * held in a {@code long[]} with its header. What a caller reserving the memory of a sum adds for it.
+   */
+  public static final long MAX_DIGITS_HEAP_BYTES = 16 + 8 * 72;
 
   private byte    state = EMPTY;
   private long    longSum;
@@ -216,6 +227,11 @@ public final class NumericSum {
    * Folds {@code other} in, as {@code sum()} merges a partial total; an empty one adds nothing. A floating-point total is folded
    * in by its exact sum, not by its rounded value, so the result does not depend on how the values were split in partials nor on
    * the order the partials are merged in (issue #12696). Every other total is added as one value, as {@link #add} adds it.
+   * <p>
+   * That holds for values of one floating-point type, mixed with integral ones or not. Where {@code Type.increment()} itself
+   * makes the result depend on which types meet first, the merge keeps its semantics: a {@code Float} total meeting a
+   * {@code Double} is widened as a whole, its values one by one once the total is a {@code Double}, and a {@code long}
+   * overflow widens to a {@code BigDecimal}, which takes a {@code Double} by its decimal form.
    */
   public void merge(final NumericSum other) {
     switch (other.state) {
@@ -420,6 +436,20 @@ public final class NumericSum {
 
   /** The exact sum correctly rounded to a {@code double}, half to even. */
   private double doubleTotal() {
+    return roundExact(53, 0);
+  }
+
+  /** The exact sum correctly rounded to a {@code float}, half to even: rounded once, from the exact sum, not from its double. */
+  private float floatTotal() {
+    // THE double HOLDS THE ROUNDED float EXACTLY (OR AN INFINITY), SO THE CAST DOES NOT ROUND AGAIN
+    return (float) roundExact(24, FLOAT_MIN_POSITION);
+  }
+
+  /**
+   * The exact sum rounded half to even to {@code precision} significant bits, and never below the bit at {@code minPosition}
+   * (in units of 2^-1074: the step of the subnormals of the target type), as a {@code double} that holds it exactly.
+   */
+  private double roundExact(final int precision, final int minPosition) {
     if (nonFinite != 0.0)
       // AN INFINITY OR NaN WINS OVER ANY FINITE TOTAL; +INFINITY AND -INFINITY GIVE NaN
       return nonFinite;
@@ -448,13 +478,26 @@ public final class NumericSum {
     final int aBits = 64 - Long.numberOfLeadingZeros(a);
     // THE 64 HIGHEST SIGNIFICANT BITS, BIT 63 SET, AND WHAT THEY LEAVE OUT OF c
     final long top = (((a << 32) | b) << (32 - aBits)) | (c >>> aBits);
-    final boolean sticky = lowest < highest - 2 || (c & ((1L << aBits) - 1)) != 0L || (top & 0x3FFL) != 0L;
-    long mantissa = top >>> 11;
-    if ((top & 0x400L) != 0L && (sticky || (mantissa & 1L) != 0L))
-      mantissa++;
-    // THE WEIGHT OF THE MANTISSA'S LOWEST BIT: c's IS 2^(32 * (digitBase + highest - 2) - 1074)
-    final double total = Math.scalb((double) mantissa, 32 * (digitBase + highest - 2) + aBits + 11 - 1074);
-    return negative ? -total : total;
+    final boolean stickyBelowTop = lowest < highest - 2 || (c & ((1L << aBits) - 1)) != 0L;
+
+    // THE POSITION OF THE BIT 0 OF top, AND THE ONE THE ROUNDED VALUE KEEPS AS ITS LOWEST: drop BITS OF top GO
+    final int topPosition = 32 * (digitBase + highest - 2) + aBits;
+    final int keptPosition = Math.max(topPosition + 64 - precision, minPosition);
+    final int drop = keptPosition - topPosition;
+    final double magnitude;
+    if (drop > 64)
+      // LESS THAN HALF THE SMALLEST STEP: A ZERO OF THE SUM'S SIGN
+      magnitude = 0.0;
+    else {
+      long mantissa = drop == 64 ? 0L : top >>> drop;
+      final boolean roundBit = ((top >>> (drop - 1)) & 1L) != 0L;
+      final boolean sticky = stickyBelowTop || (top & ((1L << (drop - 1)) - 1)) != 0L;
+      if (roundBit && (sticky || (mantissa & 1L) != 0L))
+        mantissa++;
+      // EXACT: AT MOST precision + 1 BITS, ABOVE THE SUBNORMAL STEP, OR AN INFINITY PAST THE RANGE
+      magnitude = Math.scalb((double) mantissa, keptPosition - INTEGER_POSITION);
+    }
+    return negative ? -magnitude : magnitude;
   }
 
   /**
@@ -473,9 +516,20 @@ public final class NumericSum {
     return i == lowest ? -digit & DIGIT_MASK : ~digit & DIGIT_MASK;
   }
 
-  /** The exact sum rounded to a {@code float}, through its correctly rounded {@code double}. */
-  private float floatTotal() {
-    return (float) doubleTotal();
+  /** The exact sum of the finite values, divided by {@code count}, rounded to 34 significant digits. */
+  private BigDecimal exactMean(final long count) {
+    normalize();
+    BigInteger units = BigInteger.ZERO;
+    for (int i = digits.length - 1; i >= 0; i--)
+      units = units.shiftLeft(32).add(BigInteger.valueOf(digits[i]));
+    // digits[0] WEIGHS 2^(32 * digitBase) UNITS OF 2^-1074
+    final int exponent = 32 * digitBase - INTEGER_POSITION;
+    BigInteger denominator = BigInteger.valueOf(count);
+    if (exponent >= 0)
+      units = units.shiftLeft(exponent);
+    else
+      denominator = denominator.shiftLeft(-exponent);
+    return new BigDecimal(units).divide(new BigDecimal(denominator), MathContext.DECIMAL128);
   }
 
   /** The total as {@code Type.increment()} would have typed it, or null when no value was added. */
@@ -500,6 +554,18 @@ public final class NumericSum {
       case LONG, INT -> longSum;
       default -> boxed.doubleValue();
     };
+  }
+
+  /**
+   * The total divided by {@code count}, as a {@code double}: what {@code avg()} answers. The mean of finite values is finite even
+   * when their sum is past the {@code double} (or {@code float}) range, so a floating-point total that rounds to an infinity is
+   * divided exactly first.
+   */
+  public double doubleMean(final long count) {
+    final double total = doubleValue();
+    if (Double.isInfinite(total) && (state == DOUBLE || state == FLOAT) && nonFinite == 0.0)
+      return exactMean(count).doubleValue();
+    return total / count;
   }
 
   /** Whether no value was added. */

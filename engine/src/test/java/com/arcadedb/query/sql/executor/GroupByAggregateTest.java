@@ -399,8 +399,10 @@ class GroupByAggregateTest extends TestHelper {
       final long count = values.stream().filter(v -> v != null).count();
       if (count == 0)
         assertThat(avg.getResult()).isNull();
-      else if (!(folded instanceof BigDecimal))
+      else if (!(folded instanceof BigDecimal)) {
+        assertThat(avg.getResult()).as("type of the avg of %s", values).isInstanceOf(Double.class);
         assertSameTotal((Number) avg.getResult(), folded.doubleValue() / count, values, "avg");
+      }
     }
   }
 

@@ -833,6 +833,55 @@ class SQLFunctionMathRegressionTest {
     }
 
     @Test
+    void aFloatTotalIsRoundedOnceFromTheExactSum() {
+      // JUST ABOVE THE MIDPOINT BETWEEN 1f AND ITS SUCCESSOR: ROUNDED TO A double FIRST IT WOULD BE THE MIDPOINT, THEN 1f
+      assertThat(sequential(List.of(1f, 0x1p-24f, 0x1p-54f))).isEqualTo(Math.nextUp(1f));
+      assertThat(sequential(List.of(1f, 0x1p-24f))).isEqualTo(1f);
+      assertThat(sequential(List.of(-1f, -0x1p-24f, -0x1p-54f))).isEqualTo(-Math.nextUp(1f));
+      assertThat(sequential(List.of(Float.MAX_VALUE, Float.MAX_VALUE))).isEqualTo(Float.POSITIVE_INFINITY);
+      assertThat(sequential(List.of(Float.MIN_VALUE, Float.MIN_VALUE, -Float.MIN_VALUE))).isEqualTo(Float.MIN_VALUE);
+      assertThat(sequential(List.of(-0.0f, -0.0f))).isEqualTo(-0.0f);
+
+      final Random random = new Random(24);
+      for (int round = 0; round < 2_000; round++) {
+        final List<Float> values = new ArrayList<>();
+        BigDecimal exact = BigDecimal.ZERO;
+        final int n = 1 + random.nextInt(30);
+        for (int i = 0; i < n; i++) {
+          final float v = round % 2 == 0 ? Math.scalb(random.nextFloat() - 0.5f, random.nextInt(280) - 150) : random.nextInt(1_000_000) / 100f;
+          values.add(v);
+          exact = exact.add(new BigDecimal(v));
+        }
+        assertThat(sequential(values)).as("sum of %s", values).isEqualTo(exact.floatValue());
+        assertThat(split(values, random)).as("split sum of %s", values).isEqualTo(exact.floatValue());
+      }
+    }
+
+    @Test
+    void theMeanOfFiniteValuesIsFiniteWhenTheirSumIsNot() {
+      final List<List<? extends Number>> inputs = List.of(List.of(Double.MAX_VALUE, Double.MAX_VALUE),
+          List.of(Double.MAX_VALUE, 0x1p969, 0x1p969), List.of(-Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE),
+          List.of(Float.MAX_VALUE, Float.MAX_VALUE));
+      final double[] expected = { Double.MAX_VALUE, new BigDecimal(Double.MAX_VALUE).add(new BigDecimal(0x1p970))
+          .divide(BigDecimal.valueOf(3), MathContext.DECIMAL128).doubleValue(), -Double.MAX_VALUE, Float.MAX_VALUE };
+      for (int i = 0; i < inputs.size(); i++) {
+        final SQLFunctionAverage avg = new SQLFunctionAverage();
+        final CypherAvgFunction cypherAvg = new CypherAvgFunction();
+        for (final Number value : inputs.get(i)) {
+          avg.aggregate(null, new Object[] { value }, null);
+          cypherAvg.execute(new Object[] { value }, null);
+        }
+        assertThat(avg.getResult()).as("avg of %s", inputs.get(i)).isEqualTo(expected[i]);
+        assertThat(cypherAvg.getAggregatedResult()).as("Cypher avg of %s", inputs.get(i)).isEqualTo(expected[i]);
+      }
+      // AN INFINITE VALUE STILL MAKES AN INFINITE MEAN
+      final SQLFunctionAverage infinite = new SQLFunctionAverage();
+      infinite.aggregate(null, new Object[] { Double.MAX_VALUE }, null);
+      infinite.aggregate(null, new Object[] { Double.POSITIVE_INFINITY }, null);
+      assertThat(infinite.getResult()).isEqualTo(Double.POSITIVE_INFINITY);
+    }
+
+    @Test
     void sqlAndCypherFunctionsMergeTheirPartialsExactly() {
       final List<Double> values = new ArrayList<>();
       final Random random = new Random(11);
