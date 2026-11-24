@@ -3651,7 +3651,9 @@ public enum GlobalConfiguration {
       "Path of the PEM private key served by the gRPC endpoint when arcadedb.grpc.tls.enabled is true", String.class, null),
 
   GRPC_MAX_MESSAGE_SIZE("arcadedb.grpc.maxMessageSize", SCOPE.SERVER,
-      "Maximum inbound gRPC message size, in megabytes (minimum 1). Default is 100", Integer.class, 100),
+      "Maximum gRPC message size, in megabytes (minimum 1): the largest message the server accepts, and the largest result it "
+          + "encodes into one response, streamed batch or materialized result (a larger one fails with RESOURCE_EXHAUSTED). "
+          + "Default is 100", Integer.class, 100),
 
   GRPC_MAX_METADATA_SIZE("arcadedb.grpc.maxMetadataSize", SCOPE.SERVER,
       "Maximum inbound gRPC metadata (headers) size, in kilobytes (minimum 1). Default is 16", Integer.class, 16),
