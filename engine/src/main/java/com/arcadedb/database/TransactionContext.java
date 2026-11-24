@@ -786,6 +786,36 @@ public class TransactionContext implements Transaction {
     return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
+  /**
+   * The failure a retry loop raises when it refuses to replay a block that {@link #isPartiallyCommitted} (issue #13251).
+   * <p>
+   * The refusal alone is not enough: the conflict that ended the block is a {@link NeedRetryException}, and every layer above
+   * the loop reads that type as "the same request can succeed as issued". The HTTP API answers it 503 with
+   * {@code Retry-After: 0}, gRPC {@code ABORTED}, Bolt a transient error, and the Java remote client resends the request on
+   * it, so the committed part was applied again by whoever retried next. A {@link TransactionException} is not retryable on
+   * any of them, so the caller learns that the block stopped with part of its work durable and must not be run again as is.
+   * <p>
+   * The conflict is attached as a SUPPRESSED exception, not as the cause: the error mappings look through a
+   * {@link TransactionException} to its cause and would find the retryable conflict again. A {@link DuplicatedKeyException}
+   * is returned unchanged: no layer tells a client to retry it.
+   *
+   * @param conflict the exception the block failed with
+   * @param block    what failed, for the message ("Transaction block", "COMMIT RETRY block", ...)
+   *
+   * @return the exception to raise instead of {@code conflict}
+   */
+  public static ArcadeDBException notReplayable(final ArcadeDBException conflict, final String block) {
+    if (!(conflict instanceof NeedRetryException))
+      return conflict;
+
+    final TransactionException failure = new TransactionException(
+        block + " committed part of its work before failing with " + conflict.getClass().getSimpleName() + " (" + conflict.getMessage()
+            + "). It is not retried, because a replay would apply the already committed part a second time: check what was "
+            + "applied before running it again");
+    failure.addSuppressed(conflict);
+    return failure;
+  }
+
   /** True while the transaction holds the file locks a {@code LOCK TYPE} / {@code LOCK BUCKET} took, until its commit or rollback. */
   public boolean holdsExplicitLocks() {
     return explicitLockedFiles != null;
