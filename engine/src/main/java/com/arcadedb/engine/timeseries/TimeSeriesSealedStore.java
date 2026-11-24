@@ -206,6 +206,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@link #listSealedFiles} by the exact suffix match.
    */
   static final String MERGE_TEMP_SUFFIX = ".ts.sealed.merge.tmp";
+  /**
+   * The temp file of a downsampling pass (issue #12610). Its own, like a merge's: the pass writes it without the directory lock, so it
+   * must not be a file a retention or a compaction of the same store could open, truncate or install meanwhile.
+   */
+  static final String DOWNSAMPLE_TEMP_SUFFIX = ".ts.sealed.downsample.tmp";
 
   private static final File[] EMPTY_FILES = new File[0];
 
@@ -628,6 +633,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final File mergeTmpFile = new File(basePath + MERGE_TEMP_SUFFIX);
     if (mergeTmpFile.exists() && !mergeTmpFile.delete())
       throw new IOException("Failed to delete stale temporary file: " + mergeTmpFile.getAbsolutePath());
+
+    final File downsampleTmpFile = new File(basePath + DOWNSAMPLE_TEMP_SUFFIX);
+    if (downsampleTmpFile.exists() && !downsampleTmpFile.delete())
+      throw new IOException("Failed to delete stale temporary file: " + downsampleTmpFile.getAbsolutePath());
 
     // Clean up a stale .incoming file left by an HA sealed-blob install that crashed before the
     // atomic move (issue #4382). The live .ts.sealed below is authoritative; the Raft entry that
@@ -3179,7 +3188,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * What {@link #prepareDownsample} wrote to {@code .ts.sealed.tmp} and {@link #commitDownsample} installs (issue #12610).
+   * What {@link #prepareDownsample} wrote to {@link #DOWNSAMPLE_TEMP_SUFFIX} and {@link #commitDownsample} installs (issue #12610).
    *
    * @param newDirectory      the block directory of the temp file, {@code null} for {@link #DIRECTORY_MOVED}
    * @param directoryVersion  the {@link #directoryVersion} the temp file was derived from: the commit installs it only if the live
@@ -3210,9 +3219,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * The verdicts that a block cannot be reduced are recorded as the blocks are read, and stay valid when the pass is dropped: they are
    * a property of the samples, which a rewrite copies along with the verdict ({@link #writeRetainedBlock}).
    * <p>
-   * The temp file is the one retention and compaction write as well, so the caller serialises a pass with every other rewrite of the
-   * sealed file ({@code TimeSeriesShard.compactionMutex}), as it does a merge, and with every other downsampling pass of this store
-   * ({@link #getDownsampleLock}), which it holds until the plan is committed or dropped.
+   * The temp file is the pass's own ({@link #DOWNSAMPLE_TEMP_SUFFIX}), so no other kind of rewrite writes it; another downsampling
+   * pass of this store would, so the caller holds {@link #getDownsampleLock} until the plan is committed or dropped. The shard also
+   * serialises a pass with every other rewrite of the sealed file ({@code TimeSeriesShard.compactionMutex}), as it does a merge, so
+   * that a pass is not dropped for a directory that one of them moved.
    */
   DownsamplePlan prepareDownsample(final long cutoffTs, final long granularityMs, final long gridOffsetMs, final int tsColIdx,
       final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
@@ -3305,7 +3315,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     output.sealRemainder();
 
     // The temp file: toKeep blocks (raw copy) + new downsampled blocks
-    final List<BlockEntry> newDirectory = writeRewriteTempFile(toKeep, output, version);
+    final List<BlockEntry> newDirectory;
+    try {
+      newDirectory = writeRewriteTempFile(toKeep, output, version);
+    } catch (final IOException e) {
+      // a store closed after its last block was read refuses the temp file (openTempFile()): dropped as at any other point
+      if (closed)
+        return DownsamplePlan.DIRECTORY_MOVED;
+      throw e;
+    }
     if (newDirectory == null)
       return DownsamplePlan.DIRECTORY_MOVED;
     return new DownsamplePlan(newDirectory, version, sweep.peakAccumulators());
@@ -3327,17 +3345,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // would re-create the file the drop deleted, for the next type of that name to adopt
       if (closed || directoryVersion != plan.directoryVersion()) {
         // a no-op for a closed store, whose temp path may belong to a store created since (see openTempFile())
-        deleteTempFileIfExists();
+        deleteDownsampleTempFileIfExists();
         return false;
       }
       try {
-        commitTempFile(plan.newDirectory(), basePath + ".ts.sealed.tmp", () -> {
+        commitTempFile(plan.newDirectory(), basePath + DOWNSAMPLE_TEMP_SUFFIX, () -> {
           downsampleEpoch++;
           downsamplePeakAccumulators = plan.peakAccumulators();
         });
       } catch (final IOException | RuntimeException e) {
         // a failed swap leaves no half-installed file for whoever rewrites next to find (issue #9770)
-        deleteTempFileIfExists();
+        deleteDownsampleTempFileIfExists();
         throw e;
       }
       return true;
@@ -4390,7 +4408,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // atomic file swap. If Files.move() fails, the live file and blockDirectory remain intact.
     // The caller holds the directory write lock, so the retained blocks are read as they are: nothing can move them
     final int colCount = columns.size();
-    final List<BlockEntry> newDirectory = writeRewriteTempFile(retained, newBlocks, entry -> {
+    final List<BlockEntry> newDirectory = writeRewriteTempFile(retained, newBlocks, tempPath, this::deleteTempFileIfExists, entry -> {
       final byte[][] compressedCols = new byte[colCount][];
       for (int c = 0; c < colCount; c++)
         compressedCols[c] = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
@@ -4452,7 +4470,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private List<BlockEntry> writeRewriteTempFile(final List<BlockEntry> retained, final NewBlocks newBlocks, final int version)
       throws IOException {
-    return writeRewriteTempFile(retained, newBlocks, entry -> readBlockColumnsIfUnchanged(entry, version, false));
+    return writeRewriteTempFile(retained, newBlocks, basePath + DOWNSAMPLE_TEMP_SUFFIX, this::deleteDownsampleTempFileIfExists,
+        entry -> readBlockColumnsIfUnchanged(entry, version, false));
   }
 
   /**
@@ -4462,10 +4481,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code reader} answered {@code null} for a block, and then no temp file is left behind, as none is by a write that fails
    * (issue #9770).
    */
-  private List<BlockEntry> writeRewriteTempFile(final List<BlockEntry> retained, final NewBlocks newBlocks,
-      final RetainedBlockReader reader) throws IOException {
+  private List<BlockEntry> writeRewriteTempFile(final List<BlockEntry> retained, final NewBlocks newBlocks, final String tempPath,
+      final Runnable deleteTempFile, final RetainedBlockReader reader) throws IOException {
     final int colCount = columns.size();
-    final String tempPath = basePath + ".ts.sealed.tmp";
 
     // Build a merged, minTimestamp-sorted write plan so that the on-disk layout is
     // always in ascending order (required by binary search in iterateRange/scanRange).
@@ -4479,31 +4497,34 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     final List<BlockEntry> newDirectory = new ArrayList<>(writeOrder.size());
     boolean complete = false;
-    try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
-      // Write all blocks in ascending minTimestamp order
-      for (final WriteSpec spec : writeOrder) {
-        if (spec.retained()) {
-          final BlockEntry oldEntry = retained.get(spec.idx());
-          final byte[][] compressedCols = reader.read(oldEntry);
-          if (compressedCols == null)
-            return null;
-          newDirectory.add(writeRetainedBlock(tempFile, oldEntry, compressedCols, colCount));
-        } else {
-          final int b = spec.idx();
-          final long[] meta = newBlocks.meta(b);
-          final NewBlock block = newBlocks.build(b);
-          final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
-              colCount, block.tagDistinctValues(), newBlockId());
-          // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
-          entry.downsampledGranularityMs = block.granularityMs();
-          newDirectory.add(entry);
+    try {
+      try (final RandomAccessFile tempFile = openTempFileForRewrite(tempPath, colCount)) {
+        // Write all blocks in ascending minTimestamp order
+        for (final WriteSpec spec : writeOrder) {
+          if (spec.retained()) {
+            final BlockEntry oldEntry = retained.get(spec.idx());
+            final byte[][] compressedCols = reader.read(oldEntry);
+            if (compressedCols == null)
+              return null;
+            newDirectory.add(writeRetainedBlock(tempFile, oldEntry, compressedCols, colCount));
+          } else {
+            final int b = spec.idx();
+            final long[] meta = newBlocks.meta(b);
+            final NewBlock block = newBlocks.build(b);
+            final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1], block.compressed(), block.stats(),
+                colCount, block.tagDistinctValues(), newBlockId());
+            // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
+            entry.downsampledGranularityMs = block.granularityMs();
+            newDirectory.add(entry);
+          }
         }
       }
+      // complete only once the handle is closed: a close that fails leaves a file nobody installs
       complete = true;
     } finally {
       // a failed write leaves no half-written file for whoever rewrites next to find (issue #9770), and neither does a dropped one
       if (!complete)
-        deleteTempFileIfExists();
+        deleteTempFile.run();
     }
     return newDirectory;
   }
@@ -4925,9 +4946,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         throw moveEx;
       }
 
-      indexFile = new RandomAccessFile(sealedFile, "rw");
-      indexChannel = channelOf(indexFile);
-
+      // From the move on the file on disk is the new one, so the new directory is installed before anything else can fail: a reopen
+      // that fails below leaves the shared channel closed, and the next read reopens it at this path (readAfterChannelClosed), which
+      // has to find the offsets of the file there and not those of the file it replaced
       blockDirectory.clear();
       ++directoryVersion;
       decodedColumnCache.clear();
@@ -4949,6 +4970,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (onInstalled != null)
         onInstalled.run();
 
+      indexFile = new RandomAccessFile(sealedFile, "rw");
+      indexChannel = channelOf(indexFile);
       rewriteHeader();
     } finally {
       directoryLock.writeLock().unlock();
@@ -5093,6 +5116,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final File tmp = new File(basePath + MERGE_TEMP_SUFFIX);
       if (tmp.exists() && !tmp.delete())
         LogManager.instance().log(this, Level.WARNING, "Could not delete temporary merge file %s", tmp.getAbsolutePath());
+    }
+  }
+
+  /** Deletes the temp file of a downsampling pass ({@code .ts.sealed.downsample.tmp}) if it exists (issue #12610). */
+  void deleteDownsampleTempFileIfExists() {
+    synchronized (channelReopenLock) {
+      // a store closed on purpose owns no file at that path any more (issue #10867): see openTempFile()
+      if (closed)
+        return;
+      final File tmp = new File(basePath + DOWNSAMPLE_TEMP_SUFFIX);
+      if (tmp.exists() && !tmp.delete())
+        LogManager.instance().log(this, Level.WARNING, "Could not delete temporary downsample file %s", tmp.getAbsolutePath());
     }
   }
 
@@ -6254,7 +6289,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * name finds none of them.
    */
   public static void deleteFiles(final String basePath) throws IOException {
-    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
+    for (final String suffix : new String[] { ".ts.sealed.tmp", MERGE_TEMP_SUFFIX, DOWNSAMPLE_TEMP_SUFFIX, ".ts.sealed.incoming" }) {
       final File temp = new File(basePath + suffix);
       if (temp.exists() && !temp.delete())
         LogManager.instance().log(TimeSeriesSealedStore.class, Level.WARNING, "Could not delete the temp file '%s'", null,

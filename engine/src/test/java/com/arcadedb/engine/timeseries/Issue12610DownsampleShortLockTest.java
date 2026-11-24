@@ -173,7 +173,7 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
       assertThat(hookRuns.get()).as("every block was folded before the install was noticed").isEqualTo(BLOCKS);
       assertThat(shipped.get()).as("sealed files handed to the replication").isZero();
       assertThat(sealed.getDownsampleRewriteCount()).isZero();
-      assertThat(new File(getDatabasePath(), sealed.getSealedFileName() + ".tmp")).as("the temp file of the dropped pass").doesNotExist();
+      assertThat(new File(getDatabasePath(), sealed.getSealedFileName() + ".downsample.tmp")).as("the temp file of the dropped pass").doesNotExist();
       assertThat(rows(engine)).as("the store is the one that was installed").hasSize(BLOCKS * PER_BLOCK);
 
       assertThat(shard.downsample(Long.MAX_VALUE / 2, MINUTE, 0L, 0, List.of(1), List.of(2))).isTrue();
@@ -195,7 +195,7 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
       final TimeSeriesSealedStore.DownsamplePlan plan = store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1));
       assertThat(plan).isNotNull();
       assertThat(plan.directoryMoved()).isFalse();
-      final File temp = new File(STORE_PATH + ".ts.sealed.tmp");
+      final File temp = new File(STORE_PATH + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX);
       assertThat(temp).as("the prepare wrote the temp file").exists();
       assertThat(store.getBlockCount()).as("and installed nothing").isEqualTo(2);
 
@@ -237,7 +237,7 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
 
       final TimeSeriesSealedStore.DownsamplePlan plan = store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1));
       assertThat(plan).isSameAs(TimeSeriesSealedStore.DownsamplePlan.DIRECTORY_MOVED);
-      assertThat(new File(STORE_PATH + ".ts.sealed.tmp")).doesNotExist();
+      assertThat(new File(STORE_PATH + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX)).doesNotExist();
       assertThat(store.getDownsampleRewriteCount()).isZero();
       assertThat(store.getBlockCount()).isEqualTo(4);
       assertThat(hookRuns.get()).as("the prepare gave up at the block after the one the rewrite landed behind").isEqualTo(1);
@@ -273,32 +273,54 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
       assertThat(hookRuns.get()).as("one block of the dropped attempt, then the four blocks of the live directory").isEqualTo(1 + 4);
       assertThat(store.getDownsampleRewriteCount()).isEqualTo(1);
       assertThat(store.getTotalSampleCount()).isEqualTo(4L * 6);
-      assertThat(new File(STORE_PATH + ".ts.sealed.tmp")).doesNotExist();
+      assertThat(new File(STORE_PATH + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX)).doesNotExist();
     }
   }
 
-  /** A store closed while a pass reads it is not read through its closed channel: the pass is dropped, and the retry refused. */
+  /** A store closed while the prepare reads it is not read through its closed channel: the plan is dropped. */
   @Test
-  void aStoreClosedWhileThePassFoldsDropsThePassAndRefusesTheRetry() throws Exception {
+  void aStoreClosedWhileThePrepareFoldsDropsThePlan() throws Exception {
     new File(STORE_DIR).mkdirs();
-    final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS);
-    for (int b = 0; b < 3; b++)
-      appendBlock(store, b * MINUTE);
+    // closed by the hook, and again by the try, which is a no-op then: a fixture that fails before the hook runs still closes it
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS)) {
+      for (int b = 0; b < 3; b++)
+        appendBlock(store, b * MINUTE);
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = closeOnce(store);
 
-    TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = () -> {
-      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = null;
-      try {
-        store.close();
-      } catch (final IOException e) {
-        throw new UncheckedIOException(e);
-      }
-    };
+      assertThat(store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
+          .isSameAs(TimeSeriesSealedStore.DownsamplePlan.DIRECTORY_MOVED);
+      assertThat(store.getDownsampleRewriteCount()).isZero();
+    }
+  }
 
-    assertThat(store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
-        .isSameAs(TimeSeriesSealedStore.DownsamplePlan.DIRECTORY_MOVED);
-    assertThatThrownBy(() -> store.downsampleBlocks(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
-        .isInstanceOf(IOException.class).hasMessageContaining("closed on purpose");
-    assertThat(store.getDownsampleRewriteCount()).isZero();
+  /** Closed after the last block is folded, there is no block read left to notice it: the open of the temp file does. */
+  @Test
+  void aStoreClosedAfterTheLastBlockIsFoldedDropsThePlanAtTheTempFile() throws Exception {
+    new File(STORE_DIR).mkdirs();
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS)) {
+      appendBlock(store, 0L);
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = closeOnce(store);
+
+      assertThat(store.prepareDownsample(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
+          .isSameAs(TimeSeriesSealedStore.DownsamplePlan.DIRECTORY_MOVED);
+      assertThat(new File(STORE_PATH + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX)).doesNotExist();
+    }
+  }
+
+  /** The same through one public call: the pass is dropped, and the retry is refused instead of looping on a closed store. */
+  @Test
+  void aStoreClosedWhileThePassFoldsRefusesTheRetry() throws Exception {
+    new File(STORE_DIR).mkdirs();
+    // closed by the hook, and again by the try, which is a no-op then: a fixture that fails before the hook runs still closes it
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(STORE_PATH, STORE_COLUMNS)) {
+      for (int b = 0; b < 3; b++)
+        appendBlock(store, b * MINUTE);
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = closeOnce(store);
+
+      assertThatThrownBy(() -> store.downsampleBlocks(Long.MAX_VALUE, 10_000L, 0L, 0, List.of(), List.of(1)))
+          .isInstanceOf(IOException.class).hasMessageContaining("closed on purpose");
+      assertThat(store.getDownsampleRewriteCount()).isZero();
+    }
   }
 
   /**
@@ -362,6 +384,18 @@ class Issue12610DownsampleShortLockTest extends TestHelper {
   }
 
   // ---- Helpers ----
+
+  /** A sweep hook that closes {@code store} the first time it runs, and then does nothing. */
+  private static Runnable closeOnce(final TimeSeriesSealedStore store) {
+    return () -> {
+      TimeSeriesSealedStore.TEST_DOWNSAMPLE_SWEEP_HOOK = null;
+      try {
+        store.close();
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    };
+  }
 
   /** An engine of one shard holding {@link #BLOCKS} sealed blocks of {@link #PER_BLOCK} samples one second apart, one series. */
   private TimeSeriesEngine engineWithSealedBlocks(final String name) throws Exception {

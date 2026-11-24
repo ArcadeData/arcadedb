@@ -109,7 +109,7 @@ public class TimeSeriesShard implements AutoCloseable {
   //  - compact()             (Phases 3 and 4b are lock-free, and they own .ts.sealed.tmp)
   //  - mergeSmallBlocks()    (its own .ts.sealed.merge.tmp, but it installs a directory planned against a snapshot)
   //  - runSealedRewrite()    (retention and delete, through TimeSeriesEngine: truncateBefore() uses .ts.sealed.tmp as well)
-  //  - downsample()          (its temp file is .ts.sealed.tmp too, written outside the compaction lock like a merge's, issue #12610)
+  //  - downsample()          (its own .ts.sealed.downsample.tmp, written outside the compaction lock like a merge's, issue #12610)
   // All of them either share that one temp path or install a block directory computed from a snapshot of the live store, so
   // two of them overlapping corrupt each other's temp file or silently undo each other's result (a retention pass inside a
   // compaction's window put the retired blocks back). compactionLock is NOT this lock: compaction deliberately does not hold
@@ -1347,7 +1347,7 @@ public class TimeSeriesShard implements AutoCloseable {
         } finally {
           // a session that never ran the commit, or a commit that failed before the swap, leaves no temp file behind (issue #9770)
           if (!installed[0])
-            sealedStore.deleteTempFileIfExists();
+            sealedStore.deleteDownsampleTempFileIfExists();
         }
         return installed[0];
       } finally {
