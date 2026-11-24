@@ -109,12 +109,14 @@ class CypherRidTextIndexSeekIssue11933Test extends TestHelper {
 
   /**
    * A property map matched per input row compares through {@code InlineProperties}, which does not read a RID spelled as text as an
-   * id: the scan finds nothing there, and the seek of that path, which keeps the text as the key, finds nothing either.
+   * id: the scan finds nothing there, and the seek of that path, which keeps the text as the key, finds nothing either. The leading
+   * {@code WITH} keeps the second statement on that step plan: without it the optimizer plans the pattern from the index (issue
+   * #11904) and reads the map as it reads a WHERE equality.
    */
   @ParameterizedTest
   @ValueSource(strings = {
       "UNWIND ['#0:1', '#0:2'] AS r MATCH (p:{V} {id: r}) RETURN p.id AS v",
-      "MATCH (p:{V} {id: '#0:1'})-[:{E}]->(q) RETURN q.id AS v" })
+      "WITH 1 AS one MATCH (p:{V} {id: '#0:1'})-[:{E}]->(q) RETURN q.id AS v" })
   void aPropertyMapMatchedPerRowAnswersAsItsScan(final String template) {
     assertThat(column(template.replace("{V}", "P").replace("{E}", "R"))).as(template)
         .isEqualTo(column(template.replace("{V}", "Q").replace("{E}", "S")));

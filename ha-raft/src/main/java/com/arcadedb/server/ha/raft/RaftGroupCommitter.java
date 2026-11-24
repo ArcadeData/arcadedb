@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
@@ -26,15 +27,23 @@ import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import com.arcadedb.network.binary.ReplicationQueueFullException;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.client.retry.ClientRetryEvent;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
+import org.apache.ratis.protocol.exceptions.LeaderNotReadyException;
+import org.apache.ratis.protocol.exceptions.LeaderSteppingDownException;
+import org.apache.ratis.protocol.exceptions.NotLeaderException;
+import org.apache.ratis.retry.RetryPolicy;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.apache.ratis.util.StringUtils;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -474,6 +483,7 @@ class RaftGroupCommitter {
     boolean clientClosedDetected = false;
 
     final CompletableFuture<RaftClientReply>[] futures = new CompletableFuture[batch.size()];
+    final EntryMessage[] messages = new EntryMessage[batch.size()];
     for (int i = 0; i < batch.size(); i++) {
       final CancellablePendingEntry p = batch.get(i);
       if (!p.tryDispatch()) {
@@ -481,7 +491,8 @@ class RaftGroupCommitter {
         futures[i] = null;
         continue;
       }
-      final Message msg = Message.valueOf(ByteString.copyFrom(p.entry));
+      final EntryMessage msg = new EntryMessage(ByteString.copyFrom(p.entry));
+      messages[i] = msg;
       try {
         futures[i] = raftClient.async().send(msg);
       } catch (final Throwable t) {
@@ -522,10 +533,11 @@ class RaftGroupCommitter {
         final RaftClientReply reply = futures[i].get(remainingNanos, TimeUnit.NANOSECONDS);
         if (!reply.isSuccess()) {
           // The leader refused the entry BEFORE appending it (a page-version conflict detected in
-          // ArcadeStateMachine.preAppendTransaction, issue #6965): a definite outcome, and a retryable one. Ratis
-          // rebuilds the cause on the client side from its class name and message, so it arrives as the same
+          // ArcadeStateMachine.preAppendTransaction, issue #6965, or a leadership transfer in progress, issue #11951):
+          // a definite outcome, and a retryable one, unless the Ratis client re-sent the entry. Ratis rebuilds the cause
+          // on the client side from its class name and message, so a conflict arrives as the same
           // ConcurrentModificationException the leader threw.
-          final NeedRetryException refused = refusedBeforeAppend(reply.getException());
+          final NeedRetryException refused = refusedBeforeAppend(reply.getException(), messages[i]);
           if (refused != null) {
             batch.get(i).future.complete(refused);
             continue;
@@ -602,8 +614,8 @@ class RaftGroupCommitter {
         break;
       } catch (final Exception e) {
         // The Ratis client turns a refusal reply into an exceptional completion rather than a failed reply
-        // (RaftClientImpl.handleRaftException), so the leader's pre-append refusal (issue #6965) arrives here.
-        final NeedRetryException refused = refusedBeforeAppend(e);
+        // (RaftClientImpl.handleRaftException), so the leader's pre-append refusals (issues #6965, #11951) arrive here.
+        final NeedRetryException refused = refusedBeforeAppend(e, messages[i]);
         if (refused != null) {
           batch.get(i).future.complete(refused);
           continue;
@@ -612,7 +624,9 @@ class RaftGroupCommitter {
           clientClosedDetected = true;
         final String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
         batch.get(i).future.complete(new ReplicationDispatchedTimeoutException(
-            "Group commit entry failed: " + detail + " (entry was dispatched to Raft; outcome unknown)"));
+            "Group commit entry failed: " + detail
+                + (messages[i].earlierAttemptMayHaveLanded ? " (re-sent after an attempt that may have reached a log)" : "")
+                + " (entry was dispatched to Raft; outcome unknown)"));
       }
     }
 
@@ -637,13 +651,111 @@ class RaftGroupCommitter {
   }
 
   /**
-   * The retryable conflict the leader refused the entry with BEFORE appending it (issue #6965), or {@code null} when
-   * the failure is something else. Such an entry never reached the log, so its outcome is definite: the caller rolls
-   * back and retries, exactly as for a single-node conflict. One walk, shared with the log filter that mutes the same
-   * refusal.
+   * The retryable refusal the leader turned the entry away with BEFORE appending it, or {@code null} when the failure is
+   * something else or the outcome is not definite. Such an entry never reached the log, so the caller rolls back and
+   * retries, exactly as for a single-node conflict. Two refusals qualify: the page-version conflict of issue #6965 and
+   * the {@code LeaderSteppingDownException} a leader answers every write with while a leadership transfer is pending
+   * (issue #11951). One walk, shared with the log filter that mutes the same refusals.
+   * <p>
+   * The stepping-down refusal counts only for an entry no earlier attempt of which may have reached a leader's log
+   * ({@link EntryMessage#earlierAttemptMayHaveLanded}). It describes the attempt it answers, and the Ratis client sends a
+   * call again after a failed attempt: a reply lost or late past the request timeout, a stream reset, or a
+   * {@code NotLeaderException} a deposed leader gives the entries it HAD appended. A leader stepping down - the same one
+   * that holds the first copy included, since Ratis checks the leader state before its retry cache - then refuses the
+   * new copy while the first one commits. Such an outcome stays the unknown one it always was.
+   * <p>
+   * The page conflict keeps the verdict it has had since #6965 whatever the attempt. The same reasoning reaches a conflict
+   * on a re-sent copy, which the call's own first copy can have caused, but treating every such conflict as unknown
+   * would turn the ordinary conflicts of a leadership change into "outcome unknown" answers: a separate decision.
    */
-  static NeedRetryException refusedBeforeAppend(final Throwable thrown) {
-    return RatisRefusedEntryErrorFilter.refusedBeforeAppend(thrown);
+  static NeedRetryException refusedBeforeAppend(final Throwable thrown, final EntryMessage message) {
+    final NeedRetryException refused = RatisRefusedEntryErrorFilter.refusedBeforeAppend(thrown);
+    if (refused != null && message.earlierAttemptMayHaveLanded && CauseChain.contains(thrown, LeaderSteppingDownException.class))
+      return null;
+    return refused;
+  }
+
+  /**
+   * The retry policy of a Raft client the group committer sends through: {@code policy}, recording on each
+   * {@link EntryMessage} whose attempt failed in a way that leaves open whether a leader appended it (issue #11951).
+   * <p>
+   * {@code OrderedAsync} sends a call again only after a failed attempt (a transport error, or a
+   * {@code NotLeaderException} / {@code LeaderNotReadyException} reply, which the gRPC client turns into one), and it asks
+   * the retry policy about every failed attempt before it does; any other reply, a refusal included, ends the call. Each
+   * attempt is rebuilt around the same {@link Message} instance, so the entry is marked before any copy a leader could
+   * refuse goes out. Marked whatever the verdict: an attempt that failed and is not retried ends the call with that
+   * failure, never with a refusal.
+   */
+  static RetryPolicy recordingResends(final RetryPolicy policy) {
+    return new ResendRecordingRetryPolicy(policy);
+  }
+
+  /**
+   * Whether an attempt that failed with {@code failure} may have been appended to a leader's log. Two failures prove it was
+   * not, and both are what a leadership change answers most of its writes with. Ratis 3.3 raises
+   * {@link LeaderNotReadyException} only in {@code RaftServerImpl.checkLeaderState}, which runs before the append, while a
+   * new leader has not committed its first entry. A {@link NotLeaderException} naming a suggested leader comes from a server
+   * that knows another leader, refusing in {@code checkLeaderState} or {@code appendTransaction} before the append; the
+   * deposed leader's answer to the entries it had appended ({@code LeaderStateImpl.stop}) is built while the server still
+   * names itself the leader, and so names none. Everything else - a timeout, a closed stream or client, a refusal naming no
+   * leader - leaves the question open.
+   */
+  static boolean mayHaveBeenAppended(final Throwable failure) {
+    final Throwable cause = failure instanceof CompletionException && failure.getCause() != null ? failure.getCause() : failure;
+    if (cause instanceof LeaderNotReadyException)
+      return false;
+    if (cause instanceof NotLeaderException notLeader)
+      return notLeader.getSuggestedLeader() == null;
+    return true;
+  }
+
+  /** See {@link #recordingResends(RetryPolicy)}. */
+  static final class ResendRecordingRetryPolicy implements RetryPolicy {
+    private final RetryPolicy delegate;
+
+    private ResendRecordingRetryPolicy(final RetryPolicy delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public Action handleAttemptFailure(final Event event) {
+      if (event instanceof ClientRetryEvent clientEvent) {
+        final RaftClientRequest request = clientEvent.getRequest();
+        if (request != null && request.getMessage() instanceof EntryMessage entry && mayHaveBeenAppended(clientEvent.getCause()))
+          entry.earlierAttemptMayHaveLanded = true;
+      }
+      return delegate.handleAttemptFailure(event);
+    }
+
+    @Override
+    public String toString() {
+      return delegate.toString();
+    }
+  }
+
+  /**
+   * The payload of one group-commit entry as the Ratis client sends it, and whether an attempt of it failed in a way that
+   * leaves open whether a leader appended it (set by {@link #recordingResends(RetryPolicy)}). The same string form as
+   * {@link Message#valueOf(ByteString)}.
+   */
+  static final class EntryMessage implements Message {
+    private final    ByteString content;
+    /** Written by the Ratis client's retry path, read by the flusher once the send future completed. */
+    volatile boolean            earlierAttemptMayHaveLanded;
+
+    EntryMessage(final ByteString content) {
+      this.content = content;
+    }
+
+    @Override
+    public ByteString getContent() {
+      return content;
+    }
+
+    @Override
+    public String toString() {
+      return "Message:" + StringUtils.bytes2ShortString(content);
+    }
   }
 
   /**

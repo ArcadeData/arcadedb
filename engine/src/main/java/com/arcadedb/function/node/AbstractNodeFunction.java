@@ -22,7 +22,10 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.graph.IncomingEdgeLookup;
+import com.arcadedb.graph.RelationshipPattern;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.Locale;
@@ -83,17 +86,96 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
     if (direction == null)
       return Vertex.DIRECTION.BOTH;
 
-    switch (direction.toLowerCase(Locale.ROOT)) {
-    case "in":
-    case "incoming":
-      return Vertex.DIRECTION.IN;
-    case "out":
-    case "outgoing":
-      return Vertex.DIRECTION.OUT;
-    case "both":
-      return Vertex.DIRECTION.BOTH;
-    default:
+    final Vertex.DIRECTION parsed = directionOrNull(direction);
+    if (parsed == null)
       throw new IllegalArgumentException("unknown direction '" + direction + "', expected one of IN, OUT or BOTH");
+    return parsed;
+  }
+
+  /**
+   * The direction {@code word} names (in, incoming, out, outgoing, both, in any case), {@code null} for any other text. The one
+   * list of direction words: {@link #parseDirection} refuses what this does not know, and a reader that must tell a direction
+   * word from a relationship pattern asks it too.
+   */
+  protected static Vertex.DIRECTION directionOrNull(final String word) {
+    return switch (word.toLowerCase(Locale.ROOT)) {
+      case "in", "incoming" -> Vertex.DIRECTION.IN;
+      case "out", "outgoing" -> Vertex.DIRECTION.OUT;
+      case "both" -> Vertex.DIRECTION.BOTH;
+      default -> null;
+    };
+  }
+
+  /**
+   * The relationship pattern of the {@code relTypes} argument at {@code index} (APOC's syntax, see {@link RelationshipPattern}),
+   * empty when the call omits it.
+   */
+  protected RelationshipPattern patternArgument(final Object[] args, final int index) {
+    return RelationshipPattern.parse(getName(), args.length > index ? args[index] : null);
+  }
+
+  /**
+   * The direction argument ArcadeDB accepts after the pattern (an extension APOC does not have), {@code BOTH} when the call
+   * omits it.
+   */
+  protected Vertex.DIRECTION directionArgument(final Object[] args, final int index) {
+    return args.length > index && args[index] != null ? parseDirection(args[index].toString()) : Vertex.DIRECTION.BOTH;
+  }
+
+  /**
+   * The direction an alternative of the pattern is followed in once the direction argument restricts it: the alternative's
+   * own marker, or the restriction for an alternative without one; {@code null} when the two disagree, which is an
+   * alternative the direction argument rules out: {@code 'KNOWS>'} restricted to {@code IN} names no relationship.
+   */
+  protected static Vertex.DIRECTION effectiveDirection(final RelationshipPattern.Entry entry, final Vertex.DIRECTION restriction) {
+    if (restriction == Vertex.DIRECTION.BOTH || entry.direction() == restriction)
+      return entry.direction();
+    return entry.direction() == Vertex.DIRECTION.BOTH ? restriction : null;
+  }
+
+  /**
+   * The relationships of {@code vertex} the pattern follows, summed per alternative as APOC sums them ({@code 'KNOWS|KNOWS'}
+   * counts each KNOWS twice); every relationship in {@code restriction} for an empty pattern. A self loop followed in both
+   * directions counts once, as APOC and {@code COUNT { (n)-[:T]-() }} count it (issue #12674). The incoming side of a
+   * unidirectional edge type is counted from the edges that end in the node (issue #8629).
+   */
+  protected static long countEdges(final CommandContext context, final Vertex vertex, final RelationshipPattern pattern,
+      final Vertex.DIRECTION restriction) {
+    if (pattern.isEmpty())
+      return IncomingEdgeLookup.countPatternEdges(context, vertex, restriction);
+
+    long count = 0;
+    for (final RelationshipPattern.Entry entry : pattern.entries()) {
+      final Vertex.DIRECTION direction = effectiveDirection(entry, restriction);
+      if (direction == null)
+        continue;
+      count += countAlternative(context, vertex, entry, direction);
     }
+    return count;
+  }
+
+  /**
+   * Whether {@code vertex} has a relationship the pattern follows: {@code countEdges(...) > 0}, answered at the first
+   * alternative that has one. The alternatives behind it are not counted, and counting the incoming side of a unidirectional
+   * edge type takes a scan of the whole type, which an answer already known must not pay.
+   */
+  protected static boolean hasEdges(final CommandContext context, final Vertex vertex, final RelationshipPattern pattern,
+      final Vertex.DIRECTION restriction) {
+    if (pattern.isEmpty())
+      return IncomingEdgeLookup.countEdges(context, vertex, restriction) > 0;
+
+    for (final RelationshipPattern.Entry entry : pattern.entries()) {
+      final Vertex.DIRECTION direction = effectiveDirection(entry, restriction);
+      if (direction != null && countAlternative(context, vertex, entry, direction) > 0)
+        return true;
+    }
+    return false;
+  }
+
+  private static long countAlternative(final CommandContext context, final Vertex vertex, final RelationshipPattern.Entry entry,
+      final Vertex.DIRECTION direction) {
+    return entry.type() == null ?
+        IncomingEdgeLookup.countPatternEdges(context, vertex, direction) :
+        IncomingEdgeLookup.countPatternEdges(context, vertex, direction, entry.type());
   }
 }

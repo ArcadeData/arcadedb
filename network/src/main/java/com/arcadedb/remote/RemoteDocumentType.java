@@ -26,8 +26,10 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.columnar.ColumnarIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -54,7 +56,8 @@ public class RemoteDocumentType implements DocumentType {
   private         List<String>                buckets;
   private         String                      bucketSelectionStrategy;
   private         List<String>                parentTypes;
-  private         Map<String, RemoteProperty> properties;
+  // replaced as a whole by reload(), never mutated: see there (issue #12188)
+  private volatile Map<String, RemoteProperty> properties = Collections.emptyMap();
   private         Set<String>                 aliases = Collections.emptySet();
   private         Map<String, Object>         custom  = new HashMap<>();
   private         boolean                     needsRepartition;
@@ -81,19 +84,26 @@ public class RemoteDocumentType implements DocumentType {
 
     final List<Map<String, Object>> propertiesMap = record.getProperty("properties");
 
-    if (properties == null)
-      properties = new HashMap<>(propertiesMap.size());
-
-    for (Map<String, Object> entry : propertiesMap) {
+    // Issue #12188: the server's list is the WHOLE set of properties of the type, so the map is rebuilt from it and a
+    // cached property it no longer lists, dropped or renamed, is forgotten. Kept, it answered existsProperty() and
+    // decoded the values of records for the rest of the session. Built aside and published whole, like the maps of
+    // RemoteSchema.reload(): a reader walking getPropertyNames() is never broken by a reload (it was a live view of a map
+    // this method mutated). The property objects are reused while they still describe the same declaration, so a
+    // reference a caller holds keeps tracking its attributes.
+    final Map<String, RemoteProperty> previous = properties;
+    final Map<String, RemoteProperty> reloaded = new HashMap<>(propertiesMap.size());
+    for (final Map<String, Object> entry : propertiesMap) {
       final String propertyName = (String) entry.get("name");
 
-      RemoteProperty p = properties.get(propertyName);
-      if (p == null) {
-        p = new RemoteProperty(this, entry);
-        properties.put(propertyName, p);
-      } else
+      RemoteProperty p = previous.get(propertyName);
+      if (p != null && p.describes(entry))
         p.reload(entry);
+      else
+        // new, or dropped and declared again under the same name with another type, which a property cannot change
+        p = new RemoteProperty(this, entry);
+      reloaded.put(propertyName, p);
     }
+    properties = reloaded;
 
     if (record.hasProperty("custom"))
       custom = record.getProperty("custom");
@@ -152,9 +162,14 @@ public class RemoteDocumentType implements DocumentType {
     remoteDatabase.getSchema().reload();
   }
 
+  /**
+   * Through {@link RemoteDatabase#newDocument(String)}, so a type that is not a document type is refused as the embedded API
+   * does (issue #12190): a record built straight on a vertex type saved a vertex. {@link RemoteVertexType} and
+   * {@link RemoteEdgeType} override it.
+   */
   @Override
   public MutableDocument newRecord() {
-    return new RemoteMutableDocument(remoteDatabase, name);
+    return remoteDatabase.newDocument(name);
   }
 
   public int count() {
@@ -250,16 +265,16 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
+    final TypeIndex index = remoteDatabase.getSchema().createTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
-    return null;
+    return index;
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
+    final TypeIndex index = remoteDatabase.getSchema().getOrCreateTypeIndex(indexType, unique, name, propertyNames);
     remoteDatabase.getSchema().invalidateSchema();
-    return null;
+    return index;
   }
 
   @Override
@@ -359,45 +374,116 @@ public class RemoteDocumentType implements DocumentType {
     return result;
   }
 
+  // Issue #12193: the index lookups answer from the server's schema:indexes, as RemoteSchema.existsIndex() does, with the
+  // description RemoteTypeIndex gives of an index. They answered null or an empty list for an existing index, which a caller
+  // could not tell from "no index". A RemoteTypeIndex is never ready for queries, so no client side planner reads it.
+  //
+  // THE COST: ONE ROUND TRIP TO THE SERVER PER TYPE READ, A POLYMORPHIC LOOKUP ONE PER TYPE OF THE HIERARCHY, AND NOTHING IS CACHED:
+  // THE IDEMPOTENT SETUP "IF getIndexByProperties(...) == null THEN createTypeIndex(...)" NEEDS AN INDEX ANOTHER CLIENT JUST CREATED
+  // OR DROPPED TO BE SEEN, AND A CACHE CLEARED ONLY BY THIS CLIENT'S invalidateSchema() WOULD NOT SEE IT. A CALLER THAT ASKS IN A LOOP
+  // KEEPS THE ANSWER. THE GREMLIN STRATEGY DOES NOT ASK AT ALL OVER A RemoteDatabase (ArcadeTraversalStrategy).
+
   @Override
-  public List<TypeIndex> getIndexesByProperties(Collection<String> properties) {
-    return Collections.emptyList();
+  public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
+    final Set<TypeIndex> result = new LinkedHashSet<>(ownIndexes());
+    if (polymorphic)
+      for (final DocumentType superType : getSuperTypes())
+        result.addAll(superType.getAllIndexes(true));
+    return Collections.unmodifiableSet(result);
   }
 
   @Override
-  public TypeIndex getPolymorphicIndexByProperties(String... properties) {
-    // NEVER USES THE INDEX
+  public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
+    final Set<String> properties = new HashSet<>(propertiesN.length + 1);
+    properties.add(property1);
+    Collections.addAll(properties, propertiesN);
+    return getIndexesByProperties(properties);
+  }
+
+  @Override
+  public List<TypeIndex> getIndexesByProperties(final Collection<String> properties) {
+    final List<TypeIndex> result = new ArrayList<>();
+    for (final RemoteTypeIndex index : ownIndexes())
+      for (final String property : index.getPropertyNames())
+        if (properties.contains(property)) {
+          result.add(index);
+          break;
+        }
+    return result;
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
+    return getPolymorphicIndexByProperties(Arrays.asList(properties));
+  }
+
+  @Override
+  public TypeIndex getPolymorphicIndexByProperties(final List<String> properties) {
+    final TypeIndex index = getIndexByProperties(properties);
+    if (index != null)
+      return index;
+    for (final DocumentType superType : getSuperTypes()) {
+      final TypeIndex inherited = superType.getPolymorphicIndexByProperties(properties);
+      if (inherited != null)
+        return inherited;
+    }
     return null;
   }
 
   @Override
-  public TypeIndex getPolymorphicIndexByProperties(List<String> properties) {
-    // NEVER USES THE INDEX
-    return null;
+  public TypeIndex getIndexByProperties(final String... properties) {
+    return getIndexByProperties(Arrays.asList(properties));
   }
 
   @Override
-  public TypeIndex getIndexByProperties(String... properties) {
-    // NEVER USES THE INDEX
-    return null;
-  }
-
-  @Override
-  public TypeIndex getIndexByProperties(List<String> properties) {
-    // NEVER USES THE INDEX
+  public TypeIndex getIndexByProperties(final List<String> properties) {
+    // as the embedded type: the indexes keyed by their exact property list, the COLUMNAR ones apart (getColumnarIndex())
+    for (final RemoteTypeIndex index : ownIndexes())
+      if (index.getType() != Schema.INDEX_TYPE.COLUMNAR && index.getPropertyNames().equals(properties))
+        return index;
     return null;
   }
 
   @Override
   public TypeIndex getColumnarIndex(final String property) {
-    // NEVER USES THE INDEX
-    return null;
+    final List<String> byValue = List.of(property);
+    final List<String> byItem = List.of(property + ColumnarIndex.BY_ITEM_SUFFIX);
+    TypeIndex found = null;
+    for (final RemoteTypeIndex index : ownIndexes())
+      if (index.getType() == Schema.INDEX_TYPE.COLUMNAR) {
+        if (index.getPropertyNames().equals(byValue))
+          return index;
+        if (found == null && index.getPropertyNames().equals(byItem))
+          found = index;
+      }
+    return found;
   }
 
   @Override
   public TypeIndex getPolymorphicColumnarIndex(final String property) {
-    // NEVER USES THE INDEX
+    final TypeIndex index = getColumnarIndex(property);
+    if (index != null)
+      return index;
+    for (final DocumentType superType : getSuperTypes()) {
+      final TypeIndex inherited = superType.getPolymorphicColumnarIndex(property);
+      if (inherited != null)
+        return inherited;
+    }
     return null;
+  }
+
+  /** The type indexes the server lists for this type, the bucket indexes under them left out. */
+  private List<RemoteTypeIndex> ownIndexes() {
+    final List<RemoteTypeIndex> result = new ArrayList<>();
+    try (final ResultSet rows = remoteDatabase.commandUncounted("sql", "select from schema:indexes where typeName = :name",
+        Map.of("name", name))) {
+      while (rows.hasNext()) {
+        final Result row = rows.next();
+        if (RemoteTypeIndex.isTypeIndexRow(row))
+          result.add(new RemoteTypeIndex(remoteDatabase, this, row));
+      }
+    }
+    return result;
   }
 
   @Override
@@ -546,18 +632,8 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   @Override
-  public Collection<TypeIndex> getAllIndexes(boolean polymorphic) {
-    throw new UnsupportedOperationException("getAllIndexes() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
-  }
-
-  @Override
   public List<IndexInternal> getPolymorphicBucketIndexByBucketId(int bucketId, List<String> filterByProperties) {
     throw new UnsupportedOperationException("getPolymorphicBucketIndexByBucketId() is not supported in remote database. Bucket sub-indexes are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:indexes instead.");
-  }
-
-  @Override
-  public List<TypeIndex> getIndexesByProperties(String property1, String... propertiesN) {
-    throw new UnsupportedOperationException("getIndexesByProperties() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Override

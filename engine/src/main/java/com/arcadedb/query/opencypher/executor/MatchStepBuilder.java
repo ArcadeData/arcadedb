@@ -21,18 +21,22 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
+import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PathPattern;
+import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.QuantifiedPathPattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
+import com.arcadedb.query.opencypher.executor.steps.BoundNodeCheckStep;
 import com.arcadedb.query.opencypher.executor.steps.ExpandPathStep;
 import com.arcadedb.query.opencypher.executor.steps.FilterPropertiesStep;
 import com.arcadedb.query.opencypher.executor.steps.IndexSeekStep;
@@ -47,6 +51,7 @@ import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -60,6 +65,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Builds the steps of one MATCH clause: the scan or seek of each node, the expansion of each hop, the WHERE applied where
@@ -163,29 +169,31 @@ final class MatchStepBuilder {
 
         // Optimization: when the variable is already bound from a previous clause AND
         // the new node pattern carries no additional constraints (no labels, no inline
-        // properties), skip the redundant MatchNodeStep - the carried binding already
-        // satisfies the empty constraint. We can only skip safely if the carried
-        // value is guaranteed to be a vertex (i.e. it came from a non-OPTIONAL MATCH).
-        // When the pattern adds labels or inline properties, MatchNodeStep must run
-        // so the constraints are checked against the bound vertex (and a null binding
-        // from an OPTIONAL MATCH correctly filters the row out - issue #4102).
+        // properties), no MatchNodeStep is needed - the carried binding already satisfies
+        // the empty constraint, as long as it is a node. A binding an earlier OPTIONAL MATCH
+        // left null cannot match, so a BoundNodeCheckStep drops such a row instead of letting
+        // it through as if the pattern had matched (issue #11761). When the pattern adds
+        // labels or inline properties, MatchNodeStep runs so the constraints are checked
+        // against the bound vertex (and a null binding is filtered out the same way - issue #4102).
         if (boundVariables.contains(variable)
             && !nodePattern.hasLabels()
             && !nodePattern.hasProperties()) {
-          // Variable already bound and no new constraints - skip creating a new MatchNodeStep
-          // But still handle zero-length named paths
+          final BoundNodeCheckStep checkStep = new BoundNodeCheckStep(variable, context);
+          if (currentStep != null && !(isOptional && matchChainStart == null))
+            checkStep.setPrevious(currentStep);
+          currentStep = checkStep;
+          // The first step of an OPTIONAL chain is registered as its start: OptionalMatchStep feeds every input row
+          // into matchChainStart, and the next pattern part re-seats matchChainStart on its own head, so a chain start
+          // left null here would orphan this step (issue #6544).
+          if (isOptional && matchChainStart == null)
+            matchChainStart = checkStep;
+          // Handle zero-length named paths: p = (n)
           final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
           if (singlePathVar != null) {
             matchVariables.add(singlePathVar);
             final ZeroLengthPathStep zeroPathStep = new ZeroLengthPathStep(variable, singlePathVar, context);
             zeroPathStep.setPrevious(currentStep);
             currentStep = zeroPathStep;
-            // With no MatchNodeStep created above, this is the first step of the OPTIONAL chain and has to be
-            // registered as such: OptionalMatchStep feeds every input row into matchChainStart, and the next
-            // pattern part re-seats matchChainStart on its own head, so a chain start left null here would
-            // orphan this step and leave the path variable permanently unbound (issue #6544).
-            if (isOptional && matchChainStart == null)
-              matchChainStart = zeroPathStep;
           }
           continue;
         }
@@ -344,6 +352,18 @@ final class MatchStepBuilder {
           }
         }
 
+        // Issue #12149: a single hop from an unlabelled, unconstrained source to a target a UNIQUE index pins starts from the
+        // target: an index lookup and a walk of its relationships backwards, instead of a scan of every vertex of every type
+        // (repeated for every row an UNWIND or a WITH hands over) and an expansion of all of them
+        if (!reversed && !sourceAlreadyBound
+            && startsFromUniquelyKeyedTarget(pathPattern, sourceNode, sourceVar, whereClause, isOptional, boundVariables,
+            matchVariables)) {
+          final NodePattern targetNode = pathPattern.getLastNode();
+          reversed = true;
+          sourceNode = targetNode;
+          sourceVar = targetNode.getVariable() != null ? targetNode.getVariable() : ("  tgt" + nextAnonymousId());
+        }
+
         if (!sourceAlreadyBound) {
           matchVariables.add(sourceVar);
         }
@@ -436,8 +456,9 @@ final class MatchStepBuilder {
 
           // When reversed, swap source/target variables and use the original source as target.
           // This mapping only holds for a single-relationship pattern: the written source is the
-          // end of the one reversed hop. Both entry points into `reversed` enforce that (the
-          // bound-target reversal below and shouldReverseVariableLengthPathFromIndexedAnchor);
+          // end of the one reversed hop. Every entry point into `reversed` enforces that (the
+          // bound-target reversal above, the uniquely keyed target one of issue #12149 and
+          // shouldReverseVariableLengthPathFromIndexedAnchor);
           // reversing a longer pattern requires rebuilding the whole pattern back to front.
           final String effectiveSourceVar;
           final String effectiveTargetVar;
@@ -703,6 +724,41 @@ final class MatchStepBuilder {
   }
 
   /**
+   * {@link #isUniquelyKeyed(NodePattern)}, with one column of the index allowed to be keyed by an IN-list of the
+   * {@code WHERE} instead ({@link HopEdgeTrackingAnalyzer#whereInListKeys}): a seek of the node then finds one vertex per key
+   * (issue #11715).
+   */
+  boolean isUniquelyKeyed(final NodePattern node, final Map<String, Set<String>> inListKeys) {
+    final Set<String> listed = node.getVariable() != null ? inListKeys.getOrDefault(node.getVariable(), Set.of()) : Set.of();
+    if (listed.isEmpty())
+      return isUniquelyKeyed(node);
+    if (node.getPropertiesParameterName() != null || node.hasDynamicLabels() || !node.hasLabels() || node.getLabels().size() != 1)
+      return false;
+    final Schema schema = database.getSchema();
+    if (!schema.existsType(node.getLabels().getFirst()))
+      return false;
+    final Set<String> inline = node.hasProperties() ? node.getProperties().keySet() : Set.of();
+    for (final TypeIndex index : schema.getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys == null)
+        continue;
+      int listedOnly = 0;
+      boolean covered = true;
+      for (final String key : keys) {
+        if (inline.contains(key))
+          continue;
+        if (listed.contains(key))
+          ++listedOnly;
+        else
+          covered = false;
+      }
+      if (covered && listedOnly <= 1)
+        return true;
+    }
+    return false;
+  }
+
+  /**
    * A UNIQUE index of the one label of a node pattern whose every column the pattern's property map pins by an equality, or null
    * when there is none (issues #11699, #11594).
    */
@@ -757,16 +813,112 @@ final class MatchStepBuilder {
   private static boolean readsOnlyEarlierClauses(final Map<String, Object> properties, final Set<String> boundBefore) {
     if (properties == null)
       return true;
-    for (final Object value : properties.values()) {
-      if (RowIndependentValues.isSeekable(value))
-        continue;
-      if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
+    for (final Object value : properties.values())
+      if (!valueReadsOnlyEarlierClauses(value, boundBefore))
         return false;
-      final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
-      if (!referenced.isComplete() || !boundBefore.containsAll(referenced.getNames()))
-        return false;
-    }
     return true;
+  }
+
+  /** {@link #readsOnlyEarlierClauses} for one value of a property map, or one side of a {@code WHERE} equality. */
+  private static boolean valueReadsOnlyEarlierClauses(final Object value, final Set<String> boundBefore) {
+    if (RowIndependentValues.isSeekable(value))
+      return true;
+    if (!(value instanceof Expression expression) || !RowIndependentValues.isDeterministic(expression))
+      return false;
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(expression);
+    return referenced.isComplete() && boundBefore.containsAll(referenced.getNames());
+  }
+
+  /**
+   * Whether a pattern of one fixed-length hop is better started from its target (issue #12149): the source is unlabelled and
+   * unconstrained, so starting from it scans every vertex of every type, while the target is pinned by an equality on every
+   * column of a UNIQUE index of its label, through its inline map or through the {@code WHERE} clause (equalities or
+   * {@code IN}-lists), whose values are literals, parameters or variables an earlier clause bound (an UNWIND or WITH row). The
+   * step that starts the pattern then finds the target through that index, once per row, and the hop walks its relationships
+   * backwards.
+   * <p>
+   * Not over a relationship of no type or of a unidirectional type, whose incoming side no vertex stores, and not for an OPTIONAL
+   * MATCH or a path variable, which bind the pattern in the order written. Not when the {@code WHERE} clause pins the source
+   * either: the step that starts from it may seek an index of some type, where the walk back from a target with many
+   * relationships would read them all.
+   */
+  private boolean startsFromUniquelyKeyedTarget(final PathPattern pathPattern, final NodePattern sourceNode, final String sourceVar,
+      final WhereClause whereClause, final boolean isOptional, final Set<String> boundVariables, final Set<String> matchVariables) {
+    if (isOptional || pathPattern.hasPathVariable() || pathPattern.getRelationshipCount() != 1)
+      return false;
+    final RelationshipPattern rel = pathPattern.getRelationship(0);
+    if (rel instanceof QuantifiedPathPattern || rel.isVariableLength() || !rel.hasTypes())
+      return false;
+    for (final String type : rel.getTypes())
+      if (!(database.getSchema().getTypeOrNull(type) instanceof EdgeType edgeType) || !edgeType.isBidirectional())
+        return false;
+
+    // the source is a scan of every vertex: no label, no property, no inline predicate, no id, no equality or IN-list of the WHERE
+    final BooleanExpression where = whereClause != null ? whereClause.getConditionExpression() : null;
+    if (sourceNode.hasLabels() || sourceNode.hasDynamicLabels() || sourceNode.hasProperties() || sourceNode.hasWhereExpression()
+        || boundVariables.contains(sourceVar) || matchVariables.contains(sourceVar) || plan.extractIdFilter(whereClause, sourceVar) != null
+        || !wherePinnedProperties(sourceVar, where, value -> true).isEmpty())
+      return false;
+
+    final NodePattern target = pathPattern.getLastNode();
+    final String targetVar = target.getVariable();
+    if (target.hasDynamicLabels() || target.hasWhereExpression() || target.getPropertiesParameterName() != null)
+      return false;
+    if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
+      return false;
+    if (isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+      return true;
+    return targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
+  }
+
+  /**
+   * Whether the {@code WHERE} clause pins every column of a UNIQUE index of the node's one label (issue #12149), with the
+   * predicates the node step seeks an index with: equalities and {@code IN}-lists whose values are literals, parameters or
+   * variables an earlier clause bound.
+   */
+  private boolean isUniquelyKeyedByWhere(final NodePattern node, final String variable, final BooleanExpression where,
+      final Set<String> boundVariables) {
+    if (where == null || !node.hasLabels() || node.getLabels().size() != 1
+        || !database.getSchema().existsType(node.getLabels().getFirst()))
+      return false;
+    final Set<String> pinned = wherePinnedProperties(variable, where, value -> valueReadsOnlyEarlierClauses(value, boundVariables));
+    if (pinned.isEmpty())
+      return false;
+    for (final TypeIndex index : database.getSchema().getType(node.getLabels().getFirst()).getAllIndexes(true)) {
+      final List<String> keys = index.isUnique() && index.isReadyForQueries() ? index.getPropertyNamesIfExactKeyLookup() : null;
+      if (keys != null && pinned.containsAll(keys))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * The properties of {@code variable} the {@code WHERE} clause pins to a value {@code readable} accepts: the row-independent
+   * equalities and {@code IN}-lists, an OR of them included ({@link EdgeIndexSeedPlanner#collectWherePredicates}), and the
+   * equalities and {@code IN}-lists among the top-level conjuncts whose values an earlier clause decides.
+   */
+  private static Set<String> wherePinnedProperties(final String variable, final BooleanExpression where,
+      final Predicate<Expression> readable) {
+    final Set<String> pinned = new HashSet<>();
+    if (where == null)
+      return pinned;
+    final Map<String, Object> rowIndependent = new LinkedHashMap<>();
+    EdgeIndexSeedPlanner.collectWherePredicates(variable, where, rowIndependent);
+    pinned.addAll(rowIndependent.keySet());
+    for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where)) {
+      if (conjunct instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS) {
+        if (comparison.getLeft() instanceof PropertyAccessExpression left && variable.equals(left.getVariableName())
+            && readable.test(comparison.getRight()))
+          pinned.add(left.getPropertyName());
+        else if (comparison.getRight() instanceof PropertyAccessExpression right && variable.equals(right.getVariableName())
+            && readable.test(comparison.getLeft()))
+          pinned.add(right.getPropertyName());
+      } else if (conjunct instanceof InExpression in && in.getExpression() instanceof PropertyAccessExpression listed
+          && variable.equals(listed.getVariableName()) && in.getList() != null && !in.getList().isEmpty()
+          && in.getList().stream().allMatch(readable))
+        pinned.add(listed.getPropertyName());
+    }
+    return pinned;
   }
 
   /**

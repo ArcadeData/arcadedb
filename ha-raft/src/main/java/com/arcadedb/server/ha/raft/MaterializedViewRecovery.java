@@ -30,7 +30,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.logging.Level;
 
 /**
- * Recovers the per-record materialized views of each database once, in the term in which this node leads (issue #11555):
+ * Recovers the INCREMENTAL materialized views of each database once, in the term in which this node leads (issue #11555):
  * when it becomes the leader, and for a database opened later in the same term.
  * <p>
  * Split out of {@link ArcadeStateMachine}, which triggers the recovery on a leader change.
@@ -40,7 +40,7 @@ import java.util.logging.Level;
 final class MaterializedViewRecovery {
   private final ArcadeStateMachine sm;
 
-  // Issue #11555: the Raft term in which this node, as the leader, last recovered the per-record materialized views of each
+  // Issue #11555: the Raft term in which this node, as the leader, last recovered the INCREMENTAL materialized views of each
   // database. The leadership hook recovers the databases open when it runs, the open of a database recovers it when it happens
   // later in the leadership: whichever comes first in a term makes the full recovery, the other only what the views still owe
   final ConcurrentHashMap<String, Long> materializedViewsRecoveredInTerm = new ConcurrentHashMap<>();
@@ -50,9 +50,9 @@ final class MaterializedViewRecovery {
   }
 
   /**
-   * Hands the recovery full pass of every per-record materialized view of every open database to that database's scheduler
-   * thread (issue #11550), once this leader is READY: Ratis reports that only after it has applied every entry committed before
-   * its term, so the passes read every source change the previous leader committed. The passes themselves do not run here, so
+   * Hands the recovery full pass of every INCREMENTAL materialized view of every open database to that database's scheduler
+   * thread (issues #11550, #12220), once this leader is READY: Ratis reports that only after it has applied every entry committed
+   * before its term, so the passes read every source change the previous leader committed. The passes themselves do not run here, so
    * this executor waits for the readiness only. A database being replaced with a peer's copy is skipped: the leadership is handed
    * on in that case, and the next leader recovers it. A database this leader opens later is recovered by its open
    * ({@link #recoverMaterializedViewsOfOpenedDatabase}, issue #11555).
@@ -83,14 +83,14 @@ final class MaterializedViewRecovery {
         recoverMaterializedViewsAsLeader(dbName, db.getSchema().getEmbedded(), term);
       } catch (final Exception e) {
         LogManager.instance().log(sm, Level.WARNING,
-            "Leader recovery of the materialized views of database '%s' failed: run REFRESH MATERIALIZED VIEW on its per-record "
+            "Leader recovery of the materialized views of database '%s' failed: run REFRESH MATERIALIZED VIEW on its INCREMENTAL "
                 + "views (issue #11550): %s", e, dbName, e.getMessage());
       }
     }
   }
 
   /**
-   * The recovery a database opened on this node owes its per-record materialized views when this node leads (issue #11555). The
+   * The recovery a database opened on this node owes its INCREMENTAL materialized views when this node leads (issue #11555). The
    * open-time recovery of the engine is skipped on every HA node, which cannot tell at the open whether it leads, and the
    * leadership hook ({@link #recoverMaterializedViewsAsNewLeader}) recovers only the databases open when it runs: a database the
    * leader opens later (loaded lazily, closed and opened again) would otherwise keep views that miss the commits whose pending
@@ -111,7 +111,7 @@ final class MaterializedViewRecovery {
         } catch (final Exception e) {
           LogManager.instance().log(sm, Level.WARNING,
               "Recovery of the materialized views of database '%s' at its open failed: run REFRESH MATERIALIZED VIEW on its "
-                  + "per-record views (issue #11555): %s", e, dbName, e.getMessage());
+                  + "INCREMENTAL views (issue #11555): %s", e, dbName, e.getMessage());
         }
       });
     } catch (final RejectedExecutionException ree) {
@@ -130,7 +130,7 @@ final class MaterializedViewRecovery {
     final boolean everyView = previous == null || previous != term;
     final int views;
     try {
-      views = schema.recoverPerRecordMaterializedViews(everyView);
+      views = schema.recoverIncrementalMaterializedViews(everyView);
     } catch (final RuntimeException | Error e) {
       // A full recovery that failed is not recorded as made: the next open in this term makes it again, not the partial one
       if (everyView && term >= 0)
@@ -139,7 +139,7 @@ final class MaterializedViewRecovery {
     }
     if (views > 0)
       LogManager.instance().log(sm, Level.INFO,
-          "Leader recovery of database '%s': %d per-record materialized view(s) handed a %s pass", dbName, views,
+          "Leader recovery of database '%s': %d INCREMENTAL materialized view(s) handed a %s pass", dbName, views,
           everyView ? "full" : "recovery");
   }
 
@@ -150,7 +150,7 @@ final class MaterializedViewRecovery {
         return true;
       if (raftHA.isLeader())
         LogManager.instance().log(sm, Level.WARNING,
-            "This leader did not become ready within %d ms: the per-record materialized views are not recovered and may miss "
+            "This leader did not become ready within %d ms: the INCREMENTAL materialized views are not recovered and may miss "
                 + "commits of the previous leader; run REFRESH MATERIALIZED VIEW on them (issue #11550)",
             raftHA.getQuorumTimeout());
       return false;

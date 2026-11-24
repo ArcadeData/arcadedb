@@ -858,17 +858,28 @@ public final class ColumnarIndexManager {
   /**
    * Under {@link #registryLock}: adds the column of {@code columns} with the index file id to the projection when the registration did
    * not (its open came first), and publishes it inline on an empty bucket with a free maintenance slot
-   * ({@link ColumnarRebuilder#createInlineIfEmpty}), else schedules a {@code create} rebuild unless the projection publishes it or a
+   * ({@link ColumnarRebuilder#createInlineIfEmpty}), else schedules a {@code create} rebuild unless the projection publishes it, a
    * rebuild is queued or running (a running rebuild that decided on its columns before this add schedules a create when it leaves the running state,
-   * {@code ColumnarRebuilder.Job#finish}).
+   * {@code ColumnarRebuilder.Job#finish}), or a failed rebuild waits for its backoff: its retry builds the column added here, on the
+   * schedule of {@link #rebuildFailed}. Scheduled now, the create of a DDL whose first reconcile came after that create failed ran a
+   * second time at once, ahead of the backoff.
    */
   private void addAndBuild(final ColumnarProjection projection, final ColumnDefinition[] columns, final int indexFileId) {
     for (final ColumnDefinition column : columns)
       if (column.indexFileId() == indexFileId)
         projection.addColumn(column);
-    if (!projection.isPublishedWith(indexFileId) && !ColumnarRebuilder.isQueuedOrRunning(projection)
+    if (!projection.isPublishedWith(indexFileId) && !ColumnarRebuilder.isQueuedOrRunning(projection) && !awaitsRebuildRetry(projection)
         && !ColumnarRebuilder.createInlineIfEmpty(this, projection))
       ColumnarRebuilder.schedule(this, projection, ColumnarRebuilder.CREATE);
+  }
+
+  /**
+   * Under {@link #registryLock}: a failed rebuild of the projection waits for its retry ({@link #rebuildFailed}). The failure records the
+   * retry before its job leaves the running state, so a caller that finds no rebuild queued or running sees it.
+   */
+  private boolean awaitsRebuildRetry(final ColumnarProjection projection) {
+    final Slot slot = slotsByBucket.get(projection.bucketId());
+    return slot != null && slot.rebuildRetryAtMs != 0;
   }
 
   /** Whether the bucket has no record; false when it cannot be read (an {@code ADD_COLUMN} then rebuilds, which costs a scan only). */

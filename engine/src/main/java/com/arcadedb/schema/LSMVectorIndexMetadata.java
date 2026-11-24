@@ -18,6 +18,8 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorEncoding;
@@ -27,6 +29,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -105,7 +108,13 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      mutationsBeforeRebuild   = -1; // -1 = use global default
   public int                      inactivityRebuildTimeoutMs = -1; // -1 = use global default
   public boolean                  storeVectorsInGraph      = false; // Phase 2: Store vectors inline in graph file
-  public boolean                  addHierarchy             = false;
+  /**
+   * Whether the graph has hierarchical (HNSW) layers above the base layer. True for every index created since issue #12092:
+   * a flat graph starts every search from one entry node, and on clustered data a greedy walk from it could settle in the
+   * cluster next to the query's own. A persisted definition that does not carry the key describes an index built flat, and
+   * {@link #fromJSON(JSONObject)} keeps it flat.
+   */
+  public boolean                  addHierarchy             = true;
   public String                   buildState               = "READY"; // BUILDING, READY, or INVALID
 
   // Product Quantization (PQ) configuration - used when quantizationType=PRODUCT
@@ -289,6 +298,18 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Leaves out an {@code efSearch} nobody asked for: it is not in force, since a search on such an index takes the adaptive
+   * beam instead (issue #6494).
+   */
+  @Override
+  public Map<String, Object> getUserSettings() {
+    final Map<String, Object> settings = super.getUserSettings();
+    if (!efSearchConfigured)
+      settings.remove("efSearch");
+    return settings;
+  }
+
+  /**
    * Sets the similarity function from its name (COSINE, DOT_PRODUCT, EUCLIDEAN), case-insensitive.
    */
   public void setSimilarity(final String similarity) {
@@ -424,6 +445,25 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     this.rerankOversample = rerankOversample;
   }
 
+  /**
+   * Refuses {@code dimensions} above {@link GlobalConfiguration#VECTOR_INDEX_MAX_DIMENSIONS} (issue #12822): the index holds
+   * buffers of that many floats, so an unbounded value let one statement allocate gigabytes. Called where the dimensions of a
+   * new index are DECLARED (the builders, the Cypher options) and where an index sized on its first vector is offered one,
+   * never from {@link #fromJSON(JSONObject)} nor where an existing definition is created again (a rebuild, a truncate, a new
+   * bucket of the type), so an index persisted with a larger value keeps opening and keeps being maintained. An
+   * {@link IllegalArgumentException}, like the lower bounds of the setters, so the refusal is a client error (HTTP 400).
+   *
+   * @param dimensions    the dimensions the index is about to be created with
+   * @param configuration the configuration of the database the index belongs to
+   */
+  public static void checkDimensionsBound(final int dimensions, final ContextConfiguration configuration) {
+    final int maxDimensions = configuration.getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS);
+    if (dimensions > maxDimensions)
+      throw new IllegalArgumentException(
+          "dimensions " + dimensions + " exceeds the maximum of " + maxDimensions + " allowed by the setting '"
+              + GlobalConfiguration.VECTOR_INDEX_MAX_DIMENSIONS.getKey() + "': raise it before creating a wider index");
+  }
+
   @Override
   public void fromJSON(final JSONObject metadata) {
     super.fromJSON(metadata);
@@ -498,8 +538,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("storeVectorsInGraph"))
       this.storeVectorsInGraph = metadata.getBoolean("storeVectorsInGraph");
 
-    if (metadata.has("addHierarchy"))
-      this.addHierarchy = metadata.getBoolean("addHierarchy");
+    // An absent key is an index built before the default turned hierarchical (issue #12092): it was built flat, and reading
+    // it with the creation default would rebuild it as a different graph on its next rebuild
+    this.addHierarchy = metadata.getBoolean("addHierarchy", false);
 
     if (metadata.has("buildState"))
       this.buildState = metadata.getString("buildState");

@@ -127,6 +127,8 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    // A user who may not read the label is refused whatever the keys are, as the walk of its buckets does (issue #11904)
+    requireReadable(context, label);
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
@@ -135,7 +137,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       /** The index is declared on a supertype, so its cursor carries records that are not of {@link #label}. */
       private boolean inheritedIndex = false;
       /** The type of each column of {@link #index}, for the key a RID spelled as text is sought with (issue #11933). */
-      private Type[] keyTypes = null;
       private List<Object[]> seekKeys = null; // one key per value to seek (IN-list expands to N keys)
       private int seekIndex = 0;
       private boolean wholeKey = false;        // the key covers every index property: single-entry lookup
@@ -173,69 +174,22 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
       private void initialize() {
         initialized = true;
 
-        final DocumentType type = context.getDatabase().getSchema().getType(label);
-        // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
-        if (!(type instanceof VertexType)) {
+        final Seek seek = resolveSeek(context);
+        if (seek == null) {
           finished = true;
           return;
         }
-
-        // Resolve the index by its whole key: a composite index is not registered under the single
-        // anchor property, and looking it up by that property alone used to yield no index and,
-        // silently, no rows at all (issue #5444).
-        index = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
-        if (index == null && indexProperties.size() > 1)
-          index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
-        if (index == null)
-          // The planner picked an index that the schema no longer offers. Returning an empty result
-          // set here would silently drop rows the query must return, so fail instead.
-          throw new CommandExecutionException(
-              "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
-
-        // An index inherited from a supertype spans every bucket in the hierarchy, so its cursor also yields
-        // the parent's own records and every sibling child's. Those are not answers to (n:label) and are
-        // dropped below - the same thing the SQL plan for this query spells as FILTER ITEMS BY TYPE (#7021).
-        inheritedIndex = Labels.isInheritedIndex(index, label);
-
-        // The prefix values are shared by every seek; only the leading value varies over an IN-list. A RID spelled as text is sought
-        // as the id it stands for in a numeric column (issue #11933)
-        keyTypes = index.getKeyTypes();
-        final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
-        for (int i = 1; i < keyValues.size(); i++) {
-          final Object resolved = resolveValue(keyValues.get(i));
-          if (resolved == null)
-            break; // an unresolved parameter truncates the key, degrading the seek to a shorter prefix
-          trailing.add(RidTextKeys.keyFor(resolved, keyTypes, i));
-        }
-        wholeKey = 1 + trailing.size() == index.getPropertyNames().size();
-
-        // Resolve the seek keys at runtime (parameters change per execution). A single equality value
-        // yields one key; an IN-list (issue #5306) yields one key per list element, with duplicates
-        // removed and result RIDs de-duplicated to honor set-membership semantics.
-        seekKeys = new ArrayList<>();
-        if (propertyValue instanceof InListValues inList) {
+        index = seek.index();
+        inheritedIndex = seek.inherited();
+        seekKeys = seek.keys();
+        wholeKey = seek.wholeKey();
+        // The values of an IN-list are de-duplicated, and so are the RIDs they find, to honor set-membership semantics
+        if (propertyValue instanceof InListValues)
           seen = newSeen();
-          for (final Expression element : inList.getValues()) {
-            final Object resolved = resolveValue(element);
-            if (inList.isScalar(element) || resolved == null)
-              addSeekKey(resolved, trailing);
-            else if (inList.isWholeList(element))
-              // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
-              // to be taken for one key, which answered no rows where the scan refuses
-              for (final Object v : InExpression.listOperand(resolved))
-                addSeekKey(v, trailing);
-            else
-              // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
-              // property holds, and the index answers it with no row, as the comparison of the scan does
-              addSeekKey(resolved, trailing);
-          }
-        } else {
-          addSeekKey(resolveValue(propertyValue), trailing);
-        }
 
         // A null parameter cut the key short of the index. A hash index answers an exact key only, and a null never equals a value
         // (issue #9236), so there is nothing to read
-        if (seekKeys.isEmpty() || (!wholeKey && !index.supportsOrderedIterations()))
+        if (!seek.readable())
           finished = true;
         else if (seen == null && statementWritesKey && !wholeKey)
           seen = newSeen();
@@ -252,22 +206,6 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
           seenHeapLimit.release();
           seenHeapLimit = null;
         }
-      }
-
-      private void addSeekKey(final Object leadingValue, final List<Object> trailing) {
-        if (leadingValue == null)
-          return;
-
-        final Object[] key = new Object[1 + trailing.size()];
-        key[0] = RidTextKeys.keyFor(leadingValue, keyTypes, 0);
-        for (int i = 0; i < trailing.size(); i++)
-          key[1 + i] = trailing.get(i);
-        seekKeys.add(key);
-      }
-
-      /** A literal, a parameter, or any row-independent expression such as a field of a parameter, {@code $d.u} (issue #11480) */
-      private Object resolveValue(final Object value) {
-        return RowIndependentValues.resolve(value, context);
       }
 
       private void fetchMore(final int n) {
@@ -306,9 +244,7 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
               }
             }
             final Object[] key = seekKeys.get(seekIndex++);
-            // A key covering every index property identifies at most one entry per RID; a shorter one
-            // matches a contiguous range of the ordered index, which only the range cursor can walk.
-            cursor = wholeKey ? index.get(key) : index.range(true, key, true, key, true);
+            cursor = openCursor(index, wholeKey, key);
             continue;
           }
 
@@ -352,6 +288,148 @@ public class NodeIndexSeek extends AbstractPhysicalOperator {
         releaseSeen();
       }
     };
+  }
+
+  /**
+   * The index a seek reads and the keys it looks up there, with the parameters bound.
+   *
+   * @param inherited whether the index is declared on a supertype, so its cursor carries records that are not of the label
+   * @param keys      one key per value to seek: an IN-list yields one per element
+   * @param wholeKey  whether the keys cover every index property, a single-entry lookup each
+   */
+  private record Seek(TypeIndex index, boolean inherited, List<Object[]> keys, boolean wholeKey) {
+    /** Whether there is anything to read: a hash index answers a whole key only. */
+    boolean readable() {
+      return !keys.isEmpty() && (wholeKey || index.supportsOrderedIterations());
+    }
+  }
+
+  /**
+   * Resolves the index and the keys to seek, with the parameters bound.
+   *
+   * @return null when no node can match: the label is not a vertex type
+   */
+  private Seek resolveSeek(final CommandContext context) {
+    final DocumentType type = context.getDatabase().getSchema().getType(label);
+    // A non-vertex type with the same name (edge/document type) matches no node pattern (issue #5194)
+    if (!(type instanceof VertexType))
+      return null;
+
+    // Resolve the index by its whole key: a composite index is not registered under the single
+    // anchor property, and looking it up by that property alone used to yield no index and,
+    // silently, no rows at all (issue #5444).
+    TypeIndex index = (TypeIndex) type.getPolymorphicIndexByProperties(indexProperties);
+    if (index == null && indexProperties.size() > 1)
+      index = (TypeIndex) type.getPolymorphicIndexByProperties(propertyName);
+    if (index == null)
+      // The planner picked an index that the schema no longer offers. Returning an empty result
+      // set here would silently drop rows the query must return, so fail instead.
+      throw new CommandExecutionException(
+          "Index '" + indexName + "' on type '" + label + "' is no longer available: re-plan the query");
+
+    // The prefix values are shared by every seek; only the leading value varies over an IN-list. A RID spelled as text is sought
+    // as the id it stands for in a numeric column (issue #11933)
+    final Type[] keyTypes = index.getKeyTypes();
+    final List<Object> trailing = new ArrayList<>(keyValues.size() - 1);
+    for (int i = 1; i < keyValues.size(); i++) {
+      final Object resolved = RowIndependentValues.resolve(keyValues.get(i), context);
+      if (resolved == null)
+        break; // an unresolved parameter truncates the key, degrading the seek to a shorter prefix
+      trailing.add(RidTextKeys.keyFor(resolved, keyTypes, i));
+    }
+
+    // Resolve the seek keys at runtime (parameters change per execution). A single equality value
+    // yields one key; an IN-list (issue #5306) yields one key per list element.
+    final List<Object[]> keys = new ArrayList<>();
+    if (propertyValue instanceof InListValues inList) {
+      for (final Expression element : inList.getValues()) {
+        final Object resolved = RowIndependentValues.resolve(element, context);
+        if (inList.isScalar(element) || resolved == null)
+          addSeekKey(keys, keyTypes, resolved, trailing);
+        else if (inList.isWholeList(element))
+          // The whole right side, x IN $ids: a list, or the refusal the scan gives a value that is not one (issue #10541). It used
+          // to be taken for one key, which answered no rows where the scan refuses
+          for (final Object v : InExpression.listOperand(resolved))
+            addSeekKey(keys, keyTypes, v, trailing);
+        else
+          // One item of a list literal, x IN [$a, $b]: one key, whatever it resolves to (issue #10541). A list or a map is a key no
+          // property holds, and the index answers it with no row, as the comparison of the scan does
+          addSeekKey(keys, keyTypes, resolved, trailing);
+      }
+    } else
+      addSeekKey(keys, keyTypes, RowIndependentValues.resolve(propertyValue, context), trailing);
+
+    // An index inherited from a supertype spans every bucket in the hierarchy, so its cursor also yields
+    // the parent's own records and every sibling child's. Those are not answers to (n:label) and are
+    // dropped by the seek - the same thing the SQL plan for this query spells as FILTER ITEMS BY TYPE (#7021).
+    return new Seek(index, Labels.isInheritedIndex(index, label), keys, 1 + trailing.size() == index.getPropertyNames().size());
+  }
+
+  private static void addSeekKey(final List<Object[]> keys, final Type[] keyTypes, final Object leadingValue, final List<Object> trailing) {
+    if (leadingValue == null)
+      return;
+
+    final Object[] key = new Object[1 + trailing.size()];
+    key[0] = RidTextKeys.keyFor(leadingValue, keyTypes, 0);
+    for (int i = 0; i < trailing.size(); i++)
+      key[1 + i] = trailing.get(i);
+    keys.add(key);
+  }
+
+  /**
+   * A key covering every index property identifies at most one entry per RID; a shorter one matches a contiguous range of the
+   * ordered index, which only the range cursor can walk.
+   */
+  private static IndexCursor openCursor(final TypeIndex index, final boolean wholeKey, final Object[] key) {
+    return wholeKey ? index.get(key) : index.range(true, key, true, key, true);
+  }
+
+  /**
+   * Counts the index entries the seek finds, up to a cap, without loading a record (issue #11889). The planner's estimate of an
+   * equality on a NOTUNIQUE key is an average over the keys, which says little of the one sought; this reads what it finds,
+   * for what reading at most {@code cap} index entries costs: the lookup of a whole key collects the entries it finds before it
+   * answers, so it is asked for the entries the cap leaves and no more. An entry of an index declared on a supertype is counted
+   * only when its record carries the label, read from its bucket as the seek reads it, but the cap bounds the entries READ: the
+   * seek reads every entry of the key, a sibling's included, to drop it, so a key the cap stops is no cheaper than the label it
+   * would replace whoever its entries belong to. The values of an IN-list are counted one by one, a vertex two of them find
+   * twice.
+   * <p>
+   * The refusals of {@link #resolveSeek} ("re-plan the query", an index the schema no longer offers) and a timeout are not
+   * caught: the plan was built from the schema this call reads, so a failure here is a statement racing a DDL, which the seek
+   * refuses with the same exception.
+   *
+   * @return the entries the seek finds, or {@code cap} when it reads that many or more
+   */
+  public long countEntries(final CommandContext context, final long cap) {
+    // a cap below one leaves nothing to read, and a lookup limit below zero would mean no limit at all
+    if (cap < 1L)
+      return cap;
+    final Seek seek = resolveSeek(context);
+    if (seek == null || !seek.readable())
+      return 0L;
+    final WorkGuard guard = WorkGuard.forCommandDeadline(context);
+    long read = 0L;
+    long counted = 0L;
+    for (final Object[] key : seek.keys()) {
+      // an IN-list of many values that hold no entry reads none: one check per value keeps the deadline in reach
+      guard.check();
+      final IndexCursor cursor = seek.wholeKey() ?
+          seek.index().get(key, (int) Math.min(cap - read, Integer.MAX_VALUE)) :
+          seek.index().range(true, key, true, key, true);
+      try {
+        while (read < cap && cursor.hasNext()) {
+          guard.checkPeriodically((int) ++read);
+          final Identifiable entry = cursor.next();
+          if (entry != null && (!seek.inherited() || Labels.carriesLabel(context.getDatabase().getSchema(), entry, label)))
+            ++counted;
+        }
+      } finally {
+        cursor.close();
+      }
+      if (read >= cap)
+        break;
+    }
+    return read < cap ? counted : cap;
   }
 
   @Override

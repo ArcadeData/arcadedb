@@ -33,13 +33,15 @@ import java.util.stream.Collectors;
  * used to accept a {@code List} only, so {@code 'a,b'.split(',').join('-')} answered the array's identity
  * {@code toString()} and {@code ['b','a'].asSet().join('-')} answered the set's own {@code toString()} with the
  * separator ignored (issue #7027).
+ * <p>
+ * The separator is optional and defaults to {@code ','} (issue #12083).
  */
 public class SQLMethodJoin extends AbstractSQLMethod {
 
   public static final String NAME = "join";
 
   public SQLMethodJoin() {
-    super(NAME, 1);
+    super(NAME, 0, 1);
   }
 
   @Override

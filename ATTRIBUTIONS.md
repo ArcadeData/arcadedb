@@ -208,7 +208,7 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 |----------|-------------|---------|---------|----------|
 | org.apache.commons | commons-compress | 1.28.0 | Apache 2.0 | https://commons.apache.org/proper/commons-compress/ |
 | org.apache.commons | commons-lang3 | 3.18.0 | Apache 2.0 | https://commons.apache.org/proper/commons-lang/ |
-| commons-codec | commons-codec | 1.19.0 | Apache 2.0 | https://commons.apache.org/proper/commons-codec/ |
+| commons-codec | commons-codec | 1.23.0 | Apache 2.0 | https://commons.apache.org/proper/commons-codec/ |
 | commons-io | commons-io | 2.20.0 | Apache 2.0 | https://commons.apache.org/proper/commons-io/ |
 
 ### Apache HttpComponents

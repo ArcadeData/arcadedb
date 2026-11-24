@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Issue #9498: {@link RemoteGrpcServer#acceptStaleSnapshot()} reaches the {@code AcceptStaleSnapshot} RPC, and the server's
  * refusal comes back through the shared client error mapper. The lift itself on a one-voter cluster is covered by
- * {@code Issue9498GrpcAcceptStaleSnapshotIT} in grpcw.
+ * {@code GrpcHaAcceptRpcsIT.AcceptStaleSnapshot} in grpcw.
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */

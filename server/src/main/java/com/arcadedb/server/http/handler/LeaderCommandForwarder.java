@@ -551,6 +551,8 @@ public final class LeaderCommandForwarder {
       // An HttpClient's connect timeout is fixed at build time, so this one is read once. The response
       // deadlines below are read per request instead, so SET SERVER SETTING moves them without a restart.
       this.client = HttpClient.newBuilder()
+          // HTTP/1.1, not the default HTTP/2: see LeaderDial.FORWARD_HTTP_VERSION (issue #12442)
+          .version(LeaderDial.FORWARD_HTTP_VERSION)
           .connectTimeout(bounded(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT,
               configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT)))
           .build();
@@ -750,7 +752,7 @@ public final class LeaderCommandForwarder {
         // has to come first or it is dead code and every failure to connect reports itself as "the leader did
         // not answer within proxyReadTimeout" - the wrong knob, and the wrong story about whether the command
         // ran. Swapping the two arms is caught only by
-        // Issue7507LeaderForwardTimeoutTest#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
+        // LeaderForwardTimeoutTest.CommandForwardTimeout#aLeaderThatCannotBeConnectedToIsAnsweredWithItsOwnGatewayTimeout.
         if (cause instanceof HttpConnectTimeoutException)
           return new Awaited<>(null, couldNotConnect(dialClient, leaderHttpAddress));
         if (cause instanceof HttpTimeoutException)
@@ -826,7 +828,7 @@ public final class LeaderCommandForwarder {
      * {@code shutdownNow} rather than {@code close}: the latter waits for in-flight exchanges, and the whole
      * point of the deadlines above is that this node stops waiting on the leader. But {@code shutdownNow} only
      * <em>requests</em> the shutdown - the selector thread unwinds after it returns - so on its own it leaves the
-     * caller no way to say the client is released, which is what {@code Issue7507ForwarderClientLifecycleTest}
+     * caller no way to say the client is released, which is what {@code ForwarderClientLifecycleTest.StopReleasesForwarderClient}
      * asserts and why that test was intermittently red (issue #7677). {@link LeaderDial#releaseBounded} is both
      * halves: cancel now, then wait a few seconds for the termination that follows.
      */

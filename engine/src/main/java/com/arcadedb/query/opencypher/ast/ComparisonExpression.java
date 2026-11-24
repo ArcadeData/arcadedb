@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.LightEdgeRID;
 import com.arcadedb.query.opencypher.InlineProperties;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
@@ -453,30 +454,16 @@ public class ComparisonExpression implements BooleanExpression {
       final Map<?, ?> leftMap = (Map<?, ?>) left;
       final Map<?, ?> rightMap = (Map<?, ?>) right;
       if (operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) {
-        // Different key sets means definitely not equal
-        if (!leftMap.keySet().equals(rightMap.keySet()))
-          return operator == Operator.NOT_EQUALS;
-        // Same key set: compare values with 3VL
-        boolean hasNull = false;
-        for (final Object key : leftMap.keySet()) {
-          final Object lv = leftMap.get(key);
-          final Object rv = rightMap.get(key);
-          // A point stored before issue #11113 spells its crs WGS-84, one built since wgs-84: the same reference system
-          if ("crs".equals(key) && lv instanceof String lc && rv instanceof String rc && lc.equalsIgnoreCase(rc)
-              && CypherPointFunction.sridOfCrs(lc) != null && isPointShaped(leftMap) && isPointShaped(rightMap))
-            continue;
-          final Object cmp = new ComparisonExpression(
-              new LiteralExpression(lv, ""), Operator.EQUALS,
-              new LiteralExpression(rv, "")).evaluateTernary(null, null);
-          if (cmp == null)
-            hasNull = true;
-          else if (!Boolean.TRUE.equals(cmp))
-            return operator == Operator.NOT_EQUALS;
-        }
-        if (hasNull)
+        final Boolean equal = mapsEqual(leftMap, rightMap);
+        if (equal == null)
           return null;
-        return operator == Operator.EQUALS;
+        return operator == Operator.EQUALS ? equal : !equal;
       }
+      // Points have no order under < and >, but two equal points are <= and >= each other, as in Neo4j (issue #12274)
+      if ((operator == Operator.LESS_THAN_OR_EQUAL || operator == Operator.GREATER_THAN_OR_EQUAL)
+          && CypherValues.isPointShaped(leftMap) && CypherValues.isPointShaped(rightMap)
+          && Boolean.TRUE.equals(mapsEqual(leftMap, rightMap)))
+        return true;
       return null;
     }
 
@@ -662,8 +649,32 @@ public class ComparisonExpression implements BooleanExpression {
   }
 
 
-  /** A point map has numeric x/y (see {@code CypherValues.isPointShaped}): an ordinary map with a crs key compares as written. */
-  private static boolean isPointShaped(final Map<?, ?> map) {
-    return map.get("x") instanceof Number && map.get("y") instanceof Number;
+  /**
+   * Equality of two maps with 3VL null propagation: {@code false} when the key sets or any pair of values differ, {@code null}
+   * when no pair differs but a pair holds a null, {@code true} otherwise.
+   */
+  private static Boolean mapsEqual(final Map<?, ?> leftMap, final Map<?, ?> rightMap) {
+    // Different key sets means definitely not equal
+    if (!leftMap.keySet().equals(rightMap.keySet()))
+      return Boolean.FALSE;
+    // Same key set: compare values with 3VL
+    boolean hasNull = false;
+    for (final Object key : leftMap.keySet()) {
+      final Object lv = leftMap.get(key);
+      final Object rv = rightMap.get(key);
+      // A point stored before issue #11113 spells its crs WGS-84, one built since wgs-84: the same reference system. Both maps
+      // hold a crs here, so a point is a map with numeric x/y: an ordinary map with a crs key compares as written.
+      if ("crs".equals(key) && lv instanceof String lc && rv instanceof String rc && lc.equalsIgnoreCase(rc)
+          && CypherPointFunction.sridOfCrs(lc) != null && CypherValues.isPointShaped(leftMap) && CypherValues.isPointShaped(rightMap))
+        continue;
+      final Object cmp = new ComparisonExpression(
+          new LiteralExpression(lv, ""), Operator.EQUALS,
+          new LiteralExpression(rv, "")).evaluateTernary(null, null);
+      if (cmp == null)
+        hasNull = true;
+      else if (!Boolean.TRUE.equals(cmp))
+        return Boolean.FALSE;
+    }
+    return hasNull ? null : Boolean.TRUE;
   }
 }

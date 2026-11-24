@@ -28,10 +28,14 @@ import java.util.Map;
  * Cypher {@code point.distance(point1, point2)} function.
  *
  * <p>Computes the distance between two points. Uses Haversine formula for WGS-84
- * geographic points (result in meters), and Euclidean distance for Cartesian points.</p>
+ * geographic points (result in meters), and Euclidean distance for Cartesian points. A 3D WGS-84 point adds its height: the
+ * surface arc is taken at the mean height and the height difference is the other leg. A 2D point and a 3D point, like points
+ * of different coordinate reference systems, are not comparable and give {@code null}.</p>
  */
 public class CypherPointDistanceFunction implements StatelessFunction {
-  private static final double EARTH_RADIUS_M = 6371000.0;
+  // Same Earth radius as Neo4j, so geographic distances agree with the reference implementation (issue #12273). The SQL geo.*
+  // functions keep GeoUtils.EARTH_RADIUS_KM (6371 km) on purpose: they are not Neo4j functions and their results are unchanged
+  private static final double EARTH_RADIUS_M = 6378140.0;
 
   @Override
   public String getName() {
@@ -75,7 +79,19 @@ public class CypherPointDistanceFunction implements StatelessFunction {
       final Number lat2n = coordinate(p2, "latitude", "y");
       if (lat1n == null || lon1n == null || lat2n == null || lon2n == null)
         return null;
-      return haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
+      final Number h1n = thirdCoordinate(p1, true);
+      final Number h2n = thirdCoordinate(p2, true);
+      // A 2D and a 3D WGS-84 point are not comparable, as for Cartesian points (issue #12273)
+      if ((h1n == null) != (h2n == null))
+        return null;
+      final double surface = haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
+      if (h1n == null)
+        return surface;
+      // 3D: the surface arc is taken at the mean height, the height difference is the other leg
+      final double h1 = h1n.doubleValue();
+      final double h2 = h2n.doubleValue();
+      final double arc = surface * (EARTH_RADIUS_M + (h1 + h2) / 2) / EARTH_RADIUS_M;
+      return Math.hypot(arc, h2 - h1);
     }
 
     // Cartesian: use Euclidean distance
@@ -88,8 +104,8 @@ public class CypherPointDistanceFunction implements StatelessFunction {
     final double dx = x2n.doubleValue() - x1n.doubleValue();
     final double dy = y2n.doubleValue() - y1n.doubleValue();
     double sumSq = dx * dx + dy * dy;
-    final Number z1n = (Number) p1.get("z");
-    final Number z2n = (Number) p2.get("z");
+    final Number z1n = thirdCoordinate(p1, false);
+    final Number z2n = thirdCoordinate(p2, false);
     if ((z1n == null) != (z2n == null))
       return null;
     if (z1n != null) {
@@ -104,7 +120,7 @@ public class CypherPointDistanceFunction implements StatelessFunction {
    * Prefers the explicit {@code crs} field set by {@code point()}; falls back to the presence of
    * {@code longitude}/{@code latitude} keys for raw maps that carry no {@code crs}.
    */
-  private static boolean isGeographic(final Map<?, ?> p) {
+  static boolean isGeographic(final Map<?, ?> p) {
     final Object crs = p.get("crs");
     if (crs instanceof String s) {
       if (CypherPointFunction.isGeographicCrs(s))
@@ -113,6 +129,16 @@ public class CypherPointDistanceFunction implements StatelessFunction {
         return false;
     }
     return p.containsKey("longitude") && p.containsKey("latitude");
+  }
+
+  /**
+   * The third coordinate of a point, or {@code null} when it has none or holds something that is not a number. A geographic
+   * point reads {@code height} and falls back to {@code z}, any other point reads {@code z} and falls back to {@code height},
+   * as {@code point()} does. {@code point.withinBBox()} reads it through here too, so both functions take the same coordinate
+   * of the same map and agree on whether it is 2D or 3D (issue #12273). Returns the number the map holds, no new object.
+   */
+  static Number thirdCoordinate(final Map<?, ?> p, final boolean geographic) {
+    return geographic ? coordinate(p, "height", "z") : coordinate(p, "z", "height");
   }
 
   /**

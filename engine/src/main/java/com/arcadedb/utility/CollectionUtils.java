@@ -104,6 +104,23 @@ public class CollectionUtils {
   }
 
   /**
+   * The value {@code map} holds under {@code key}, or null when the map has no such entry <b>or cannot be asked for it</b>.
+   * <p>
+   * A sorted map orders the key it is asked for against its own, so a {@code TreeMap} of {@code Character} or {@code Integer} keys
+   * refuses a String with a {@link ClassCastException}, and so does any sorted map whose comparator does not take one.
+   * {@link Map#get} documents that refusal as optional behaviour, and it means the same as "no entry": a map that cannot hold a
+   * key of that class cannot hold the entry. This is the probe for a reserved key of a map of unknown origin, such as the
+   * {@code "@type"} of an embedded document, where the keys are the caller's and a refusal must not fail the write (issue #12590).
+   */
+  public static Object getOrNullIfKeyRefused(final Map<?, ?> map, final Object key) {
+    try {
+      return map.get(key);
+    } catch (final ClassCastException e) {
+      return null;
+    }
+  }
+
+  /**
    * Returns the count of the remaining items that have not been iterated yet.<br>
    * <b>NOTE: the default implementation consumes the iterator</b>.
    */

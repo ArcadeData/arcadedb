@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -53,6 +54,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -236,6 +238,7 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
 
         if (!initialized) {
           initialized = true;
+          requireReadable();
           if (!openNextCursor()) {
             finished = true;
             return;
@@ -340,6 +343,31 @@ public class MatchEdgeByIndexStep extends AbstractExecutionStep {
   public void close() {
     releaseCursor();
     super.close();
+  }
+
+  /**
+   * Refuses the user who may not read a type the seek reads, or whose vertices it binds, as the walk of the buckets of those types
+   * does (issue #12663), once before the first cursor opens.
+   * <p>
+   * A walk opens the buckets of the type, and a bucket refuses a user who may not read it whatever the keys are. The seek loads the
+   * edge a key finds, which a bucket refuses only for a key the edge type holds, so left to itself the statement would tell a user
+   * who may not read the type whether it holds a key. And it binds the endpoints from the RIDs the edge carries, without loading
+   * them, so the vertex type of an endpoint is never asked at all and the rows of the relationships that end in a type the user may
+   * not read would be returned. The labels of the endpoints are what the pattern would have walked instead of seeking, so they are
+   * asked as that walk asks them: the buckets of the type and of every type under it. The plan is not always built for the user who
+   * runs it (the cache of Cypher plans belongs to the database), so the check is the step's to make, per execution.
+   *
+   * @throws SecurityException when the current user may not read one of the types
+   */
+  private void requireReadable() {
+    final DatabaseInternal database = context.getDatabase();
+    final Schema schema = database.getSchema();
+    for (final EdgeIndexSeedPlanner.TypeSeek seek : seeks)
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(seek.edgeType()));
+    for (final String label : sourceFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
+    for (final String label : targetFilter.labels())
+      SecurityHelper.checkReadOnTypeAndSubTypes(database, schema.getTypeOrNull(label));
   }
 
   /**
