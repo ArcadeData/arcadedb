@@ -70,6 +70,18 @@ class CypherSkipLimitBeyondIntIssue12757Test extends TestHelper {
     assertThat(xs("UNWIND [1, 2, 3] AS x WITH x ORDER BY x DESC SKIP 1 LIMIT 3000000000 RETURN x")).containsExactly(2L, 1L);
   }
 
+  /**
+   * {@code LIMIT 2147483647} needs no wrap to break: the top-K heap of the ORDER BY was sized {@code Math.min(k + 1, 1000)}, which
+   * overflowed to a negative capacity and failed the query with an IllegalArgumentException from the PriorityQueue.
+   */
+  @Test
+  void limitAtIntMaxUnderOrderByKeepsEveryRow() {
+    assertThat(xs("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x LIMIT 2147483647")).containsExactly(1L, 2L, 3L);
+    assertThat(xs("UNWIND [3, 1, 2] AS x WITH x ORDER BY x DESC LIMIT 2147483647 RETURN x")).containsExactly(3L, 2L, 1L);
+    assertThat(xs("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x SKIP 1 LIMIT 2147483646")).containsExactly(2L, 3L);
+    assertThat(xs("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x LIMIT $n", Map.of("n", 2147483647L))).containsExactly(1L, 2L, 3L);
+  }
+
   @Test
   void skipPastIntSkipsEveryRow() {
     for (final String skip : new String[] { "2147483648", "4294967296", "4294967297", "9223372036854775807" }) {

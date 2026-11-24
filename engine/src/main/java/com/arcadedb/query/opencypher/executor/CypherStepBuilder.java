@@ -1147,13 +1147,7 @@ final class CypherStepBuilder {
         evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
 
     if (ordered && !orderedByIndex) {
-      // Top-K keeps SKIP + LIMIT rows so enough survive the skip; a sum past int range sorts everything instead
-      Integer topKVal = null;
-      if (limitVal != null) {
-        final long topK = (long) limitVal + (skipVal != null ? skipVal : 0);
-        topKVal = topK <= Integer.MAX_VALUE ? (int) topK : null;
-      }
-      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKVal)
+      final OrderByStep orderByStep = new OrderByStep(withClause.getOrderByClause(), context, functionFactory, topKRows(limitVal, skipVal))
           .withProjection(withClause.getItems());
       if (currentStep != null)
         orderByStep.setPrevious(currentStep);
@@ -1320,16 +1314,28 @@ final class CypherStepBuilder {
   }
 
   /**
-   * The rows an ORDER BY has to keep when a LIMIT follows it, or null for no LIMIT: the LIMIT plus the SKIP that discards from
-   * them. Saturating at {@link Integer#MAX_VALUE}, as both values are, so that two large values do not wrap negative (#12757).
+   * The rows the ORDER BY of a RETURN has to keep when a LIMIT follows it: see {@link #topKRows(Integer, Integer)}.
    */
   private static Integer topKRows(final CypherStatement statement, final CypherFunctionFactory functionFactory, final CommandContext context) {
     if (statement.getLimit() == null)
       return null;
     final ExpressionEvaluator evaluator = new ExpressionEvaluator(functionFactory);
-    final long limit = evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
-    final long skip = statement.getSkip() != null ? evaluator.evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context) : 0L;
-    return (int) Math.min(Integer.MAX_VALUE, limit + skip);
+    final int limit = evaluator.evaluateSkipLimit(statement.getLimit(), new ResultInternal(), context);
+    final Integer skip = statement.getSkip() != null ? evaluator.evaluateSkipLimit(statement.getSkip(), new ResultInternal(), context) : null;
+    return topKRows(limit, skip);
+  }
+
+  /**
+   * The rows an ORDER BY has to keep when a LIMIT follows it: the LIMIT plus the SKIP that discards from them, or null to sort
+   * every row, for no LIMIT or for a bound that reaches {@link Integer#MAX_VALUE}. A bound that large keeps every row a list can
+   * hold, so a heap of that size would only be a slower full sort, and the sum is taken in long so that two large values do not
+   * wrap negative (#12757). One rule for the ORDER BY of a WITH and of a RETURN.
+   */
+  private static Integer topKRows(final Integer limit, final Integer skip) {
+    if (limit == null)
+      return null;
+    final long rows = (long) limit + (skip != null ? skip : 0);
+    return rows < Integer.MAX_VALUE ? (int) rows : null;
   }
 
   /**
