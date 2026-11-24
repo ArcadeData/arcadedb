@@ -28,6 +28,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.UpdateOptions;
 import org.bson.BsonRegularExpression;
 import org.bson.Document;
+import org.bson.types.Binary;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -165,6 +166,29 @@ class Issue12594MongoRegexEqualityTest extends BaseMongoServerTest {
       assertThat(stored.getFirst().get("a")).as("%s", filter.toJson()).isEqualTo(expected);
       assertThat(stored.getFirst().get("n")).isEqualTo(2);
     }
+  }
+
+  @Test
+  void aPathBelowAStoredRegularExpressionIsNotViable() {
+    // the seeded regular expression is stored tagged, a map in the record: a field set below it would be lost when it is read back
+    final MongoCollection<Document> upserted = client.getDatabase(getDatabaseName()).getCollection("v" + (collections++));
+    assertThatThrownBy(() -> upserted.updateOne(new Document("a", new Document("$eq", X)), new Document("$set", new Document("a.b", 1)),
+        new UpdateOptions().upsert(true))).isInstanceOf(MongoException.class)
+        .satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(28));
+    assertThat(upserted.countDocuments()).isZero();
+
+    final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("v" + (collections++));
+    collection.insertOne(new Document("_id", 1).append("a", X).append("bin", new Binary(new byte[] { 1, 2 })));
+    for (final Document update : List.of(new Document("$set", new Document("a.b", 1)), new Document("$inc", new Document("a.pattern", 1)),
+        new Document("$set", new Document("bin.data", "x"))))
+      assertThatThrownBy(() -> collection.updateOne(new Document("_id", 1), update)).as("%s", update.toJson())
+          .isInstanceOf(MongoException.class).satisfies(e -> assertThat(((MongoException) e).getCode()).isEqualTo(28));
+
+    // $unset of a path below a scalar leaves it alone
+    collection.updateOne(new Document("_id", 1), new Document("$unset", new Document("a.pattern", "").append("a.options", "")));
+    final Document stored = collection.find(new Document("_id", 1)).first();
+    assertThat(stored.get("a")).isEqualTo(X);
+    assertThat(stored.get("bin")).isEqualTo(new Binary(new byte[] { 1, 2 }));
   }
 
   @Test

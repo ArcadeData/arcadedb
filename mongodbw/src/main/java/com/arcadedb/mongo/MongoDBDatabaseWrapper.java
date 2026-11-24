@@ -2057,7 +2057,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       return MISSING;
     Object current = record.get(head);
     for (final String segment : path.substring(dot + 1).split("\\.")) {
-      if (current instanceof Map<?, ?> map) {
+      if (current instanceof Map<?, ?> map && !MongoBsonValues.isTagged(map)) {
         final Object key = keyNamed(map, segment);
         if (!map.containsKey(key))
           return MISSING;
@@ -2107,9 +2107,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * the client in production mode too, and the value is stored data.
    */
   private static void requireEmbedded(final Object container, final String field) {
-    if (container != null && !isEmbedded(container))
+    if (container != null && !isEmbedded(container)) {
+      final Object value = MongoBsonValues.isTagged(container) ? MongoBsonValues.toBson(container) : container;
       throw new MongoServerError(PATH_NOT_VIABLE, "PathNotViable",
-          "Cannot create field '" + field + "' in an element of type " + (container instanceof List ? "array" : container.getClass().getSimpleName()));
+          "Cannot create field '" + field + "' in an element of type " + (value instanceof List ? "array" : value.getClass().getSimpleName()));
+    }
   }
 
   /**
@@ -2134,8 +2136,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return add(current, delta, record);
   }
 
+  /**
+   * Whether a stored value is an embedded document a path can enter. A value stored tagged (a regular expression, a binary, a
+   * timestamp...) is a map in the record but a scalar to MongoDB: a path below it reaches nothing, and a field created in it would be
+   * lost when the value is read back (issue #12594).
+   */
   private static boolean isEmbedded(final Object value) {
-    return value instanceof Map || value instanceof com.arcadedb.database.Document;
+    return value instanceof Map && !MongoBsonValues.isTagged(value) || value instanceof com.arcadedb.database.Document;
   }
 
   private static boolean isArrayIndex(final String segment) {
