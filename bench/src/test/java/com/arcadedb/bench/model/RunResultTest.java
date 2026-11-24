@@ -19,6 +19,7 @@
 package com.arcadedb.bench.model;
 
 import com.arcadedb.bench.model.CaseResult.Status;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -85,9 +86,58 @@ class RunResultTest {
   }
 
   @Test
-  void rejectsUnknownSchemaVersion() throws IOException {
-    final JSONObject json = sample().put("schemaVersion", 2);
-    assertThatThrownBy(() -> RunResult.fromJSON(json)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("2");
+  void unknownVersionIsRefused() throws IOException {
+    final JSONObject json = sample().put("schemaVersion", 3);
+    assertThatThrownBy(() -> RunResult.fromJSON(json)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("3");
+  }
+
+  @Test
+  void v2RoundTripKeepsNotesHistogramsCompleteAndDiagnostics() throws IOException {
+    final RunResult base = RunResult.fromJSON(sample());
+    final CaseResult first = base.results().get(0);
+    final CaseResult withExtras = new CaseResult(first.workload(), first.caseName(), first.scale(), first.params(), first.reps(),
+        first.warmup(), first.metrics(), first.status(), first.error(), new JSONObject().put("serverDied", "oom"),
+        new JSONArray().put("AAAA").put("BBBB"));
+    final RunResult run = new RunResult(base.info(), List.of(withExtras), false,
+        new JSONObject("{\"ingestion\":{\"threads\":42}}"));
+
+    final RunResult back = RunResult.fromJSON(new JSONObject(run.toJSON().toString()));
+
+    assertThat(run.toJSON().getInt("schemaVersion")).isEqualTo(2);
+    assertThat(back.complete()).isFalse();
+    assertThat(back.diagnostics().getJSONObject("ingestion").getInt("threads")).isEqualTo(42);
+    final CaseResult c = back.results().get(0);
+    assertThat(c.notes().getString("serverDied")).isEqualTo("oom");
+    assertThat(c.histograms().length()).isEqualTo(2);
+    assertThat(c.histograms().getString(0)).isEqualTo("AAAA");
+    assertThat(c.histograms().getString(1)).isEqualTo("BBBB");
+  }
+
+  @Test
+  void v1FileStillReads() throws IOException {
+    final RunResult run = RunResult.fromJSON(sample().put("schemaVersion", 1));
+    assertThat(run.complete()).isTrue();
+    assertThat(run.diagnostics().isEmpty()).isTrue();
+    assertThat(run.results().get(0).notes().isEmpty()).isTrue();
+    assertThat(run.results().get(0).histograms().length()).isZero();
+  }
+
+  @Test
+  void emptyNotesAndHistogramsAreOmitted() throws IOException {
+    final JSONObject json = RunResult.fromJSON(sample()).results().get(0).toJSON();
+    assertThat(json.has("notes")).isFalse();
+    assertThat(json.has("histograms")).isFalse();
+  }
+
+  @Test
+  void withNoteAndWithStatusReturnCopies() {
+    final CaseResult c = new CaseResult("graph", "traverse", "M", new JSONObject(), 5, 2, List.of(), Status.OK, null);
+    final CaseResult noted = c.withNote("stallDumps", 2).withStatus(Status.FAILED, "boom");
+    assertThat(c.notes().isEmpty()).isTrue();
+    assertThat(c.status()).isEqualTo(Status.OK);
+    assertThat(noted.notes().getInt("stallDumps")).isEqualTo(2);
+    assertThat(noted.status()).isEqualTo(Status.FAILED);
+    assertThat(noted.error()).isEqualTo("boom");
   }
 
   @Test

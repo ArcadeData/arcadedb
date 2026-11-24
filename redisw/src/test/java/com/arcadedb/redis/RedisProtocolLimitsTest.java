@@ -23,7 +23,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,28 +50,34 @@ public class RedisProtocolLimitsTest extends BaseRedisServerTest {
   @Test
   void deeplyNestedArrayIsRejectedInsteadOfOverflowingTheStack() throws Exception {
     // Well beyond both the configured nesting cap and the depth that used to overflow the default JVM
-    // stack (~11,861 levels / ~47 KB in the original report), so the fix is exercised either way.
-    final int          depth   = 50_000;
-    final StringBuilder payload = new StringBuilder();
-    for (int i = 0; i < depth; i++)
-      payload.append("*1\r\n");
-    payload.append("$1\r\nx\r\n");
+    // stack (~11,861 levels / ~47 KB in the original report), so the fix is exercised either way. And 16 MB,
+    // more than the socket buffers of a loopback connection hold, so the server always rejects the nesting
+    // and closes the connection while the client is still writing (issue #12094).
+    final int    depth   = 4_000_000;
+    final byte[] payload = ("*1\r\n".repeat(depth) + "$1\r\nx\r\n").getBytes(StandardCharsets.US_ASCII);
 
+    final Thread writer;
+    final String received;
     try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
-      socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
-      socket.getOutputStream().flush();
+
+      // The payload goes out from a thread of its own: a write has no timeout, so a server that stopped reading
+      // without closing the connection (the uncaught StackOverflowError this test guards against does exactly
+      // that) would block the test thread for good, instead of failing on the read timeout below.
+      writer = new Thread(() -> writeUntilClosed(socket, payload), "RedisProtocolLimitsTest-writer");
+      writer.setDaemon(true);
+      writer.start();
 
       // The server must reject the oversized nesting and close the connection instead of dying with an
-      // uncaught StackOverflowError: reading from the socket returns a diagnostic error reply (or at
-      // least EOF), never a hang and never a raw crash.
-      final byte[] buffer = new byte[512];
-      final int    read   = socket.getInputStream().read(buffer);
-      if (read > 0) {
-        final String reply = new String(buffer, 0, read, StandardCharsets.US_ASCII);
-        assertThat(reply).startsWith("-ERR");
-      }
+      // uncaught StackOverflowError: the read ends with the diagnostic error reply and the close (EOF, or the
+      // reset of a connection closed with input unread), and times out, failing the test, on a connection left open.
+      received = readUntilClosed(socket);
     }
+    writer.join(10_000);
+
+    // A reset can drop the reply before the client reads it, so a close without one proves the rejection too
+    if (!received.isEmpty())
+      assertThat(received).startsWith("-ERR").contains("maximum allowed depth");
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
     try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
@@ -341,6 +352,39 @@ public class RedisProtocolLimitsTest extends BaseRedisServerTest {
     } finally {
       GlobalConfiguration.REDIS_MAX_BULK_LENGTH.reset();
     }
+  }
+
+  /**
+   * Writes the payload and returns when it is out or when the connection is gone: the server rejecting the payload closes the
+   * connection while it is still being written, which fails the write with "Broken pipe", "Connection reset" or, once the
+   * test closed the socket, "Socket closed". What the server did is judged by what the test reads back, not by the write.
+   */
+  private static void writeUntilClosed(final Socket socket, final byte[] payload) {
+    try {
+      final OutputStream out = socket.getOutputStream();
+      out.write(payload);
+      out.flush();
+    } catch (final IOException closedByTheServer) {
+      // the connection is gone: nothing left to write
+    }
+  }
+
+  /**
+   * Reads until the server closes the connection, and returns what it sent before. A read timeout is not caught: it means the
+   * connection was left open.
+   */
+  private static String readUntilClosed(final Socket socket) throws IOException {
+    final ByteArrayOutputStream received = new ByteArrayOutputStream();
+    final byte[] buffer = new byte[512];
+    try {
+      final InputStream in = socket.getInputStream();
+      int read;
+      while ((read = in.read(buffer)) != -1)
+        received.write(buffer, 0, read);
+    } catch (final SocketException resetByTheServer) {
+      // a server that closes with input still unread answers with a TCP reset: still a close
+    }
+    return received.toString(StandardCharsets.US_ASCII);
   }
 
   @Override

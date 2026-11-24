@@ -106,6 +106,35 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   }
 
   /**
+   * The name of a TIMESERIES type is not encoded the way the name of a document type is: it is the first part of the names of the files of
+   * its engine ({@code <name>_shard_<n>}, the sealed file beside each, {@code <name>_tags}), written as given into the database directory.
+   * It has to address files of that directory and nothing else, so a path separator and the control characters, which no file name holds,
+   * are refused. Every other character keeps working, as it always did.
+   *
+   * @throws SchemaException when {@code typeName} is not a valid name for the files of the type
+   */
+  public static void checkValidName(final String typeName) {
+    final String refusal = nameRefusal(typeName);
+    if (refusal != null)
+      throw new SchemaException(refusal);
+  }
+
+  /** Why {@code typeName} cannot name the files of a TIMESERIES type, or {@code null} when it can. See {@link #checkValidName}. */
+  public static String nameRefusal(final String typeName) {
+    if (typeName == null || typeName.isEmpty())
+      return "Invalid TIMESERIES type name '" + typeName + "'";
+
+    for (int i = 0; i < typeName.length(); ++i) {
+      final char c = typeName.charAt(i);
+      if (c == '/' || c == '\\')
+        return "Invalid TIMESERIES type name '" + typeName + "': it cannot contain the character '" + c + "'";
+      if (c < 0x20)
+        return String.format("Invalid TIMESERIES type name: it cannot contain the control character \\u%04x", (int) c);
+    }
+    return null;
+  }
+
+  /**
    * Initializes the TimeSeriesEngine. Called after all column definitions are set.
    * Thread-safe: double-checked locking on the volatile {@code engine} field.
    */
@@ -312,8 +341,11 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
         }
       }
 
-    // the type's own name, which the schema validated when the type was created, names the files exactly as the engine names them
-    // (TimeSeriesSealedStore.sealedFileNameFor): nothing outside the database directory can be reached through it
+    // the type's own name names the files exactly as the engine names them (TimeSeriesSealedStore.sealedFileNameFor), which holds for a
+    // name checkValidName accepts: a type read from a schema that stored another one never had an engine, and has no file to delete
+    if (nameRefusal(name) != null)
+      return;
+
     final String directory = database.getDatabasePath() + File.separator;
     for (int i = 0; i < engineShardCount(); i++)
       try {
@@ -334,6 +366,9 @@ public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeries
   @Override
   protected void renameFiles(final String newName) {
     final String oldName = name;
+    // both names go into the names of the files the engine moves: judged before any of them is looked at
+    checkValidName(newName);
+    checkValidName(oldName);
     // a target name taken by a type is refused by the document part, as a collision of names, before any file is looked at
     if (!schema.existsType(newName))
       checkEngineFilesCanMove(oldName, newName);

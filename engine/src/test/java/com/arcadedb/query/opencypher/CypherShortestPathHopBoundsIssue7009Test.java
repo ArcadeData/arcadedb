@@ -272,14 +272,16 @@ class CypherShortestPathHopBoundsIssue7009Test extends TestHelper {
   }
 
   @Test
-  void aZeroLengthSelfPathIsStillReturned() {
-    // Endpoints resolving to the same vertex answer with the zero-length path, which is what
-    // MATCH p = shortestPath((a)-[:KNOWS*]-(a)) has always answered
-    // (CypherReduceAndShortestPathTest.shortestPathSameNode). [*] carries an implicit minimum of one hop
-    // and keeps that answer; a minimum ABOVE one hop rejects it - see
-    // CypherShortestPathSelfPathBoundsIssue7017Test and HopBounds.acceptsSelfPath() (issue #7017).
+  void aZeroLengthSelfPathAnswersOnlyAMinimumOfZero() {
+    // Endpoints resolving to the same vertex have the zero-length path as their only shortest path. [*] carries an
+    // implicit minimum of one hop, so it has no answer for that pair; a written minimum of zero keeps it - see
+    // CypherShortestPathSelfPathBoundsIssue7017Test (issues #7017, #11913).
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*0..]-(e)) RETURN length(p) AS len")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("len").intValue()).isZero();
     }

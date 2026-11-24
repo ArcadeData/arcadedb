@@ -72,6 +72,16 @@ public abstract class BaseRecord implements Record {
   }
 
   /**
+   * The bytes of content this record holds in memory right now, or 0 for a record handed out without its content that
+   * nothing has read yet. Unlike {@link #size()} it never loads the record: it is for a caller that keeps records and has
+   * to know what they weigh.
+   */
+  public int getLoadedSize() {
+    final Binary current = buffer;
+    return current != null ? current.size() : 0;
+  }
+
+  /**
    * Returns the record content, or fails with a message that says WHICH record and WHY instead of letting the caller
    * dereference a {@code null} buffer.
    * <p>
@@ -116,19 +126,25 @@ public abstract class BaseRecord implements Record {
   public void reload() {
     if (rid != null && database.isOpen()) {
       try {
-        buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+        final Binary read = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
+        buffer = read;
 
         final Record loaded = database.invokeAfterReadEvents(this);
         if (loaded == null) {
           buffer = null;
         } else if (loaded != this) {
+          // A LISTENER THAT MODIFIES THE RECORD RELOADS IT ITSELF (NOTHING FIRES THEN), SO THE IMAGE LOADED LAST IS THE ONE THE RETURNED
+          // RECORD WAS BUILT FROM
+          final Binary stored = buffer != null ? buffer : read;
           // CREATE A BUFFER FROM THE MODIFIED RECORD, THE SAME WAY ImmutableDocument.checkForLazyLoading() DOES.
           // TAKING getBuffer() INSTEAD WOULD DISCARD WHAT THE LISTENER DID: ON A DIRTY MutableDocument THAT BUFFER
           // STILL HOLDS THE PRE-MODIFICATION CONTENT, AND IT IS null OUTRIGHT FOR A RECORD BUILT FROM SCRATCH.
           // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
           // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
-          // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER
-          buffer = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+          // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER.
+          // THE STORED IMAGE IS KEPT WITH IT (ISSUE #12579): A WRITE OR A DELETE OF THIS RECORD COMPARES THAT ONE WITH THE SLOT
+          buffer = ListenerRewrittenBinary.of(database.getSerializer().serializeForRead(database, loaded).getNotReusable(),
+              stored.copyOfContent());
         }
 
       } catch (final RecordNotFoundException e) {
@@ -171,6 +187,30 @@ public abstract class BaseRecord implements Record {
 
   public Binary getBuffer() {
     return buffer;
+  }
+
+  /**
+   * The image of this record as its bucket held it when it was read: {@link #getBuffer()}, except for a record whose content an
+   * after-read listener replaced (a decryption, for instance), which keeps the image it was read as (issue #12579). The one to
+   * compare with the record's slot, to find out whether another transaction changed the record since it was read, and to clean the
+   * indexes up from: the listener's content is what the record answers, not what is stored.
+   */
+  public Binary getStoredBuffer() {
+    final Binary current = buffer;
+    return current instanceof ListenerRewrittenBinary rewritten ? rewritten.getStoredImage() : current;
+  }
+
+  /** Whether {@link #getBuffer()} holds the content an after-read listener returned instead of the stored image. */
+  boolean isContentRewrittenByListener() {
+    return buffer instanceof ListenerRewrittenBinary;
+  }
+
+  /**
+   * A copy of this record's content for the {@link MutableDocument} {@code modify()} builds over it: the stored image goes along when
+   * a listener rewrote the content, so the copy is saved and deleted against the image its original was read as (issue #12579).
+   */
+  protected static Binary copyOfContentForModify(final Binary content) {
+    return ListenerRewrittenBinary.copyOf(content);
   }
 
   public void setBuffer(final Binary buffer) {
