@@ -3438,6 +3438,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final boolean[] errorSent = { false };
     final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
     final AtomicReference<Database> dbRef = new AtomicReference<>();
+    // The user the first chunk authenticated, applied again by every later callback, which may run on another thread
+    final String[] principal = { null };
     final Map<String, RID> tempIdMap = new HashMap<>();
 
     // Vertex accumulation state
@@ -3495,6 +3497,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Bound for the chunk: the commits of the flushes it triggers obey a termination, and the termination listener
         // leaves a running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
+        PrincipalScope principalScope = null;
         try {
           // Terminated between the check above and the lock: the finally below ends the load
           if (entry.isTerminated())
@@ -3509,6 +3512,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             // answers with the cluster's topology, which is not something to hand to a caller that has not
             // shown it may talk to this database at all.
             final Database db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
+            principal[0] = resolvedUsername(chunk.getCredentials());
 
             // On a follower of a replicated database the load must not run here: the bulk path mutates shared
             // state (schema dictionary, type metadata) that only the leader can serialize, and running it on a
@@ -3558,9 +3562,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             batchRef.set(batch);
 
             // Once the database has authenticated the caller: the entry names who runs the load, and where
-            entry.open(db.getName(), resolvedUsername(chunk.getCredentials()), null, () -> "GraphBatchLoad",
+            entry.open(db.getName(), principal[0], null, () -> "GraphBatchLoad",
                 () -> entry.runIfIdle(endTerminated));
-          }
+          } else
+            // A later chunk may run on another thread than the first: the user of the stream is applied to this one
+            principalScope = bindCallbackPrincipal(dbRef.get(), principal[0]);
 
           // Process records in this chunk
           for (final GraphBatchRecord rec : chunk.getRecordsList()) {
@@ -3609,6 +3615,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           out.onError(graphBatchLoadError(e, trailers, ha(), conceal));
           return;
         } finally {
+          if (principalScope != null)
+            principalScope.close();
           bound.close();
           // Requested while the chunk ran: the load ends here. endTerminated sets errorSent, so no chunk is asked for below
           if (entry.isTerminated())
@@ -3626,7 +3634,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (entry.isTerminated())
           endTerminated.run();
         else
-          closeQuietly(batchRef.getAndSet(null));
+          closeQuietly(batchRef.getAndSet(null), dbRef.get(), principal[0]);
         entry.close();
       }
 
@@ -3637,6 +3645,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           return;
         }
         final StreamingLoadEntry.Bound bound = entry.enter();
+        PrincipalScope principalScope = null;
         try {
           // Terminated: the batch is not closed, the finally below drops it
           if (entry.isTerminated())
@@ -3647,6 +3656,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             out.onCompleted();
             return;
           }
+
+          // The completion may run on another thread than the chunks: the user of the stream is applied to this one
+          principalScope = bindCallbackPrincipal(dbRef.get(), principal[0]);
 
           // Flush remaining vertices
           if (!vertexPropsBatch.isEmpty())
@@ -3683,8 +3695,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
           final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
           out.onError(graphBatchLoadError(e, trailers, ha(), conceal));
-          closeQuietly(batchRef.getAndSet(null));
+          closeQuietly(batchRef.getAndSet(null), dbRef.get(), principal[0]);
         } finally {
+          if (principalScope != null)
+            principalScope.close();
           bound.close();
           if (entry.isTerminated())
             endTerminated.run();
@@ -3806,6 +3820,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean failed = new AtomicBoolean(false);
     final AtomicReference<Database> dbRef = new AtomicReference<>();
+    // The user the first chunk authenticated, applied again by every later chunk, which may run on another thread
+    final String[] principal = { null };
 
     // Totals across the whole stream. Each chunk is appended as it arrives and its measurements commit their
     // own shard transactions, so these are counts of what is already durable, not of what a final commit would
@@ -3853,6 +3869,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Bound for the chunk: the commits of its appends obey a termination, and the termination listener leaves a
         // running chunk alone
         final StreamingLoadEntry.Bound bound = entry.enter();
+        PrincipalScope principalScope = null;
         try {
           // Terminated between the check above and the lock: the finally below ends the load
           if (entry.isTerminated())
@@ -3863,15 +3880,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               throw Status.INVALID_ARGUMENT
                   .withDescription("The first TimeSeriesWriteChunk must name the database")
                   .asRuntimeException();
-            // Resolved once and cached, mirroring graphBatchLoad: authenticating every chunk would put a
-            // security lookup on the per-chunk hot path for no gain, since the stream is one authenticated call.
+            // Authenticated once and cached, mirroring graphBatchLoad: the credentials are not checked again on every
+            // chunk, since the stream is one authenticated call. What every chunk does apply again is the user of the
+            // stream (below), because the chunk may run on another thread than the one this binding was made on.
             db = getDatabase(chunk.getDatabase(), chunk.getCredentials());
+            principal[0] = resolvedUsername(chunk.getCredentials());
             dbRef.set(db);
 
             // Once the database has authenticated the caller: the entry names who runs the load, and where
-            entry.open(db.getName(), resolvedUsername(chunk.getCredentials()), null, () -> "TimeSeriesWriteStream",
+            entry.open(db.getName(), principal[0], null, () -> "TimeSeriesWriteStream",
                 () -> entry.runIfIdle(endTerminated));
-          }
+          } else
+            principalScope = bindCallbackPrincipal(db, principal[0]);
 
           entry.checkNotTerminated();
           final List<Sample> samples = GrpcTimeSeriesSupport.toSamples(chunk.getPointsList(), chunk.getType(),
@@ -3903,6 +3923,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           failed.set(true);
           out.onError(mapError(e, "TimeSeriesWriteStream"));
         } finally {
+          if (principalScope != null)
+            principalScope.close();
           bound.close();
           ProtocolContext.clear();
           // Requested while the chunk ran, or the chunk failed: the load is over
@@ -4663,9 +4685,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       builder.withCommitRetryDelay(opts.getCommitRetryDelayMs());
   }
 
-  private void closeQuietly(final GraphBatch batch) {
-    if (batch != null) {
-      try { batch.close(); } catch (final Exception ignored) { }
+  /**
+   * Closes the batch of a stream that ended, as the user of that stream: closing writes the edges the batch still buffers, on
+   * whichever thread runs the end of the call. A stream whose user can no longer be resolved drops them instead, which gives the
+   * batch slot of the database back without writing anything.
+   */
+  private void closeQuietly(final GraphBatch batch, final Database db, final String principal) {
+    if (batch == null)
+      return;
+
+    final PrincipalScope scope;
+    try {
+      scope = bindCallbackPrincipal(db, principal);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "graphBatchLoad: the edges still buffered by an ended stream were dropped: its user is not valid any more");
+      batch.abandon();
+      return;
+    }
+    try {
+      batch.close();
+    } catch (final Exception ignored) {
+    } finally {
+      scope.close();
     }
   }
 
@@ -6372,6 +6414,58 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.WARNING,
           "gRPC request authenticated as '%s' but server security has no matching user; permission checks and HA leader-forwarding will not work for this request",
           authenticatedUser);
+  }
+
+  /**
+   * Applies, on the thread that runs one callback of a client-streaming call after its first chunk, the context of {@code db}
+   * and the per-type grants of {@code principal}, the user the first chunk authenticated.
+   * <p>
+   * gRPC hands each callback of a call (a later chunk, the completion, the error) to whichever thread of its executor is free,
+   * so what {@link #getDatabase} bound on the thread of the first chunk is not there for the next one: that thread holds no
+   * context for this database, or the user of an unrelated request, and the engine's per-type checks are no-ops without a
+   * bound user. The user is resolved again on every callback, so one dropped since the first chunk ends the call with
+   * {@code UNAUTHENTICATED} instead of letting it go on unbound. Only a server with no user configured, which authenticates
+   * nobody, runs without one.
+   * <p>
+   * The credentials of the later chunks are not read: the stream is one authenticated call, whoever it names.
+   *
+   * @return the scope to close when the callback is done, which puts back the user the thread held
+   */
+  private PrincipalScope bindCallbackPrincipal(final Database db, final String principal) {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+    final SecurityDatabaseUser previous = ctx.getCurrentUser();
+
+    SecurityDatabaseUser user = null;
+    if (usersConfigured()) {
+      final ServerSecurityUser secUser = principal != null ? arcadeServer.getSecurity().getUser(principal) : null;
+      if (secUser == null)
+        throw Status.UNAUTHENTICATED.withDescription("User/Password not valid").asRuntimeException();
+      user = secUser.getDatabaseUser(db);
+    }
+    ctx.setCurrentUser(user);
+    return new PrincipalScope(ctx, previous);
+  }
+
+  /** Whether the server has users configured, that is, authenticates its callers. */
+  private boolean usersConfigured() {
+    final ServerSecurity security = arcadeServer != null ? arcadeServer.getSecurity() : null;
+    return security != null && security.getUsers() != null && !security.getUsers().isEmpty();
+  }
+
+  /** The user a thread held before {@link #bindCallbackPrincipal} bound the one of a call, which {@link #close()} gives back. */
+  private static final class PrincipalScope implements AutoCloseable {
+    private final DatabaseContext.DatabaseContextTL ctx;
+    private final SecurityDatabaseUser              previous;
+
+    private PrincipalScope(final DatabaseContext.DatabaseContextTL ctx, final SecurityDatabaseUser previous) {
+      this.ctx = ctx;
+      this.previous = previous;
+    }
+
+    @Override
+    public void close() {
+      ctx.setCurrentUser(previous);
+    }
   }
 
   /**
