@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -114,62 +116,73 @@ class CypherCreateStepContractsOracleTest extends TestHelper {
 
   @Test
   void twoSetClausesAfterACreateBothApply() {
-    assertThat(run("CREATE (n:X) SET n.a = 1 SET n.b = 2 RETURN n.a AS a, n.b AS b")).containsExactly("a=1, b=2");
+    assertThat(run("CREATE (n:X) SET n.a = 1 SET n.b = 2 RETURN n.a AS a, n.b AS b")).
+        containsExactly("a=1, b=2");
     assertStats(2, 1, 0, 1);
-    assertThat(run("UNWIND [1, 2] AS i CREATE (n:Y {i: i}) SET n.j = i * 2 SET n.k = n.j + 1 RETURN n.i AS i, n.j AS j, n.k AS k ORDER BY i")).containsExactly("i=1, j=2, k=3", "i=2, j=4, k=5");
+    assertThat(run("UNWIND [1, 2] AS i CREATE (n:Y {i: i}) SET n.j = i * 2 SET n.k = n.j + 1 RETURN n.i AS i, n.j AS j, n.k AS k ORDER BY i")).
+        containsExactly("i=1, j=2, k=3", "i=2, j=4, k=5");
     assertStats(6, 2, 0, 2);
   }
 
   @Test
   void aSetThatReadsARelationshipOfAnotherPatternOfTheCreateSeesIt() {
-    assertThat(run("CREATE (a:A), (b:B)-[r:R]->(c:C) SET a.t = type(r) RETURN a.t AS t")).containsExactly("t=R");
+    assertThat(run("CREATE (a:A), (b:B)-[r:R]->(c:C) SET a.t = type(r) RETURN a.t AS t")).
+        containsExactly("t=R");
     assertStats(1, 3, 1, 3);
   }
 
   @Test
   void aSetThatReadsAPathOfAnotherPatternOfTheCreateSeesIt() {
-    assertThat(run("CREATE (a:A), p = (b:B)-[:R]->(c:C) SET a.len = length(p) RETURN a.len AS len")).containsExactly("len=1");
+    assertThat(run("CREATE (a:A), p = (b:B)-[:R]->(c:C) SET a.len = length(p) RETURN a.len AS len")).
+        containsExactly("len=1");
     assertStats(1, 3, 1, 3);
   }
 
   @Test
   void aSetThatReadsAnotherNodeOfTheCreateSeesItsProperties() {
-    assertThat(run("CREATE (a:A {x: 1}), (b:B) SET b.v = a.x RETURN b.v AS v")).containsExactly("v=1");
+    assertThat(run("CREATE (a:A {x: 1}), (b:B) SET b.v = a.x RETURN b.v AS v")).
+        containsExactly("v=1");
     assertStats(2, 2, 0, 2);
   }
 
   @Test
   void aSetOnTheEndOfALongerPathStillApplies() {
-    assertThat(run("CREATE (a:A)-[:R]->(b:B) SET a.x = 1, b.y = 2 RETURN a.x AS x, b.y AS y")).containsExactly("x=1, y=2");
+    assertThat(run("CREATE (a:A)-[:R]->(b:B) SET a.x = 1, b.y = 2 RETURN a.x AS x, b.y AS y")).
+        containsExactly("x=1, y=2");
     assertStats(2, 2, 1, 2);
   }
 
   @Test
   void aSetOnANodeThatReadsItsOwnMissingPropertyStoresNothing() {
-    assertThat(run("CREATE (a:A) SET a.l = a.x RETURN a.l AS l")).containsExactly("l=null");
+    assertThat(run("CREATE (a:A) SET a.l = a.x RETURN a.l AS l")).
+        containsExactly("l=null");
     assertStats(0, 1, 0, 1);
   }
 
   @Test
   void aRelationshipTakesItsPropertiesFromAMapParameterAndSkipsNulls() {
-    assertThat(run("CREATE (a:A)-[r:R $p]->(b:B) RETURN r.x AS x, r.y AS y, r.z AS z, r.w AS w", map("p", map("x", 1, "y", null, "z", "s", "w", list(1, 2))))).containsExactly("w=[1, 2], x=1, y=null, z=s");
+    assertThat(run("CREATE (a:A)-[r:R $p]->(b:B) RETURN r.x AS x, r.y AS y, r.z AS z, r.w AS w", map("p", map("x", 1, "y", null, "z", "s", "w", list(1, 2))))).
+        containsExactly("w=[1, 2], x=1, y=null, z=s");
     assertStats(3, 2, 1, 2);
   }
 
   @Test
   void aMapParameterOfARelationshipIsReadOncePerRow() {
-    assertThat(run("UNWIND $rows AS row CREATE (a:A {k: row})-[r:R $p]->(b:B) RETURN count(r) AS c, sum(r.x) AS s", map("p", map("x", 1), "rows", list(1, 2, 3)))).containsExactly("c=3, s=3");
+    assertThat(run("UNWIND $rows AS row CREATE (a:A {k: row})-[r:R $p]->(b:B) RETURN count(r) AS c, sum(r.x) AS s", map("p", map("x", 1), "rows", list(1, 2, 3)))).
+        containsExactly("c=3, s=3");
     assertStats(6, 6, 3, 6);
   }
 
   @Test
   void aRelationshipParameterWithAMapValueIsRefused() {
-    assertThatThrownBy(() -> run("CREATE (a:A)-[r:R $p]->(b:B) RETURN r.x AS x", map("p", map("x", map("m", 1))))).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> run("CREATE (a:A)-[r:R $p]->(b:B) RETURN r.x AS x", map("p", map("x", map("m", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class).hasMessageContaining("Property values can only be of primitive types").hasMessageContaining("property 'x'");
   }
 
   @Test
   void aNodeNamedAgainByASecondCreateIsRefused() {
-    assertThatThrownBy(() -> run("CREATE (n:X) CREATE (n) RETURN n")).isInstanceOf(Exception.class);
+    assertThatThrownBy(() -> run("CREATE (n:X) CREATE (n) RETURN n"))
+        .isInstanceOf(CommandParsingException.class).hasMessageContaining("Variable 'n' already defined");
   }
 
   @Test
@@ -177,7 +190,9 @@ class CypherCreateStepContractsOracleTest extends TestHelper {
     // The properties_set statistic is not asserted: Neo4j counts a null SET that precedes a SET += of the same clause as one more
     // property set, although nothing is stored for it
     run("CREATE (:Entity {external_id: 'a'}), (:Entity {external_id: 'b'}), (:Entity {external_id: 'c'})");
-    assertThat(run("UNWIND $rows AS row MATCH (a:Entity {external_id: row.from_id}) MATCH (b:Entity {external_id: row.to_id}) CREATE (a)-[e:RELATES_TO]->(b) SET e.predicate = row.predicate, e.confidence = row.confidence, e.graph_name = row.graph_name, e.source_record = row.source_record, e.is_asserted = row.is_asserted, e += row.cascade, e.created_at = row.now RETURN a.external_id AS from_id, b.external_id AS to_id ORDER BY from_id", map("rows", list(map("from_id", "a", "to_id", "b", "predicate", "p1", "confidence", 0.5, "graph_name", "g", "source_record", null, "is_asserted", true, "cascade", map("f1", 1, "f2", null), "now", 100), map("from_id", "b", "to_id", "c", "predicate", "p2", "confidence", null, "graph_name", "g", "source_record", "r1", "is_asserted", false, "cascade", map("f3", "x"), "now", 101))))).containsExactly("from_id=a, to_id=b", "from_id=b, to_id=c");
-    assertThat(run("MATCH ()-[e:RELATES_TO]->() RETURN properties(e) AS p ORDER BY p.predicate")).containsExactly("p={confidence: 0.5, created_at: 100, f1: 1, graph_name: g, is_asserted: true, predicate: p1}", "p={created_at: 101, f3: x, graph_name: g, is_asserted: false, predicate: p2, source_record: r1}");
+    assertThat(run("UNWIND $rows AS row MATCH (a:Entity {external_id: row.from_id}) MATCH (b:Entity {external_id: row.to_id}) CREATE (a)-[e:RELATES_TO]->(b) SET e.predicate = row.predicate, e.confidence = row.confidence, e.graph_name = row.graph_name, e.source_record = row.source_record, e.is_asserted = row.is_asserted, e += row.cascade, e.created_at = row.now RETURN a.external_id AS from_id, b.external_id AS to_id ORDER BY from_id", map("rows", list(map("from_id", "a", "to_id", "b", "predicate", "p1", "confidence", 0.5, "graph_name", "g", "source_record", null, "is_asserted", true, "cascade", map("f1", 1, "f2", null), "now", 100), map("from_id", "b", "to_id", "c", "predicate", "p2", "confidence", null, "graph_name", "g", "source_record", "r1", "is_asserted", false, "cascade", map("f3", "x"), "now", 101))))).
+        containsExactly("from_id=a, to_id=b", "from_id=b, to_id=c");
+    assertThat(run("MATCH ()-[e:RELATES_TO]->() RETURN properties(e) AS p ORDER BY p.predicate")).
+        containsExactly("p={confidence: 0.5, created_at: 100, f1: 1, graph_name: g, is_asserted: true, predicate: p1}", "p={created_at: 101, f3: x, graph_name: g, is_asserted: false, predicate: p2, source_record: r1}");
   }
 }

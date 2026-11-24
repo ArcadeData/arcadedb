@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -237,7 +238,7 @@ class CypherCallStepStreamLifecycleTest extends TestHelper {
 
   @Test
   void aProcedureThatDeclaresNoYieldFieldsIsToldToProduceNone() {
-    for (final List<String> declared : new List[] { null, List.of() }) {
+    for (final List<String> declared : Arrays.asList((List<String>) null, List.<String>of())) {
       final Probe open = new Probe("test.probeOpen", false);
       open.declared = declared;
       CypherProcedureRegistry.registerOrReplace(open);
@@ -293,7 +294,7 @@ class CypherCallStepStreamLifecycleTest extends TestHelper {
     read.rows = 2;
     database.begin();
     final String profile;
-    try (final ResultSet rs = database.query("opencypher", "PROFILE UNWIND range(1, 200) AS x CALL test.probeRead() YIELD a RETURN x, a")) {
+    try (final ResultSet rs = database.query("opencypher", "PROFILE UNWIND range(1, 2000) AS x CALL test.probeRead() YIELD a RETURN x, a")) {
       while (rs.hasNext())
         rs.next();
       profile = rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
@@ -308,7 +309,7 @@ class CypherCallStepStreamLifecycleTest extends TestHelper {
     assertThat(total.find()).as(profile).isTrue();
     final double totalMicros = Double.parseDouble(total.group(1).replace(",", "")) * 1_000;
 
-    assertThat(costMicros).as("the 200 calls took time: %s", profile).isGreaterThan(0);
+    assertThat(costMicros).as("the 2000 calls took time: %s", profile).isGreaterThan(0);
     assertThat((double) costMicros).as("the calls are part of the query: %s", profile).isLessThanOrEqualTo(totalMicros + 1);
   }
 

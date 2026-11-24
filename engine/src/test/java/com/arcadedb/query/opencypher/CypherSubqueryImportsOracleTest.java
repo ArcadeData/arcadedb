@@ -115,39 +115,47 @@ class CypherSubqueryImportsOracleTest extends TestHelper {
   @Test
   void aUnionBranchImportingWithStarSeesEveryOuterVariable() {
     run("UNWIND [1, 2] AS i CREATE (:N {i: i})");
-    assertThat(run("MATCH (n:N) WITH n CALL { WITH * RETURN 1 AS r UNION WITH n RETURN 2 AS r } RETURN n.i AS i, r ORDER BY i, r")).containsExactly("i=1, r=1", "i=1, r=2", "i=2, r=1", "i=2, r=2");
-    assertThat(run("MATCH (n:N) WITH n CALL { WITH * RETURN n.i AS r UNION WITH n RETURN n.i * 10 AS r } RETURN n.i AS i, r ORDER BY i, r")).containsExactly("i=1, r=1", "i=1, r=10", "i=2, r=2", "i=2, r=20");
+    assertThat(run("MATCH (n:N) WITH n CALL { WITH * RETURN 1 AS r UNION WITH n RETURN 2 AS r } RETURN n.i AS i, r ORDER BY i, r")).
+        containsExactly("i=1, r=1", "i=1, r=2", "i=2, r=1", "i=2, r=2");
+    assertThat(run("MATCH (n:N) WITH n CALL { WITH * RETURN n.i AS r UNION WITH n RETURN n.i * 10 AS r } RETURN n.i AS i, r ORDER BY i, r")).
+        containsExactly("i=1, r=1", "i=1, r=10", "i=2, r=2", "i=2, r=20");
   }
 
   @Test
   void aStarImportInTheLastBranchOfAUnionStillSeesTheVariablesTheFirstBranchDoesNotImport() {
     run("CREATE (:N {i: 1}), (:M {i: 5})");
-    assertThat(run("MATCH (n:N), (m:M) WITH n, m CALL { WITH n RETURN n.i AS r UNION WITH * RETURN m.i AS r } RETURN n.i AS ni, m.i AS mi, r ORDER BY r")).containsExactly("mi=5, ni=1, r=1", "mi=5, ni=1, r=5");
+    assertThat(run("MATCH (n:N), (m:M) WITH n, m CALL { WITH n RETURN n.i AS r UNION WITH * RETURN m.i AS r } RETURN n.i AS ni, m.i AS mi, r ORDER BY r")).
+        containsExactly("mi=5, ni=1, r=1", "mi=5, ni=1, r=5");
   }
 
   @Test
   void anOptionalCallOverAUnionBodyThatAnswersNothingKeepsEveryColumnOfTheBodyAsNull() {
     run("UNWIND [1, 2] AS i CREATE (:N {i: i})");
-    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i RETURN m.k AS k, m.j AS j UNION MATCH (m:M) WHERE m.k = -n.i RETURN m.k AS k, m.j AS j } RETURN n.i AS i, k, j ORDER BY i")).containsExactly("i=1, j=null, k=null", "i=2, j=null, k=null");
+    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i RETURN m.k AS k, m.j AS j UNION MATCH (m:M) WHERE m.k = -n.i RETURN m.k AS k, m.j AS j } RETURN n.i AS i, k, j ORDER BY i")).
+        containsExactly("i=1, j=null, k=null", "i=2, j=null, k=null");
   }
 
   @Test
   void anOptionalCallOverAStarReturnKeepsTheColumnsOfTheScope() {
     run("UNWIND [1, 2] AS i CREATE (:N {i: i})");
-    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i WITH m, n.i AS x RETURN * } RETURN n.i AS i, m, x ORDER BY i")).containsExactly("i=1, m=null, x=null", "i=2, m=null, x=null");
+    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i WITH m, n.i AS x RETURN * } RETURN n.i AS i, m, x ORDER BY i")).
+        containsExactly("i=1, m=null, x=null", "i=2, m=null, x=null");
   }
 
   @Test
   void anOptionalCallOverAUnionOfStarReturnsKeepsTheColumnsOfTheScopeAsNull() {
     run("UNWIND [1, 2] AS i CREATE (:N {i: i})");
-    assertThat(run("MATCH (n:N) OPTIONAL CALL { MATCH (m:M) RETURN * UNION MATCH (m:M) RETURN * } RETURN n.i AS i, m ORDER BY i")).containsExactly("i=1, m=null", "i=2, m=null");
-    assertThat(run("MATCH (n:N) OPTIONAL CALL { MATCH (m:M) WITH m, 5 AS q RETURN * UNION MATCH (m:M) WITH m, 5 AS q RETURN * } RETURN n.i AS i, m, q ORDER BY i")).containsExactly("i=1, m=null, q=null", "i=2, m=null, q=null");
+    assertThat(run("MATCH (n:N) OPTIONAL CALL { MATCH (m:M) RETURN * UNION MATCH (m:M) RETURN * } RETURN n.i AS i, m ORDER BY i")).
+        containsExactly("i=1, m=null", "i=2, m=null");
+    assertThat(run("MATCH (n:N) OPTIONAL CALL { MATCH (m:M) WITH m, 5 AS q RETURN * UNION MATCH (m:M) WITH m, 5 AS q RETURN * } RETURN n.i AS i, m, q ORDER BY i")).
+        containsExactly("i=1, m=null, q=null", "i=2, m=null, q=null");
   }
 
   @Test
   void anOptionalCallOverABodyThatWritesAndAnswersNothingKeepsEveryColumnAsNull() {
     run("UNWIND [1, 2] AS i CREATE (:N {i: i})");
-    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i SET m.x = 1 RETURN m.k AS k } RETURN n.i AS i, k ORDER BY i")).containsExactly("i=1, k=null", "i=2, k=null");
+    assertThat(run("MATCH (n:N) OPTIONAL CALL (n) { MATCH (m:M) WHERE m.k = n.i SET m.x = 1 RETURN m.k AS k } RETURN n.i AS i, k ORDER BY i")).
+        containsExactly("i=1, k=null", "i=2, k=null");
     assertStats(0, 0, 0, 0);
     assertThat(run("MATCH (n:N) CALL (n) { MATCH (m:M) WHERE m.k = n.i SET m.x = 1 RETURN m.k AS k } RETURN n.i AS i, k ORDER BY i")).isEmpty();
     assertStats(0, 0, 0, 0);

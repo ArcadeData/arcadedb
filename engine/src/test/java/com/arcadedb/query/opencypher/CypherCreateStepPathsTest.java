@@ -176,14 +176,26 @@ class CypherCreateStepPathsTest extends TestHelper {
     final long costNanos = (Long.parseLong(header.group(1).replace(",", "")) + 1) * 1_000;
 
     final long vertices = timeOf(profile, "Vertices: \\d+ \\(");
-    assertThat(vertices).as("vertex time in %s", profile).isBetween(1L, costNanos);
+    assertThat(vertices).as("vertex time in %s", profile).isBetween(1L, costNanos + roundingOf(profile, "Vertices: \\d+ \\("));
     if (profile.contains("Edges:"))
-      assertThat(timeOf(profile, "Edges: \\d+ \\(")).as("edge time in %s", profile).isBetween(1L, costNanos);
+      assertThat(timeOf(profile, "Edges: \\d+ \\(")).as("edge time in %s", profile).isBetween(1L, costNanos + roundingOf(profile, "Edges: \\d+ \\("));
 
     assertThat(profile).containsPattern("Property eval: [^\\n]*\\(\\d+\\.\\d%\\)").containsPattern("Save ops: [^\\n]*\\(\\d+\\.\\d%\\)");
     final Matcher percents = Pattern.compile("(?:Property eval|Save ops): [^\\n]*\\((\\d+\\.\\d)%\\)").matcher(profile);
     while (percents.find())
       assertThat(Double.parseDouble(percents.group(1))).as(profile).isBetween(0.0, 100.0);
+  }
+
+  /** The largest amount the printed time may be above the time measured: half of its last printed digit (formatTime prints ns, then 1, 1 and 2 decimals of us, ms and s). */
+  private static long roundingOf(final String profile, final String prefix) {
+    final Matcher matcher = Pattern.compile(prefix + TIME.pattern() + "\\)").matcher(profile);
+    assertThat(matcher.find()).as("%s in %s", prefix, profile).isTrue();
+    return switch (matcher.group(2)) {
+      case "ns" -> 1;
+      case "μs" -> 50;
+      case "ms" -> 50_000;
+      default -> 5_000_000;
+    };
   }
 
   private static long timeOf(final String profile, final String prefix) {
