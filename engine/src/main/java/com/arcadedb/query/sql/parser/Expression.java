@@ -587,6 +587,15 @@ public class Expression extends SimpleNode {
     }
   }
 
+  /**
+   * Stores {@code value} where this expression reads from, so the items {@code REMOVE <this> = <value>} took out of an array
+   * (ARRAY_OF_LONGS / ARRAY_OF_DOUBLES), which cannot lose items in place, are taken out of what is stored. Answers false, and
+   * stores nothing, when the expression does not name a place that can be written (issue #12896).
+   */
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    return !isNull && rid == null && mathExpression != null && mathExpression.writeBack(result, value, context);
+  }
+
   public boolean isCount() {
     if (mathExpression == null) {
       return false;

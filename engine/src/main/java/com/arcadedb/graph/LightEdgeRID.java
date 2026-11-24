@@ -153,10 +153,12 @@ public class LightEdgeRID extends DatabaseRID {
    * read from: 0 for the first (and, in the normal case of no duplicates, only) one.
    * <p>
    * Walks the list on the first call, O(degree of the owner), and caches the answer. It is meant to be asked only
-   * when a second edge with the same triple turns up, never per edge. The walk visits entries in the same order the
-   * iterators do, so the OUT list of the source and the IN list of the target - which hold the same entries appended
-   * in the same order - number twins alike; and where they do not, the twins are indistinguishable anyway (no
-   * properties), so any consistent numbering counts the same relationships.
+   * when a second edge with the same triple turns up, never per edge - except by {@link #toElementId()}, which names
+   * the edge and so has to know its occurrence, and only for an edge whose element id is asked for (through the
+   * {@link LightEdgeCensus} of the iteration that read it, two walks of the list serve all of its edges). The walk
+   * visits entries in the same order the iterators do, so the OUT list of the source and the IN list of the target -
+   * which hold the same entries appended in the same order - number twins alike; and where they do not, the twins are
+   * indistinguishable anyway (no properties), so any consistent numbering counts the same relationships.
    */
   public int getOccurrence() {
     int result = occurrence;
@@ -253,6 +255,28 @@ public class LightEdgeRID extends DatabaseRID {
     public String toString() {
       return edge.toString();
     }
+  }
+
+  /**
+   * The element id of this edge, what openCypher's {@code elementId()} and the Bolt wire hand out (issue #12132):
+   * {@code #<type bucket>:-1/<out>/<in>}, and for a second or later twin of the triple {@code /<occurrence>} after it.
+   * <p>
+   * The {@code #bucket:-1} pair alone is shared by every lightweight edge of the type, so a lookup by it selects them
+   * all; the endpoints name the edge, and the occurrence tells twins apart the way {@link #distinctKey()} does (which
+   * of the twins an id names after one of them was deleted is not stable, but twins carry nothing to tell them apart,
+   * so deleting by the id still deletes exactly one). The string is deliberately not a RID ({@link RID#is(String)} is
+   * false for it), so no RID seek and no {@code id()}/RID-string coercion can take it for a record address.
+   * <p>
+   * Costs the occurrence: resolved once per edge, through the census of the iteration that read it when it has one.
+   */
+  public String toElementId() {
+    final StringBuilder buffer = new StringBuilder(32);
+    buffer.append('#').append(getBucketId()).append(':').append(getPosition());
+    buffer.append('/').append(out).append('/').append(in);
+    final int occurrenceOfTwin = getOccurrence();
+    if (occurrenceOfTwin > 0)
+      buffer.append('/').append(occurrenceOfTwin);
+    return buffer.toString();
   }
 
   /** Receives the entries of an edge list, in the order the iterators read them. */

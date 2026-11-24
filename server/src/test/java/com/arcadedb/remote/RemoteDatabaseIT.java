@@ -69,8 +69,8 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
       database.command("sql", "create vertex type Person");
 
-      // CREATE DOCUMENT VIA API
-      final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
+      // CREATE A RECORD VIA API: Person is a vertex type, so newVertex(), as the embedded API requires (issue #12190)
+      final MutableDocument jay = database.newVertex("Person").set("name", "Jay").save();
       assertThat(jay).isNotNull();
       assertThat(jay.getString("name")).isEqualTo("Jay");
       assertThat(jay.getIdentity()).isNotNull();
@@ -339,7 +339,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
           database.transaction(() -> {
             for (int j = 0; j < BATCH_SIZE; j++) {
-              final MutableDocument jay = database.newDocument("Person").set("name", "Jay").save();
+              final MutableDocument jay = database.newVertex("Person").set("name", "Jay").save();
               assertThat(jay).isNotNull();
               assertThat(jay.getString("name")).isEqualTo("Jay");
               assertThat(jay.getIdentity()).isNotNull();
@@ -433,7 +433,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
       database1.begin();
 
-      final MutableDocument jay = database1.newDocument("Person").set("name", "Jay").save();
+      final MutableDocument jay = database1.newVertex("Person").set("name", "Jay").save();
       assertThat(jay).isNotNull();
       assertThat(jay.getString("name")).isEqualTo("Jay");
       assertThat(jay.getIdentity()).isNotNull();
@@ -442,7 +442,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
       final String sessionId = database1.getSessionId();
       database1.setSessionId(sessionId + "1");
 
-      assertThatThrownBy(() -> database1.newDocument("Person").set("name", "John").save())
+      assertThatThrownBy(() -> database1.newVertex("Person").set("name", "John").save())
           .isInstanceOf(TransactionException.class);
 
       database1.setSessionId(sessionId);

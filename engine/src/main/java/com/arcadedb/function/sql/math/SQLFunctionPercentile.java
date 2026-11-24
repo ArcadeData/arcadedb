@@ -22,7 +22,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.serializer.BinaryComparator;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -91,6 +94,10 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
     if (iValues.isEmpty())  // result set is empty
       return null;
 
+    // SORTED ONCE FOR EVERY QUANTILE, BY VALUE: doubleValue() MAKES 2^53 AND 2^53 + 1 EQUAL AND LET THE STABLE SORT KEEP THEM IN
+    // INSERTION ORDER, SO THE ENDPOINTS CAME OUT SWAPPED (ISSUE #12569)
+    iValues.sort(SQLFunctionPercentile::compareByValue);
+
     if (quantiles.size() > 1) {
       final List<Number> results = new ArrayList<Number>(this.quantiles.size());
       for (final Double q : this.quantiles)
@@ -101,13 +108,8 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
       return this.evaluate(iValues, this.quantiles.getFirst());
   }
 
+  /** Expects {@code iValues} sorted by {@link #compareByValue(Number, Number)}. */
   private Number evaluate(final List<Number> iValues, final double iQuantile) {
-    iValues.sort((o1, o2) -> {
-      final double d1 = o1.doubleValue();
-      final double d2 = o2.doubleValue();
-      return Double.compare(d1, d2);
-    });
-
     final double n = iValues.size();
     final double pos = iQuantile * (n + 1);
 
@@ -121,9 +123,42 @@ public class SQLFunctionPercentile extends SQLAggregatedFunction {
     final int intPos = (int) fpos;
     final double dif = pos - fpos;
 
-    final double lower = iValues.get(intPos - 1).doubleValue();
-    final double upper = iValues.get(intPos).doubleValue();
+    final Number lowerValue = iValues.get(intPos - 1);
+    final Number upperValue = iValues.get(intPos);
+    if (dif == 0 || compareByValue(lowerValue, upperValue) == 0)
+      // NOTHING TO INTERPOLATE: THE ANSWER IS ONE OF THE VALUES
+      return valueAsDouble(lowerValue);
+
+    final double lower = lowerValue.doubleValue();
+    final double upper = upperValue.doubleValue();
     return lower + dif * (upper - lower);
+  }
+
+  /**
+   * The numeric order of {@link BinaryComparator#compareTo(Object, Object)}, exact across every class (a LONG above 2^53 against
+   * its neighbour or against a DOUBLE), with a direct arm for the pairs of one class a column usually holds.
+   */
+  private static int compareByValue(final Number a, final Number b) {
+    if (a instanceof Long la && b instanceof Long lb)
+      return Long.compare(la, lb);
+    if (a instanceof Integer ia && b instanceof Integer ib)
+      return Integer.compare(ia, ib);
+    if (a instanceof Double da && b instanceof Double db)
+      return BinaryComparator.compareDoubles(da, db);
+    return BinaryComparator.compareTo(a, b);
+  }
+
+  /**
+   * A quantile that lands on one value answers it as a double, as an interpolated one does, but only when the double IS that value:
+   * a LONG above 2^53 (or a BigInteger, a BigDecimal) the double cannot hold is answered as it is, never as a number no row holds
+   * (issue #12569).
+   */
+  private static Number valueAsDouble(final Number value) {
+    final double asDouble = value.doubleValue();
+    if ((value instanceof Long || value instanceof BigInteger || value instanceof BigDecimal)
+        && BinaryComparator.compareTo(value, asDouble) != 0)
+      return value;
+    return asDouble;
   }
 
   /** Keeps every value it aggregates until the aggregation ends (issue #8591). */

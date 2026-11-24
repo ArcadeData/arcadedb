@@ -21,6 +21,7 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.google.protobuf.Timestamp;
 
 import java.time.Instant;
@@ -74,10 +75,12 @@ public final class GrpcTemporalCodec {
   }
 
   /**
-   * Encodes a temporal value, or returns {@code null} when {@code o} is not one of the temporal types the wire carries, so
-   * the caller goes on with its own dispatch.
+   * Encodes a temporal value, or returns {@code null} when {@code value} is not one of the temporal types the wire carries, so
+   * the caller goes on with its own dispatch. A Cypher date, time or datetime is encoded as the {@code java.time} value it wraps,
+   * so a property read through Cypher gets the same kind and tag as through SQL (issue #11955).
    */
-  public static GrpcValue encode(final Object o) {
+  public static GrpcValue encode(final Object value) {
+    final Object o = CypherTemporalValue.toJavaTime(value);
     if (o instanceof Date v)
       return timestamp(Math.floorDiv(v.getTime(), 1000L), (int) (Math.floorMod(v.getTime(), 1000L) * 1_000_000L), DATETIME);
     if (o instanceof LocalDate ld)
@@ -95,6 +98,19 @@ public final class GrpcTemporalCodec {
     if (o instanceof CypherDuration duration)
       return text(duration.toString(), DURATION);
     return null;
+  }
+
+  /**
+   * Decodes a {@code timestamp_value}: a {@link LocalDate} when it is tagged {@link #DATE}, the inverse of {@link #encode} for
+   * a {@link LocalDate} (the epoch day times 86,400 seconds, UTC), otherwise the {@link Instant} it holds, with its full
+   * nanosecond precision (issue #4149). A date decoded as an instant was a datetime to the engine: a Cypher equality on a DATE
+   * property never matched it, an undeclared property stored it as a DATETIME and its echo came back tagged datetime (issue
+   * #11956).
+   */
+  public static Object decodeTimestamp(final Timestamp timestamp, final String logicalType) {
+    if (DATE.equalsIgnoreCase(logicalType))
+      return LocalDate.ofEpochDay(Math.floorDiv(timestamp.getSeconds(), 86_400L));
+    return Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos());
   }
 
   /**

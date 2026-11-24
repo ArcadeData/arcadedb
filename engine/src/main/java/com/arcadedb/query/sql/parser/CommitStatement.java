@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -47,6 +48,10 @@ public class CommitStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(final CommandContext context) {
+    // A COMMIT inside a loop or an IF is not paired with a BEGIN when the script is parsed, as one at the top level is. Reached with
+    // no transaction open it is the same mistake, so it is refused the same way rather than as a server fault (issue #11893)
+    if (!context.getDatabase().isTransactionActive())
+      throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
     context.getDatabase().commit(); // no RETRY and ELSE here, that case is allowed only for batch scripts;
     final InternalResultSet result = new InternalResultSet();
     final ResultInternal item = new ResultInternal(context.getDatabase());

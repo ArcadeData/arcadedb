@@ -40,19 +40,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code shortestPath((a)-[:LINK*3..5]-(a))} answered with a path of length 0, which is not in [3, 5],
  * and a declared minimum was silently unenforceable for exactly this one endpoint pair.
  * <p>
- * The rule settled here, and implemented by {@code ShortestPathStep.HopBounds.acceptsSelfPath()}:
- * <ul>
- *   <li>a minimum of 0 or 1 hops - which is every minimum Neo4j accepts on a {@code shortestPath()}
- *       pattern at all, and what a bare {@code [*]} is lowered to - keeps answering with the zero-length
- *       path, so {@code shortestPath((a)-[:LINK*]-(a))} is unchanged;</li>
- *   <li>a minimum above one hop, which Neo4j would have rejected outright, is read literally: zero hops
- *       is not in the declared range, so the pattern has no answer. It is NOT re-interpreted as a request
- *       for the shortest cycle back to the source - the same substitution the bound check already refuses
- *       for distinct endpoints, where a shortest path below the declared minimum yields no row rather
- *       than a longer one that would fit.</li>
- * </ul>
- * The graph deliberately contains a 3-hop cycle through {@code a}, so the "no answer" cases below are
- * choosing not to return a cycle that exists rather than failing to find one.
+ * The rule, implemented by {@code ShortestPathStep.HopBounds.accepts(0)} for every evaluator: the zero-length path answers
+ * only a pattern whose minimum is zero ({@code [*0..]}). Zero hops is not in the declared range of any other pattern, so it
+ * has no answer for that pair, and the pattern is NOT re-interpreted as a request for the shortest cycle back to the
+ * source - the same substitution the bound check already refuses for distinct endpoints, where a shortest path below the
+ * declared minimum yields no row rather than a longer one that would fit.
+ * <p>
+ * Issue #7017 first kept the zero-length path for a minimum of one hop ({@code [*]}, {@code [*1..]}, an unquantified
+ * relationship), on the belief that Neo4j answers those with it; Neo4j 5 refuses them instead ("The shortest path algorithm
+ * does not work when the start and end nodes are the same"), and a path shorter than the declared minimum is not an
+ * answer, so issue #11913 applies the minimum to them too.
+ * <p>
+ * The graph deliberately contains a 3-hop cycle through {@code a} and a self loop on {@code d}, so the "no answer" cases
+ * below are choosing not to return a cycle that exists rather than failing to find one.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -96,18 +96,18 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
         .as("a zero-length path is not in [3, 5], and the 3-hop cycle is not a shortest path answer either")
         .isEmpty();
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*2..]-(e)) RETURN length(p) AS len"))
-        .as("two hops is already above the minimum every Neo4j-accepted spelling declares")
+        .as("two hops is above the minimum, and the 3-hop cycle is not answered instead")
         .isEmpty();
   }
 
   @Test
-  void anImplicitOrExplicitMinimumOfOneKeepsTheZeroLengthSelfPath() {
+  void anImplicitOrExplicitMinimumOfOneRejectsTheZeroLengthSelfPath() {
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
-        .as("[*] is lowered to minHops = 1 and must keep answering with the zero-length path")
-        .containsExactly(0);
+        .as("[*] is lowered to minHops = 1, and a zero-length path is shorter than that (issue #11913)")
+        .isEmpty();
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*1..]-(e)) RETURN length(p) AS len"))
         .as("an explicitly written [*1..] is the same pattern as [*], so it must answer identically")
-        .containsExactly(0);
+        .isEmpty();
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*0..]-(e)) RETURN length(p) AS len"))
         .as("a minimum of zero admits the zero-length path outright")
         .containsExactly(0);
@@ -115,30 +115,34 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
 
   @Test
   void anExactQuantifierAnswersByItsMinimumLikeAnyOther() {
-    // An upper bound cannot exclude a zero-length path - it is at least zero hops long - so an exact
-    // quantifier is decided by its minimum alone, and [*1..1] keeps the self path exactly as [*] does.
+    // An upper bound cannot exclude a zero-length path - it is at least zero hops long - so a quantifier is decided by
+    // its minimum alone.
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*1..1]-(e)) RETURN length(p) AS len"))
-        .containsExactly(0);
+        .isEmpty();
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
         .as("an unquantified relationship declares the same single hop (issue #7009), so it answers the same")
-        .containsExactly(0);
+        .isEmpty();
     assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*2..2]-(e)) RETURN length(p) AS len"))
         .as("a minimum of two rejects it, upper bound or not")
         .isEmpty();
+    assertThat(selfLengths("MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[:LINK*0..1]-(e)) RETURN length(p) AS len"))
+        .as("a minimum of zero admits it, upper bound or not")
+        .containsExactly(0);
   }
 
   @Test
-  void aRealSelfLoopDoesNotChangeTheAnswer() {
-    // d carries a one-hop LINK to itself, so a 1-hop answer genuinely exists here. The zero-length path is
-    // still the shorter one and still the answer - which is also what makes the assertions above meaningful:
-    // they read 0 because 0 is the shortest path, not because nothing was found.
+  void aRealSelfLoopIsNotAnsweredInstead() {
+    // d carries a one-hop LINK to itself, so a 1-hop path from d to d exists. It is a cycle back to the source, not the
+    // shortest path between the endpoints, so the patterns that reject the zero-length path have no answer rather than
+    // that loop; a minimum of zero still answers the zero-length path, which is the shorter one.
     assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK]-(e)) RETURN length(p) AS len"))
-        .containsExactly(0);
-    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
-        .containsExactly(0);
-    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*2..]-(e)) RETURN length(p) AS len"))
-        .as("and a minimum above one hop rejects the zero-length path without reaching for the loop instead")
         .isEmpty();
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
+        .isEmpty();
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*2..]-(e)) RETURN length(p) AS len"))
+        .isEmpty();
+    assertThat(selfLengths("MATCH (s:N {k:'d'}), (e:N {k:'d'}), p = shortestPath((s)-[:LINK*0..]-(e)) RETURN length(p) AS len"))
+        .containsExactly(0);
   }
 
   @Test
@@ -177,7 +181,11 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
         .isEmpty();
     assertThat(selfLengths(
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = allShortestPaths((s)-[:LINK*]-(e)) RETURN length(p) AS len"))
-        .as("control: the unbounded spelling still yields the single zero-length path")
+        .as("[*] declares at least one hop (issue #11913)")
+        .isEmpty();
+    assertThat(selfLengths(
+        "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = allShortestPaths((s)-[:LINK*0..]-(e)) RETURN length(p) AS len"))
+        .as("control: a minimum of zero still yields the single zero-length path")
         .containsExactly(0);
   }
 
@@ -192,13 +200,19 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
         .isEmpty();
     assertThat(selfLengths(
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[r:LINK* WHERE r.w = 1]-(e)) RETURN length(p) AS len"))
-        .as("control: every LINK carries w=1, so the unbounded filtered form still answers zero-length")
+        .isEmpty();
+    assertThat(selfLengths(
+        "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = shortestPath((s)-[r:LINK*0.. WHERE r.w = 1]-(e)) RETURN length(p) AS len"))
+        .as("control: a minimum of zero answers zero-length through the filtered BFS too")
         .containsExactly(0);
     assertThat(selfLengths(
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = allShortestPaths((s)-[:LINK*3..5 {w: 1}]-(e)) RETURN length(p) AS len"))
         .isEmpty();
     assertThat(selfLengths(
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = allShortestPaths((s)-[:LINK* {w: 1}]-(e)) RETURN length(p) AS len"))
+        .isEmpty();
+    assertThat(selfLengths(
+        "MATCH (s:N {k:'a'}), (e:N {k:'a'}), p = allShortestPaths((s)-[:LINK*0.. {w: 1}]-(e)) RETURN length(p) AS len"))
         .containsExactly(0);
   }
 
@@ -219,8 +233,16 @@ class CypherShortestPathSelfPathBoundsIssue7017Test extends TestHelper {
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (s:N {k:'a'}), (e:N {k:'a'}) RETURN shortestPath((s)-[:LINK*]-(e)) AS p")) {
       assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Object>getProperty("p"))
+          .as("[*] declares at least one hop, so the expression yields null (issue #11913)")
+          .isNull();
+    }
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (s:N {k:'a'}), (e:N {k:'a'}) RETURN shortestPath((s)-[:LINK*0..]-(e)) AS p")) {
+      assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<TraversalPath>getProperty("p").getVertices())
-          .as("control: the unbounded spelling still yields the one-vertex, zero-length path")
+          .as("control: a minimum of zero yields the one-vertex, zero-length path")
           .hasSize(1);
     }
   }

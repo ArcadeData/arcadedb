@@ -44,6 +44,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LRUCache;
@@ -534,7 +535,7 @@ public class GraphBatch implements AutoCloseable {
       savedThreadWALFlush = tx.getThreadWALFlush();
     } else {
       savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
-      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH));
+      savedWALFlush = WALFile.getWALFlushType(database.getConfiguration());
       savedThreadUseWAL = null;
       savedThreadWALFlush = null;
     }
@@ -895,12 +896,12 @@ public class GraphBatch implements AutoCloseable {
     // edge without properties too (issue #9019). Types with only optional properties keep their compact property-less edges.
     final boolean isLightweight = typeIsLightweight || (lightEdges && !hasProps && !typeAppliesSchemaToEmptyEdge(edgeTypeName));
 
-    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619): refused
-    // here, BEFORE it is buffered, so nothing is left for a later flush to write. Checked per edge, not cached per batch: the
-    // user bound to the thread can change between two calls, and the check (a no-op without security, a context lookup
-    // and an array read with it) costs about what the type-cache lookups above already do.
-    if (isLightweight)
-      database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // A light edge allocates no record, so the bulk record writer never checks CREATE_RECORD for it (issue #9619), and that
+    // writer asks for a record-backed edge only when the flush reaches it: refused here, BEFORE the edge is buffered, so
+    // nothing is left for a later flush to write. Checked per edge, not cached per batch: the user bound to the thread can
+    // change between two calls, and the check (a no-op without security, a context lookup and an array read with it) costs
+    // about what the type-cache lookups above already do.
+    database.checkPermissionsOnFile(typeBucketId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
 
     edgeHasProperties[idx] = hasProps;
     this.edgeProperties[idx] = hasProps ? propertyPairs(edgeProperties) : null;
@@ -912,6 +913,33 @@ public class GraphBatch implements AutoCloseable {
 
     if (edgeCount >= batchSize)
       flush();
+  }
+
+  /**
+   * Refuses a RID that does not name an existing vertex, for a caller that takes the endpoints of its edges from outside
+   * (an HTTP or gRPC payload naming {@code #bucket:position}) and has to answer a bad one as a client error BEFORE the edge
+   * is buffered. {@link #newEdge} takes its endpoints on trust ("must be already persisted"), and a flush or the close of a
+   * batch that was handed one that is not leaves the whole batch behind it unreachable: the edge records exist (the record
+   * count answers for them), no vertex's edge list leads to them, and the failure surfaces as a raw
+   * {@link RecordNotFoundException} or {@link ClassCastException} from deep inside the connect pass (issue #12895).
+   * <p>
+   * Not called by {@link #newEdge} itself: the endpoints of a payload's own temporary ids are vertices this batch created,
+   * and one record lookup per endpoint of every edge of a load of millions would be paid for nothing.
+   *
+   * @throws RecordNotFoundException  when the record does not exist: what every protocol answers as a missing record, so a
+   *                                  caller whose RID came from its client re-raises it as the client error it is (the record
+   *                                  the request names is not the resource it addresses)
+   * @throws IllegalArgumentException when the RID is null or the record is not a vertex
+   */
+  public void requireVertex(final RID rid) {
+    if (rid == null)
+      throw new IllegalArgumentException("Vertex RID is null");
+    if (!database.existsRecord(rid))
+      throw new RecordNotFoundException("Vertex " + rid + " does not exist", rid);
+    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+    if (!(type instanceof VertexType))
+      throw new IllegalArgumentException(
+          "Record " + rid + " is not a vertex" + (type != null ? ": it belongs to the " + type.getName() + " type" : ""));
   }
 
   /**
@@ -1407,8 +1435,13 @@ public class GraphBatch implements AutoCloseable {
       final Object value = props[p * 2 + 1];
       // A null carries the null tag: the declared tag would promise bytes that never follow
       byte type = value == null ? BinaryTypes.TYPE_NULL : template.typeFlags[p];
-      if (type == -1)
+      if (type == -1) {
         type = BinaryTypes.getTypeFromValue(value, null);
+        if (type == -1)
+          // A VALUE THE SERIALIZER CANNOT WRITE (getTypeFromValue LOGGED IT): THE PROPERTY IS ALREADY IN THE HEADER, SO IT IS STORED AS
+          // NULL, AS A LIST OR MAP ENTRY OF THAT KIND IS. WRITING THE -1 TAG LEFT A RECORD NO READ COULD DECODE (ISSUE #12624)
+          type = BinaryTypes.TYPE_NULL;
+      }
 
       // Write type tag + value
       buffer.putByte(type);
@@ -1522,6 +1555,10 @@ public class GraphBatch implements AutoCloseable {
     // empty, silently breaking the contract of small primary records (issue #9814). Such a type takes the ordinary save() path,
     // the one a multi-type flush already takes.
     if (singleBucket && (bucketTypeFlags.get(firstBucket) & TYPE_DECLARES_EXTERNAL) == 0) {
+      // Asked again before the buffer is serialized: the user bound to the thread when the edges were buffered is not
+      // necessarily the one flushing them
+      database.checkPermissionsOnFile(firstBucket, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
       // Serialize all edge records using templates
       final Binary[] serializedBuffers = new Binary[nonLightCount];
 
@@ -1712,6 +1749,12 @@ public class GraphBatch implements AutoCloseable {
         // Batch-update all vertex head chunk pointers in one pass
         if (!deferredHeads.isEmpty())
           batchUpdateVertexHeadChunks();
+      } catch (final RuntimeException | Error e) {
+        // Whatever transaction a failed step above left open is the batch's own: close() refuses a caller's transaction
+        // while anything is pending, and with nothing pending none of the steps above runs. Each step rolls back what
+        // it opened itself, this covers what they did not catch (an Error)
+        rollbackOpenTransaction(e);
+        throw e;
       } finally {
         // Restore database settings, even on an exceptional exit (issue #5378)
         restoreDatabaseSettings();
@@ -1953,30 +1996,37 @@ public class GraphBatch implements AutoCloseable {
     beginTx();
     int updated = 0;
 
-    for (final long vertexKey : sortedKeys) {
-      final int bucketId = (int) (vertexKey >>> 40);
-      final long position = vertexKey & 0xFFFFFFFFFFL;
+    try {
+      for (final long vertexKey : sortedKeys) {
+        final int bucketId = (int) (vertexKey >>> 40);
+        final long position = vertexKey & 0xFFFFFFFFFFL;
 
-      MutableVertex vertex = ((Vertex) database.lookupByRID(new RID(bucketId, position), true)).modify();
+        MutableVertex vertex = ((Vertex) database.lookupByRID(new RID(bucketId, position), true)).modify();
 
-      final RID outHead = deferredHeads.getOut(vertexKey);
-      if (outHead != null)
-        vertex.setOutEdgesHeadChunk(outHead);
+        final RID outHead = deferredHeads.getOut(vertexKey);
+        if (outHead != null)
+          vertex.setOutEdgesHeadChunk(outHead);
 
-      final RID inHead = deferredHeads.getIn(vertexKey);
-      if (inHead != null)
-        vertex.setInEdgesHeadChunk(inHead);
+        final RID inHead = deferredHeads.getIn(vertexKey);
+        if (inHead != null)
+          vertex.setInEdgesHeadChunk(inHead);
 
-      database.updateRecord(vertex);
-      updated++;
+        database.updateRecord(vertex);
+        updated++;
 
-      if (commitEvery > 0 && updated % commitEvery == 0) {
-        database.commit();
-        beginTx();
+        if (commitEvery > 0 && updated % commitEvery == 0) {
+          database.commit();
+          beginTx();
+        }
       }
-    }
 
-    database.commit();
+      database.commit();
+    } catch (final RuntimeException | Error e) {
+      // The transaction is the batch's own (see close()): it must not outlive the failure on the caller's thread. The deferred
+      // heads are kept, and writing all of them again is idempotent
+      rollbackOpenTransaction(e);
+      throw e;
+    }
     deferredHeads.clear();
     knownNewVertexKeys.clear();
 
@@ -1997,6 +2047,21 @@ public class GraphBatch implements AutoCloseable {
     final TransactionContext tx = database.getTransaction();
     tx.setUseWALForThisTransaction(useWAL);
     tx.setWALFlush(walFlush);
+  }
+
+  /**
+   * Rolls back the transaction a failed step of the batch left open on this thread, so the failure does not leave it behind for
+   * the next caller of the thread. Only for a step that ran in a transaction the batch began itself. A failure of the rollback
+   * itself is attached to {@code failure}, which is the one the caller has to see.
+   */
+  private void rollbackOpenTransaction(final Throwable failure) {
+    if (!database.isTransactionActive())
+      return;
+    try {
+      database.rollback();
+    } catch (final RuntimeException rollbackError) {
+      failure.addSuppressed(rollbackError);
+    }
   }
 
   /**
@@ -2447,6 +2512,9 @@ public class GraphBatch implements AutoCloseable {
         // Just an accelerator cache - evicting is always safe, forces a fallback to the IN side of deferredHeads or the disk.
         inChunkRIDCache.remove(key);
       });
+      // The transaction is the batch's own (flush() and close() refuse a caller's): it must not outlive the failure on the
+      // caller's thread
+      rollbackOpenTransaction(e);
       throw e;
     }
   }

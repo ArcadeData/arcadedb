@@ -44,13 +44,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -156,8 +159,8 @@ public class GremlinServerPlugin implements ServerPlugin {
     // engine on the worker thread that actually runs each traversal (both bytecode and script paths use
     // this single pool). This is what makes ArcadeDB's per-user ACLs enforce for Gremlin (GHSA-c287).
     final int poolSize = settings.gremlinPool > 0 ? settings.gremlinPool : Runtime.getRuntime().availableProcessors();
-    gremlinExecutorService = new GremlinPrincipalPropagatingExecutorService(
-        Executors.newFixedThreadPool(poolSize, newGremlinThreadFactory()), server);
+    gremlinExecutorService = new GremlinPrincipalPropagatingExecutorService(newGremlinPool(poolSize, settings.maxWorkQueueSize),
+        server);
 
     gremlinServer = new GremlinServer(settings, gremlinExecutorService);
     try {
@@ -378,6 +381,21 @@ public class GremlinServerPlugin implements ServerPlugin {
       return Boolean.valueOf(trimmed);
     }
     return value;
+  }
+
+  /**
+   * The Gremlin execution pool: {@code poolSize} threads and a work queue of at most {@code maxWorkQueueSize} tasks, the
+   * {@code maxWorkQueueSize} setting of the Gremlin Server. A task that finds every thread busy and the queue full is refused
+   * with a {@link RejectedExecutionException}, which TinkerPop answers with its "too many requests" status instead of keeping
+   * the request in memory. This is the pool TinkerPop builds itself when none is supplied, and the one this plugin replaces to
+   * bind the principal, so the same bound applies.
+   */
+  static ThreadPoolExecutor newGremlinPool(final int poolSize, final int maxWorkQueueSize) {
+    if (maxWorkQueueSize <= 0)
+      throw new ServerException("Invalid Gremlin Server setting 'maxWorkQueueSize' with value '" + maxWorkQueueSize
+          + "': it must be greater than zero");
+    return new ThreadPoolExecutor(poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(maxWorkQueueSize),
+        newGremlinThreadFactory(), new ThreadPoolExecutor.AbortPolicy());
   }
 
   private static ThreadFactory newGremlinThreadFactory() {

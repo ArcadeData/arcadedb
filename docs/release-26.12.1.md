@@ -74,8 +74,60 @@ A call written for the old signature keeps its answer: a second argument that is
 `(n, 'OUT')` is the pattern naming that type, as in APOC, and answers `['OUT']` or `[]`. Write `(n, null, 'OUT')` for the
 direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an unknown direction and now answers.
 
+### Security: a group's `resultSetLimit` caps the rows a query answers, not the records it reads (#12888)
+
+The `resultSetLimit` of a security group was applied to every bucket scan, so a member under a quota of N read the first N
+records of each bucket only, without any error: a `WHERE` missed the records past them, and `sum`, `max`, `count` over rows
+and `ORDER BY` ran over those records (in openCypher over the first N of the whole type). The quota now caps the rows a query
+answers and nothing else:
+
+- SQL applies it as the statement's `LIMIT` where it is tighter than the statement's own, as it already did on top of the
+  scan cap. A script statement now does the same: a `LIMIT` below the quota stays in force, where the quota used to replace it;
+- openCypher caps the rows of the whole statement, a `UNION` included (each branch used to get an allowance of its own), and
+  a `LIMIT` below the quota stays in force. The subqueries a statement reads its answer from (`COUNT { }`, `COLLECT { }`,
+  `EXISTS { }`) are not capped, nor is a query a procedure or a user-defined function runs for the statement, in openCypher
+  or SQL. The quota does not limit writes: a `SET`, `DELETE` or `MERGE` applies to every row it matches, and only the rows it
+  answers are capped;
+- the record API (`Database.iterateType()`, `iterateBucket()`) reads every record. The `readTimeout` still interrupts it.
+
+**Who sees a different answer.** A member of a group with a `resultSetLimit`: a filter, an aggregate or an `ORDER BY` now
+answers from every record the member may read.
+
+**Gremlin and the MongoDB wire protocol (#13087).** They never applied the quota as a row cap and were bounded only by the
+scan truncation. They now cap the rows they answer, as SQL and openCypher do:
+
+- a Gremlin traversal answers at most the quota of rows, whatever sends it: the `gremlin` language of the HTTP API and of the
+  drivers, a script or a bytecode request to the Gremlin Server, the fluent Java API. The cap is on the root traversal, so a
+  `union()` answers the quota as a whole and a child traversal (`map()`, `where()`, `project().by()`) reads every row it
+  matches. `withoutStrategies()` cannot remove it. A traversal that writes (`property()`, `addV()`, `drop()`...) is applied
+  to every record it reaches, and only the rows it answers are capped. A traversal a script runs to build another one
+  (`g.V(g.V().has('name', 'a').id().next())`) is a traversal of its own and is capped as one;
+- a MongoDB `find` (and the legacy query, and the `mongo` query language) answers at most the quota of documents, after its
+  filter, sort and skip, and a `limit` below the quota stays in force. An `aggregate` runs its pipeline over every document
+  and answers at most the quota. A `count` counts every document that matches, and an `update` or a `delete` of many
+  documents reaches every one: under a quota a filtered `find` could miss documents, a sort ordered the first N candidates,
+  a `count` answered at most N and a `deleteMany` stopped after N.
+
+A value that holds many records in one row (`fold()`, `toList()` in a script, a `$group` with `$push`) is one row, as
+`collect()` is in openCypher.
+
+**The record API is not a query.** Embedded code that reads through `Database.iterateType()` or `iterateBucket()` was capped
+only by the scan truncation and now reads every record: `resultSetLimit` does not bound it, by design.
+
+**Resource use.** A member under a quota who runs a `WHERE`, an aggregate or an `ORDER BY` now makes the engine read every
+record of the type, where the scan cap used to stop it early. Only the group's `readTimeout` bounds that work: a group with a
+`resultSetLimit` and no `readTimeout` has no protection against a long scan, so set both.
+
 ## Fixes
 
+- **#11956** A DATE parameter reaches the engine as the `LocalDate` it names, as a Bolt date does, over gRPC (a
+  `timestamp_value` tagged `date`, in a parameter, a `CreateRecord` or `UpdateRecord` value, or inside a list or map) and over
+  the Postgres wire (`date`, OID 1082, in text and binary format, and the elements of a `date[]`). It used to arrive as an
+  `Instant` or as a `java.util.Date` at UTC midnight, which the engine reads as a datetime: an openCypher equality on a DATE
+  property (`WHERE n.da = $p`) matched no row, an undeclared property stored the value as a DATETIME, and `RETURN $p` over gRPC
+  came back tagged `datetime`. SQL comparisons, `datetime` and untagged gRPC timestamps (still an `Instant`, with its
+  nanoseconds) and the Postgres `timestamp` are unchanged. A date-tagged timestamp written as a time series tag, or converted
+  to a STRING property, is now the text `2024-02-29` and no longer an ISO instant.
 - **#12023** `vector.dotProduct`, `vector.l2Distance`, `vector.l1Distance` / `vector.manhattanDistance`, `vector.l1Norm`,
   `vector.multiScore` (`AVG`, `WEIGHTED`), `vector.sparseDot`, the sparse magnitude and the openCypher
   `vector_distance(..., EUCLIDEAN_SQUARED)` widen each component to double before multiplying or subtracting and sum in double,
@@ -102,3 +154,14 @@ direction. A call that passed a type name, `(n, 'KNOWS')`, used to fail as an un
   unique STRING key that reads as a number or a list (`12345`, `2.5`, `[1.5, 2]`) loads one record at commit; a version, an
   address, a date or any other text pays nothing. Run `REBUILD INDEX <name>` (or `REBUILD INDEX *`) once after upgrading to
   write every entry under its canonical key and drop that cost: an index this build creates or rebuilds pays nothing.
+- **#12162** A multi-property `FULL_TEXT` index no longer mixes its field-qualified keys (`title:java`) with its unqualified
+  ones. An unqualified prefix, wildcard, fuzzy or regexp clause (`ti*`) also matched the `title:...` and `body:...` keys of
+  every field whose name starts with the prefix, so it returned every record with a non-empty `title` and scored each such key
+  as an extra term. A token that itself reads `<property>:...` (the StandardTokenizer keeps `title:java` as one token) was
+  stored under the very key of the `title` posting of `java`, so `title:java` also matched a record holding that text in
+  `body`. Such a token is now stored behind one `:` escape, and a qualified clause reads only its own `field:` keys. A
+  one-property index, which has no qualified keys, keeps every key and now also matches its tokens that hold a colon
+  (`note:this`) by wildcard, regexp and fuzzy clauses, which it used to skip. **Upgrade note:** an index written before this
+  release keeps those few tokens (a token that reads `<property>:...`) unescaped until `REBUILD INDEX <name>`: until then
+  `title:java` can still match a record that holds that text in another field, and an unqualified search for that literal
+  token misses it. The wrong prefix, wildcard, fuzzy and regexp answers are fixed at once, with no rebuild.
