@@ -142,7 +142,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private List<IndexInternal> subIndexesToRead() {
     final List<IndexInternal> snapshot = List.copyOf(indexesOnBuckets);
     if (snapshot.isEmpty())
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
     return snapshot;
   }
 
@@ -190,11 +190,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    */
   public IndexCursor getForQuery(final Object[] keys) {
     if (!isReadyForQueries())
-      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+      throw new StaleIndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
 
     final long changesBefore = subIndexChanges.get();
     if ((changesBefore & 1) != 0)
-      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+      throw new StaleIndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
     final IndexCursor cursor;
     try {
       cursor = get(keys);
@@ -202,13 +202,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw e;
     } catch (final RuntimeException e) {
       if (isStaleRead(this, e))
-        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+        throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
       throw e;
     }
 
     if (!valid || dropping || subIndexChanges.get() != changesBefore) {
       cursor.close();
-      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+      throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
     }
     return cursor;
   }
@@ -239,11 +239,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
    */
   public IndexCursor prefixForQuery(final Object[] prefix) {
     if (!isReadyForQueries())
-      throw new IndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
+      throw new StaleIndexException("Index '" + getName() + "' is not ready for queries: it is being built, rebuilt or dropped");
 
     final long changesBefore = subIndexChanges.get();
     if ((changesBefore & 1) != 0)
-      throw new IndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
+      throw new StaleIndexException("Index '" + getName() + "' is being changed by a concurrent DDL");
     final List<IndexCursorEntry> entries = new ArrayList<>();
     try (final IndexCursor cursor = range(true, prefix, true, prefix, true)) {
       while (cursor.hasNext()) {
@@ -255,12 +255,12 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw e;
     } catch (final RuntimeException e) {
       if (isStaleRead(this, e))
-        throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
+        throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read", e);
       throw e;
     }
 
     if (!valid || dropping || subIndexChanges.get() != changesBefore)
-      throw new IndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
+      throw new StaleIndexException("Index '" + getName() + "' was dropped or rebuilt while it was read");
     return new TempIndexCursor(entries);
   }
 
@@ -1306,14 +1306,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
   }
 
   private IndexInternal getFirstUnderlyingIndex() {
     checkIsValid();
     final IndexInternal first = firstOrNull();
     if (first == null)
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
     return first;
   }
 

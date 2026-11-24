@@ -32,6 +32,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.SourceText;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -764,7 +765,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       if (!(key instanceof Collection || key instanceof Double || key instanceof Float || key instanceof BigDecimal)
           || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
         continue;
-      Object legacyKey = Type.convertIndexKeyOrNull(database, key, String.class);
+      // a list read from untyped text is the list here, as in convertKeysToDeclaredTypes: an older build wrote the text of its
+      // elements, never the text a client sent it as (issue #12711)
+      Object legacyKey = Type.convertIndexKeyOrNull(database,
+          key instanceof SourceText && key instanceof Collection<?> collection ? new ArrayList<>(collection) : key, String.class);
       if (legacyKey instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])
         legacyKey = string.toLowerCase(Locale.ROOT);

@@ -64,7 +64,7 @@ public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
 
     if (geometry instanceof Point point) {
       result.put("type", "Point");
-      result.put("coordinates", coordToArray(point.getCoordinate()));
+      result.put("coordinates", pointToArray(point));
     } else if (geometry instanceof LineString lineString) {
       result.put("type", "LineString");
       result.put("coordinates", coordsToArray(lineString.getCoordinates()));
@@ -75,7 +75,7 @@ public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
       result.put("type", "MultiPoint");
       final JSONArray coords = new JSONArray();
       for (int i = 0; i < multiPoint.getNumGeometries(); i++)
-        coords.put(coordToArray(((Point) multiPoint.getGeometryN(i)).getCoordinate()));
+        coords.put(pointToArray((Point) multiPoint.getGeometryN(i)));
       result.put("coordinates", coords);
     } else if (geometry instanceof MultiLineString multiLineString) {
       result.put("type", "MultiLineString");
@@ -101,6 +101,14 @@ public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
     return result;
   }
 
+  /**
+   * The position of a point, or no position ({@code []}, as GeoJSON writes an empty geometry) for an EMPTY one, whose JTS
+   * coordinate is null (issue #12277).
+   */
+  private JSONArray pointToArray(final Point point) {
+    return point.isEmpty() ? new JSONArray() : coordToArray(point.getCoordinate());
+  }
+
   private JSONArray coordToArray(final Coordinate coord) {
     final JSONArray arr = new JSONArray();
     arr.put(coord.x);
@@ -121,6 +129,9 @@ public class SQLFunctionGeoAsGeoJson extends SQLFunctionAbstract {
 
   private JSONArray polygonToArray(final Polygon polygon) {
     final JSONArray rings = new JSONArray();
+    // an EMPTY polygon has no rings, not one empty ring
+    if (polygon.isEmpty())
+      return rings;
     rings.put(ringToArray(polygon.getExteriorRing()));
     for (int i = 0; i < polygon.getNumInteriorRing(); i++)
       rings.put(ringToArray(polygon.getInteriorRingN(i)));

@@ -1745,7 +1745,7 @@ public class RedisNetworkExecutor extends Thread {
       final String databaseName = bucketName.substring(0, pos);
       final String keyType = bucketName.substring(pos + 1);
 
-      final Database database = getAuthorizedDatabase(databaseName);
+      final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
       // "not found" only for a key that is not there: never for one a concurrent CREATE or DROP INDEX hid (#9811)
       final Identifiable found = RedisIndexKeys.lookup(database, keyType, key);
@@ -1775,7 +1775,7 @@ public class RedisNetworkExecutor extends Thread {
     final String databaseName = bucketName.substring(0, pos);
     final String keyType = bucketName.substring(pos + 1);
 
-    final Database database = getAuthorizedDatabase(databaseName);
+    final DatabaseInternal database = getAuthorizedDatabase(databaseName);
 
     for (final Object key : keys) {
       final Identifiable found = RedisIndexKeys.lookup(database, keyType, key.toString());

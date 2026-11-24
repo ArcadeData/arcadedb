@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.exception.AlreadyExistsException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
@@ -173,7 +174,14 @@ public class ContinuousAggregateBuilder {
 
     final String intervalStr = bucketMatcher.group(1);
     final String tsColumnInQuery = bucketMatcher.group(2);
-    final long bucketIntervalMs = parseInterval(intervalStr);
+    // The function's own parser, so the aggregate cannot accept an interval the query it stores would refuse (issue #11986)
+    final long bucketIntervalMs = SQLFunctionTimeBucket.parseInterval(intervalStr);
+    // ...and the same positivity the function applies to the parsed amount (issue #6388): over an empty source type the initial
+    // refresh evaluates no row, so '0s' was stored although the stored query refuses it on the first row it evaluates
+    if (bucketIntervalMs <= 0)
+      throw new SchemaException(
+          "Continuous aggregate ts.timeBucket interval '" + intervalStr + "' must be a positive amount of time, but resolves to "
+              + bucketIntervalMs + "ms");
 
     // Validate that the timestamp column name doesn't contain backticks (SQL injection prevention)
     if (tsColumnInQuery.contains("`"))
@@ -293,33 +301,5 @@ public class ContinuousAggregateBuilder {
       }
     }
     return null;
-  }
-
-  static long parseInterval(final String interval) {
-    if (interval == null || interval.isEmpty())
-      throw new IllegalArgumentException("Invalid interval: empty");
-
-    int unitStart = 0;
-    for (int i = 0; i < interval.length(); i++) {
-      if (!Character.isDigit(interval.charAt(i))) {
-        unitStart = i;
-        break;
-      }
-    }
-
-    if (unitStart == 0)
-      throw new IllegalArgumentException("Invalid interval: '" + interval + "'");
-
-    final long value = Long.parseLong(interval.substring(0, unitStart));
-    final String unit = interval.substring(unitStart).trim().toLowerCase(Locale.ROOT);
-
-    return switch (unit) {
-      case "s" -> value * 1000L;
-      case "m" -> value * 60_000L;
-      case "h" -> value * 3_600_000L;
-      case "d" -> value * 86_400_000L;
-      case "w" -> value * 7 * 86_400_000L;
-      default -> throw new IllegalArgumentException("Unknown interval unit: '" + unit + "'. Supported: s, m, h, d, w");
-    };
   }
 }

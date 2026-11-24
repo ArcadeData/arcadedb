@@ -18,6 +18,8 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.utility.TimeBoundRegex;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -730,7 +733,8 @@ abstract class PostgresCatalogExpression {
      */
     private       CompiledRegex             compiled;
     /**
-     * The character reads this node's regular expression has left. One match is bounded by
+     * The work this node's pattern has left, in character reads: the steps a match takes without reading one are charged in the
+     * same unit ({@link BoundedCharSequence#READ_FREE_STEPS_PER_READ}). One match is bounded by
      * {@link BoundedCharSequence#MATCH_BUDGET}, and this bounds the sum over every row the node is evaluated
      * against, so a pattern that exhausts the per-match budget on each of many rows cannot add up to a long run. A
      * correlated sub-select is parsed again for each outer row, into fresh nodes; what bounds that case is the
@@ -815,40 +819,53 @@ abstract class PostgresCatalogExpression {
     private Object regex(final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
-      final String value = asString(l);
-      final String pattern = asString(r);
       try {
-        // The pattern is a literal in every query a client writes and the predicate runs once per row, so it is
-        // translated and compiled once per pattern text, not once per row (psql's \d sends one, issue #10228).
-        CompiledRegex cached = compiled;
-        if (cached == null || !cached.source().equals(pattern)) {
-          cached = new CompiledRegex(pattern,
-              Pattern.compile(javaRegex(pattern), operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0));
-          compiled = cached;
-        }
-        final Pattern regex = cached.regex();
-        if (regexBudget <= 0)
-          throw new BudgetExceeded();
-        final BoundedCharSequence text = new BoundedCharSequence(value,
-            (int) Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget));
-        try {
-          return operator.startsWith("!") != regex.matcher(text).find();
-        } finally {
-          regexBudget -= text.used();
-        }
+        final CompiledRegex regex = compile(asString(r), false, operator.endsWith("*") ? Pattern.CASE_INSENSITIVE : 0);
+        return operator.startsWith("!") != matches(regex, asString(l), true);
       } catch (final PatternSyntaxException e) {
         // A POSIX regex Java cannot compile: not something to guess the answer of.
         return UNKNOWN;
       }
     }
 
-    private static Object like(final String operator, final Object l, final Object r) {
+    private Object like(final String operator, final Object l, final Object r) {
       if (l == null || r == null)
         return null;
-      final boolean matches = Pattern.compile(likeToRegex(asString(r)),
-              operator.contains("ILIKE") ? Pattern.CASE_INSENSITIVE : 0)
-          .matcher(asString(l)).matches();
-      return operator.startsWith("NOT") != matches;
+      final CompiledRegex regex = compile(asString(r), true, operator.contains("ILIKE") ? Pattern.CASE_INSENSITIVE : 0);
+      return operator.startsWith("NOT") != matches(regex, asString(l), false);
+    }
+
+    /**
+     * The pattern is a literal in every query a client writes and the predicate runs once per row, so it is translated and
+     * compiled once per pattern text, and measured once, not once per row (psql's \d sends one, issue #10228).
+     */
+    private CompiledRegex compile(final String pattern, final boolean like, final int flags) {
+      CompiledRegex cached = compiled;
+      if (cached == null || !cached.source().equals(pattern)) {
+        final Pattern regex = Pattern.compile(like ? likeToRegex(pattern) : javaRegex(pattern), flags);
+        cached = new CompiledRegex(pattern, regex, TimeBoundRegex.readFreeWork(regex));
+        compiled = cached;
+      }
+      return cached;
+    }
+
+    /**
+     * Runs the match under the budget of this node: a search ({@code scans}, the regular-expression operators) tries every
+     * start position, a full match (LIKE) the one.
+     *
+     * @throws BudgetExceeded when the match needs more than the budget allows
+     */
+    private boolean matches(final CompiledRegex regex, final String value, final boolean scans) {
+      if (regexBudget <= 0)
+        throw new BudgetExceeded();
+      final BoundedCharSequence text = BoundedCharSequence.of(value, Math.min(BoundedCharSequence.MATCH_BUDGET, regexBudget),
+          regex.work(), scans);
+      try {
+        final Matcher matcher = regex.regex().matcher(text);
+        return scans ? matcher.find() : matcher.matches();
+      } finally {
+        regexBudget -= text.used();
+      }
     }
 
     /**
@@ -884,34 +901,68 @@ abstract class PostgresCatalogExpression {
   }
 
   /**
-   * The text a client's regular expression is matched against, counting the characters the matcher reads. The
+   * The text a client's pattern is matched against, counting the characters the matcher reads. The
    * pattern is the client's own, and {@code java.util.regex} backtracks: a pattern like {@code (a+)+$} takes time
    * exponential in the length of the name it is matched against, once per row. The budget turns that into a
    * declined statement after a bounded amount of work instead of a connection thread spinning, and it counts steps rather
    * than time, so the answer does not depend on how loaded the machine is.
+   * <p>
+   * A read is the one step of the matcher that can be counted from here, and not every step is one: a repeated empty group, an
+   * anchor, an empty alternative or any atom at the end of the text is matched without a read. So the steps a pattern can take
+   * between two reads are charged to every read, and the ones each start position of a search can take before its first read, and
+   * the ones of the attempt at the end of the text, up front ({@link TimeBoundRegex#readFreeWork}). A pattern that can take more
+   * of them than a match that reads nothing may is refused before it is run.
    */
   private static final class BoundedCharSequence implements CharSequence {
     /** Character reads one match may make: some thousand times what any catalog name needs. */
-    static final int  MATCH_BUDGET     = 1_000_000;
+    static final int  MATCH_BUDGET            = 1_000_000;
     /** Character reads one regular-expression predicate may make over all the rows of a statement. */
-    static final long STATEMENT_BUDGET = 5_000_000L;
+    static final long STATEMENT_BUDGET        = 5_000_000L;
+    /** The steps of the matcher that read no character, and so cost about as much as one read does. */
+    static final int  READ_FREE_STEPS_PER_READ = 8;
 
     private final String text;
-    private final int[]  budget;
-    private final int    allowance;
+    private final long[] budget;
+    private final long   allowance;
+    private final long   readCost;
 
-    BoundedCharSequence(final String text, final int allowance) {
-      this(text, new int[] { allowance }, allowance);
+    /**
+     * @param allowance the budget of the match, in character reads
+     * @param work      what the pattern can do between two reads
+     * @param scans     whether the match is a search, which starts at every position of the text, or a full match
+     *
+     * @throws BudgetExceeded when the steps the pattern can take without a read cost more than the allowance
+     */
+    static BoundedCharSequence of(final String text, final long allowance, final TimeBoundRegex.ReadFreeWork work,
+        final boolean scans) {
+      if (work.refused())
+        throw new BudgetExceeded();
+
+      long steps = work.perAttempt();
+      if (scans && work.perStart() > 0) {
+        final long starts = text.length() + 1L;
+        // checked before the product is taken, which a pattern measured as unbounded could overflow
+        if (work.perStart() > allowance * READ_FREE_STEPS_PER_READ / starts)
+          throw new BudgetExceeded();
+        steps += work.perStart() * starts;
+      }
+      final long upFront = (steps + READ_FREE_STEPS_PER_READ - 1) / READ_FREE_STEPS_PER_READ;
+      if (upFront > allowance)
+        throw new BudgetExceeded();
+
+      return new BoundedCharSequence(text, new long[] { allowance - upFront }, allowance,
+          1 + Math.max(work.perAttempt(), work.perStart()) / READ_FREE_STEPS_PER_READ);
     }
 
-    private BoundedCharSequence(final String text, final int[] budget, final int allowance) {
+    private BoundedCharSequence(final String text, final long[] budget, final long allowance, final long readCost) {
       this.text = text;
       this.budget = budget;
       this.allowance = allowance;
+      this.readCost = readCost;
     }
 
-    /** The character reads the match made, shared by every sub-sequence the matcher took. */
-    int used() {
+    /** The budget the match spent, shared by every sub-sequence the matcher took. */
+    long used() {
       return allowance - Math.max(budget[0], 0);
     }
 
@@ -922,14 +973,14 @@ abstract class PostgresCatalogExpression {
 
     @Override
     public char charAt(final int index) {
-      if (--budget[0] < 0)
+      if ((budget[0] -= readCost) < 0)
         throw new BudgetExceeded();
       return text.charAt(index);
     }
 
     @Override
     public CharSequence subSequence(final int start, final int end) {
-      return new BoundedCharSequence(text.substring(start, end), budget, allowance);
+      return new BoundedCharSequence(text.substring(start, end), budget, allowance, readCost);
     }
 
     @Override
@@ -1041,8 +1092,8 @@ abstract class PostgresCatalogExpression {
     return j + 1;
   }
 
-  /** A compiled regular expression and the client's text it was translated from. */
-  private record CompiledRegex(String source, Pattern regex) {
+  /** A compiled regular expression, the client's text it was translated from and the steps it can take without a read. */
+  private record CompiledRegex(String source, Pattern regex, TimeBoundRegex.ReadFreeWork work) {
   }
 
   /** Translates a SQL LIKE pattern into the equivalent regular expression. */

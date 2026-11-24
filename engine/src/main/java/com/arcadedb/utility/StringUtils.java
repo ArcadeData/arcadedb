@@ -19,6 +19,8 @@
 package com.arcadedb.utility;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.BitSet;
 import java.util.IllegalFormatException;
 import java.util.Locale;
 
@@ -28,6 +30,29 @@ import java.util.Locale;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class StringUtils {
+
+  /**
+   * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
+   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
+   * turn eight characters of query text into a 100MB string (issue #6389).
+   */
+  public static final int MAX_FORMAT_WIDTH = 1_000_000;
+
+  /**
+   * Most characters the specifiers of one user-supplied format may add together, on top of the text the caller already
+   * holds: the pattern itself and one copy of each argument that is text. {@link #MAX_FORMAT_WIDTH} bounds one specifier,
+   * and a pattern is free to repeat it: a thousand {@code %1000000s} are 9KB of query asking for a gigabyte, and
+   * {@code %1$s%1$s...} writes a long argument once per five characters of pattern (issue #12880). Sixteen full-width
+   * fields, so that no pattern with a single wide field, or a handful of them, is refused.
+   */
+  public static final int MAX_FORMAT_OUTPUT = 16 * MAX_FORMAT_WIDTH;
+
+  // What a conversion of a number, a boolean or a character writes at most, sign, exponent and separators included
+  private static final int SCALAR_TEXT_SIZE = 32;
+  // The longest date/time conversion (%tc) with a long zone name
+  private static final int TEMPORAL_TEXT_SIZE = 48;
+  // The characters upper-cased at a time to measure what %S writes
+  private static final int UPPER_CASE_PIECE = 1024;
 
   /**
    * Strict boolean parse for configuration text: {@code Boolean.parseBoolean()} reads "yes", "1", "on" and every typo as
@@ -82,13 +107,6 @@ public class StringUtils {
     }
     return previous[b.length()];
   }
-
-  /**
-   * Widest field a {@code %<width>s}-style conversion may ask for in a user-supplied format. Deliberately generous -
-   * a padded report column is nowhere near it - and the point is only that {@code format('%99999999s', 'x')} must not
-   * turn eight characters of query text into a 100MB string (issue #6389).
-   */
-  public static final int MAX_FORMAT_WIDTH = 1_000_000;
 
   protected StringUtils() {
   }
@@ -164,7 +182,7 @@ public class StringUtils {
     if (format == null)
       throw new IllegalArgumentException(caller + "() requires a non-null format");
 
-    checkFormat(caller, format, args);
+    checkFormat(caller, locale, format, args);
 
     try {
       return String.format(locale, format, args);
@@ -188,11 +206,34 @@ public class StringUtils {
    * follows the argument the way {@link java.util.Formatter} does - the next one in order, the one an explicit
    * {@code n$} names, or with the {@code <} flag the one the previous specifier used, while {@code %n} and {@code %%}
    * consume none - so a huge decimal printed by {@code %s} or {@code %e} beside an unrelated {@code %f} is not refused.
+   * <p>
+   * The same pass adds up what the specifiers write, and refuses the pattern once the sum passes
+   * {@link #MAX_FORMAT_OUTPUT}: a ceiling on each specifier is none on a pattern that repeats it (issue #12880). Each
+   * specifier counts for the larger of its width and of the text its argument becomes ({@link #textSize}). What is NOT
+   * counted is what the caller holds already: the literal text of the pattern, and the first print of an argument that is
+   * its own text (a string, a big integer, an object under {@code %s}), of which only the padding counts. So a single
+   * {@code %s} over a string of any length formats as it always did, and the output stays under the pattern, plus one
+   * copy of such arguments, plus the ceiling.
    */
-  private static void checkFormat(final String caller, final String format, final Object[] args) {
+  private static void checkFormat(final String caller, final Locale locale, final String format, final Object[] args) {
     // The argument index of the last specifier without an explicit index, and of the last specifier of any kind.
     long ordinary = -1;
     long last = -1;
+    // What the specifiers add to the output. No overflow: one specifier adds an int at most, and the scan stops at the
+    // first one that takes the sum over the ceiling.
+    long total = 0;
+    // The arguments printed once already as their own text: a bit each for the first 64, a set past them.
+    long printed = 0;
+    BitSet printedBeyond = null;
+    // The last argument whose text had to be built to be measured, so that '%1$s%1$s%1$s' builds it once.
+    long measured = -1;
+    long measuredSize = 0;
+    // The last argument upper-cased to be measured, its length, how much of it the precision kept and what the upper
+    // case adds to that much
+    long upperCased = -1;
+    long upperCasedFrom = 0;
+    long upperCasedKept = -1;
+    long upperCasedGrowth = 0;
     for (int i = 0; i < format.length(); i++) {
       if (format.charAt(i) != '%')
         continue;
@@ -203,9 +244,11 @@ public class StringUtils {
       int j = i + 1;
       long number = 0;
       int digits = 0;
-      long widest = 0;
+      long width = 0;
       long explicit = 0;
       boolean previous = false;
+      boolean precise = false;
+      boolean grouping = false;
       while (j < format.length()) {
         final char c = format.charAt(j);
         if (c >= '0' && c <= '9') {
@@ -221,19 +264,26 @@ public class StringUtils {
           digits = 0;
         } else if (c == '.') {
           // The digits just read were the width, and the precision starts now. The width still has to be measured -
-          // it is what the truncated argument is padded out to.
-          widest = Math.max(widest, number);
+          // it is what the truncated argument is padded out to. The largest, for a malformed specifier with two.
+          width = Math.max(width, number);
+          precise = true;
           number = 0;
           digits = 0;
         } else if (c == '<') {
           previous = true;
+        } else if (c == ',') {
+          grouping = true;
         } else if (!isFormatFlag(c)) {
           // Not a flag either: the conversion character, so the specifier ends here.
           break;
         }
         j++;
       }
-      widest = Math.max(widest, number);
+      final long precision = precise ? number : -1;
+      if (!precise)
+        width = number;
+      // Both size an allocation, so the largest number the specifier names is what one field is measured by
+      final long widest = Math.max(width, precision);
 
       if (widest > MAX_FORMAT_WIDTH)
         throw new IllegalArgumentException(
@@ -242,18 +292,192 @@ public class StringUtils {
 
       if (j < format.length()) {
         final char conversion = format.charAt(j);
-        if (conversion != '%' && conversion != 'n') {
+        if (conversion == '%')
+          // A literal percent sign, padded to the width
+          total += width;
+        else if (conversion != 'n') {
+          // '%n' is left out: a line separator is no longer than the two characters that ask for it, and it takes no
+          // width.
           // The '<' flag wins over an explicit index, and leaves both counters where they were.
           if (!previous)
             last = explicit > 0 ? explicit - 1 : ++ordinary;
-          if (conversion == 'f' && args != null && last >= 0 && last < args.length
-              && args[(int) last] instanceof BigDecimal decimal)
-            checkPlainDigits(caller, format, decimal);
+          // A null array is not a missing argument for the formatter: every specifier prints null
+          if (last >= 0 && (args == null || last < args.length)) {
+            final Object arg = args == null ? null : args[(int) last];
+            if (conversion == 'f' && arg instanceof BigDecimal decimal)
+              checkPlainDigits(caller, format, decimal);
+
+            final char kind = Character.toLowerCase(conversion);
+            boolean firstPrint = false;
+            if (isItsOwnText(kind, arg)) {
+              if (last < Long.SIZE) {
+                firstPrint = (printed & 1L << last) == 0;
+                printed |= 1L << last;
+              } else {
+                if (printedBeyond == null)
+                  printedBeyond = new BitSet();
+                firstPrint = !printedBeyond.get((int) last);
+                printedBeyond.set((int) last);
+              }
+            }
+
+            long size;
+            // What the upper case adds to the text: 'ß' is printed as 'SS' by %S, on the first print as on any other
+            long growth = 0;
+            if (conversion == 'S' && isUpperCasedText(arg)) {
+              // Only the upper-cased text says how long it is, so it is measured, once: what the precision keeps of it,
+              // because the formatter truncates first and the case of the rest changes nothing
+              if (upperCased != last || upperCasedKept != precision) {
+                final String text = String.valueOf(arg);
+                upperCasedFrom = text.length();
+                upperCasedGrowth = upperCaseGrowth(text, precise ? (int) Math.min(precision, upperCasedFrom) : text.length(),
+                    locale != null ? locale : Locale.getDefault(Locale.Category.FORMAT));
+                upperCased = last;
+                upperCasedKept = precision;
+              }
+              size = upperCasedFrom;
+              growth = upperCasedGrowth;
+            } else if (isTextBuiltToBeMeasured(kind, arg)) {
+              // Only its text says how long it is. The first print is not counted, so without a width to pad it to it is
+              // not built for it.
+              if (firstPrint && width == 0)
+                size = 0;
+              else {
+                if (measured != last) {
+                  measuredSize = String.valueOf(arg).length();
+                  measured = last;
+                }
+                size = measuredSize;
+              }
+            } else
+              size = textSize(kind, arg);
+
+            if (kind == 's' || kind == 'b' || kind == 'h') {
+              // The precision truncates
+              if (precise)
+                size = Math.min(size, precision);
+            } else if (kind != 'c' && kind != 't') {
+              // One separator every three integer digits, which for %g are as many as the precision
+              if (grouping)
+                size += kind == 'g' ? (precise ? precision : 6) / 3 : size / 3;
+              // For a floating-point conversion the precision is the number of fraction digits, six when the pattern
+              // names none
+              if (kind != 'd' && kind != 'o' && kind != 'x')
+                size += precise ? precision : 6;
+            }
+
+            final long written = Math.max(width, size + growth);
+            total += firstPrint ? written - size : written;
+          }
         }
+
+        if (total > MAX_FORMAT_OUTPUT)
+          throw new IllegalArgumentException(
+              caller + "() format '" + abbreviate(format) + "' writes more than " + MAX_FORMAT_OUTPUT
+                  + " characters over its arguments, over the limit");
       }
 
       i = j;
     }
+  }
+
+  /**
+   * Whether the argument is, for this conversion, text the caller holds already at about the size it is printed at: a
+   * string, a big integer in digits, any other object under {@code %s}. Its first print adds nothing to what the query
+   * already costs, unlike a number spelled out ({@code 1E+999999} under {@code %f}) which is a few bytes until printed.
+   */
+  private static boolean isItsOwnText(final char kind, final Object arg) {
+    if (kind == 's')
+      return arg != null && !isScalar(arg);
+    return arg instanceof BigInteger && (kind == 'd' || kind == 'o' || kind == 'x');
+  }
+
+  /** Whether {@code %S} changes the case of text that may not be ASCII: a number, a boolean and null print as they are long. */
+  private static boolean isUpperCasedText(final Object arg) {
+    return arg instanceof CharSequence || isTextBuiltToBeMeasured('s', arg);
+  }
+
+  /**
+   * The characters the upper case adds to the first {@code length} of a text. Taken a piece at a time:
+   * {@code String.toUpperCase} extends its buffer by a character for each one that becomes two, copying it whole, which
+   * a long run of them makes quadratic. A piece that ends inside a sequence the locale would shorten only measures a
+   * character more.
+   */
+  private static long upperCaseGrowth(final String text, final int length, final Locale locale) {
+    long growth = 0;
+    for (int from = 0; from < length; from += UPPER_CASE_PIECE) {
+      final int to = Math.min(from + UPPER_CASE_PIECE, length);
+      growth += text.substring(from, to).toUpperCase(locale).length() - (to - from);
+    }
+    return Math.max(growth, 0);
+  }
+
+  /** Whether the size of what {@code %s} prints is known only by building it: anything but text and numbers. */
+  private static boolean isTextBuiltToBeMeasured(final char kind, final Object arg) {
+    return kind == 's' && arg != null && !(arg instanceof CharSequence) && !(arg instanceof BigInteger)
+        && !(arg instanceof BigDecimal) && !isScalar(arg);
+  }
+
+  /** A value whose text is a few characters whatever it holds. Any other {@link Number} prints what its class decides. */
+  private static boolean isScalar(final Object arg) {
+    return arg instanceof Boolean || arg instanceof Character || arg instanceof Integer || arg instanceof Long
+        || arg instanceof Double || arg instanceof Float || arg instanceof Short || arg instanceof Byte;
+  }
+
+  /**
+   * The characters a conversion (lower case) writes for an argument, before the precision and the width are applied:
+   * exact for text, an upper estimate for the rest, and never by building the text. A conversion the argument does not
+   * fit is left to the formatter, which refuses it.
+   */
+  private static long textSize(final char kind, final Object arg) {
+    switch (kind) {
+    case 's':
+      if (arg == null)
+        return 4;
+      if (arg instanceof CharSequence text)
+        return text.length();
+      if (arg instanceof BigInteger integer)
+        return decimalDigits(integer.bitLength()) + 1;
+      if (arg instanceof BigDecimal decimal)
+        // The digits, with a sign, a point and an exponent or a few leading zeros
+        return decimal.precision() + SCALAR_TEXT_SIZE;
+      return SCALAR_TEXT_SIZE;
+    case 'd', 'o', 'x':
+      if (arg instanceof BigInteger integer)
+        return (kind == 'o' ? integer.bitLength() / 3 + 1 : decimalDigits(integer.bitLength())) + 1;
+      return SCALAR_TEXT_SIZE;
+    case 'f':
+      // The integer digits, a sign and a point: the fraction digits are the precision
+      if (arg instanceof BigDecimal decimal)
+        return Math.abs((long) decimal.precision() - decimal.scale()) + 2;
+      if (arg instanceof Double || arg instanceof Float) {
+        final int exponent = Math.getExponent(((Number) arg).doubleValue());
+        return (exponent > 0 ? decimalDigits(exponent) : 1) + 2;
+      }
+      return SCALAR_TEXT_SIZE;
+    case 't':
+      return TEMPORAL_TEXT_SIZE;
+    case 'c':
+      return 2;
+    case 'b':
+      return 5;
+    case 'h':
+      return 8;
+    default:
+      // %e, %g and %a: one digit, the exponent and the sign, beside the precision
+      return SCALAR_TEXT_SIZE;
+    }
+  }
+
+  /** The decimal digits of a number of that many bits, within a few digits in a million. */
+  private static long decimalDigits(final int bits) {
+    // log10(2) = 0.30103 and 1233 / 4096 = 0.30103
+    return (bits * 1233L >>> 12) + 1;
+  }
+
+  /** The start of a pattern, for an error message: the one refused for its length is not repeated in full. */
+  private static String abbreviate(final String format) {
+    return format.length() <= 200 ? format : format.substring(0, 200) + "...";
   }
 
   /**
