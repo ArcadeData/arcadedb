@@ -1915,4 +1915,58 @@ public class TransactionRetryAndRollbackTest {
       assertThat(countRecords()).isZero();
     }
   }
+
+  /**
+   * Issue #12635: a write another node committed for the block - a statement a replica forwarded to the leader - is never replayed
+   * by a retry loop, at any nesting depth. The HA layer reports it through {@link DatabaseContext.DatabaseContextTL}; here the
+   * report is made directly, where the forward would be.
+   */
+  @Nested
+  class WriteCommittedByAnotherNode extends TestHelper {
+
+    @Test
+    void theBlockIsNotReplayed() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        attempts.incrementAndGet();
+        reportForwardedWrite();
+        throw new ConcurrentModificationException("a conflict after the forward (issue #12635 test)");
+      }, false, 3)).isInstanceOf(ConcurrentModificationException.class);
+
+      assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void theBlockIsNotReplayedWhenTheForwardRanInATransactionTheBlockOpenedAndCommitted() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      assertThatThrownBy(() -> database.transaction(() -> {
+        attempts.incrementAndGet();
+        // The forward runs one level down, and the commit pops the context it reported on before the loop looks
+        database.begin();
+        reportForwardedWrite();
+        database.commit();
+        throw new ConcurrentModificationException("a conflict after the nested commit (issue #12635 test)");
+      }, false, 3)).isInstanceOf(ConcurrentModificationException.class);
+
+      assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aBlockThatReportedNothingIsStillRetried() {
+      final AtomicInteger attempts = new AtomicInteger();
+
+      database.transaction(() -> {
+        if (attempts.incrementAndGet() < 3)
+          throw new ConcurrentModificationException("forced retry");
+      }, false, 3);
+
+      assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    private void reportForwardedWrite() {
+      DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()).reportWriteCommittedByAnotherNode();
+    }
+  }
 }

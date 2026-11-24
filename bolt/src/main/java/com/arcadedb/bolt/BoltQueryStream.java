@@ -61,7 +61,10 @@ final class BoltQueryStream {
   /** Rows of a system query (SHOW DATABASES, CALL dbms.components(), ...) answered without the engine. */
   List<List<Object>> syntheticResults;
 
+  /** The statement writes, or could not be analyzed (which counts as a write): what the summary's query type is read from. */
   boolean writeOperation;
+  /** An index or constraint statement, reported with the query type {@code s} (issue #11972). */
+  boolean schemaOperation;
 
   long queryStartTime;  // System.nanoTime() when execution started, for the t_first/t_last metadata
   long firstRecordTime; // System.nanoTime() when the first row became available, 0 if there was none

@@ -58,6 +58,17 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   boolean canBeCached();
 
+  /**
+   * Hands the plan the rows the caller of its statement reads at most (see {@link com.arcadedb.query.ResultRowCapScope}, issue
+   * #12016), before the first row is pulled. The steps the planner marked stop at it; the plan is not changed in any other way, so a
+   * plan taken from the cache serves a caller with a cap and one without.
+   *
+   * @param rowCap the rows the caller reads after the SKIP of the statement, positive
+   */
+  default void applyRowCap(final int rowCap) {
+    // NO ACTION: A PLAN THAT HOLDS NO ROWS BY ITSELF HAS NOTHING TO BOUND
+  }
+
   /** The facets of a {@code SELECT ... FACETS} plan (see {@link ResultSet#getFacets()}), null for any other plan. */
   default FacetResults getFacets() {
     return null;

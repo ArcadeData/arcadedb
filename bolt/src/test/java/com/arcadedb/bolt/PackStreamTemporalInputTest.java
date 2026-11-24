@@ -101,8 +101,10 @@ class PackStreamTemporalInputTest {
     final long secondsLocal = expected.toLocalDateTime().toEpochSecond(ZoneOffset.UTC);
     final Object decoded = decode(SIG_DATE_TIME_OFFSET_LEGACY, secondsLocal, (long) expected.getNano(),
         (long) expected.getOffset().getTotalSeconds());
-    assertThat(decoded).isInstanceOf(OffsetDateTime.class);
-    assertThat(decoded).isEqualTo(expected);
+    // #12778: decoded as a ZonedDateTime whose zone is the offset, so a schemaless property keeps it
+    assertThat(decoded).isInstanceOf(ZonedDateTime.class);
+    assertThat(decoded).isEqualTo(expected.toZonedDateTime());
+    assertThat(((ZonedDateTime) decoded).getZone()).isEqualTo(ZoneOffset.ofHours(2));
   }
 
   @Test
@@ -121,8 +123,10 @@ class PackStreamTemporalInputTest {
     final long secondsUtc = expected.toInstant().getEpochSecond();
     final Object decoded = decode(SIG_DATE_TIME_OFFSET_UTC, secondsUtc, (long) expected.getNano(),
         (long) expected.getOffset().getTotalSeconds());
-    assertThat(decoded).isInstanceOf(OffsetDateTime.class);
-    assertThat(decoded).isEqualTo(expected);
+    // #12778: decoded as a ZonedDateTime whose zone is the offset, so a schemaless property keeps it
+    assertThat(decoded).isInstanceOf(ZonedDateTime.class);
+    assertThat(decoded).isEqualTo(expected.toZonedDateTime());
+    assertThat(((ZonedDateTime) decoded).getZone()).isEqualTo(ZoneOffset.ofHours(2));
   }
 
   @Test
@@ -151,7 +155,7 @@ class PackStreamTemporalInputTest {
 
     final Object hydrated = BoltStructureMapper.fromPackStreamValue(new PackStreamReader(writer.toByteArray()).readValue());
     assertThat(hydrated).isInstanceOf(Map.class);
-    assertThat(((Map<?, ?>) hydrated).get("reference_time")).isEqualTo(expected);
+    assertThat(((Map<?, ?>) hydrated).get("reference_time")).isEqualTo(expected.toZonedDateTime());
   }
 
   @Test

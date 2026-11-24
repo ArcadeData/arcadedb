@@ -136,16 +136,30 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     }).filter(Objects::nonNull);
   }
 
-  /** The community of each node, numbered from 0 in order of first appearance, and the modularity of the partition. */
+  /**
+   * The community of each node, numbered from 0 in order of first appearance, and the modularity of the partition at the
+   * resolution the passes optimised (the standard modularity at resolution 1).
+   */
   record Communities(int[] community, double modularity) {
+  }
+
+  /** {@link #detect(int[][], double[][], int, double, double, WorkGuard)} at the standard resolution of 1. */
+  static Communities detect(final int[][] neighbors, final double[][] weights, final int maxIterations, final double tolerance,
+      final WorkGuard guard) {
+    return detect(neighbors, weights, maxIterations, tolerance, 1.0, guard);
   }
 
   /**
    * Runs the local-moving passes over an undirected weighted adjacency ({@code BOTH} rows, every edge listed once in the
-   * row of each of its ends, a self-loop twice in its node's own row). In each pass every node, in index order, moves to
-   * the neighbouring community of highest gain {@code w(i, c) - k(i) * Σtot(c) / 2m} when that gain is positive (the
-   * lowest community id among equal gains), until a pass moves nothing, the modularity moves by less than
-   * {@code tolerance}, or {@code maxIterations} passes ran.
+   * row of each of its ends, a self-loop twice in its node's own row). In each pass every node, in index order, is taken out
+   * of its community and put into the community of highest gain {@code w(i, c) - resolution * k(i) * Σtot(c) / 2m}, over its
+   * neighbouring communities and the one it left (whose {@code Σtot} no longer holds the node). It stays unless another
+   * community gains strictly more, and among equal gains the lowest community id wins. The passes run until one moves
+   * nothing, the modularity moves by less than {@code tolerance}, or {@code maxIterations} passes ran.
+   * <p>
+   * The gain of staying is part of the comparison: a node used to move to any neighbouring community whose gain was positive,
+   * which is true of almost every candidate, so nodes left communities they were as well off in and two 4-cliques joined by
+   * one edge ended as four communities.
    * <p>
    * O(E) per pass (issue #12169): the total degree of each community is kept in an array, updated as a node leaves one
    * community for another, where it used to be summed over every node for every candidate community of every node, and
@@ -153,7 +167,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
    * list of those touched, where a map was allocated per node.
    */
   static Communities detect(final int[][] neighbors, final double[][] weights, final int maxIterations, final double tolerance,
-      final WorkGuard guard) {
+      final double resolution, final WorkGuard guard) {
     final int n = neighbors.length;
     final double[] nodeDegree = new double[n];
     double totalWeight = 0.0;
@@ -176,7 +190,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
 
     final double[] scratchA = new double[n];
     final double[] scratchB = new double[n];
-    double prevModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
+    double prevModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, resolution, scratchA, scratchB, guard);
 
     final double[] candidateWeight = new double[n]; // all zero between two nodes
     final boolean[] touched = new boolean[n];
@@ -197,6 +211,8 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         int candidateCount = 0;
         for (int k = 0; k < row.length; k++) {
           guard.checkPeriodically(++work);
+          if (row[k] == i)
+            continue; // a self-loop travels with the node: it is inside every community the node can be in
           final int c = community[row[k]];
           if (!touched[c]) {
             touched[c] = true;
@@ -205,13 +221,17 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
           candidateWeight[c] += rowWeights[k];
         }
 
+        // the node is taken out of its community first: staying is a candidate like the others, with the community's degree
+        // sum as it is without the node
+        final double twoM = 2.0 * totalWeight;
         int bestCommunity = currentCommunity;
-        double bestGain = 0.0;
+        double bestGain = candidateWeight[currentCommunity]
+            - resolution * nodeDegree[i] * (communityDegree[currentCommunity] - nodeDegree[i]) / twoM;
         for (int k = 0; k < candidateCount; k++) {
           guard.checkPeriodically(++work);
           final int c = candidates[k];
           if (c != currentCommunity) {
-            final double gain = candidateWeight[c] - nodeDegree[i] * communityDegree[c] / (2.0 * totalWeight);
+            final double gain = candidateWeight[c] - resolution * nodeDegree[i] * communityDegree[c] / twoM;
             if (gain > bestGain || (gain == bestGain && bestCommunity != currentCommunity && c < bestCommunity)) {
               bestGain = gain;
               bestCommunity = c;
@@ -232,13 +252,13 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
       if (!changed)
         break;
 
-      final double newModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
+      final double newModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, resolution, scratchA, scratchB, guard);
       if (Math.abs(newModularity - prevModularity) < tolerance)
         break;
       prevModularity = newModularity;
     }
 
-    final double finalModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, scratchA, scratchB, guard);
+    final double finalModularity = modularity(neighbors, weights, community, nodeDegree, totalWeight, resolution, scratchA, scratchB, guard);
 
     // Number the communities from 0 in order of first appearance (community ids are node indexes)
     final int[] remap = candidates; // reused
@@ -254,13 +274,15 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
   }
 
   /**
-   * Q = sum_c [ L_c/m - (d_c/(2m))^2 ] with L_c the weight of the edges inside community c and d_c the sum of the
-   * weighted degrees of its nodes. Community ids are node indexes (0..n-1). Every edge is listed from both of its ends,
-   * so the internal weights summed over the rows are twice L_c. The two scratch arrays are cleared first.
+   * Q = sum_c [ L_c/m - resolution * (d_c/(2m))^2 ] with L_c the weight of the edges inside community c and d_c the sum of
+   * the weighted degrees of its nodes. Community ids are node indexes (0..n-1). Every edge is listed from both of its ends,
+   * so the internal weights summed over the rows are twice L_c. The two scratch arrays are cleared first. The resolution is
+   * the one the local moves optimise, so that the tolerance check measures the objective the passes improve: at any other
+   * resolution a pass can change it by less than the tolerance while it still has moves to make.
    */
   private static double modularity(final int[][] neighbors, final double[][] weights, final int[] community,
-      final double[] nodeDegree, final double totalWeight, final double[] internalWeight, final double[] communityDegree,
-      final WorkGuard guard) {
+      final double[] nodeDegree, final double totalWeight, final double resolution, final double[] internalWeight,
+      final double[] communityDegree, final WorkGuard guard) {
     if (totalWeight == 0.0)
       return 0.0;
 
@@ -283,7 +305,7 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     double modularity = 0.0;
     for (int c = 0; c < n; c++) {
       final double share = communityDegree[c] / (2.0 * totalWeight);
-      modularity += internalWeight[c] / 2.0 / totalWeight - share * share;
+      modularity += internalWeight[c] / 2.0 / totalWeight - resolution * share * share;
     }
     return modularity;
   }

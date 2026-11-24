@@ -381,8 +381,9 @@ class AlgoNearLinearKernelsTest {
   }
 
   /**
-   * The former algorithm: each candidate community's total degree summed over every node, candidates met in ascending
-   * id (the lowest id wins equal gains), and the modularity computed from the edge list.
+   * The scan-based algorithm: each candidate community's total degree summed over every node, the node taken out of its
+   * community first so that staying competes with the candidates (a move needs a strictly higher gain), candidates met in
+   * ascending id (the lowest id wins equal gains), and the modularity computed from the edge list.
    */
   private static AlgoLouvain.Communities referenceLouvain(final Graph graph, final int maxIterations, final double tolerance) {
     final int n = graph.n();
@@ -404,9 +405,14 @@ class AlgoNearLinearKernelsTest {
       for (int i = 0; i < n; i++) {
         final TreeMap<Integer, Double> weightTo = new TreeMap<>();
         for (int k = 0; k < graph.both()[i].length; k++)
-          weightTo.merge(community[graph.both()[i][k]], graph.bothWeights()[i][k], Double::sum);
+          if (graph.both()[i][k] != i)
+            weightTo.merge(community[graph.both()[i][k]], graph.bothWeights()[i][k], Double::sum);
         int bestCommunity = community[i];
-        double bestGain = 0.0;
+        double ownDegree = 0.0;
+        for (int j = 0; j < n; j++)
+          if (community[j] == community[i])
+            ownDegree += nodeDegree[j];
+        double bestGain = weightTo.getOrDefault(community[i], 0.0) - nodeDegree[i] * (ownDegree - nodeDegree[i]) / (2.0 * totalWeight);
         for (final Map.Entry<Integer, Double> entry : weightTo.entrySet()) {
           if (entry.getKey() == community[i])
             continue;

@@ -45,6 +45,7 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -135,6 +136,11 @@ public class MongoDBBackend extends AbstractMongoBackend {
   @Override
   protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
     return new MongoDBDatabaseWrapper(databaseForClient(databaseName), plugin, this);
+  }
+
+  /** The wrapper that serves a database, whichever connection it was opened for. */
+  MongoDBDatabaseWrapper wrapperOf(final String databaseName) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper ? wrapper : null;
   }
 
   /**
@@ -234,11 +240,14 @@ public class MongoDBBackend extends AbstractMongoBackend {
     // opens) "local" or "config" by name exactly like any other, so a database called that is no exemption.
     if (!isAdminDatabase(databaseName)) {
       final ServerSecurityUser user = authorizeOnDatabase(channel, databaseName, "Command '" + command + "'");
-      // A cursor continuation is not admitted: it only serves the rows its find already read, and refusing it would break a
-      // cursor the client cannot resume
-      final boolean admit = !"getmore".equals(normalizedCommand) && !"killcursors".equals(normalizedCommand);
-      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> super.handleCommand(channel,
-          databaseName, command, query));
+      // A getMore of the cursor of a find is admitted like the find: it reads, filters and converts the rows of its batch (a filtered
+      // cursor scans the collection to find the next matches), so it is bounded by the gate, listed as a running query and stopped
+      // by a terminate. A refused one leaves the cursor where it was. What is not that, a killCursors that only releases and a
+      // getMore of a cursor of the library (its rows are read already), is not admitted
+      final boolean admit = !"killcursors".equals(normalizedCommand) && (!"getmore".equals(normalizedCommand) || readsFindCursor(
+          databaseName, query));
+      return runAuthorized(channel, databaseName, user, admit, () -> command + " " + query, () -> handleCommandOrCursor(channel,
+          databaseName, command, normalizedCommand, query));
     }
 
     // The virtual admin database: the handshake commands stay public, anything else (listDatabases, renameCollection,
@@ -249,6 +258,48 @@ public class MongoDBBackend extends AbstractMongoBackend {
       if (("dropdatabase".equals(normalizedCommand) || "getmore".equals(normalizedCommand)) && !user.canAccessToDatabase(
           databaseName))
         throw notAuthorizedOn(user, databaseName);
+    }
+    return super.handleCommand(channel, databaseName, command, query);
+  }
+
+  /** Whether a {@code getMore} names a cursor of a {@code find} of the database: the rows of its batch are read by the request itself. */
+  private boolean readsFindCursor(final String databaseName, final Document getMore) {
+    return resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper && wrapper.holdsFindCursor(getMore.get("getMore"));
+  }
+
+  /**
+   * A {@code getMore} or {@code killCursors} on a cursor of a {@code find} is served by the database that holds it, for the user that
+   * opened it; anything else (a change stream's cursor, an unknown id) is the library's.
+   */
+  private Document handleCommandOrCursor(final Channel channel, final String databaseName, final String command,
+      final String normalizedCommand, final Document query) {
+    if ("getmore".equals(normalizedCommand)) {
+      if (resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+        final Document reply = wrapper.getMore(query);
+        if (reply != null)
+          return reply;
+      }
+    } else if ("killcursors".equals(normalizedCommand) && query.get("cursors") instanceof List<?> ids
+        && resolveDatabase(databaseName) instanceof MongoDBDatabaseWrapper wrapper) {
+      final List<Object> killed = new ArrayList<>();
+      final List<Object> notFound = new ArrayList<>();
+      wrapper.killCursors(ids, killed, notFound);
+      if (!notFound.isEmpty()) {
+        // what is not a cursor of a find: the library closes its own kinds, and tells the ones it does not know
+        final Document rest = new Document();
+        rest.putAll(query);
+        rest.put("cursors", notFound);
+        final Document reply = super.handleCommand(channel, databaseName, command, rest);
+        if (reply.get("cursorsKilled") instanceof List<?> libraryKilled)
+          killed.addAll(libraryKilled);
+        reply.put("cursorsKilled", killed);
+        return reply;
+      }
+      final Document reply = new Document();
+      reply.put("cursorsKilled", killed);
+      reply.put("cursorsNotFound", notFound);
+      Utils.markOkay(reply);
+      return reply;
     }
     return super.handleCommand(channel, databaseName, command, query);
   }
@@ -381,11 +432,12 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   /**
    * The virtual administrative namespace the library answers its admin commands on: {@code admin} exactly, as the library
-   * compares it, or an authentication source such as {@code $external}. Any other name is resolved (and opened) as a database
-   * by the library, so it requires authorization and principal binding.
+   * compares it, and a request that names no database at all, which the library cannot resolve to one. Any other name, whatever
+   * its first character, is resolved (and opened) as a database by the library, so it requires authorization and principal
+   * binding. An authentication source such as {@code $external} is only the name a login is made on ({@link #handleSaslStart}).
    */
   private static boolean isAdminDatabase(final String databaseName) {
-    return databaseName == null || databaseName.isEmpty() || databaseName.startsWith("$") || ADMIN_DATABASE.equals(databaseName);
+    return databaseName == null || ADMIN_DATABASE.equals(databaseName);
   }
 
   /**

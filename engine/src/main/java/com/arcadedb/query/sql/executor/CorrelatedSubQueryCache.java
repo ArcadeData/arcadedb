@@ -164,16 +164,20 @@ public final class CorrelatedSubQueryCache {
       return DefaultSQLFunctionFactory.getInstance().isBuiltIn(name);
     }
 
-    if (node instanceof MethodCall call) {
-      final String name = call.methodName == null ? null : call.methodName.getStringValue().toLowerCase(Locale.ENGLISH);
-      if (name == null)
-        return false;
-      // GRAPH TRAVERSAL METHODS (.out(), .inE(), ...) ARE NOT IN THE METHOD REGISTRY: THEY RESOLVE AS FUNCTIONS, AND
-      // isBuiltInMethod() ADMITS THEM. NOT READ FROM MethodCall.isCacheable(), WHICH ANSWERS PLAN-CACHEABILITY, NOT PURITY
-      return !UNTRUSTED_METHODS.contains(name) && SqlAstInspector.isBuiltInMethod(call);
-    }
+    if (node instanceof MethodCall call)
+      return isTrustedMethod(call);
 
     return true;
+  }
+
+  /**
+   * Whether a method call is one the engine can vouch for: a built-in that is not in {@link #UNTRUSTED_METHODS}. Graph traversal
+   * methods (.out(), .inE(), ...) are not in the method registry, they resolve as functions, and isBuiltInMethod() admits them.
+   * Not read from MethodCall.isCacheable(), which answers plan-cacheability, not purity.
+   */
+  static boolean isTrustedMethod(final MethodCall call) {
+    final String name = call.methodName == null ? null : call.methodName.getStringValue().toLowerCase(Locale.ENGLISH);
+    return name != null && !UNTRUSTED_METHODS.contains(name) && SqlAstInspector.isBuiltInMethod(call);
   }
 
   /**

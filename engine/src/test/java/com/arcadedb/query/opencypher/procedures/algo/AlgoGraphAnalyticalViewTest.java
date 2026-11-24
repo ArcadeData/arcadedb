@@ -673,6 +673,8 @@ class AlgoGraphAnalyticalViewTest {
           { "algo.scc()", "node" },
           { "algo.triangleCount()", "node" },
           { "algo.katz()", "nodeId" },
+          { "algo.louvain()", "node" },
+          { "algo.leiden()", "nodeId" },
       };
 
       for (final String[] procedure : procedures) {
@@ -883,6 +885,8 @@ class AlgoGraphAnalyticalViewTest {
           { "algo.scc()", "node" },
           { "algo.triangleCount()", "node" },
           { "algo.katz()", "nodeId" },
+          { "algo.louvain()", "node" },
+          { "algo.leiden()", "nodeId" },
       };
 
       for (final String[] procedure : procedures) {
