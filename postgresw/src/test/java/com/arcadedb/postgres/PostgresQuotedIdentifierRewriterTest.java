@@ -410,12 +410,86 @@ class PostgresQuotedIdentifierRewriterTest {
     // comments, back-tick identifiers and ArcadeDB double-quoted strings are copied verbatim
     assertThat(on("SELECT `it's` FROM V -- 'a\\b'\n WHERE \"@rid\" = '#1:0' /* 'c\\' */"))
         .isEqualTo("SELECT `it's` FROM V -- 'a\\b'\n WHERE \"@rid\" = '#1:0' /* 'c\\' */");
-    // inside an ArcadeDB JSON object a single-quoted literal keeps the ArcadeDB meaning
-    assertThat(on("INSERT INTO T CONTENT {\"k\": 'a\\tb'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'a\\tb'}");
+    // inside an ArcadeDB JSON object a single-quoted literal is a PostgreSQL literal too
+    assertThat(on("INSERT INTO T CONTENT {\"k\": 'a\\tb'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'a\\\\tb'}");
     // square brackets are also PostgreSQL's: a literal between them is a PostgreSQL literal
     assertThat(on("SELECT ARRAY['C:\\'] AS v")).isEqualTo("SELECT ARRAY['C:\\\\'] AS v");
     // an unterminated literal is left for the parser to report
     assertThat(on("SELECT 'abc")).isEqualTo("SELECT 'abc");
     assertThat(on("SELECT E'abc\\'")).isEqualTo("SELECT E'abc\\'");
+  }
+
+  /*
+   * A single-quoted literal is read with PostgreSQL's rules wherever it stands, inside an ArcadeDB JSON object included: a
+   * client that composes the statement text itself (psycopg2, pgjdbc with preferQueryMode=simple) writes a value as a
+   * PostgreSQL literal, so the three passes - identifiers, literals and statement splitting - must agree with it on where
+   * the literal ends.
+   */
+  /** The value written as a client composing the text writes it while standard_conforming_strings is on. */
+  private static String clientLiteral(final String value) {
+    return "'" + value.replace("'", "''") + "'";
+  }
+
+  /** The value written in the form the ArcadeDB lexer decodes back to it. */
+  private static String engineLiteral(final String value) {
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'";
+  }
+
+  private static final String[] COMPOSED_VALUES = { "plain", "a\\b", "C:\\", "\\'", "it's", "\\''", "x\\'}", "\\', \"w\": 1, \"v\": '",
+      "};z;--", "\\'};z;--", "\\'}];z /* ", "{[;'\\", "a\\';b" };
+
+  @Test
+  void aLiteralInsideAJsonObjectIsReadWithPostgresRules() {
+    // a backslash is an ordinary character
+    assertThat(on("INSERT INTO T CONTENT {\"k\": 'a\\tb'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'a\\\\tb'}");
+    // a literal ending in a backslash is complete, and the one after it is a literal of its own
+    assertThat(on("INSERT INTO T CONTENT {\"k\": 'C:\\', \"j\": 'x'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'C:\\\\', \"j\": 'x'}");
+    // a doubled quote is one quote
+    assertThat(on("INSERT INTO T CONTENT {\"k\": 'it''s'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'it\\'s'}");
+    // in a collection nested in the object, and in an object nested in the collection
+    assertThat(on("INSERT INTO T CONTENT {\"k\": ['a\\', 'b']}")).isEqualTo("INSERT INTO T CONTENT {\"k\": ['a\\\\', 'b']}");
+    assertThat(on("UPDATE T SET v = [{\"k\": 'a\\'}]")).isEqualTo("UPDATE T SET v = [{\"k\": 'a\\\\'}]");
+    // an escape string decodes the escapes
+    assertThat(on("INSERT INTO T CONTENT {\"k\": E'a\\tb\\'c'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'a\tb\\'c'}");
+    // with standard_conforming_strings off every literal does
+    assertThat(off("INSERT INTO T CONTENT {\"k\": 'it\\'s'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'it\\'s'}");
+    assertThat(off("INSERT INTO T CONTENT {\"k\": 'a\\\\b'}")).isEqualTo("INSERT INTO T CONTENT {\"k\": 'a\\\\b'}");
+    // a double-quoted string of the object keeps the ArcadeDB meaning
+    assertThat(on("INSERT INTO T CONTENT {\"k\": \"it\\\"s 'x'\"}")).isEqualTo("INSERT INTO T CONTENT {\"k\": \"it\\\"s 'x'\"}");
+  }
+
+  @Test
+  void aValueComposedByTheClientIsOneLiteralInsideAJsonObject() {
+    for (final String value : COMPOSED_VALUES) {
+      assertThat(on("INSERT INTO T CONTENT {\"k\": " + clientLiteral(value) + "}"))
+          .as("value %s", value)
+          .isEqualTo("INSERT INTO T CONTENT {\"k\": " + engineLiteral(value) + "}");
+      assertThat(on("INSERT INTO T CONTENT {\"k\": [" + clientLiteral(value) + ", " + clientLiteral(value) + "], \"j\": 1}"))
+          .as("value %s in a collection", value)
+          .isEqualTo("INSERT INTO T CONTENT {\"k\": [" + engineLiteral(value) + ", " + engineLiteral(value) + "], \"j\": 1}");
+    }
+  }
+
+  @Test
+  void aValueComposedByTheClientIsOneStatementInsideAJsonObject() {
+    for (final String value : COMPOSED_VALUES) {
+      final String text = "INSERT INTO T CONTENT {\"k\": " + clientLiteral(value) + "}";
+      assertThat(split(text)).as("value %s", value).containsExactly(text);
+      assertThat(split(text + ";SELECT 2")).as("value %s followed by a statement", value).containsExactly(text, "SELECT 2");
+    }
+  }
+
+  @Test
+  void theSplitterAndTheTranslatorAgreeOnWhereALiteralInsideAJsonObjectEnds() {
+    // 'a\' is a whole literal while standard_conforming_strings is on: the object closes after it and the ';' separates
+    assertThat(split("INSERT INTO T CONTENT {\"k\": 'a\\'};SELECT 2")).containsExactly("INSERT INTO T CONTENT {\"k\": 'a\\'}", "SELECT 2");
+    // with the setting off the backslash escapes the quote, the literal runs on and so does the object
+    assertThat(PostgresQuotedIdentifierRewriter.splitStatements("INSERT INTO T CONTENT {\"k\": 'a\\';SELECT 2'}", false, true))
+        .containsExactly("INSERT INTO T CONTENT {\"k\": 'a\\';SELECT 2'}");
+    // an escape string always does
+    assertThat(split("INSERT INTO T CONTENT {\"k\": E'a\\';SELECT 2'}")).containsExactly("INSERT INTO T CONTENT {\"k\": E'a\\';SELECT 2'}");
+    // the quoted-identifier pass reads the same end: the identifier after the object is rewritten
+    assertThat(PostgresQuotedIdentifierRewriter.rewrite("SELECT \"a\" FROM T WHERE x = {\"k\": 'a\\'} AND \"b\" = 1"))
+        .isEqualTo("SELECT `a` FROM T WHERE x = {\"k\": 'a\\'} AND `b` = 1");
   }
 }
