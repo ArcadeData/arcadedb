@@ -197,7 +197,7 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
       final CommandContext context, final Expression[] oExpressions) {
     final FullTextFunctionSearch search = search(target, context, oExpressions);
-    return search != null ? search.explainScoring() : null;
+    return search != null ? search.explainScoring(context) : null;
   }
 
   @Override
