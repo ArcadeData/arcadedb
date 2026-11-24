@@ -81,7 +81,19 @@ class SelectParallelOrderByLimitTest extends TestHelper {
 
   @Test
   void aLimitWithoutAnOrderStillStopsTheProducers() {
-    for (int run = 0; run < 5; run++)
-      assertThat(values(database.select().fromType("T").limit(7).compile().parallel())).hasSize(7).doesNotHaveDuplicates();
+    for (int run = 0; run < 5; run++) {
+      final SelectIterator<Document> iterator = database.select().fromType("T").where().property("v").ge().value(0).limit(7)
+          .compile().parallel().documents();
+      final List<Integer> result = new ArrayList<>();
+      while (iterator.hasNext())
+        result.add(iterator.next().getInteger("v"));
+      assertThat(result).hasSize(7).doesNotHaveDuplicates();
+
+      // THE CONSUMER CAPS THE RESULT AT THE LIMIT EITHER WAY: ONLY THE NUMBER OF RECORDS THE PRODUCERS EVALUATED TELLS WHETHER
+      // THEY STOPPED. EACH OF THE 3 BUCKET PRODUCERS EVALUATES AT MOST ONE MATCH PAST THE SHARED LIMIT, SO THE BOUND IS
+      // limit + 3, AGAINST THE 300 A PRODUCER THAT IGNORED THE LIMIT WOULD EVALUATE (THE QUEUE HOLDS THEM ALL)
+      database.async().waitCompletion();
+      assertThat((Long) iterator.getMetrics().get("evaluatedRecords")).isLessThanOrEqualTo(7L + 3L);
+    }
   }
 }

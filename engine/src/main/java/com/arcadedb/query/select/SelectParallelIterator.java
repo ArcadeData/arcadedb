@@ -47,7 +47,8 @@ import java.util.concurrent.locks.LockSupport;
  * This iterator creates one task per bucket and executes the fetching in parallel on the database async workers. The
  * fetched records are handed to the consumer through a fixed-size concurrent queue. A producer facing a full queue waits
  * with a bounded park instead of busy-spinning (#5065): it gives up as soon as the iterator is closed, the worker is
- * interrupted (executor shutdown), enough records were produced to satisfy the limit, or the consumer made no progress
+ * interrupted (executor shutdown), enough records were produced to satisfy the limit (only without an order by, which
+ * sorts the whole result before applying the limit, #12692), or the consumer made no progress
  * for the whole stall bound (the select timeout when set, otherwise {@link #DEFAULT_STALL_TIMEOUT_MS}). A producer that
  * gives up ends its task through the regular completion path, so the async executor contracts (completed() notification,
  * batch commit) are preserved.</p>
