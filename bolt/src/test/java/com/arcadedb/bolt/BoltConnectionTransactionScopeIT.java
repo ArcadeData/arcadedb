@@ -36,9 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The transaction of a BOLT connection is the one the BEGIN, COMMIT and ROLLBACK messages of the protocol manage. A statement
- * of the same name sent as the text of a RUN is not a way to open or end one: the connection tracks no such transaction, so
- * neither the RESET, the LOGOFF, a re-authentication nor the close of the connection would end it, and the next statement of
- * the connection, whoever it runs as by then, would join it.
+ * of the same name sent as the text of a RUN is refused, and a RESET, a LOGOFF, a new LOGON and the close of the connection
+ * all end whatever transaction the connection holds.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -115,25 +114,13 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
     }
   }
 
-  /**
-   * A connection that changes user goes on with a transaction of its own: what the next user writes with an auto-commit statement
-   * is committed, and what the previous user left uncommitted is neither seen nor committed by it.
-   */
+  /** After a LOGOFF and a LOGON of another user, each auto-commit statement of the connection is committed on its own. */
   @Test
-  void aUserThatTakesOverAConnectionRunsInTransactionsOfItsOwn() throws Exception {
+  void aLogonAfterALogoffCommitsEachStatementOnItsOwn() throws Exception {
     createSecondUser();
 
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
-      // Whatever this answers, what is written next must not depend on it: the statement either opens nothing or is refused
-      bolt.run("START TRANSACTION");
-      final BoltWireConnection.Summary first = bolt.readSummary();
-      if (first.signature() == BoltMessage.SUCCESS) {
-        bolt.pull(-1, -1);
-        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-      } else {
-        bolt.sendNoFields(BoltMessage.RESET);
-        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-      }
+      refuseStartTransaction(bolt);
 
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'first'})").signature()).isEqualTo(BoltMessage.SUCCESS);
 
@@ -154,18 +141,11 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
 
   /** The same, for a LOGON of another user on a connection that was not logged off first. */
   @Test
-  void aReauthenticationWithoutLogoffRunsInTransactionsOfItsOwn() throws Exception {
+  void aLogonWithoutALogoffCommitsEachStatementOnItsOwn() throws Exception {
     createSecondUser();
 
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
-      bolt.run("START TRANSACTION");
-      if (bolt.readSummary().signature() == BoltMessage.SUCCESS) {
-        bolt.pull(-1, -1);
-        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-      } else {
-        bolt.sendNoFields(BoltMessage.RESET);
-        assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-      }
+      refuseStartTransaction(bolt);
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'first'})").signature()).isEqualTo(BoltMessage.SUCCESS);
 
       bolt.logon(SECOND_USER, SECOND_PASSWORD);
@@ -175,12 +155,9 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
     }
   }
 
-  /**
-   * A transaction a nested statement of the connection opens is not one the connection tracks, and it ends with the identity the
-   * connection began it under: after a LOGOFF and a LOGON the next user neither sees what was written in it nor writes into it.
-   */
+  /** A transaction a nested statement of the connection opens is rolled back by a LOGOFF: what it wrote is gone after the LOGON. */
   @Test
-  void aTransactionLeftOpenByANestedStatementEndsWithTheLogoff() throws Exception {
+  void aNestedTransactionIsRolledBackByTheLogoff() throws Exception {
     createSecondUser();
 
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
@@ -193,16 +170,16 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
 
       final BoltWireConnection.Summary seen = runAndPull(bolt, "MATCH (n:" + PROBE_TYPE + ") RETURN count(n) AS c");
       assertThat(seen.signature()).isEqualTo(BoltMessage.SUCCESS);
-      assertThat(seen.records()).as("what the second user reads").isEqualTo(List.of(List.of(0L)));
+      assertThat(seen.records()).as("what the connection reads after the LOGON").isEqualTo(List.of(List.of(0L)));
 
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'second'})").signature()).isEqualTo(BoltMessage.SUCCESS);
-      assertThat(committedProbes("second")).as("probes of the second user, committed").isEqualTo(1);
+      assertThat(committedProbes("second")).as("probes written after the LOGON, committed").isEqualTo(1);
     }
   }
 
   /** A LOGON that re-authenticates a connection in READY ends it the same way. */
   @Test
-  void aTransactionLeftOpenByANestedStatementEndsWithTheReauthentication() throws Exception {
+  void aNestedTransactionIsRolledBackByTheLogon() throws Exception {
     createSecondUser();
 
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
@@ -212,13 +189,13 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
       bolt.logon(SECOND_USER, SECOND_PASSWORD);
 
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'second'})").signature()).isEqualTo(BoltMessage.SUCCESS);
-      assertThat(committedProbes("second")).as("probes of the second user, committed").isEqualTo(1);
+      assertThat(committedProbes("second")).as("probes written after the LOGON, committed").isEqualTo(1);
     }
   }
 
   /** And so does a RESET, the message a connection pool sends before it hands the connection to its next borrower. */
   @Test
-  void aTransactionLeftOpenByANestedStatementEndsWithTheReset() throws Exception {
+  void aNestedTransactionIsRolledBackByTheReset() throws Exception {
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       openTransactionFromANestedStatement(bolt);
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'first'})").signature()).isEqualTo(BoltMessage.SUCCESS);
@@ -231,10 +208,15 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
     }
   }
 
-  /**
-   * Opens an engine transaction from inside another statement and checks it was opened, so the tests above cannot pass for want of
-   * one: the statement the nested text runs is not the connection's own.
-   */
+  /** START TRANSACTION as the text of a RUN is refused, and the RESET brings the connection back to READY. */
+  private static void refuseStartTransaction(final BoltWireConnection bolt) throws IOException {
+    bolt.run("START TRANSACTION");
+    assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.FAILURE);
+    bolt.sendNoFields(BoltMessage.RESET);
+    assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+  }
+
+  /** Opens an engine transaction from inside another statement and checks it was opened, so the tests above cannot pass for want of one. */
   private static void openTransactionFromANestedStatement(final BoltWireConnection bolt) throws IOException {
     final BoltWireConnection.Summary nested = runAndPull(bolt,
         "CALL apoc.do.when(true, 'START TRANSACTION', 'RETURN 1', {}) YIELD value RETURN value");

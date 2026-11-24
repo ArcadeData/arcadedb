@@ -741,10 +741,9 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Rolls back the explicit transaction, if any, and forgets it. Whatever else this connection's thread still holds open on the
-   * database goes with it, nested levels included, whether or not the connection tracks it: nothing the connection began outlives
-   * the state (a RESET, a LOGOFF) or the identity (a new LOGON) it began under. Never throws: it runs on the teardown paths,
-   * where a rollback failure must not stop the rest of the teardown.
+   * Rolls back the explicit transaction, if any, and forgets it. Every level of the transaction of this connection's thread is
+   * rolled back, nested ones included, so a RESET, a LOGOFF, a new LOGON and the close all leave the connection without an open
+   * transaction. Never throws: it runs on the teardown paths, where a rollback failure must not stop the rest of the teardown.
    */
   private void rollbackExplicitTransaction() {
     if (database != null) {
@@ -910,9 +909,8 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
-    // The transaction of a connection is the one its BEGIN, COMMIT and ROLLBACK messages manage. The statement of the same name
-    // would begin or end one this connection does not track, so nothing that ends the connection's transaction state (RESET,
-    // LOGOFF, a new LOGON, the close) would end it. Refused before anything runs, in READY and inside a transaction alike
+    // The transaction of a connection is the one its BEGIN, COMMIT and ROLLBACK messages manage: the statement of the same name
+    // is not a way to begin or end it. Refused before anything runs, in READY and inside a transaction alike
     if (StandaloneTransactionControl.isTransactionControl(database, "opencypher", query)) {
       sendFailure(BoltErrorCodes.SEMANTIC_ERROR, "A transaction control statement is not accepted as a query: use the BEGIN, COMMIT "
           + "and ROLLBACK messages of the protocol (the transaction functions of the driver)");
@@ -2098,7 +2096,7 @@ public class BoltNetworkExecutor extends Thread {
     // pre-authentication read timeout armed, as LOGOFF leaves it.
     final boolean wasAuthenticated = user != null;
     if (wasAuthenticated)
-      // The identity is about to change: what the previous one left open on this connection is not for the next one to join
+      // The transaction of the connection ends before the principal changes
       rollbackExplicitTransaction();
     user = null;
 
