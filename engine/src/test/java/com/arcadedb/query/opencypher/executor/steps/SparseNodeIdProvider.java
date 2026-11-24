@@ -109,11 +109,11 @@ final class SparseNodeIdProvider implements GraphTraversalProvider {
   }
 
   @Override
-  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
     Arrays.fill(degrees, 0);
     for (int nodeId = 0; nodeId < degrees.length; nodeId++)
       if (isNodeLive(nodeId))
-        degrees[nodeId] = (int) countEdges(nodeId, direction, edgeType);
+        degrees[nodeId] = (int) countEdges(nodeId, direction, edgeTypes);
   }
 
   @Override

@@ -822,13 +822,15 @@ public enum Type {
         // A value read from text whose type the client left unspecified is that text as a STRING (issue #12711)
         if (value instanceof SourceText source)
           return source.sourceText();
-        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and
-        // not reversible. Refuse it rather than store that (issue #9041).
-        if (property != null && valueClass.isArray())
+        // An array's toString() is its class code and identity hash ("[B@72e34f77"): not the content, not stable, and not
+        // reversible. Refuse it rather than store that (issue #9041), except the two arrays an HTTP request leaves in a value
+        // (see unwrapNestedPrimitiveArrays): a list nested in a map parameter arrives as a long[] / double[] and is stored as
+        // "[1, 2]", the text the same list has (issue #12896)
+        if (property != null && valueClass.isArray() && valueClass != long[].class && valueClass != double[].class)
           throw inconvertible(value, "STRING", property);
-        // Without a property - an index key of an undeclared property, whose key type is STRING - the content is the text, the
-        // one a list of the same elements has: the identity text was a key no seek found and no update or delete removed
-        // (issue #11578). A collection is written the same way, so an array nested in it is its content too.
+        // Without a property - an index key of an undeclared property, whose key type is STRING - the identity text was a key no
+        // seek found and no update or delete removed: the text of the content is the key (issue #11578). A collection is written
+        // the same way, so an array nested in it is its content too.
         if (valueClass.isArray() || property == null && value instanceof Collection)
           return elementsText(value, false);
         // A zoned datetime keeps the text form Cypher gave it before it had a native type (issue #8572)

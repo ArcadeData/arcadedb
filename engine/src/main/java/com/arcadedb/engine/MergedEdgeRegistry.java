@@ -46,8 +46,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * The keys are first looked up in one of {@link #STRIPES} stripes, the low bits of the key: each stripe holds the sequence of the
  * last commit of a key in it, and how many commits are writing one right now. A stripe that has not moved answers at once. A stripe
- * that has moved is decided on the key itself (issue #11782): by the keys committed since {@link #exactSince}, a table of at most
- * {@link #EXACT_KEYS} keys started over once full (a commit with more keys than that is not kept in it), and by the keys of the
+ * that has moved is decided on the key itself (issue #11782): by the keys committed since {@link #exactSince}, two tables of at most
+ * {@link #EXACT_KEYS} keys each, the newer one handed to the older once full and a new one started (a commit with more keys than a
+ * table holds is not kept in either), and by the keys of the
  * commits in flight. A stripe answered alone refused every commit whose relationships shared a stripe with ANY relationship
  * committed meanwhile, and with E relationships per transaction the refusals grew with E squared: 70% of the commits of 4 writers
  * creating 200 each, none of them twice.
@@ -60,7 +61,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * What it costs and what it trades:
  * <ul>
- * <li>a transaction that never matched-or-created a relationship pays one volatile read at begin, and nothing at commit;</li>
+ * <li>a transaction that never matched-or-created a relationship pays one volatile read at begin, and nothing at commit, unless it
+ * created a relationship of a type with an exact-key index (issue #12483): a MERGE between two bound nodes answers its existence
+ * check from such an index and reads no edge list, so the commit of every relationship of the type marks the key of each of its
+ * exact-key indexes (the pair, the index and the values committed), which that MERGE checks;</li>
  * <li>two keys that share their 64 bits, or a transaction that began before the table of committed keys last started over and finds
  * its stripe moved, refuse a commit that did not conflict: a retry, never a wrong answer;</li>
  * <li>two transactions creating the same relationship at the same moment: the second to reach its commit is refused, never both,
@@ -87,9 +91,14 @@ public final class MergedEdgeRegistry {
   // Guarded by this. Allocated on the first commit that creates a relationship this way: most databases never do
   private       long[]          lastCommit;
   private       int[]           inFlight;
-  // Every key committed after exactSince, with the sequence of its last commit
+  // Every key committed after currentSince, with the sequence of its last commit, and the keys committed after exactSince up to
+  // currentSince: the table the current one replaced, so a transaction that began before the last start of the current table still
+  // decides its keys one by one. A bulk load of 500 relationships per commit marks about 3,000 keys, which filled one table every
+  // ten commits: a transaction spanning that many commits of 8 writers was refused by any moved stripe, whatever it created (#12643).
   private       LongLongHashMap committedKeys;
+  private       LongLongHashMap previousKeys;
   private       long            exactSince;
+  private       long            currentSince;
   // The marked keys of each commit in flight, sorted
   private final List<Reservation> reservations = new ArrayList<>();
 
@@ -145,12 +154,19 @@ public final class MergedEdgeRegistry {
   public synchronized void committed(final long[] marked, final int markedCount) {
     final long committedAt = sequence.incrementAndGet();
     final boolean kept = markedCount <= EXACT_KEYS;
-    if (committedKeys.size() + markedCount > EXACT_KEYS) {
-      // Started over: the table holds every key committed from this commit on, and a transaction that began before it decides a
-      // moved stripe alone. A commit with more keys than the table holds is not kept in it either, so the table stays within
-      // EXACT_KEYS: it starts after that commit, which a transaction that began before it decides by the moved stripe alone too
+    if (!kept) {
+      // A commit with more keys than a table holds is not kept in either: both start after that commit, which a transaction that
+      // began before it decides by the moved stripe alone
       committedKeys = new LongLongHashMap();
-      exactSince = kept ? committedAt - 1 : committedAt;
+      previousKeys = null;
+      exactSince = currentSince = committedAt;
+    } else if (committedKeys.size() + markedCount > EXACT_KEYS) {
+      // Started over: the full table becomes the previous one and the one before it is dropped, so a transaction that began before
+      // the previous table started decides a moved stripe alone
+      previousKeys = committedKeys;
+      exactSince = currentSince;
+      committedKeys = new LongLongHashMap();
+      currentSince = committedAt - 1;
     }
     for (int i = 0; i < markedCount; i++) {
       final long key = marked[i];
@@ -170,10 +186,11 @@ public final class MergedEdgeRegistry {
 
   /**
    * Whether {@code key}, whose stripe moved after {@code since}, was itself committed after it. A transaction that began before the
-   * table of committed keys started over cannot tell, and is refused.
+   * older table of committed keys started cannot tell, and is refused.
    */
   private boolean committedSince(final long key, final long since) {
-    return since < exactSince || committedKeys.get(storable(key), 0L) > since;
+    return since < exactSince || committedKeys.get(storable(key), 0L) > since
+        || previousKeys != null && previousKeys.get(storable(key), 0L) > since;
   }
 
   private boolean beingCommitted(final long key) {
@@ -219,6 +236,11 @@ public final class MergedEdgeRegistry {
   /** How many committed keys the exact table holds, for the tests. */
   synchronized int exactKeys() {
     return committedKeys != null ? committedKeys.size() : 0;
+  }
+
+  /** Whether {@code key} was committed after {@code since}, as a commit that began at {@code since} is told, for the tests. */
+  synchronized boolean isCommittedSince(final long key, final long since) {
+    return lastCommit != null && lastCommit[stripeOf(key)] > since && committedSince(key, since);
   }
 
   /** How many commits are writing {@code key} now, for the tests. */
