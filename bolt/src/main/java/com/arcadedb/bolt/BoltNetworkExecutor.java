@@ -874,6 +874,13 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it. It comes before the time budget below is taken, so the conversion is part of what the budget spent
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
+
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
     if (explicitTransaction && transactionTimedOut()) {
@@ -884,13 +891,6 @@ public class BoltNetworkExecutor extends Thread {
     final long statementTimeoutMs = explicitTransaction ?
         remainingTransactionMillis() :
         txTimeoutMillis(message.getExtra());
-
-    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
-    // through pays for it
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query, stream)) {
