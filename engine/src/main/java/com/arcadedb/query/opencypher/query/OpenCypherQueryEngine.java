@@ -336,7 +336,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * statement and runs none of them. Building them still evaluates the expressions the steps need up front (SKIP, LIMIT, the
    * top-K bound of an ORDER BY, the conditions of a conditional query), so a statement calling a function that is not confirmed
    * to be a built-in one, which can be a {@code DEFINE FUNCTION} body, runs it while it is planned and is classified as it is
-   * when run (issue #6418).
+   * when run (issue #6418). The answer is deliberately conservative: a call anywhere in the statement counts, not only one in
+   * the expressions evaluated up front, so that no shape of the statement has to be modelled here.
    */
   private static boolean isPlanOnly(final boolean explain, final CypherStatement statement) {
     return explain && !statement.hasUnconfirmedFunctionCall();
