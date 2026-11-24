@@ -7691,15 +7691,36 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it. The one place the verdict and its
-   * wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before it registers a type,
-   * so a refusal leaves no half-built type behind (issue #10317).
+   * The type that keeps the bucket {@code bucketId} for its own use, in the published graph: the paired bucket of its EXTERNAL
+   * values, an edge-list bucket of one of its vertex buckets, a bucket of its super-node stripe pool. A bucket a type owns is
+   * the one the type's own list answers with, so it is found here as well. {@code null} while a load is assembling the graph:
+   * the load restores what was saved, and the maps it builds are not the ones a statement reads.
+   */
+  LocalDocumentType getBucketInvolvedBy(final int bucketId) {
+    if (isStagingPublication())
+      return null;
+    if (bucketTypeMapsStale)
+      rebuildBucketTypeMap();
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
+  }
+
+  /**
+   * Refuses to hand {@code bucket} to the type {@code typeName} when another type owns it, or keeps it for its own use. The one
+   * place the verdict and its wording live: {@code addBucket} gives it after the fact, and {@link TypeBuilder} asks for it before
+   * it registers a type, so a refusal leaves no half-built type behind (issue #10317).
    */
   void checkBucketIsFree(final String typeName, final Bucket bucket) {
     final LocalDocumentType owner = getBucketOwner(bucket.getFileId());
     if (owner != null)
       throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
           + "', because the bucket is already associated to the type '" + owner.getName() + "'");
+
+    // An internal bucket of a type answers to that type for the per-file permissions only while no type owns it: taking it as
+    // a bucket of its own would hand it to the new type
+    final LocalDocumentType user = getBucketInvolvedBy(bucket.getFileId());
+    if (user != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + typeName
+          + "', because the bucket is an internal bucket of the type '" + user.getName() + "'");
   }
 
   /** What the published bucket maps hold that a full rebuild would not, or null when they agree (checked under -ea). */

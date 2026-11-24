@@ -576,11 +576,14 @@ class SuperNodeStripingTest extends TestHelper {
   @Test
   void poolNameCollisionWithUserBucketSkipsPromotion() {
     GlobalConfiguration.GRAPH_SUPERNODE_THRESHOLD.setValue(64);
-    createSchema();
-    // A user bucket named like slot 0 of Hub's pool, OWNED by another type
+    // A user bucket named like slot 0 of Hub's pool, OWNED by another type before Hub exists: once Hub is there, a bucket of that
+    // name is one of its own and is not handed to another type
     database.transaction(() -> {
+      database.getSchema().createVertexType("Src", 8);
       final com.arcadedb.engine.Bucket collision = database.getSchema().createBucket(StripedEdgeList.stripeBucketName("Hub", 0));
       database.getSchema().getType("Src").addBucket(collision);
+      database.getSchema().createVertexType("Hub", 1);
+      database.getSchema().createEdgeType("LINK", 8);
     });
     final RID hubRID = createHub();
 
