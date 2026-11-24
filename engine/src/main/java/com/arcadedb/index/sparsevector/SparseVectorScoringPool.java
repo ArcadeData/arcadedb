@@ -489,6 +489,8 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
         ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
         : Long.MAX_VALUE;
     final List<Throwable> errors = new ArrayList<>();
+    // The abort of the command's guard, from whichever task met it first: it is what the caller sees, whatever else failed
+    RuntimeException abort = null;
     for (final Future<T> f : futures) {
       try {
         // The shared deadline bounds the wait, as the guard does; a future that is done is collected whatever either says
@@ -504,19 +506,29 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
         Thread.currentThread().interrupt();
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Interrupted during sparse-vector fan-out", ie);
+        throw abortOr(abort, new IndexException("Interrupted during sparse-vector fan-out", ie));
       } catch (final TimeoutException te) {
         // Cancel every still-pending future so the pool stops working on results we will not
         // observe. The cancelled-from-the-pool task may still throw an InterruptedException
         // inside its IO; we don't await those (cancel(true) returns immediately).
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Sparse-vector fan-out timed out after "
+        throw abortOr(abort, new IndexException("Sparse-vector fan-out timed out after "
             + timeoutSeconds + "s (configurable via "
-            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te));
       } catch (final ExecutionException ee) {
-        errors.add(ee.getCause() != null ? ee.getCause() : ee);
+        final Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+        // isAbort only accepts runtime exceptions
+        if (abort == null && WorkGuard.isAbort(cause))
+          abort = (RuntimeException) cause;
+        else
+          errors.add(cause);
       }
+    }
+    if (abort != null) {
+      for (final Throwable error : errors)
+        abort.addSuppressed(error);
+      throw abort;
     }
     if (!errors.isEmpty()) {
       final Throwable first = errors.getFirst();
@@ -527,6 +539,18 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
       throw toThrow;
     }
     return out;
+  }
+
+  /**
+   * What a failing wait throws: the abort of the command's guard when a task already met it, with {@code failure} kept as its
+   * suppressed exception, so the caller sees the abort and not the scoring failure that came after it; {@code failure}
+   * itself otherwise.
+   */
+  static RuntimeException abortOr(final RuntimeException abort, final RuntimeException failure) {
+    if (abort == null)
+      return failure;
+    abort.addSuppressed(failure);
+    return abort;
   }
 
   /**

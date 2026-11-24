@@ -160,7 +160,9 @@ public final class WorkGuard {
   /**
    * Whether {@code t} is one of the aborts {@link #check()} raises (deadline, termination, interrupt), as opposed to a failure
    * of the work itself. A layer that wraps the failures of work run on other threads uses it to let an abort through unchanged,
-   * so the caller sees the abort and not a wrapper around it.
+   * so the caller sees the abort and not a wrapper around it. An interrupt is raised as a plain {@link CommandExecutionException},
+   * which is why that type is accepted here: only a guard that is interruptible raises it, and the guards read on pool threads
+   * are not (see {@link #withoutInterrupt()}).
    */
   public static boolean isAbort(final Throwable t) {
     return t instanceof TimeoutException || t instanceof QueryTerminatedException || t instanceof CommandExecutionException;

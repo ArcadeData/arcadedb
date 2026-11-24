@@ -821,12 +821,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         for (final Future<?> other : futures)
           other.cancel(true);
         final IndexException interrupted = new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
-        throw abortOr(abort, interrupted);
+        throw SparseVectorScoringPool.abortOr(abort, interrupted);
       } catch (final TimeoutException te) {
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw abortOr(abort, new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds
-            + "s (configurable via " + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te));
+        final IndexException timedOut = new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds
+            + "s (configurable via " + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+        throw SparseVectorScoringPool.abortOr(abort, timedOut);
       } catch (final RuntimeException e) {
         if (!WorkGuard.isAbort(e))
           throw e;
@@ -840,6 +841,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       } catch (final ExecutionException ee) {
         final Throwable cause = ee.getCause();
         if (WorkGuard.isAbort(cause)) {
+          // isAbort only accepts runtime exceptions
           if (abort == null)
             abort = (RuntimeException) cause;
         } else if (failure == null)
@@ -857,18 +859,6 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       throw failure;
 
     return BmwScorer.mergeRanges(ranges, k);
-  }
-
-  /**
-   * What a failing drain throws: the abort of the command's guard when a range already met it, with {@code failure} kept as
-   * its suppressed exception, so the caller sees the abort and not the scoring failure that came after it; {@code failure}
-   * itself otherwise.
-   */
-  private static RuntimeException abortOr(final RuntimeException abort, final RuntimeException failure) {
-    if (abort == null)
-      return failure;
-    abort.addSuppressed(failure);
-    return abort;
   }
 
   /**

@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryTerminatedException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
@@ -162,6 +163,22 @@ class SparseScanCommandBoundTest extends TestHelper {
         null, WorkGuard.forDeadline("the scan", System.currentTimeMillis() - 1))).isInstanceOf(TimeoutException.class);
     assertThat(opened.get()).as("cursor sets opened").isZero();
     assertThat(moves.get()).as("cursors started or moved").isZero();
+  }
+
+  @Test
+  void anAbortOfATaskIsWhatTheFanOutThrowsWhateverElseFailed() {
+    final List<Callable<Integer>> tasks = new ArrayList<>();
+    // The ordinary failure comes first in submission order, so it would be the one thrown if the abort did not take priority
+    tasks.add(() -> {
+      throw new IndexException("a task failed");
+    });
+    tasks.add(() -> {
+      throw new QueryTerminatedException("the statement was terminated");
+    });
+
+    assertThatThrownBy(() -> SparseVectorScoringPool.runAll(tasks, false, WorkGuard.forCommandDeadline(null)))
+        .isInstanceOf(QueryTerminatedException.class)
+        .satisfies(e -> assertThat(e.getSuppressed()).anyMatch(s -> s instanceof IndexException));
   }
 
   @Test
