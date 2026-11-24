@@ -158,8 +158,8 @@ class MultiAddressServerSocketTest {
     };
 
     try (final MultiAddressServerSocket socket = MultiAddressServerSocket.bind(failingOnce, "localhost", 0)) {
-      // the error reaches the caller as a failed accept, once, and no acceptor thread is lost to it
-      assertThatThrownBy(socket::accept).isInstanceOf(IOException.class).hasCauseInstanceOf(OutOfMemoryError.class);
+      // the error reaches the caller as it is, once, and no acceptor thread is lost to it
+      assertThatThrownBy(socket::accept).isInstanceOf(OutOfMemoryError.class);
 
       for (final String host : MultiAddressServerSocket.resolveListenHosts("localhost"))
         try (final Socket client = new Socket(InetAddress.getByName(host), socket.getLocalPort())) {

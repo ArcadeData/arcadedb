@@ -173,6 +173,12 @@ public final class MultiAddressServerSocket implements AutoCloseable {
       }
       if (next instanceof IOException e)
         throw e;
+      // a failure of an acceptor thread that is not an I/O error is handed on as it is, so the caller classifies it as it does
+      // the failure of a single socket
+      if (next instanceof RuntimeException e)
+        throw e;
+      if (next instanceof Error e)
+        throw e;
       accepted.offer(CLOSED); // leave the marker for any other waiter
       throw new SocketException("Socket is closed");
     } catch (final InterruptedException e) {
@@ -190,6 +196,10 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         } catch (final InterruptedException e) {
           closeQuietly(client);
           return;
+        } catch (final RuntimeException | Error e) {
+          // not queued, so nobody else owns the connection
+          closeQuietly(client);
+          throw e;
         }
         if (closed)
           drain();
@@ -206,7 +216,7 @@ public final class MultiAddressServerSocket implements AutoCloseable {
         // address would stay closed while the others keep working
         if (closed || socket.isClosed())
           return;
-        accepted.offer(new IOException("Unable to accept a connection: " + e, e));
+        accepted.offer(e); // dropped on purpose when the caller has not consumed the previous one, as above
         if (!pause())
           return;
       }

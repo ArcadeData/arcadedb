@@ -72,8 +72,8 @@ class RedisListenerStartFailureTest {
           throw new OutOfMemoryError("start failed");
         throw new IllegalStateException("unable to start the connection");
       }
-      servedStart.countDown();
       super.startConnection(connection);
+      servedStart.countDown();
     }
   }
 
