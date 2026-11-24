@@ -1253,6 +1253,7 @@ class CypherIndexOrderingTest {
   @Nested
   class Issue12141CypherWithOrderByIndexOrder extends TestHelper {
     private static final int VERTICES = 2_000;
+    private static final int NO_KEY_VERTICES = 2;
 
     @Override
     protected void beginTest() {
@@ -1264,6 +1265,9 @@ class CypherIndexOrderingTest {
         // Inserted in reverse order, so physical order and key order are opposite
         for (int i = VERTICES - 1; i >= 0; i--)
           database.newVertex("Doc").set("key", key(i)).set("n", i % 7).save();
+        // Two vertices with no key: the index holds neither, a range predicate never matches them, a whole-label scan does
+        for (int i = 0; i < NO_KEY_VERTICES; i++)
+          database.newVertex("Doc").set("n", 100 + i).save();
       });
     }
 
@@ -1338,9 +1342,53 @@ class CypherIndexOrderingTest {
       assertThat(column(secondWith, after)).containsExactlyElementsOf(keys(11, 14));
       assertThat(profile(secondWith, after)).contains("+ ORDER BY ");
 
-      final String aggregated = "MATCH (d:Doc) WHERE d.key > $after WITH d.n AS n, count(*) AS c ORDER BY n LIMIT 2 RETURN n, c";
+      final String aggregated = "MATCH (d:Doc) WHERE d.key > $after WITH d.n AS n, count(*) AS c ORDER BY n LIMIT 2 RETURN n AS k, c";
       assertThat(column(aggregated, after)).hasSize(2);
       assertThat(profile(aggregated, after)).contains("+ ORDER BY ");
+
+      // A SKIP with no LIMIT reads the whole range anyway: it keeps its sort
+      final String skipOnly = "MATCH (d:Doc) WHERE d.key > $after WITH d ORDER BY d.key SKIP 1985 RETURN d.key AS k";
+      assertThat(column(skipOnly, after)).containsExactlyElementsOf(keys(1996, VERTICES));
+      assertThat(profile(skipOnly, after)).contains("+ ORDER BY ");
+    }
+
+    /**
+     * A WITH over the whole label reads the index from its first key, as the RETURN form does (#8724): the vertices with no
+     * key, which the index does not hold, follow the keys ascending and precede them descending (#11701).
+     */
+    @Test
+    void aWithOverTheWholeLabelPlacesTheVerticesWithNoKey() {
+      final Map<String, Object> none = Map.of();
+      final String ascending = "MATCH (d:Doc) WITH d ORDER BY d.key LIMIT 3 RETURN d.key AS k";
+      assertThat(column(ascending, none)).containsExactlyElementsOf(keys(0, 3));
+      assertThat(profile(ascending, none)).contains("index order").doesNotContain("+ ORDER BY ");
+
+      final String acrossTheLastKey = "MATCH (d:Doc) WITH d ORDER BY d.key SKIP 1998 LIMIT 5 RETURN d.key AS k";
+      assertThat(column(acrossTheLastKey, none)).containsExactly(key(1998), key(1999), null, null);
+      assertThat(profile(acrossTheLastKey, none)).contains("index order").doesNotContain("+ ORDER BY ");
+
+      final String descending = "MATCH (d:Doc) WITH d ORDER BY d.key DESC LIMIT 4 RETURN d.key AS k";
+      assertThat(column(descending, none)).containsExactly(null, null, key(1999), key(1998));
+      assertThat(profile(descending, none)).contains("index order, descending").doesNotContain("+ ORDER BY ");
+    }
+
+    /** The Cypher 25 ORDER BY ... LIMIT clause on its own is a WITH * that pages: it takes the index order the same way. */
+    @Test
+    void aStandaloneOrderByLimitClause() {
+      final Map<String, Object> after = Map.of("after", key(100));
+      final String query = "MATCH (d:Doc) WHERE d.key > $after ORDER BY d.key LIMIT 4 RETURN d.key AS k";
+      assertThat(column(query, after)).containsExactlyElementsOf(keys(101, 105));
+      assertThat(profile(query, after)).contains("index order").doesNotContain("+ ORDER BY ");
+    }
+
+    /** The rows reach the WITH in index order through more than one MATCH clause on the anchor. */
+    @Test
+    void aWithAfterTwoMatchClauses() {
+      final Map<String, Object> after = Map.of("after", key(100));
+      final String query = "MATCH (d:Doc) WHERE d.key > $after MATCH (d) WHERE d.n >= 5 WITH d ORDER BY d.key LIMIT 4 RETURN d.key AS k";
+      // n = i % 7: from 101 on, the keys with n >= 5 are 103 (n = 5), 104, 110 and 111
+      assertThat(column(query, after)).containsExactly(key(103), key(104), key(110), key(111));
+      assertThat(profile(query, after)).contains("index order").doesNotContain("+ ORDER BY ");
     }
 
     private static String key(final int i) {
@@ -1354,14 +1402,12 @@ class CypherIndexOrderingTest {
       return keys;
     }
 
-    /** The first column of every row, in order. */
+    /** The column {@code k} of every row, in order. */
     private List<Object> column(final String query, final Map<String, Object> params) {
       final List<Object> values = new ArrayList<>();
       try (final ResultSet rs = database.query("opencypher", query, params)) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          values.add(row.getProperty(row.getPropertyNames().iterator().next()));
-        }
+        while (rs.hasNext())
+          values.add(rs.next().getProperty("k"));
       }
       return values;
     }
