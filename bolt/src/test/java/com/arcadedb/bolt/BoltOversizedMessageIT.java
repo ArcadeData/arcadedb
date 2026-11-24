@@ -111,6 +111,41 @@ public class BoltOversizedMessageIT extends BaseBoltServerTest {
     assertNothingWasCreated("FramedMarker");
   }
 
+  /** The same limit before the connection has logged on: the permit it holds is not a reason to read the message anyway. */
+  @Test
+  void aMessageOverTheSizeLimitBeforeAuthenticationEndsTheConnectionAndItsBytesAreNotRead() throws Exception {
+    try (final Socket socket = connectAfterHandshake()) {
+      final BoltChunkedInput replies = new BoltChunkedInput(socket.getInputStream());
+
+      // What the message carries would be answered with a SUCCESS if the server read it as a request
+      final PackStreamWriter hello = new PackStreamWriter();
+      hello.writeStructureHeader(BoltMessage.HELLO, 1);
+      hello.writeMap(Map.of("user_agent", "framing-test/1.0"));
+      socket.getOutputStream().write(oversizedChunk(chunked(hello.toByteArray())));
+      socket.getOutputStream().flush();
+
+      assertTheConnectionEnds(() -> replies.readMessage()[1]);
+    }
+
+    assertNothingWasCreated("NeverCreated");
+  }
+
+  /** A peer that leaves right after the oversized header has nobody to be told: the server ends the connection all the same. */
+  @Test
+  void aPeerThatLeavesAfterAnOversizedHeaderDoesNotDisturbTheServer() throws Exception {
+    for (int i = 0; i < 20; i++) {
+      try (final Socket socket = connectAfterHandshake()) {
+        // Close with a reset, so what the server writes in answer reaches a connection that is already gone
+        socket.setSoLinger(true, 0);
+        final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+        out.writeShort(MESSAGE_LIMIT * 2);
+        out.flush();
+      }
+    }
+
+    assertNothingWasCreated("NeverCreated");
+  }
+
   /** What a message just under the limit still does: it is served, in as many chunks as it takes. */
   @Test
   void aMessageWithinTheSizeLimitIsStillServed() {
@@ -118,6 +153,26 @@ public class BoltOversizedMessageIT extends BaseBoltServerTest {
     try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS));
         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
       assertThat(session.run("RETURN $v AS v", Map.of("v", value)).single().get("v").asString()).isEqualTo(value);
+    }
+  }
+
+  /** A connection that has agreed on a version and sent nothing else: it is still waiting for its HELLO. */
+  private Socket connectAfterHandshake() throws IOException {
+    final Socket socket = new Socket("localhost", getServerBoltPort());
+    try {
+      socket.setSoTimeout(READ_TIMEOUT_MS);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      out.write(new byte[] { 0x60, 0x60, (byte) 0xB0, 0x17 });
+      out.writeInt(BoltNetworkExecutor.SUPPORTED_VERSIONS[0]);
+      out.writeInt(0);
+      out.writeInt(0);
+      out.writeInt(0);
+      out.flush();
+      new DataInputStream(socket.getInputStream()).readFully(new byte[4]);
+      return socket;
+    } catch (final IOException | RuntimeException e) {
+      socket.close();
+      throw e;
     }
   }
 

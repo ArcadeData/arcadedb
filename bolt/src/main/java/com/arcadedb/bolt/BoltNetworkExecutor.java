@@ -366,7 +366,7 @@ public class BoltNetworkExecutor extends Thread {
    * effort, and the caller leaves the loop, which closes the socket.
    */
   private void closeAfterUnreadableMessage(final IOException cause) {
-    final String reason = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+    final String reason = Objects.requireNonNullElse(cause.getMessage(), "the message is not readable");
     if (isPreAuthentication())
       logPeerError("BOLT closing the connection: an incoming message could not be read: %s", reason);
     else
