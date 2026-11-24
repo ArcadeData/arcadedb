@@ -97,6 +97,9 @@ public class RedisNetworkExecutor extends Thread {
   private final    int                 maxMultiBulkDepth;
   private final    int                 maxMultiBulkLength;
   private final    int                 maxBulkLength;
+  // what a connection is held to until it authenticates: the configured limit, or the smaller bound below
+  private final    int                 maxMultiBulkLengthBeforeAuth;
+  private final    int                 maxBulkLengthBeforeAuth;
 
   // A misconfigured protocol-limit setting is re-read (and re-validated) on every new connection, since the
   // value can change at runtime; this only bounds the WARNING about it to once per setting per JVM, so a busy
@@ -113,6 +116,11 @@ public class RedisNetworkExecutor extends Thread {
   // The longest inline command line accepted, the bound Redis itself applies (PROTO_INLINE_MAX_SIZE): a client that sends
   // no LF is refused once this much has arrived (issue #10597)
   private static final int MAX_INLINE_LENGTH = 64 * 1024;
+
+  // The bounds Redis itself applies to a client that has not authenticated yet (networking.c): a command of at most 10 words,
+  // none longer than 16KB. AUTH and HELLO, the only commands such a client can run, fit well within them.
+  private static final int MAX_MULTIBULK_LENGTH_BEFORE_AUTH = 10;
+  private static final int MAX_BULK_LENGTH_BEFORE_AUTH      = 16 * 1024;
 
   /**
    * Bound of the buffer the replies of a batch are encoded into before they leave together: a larger reply is encoded into
@@ -140,6 +148,8 @@ public class RedisNetworkExecutor extends Thread {
     this.maxMultiBulkDepth = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_DEPTH, 2);
     this.maxMultiBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_MULTIBULK_LENGTH, 1);
     this.maxBulkLength = sanitizedLimit(server.getConfiguration(), GlobalConfiguration.REDIS_MAX_BULK_LENGTH, 1);
+    this.maxMultiBulkLengthBeforeAuth = Math.min(maxMultiBulkLength, MAX_MULTIBULK_LENGTH_BEFORE_AUTH);
+    this.maxBulkLengthBeforeAuth = Math.min(maxBulkLength, MAX_BULK_LENGTH_BEFORE_AUTH);
 
     // Bound the pre-authentication window (issue #5912): without a read timeout, a client that opens a
     // connection and never completes AUTH/HELLO - or trickles bytes arbitrarily slowly - can hold this
@@ -1392,9 +1402,9 @@ public class RedisNetworkExecutor extends Thread {
         // error branch for no behavioral benefit over just treating it the same as the one negative value
         // that is defined.
         return null;
-      if (size > maxBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid bulk length " + size + " (maximum allowed is " + maxBulkLength + ")");
+      final int bulkLimit = authenticatedUser != null ? maxBulkLength : maxBulkLengthBeforeAuth;
+      if (size > bulkLimit)
+        throw lengthRefused("bulk", size, bulkLimit, bulkLimit < maxBulkLength);
 
       final String value = parseChars(size);
       skipLF();
@@ -1405,9 +1415,9 @@ public class RedisNetworkExecutor extends Thread {
       if (arraySize <= 0)
         // RESP2 null array (*-1) or an explicit empty array (*0): nothing to read.
         return new ArrayList<>();
-      if (arraySize > maxMultiBulkLength)
-        throw new RedisProtocolLimitException(
-            "Protocol error: invalid multibulk length " + arraySize + " (maximum allowed is " + maxMultiBulkLength + ")");
+      final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+      if (arraySize > multiBulkLimit)
+        throw lengthRefused("multibulk", arraySize, multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
 
       final List<Object> array = new ArrayList<>();
       for (int i = 0; i < arraySize; ++i)
@@ -1423,6 +1433,18 @@ public class RedisNetworkExecutor extends Thread {
       // Inside an array RESP has no framing to resynchronize to: logging and reading on wrote two SEVERE records per
       // byte, for as long as the client kept writing (issue #10597)
       throw new RedisProtocolLimitException("Protocol error: expected '$', got '" + printable(b) + "'");
+  }
+
+  /**
+   * The refusal of a declared length above {@code limit}, in the words Redis gives; {@code beforeAuth} when the limit is the one
+   * of a connection that has not authenticated yet, which is lower than the configured one.
+   */
+  private static RedisProtocolLimitException lengthRefused(final String what, final long declared, final int limit,
+      final boolean beforeAuth) {
+    return new RedisProtocolLimitException(
+        "Protocol error: invalid " + what + " length " + declared + " (maximum allowed is " + limit + (beforeAuth ?
+            " before authentication" :
+            "") + ")");
   }
 
   /**
@@ -1450,10 +1472,10 @@ public class RedisNetworkExecutor extends Thread {
     if (length > 0 && line[length - 1] == '\r')
       --length;
     final List<Object> args = splitInlineArguments(line, length);
-    // the configured bound on a command's arguments holds for the inline form too, not only for a RESP array
-    if (args.size() > maxMultiBulkLength)
-      throw new RedisProtocolLimitException(
-          "Protocol error: invalid multibulk length " + args.size() + " (maximum allowed is " + maxMultiBulkLength + ")");
+    // the bound on a command's arguments holds for the inline form too, not only for a RESP array
+    final int multiBulkLimit = authenticatedUser != null ? maxMultiBulkLength : maxMultiBulkLengthBeforeAuth;
+    if (args.size() > multiBulkLimit)
+      throw lengthRefused("multibulk", args.size(), multiBulkLimit, multiBulkLimit < maxMultiBulkLength);
     // An HTTP request sent to this port (a browser form posting cross-protocol) would otherwise be read line by line as
     // commands: refused at its first line, as Redis refuses it
     if (!args.isEmpty() && args.getFirst() instanceof String name && (name.equalsIgnoreCase("POST") || name.equalsIgnoreCase(
@@ -1679,15 +1701,22 @@ public class RedisNetworkExecutor extends Thread {
    * {@link StringBuilder} one UTF-16 char at a time and copying it via {@code toString()} - also keeps the
    * transient cost close to the wire size instead of roughly double it. {@code size} is assumed
    * non-negative: the RESP2 null bulk string ({@code $-1}) is handled by the caller before this is reached.
+   * <p>
+   * {@code size} is what the client declared, not what it has sent: the array starts at the size of the read buffer at most and
+   * doubles, once more bytes have arrived, up to {@code size}, so the memory held follows the bytes received. A value that fits
+   * the read buffer, the common case, is still read into one array of its own size.
    */
   private String parseChars(final int size) throws IOException {
-    final byte[] bytes = new byte[size];
+    byte[] bytes = new byte[Math.min(size, buffer.length)];
     int read = 0;
     // copied a buffer at a time rather than a byte at a time: a 100-byte value used to be 100 calls
     while (read < size && !shutdown) {
       if (posInBuffer >= bytesRead)
         fill();
-      final int chunk = Math.min(size - read, bytesRead - posInBuffer);
+      if (read == bytes.length)
+        // after the read above, so the bigger array is only made for bytes that are there to go in it
+        bytes = Arrays.copyOf(bytes, (int) Math.min(size, 2L * bytes.length));
+      final int chunk = Math.min(bytes.length - read, bytesRead - posInBuffer);
       System.arraycopy(buffer, posInBuffer, bytes, read, chunk);
       posInBuffer += chunk;
       read += chunk;
