@@ -136,7 +136,7 @@ class Issue13401NullOperandTest extends TestHelper {
   }
 
   private long edgeCount() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM E")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM E")) {
       return rs.next().<Long>getProperty("c");
     }
   }
