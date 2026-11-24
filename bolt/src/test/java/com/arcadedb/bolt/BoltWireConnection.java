@@ -110,6 +110,18 @@ public final class BoltWireConnection implements AutoCloseable {
     out.writeMessage(writer.toByteArray());
   }
 
+  /** Writes {@code bytes} to the socket exactly as given, with no chunking: for a test whose subject is the framing itself. */
+  public void sendRaw(final byte[] bytes) throws IOException {
+    final OutputStream rawOut = socket.getOutputStream();
+    rawOut.write(bytes);
+    rawOut.flush();
+  }
+
+  /** Bounds every following read, so a connection the server keeps open fails the test instead of hanging it. */
+  public void setReadTimeout(final int millis) throws IOException {
+    socket.setSoTimeout(millis);
+  }
+
   /** Writes a request with no fields at all (COMMIT, ROLLBACK, RESET, LOGOFF, GOODBYE). */
   public void sendNoFields(final byte signature) throws IOException {
     final PackStreamWriter writer = new PackStreamWriter();

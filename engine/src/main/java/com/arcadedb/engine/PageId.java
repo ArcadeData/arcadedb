@@ -63,8 +63,9 @@ public class PageId implements Comparable<PageId> {
   @Override
   public int hashCode() {
     if (cachedHashCode == 0)
-      // THE VALUE OF Objects.hash(database, fileId, pageNumber), WITHOUT ITS VARARGS Object[] AND BOXED INTS (A PAGEID IS BUILT PER PAGE VISITED)
-      cachedHashCode = 31 * (31 * (31 + Objects.hashCode(database)) + fileId) + pageNumber;
+      // Fibonacci hashing of the (file, page) pair: with "31 * file + page" the pages (f, p) and (f + 1, p - 31) hashed alike, so the
+      // pages of a few files had a small fraction of that many distinct hashes
+      cachedHashCode = 31 * Objects.hashCode(database) + (int) (((((long) fileId << 32) | (pageNumber & 0xFFFFFFFFL)) * 0x9E3779B97F4A7C15L) >>> 32);
     return cachedHashCode;
   }
 

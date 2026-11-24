@@ -91,7 +91,7 @@ public class AnchorSelector {
    *
    * @param plan               the logical plan to analyze
    * @param excludedVariables  node variables to skip when choosing the anchor
-   * @return anchor selection with the best starting node
+   * @return anchor selection with the best starting node, or null when every node left is unlabelled
    */
   public AnchorSelection selectAnchor(final LogicalPlan plan, final Set<String> excludedVariables) {
     if (plan.getNodes().isEmpty()) {
@@ -114,6 +114,10 @@ public class AnchorSelector {
     // no named node at all keeps falling back the way count push-down expects.
     for (final LogicalNode node : plan.getPatternNodes().values()) {
       if (excludedVariables.contains(node.getVariable()))
+        continue;
+      // A node with no label is reached by an expansion, which accepts any vertex, and never starts the pattern: no anchor
+      // operator scans every vertex type (issue #11904)
+      if (node.getLabels().isEmpty())
         continue;
 
       final AnchorSelection candidate = evaluateNode(node, plan);
@@ -702,6 +706,12 @@ public class AnchorSelector {
       if (logical.getOperator() == LogicalExpression.Operator.AND) {
         extractEqualityPredicatesFromExpression(variable, logical.getLeft(), predicates);
         extractEqualityPredicatesFromExpression(variable, logical.getRight(), predicates);
+      } else if (logical.getOperator() == LogicalExpression.Operator.NOT) {
+        // NOT (n.k <> v) holds exactly where n.k = v does, and is null with it when n.k is null: the same seek, under the
+        // WHERE that stays above the anchor (issue #12281). MatchNodeStep reads the same shape for a MATCH after an UNWIND
+        final ComparisonExpression inequality = logical.getNegatedInequality();
+        if (inequality != null)
+          seedFromEquality(variable, inequality.getLeft(), inequality.getRight(), predicates);
       }
       return;
     }
@@ -713,9 +723,12 @@ public class AnchorSelector {
     if (comparison.getOperator() != ComparisonExpression.Operator.EQUALS)
       return;
 
-    final Expression left = comparison.getLeft();
-    final Expression right = comparison.getRight();
+    seedFromEquality(variable, comparison.getLeft(), comparison.getRight(), predicates);
+  }
 
+  /** The seek an equality of {@code left} and {@code right} gives the property of {@code variable} it reads, on either side. */
+  private static void seedFromEquality(final String variable, final Expression left, final Expression right,
+      final Map<String, Object> predicates) {
     // Check if left side is a property access on our variable
     if (left instanceof PropertyAccessExpression propAccess && propAccess.getVariableName().equals(variable))
       putSeekValue(predicates, propAccess.getPropertyName(), right);

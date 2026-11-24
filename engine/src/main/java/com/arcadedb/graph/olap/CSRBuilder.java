@@ -49,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -202,6 +203,8 @@ public class CSRBuilder {
     final long uncoveredMark = uncoveredEdgeWrites != null ? uncoveredEdgeWrites.get() : -1L;
     final Map<Integer, String> bucketToEdgeType = buildBucketToEdgeTypeMap(edgeTypes);
     final Set<String> scannedEdgeTypes = Set.copyOf(bucketToEdgeType.values());
+    // WHAT EACH SLICE IS SCANNED FROM: A TYPE OF THE SAME NAME THAT OWNS OTHER BUCKETS LATER IS NOT THE ONE THE SLICE HOLDS (#12507)
+    final Map<String, int[]> edgeTypeBuckets = bucketsPerEdgeType(bucketToEdgeType);
     boolean uncoveredEdgesSeen = false;
     // THE BUCKETS OF THE UNCOVERED EDGES MET: A TYPE THAT JOINS THE FILTER LATER HELD EDGES THE CSR DOES NOT HAVE (#10214)
     final IntHashSet uncoveredEdgeBuckets = new IntHashSet();
@@ -221,12 +224,14 @@ public class CSRBuilder {
       final long elapsedMs = System.currentTimeMillis() - startTime;
       LogManager.instance().log(this, Level.INFO, "CSR built: 0 nodes, 0 edges, 0.0 MB, %d ms", elapsedMs);
       return new CSRResult(new HashMap<>(), mapping, createEmptyBucketColumns(mapping)).withScanCoverage(uncoveredMark,
-          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
+          scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets, edgeTypeBuckets);
     }
 
     // Detect property types from schema (instant, no scanning needed).
-    // Falls back to runtime sampling for schemaless properties.
-    final Map<String, Column.Type> detectedTypes = extractProps ? detectPropertyTypesFromSchema(concreteVertexTypes) : new HashMap<>();
+    // Falls back to runtime sampling for schemaless properties, never for a name declared with conflicting types.
+    final Set<String> conflictingProperties = new HashSet<>();
+    final Map<String, Column.Type> detectedTypes = extractProps ?
+        detectPropertyTypesFromSchema(concreteVertexTypes, conflictingProperties) : new HashMap<>();
     final boolean schemaComplete = !detectedTypes.isEmpty();
 
     // Create per-bucket column stores upfront (columns added as types are discovered)
@@ -287,7 +292,7 @@ public class CSRBuilder {
             final Vertex vertex = loadVertex(bucketId, position);
             if (vertex == null)
               continue;
-            newTypesInLastSample |= sampleProperties(vertex, detectedTypes, bucketColumns);
+            newTypesInLastSample |= sampleProperties(vertex, detectedTypes, conflictingProperties, bucketColumns);
             propertySampleCount++;
             if (!detectedTypes.isEmpty()) {
               fillProperties(vertex, bucketColumns[bucketIdx], localId, detectedTypes);
@@ -323,7 +328,7 @@ public class CSRBuilder {
 
       // For schemaless properties: detect types from sampled records, creating columns lazily
       if (extractProps && !schemaComplete && propertySampleCount < propertySampleSize) {
-        newTypesInLastSample |= sampleProperties(vertex, detectedTypes, bucketColumns);
+        newTypesInLastSample |= sampleProperties(vertex, detectedTypes, conflictingProperties, bucketColumns);
         propertySampleCount++;
       }
 
@@ -440,7 +445,7 @@ public class CSRBuilder {
         totalMemory / (1024.0 * 1024.0), elapsedMs);
 
     return new CSRResult(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwdMap).withScanCoverage(
-        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets);
+        uncoveredEdgesSeen ? -1L : uncoveredMark, scannedEdgeTypes, uncoveredMark, uncoveredEdgeBuckets, edgeTypeBuckets);
   }
 
   private void registerVertexBuckets(final NodeIdMapping mapping, final Set<String> concreteVertexTypes) {
@@ -451,32 +456,41 @@ public class CSRBuilder {
             database.getSchema().getBucketById(bucketId).getName()));
   }
 
-  private Map<String, Column.Type> detectPropertyTypesFromSchema(final Set<String> concreteVertexTypes) {
-    final Map<String, Column.Type> result = new HashMap<>();
-    for (final String typeName : concreteVertexTypes)
-      collectSchemaProperties(database.getSchema().getType(typeName), result);
-    return result;
+  private Map<String, Column.Type> detectPropertyTypesFromSchema(final Set<String> concreteVertexTypes,
+      final Set<String> conflicting) {
+    return declaredColumnTypes(concreteVertexTypes, this::isPropertyIncluded, conflicting, "Property", "vertex");
   }
 
-  private void collectSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
-    for (final Property prop : type.getProperties()) {
-      if (!isPropertyIncluded(prop.getName()))
-        continue;
-      final Column.Type colType = schemaTypeToColumnType(prop.getType());
-      if (colType == null)
-        continue;
-      final Column.Type existing = result.get(prop.getName());
-      final Column.Type merged = mergeColumnType(existing, colType);
-      if (merged != null)
-        result.put(prop.getName(), merged);
-      else {
-        // Type conflict across vertex types — remove to prevent ClassCastException
-        LogManager.instance().log(this, Level.WARNING,
-            "Property '%s' excluded from columnar storage: type conflict (%s vs %s) across vertex types",
-            prop.getName(), existing, colType);
-        result.remove(prop.getName());
+  /**
+   * The column type of every property the types declare with a type a column holds and {@code included} accepts. A name declared
+   * with two column types is left out and added to {@code conflicting}, whatever the types declaring it after the conflict say: a
+   * third type declaring the first type again used to bring the name back, and the view then built a column of that type, holding
+   * no value for the vertices of the conflicting type and serving the others from it.
+   */
+  private Map<String, Column.Type> declaredColumnTypes(final Set<String> typeNames, final Predicate<String> included,
+      final Set<String> conflicting, final String what, final String kind) {
+    final Map<String, Column.Type> result = new HashMap<>();
+    for (final String typeName : typeNames)
+      for (final Property prop : database.getSchema().getType(typeName).getProperties()) {
+        final String name = prop.getName();
+        if (!included.test(name) || conflicting.contains(name))
+          continue;
+        final Column.Type colType = schemaTypeToColumnType(prop.getType());
+        if (colType == null)
+          continue;
+        final Column.Type existing = result.get(name);
+        final Column.Type merged = mergeColumnType(existing, colType);
+        if (merged != null)
+          result.put(name, merged);
+        else {
+          // Type conflict across the types: removed to prevent ClassCastException, and kept out
+          LogManager.instance().log(this, Level.WARNING, "%s '%s' excluded from columnar storage: type conflict (%s vs %s) across %s types",
+              what, name, existing, colType, kind);
+          result.remove(name);
+          conflicting.add(name);
+        }
       }
-    }
+    return result;
   }
 
   private static Column.Type schemaTypeToColumnType(final Type schemaType) {
@@ -570,6 +584,24 @@ public class CSRBuilder {
     return map;
   }
 
+  /**
+   * The buckets of each concrete edge type of {@code bucketToEdgeType}, by the type's name, sorted (issue #12507). A bucket is what
+   * a slice is made of, and what tells the type it was scanned from from another that took its name: file ids are not reused, so a
+   * type dropped and created again, or one renamed over another, owns other buckets.
+   */
+  private static Map<String, int[]> bucketsPerEdgeType(final Map<Integer, String> bucketToEdgeType) {
+    final Map<String, int[]> buckets = new HashMap<>();
+    for (final Map.Entry<Integer, String> entry : bucketToEdgeType.entrySet()) {
+      final int[] known = buckets.get(entry.getValue());
+      final int[] grown = known == null ? new int[1] : Arrays.copyOf(known, known.length + 1);
+      grown[grown.length - 1] = entry.getKey();
+      buckets.put(entry.getValue(), grown);
+    }
+    for (final int[] ids : buckets.values())
+      Arrays.sort(ids);
+    return buckets;
+  }
+
   /** The requested edge types and all their sub-types, or every edge type of the schema when none is requested. */
   private Set<String> concreteEdgeTypes(final String[] edgeTypes) {
     final Set<String> names = new LinkedHashSet<>();
@@ -648,10 +680,12 @@ public class CSRBuilder {
    *
    * @return true when a new property type was found
    */
-  private boolean sampleProperties(final Vertex vertex, final Map<String, Column.Type> detectedTypes, final ColumnStore[] bucketColumns) {
+  private boolean sampleProperties(final Vertex vertex, final Map<String, Column.Type> detectedTypes,
+      final Set<String> conflictingProperties, final ColumnStore[] bucketColumns) {
     boolean newTypes = false;
     for (final String propName : vertex.getPropertyNames()) {
-      if (detectedTypes.containsKey(propName))
+      // A name the schema declares with conflicting types gets no column from a sampled value either
+      if (detectedTypes.containsKey(propName) || conflictingProperties.contains(propName))
         continue;
       if (!isPropertyIncluded(propName))
         continue;
@@ -690,30 +724,31 @@ public class CSRBuilder {
   }
 
   private Map<String, Column.Type> detectEdgePropertyTypesFromSchema(final String[] edgeTypes) {
-    final Map<String, Column.Type> result = new HashMap<>();
-    for (final String typeName : concreteEdgeTypes(edgeTypes))
-      collectEdgeSchemaProperties(database.getSchema().getType(typeName), result);
-    return result;
+    return declaredColumnTypes(concreteEdgeTypes(edgeTypes),
+        name -> edgePropertyFilterSet == null || edgePropertyFilterSet.contains(name), new HashSet<>(), "Edge property", "edge");
   }
 
-  private void collectEdgeSchemaProperties(final DocumentType type, final Map<String, Column.Type> result) {
-    for (final Property prop : type.getProperties()) {
-      if (edgePropertyFilterSet != null && !edgePropertyFilterSet.contains(prop.getName()))
-        continue;
-      final Column.Type colType = schemaTypeToColumnType(prop.getType());
-      if (colType == null)
-        continue;
-      final Column.Type existing = result.get(prop.getName());
-      final Column.Type merged = mergeColumnType(existing, colType);
-      if (merged != null)
-        result.put(prop.getName(), merged);
-      else {
-        LogManager.instance().log(this, Level.WARNING,
-            "Edge property '%s' excluded from columnar storage: type conflict (%s vs %s) across edge types",
-            prop.getName(), existing, colType);
-        result.remove(prop.getName());
-      }
-    }
+  /**
+   * The names of the edge property filter a build over {@code edgeTypes} stores no column for, sorted: declared on none of the
+   * edge types it covers, declared only with a type no column holds, or declared with types that differ across them. A view
+   * holds no value of such a property, and every weighted read of it falls back to the edge records (issue #12177). Edge types
+   * the schema does not hold are left out.
+   */
+  List<String> edgePropertiesWithoutColumn(final String[] edgeTypes) {
+    if (edgePropertyFilterSet == null)
+      return List.of();
+    final boolean allTypes = edgeTypes == null || edgeTypes.length == 0;
+    final String[] existing = allTypes ? null :
+        Arrays.stream(edgeTypes).filter(database.getSchema()::existsType).toArray(String[]::new);
+    if (!allTypes && existing.length == 0)
+      return List.of();
+    final Map<String, Column.Type> stored = detectEdgePropertyTypesFromSchema(existing);
+    final List<String> missing = new ArrayList<>();
+    for (final String name : edgePropertyFilterSet)
+      if (!stored.containsKey(name))
+        missing.add(name);
+    Collections.sort(missing);
+    return missing;
   }
 
   private void fillEdgeProperties(final Document edgeDoc, final ColumnStore store, final int edgeIdx,
@@ -1372,6 +1407,8 @@ public class CSRBuilder {
     // SEE GraphAnalyticalView.Snapshot.uncoveredWritesMark AND uncoveredEdgeBuckets (ISSUE #10214)
     private       long                           uncoveredWritesMark   = -1L;
     private       IntHashSet                     uncoveredEdgeBuckets;
+    // SEE GraphAnalyticalView.Snapshot.edgeTypeBuckets (ISSUE #12507)
+    private       Map<String, int[]>             edgeTypeBuckets;
 
     public CSRResult(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping mapping,
         final ColumnStore[] bucketColumns) {
@@ -1389,16 +1426,18 @@ public class CSRBuilder {
     }
 
     CSRResult withScanCoverage(final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
-        final IntHashSet uncoveredEdgeBuckets) {
+        final IntHashSet uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) {
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
       this.uncoveredWritesMark = uncoveredWritesMark;
       this.uncoveredEdgeBuckets = uncoveredEdgeBuckets;
+      this.edgeTypeBuckets = edgeTypeBuckets;
       return this;
     }
 
     long getUncoveredEdgeFreeAsOf() { return uncoveredEdgeFreeAsOf; }
     Set<String> getScannedEdgeTypes() { return scannedEdgeTypes; }
+    Map<String, int[]> getEdgeTypeBuckets() { return edgeTypeBuckets; }
     long getUncoveredWritesMark() { return uncoveredWritesMark; }
     IntHashSet getUncoveredEdgeBuckets() { return uncoveredEdgeBuckets; }
     public Map<String, CSRAdjacencyIndex> getCsrPerType() { return csrPerType; }

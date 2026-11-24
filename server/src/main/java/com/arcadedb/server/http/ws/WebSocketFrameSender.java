@@ -67,7 +67,7 @@ public final class WebSocketFrameSender {
    * Channel attribute holding the per-connection outstanding-bytes counter {@link #sendBudgeted} charges
    * against (issue #8085). Package-private, not private, so a test in this package can seed an outstanding
    * balance directly to simulate a frame still in flight, the same way
-   * {@code Issue6762WebSocketEventBusTest.neverCompletingSubscription()} does for the event bus's budget.
+   * {@code WebSocketEventBusTest.neverCompletingSubscription()} does for the event bus's budget.
    */
   static final String PENDING_BYTES = "arcadedb.ws.pendingBytes";
 

@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
@@ -61,10 +62,12 @@ import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.InListValues;
 import com.arcadedb.query.opencypher.executor.operators.IndexNestedLoopJoin;
 import com.arcadedb.query.opencypher.executor.operators.NodeByIdSeek;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
+import com.arcadedb.query.opencypher.executor.operators.SeekOrWalkExpand;
 import com.arcadedb.query.opencypher.executor.operators.GAVVarLengthExpand;
 import com.arcadedb.query.opencypher.executor.operators.VarLengthExpand;
 import com.arcadedb.query.opencypher.parser.FunctionValidator;
@@ -259,6 +262,9 @@ public class CypherOptimizer {
 
     if (components.isEmpty()) {
       anchor = anchorSelector.selectAnchor(logicalPlan);
+      // No labelled node to start from (issue #11904): hasRepresentableLabelSets keeps a lone unlabelled node out of here already
+      if (anchor == null)
+        return null;
       anchorOperator = createAnchorOperator(anchor);
       rootOperator = anchorOperator;
     } else {
@@ -278,6 +284,9 @@ public class CypherOptimizer {
         excludedVariables.removeAll(component.variables());
 
         AnchorSelection componentAnchor = anchorSelector.selectAnchor(logicalPlan, excludedVariables);
+        // A component whose every node is unlabelled has nowhere to start from but a scan of every vertex type (issue #11904)
+        if (componentAnchor == null)
+          return null;
         componentAnchor = validateAnchorForUnidirectionalEdges(componentAnchor, logicalPlan,
             component.relationships(), component.variables());
 
@@ -313,6 +322,13 @@ public class CypherOptimizer {
           }
         }
         if (nodeExpansion == null)
+          return null;
+        // An unlabelled node is planned here for the index a labelled node offers the pattern (issue #11904). Started from a
+        // scan of a whole label, the pattern walks every vertex of it on either plan, and the step-based plan walked such an
+        // expansion as fast or faster (a two-hop chain from a 60,000-vertex label: 382 ms, against 413 ms for the same chain
+        // labelled on the optimizer's plan), so that plan is kept for it
+        if ((nodeAnchorOperator instanceof NodeByLabelScan || nodeAnchorOperator instanceof NodeByLabelDisjunctionScan)
+            && hasUnlabelledNode(logicalPlan, component.variables()))
           return null;
 
         final PhysicalOperator componentAnchorOperator = nodeAnchorOperator;
@@ -371,22 +387,29 @@ public class CypherOptimizer {
     // 9. Defer vertex loading for remaining (non-fused) intermediate GAVExpandAll hops
     applyDeferredVertexLoading(rootOperator);
 
-    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422)
-    final PhysicalOperator indexOrdered = components.size() <= 1 && isolatedNodes.isEmpty() ?
-        orderByIndex(logicalPlan, rootOperator, anchorOperator) : null;
+    // 9a. Answer the ORDER BY from the index order, so that the LIMIT stops the scan (issue #8422): the RETURN's, or that of the
+    // WITH the matched rows reach first (issue #12141)
+    final OrderedProjection orderedProjection = components.size() <= 1 && isolatedNodes.isEmpty() ? orderedProjection() : null;
+    final PhysicalOperator indexOrdered = orderedProjection != null ?
+        orderByIndex(logicalPlan, rootOperator, anchorOperator, orderedProjection) : null;
     if (indexOrdered != null)
       rootOperator = indexOrdered;
+    else
+      // 9b. A statement that reads only the distinct far ends of its top chain of anonymous hops gets each far end once
+      rootOperator = DistinctEndsRewrite.apply(statement, rootOperator);
 
     // 10. Calculate total cost and cardinality
     final double totalCost = rootOperator.getEstimatedCost();
     final long totalCardinality = rootOperator.getEstimatedCardinality();
 
     // 11. Build physical plan with complete operator tree
-    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality, indexOrdered != null);
+    return new PhysicalPlan(logicalPlan, anchor, rootOperator, totalCost, totalCardinality,
+        indexOrdered != null && !orderedProjection.isWith(), indexOrdered != null && orderedProjection.isWith());
   }
 
   /**
-   * Makes the anchor produce the rows in the order the statement's ORDER BY asks for, when an index holds that order,
+   * Makes the anchor produce the rows in the order the ORDER BY of {@code projection} asks for (the RETURN's, or the first
+   * WITH's, see {@link #orderedProjection()}), when an index holds that order,
    * so the plan leaves the sort out and the LIMIT stops the scan after its first rows instead of after the whole range
    * (issue #8422). Two anchors qualify:
    * <ul>
@@ -406,7 +429,7 @@ public class CypherOptimizer {
    * @return the root operator, replaced when the anchor had to be, or null when the statement keeps its sort
    */
   private PhysicalOperator orderByIndex(final LogicalPlan logicalPlan, final PhysicalOperator rootOperator,
-      final PhysicalOperator anchorOperator) {
+      final PhysicalOperator anchorOperator, final OrderedProjection projection) {
     final String variable;
     final String label;
     if (anchorOperator instanceof NodeIndexRangeScan rangeScan) {
@@ -418,11 +441,11 @@ public class CypherOptimizer {
     } else
       return null;
 
-    if (!rowsKeepTheMatchOrder() || !preservesInputOrder(rootOperator, anchorOperator))
+    if (!preservesInputOrder(rootOperator, anchorOperator))
       return null;
 
     final List<String> orderedProperties = new ArrayList<>();
-    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties);
+    final Boolean ascending = orderedPropertiesOf(variable, orderedProperties, projection);
     if (ascending == null)
       return null;
 
@@ -515,29 +538,51 @@ public class CypherOptimizer {
   }
 
   /**
-   * Whether the rows reach the ORDER BY in the order the MATCH produced them: a single statement of MATCH clauses and a
-   * RETURN that neither aggregates nor is fed by a WITH, UNWIND or a clause that writes (a SET could rewrite the very
-   * key the rows are ordered by), under a LIMIT.
+   * The projection the matched rows reach first in the order the MATCH produced them, when it sorts them under a LIMIT:
+   * after nothing but MATCH clauses, either a RETURN that does not aggregate, or a WITH that neither aggregates nor
+   * de-duplicates (issue #12141, the keyset page {@code WITH n ORDER BY n.key LIMIT k}). A WITH, UNWIND or a clause that
+   * writes before it (a SET could rewrite the very key the rows are ordered by) is not the MATCH's order any more.
+   * <p>
+   * Only the ORDER BY of that projection is answered from the index: whatever follows a WITH sorts as it would have.
+   *
+   * @return the projection, or null when no projection the rows reach in the MATCH's order sorts them under a LIMIT
    */
-  private boolean rowsKeepTheMatchOrder() {
-    if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty())
-      return false;
-    final ReturnClause returnClause = statement.getReturnClause();
-    if (returnClause == null || returnClause.hasAggregations())
-      return false;
-    final List<WithClause> withClauses = statement.getWithClauses();
-    if (withClauses != null && !withClauses.isEmpty())
-      return false;
+  private OrderedProjection orderedProjection() {
     final List<ClauseEntry> clauses = statement.getClausesInOrder();
     if (clauses == null)
-      return false;
+      return null;
     for (final ClauseEntry entry : clauses) {
-      if (entry.getType() == ClauseEntry.ClauseType.RETURN)
-        continue;
-      if (entry.getType() != ClauseEntry.ClauseType.MATCH || entry.<MatchClause>getTypedClause().isOptional())
-        return false;
+      switch (entry.getType()) {
+      case MATCH:
+        if (entry.<MatchClause>getTypedClause().isOptional())
+          return null;
+        break;
+      case WITH: {
+        final WithClause with = entry.getTypedClause();
+        if (with.getLimit() == null || with.getOrderByClause() == null || with.getOrderByClause().isEmpty()
+            || with.hasAggregations() || with.isDistinct() || with.isLetBinding())
+          return null;
+        return new OrderedProjection(with.getItems(), with.getOrderByClause(), true);
+      }
+      case RETURN: {
+        final ReturnClause returnClause = statement.getReturnClause();
+        if (statement.getLimit() == null || statement.getOrderByClause() == null || statement.getOrderByClause().isEmpty()
+            || returnClause == null || returnClause.hasAggregations())
+          return null;
+        return new OrderedProjection(returnClause.getReturnItems(), statement.getOrderByClause(), false);
+      }
+      default:
+        return null;
+      }
     }
-    return true;
+    return null;
+  }
+
+  /**
+   * The items and ORDER BY of the projection {@link #orderedProjection()} found, and whether it is the statement's first WITH
+   * rather than its RETURN.
+   */
+  private record OrderedProjection(List<ReturnClause.ReturnItem> items, OrderByClause orderBy, boolean isWith) {
   }
 
   /**
@@ -548,7 +593,7 @@ public class CypherOptimizer {
     PhysicalOperator operator = rootOperator;
     while (operator != anchorOperator) {
       if (!(operator instanceof FilterOperator || operator instanceof ExpandAll || operator instanceof ExpandInto
-          || operator instanceof VarLengthExpand))
+          || operator instanceof SeekOrWalkExpand || operator instanceof VarLengthExpand))
         return false;
       operator = operator.getChild();
     }
@@ -557,13 +602,14 @@ public class CypherOptimizer {
 
   /**
    * Collects the properties of the variable the ORDER BY items sort on, directly ({@code ORDER BY n.id}) or through
-   * the RETURN column that projects one ({@code RETURN n.id AS id ORDER BY id}).
+   * the column of the projection that projects one ({@code RETURN n.id AS id ORDER BY id}).
    *
    * @return the direction all the items share, or null when an item is not a property of the variable, or the items
    * mix directions
    */
-  private Boolean orderedPropertiesOf(final String variable, final List<String> properties) {
-    final List<ReturnClause.ReturnItem> returnItems = statement.getReturnClause().getReturnItems();
+  private static Boolean orderedPropertiesOf(final String variable, final List<String> properties,
+      final OrderedProjection projection) {
+    final List<ReturnClause.ReturnItem> returnItems = projection.items();
     for (final ReturnClause.ReturnItem item : returnItems)
       // A column named like the variable hides it from the ORDER BY: n.id would read a property of that column
       if (!item.isStar() && variable.equals(item.getOutputName())
@@ -571,7 +617,7 @@ public class CypherOptimizer {
         return null;
 
     Boolean ascending = null;
-    for (final OrderByClause.OrderByItem item : statement.getOrderByClause().getItems()) {
+    for (final OrderByClause.OrderByItem item : projection.orderBy().getItems()) {
       if (ascending != null && ascending != item.isAscending())
         return null;
       ascending = item.isAscending();
@@ -894,6 +940,16 @@ public class CypherOptimizer {
     return false;
   }
 
+  /** Whether some node of a component has no label (issue #11904). */
+  private static boolean hasUnlabelledNode(final LogicalPlan logicalPlan, final Set<String> componentVariables) {
+    for (final String variable : componentVariables) {
+      final LogicalNode node = logicalPlan.getPatternNode(variable);
+      if (node != null && node.getLabels().isEmpty())
+        return true;
+    }
+    return false;
+  }
+
   /** A relationship the plan can start from by its type's index, the seek doing it and the anchor it stands for (issue #11481). */
   private record EdgeSeedPlan(LogicalRelationship relationship, EdgeIndexSeek operator, AnchorSelection anchor) {
   }
@@ -1032,7 +1088,8 @@ public class CypherOptimizer {
     double lowestCost = Double.MAX_VALUE;
     for (final String variable : componentVariables) {
       final LogicalNode node = logicalPlan.getPatternNode(variable);
-      if (node == null || !anchorReachesAllNodes(variable, relationships, componentVariables))
+      // an unlabelled node never anchors, see AnchorSelector#selectAnchor (issue #11904)
+      if (node == null || node.getLabels().isEmpty() || !anchorReachesAllNodes(variable, relationships, componentVariables))
         continue;
       final AnchorSelection candidate = anchorSelector.evaluateNodeDirect(node, logicalPlan);
       if (candidate.getEstimatedCost() < lowestCost) {
@@ -1245,12 +1302,23 @@ public class CypherOptimizer {
           && (needsEdgeTracking.contains(rel)
               || CypherVariableUsage.isEdgeVariableReferenced(statement, rel.getVariable()));
 
+      final boolean anonymousTracked = (rel.getVariable() == null || rel.getVariable().isEmpty()) && needsEdgeTracking.contains(rel);
+      SeekOrWalkExpand seekOrWalk = null;
       // Issue #11699: an endpoint pinned by an equality on every column of a UNIQUE index is one row at most. Seeking
       // it binds both ends, so the hop reads the edges joining the pair off the shorter edge list (ExpandInto) instead
       // of every edge of the bound end followed by a filter on the far one
       if (!rel.isVariableLength()) {
         final AnchorSelection farSeek = uniqueSeekOfFarEnd(logicalPlan, rel, boundVariables);
-        if (farSeek != null) {
+        if (farSeek != null && farSeek.getPropertyValue() instanceof InListValues farKeys) {
+          // Issue #11715: keyed by an IN-list, the far end is one row per key, which is worth seeking only from a bound end
+          // with more relationships than keys: the choice is made per row, at run time, where no plan-time count exists. The
+          // seek gives the rows grouped by far end, the walk in the order of the edge list, so only a statement whose output
+          // cannot show the order seeks; any other keeps the walk, rows and order alike
+          if (rowOrderIsInvisible(statement))
+            seekOrWalk = createSeekOrWalkOperator(logicalPlan, rel, currentOp, farSeek, farKeys, boundVariables,
+                sameClausePreceding, needsEdgeTracking.contains(rel), edgeIsMaterialized, gavTracked.get(rel),
+                anonymousTracked ? "  anon_e_" + (syntheticEdgeCounter[0]++) : null);
+        } else if (farSeek != null) {
           final PhysicalOperator seek = createAnchorOperator(farSeek);
           currentOp = new CartesianProduct(currentOp, seek, currentOp.getEstimatedCost() + seek.getEstimatedCost(),
               currentOp.getEstimatedCardinality());
@@ -1258,7 +1326,11 @@ public class CypherOptimizer {
         }
       }
 
-      if (rel.isVariableLength()) {
+      if (seekOrWalk != null) {
+        currentOp = seekOrWalk;
+        if (seekOrWalk.getEdgeTrackingVar() != null)
+          relVarsPerClause.computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>()).add(seekOrWalk.getEdgeTrackingVar());
+      } else if (rel.isVariableLength()) {
         currentOp = createVarLengthExpandOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
         if ((rel.getVariable() == null || rel.getVariable().isEmpty())
@@ -1331,8 +1403,9 @@ public class CypherOptimizer {
 
   /**
    * The seek of the endpoint {@code relationship} is about to reach from its bound end, when that endpoint is pinned by an
-   * equality on every column of a UNIQUE index, so the seek finds one row at most; null for any other endpoint, and when
-   * neither or both ends are bound already (issue #11699).
+   * equality on every column of a UNIQUE index, so the seek finds one row at most, or by an IN-list on one of them and
+   * equalities on the others, one row per key (issue #11715); null for any other endpoint, and when neither or both ends
+   * are bound already (issue #11699).
    */
   private AnchorSelection uniqueSeekOfFarEnd(final LogicalPlan logicalPlan, final LogicalRelationship relationship,
       final Set<String> boundVariables) {
@@ -1345,10 +1418,44 @@ public class CypherOptimizer {
       return null;
     final AnchorSelection seek = anchorSelector.evaluateNodeDirect(farNode, logicalPlan);
     if (!seek.useIndex() || seek.isRangeScan() || seek.isDisjunctionIndexSeek() || seek.isUnionIndexSeek()
-        || seek.getPropertyValue() instanceof InListValues || seek.getIndex() == null || !seek.getIndex().isUnique()
+        || seek.getIndex() == null || !seek.getIndex().isUnique()
         || seek.getKeyValues().size() != seek.getIndex().getPropertyNames().size())
       return null;
     return seek;
+  }
+
+  /**
+   * The hop to a far end keyed by an IN-list on a UNIQUE index (issue #11715): per input row, the relationships of the
+   * bound end are walked when they are few for the number of keys, and the far end is sought per key otherwise, each pair
+   * then read off its shorter edge list. Null when a Graph Analytical View answers the hop, or the seek is not a node
+   * index seek: the hop then keeps the plain expansion.
+   *
+   * @param edgeTrackingVar the binding an anonymous relationship is tracked under for the uniqueness checks, or null
+   */
+  private SeekOrWalkExpand createSeekOrWalkOperator(final LogicalPlan logicalPlan, final LogicalRelationship rel,
+      final PhysicalOperator input, final AnchorSelection farSeek, final InListValues farKeys, final Set<String> boundVariables,
+      final Set<String> sameClausePreceding, final boolean needsEdgeTracking, final boolean edgeIsMaterialized,
+      final GraphTraversalProvider trackedGavView, final String edgeTrackingVar) {
+    if (trackedGavView != null || !(createAnchorOperator(farSeek) instanceof NodeIndexSeek seek))
+      return null;
+    final PhysicalOperator walk = addTargetLabelFilter(logicalPlan, rel,
+        createExpandAllOperator(rel, input, boundVariables, sameClausePreceding, edgeIsMaterialized, !needsEdgeTracking, null));
+    final PhysicalOperator into = createExpandIntoOperator(rel, input, sameClausePreceding, needsEdgeTracking, edgeIsMaterialized,
+        null);
+    if (!(walk instanceof ExpandAll walkAll) || !(into instanceof ExpandInto expandInto))
+      return null;
+    // Neither reads a child: the operator hands them each input row it walks, and the pairs of each row it seeks
+    walkAll.setChild(null);
+    expandInto.setChild(null);
+    if (edgeTrackingVar != null) {
+      walkAll.setEdgeTrackingVar(edgeTrackingVar);
+      expandInto.setEdgeTrackingVar(edgeTrackingVar);
+    }
+
+    final long pairs = input.getEstimatedCardinality() * Math.max(1, seek.getEstimatedCardinality());
+    return new SeekOrWalkExpand(input, walkAll.getSourceVariable(), walkAll.getTargetVariable(),
+        walkAll.getDirection().toArcadeDirection(), walkAll.getEdgeTypes(), farKeys, seek, walkAll, expandInto, edgeTrackingVar,
+        input.getEstimatedCost() + seek.getEstimatedCost() + pairs, pairs);
   }
 
   /** Builds a depth-first physical expansion for one ordinary variable-length relationship. */
@@ -1668,7 +1775,9 @@ public class CypherOptimizer {
    * {@code p3} is bound: left above the last hop it ran once per row the last hop multiplies in, 24 times as often when
    * every person has 24 interests, instead of once per path.
    * <p>
-   * Only a chain of ExpandAll / ExpandInto / GAVExpandAll / GAVExpandInto hops above the anchor scan is rewritten; the caller
+   * Only a chain of ExpandAll / ExpandInto / SeekOrWalkExpand / GAVExpandAll / GAVExpandInto hops above the anchor scan is
+   * rewritten; a SeekOrWalkExpand binds its far end and relationship whichever alternative answers the row, so a conjunct on
+   * them sits above it, before the hops after it multiply the rows. The caller
    * leaves out a GAV chain the fusion takes, which places the conjuncts itself (issue #9938). Anything else (a join, a
    * variable-length hop) keeps the whole predicate at the top, and so does a conjunct that reads no pattern variable, or one
    * that reads a variable the chain does not bind.
@@ -1681,8 +1790,8 @@ public class CypherOptimizer {
       chain.add(op);
       if (op == anchorOperator)
         break;
-      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof GAVExpandAll || op instanceof GAVExpandInto
-          || op instanceof FilterOperator))
+      if (!(op instanceof ExpandAll || op instanceof ExpandInto || op instanceof SeekOrWalkExpand || op instanceof GAVExpandAll
+          || op instanceof GAVExpandInto || op instanceof FilterOperator))
         return expression;
     }
     if (chain.size() < 2 || chain.getLast() != anchorOperator)
@@ -1699,6 +1808,9 @@ public class CypherOptimizer {
       } else if (op instanceof ExpandInto into) {
         addVariable(bound, into.getTargetVariable());
         addVariable(bound, into.getEdgeVariable());
+      } else if (op instanceof SeekOrWalkExpand seekOrWalk) {
+        addVariable(bound, seekOrWalk.getTargetVariable());
+        addVariable(bound, seekOrWalk.getEdgeVariable());
       } else if (op instanceof GAVExpandAll gavExpand) {
         addVariable(bound, gavExpand.getTargetVariable());
       } else if (op instanceof GAVExpandInto gavInto) {
@@ -2231,7 +2343,8 @@ public class CypherOptimizer {
         final Object vertexObj = result.getProperty(expandTargetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
-          return vertex.getType().instanceOf(targetLabel);
+          // the one definition of "carries the label": a virtual node (issue #12109) has no schema type to ask
+          return Labels.hasLabel(vertex, targetLabel);
         }
         return false;
       }

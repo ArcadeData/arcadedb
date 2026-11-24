@@ -273,9 +273,10 @@ public final class CypherValues {
   /**
    * At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. Which keys
    * those are follows the map's own iteration order: insertion order for a map the parser built, and whatever the
-   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection.
+   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection. Public so
+   * that another refusal of a map ({@code point()}, issue #12276) names its keys the same bounded and cleaned way.
    */
-  private static String describeKeys(final Map<?, ?> map) {
+  public static String describeKeys(final Map<?, ?> map) {
     if (map.isEmpty())
       return "with no entries";
     final StringJoiner keys = new StringJoiner(", ", "[", "]");
@@ -299,7 +300,13 @@ public final class CypherValues {
    * would leave open.
    */
   public static boolean isPointShaped(final Map<?, ?> map) {
-    return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
+    try {
+      return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
+    } catch (final ClassCastException e) {
+      // A map whose keys cannot be compared with a String, such as a TreeMap with Integer keys (a Java parameter), is not a
+      // point; the map order and the inclusive comparison ask this of every map they meet (issue #12274)
+      return false;
+    }
   }
 
   /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of

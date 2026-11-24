@@ -32,6 +32,8 @@
 
 "use strict";
 
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const SCRIPTS = path.join(__dirname, "..");
@@ -189,13 +191,35 @@ const REPO_LABELS = [
 ];
 const THIS_REPO_ISSUE = [{ number: 7, repository: { nameWithOwner: "ArcadeData/arcadedb" } }];
 
+// The decision reaches apply as a file the workflow downloaded from the classify job's artifact,
+// never as a job output (#12492: the runner drops a job output that holds a masked string).
+const TEMP_DIRS = [];
+const tempDir = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "classify-apply-test-"));
+  TEMP_DIRS.push(dir);
+  return dir;
+};
+
+// `output` is the text of the decision file; null means no file at all. `opts.classifyResult` and
+// `opts.decisionSaved` stand for needs.classify.result and needs.classify.outputs.decision_saved
+// (default: a successful classify job that saved the file when there is one); `undefined` leaves
+// the variable unset, and `opts.decisionFile` overrides the path.
 const runApply = async (output, opts = {}) => {
-  Object.assign(process.env, {
+  const decisionFile = path.join(tempDir(), "decision.json");
+  if (output !== null) fs.writeFileSync(decisionFile, output);
+  const pick = (key, fallback) => (key in opts ? opts[key] : fallback);
+  const env = {
     PR_NUMBER: "123",
     HEAD_SHA: opts.headSha ?? H,
-    STRUCTURED_OUTPUT: output,
+    DECISION_FILE: pick("decisionFile", decisionFile),
+    CLASSIFY_RESULT: pick("classifyResult", "success"),
+    DECISION_SAVED: pick("decisionSaved", output ? "true" : "false"),
     DRY_RUN: opts.dryRun ? "true" : "false",
-  });
+  };
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   const fake = recorder({
     prHead: H,
     repoLabels: REPO_LABELS,
@@ -231,6 +255,27 @@ const parseCases = () => {
   check("parse: missing severity gives null", parseDecision(decision({ severity: undefined })).severity, null);
   check("parse: non-array areas give []", parseDecision(decision({ areas: "server" })).areas, []);
   check("parse: non-string areas dropped", parseDecision(decision({ areas: ["a", 3, null] })).areas, ["a"]);
+
+  const { readDecision, noDecisionReason } = loadApply();
+  const file = path.join(tempDir(), "decision.json");
+  fs.writeFileSync(file, decision());
+  check("read: a regular file", readDecision(file), { status: "present", text: decision() });
+  check("read: a missing file", readDecision(path.join(path.dirname(file), "nope.json")), { status: "missing" });
+  check("read: no path", [readDecision(undefined), readDecision("")], [{ status: "missing" }, { status: "missing" }]);
+  fs.writeFileSync(file, "  \n");
+  check("read: a blank file", readDecision(file), { status: "missing" });
+  fs.writeFileSync(file, "x".repeat(1024 * 1024 + 1));
+  check("read: a file over the cap", readDecision(file), { status: "unusable" });
+  fs.writeFileSync(file, "x".repeat(1024 * 1024));
+  check("read: a file at the cap is read", readDecision(file).status, "present");
+
+  const codeOf = (...args) => noDecisionReason(...args).code;
+  check("reason: a failed job beats the flag", codeOf("missing", "failure", "true"), "classify-failed");
+  check("reason: nothing saved by a successful job", codeOf("missing", "success", "false"), "no-output");
+  check("reason: saved but missing", codeOf("missing", "success", "true"), "decision-lost");
+  check("reason: unknown flag is a lost decision", codeOf("missing", "success", undefined), "decision-lost");
+  check("reason: unreadable content", codeOf("present", "success", "true"), "unusable");
+  check("reason: oversized content", codeOf("unusable", "failure", "false"), "unusable");
 };
 
 const sanitizeCases = () => {
@@ -286,6 +331,84 @@ const sanitizeCases = () => {
 
   check("marker: matches the consumers' regex", MARKER_RE.test(markerLine(H, "lgtm")), true);
   check("marker: exact text", markerLine(H, "none"), `<!-- classify-pr sha=${H} verdict=none -->`);
+};
+
+// #12492: apply used to read the decision from a job output, which the runner drops when it holds a
+// masked string, and then said "the classifier returned no usable output" for every way of having no
+// decision. The decision now travels as an artifact, and each way of ending up without one is told
+// apart: the comment says what happened and the audit line carries a reason code.
+const noDecisionCases = async () => {
+  const markerOf = (r) => callsOf(r.log, "createComment")[0]?.args.body.split("\n")[0];
+  const bodyOf = (r) => callsOf(r.log, "createComment")[0]?.args.body ?? "";
+  const reasonOf = (r) => /reason=([a-z-]+)/.exec(r.audit)?.[1];
+  const NONE_MARKER = `<!-- classify-pr sha=${H} verdict=none -->`;
+
+  const table = [
+    ["classify failed, nothing saved", null, { classifyResult: "failure", decisionSaved: "false" }, "classify-failed", "The classifier job failed (result: `failure`)"],
+    ["classify failed, flag unset", null, { classifyResult: "failure", decisionSaved: undefined }, "classify-failed", "The classifier job failed (result: `failure`)"],
+    ["classify skipped", null, { classifyResult: "skipped", decisionSaved: undefined }, "classify-failed", "The classifier job failed (result: `skipped`)"],
+    ["result outside the known set", null, { classifyResult: "<b>pwned</b>" }, "classify-failed", "The classifier job failed (result: `unknown`)"],
+    ["result unset", null, { classifyResult: undefined, decisionSaved: undefined }, "classify-failed", "The classifier job failed (result: `unknown`)"],
+    ["model returned nothing", null, { decisionSaved: "false" }, "no-output", "The classifier finished but returned no structured output"],
+    ["decision saved, file never arrived", null, { decisionSaved: "true" }, "decision-lost", "its decision did not reach the apply job"],
+    ["decision saved, file empty", "", { decisionSaved: "true" }, "decision-lost", "its decision did not reach the apply job"],
+    ["decision saved, path unset", null, { decisionSaved: "true", decisionFile: undefined }, "decision-lost", "its decision did not reach the apply job"],
+    ["decision saved, path blank", null, { decisionSaved: "true", decisionFile: "  " }, "decision-lost", "its decision did not reach the apply job"],
+    ["decision saved, path is a directory", null, { decisionSaved: "true", decisionFile: os.tmpdir() }, "decision-lost", "its decision did not reach the apply job"],
+    ["flag unset, file missing", null, { decisionSaved: undefined }, "decision-lost", "its decision did not reach the apply job"],
+    ["file is not JSON", "{broken", {}, "unusable", "The classifier returned output that is not a valid decision"],
+    ["file is not an object", "[1]", {}, "unusable", "The classifier returned output that is not a valid decision"],
+    ["file has an unknown verdict", decision({ verdict: "approve" }), {}, "unusable", "The classifier returned output that is not a valid decision"],
+    ["file has no review", decision({ review: "" }), {}, "unusable", "The classifier returned output that is not a valid decision"],
+    ["file is over the size cap", decision({ review: "x".repeat(1100 * 1024) }), {}, "unusable", "The classifier returned output that is not a valid decision"],
+    ["unusable file of a failed job", "{broken", { classifyResult: "failure" }, "unusable", "The classifier returned output that is not a valid decision"],
+  ];
+  for (const [name, output, opts, reason, text] of table) {
+    const r = await runApply(output, { prLabels: ["triage:lgtm"], ...opts });
+    check(`apply no decision (${name}): marker verdict=none`, markerOf(r), NONE_MARKER);
+    check(`apply no decision (${name}): says what happened`, bodyOf(r).includes(text), true);
+    check(`apply no decision (${name}): never the old catch-all`, bodyOf(r).includes("no usable output"), false);
+    check(`apply no decision (${name}): still asks for a manual review`, bodyOf(r).includes("no `triage:*` label was applied. This PR needs a manual review."), true);
+    check(`apply no decision (${name}): no triage label added`, addedOf(r.log).some((n) => n.startsWith("triage:")), false);
+    check(`apply no decision (${name}): audit reason`, [reasonOf(r), r.audit.includes("verdict=none"), r.auditCount], [reason, true, 1]);
+  }
+
+  {
+    // The file's content is untrusted and never echoed when it is unusable.
+    const secret = `ghp_${"x".repeat(36)}`;
+    const r = await runApply(`{"verdict": "lgtm", "note": "${secret}"`);
+    check("apply unusable file: content not in the comment", bodyOf(r).includes(secret), false);
+    check("apply unusable file: content not in the log", r.lines.some((l) => l.includes(secret)), false);
+  }
+  {
+    // The decision is no longer read from a job output, so a leftover STRUCTURED_OUTPUT is ignored.
+    process.env.STRUCTURED_OUTPUT = decision();
+    const r = await runApply(null, { decisionSaved: "true" });
+    delete process.env.STRUCTURED_OUTPUT;
+    check("apply ignores STRUCTURED_OUTPUT: verdict=none", markerOf(r), NONE_MARKER);
+    check("apply ignores STRUCTURED_OUTPUT: no triage label", addedOf(r.log).some((n) => n.startsWith("triage:")), false);
+  }
+  {
+    // A valid decision is used whatever the job result: classify may fail after the model answered.
+    const r = await runApply(decision(), { classifyResult: "failure" });
+    check("apply valid decision of a failed job: verdict used", [markerOf(r), addedOf(r.log).includes("triage:lgtm")], [`<!-- classify-pr sha=${H} verdict=lgtm -->`, true]);
+    check("apply valid decision: no reason in the audit line", r.audit.includes("reason="), false);
+  }
+  {
+    // A symlink is never followed, even to a valid decision.
+    const dir = tempDir();
+    const target = path.join(dir, "target.json");
+    const link = path.join(dir, "decision.json");
+    fs.writeFileSync(target, decision());
+    fs.symlinkSync(target, link);
+    const r = await runApply(null, { decisionSaved: "true", decisionFile: link });
+    check("apply symlinked decision: not read", [markerOf(r), reasonOf(r)], [NONE_MARKER, "decision-lost"]);
+  }
+  {
+    const r = await runApply(null, { classifyResult: "failure", dryRun: true });
+    check("apply no decision, dry run: zero writes", writesOf(r.log), []);
+    check("apply no decision, dry run: audit reason", [reasonOf(r), r.audit.endsWith("action=would_label")], ["classify-failed", true]);
+  }
 };
 
 const applyCases = async () => {
@@ -385,6 +508,7 @@ const applyCases = async () => {
     const r = await runApply("{broken");
     check("apply unparseable output: comment marker verdict=none", callsOf(r.log, "createComment")[0]?.args.body.split("\n")[0], `<!-- classify-pr sha=${H} verdict=none -->`);
   }
+  await noDecisionCases();
   {
     const missing = ["triage:lgtm", "severity:major", "has-issue"];
     const r = await runApply(decision(), { repoLabels: REPO_LABELS.filter((n) => !missing.includes(n)) });
@@ -426,6 +550,7 @@ const cases = [configCases, parseCases, sanitizeCases, applyCases];
 
 (async () => {
   for (const group of cases) await group();
+  for (const dir of TEMP_DIRS) fs.rmSync(dir, { recursive: true, force: true });
   console.log(`\n${checks} checks, ${failures} failed`);
   process.exit(failures === 0 ? 0 : 1);
 })();
