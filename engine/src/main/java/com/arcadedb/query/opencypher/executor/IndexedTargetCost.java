@@ -20,8 +20,11 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
@@ -56,6 +59,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * What it costs to start a hop from the node an index pins instead of from the node written first (issue #13267): the number of
@@ -134,6 +138,12 @@ final class IndexedTargetCost {
       } catch (final IndexException | RecordNotFoundException e) {
         // dropped, rebuilt or emptied since it was checked: no estimate from this index
         cost = -1D;
+      } catch (final CommandExecutionException | IllegalArgumentException | ArithmeticException | ClassCastException e) {
+        // a key expression the evaluator refuses: the statement fails or answers when it runs, as it would without this estimate, and
+        // the written order stays. Only the kind is logged: the message may carry a value
+        LogManager.instance().log(this, Level.FINE, "No cost for the walk back from an index of '%s': %s", null,
+            target.getLabels().getFirst(), e.getClass().getSimpleName());
+        cost = -1D;
       }
       if (cost >= 0D && (best < 0D || cost < best))
         best = cost;
@@ -202,42 +212,41 @@ final class IndexedTargetCost {
   private record Keys(List<Object> values, boolean allOfThemPerRow) {
   }
 
-  /** The keys the pin names in this execution, or null when they depend on something planning cannot read. */
+  /**
+   * The keys the pin names in this execution, or null when they depend on something planning cannot read (a row). An expression the
+   * evaluator refuses is not caught here: {@link #rowsPerRow} keeps the written order for it.
+   */
   private Keys resolve(final Pin pin) {
-    try {
-      if (pin.fromIn()) {
-        final List<Object> elements = new ArrayList<>();
-        final List<Expression> list = pin.elements();
-        for (final Expression element : list) {
-          if (!RowIndependentValues.isRowIndependent(element))
-            return null;
-          final Object value = evaluator.evaluate(element, NO_ROW, context);
-          if (list.size() == 1 && !(element instanceof LiteralExpression) && value instanceof Collection<?> collection)
-            elements.addAll(collection);
-          else if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
-            return null;
-          else
-            elements.add(value);
-        }
-        return new Keys(distinctKeys(elements), true);
-      }
-      final Expression element = pin.elements().getFirst();
-      if (RowIndependentValues.isRowIndependent(element)) {
-        final Object value = evaluator.evaluate(element, NO_ROW, context);
-        if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
+    if (pin.fromIn()) {
+      final List<Object> elements = new ArrayList<>();
+      final List<Expression> list = pin.elements();
+      for (final Expression element : list) {
+        if (!RowIndependentValues.isRowIndependent(element))
           return null;
-        return new Keys(distinctKeys(Collections.singletonList(value)), true);
+        final Object value = evaluator.evaluate(element, NO_ROW, context);
+        if (list.size() == 1 && !(element instanceof LiteralExpression) && value instanceof Collection<?> collection)
+          elements.addAll(collection);
+        else if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
+          return null;
+        else
+          elements.add(value);
       }
-      if (element instanceof VariableExpression variable)
-        for (final UnwindClause unwind : statement.getUnwindClauses())
-          if (variable.getVariableName().equals(unwind.getVariable()) && RowIndependentValues.isRowIndependent(unwind.getListExpression())) {
-            final Object list = evaluator.evaluate(unwind.getListExpression(), NO_ROW, context);
-            if (list instanceof Collection<?> collection)
-              return new Keys(distinctKeys(collection), false);
-          }
-    } catch (final RuntimeException e) {
-      // a value only a row can answer, or one the evaluator refuses: the estimate stands in
+      return new Keys(distinctKeys(elements), true);
     }
+    final Expression element = pin.elements().getFirst();
+    if (RowIndependentValues.isRowIndependent(element)) {
+      final Object value = evaluator.evaluate(element, NO_ROW, context);
+      if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
+        return null;
+      return new Keys(distinctKeys(Collections.singletonList(value)), true);
+    }
+    if (element instanceof VariableExpression variable)
+      for (final UnwindClause unwind : statement.getUnwindClauses())
+        if (variable.getVariableName().equals(unwind.getVariable()) && RowIndependentValues.isRowIndependent(unwind.getListExpression())) {
+          final Object list = evaluator.evaluate(unwind.getListExpression(), NO_ROW, context);
+          if (list instanceof Collection<?> collection)
+            return new Keys(distinctKeys(collection), false);
+        }
     return null;
   }
 
@@ -260,10 +269,22 @@ final class IndexedTargetCost {
 
     final int probed = Math.min(PROBED_KEYS, values.size());
     double sum = 0D;
-    for (int i = 0; i < probed; i++)
+    for (int i = 0; i < probed; i++) {
       sum += costOfKey(index, values.get((int) ((long) i * values.size() / probed)), edgeTypes, limit);
+      // what the keys read so far is a lower bound of the mean: once it fills the scan the rest cannot bring it under
+      if (sum / probed >= limit)
+        break;
+    }
     final double mean = sum / probed;
     return keys.allOfThemPerRow() ? mean * values.size() : mean;
+  }
+
+  /** How many times the cost of the scan a key or a vertex that fills it is counted as. */
+  private static final long OVER_LIMIT = 64L;
+
+  /** The reads that stand for "far more than the scan": {@value #OVER_LIMIT} times it, at most {@value #MAX_PROBED_ENTRIES}. */
+  private static long overLimit(final long limit) {
+    return Math.min(Math.max(limit, 1L) * OVER_LIMIT, MAX_PROBED_ENTRIES);
   }
 
   /**
@@ -286,13 +307,23 @@ final class IndexedTargetCost {
     } finally {
       cursor.close();
     }
+    // the walk back from a vertex reads as many entries as it has incoming relationships, which is not bounded for a hub: they are
+    // counted, with no record read, up to OVER_LIMIT times the cost of the scan it is weighed against, and a key that already fills
+    // that cost is not looked into at all. Both stand for "far more than the scan reads" in the mean over the keys of a list
+    final long ceiling = overLimit(limit);
+    if (entries >= limit)
+      return 1D + ceiling;
     final String[] types = edgeTypes.toArray(new String[0]);
     final int probed = Math.min(PROBED_VERTICES, kept.size());
     long inEdges = 0L;
     int loaded = 0;
     for (int i = 0; i < probed; i++)
       if (kept.get((int) ((long) i * kept.size() / probed)).getRecord(false) instanceof Vertex vertex) {
-        inEdges += vertex.countEdges(Vertex.DIRECTION.IN, types);
+        long degree = 0L;
+        for (final RID ignored : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN, types))
+          if (++degree >= ceiling)
+            break;
+        inEdges += degree;
         ++loaded;
       }
     final double meanInDegree = loaded == 0 ? 0D : (double) inEdges / loaded;
@@ -337,14 +368,18 @@ final class IndexedTargetCost {
   /**
    * The entries per distinct key of an ordered, NOTUNIQUE index, from its first and its last {@value #KEY_SAMPLE_ENTRIES} entries in
    * key order, the larger of the two. A sample that one key fills only says the key holds at least that many entries: -1, no
-   * estimate. A key that is large in the middle of the key order is the limit of the sample. The answer is kept for as long as the
-   * index holds the same number of entries.
+   * estimate. A key that is large in the middle of the key order is the limit of the sample.
+   * <p>
+   * The answer is kept on the database, stamped with the record count of the index's type (an O(1) read, where counting the entries
+   * of the index walks all of them) and the time it was taken: it is read again when the count changes or after
+   * {@link GraphStatisticsCache#ENTRIES_PER_KEY_TTL_MILLIS}. A delete and an insert that leave the count alone therefore leave
+   * the answer standing for at most that long, which is the staleness bound of an estimate that only chooses between two plans.
    */
   private long entriesPerKey(final TypeIndex index) {
     final GraphStatisticsCache cache = database.getGraphStatisticsCache();
-    final long total = index.countEntries();
+    final long records = database.countType(index.getTypeName(), true);
     if (cache != null) {
-      final Long cached = cache.getEntriesPerKey(index.getName(), total);
+      final Long cached = cache.getEntriesPerKey(index.getName(), records);
       if (cached != null)
         return cached;
     }
@@ -352,7 +387,7 @@ final class IndexedTargetCost {
     final long descending = ascending < 0L ? -1L : sampleEntriesPerKey(index, false);
     final long perKey = ascending < 0L || descending < 0L ? -1L : Math.max(ascending, descending);
     if (cache != null)
-      cache.putEntriesPerKey(index.getName(), perKey, total);
+      cache.putEntriesPerKey(index.getName(), perKey, records);
     return perKey;
   }
 

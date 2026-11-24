@@ -114,4 +114,24 @@ class GraphStatisticsCacheTest {
     assertThat(cache.getMeanEdgesPerConnectedPair("KNOWS", 10L)).isNull();
     assertThat(cache.getAverageDegree("KNOWS:Person:Person", 10L, 5L, 5L)).isNull();
   }
+
+  @Test
+  void entriesPerKeyIsKeptWhileTheRecordCountStaysWithinTheDriftAndTheSampleIsYoung() {
+    final GraphStatisticsCache cache = new GraphStatisticsCache();
+    cache.putEntriesPerKey("Entity[uuid]", 4L, 1000L, 0L);
+
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 1000L, 1_000_000L)).isEqualTo(4L);
+    // a delete and an insert leave the count alone: the sample stands, until it is old
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 1000L, (GraphStatisticsCache.ENTRIES_PER_KEY_TTL_MILLIS - 1L) * 1_000_000L)).isEqualTo(4L);
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 1000L, GraphStatisticsCache.ENTRIES_PER_KEY_TTL_MILLIS * 1_000_000L)).isNull();
+    // a drift of 10 percent is within the bound, one record more is not
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 1100L, 1L)).isEqualTo(4L);
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 900L, 1L)).isEqualTo(4L);
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 1101L, 1L)).isNull();
+    assertThat(cache.getEntriesPerKey("Entity[uuid]", 899L, 1L)).isNull();
+    assertThat(cache.getEntriesPerKey("Other[uuid]", 1000L, 1L)).isNull();
+    // an estimate that could not be made is kept as well, so that it is not tried again for every statement
+    cache.putEntriesPerKey("Entity[status]", -1L, 10L, 0L);
+    assertThat(cache.getEntriesPerKey("Entity[status]", 10L, 1L)).isEqualTo(-1L);
+  }
 }
