@@ -863,10 +863,6 @@ public class BoltNetworkExecutor extends Thread {
     resolveRequestDatabase(db);
 
     final String query = message.getQuery();
-    final Map<String, Object> params = message.getParameters();
-
-    if (debug)
-      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     final BoltQueryStream stream = new BoltQueryStream(nextQid);
 
@@ -888,6 +884,13 @@ public class BoltNetworkExecutor extends Thread {
     final long statementTimeoutMs = explicitTransaction ?
         remainingTransactionMillis() :
         txTimeoutMillis(message.getExtra());
+
+    // The first read of the parameters turns them into the values the engine binds: only a RUN that every check above let
+    // through pays for it
+    final Map<String, Object> params = message.getParameters();
+
+    if (debug)
+      LogManager.instance().log(this, Level.FINE, "BOLT executing: %s with params %s (db=%s)", query, params, databaseName);
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query, stream)) {

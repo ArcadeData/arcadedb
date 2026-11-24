@@ -62,6 +62,16 @@ public final class BoltWireConnection implements AutoCloseable {
   }
 
   public BoltWireConnection(final int port, final String database, final String userAgent) throws IOException {
+    this(port, database, userAgent, true);
+  }
+
+  /** Connects to {@code port} and completes the version handshake only: no HELLO, no LOGON, so the connection is unauthenticated. */
+  public static BoltWireConnection beforeHello(final int port) throws IOException {
+    return new BoltWireConnection(port, null, "bolt-wire-connection/1.0", false);
+  }
+
+  private BoltWireConnection(final int port, final String database, final String userAgent, final boolean authenticate)
+      throws IOException {
     socket = new Socket("localhost", port);
 
     final OutputStream rawOut = socket.getOutputStream();
@@ -83,6 +93,9 @@ public final class BoltWireConnection implements AutoCloseable {
     out = new BoltChunkedOutput(rawOut);
     in = new BoltChunkedInput(socket.getInputStream());
 
+    if (!authenticate)
+      return;
+
     // A null database sends no routing context at all, so the server resolves the database itself
     sendMap(BoltMessage.HELLO, database != null ?
         Map.of("user_agent", userAgent, "routing", Map.of("db", database)) :
@@ -90,6 +103,12 @@ public final class BoltWireConnection implements AutoCloseable {
     assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
     logon();
+  }
+
+  /** HELLO without credentials, asserting it is accepted: Bolt 5.1+ authenticates with the LOGON that follows. */
+  public void hello() throws IOException {
+    sendMap(BoltMessage.HELLO, Map.of("user_agent", "bolt-wire-connection/1.0"));
+    assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
   }
 
   public void logon() throws IOException {
@@ -133,10 +152,15 @@ public final class BoltWireConnection implements AutoCloseable {
   }
 
   public void run(final String query, final Map<String, Object> extra) throws IOException {
+    run(query, Map.of(), extra);
+  }
+
+  public void run(final String query, final Map<String, Object> parameters, final Map<String, Object> extra)
+      throws IOException {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader(BoltMessage.RUN, 3);
     writer.writeString(query);
-    writer.writeMap(Map.of());
+    writer.writeMap(parameters);
     writer.writeMap(extra);
     out.writeMessage(writer.toByteArray());
   }
