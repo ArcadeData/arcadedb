@@ -91,7 +91,7 @@ public class ContinuousAggregateRefresher {
     // applies it
     for (int pass = 0; pass <= MAX_FOLLOW_UP_REFRESHES; pass++) {
       if (!ca.tryBeginRefresh()) {
-        if (ca.getInvalidation() != null) {
+        if (ca.hasInvalidation()) {
           ca.requestRefresh();
           // the refresh in progress may have ended since the attempt, and would not look at the request any more
           if (ca.tryBeginRefresh())
@@ -125,7 +125,8 @@ public class ContinuousAggregateRefresher {
   private static void refreshOnce(final Database database, final ContinuousAggregateImpl ca) {
     // #11019: a refresh that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
     final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(ca.getStatus());
-    ca.setStatus(MaterializedViewStatus.BUILDING);
+    // #12252: reported, never saved: a schema save while the refresh runs keeps the status it started from
+    ca.markRefreshRunning();
     final long startNs = System.nanoTime();
     // the scope is what lets the writes below through: nothing else writes a backing type (issue #11020)
     try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(ca)) {
@@ -134,6 +135,9 @@ public class ContinuousAggregateRefresher {
       // #10428: the range samples were removed from since the buckets behind the watermark were computed. Read once: a delete
       // that widens it while this refresh runs makes the clearing below a no-op, and the next refresh recomputes the wider range
       final ContinuousAggregateImpl.Invalidation invalidated = ca.getInvalidation();
+      // #13049: and the range samples were appended to behind the watermark, kept apart from the one above for what each is made of.
+      // Read once for the same reason, and cleared on its own
+      final ContinuousAggregateImpl.Invalidation lateInvalidated = ca.getLateInvalidation();
       // #10857: read once this refresh is flagged in progress, AFTER the record above and before the source is read, see
       // clipToInFlightAppends: an append that may have added to the record read is found here
       final long oldestInFlightTs = oldestInFlightAppendTs(database, ca);
@@ -180,8 +184,12 @@ public class ContinuousAggregateRefresher {
 
         // #10428: the buckets behind the watermark that a delete reached. A refresh that rebuilds everything (no watermark yet,
         // or a clean rebuild) recomputes them below anyway
-        if (invalidated != null && watermarkSet && !cleanRebuild)
-          recomputeInvalidatedBuckets(database, ca, invalidated, watermark);
+        if (watermarkSet && !cleanRebuild) {
+          if (invalidated != null)
+            recomputeInvalidatedBuckets(database, ca, invalidated, watermark);
+          if (lateInvalidated != null)
+            recomputeInvalidatedBuckets(database, ca, lateInvalidated, watermark);
+        }
 
         // Replace the rows of the current (possibly incomplete) bucket and of all newer buckets. #8152: the guard used to be
         // `watermark > 0`, which skipped the replacement for an aggregate legitimately anchored at the epoch and let that one bucket
@@ -243,6 +251,8 @@ public class ContinuousAggregateRefresher {
       // record after the samples. Kept, the next refresh recomputes those buckets once more
       if (invalidated != null && !mayHoldInFlightSamples(invalidated, oldestInFlightTs))
         ca.clearInvalidation(invalidated);
+      if (lateInvalidated != null && !mayHoldInFlightSamples(lateInvalidated, oldestInFlightTs))
+        ca.clearLateInvalidation(lateInvalidated);
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
       ca.updateLastRefreshTime();
@@ -253,7 +263,8 @@ public class ContinuousAggregateRefresher {
       // so the next refresh re-processes the same window (delete-first design makes it safe).
       // A clean rebuild must persist even if it found no rows to advance the watermark with, so the repair is not
       // repeated on every restart.
-      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null || adoptedWatermark || persistedStatusIsStale) {
+      if (advancedWatermark[0] != null || cleanRebuild || invalidated != null || lateInvalidated != null || adoptedWatermark
+          || persistedStatusIsStale) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();
@@ -261,9 +272,11 @@ public class ContinuousAggregateRefresher {
           // #8152: restore the FLAG too. setWatermarkTs(watermark) would have left the aggregate claiming a
           // watermark of 0 it never had, which the next refresh would then honour by deleting nothing.
           ca.restoreWatermark(watermark, watermarkSet);
-          // #10428: and the range, which the next refresh recomputes again (the recompute deletes before it inserts)
+          // #10428: and the ranges, which the next refresh recomputes again (the recompute deletes before it inserts)
           if (invalidated != null)
             ca.restoreInvalidation(invalidated);
+          if (lateInvalidated != null)
+            ca.restoreLateInvalidation(lateInvalidated);
           throw saveEx;
         }
       }
@@ -354,9 +367,14 @@ public class ContinuousAggregateRefresher {
    * The cost: an append in flight with a very old timestamp holds the watermark back, and keeps the record, until its commit ends.
    * The next refresh recomputes those buckets, so nothing is lost and no entry outlives its append (the registration is released in
    * a {@code finally} of {@code TimeSeriesShard.appendSamples}).
+   * <p>
+   * {@link Long#MAX_VALUE} is what {@code oldestInFlightTs} is when no append is in flight, and it is also the end of the range of a
+   * delete of the whole type: read as a timestamp it made every such range "hold" a sample, so the range was never cleared (issue
+   * #13049) and every later refresh recomputed it. It is the absence of an append here, never a sample: a timestamp that is the last
+   * instant a column can hold is not one an append carries.
    */
   static boolean mayHoldInFlightSamples(final ContinuousAggregateImpl.Invalidation invalidated, final long oldestInFlightTs) {
-    return oldestInFlightTs <= invalidated.toTs();
+    return oldestInFlightTs != Long.MAX_VALUE && oldestInFlightTs <= invalidated.toTs();
   }
 
   /**
@@ -451,9 +469,13 @@ public class ContinuousAggregateRefresher {
   }
 
   /**
-   * Recomputes the buckets samples were removed from (issue #10428): deletes their rows from the backing type and runs the defining
-   * query over the samples of exactly those buckets. Only the buckets behind the watermark are looked at, the ones at or after it
-   * are deleted and recomputed by the refresh anyway.
+   * Recomputes the buckets samples were removed from (issue #10428) or appended to behind the watermark (issue #10502): deletes their
+   * rows from the backing type and runs the defining query over the samples of exactly those buckets. Only the buckets behind the
+   * watermark are looked at, the ones at or after it are deleted and recomputed by the refresh anyway.
+   * <p>
+   * Called once for each of the two ranges an aggregate records, which are not merged (issue #13049): the range of the deletes and the
+   * range of the late appends. A range that reaches back to the first instants, which only a delete of the whole type records, is
+   * bounded by the rows of the backing type, and a range merged with a late append would have taken the same road and lost it.
    * <p>
    * The buckets are computed on the grid the watermark is a start of, not from the interval alone: a bucket start worked out from the
    * interval would be unaligned on any grid but the epoch's (an origin, an offset or a time zone of {@code ts.timeBucket()}), and

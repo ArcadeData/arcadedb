@@ -48,6 +48,14 @@ public class BinaryCondition extends BooleanExpression {
   private record Mirror(Expression left, BinaryCompareOperator operator, Expression right, BinaryCompareOperator mirrored) {
   }
 
+  /** The key of the memo an execution converts the right operand with, assigned at its first use; see {@link #rightConversion}. */
+  private volatile String rightConversionKey;
+  /**
+   * Whether the right operand is a literal or a parameter, decided at its first use ({@link ConstantOperandConversion#literalState}),
+   * so a record does not walk the expression again. A benign race: two threads compute the same answer.
+   */
+  private          byte   rightLiteralState = ConstantOperandConversion.UNKNOWN;
+
   public BinaryCondition() {
   }
 
@@ -78,7 +86,12 @@ public class BinaryCondition extends BooleanExpression {
     final BinaryCompareOperator mirrored = mirroredOperator();
     try {
       final DatabaseInternal database = context != null ? context.getDatabase() : null;
-      return mirrored != null ? mirrored.execute(database, rightVal, leftVal) : operator.execute(database, leftVal, rightVal);
+      if (mirrored != null)
+        // the constant operand is the one written on the left, which the mirrored operator takes as its right operand
+        return mirrored.execute(database, rightVal, leftVal,
+            ConstantOperandConversion.isStringToConvert(rightVal, leftVal) ? rightConversion(context) : null);
+      return operator.execute(database, leftVal, rightVal,
+          ConstantOperandConversion.isStringToConvert(leftVal, rightVal) && isRightConstant() ? rightConversion(context) : null);
     } catch (final ClassCastException e) {
       if (!operator.isRangeOperator())
         throw e;
@@ -103,6 +116,30 @@ public class BinaryCondition extends BooleanExpression {
       mirror = current;
     }
     return current.mirrored;
+  }
+
+  /**
+   * The memo the execution {@code context} runs converts the right operand with, when it is the same string on every record
+   * compared with a value of another class: the operator then parses it once, not once per record (issue #12713). Null without a
+   * context.
+   */
+  ConstantOperandConversion rightConversion(final CommandContext context) {
+    String key = rightConversionKey;
+    if (key == null) {
+      // A benign race, as the memo key of InCondition: two threads may give the node two keys, and the loser converts once more
+      key = ConstantOperandConversion.newKey();
+      rightConversionKey = key;
+    }
+    return ConstantOperandConversion.of(context, key);
+  }
+
+  private boolean isRightConstant() {
+    byte state = rightLiteralState;
+    if (state == ConstantOperandConversion.UNKNOWN) {
+      state = ConstantOperandConversion.literalState(right);
+      rightLiteralState = state;
+    }
+    return state == ConstantOperandConversion.CONSTANT;
   }
 
   /**
@@ -205,6 +242,12 @@ public class BinaryCondition extends BooleanExpression {
   public boolean indexedFunctionAnswersByScore(final CommandContext context) {
     final IndexableSQLFunction function = indexableFunction(context);
     return function != null && function.answersByScore();
+  }
+
+  /** Whether the function of this condition answers past a limit it is handed, see {@link IndexableSQLFunction#continuesPastLimit()}. */
+  public boolean indexedFunctionContinuesPastLimit(final CommandContext context) {
+    final IndexableSQLFunction function = indexableFunction(context);
+    return function != null && function.continuesPastLimit();
   }
 
   /**

@@ -30,7 +30,12 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object left, Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
+    return execute(database, left, right, null);
+  }
+
+  @Override
+  public boolean execute(final DatabaseInternal database, Object left, Object right, final ConstantOperandConversion rightConversion) {
     if (left == null || right == null)
       return false;
 
@@ -51,7 +56,7 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
         // raw parse/conversion failure (e.g. NumberFormatException on a non-numeric String) escape (#5900).
         // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206).
         left = DateUtils.dateAsMidnightAgainst(left, right);
-        right = Type.convertOrNull(database, right, left.getClass());
+        right = ConstantOperandConversion.convertOrNull(rightConversion, database, right, left.getClass());
       }
     }
 

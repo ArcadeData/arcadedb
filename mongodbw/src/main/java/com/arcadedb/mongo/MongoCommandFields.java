@@ -79,8 +79,8 @@ final class MongoCommandFields {
   }
 
   private static final Map<String, Table> TABLES = Map.of(
-      // every document is answered in the first batch with no cursor left open, so the fields that size or keep a cursor ask for
-      // nothing more; allowPartialResults is about unreachable shards and oplogReplay is ignored by mongod itself
+      // the fields that size or keep a cursor are read by the find (batchSize, singleBatch, noCursorTimeout); allowPartialResults is
+      // about unreachable shards and oplogReplay is ignored by mongod itself
       "find", new Table(
           Set.of("find", "filter", "sort", "projection", "skip", "limit", "batchSize", "singleBatch", "allowDiskUse", "noCursorTimeout",
               "allowPartialResults", "oplogReplay"),
