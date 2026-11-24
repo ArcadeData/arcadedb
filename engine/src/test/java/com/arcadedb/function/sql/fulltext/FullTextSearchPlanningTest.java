@@ -48,10 +48,12 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Spliterator;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -1287,6 +1289,80 @@ class FullTextSearchPlanningTest {
       assertThat(rids("SELECT FROM Place WHERE " + westHalf + " = true")).hasSize(100);
       assertThat(plan("SELECT FROM Place WHERE " + westHalf + " = false", cursor)).doesNotContain("INDEXED FUNCTION");
       assertThat(rids("SELECT FROM Place WHERE " + westHalf + " = false")).hasSize(100);
+    }
+
+    /**
+     * Regression for #13283: a client whose parameters have no RID type (JSON, protobuf) binds {@code :ids} as the RIDs' text. Such a
+     * list was not held as RIDs by the fetch, so the condition was evaluated for every match against the whole list: a scan of the
+     * list per match. A counting list shows how many times the statement walks it: a handful of times with the fix (to read it),
+     * once per match without.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "BM25_1", "BM25_4" })
+    void aListOfRidTextsIsReadOnceNotScannedPerMatch(final String variant) {
+      createCorpus(variant);
+      final String either = "(" + SEARCH + " OR SEARCH_INDEX('Doc[content]', 'filler') = true)";
+      final List<RID> everyFourth = new ArrayList<>();
+      final List<RID> all = rids("SELECT FROM Doc WHERE " + SEARCH + " ORDER BY @rid");
+      for (int i = 0; i < all.size(); i += 4)
+        everyFourth.add(all.get(i));
+      final Set<RID> chosen = new HashSet<>(everyFourth);
+      final WalkCountingList texts = new WalkCountingList();
+      for (final RID rid : everyFourth)
+        texts.add(rid.toString());
+
+      for (final String test : new String[] { "IN", "NOT IN" }) {
+        final String ranked = "SELECT FROM Doc WHERE " + either + " AND @rid " + test + " :ids ORDER BY $score DESC";
+        final Map<String, Object> asRids = Map.of("ids", everyFourth);
+        final Map<String, Object> asTexts = Map.of("ids", texts);
+        assertThat(plan(ranked, asTexts)).contains("RID FILTER (@rid " + test + " :ids)");
+
+        texts.walks = 0;
+        final List<RID> answer = rids(ranked, asTexts);
+        assertThat(answer).as(test).isEqualTo(rids(ranked, asRids));
+        assertThat(answer).as(test).hasSize(test.equals("IN") ? chosen.size() : DOCUMENTS - chosen.size());
+        assertThat(rids(ranked + " LIMIT 20", asTexts)).as(test + " LIMIT 20").isEqualTo(rids(ranked + " LIMIT 20", asRids))
+            .hasSize(20);
+        // Read to build the filter, once per fetch and execution; never again for a match
+        assertThat(texts.walks).as(test).isLessThanOrEqualTo(12);
+      }
+
+      // A list holding something else than RIDs keeps the evaluation per match, with the condition's own answer
+      final WalkCountingList mixed = new WalkCountingList();
+      mixed.add(everyFourth.get(0).toString());
+      mixed.add("not a rid");
+      assertThat(rids("SELECT FROM Doc WHERE " + either + " AND @rid IN :ids", Map.of("ids", mixed))).containsExactly(everyFourth.get(0));
+      assertThat(rids("SELECT FROM Doc WHERE " + either + " AND @rid NOT IN :ids", Map.of("ids", mixed))).hasSize(DOCUMENTS - 1);
+    }
+
+    private String plan(final String query, final Map<String, Object> params) {
+      try (final ResultSet rs = database.query("sql", query, params)) {
+        return rs.getExecutionPlan().orElseThrow().prettyPrint(0, 2);
+      }
+    }
+
+    /** A list that counts how many times it is walked from its start. */
+    private static final class WalkCountingList extends ArrayList<String> {
+      int walks;
+
+      @Override
+      public Iterator<String> iterator() {
+        ++walks;
+        return super.iterator();
+      }
+
+      @Override
+      public Spliterator<String> spliterator() {
+        ++walks;
+        return super.spliterator();
+      }
+
+      @Override
+      public String get(final int index) {
+        if (index == 0)
+          ++walks;
+        return super.get(index);
+      }
     }
 
     private void assertSame(final String ridCondition, final Predicate<RID> accepted, final List<RID> ordered,
