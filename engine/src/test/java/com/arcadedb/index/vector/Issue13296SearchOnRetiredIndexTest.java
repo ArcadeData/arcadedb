@@ -167,13 +167,18 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
   @MethodSource("searches")
   void aWarmProductSubIndexWhoseFilesWereRetiredStillAnswersEveryRecord(final String search) {
     final float[] query = createIndexAndRecords("PRODUCT", false);
-    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+    // An approximate (PQ) search may miss a row on a healthy index (main answers 399 of 400 now and then), so completeness is
+    // asserted to within that one row, before and after: a retired file loses a whole bucket (100 rows) or all of the sub-index
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isGreaterThanOrEqualTo(RECORDS - 1);
     final LSMVectorIndex subIndex = subIndex();
+    final int expected = "sql".equals(search) ? RECORDS : RECORDS / BUCKETS;
+    assertThat(rowsOf(subIndex, search, query)).as("a healthy PRODUCT index answers (nearly) every row")
+        .isBetween(expected - 1, expected);
 
     retire(subIndex);
 
     assertThat(rowsOf(subIndex, search, query)).as("a PRODUCT search scores in memory and reads the records, not the retired files")
-        .isEqualTo("sql".equals(search) ? RECORDS : RECORDS / BUCKETS);
+        .isBetween(expected - 1, expected);
   }
 
   @ParameterizedTest
