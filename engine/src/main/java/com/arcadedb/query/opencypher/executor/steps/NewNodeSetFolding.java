@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -82,6 +83,36 @@ final class NewNodeSetFolding {
         return false;
     }
     return true;
+  }
+
+  /**
+   * Whether a record of {@code type} is given a default value for a property it is created without. A SET folded into the
+   * first save is applied before the defaults are filled in, so it would keep a default that the same SET applied to the saved
+   * record removes ({@code SET n = map} without the property, {@code SET n.p = null}): for such a type the items are applied
+   * after the first save instead, as the SET step applies them.
+   */
+  static boolean fillsDefaults(final DocumentType type) {
+    return type != null && !type.getPolymorphicPropertiesWithDefaultDefined().isEmpty();
+  }
+
+  /**
+   * Applies {@code items} to a vertex the creating clause is about to save, and saves it. On a type that fills default values
+   * ({@link #fillsDefaults}) the vertex is saved first and the items are applied to the saved record, so the defaults a SET
+   * replaces or removes are gone as they are when the SET step applies it.
+   *
+   * @return the number of properties the items count as set
+   */
+  static int applyAndSave(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
+      final ExpressionEvaluator evaluator, final CommandContext context) {
+    if (!fillsDefaults(vertex.getType())) {
+      final int counted = apply(items, vertex, result, evaluator, context);
+      vertex.save();
+      return counted;
+    }
+    vertex.save();
+    final int counted = apply(items, vertex, result, evaluator, context);
+    vertex.save();
+    return counted;
   }
 
   /**

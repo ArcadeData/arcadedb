@@ -1305,7 +1305,8 @@ public class MergeStep extends AbstractExecutionStep {
       tracePathElement(trace, 2 * i, vertices.get(i));
 
     // The SET this step absorbed is written with the one relationship of the path (isRelationshipSetFoldable)
-    final List<SetClause.SetItem> folded = absorbedSet != null ? absorbedSet.getItems() : null;
+    final List<SetClause.SetItem> folded = absorbedSet != null && !relationshipTypeHasDefaults(pathPattern.getRelationship(0))
+        ? absorbedSet.getItems() : null;
     for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
       final RelationshipPattern relPattern = pathPattern.getRelationship(i);
       final Vertex fromVertex = relPattern.getDirection() == Direction.IN
@@ -1824,6 +1825,17 @@ public class MergeStep extends AbstractExecutionStep {
     return true;
   }
 
+  /**
+   * Whether the type the relationship is created with fills a default value in a property the record is created without. A
+   * folded SET would then write its map before the default is filled in, and keep a default the SET step removes: the
+   * relationship is created with its pattern's properties and the SET is applied to it, as the SET step would.
+   */
+  private boolean relationshipTypeHasDefaults(final RelationshipPattern relPattern) {
+    final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
+    final Schema schema = context.getDatabase().getSchema();
+    return schema.existsType(type) && NewNodeSetFolding.fillsDefaults(schema.getType(type));
+  }
+
   private Vertex createPatternVertex(final NodePattern nodePattern, final Result result,
       final List<SetClause.SetItem> foldedSet) {
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
@@ -1846,9 +1858,13 @@ public class MergeStep extends AbstractExecutionStep {
     }
 
     final int patternProperties = vertex.getPropertyNames().size();
-    final int assignedBySet = foldedSet != null ? NewNodeSetFolding.apply(foldedSet, vertex, result, evaluator, context) : 0;
-
-    vertex.save();
+    final int assignedBySet;
+    if (foldedSet != null)
+      assignedBySet = NewNodeSetFolding.applyAndSave(foldedSet, vertex, result, evaluator, context);
+    else {
+      assignedBySet = 0;
+      vertex.save();
+    }
 
     final QueryStatistics stats = context.getStatistics();
     stats.incNodesCreated();
@@ -1898,26 +1914,50 @@ public class MergeStep extends AbstractExecutionStep {
     // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
     // before the internal save()/validation. Otherwise edges with mandatory properties fail
     // validation inside newEdge() (issue #4413).
-    final Map<String, Object> properties = new LinkedHashMap<>();
     Map<String, Object> evaluatedProperties = null;
-    if (relPattern.hasProperties()) {
-      final Map<String, Object> rawProperties = relPattern.getProperties();
-      evaluatedProperties = evaluateProperties(rawProperties, result);
-      for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
-        // Skip a null value, matching setProperties (the vertex creation branch) and CreateStep's own
-        // buildEdgeProperties/buildPropertiesFromParameter: Cypher property maps don't remove via null the way
-        // SET's merge form does, so a null entry is simply not stored (issue #7629).
-        final Object value = entry.getValue();
-        if (value != null)
-          properties.put(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
-              originOf(rawProperties, entry.getKey(), value)));
-      }
-    }
-    final int patternProperties = properties.size();
-    final int assignedBySet = foldedSet != null ? NewNodeSetFolding.apply(foldedSet, properties, result, evaluator, context) : 0;
-
     final Edge edge;
-    if (relPattern.hasProperties() || !properties.isEmpty()) {
+    int propertiesSet = -1;
+    if (foldedSet == null) {
+      final Object[] edgeProperties;
+      if (relPattern.hasProperties()) {
+        final Map<String, Object> rawProperties = relPattern.getProperties();
+        evaluatedProperties = evaluateProperties(rawProperties, result);
+        final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
+        for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
+          // Skip a null value, matching setProperties (the vertex creation branch) and CreateStep's own
+          // buildEdgeProperties/buildPropertiesFromParameter: Cypher property maps don't remove via null the way
+          // SET's merge form does, so a null entry is simply not stored (issue #7629).
+          final Object value = entry.getValue();
+          if (value != null) {
+            keyValues.add(entry.getKey());
+            keyValues.add(CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
+                originOf(rawProperties, entry.getKey(), value)));
+          }
+        }
+        edgeProperties = keyValues.toArray();
+      } else
+        edgeProperties = null;
+
+      edge = edgeProperties != null
+          ? fromVertex.newEdge(type, toVertex, edgeProperties)
+          : fromVertex.newEdge(type, toVertex);
+    } else {
+      // The SET this step absorbed is applied to the properties the relationship is created with (issue #12640)
+      final Map<String, Object> properties = new LinkedHashMap<>();
+      if (relPattern.hasProperties()) {
+        final Map<String, Object> rawProperties = relPattern.getProperties();
+        evaluatedProperties = evaluateProperties(rawProperties, result);
+        for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
+          // Skip a null value, as the branch above does (issue #7629)
+          final Object value = entry.getValue();
+          if (value != null)
+            properties.put(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
+                originOf(rawProperties, entry.getKey(), value)));
+        }
+      }
+      final int patternProperties = properties.size();
+      propertiesSet = patternProperties + NewNodeSetFolding.apply(foldedSet, properties, result, evaluator, context);
+
       final Object[] keyValues = new Object[properties.size() * 2];
       int i = 0;
       for (final Map.Entry<String, Object> entry : properties.entrySet()) {
@@ -1925,8 +1965,7 @@ public class MergeStep extends AbstractExecutionStep {
         keyValues[i++] = entry.getValue();
       }
       edge = fromVertex.newEdge(type, toVertex, keyValues);
-    } else
-      edge = fromVertex.newEdge(type, toVertex);
+    }
 
     if (betweenExistingNodes) {
       // The match that did not find it read an edge list a concurrent MERGE may be appending the same relationship to (#11482)
@@ -1943,7 +1982,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     final QueryStatistics stats = context.getStatistics();
     stats.incRelationshipsCreated();
-    stats.addPropertiesSet(foldedSet != null ? patternProperties + assignedBySet : edge.getPropertyNames().size());
+    stats.addPropertiesSet(propertiesSet >= 0 ? propertiesSet : edge.getPropertyNames().size());
 
     return edge;
   }

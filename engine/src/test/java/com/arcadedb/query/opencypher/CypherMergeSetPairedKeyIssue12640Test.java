@@ -82,6 +82,117 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
   }
 
   @Test
+  void aKeyTheMergeActionsWriteIsNotPaired() {
+    // the MERGE's own ON CREATE SET / ON MATCH SET runs between the lookup and the SET, so the key no longer holds the value the
+    // MERGE matched it by when the SET runs
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON CREATE SET n.uuid = 'z' SET n = row"))
+        .contains("EAGER");
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON MATCH SET n.uuid = 'z' SET n = row"))
+        .contains("EAGER");
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON MATCH SET n = {} SET n = row")).contains("EAGER");
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON CREATE SET n += row.extra SET n += row"))
+        .contains("EAGER");
+    assertThat(explain("UNWIND $rows AS row MATCH (a:Entity {uuid: row.source}) MATCH (b:Entity {uuid: row.target}) "
+        + "MERGE (a)-[e:RELATES_TO {uuid: row.uuid}]->(b) ON MATCH SET e.uuid = 'z' SET e = row")).contains("EAGER");
+    // an action that writes another key keeps the pair
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON CREATE SET n.created = true SET n += row"))
+        .doesNotContain("EAGER");
+  }
+
+  @Test
+  void aMergeActionWritingThePairedKeyMergesAsTheClauseAtATimePlanDoes() {
+    // Clause at a time every MERGE runs before any SET: each row finds no node with the key, since ON CREATE SET moved it, and
+    // creates one. Streamed, the SET of the first row would write the key back and every later row would match that node.
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (int i = 0; i < 150; i++)
+      rows.add(Map.of("uuid", "same", "name", "n" + i));
+    database.transaction(() -> database.command("opencypher",
+        "UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON CREATE SET n.uuid = 'moved' SET n = row", Map.of("rows", rows))
+        .close());
+    final long direct = database.countType("Entity", false);
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Entity"));
+    // the WITH keeps the SET a step of its own, behind the barrier
+    database.transaction(() -> database.command("opencypher",
+        "UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) ON CREATE SET n.uuid = 'moved' WITH n, row SET n = row",
+        Map.of("rows", rows)).close());
+    assertThat(direct).isEqualTo(database.countType("Entity", false)).isEqualTo(150);
+  }
+
+  @Test
+  void aRelationshipTypeWithDefaultsKeepsWhatTheSetStepStores() {
+    database.command("sql", "CREATE EDGE TYPE WEIGHTED");
+    database.command("sql", "CREATE PROPERTY WEIGHTED.uuid STRING");
+    database.command("sql", "CREATE PROPERTY WEIGHTED.weight INTEGER (default 7)");
+    database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a'}), (:Entity {uuid: 'b'})").close());
+
+    final List<Map<String, Object>> rows = List.of(Map.of("uuid", "w1", "source", "a", "target", "b", "fact", "f"));
+    database.transaction(() -> database.command("opencypher",
+        "UNWIND $rows AS row MATCH (a:Entity {uuid: row.source}) MATCH (b:Entity {uuid: row.target}) "
+            + "MERGE (a)-[e:WEIGHTED {uuid: row.uuid}]->(b) SET e = row", Map.of("rows", rows)).close());
+    final List<Map<String, Object>> stepped = List.of(Map.of("uuid", "w2", "source", "a", "target", "b", "fact", "f"));
+    database.transaction(() -> database.command("opencypher",
+        "UNWIND $rows AS row MATCH (a:Entity {uuid: row.source}) MATCH (b:Entity {uuid: row.target}) "
+            + "MERGE (a)-[e:WEIGHTED {uuid: row.uuid}]->(b) WITH e, row SET e = row", Map.of("rows", stepped)).close());
+
+    final Edge direct = database.query("sql", "SELECT FROM WEIGHTED WHERE uuid = 'w1'").next().getEdge().get();
+    final Edge viaStep = database.query("sql", "SELECT FROM WEIGHTED WHERE uuid = 'w2'").next().getEdge().get();
+    assertThat(direct.getString("fact")).isEqualTo("f");
+    assertThat(direct.has("weight")).isEqualTo(viaStep.has("weight"));
+    assertThat(direct.getPropertyNames()).containsExactlyInAnyOrderElementsOf(viaStep.getPropertyNames());
+  }
+
+  @Test
+  void aNodeTypeWithDefaultsKeepsWhatTheSetStepStores() {
+    database.command("sql", "CREATE VERTEX TYPE Weighted");
+    database.command("sql", "CREATE PROPERTY Weighted.uuid STRING");
+    database.command("sql", "CREATE PROPERTY Weighted.weight INTEGER (default 7)");
+
+    // each folded form next to the same clauses with a WITH in between, which keeps the SET a step of its own
+    final String[][] forms = {
+        { "UNWIND $rows AS row MERGE (n:Weighted {uuid: row.uuid}) SET n = row",
+            "UNWIND $rows AS row MERGE (n:Weighted {uuid: row.uuid}) WITH n, row SET n = row" },
+        { "UNWIND $rows AS row CREATE (n:Weighted) SET n = row", "UNWIND $rows AS row CREATE (n:Weighted) WITH n, row SET n = row" },
+        { "UNWIND $rows AS row MERGE (n:Weighted {uuid: row.uuid}) ON CREATE SET n.weight = null",
+            "UNWIND $rows AS row MERGE (n:Weighted {uuid: row.uuid}) WITH n, row SET n.weight = null" } };
+    int next = 0;
+    for (final String[] form : forms) {
+      final String folded = "f" + next;
+      final String stepped = "s" + next++;
+      final int[] propertiesSet = new int[2];
+      for (int i = 0; i < 2; i++) {
+        final int index = i;
+        final String uuid = i == 0 ? folded : stepped;
+        database.transaction(() -> {
+          try (final ResultSet rs = database.command("opencypher", form[index], Map.of("rows", List.of(Map.of("uuid", uuid, "name", "x"))))) {
+            count(rs);
+            propertiesSet[index] = rs.getStatistics().orElseThrow().getPropertiesSet();
+          }
+        });
+      }
+      final Vertex direct = database.query("sql", "SELECT FROM Weighted WHERE uuid = ?", folded).next().getVertex().get();
+      final Vertex viaStep = database.query("sql", "SELECT FROM Weighted WHERE uuid = ?", stepped).next().getVertex().get();
+      assertThat(direct.getPropertyNames()).as(form[0]).containsExactlyInAnyOrderElementsOf(viaStep.getPropertyNames());
+      assertThat(direct.has("weight")).as(form[0]).isFalse();
+      assertThat(propertiesSet[0]).as(form[0]).isEqualTo(propertiesSet[1]);
+    }
+  }
+
+  @Test
+  void aParameterHoldingARecordKeepsTheBarrier() {
+    final Vertex[] entity = new Vertex[1];
+    database.transaction(() -> entity[0] = database.newVertex("Entity").set("uuid", "u", "source", "a", "target", "b").save());
+    final String query = "EXPLAIN " + EDGE_UPSERT;
+    try (final ResultSet rs = database.command("opencypher", query, Map.of("rows", List.of(entity[0])))) {
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("EAGER");
+    }
+    try (final ResultSet rs = database.command("opencypher", query, Map.of("rows", List.of(Map.of("uuid", "u", "source", "a"),
+        entity[0])))) {
+      assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("EAGER");
+    }
+  }
+
+  @Test
   void nodeUpsertStoresEachNewNodeOnceAndUpdatesMatchedOnes() {
     final List<Map<String, Object>> rows = new ArrayList<>();
     for (int i = 0; i < 300; i++)

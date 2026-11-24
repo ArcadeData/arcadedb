@@ -378,31 +378,76 @@ public final class CypherEagernessAnalyzer {
     if (mergeClause == null || mergeClause.getPathPattern() == null)
       return;
     final PathPattern pathPattern = mergeClause.getPathPattern();
+    // The keys the MERGE's own ON CREATE SET / ON MATCH SET writes between the lookup and a SET after the MERGE: such a key no
+    // longer holds the value it was matched by when that SET runs, so it pairs with nothing. Null when an action writes keys
+    // the planner cannot name (a whole map, a computed key), which leaves no key paired.
+    final Set<String> actionWrittenKeys = tracksPropertyReads ? actionWrittenKeys(mergeClause) : Set.of();
     // The entity a MERGE binds itself: the node of a single-node pattern (the validator refuses one bound before) and the
     // relationships of a path (MERGE cannot reuse a bound relationship). A bound endpoint of a path is only filtered by its map.
     final boolean singleNode = pathPattern.isSingleNode();
     for (final NodePattern node : pathPattern.getNodes()) {
-      observeMergeReadKeys(singleNode ? node.getVariable() : null, node.getProperties(), node.getPropertiesParameterName());
+      observeMergeReadKeys(singleNode ? node.getVariable() : null, node.getProperties(), node.getPropertiesParameterName(),
+          actionWrittenKeys);
       if (node.hasDynamicLabels())
         mergeReadsAnyLabel = true;
       else if (node.hasLabels())
         mergeReadLabels.addAll(node.getLabels());
     }
     for (final RelationshipPattern relationship : pathPattern.getRelationships())
-      observeMergeReadKeys(relationship.getVariable(), relationship.getProperties(), relationship.getPropertiesParameterName());
+      observeMergeReadKeys(relationship.getVariable(), relationship.getProperties(), relationship.getPropertiesParameterName(),
+          actionWrittenKeys);
   }
 
   /**
-   * @param variable the variable of the entity the MERGE binds by these keys, or null when the pattern element only filters an
-   *                 entity bound before
+   * The property keys the {@code ON CREATE SET} and {@code ON MATCH SET} actions of {@code mergeClause} write, through any
+   * variable, or null when one of them writes keys the planner cannot name: {@code SET n = map}, {@code SET n += expr}, a
+   * computed key or an expression target.
    */
-  private void observeMergeReadKeys(final String variable, final Map<String, Object> properties, final String parameterName) {
+  private static Set<String> actionWrittenKeys(final MergeClause mergeClause) {
+    if (!mergeClause.hasOnCreateSet() && !mergeClause.hasOnMatchSet())
+      return Set.of();
+    final Set<String> keys = new HashSet<>();
+    for (final SetClause action : new SetClause[] { mergeClause.getOnCreateSet(), mergeClause.getOnMatchSet() }) {
+      if (action == null)
+        continue;
+      for (final SetClause.SetItem item : action.getItems()) {
+        switch (item.getType()) {
+        case PROPERTY -> {
+          if (item.getKeyExpression() != null || item.getTargetExpression() != null || item.getProperty() == null)
+            return null;
+          keys.add(item.getProperty());
+        }
+        case MERGE_MAP -> {
+          if (!(item.getValueExpression() instanceof MapExpression map) || item.getTargetExpression() != null)
+            return null;
+          keys.addAll(map.getEntries().keySet());
+        }
+        case REPLACE_MAP -> {
+          return null;
+        }
+        default -> {
+          // a label write changes no property
+        }
+        }
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * @param variable          the variable of the entity the MERGE binds by these keys, or null when the pattern element only
+   *                          filters an entity bound before
+   * @param actionWrittenKeys the keys the MERGE's own actions write, which pair with nothing, or null when they may write any
+   */
+  private void observeMergeReadKeys(final String variable, final Map<String, Object> properties, final String parameterName,
+      final Set<String> actionWrittenKeys) {
     if (parameterName != null)
       mergeReadsAnyKey = true;
     else if (properties != null)
       for (final Map.Entry<String, Object> entry : properties.entrySet()) {
         mergeReadKeys.add(entry.getKey());
-        if (tracksPropertyReads && variable != null && entry.getValue() instanceof PropertyAccessExpression access
+        if (tracksPropertyReads && variable != null && actionWrittenKeys != null && !actionWrittenKeys.contains(entry.getKey())
+            && entry.getValue() instanceof PropertyAccessExpression access
             && entry.getKey().equals(access.getPropertyName()) && !variable.equals(access.getVariableName()))
           mergeKeyPairs.add(new PropertyReadSite(variable, entry.getKey(), access.getVariableName()));
       }
