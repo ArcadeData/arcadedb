@@ -111,6 +111,8 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * of when each repetition is matched (issue #10559).
    */
   private final boolean              innerWhereReadsTarget;
+  /** The search a pull stopped in the middle of, if any: what {@link #close()} has to give back. */
+  private volatile RowSearch         activeSearch;
 
   /**
    * @param sourceVariable        variable holding the group's left boundary vertex
@@ -199,14 +201,17 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
             }
 
             search = openSearch(prevResults.next(), guard);
+            activeSearch = search;
             if (search == null)
               continue;
           }
 
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
-            if (search.advance(buffer, batch))
+            if (search.advance(buffer, batch)) {
               search = null;
+              activeSearch = null;
+            }
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -218,13 +223,24 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        if (search != null) {
-          search.release();
-          search = null;
-        }
+        search = null;
         QuantifiedPathStep.this.close();
       }
     };
+  }
+
+  /**
+   * Gives back what a search stopped before its end still holds, as a {@code LIMIT} that is satisfied leaves it. The plan is closed
+   * through its steps, not through the result set each of them returned, so the release is the step's.
+   */
+  @Override
+  public void close() {
+    final RowSearch open = activeSearch;
+    if (open != null) {
+      activeSearch = null;
+      open.release();
+    }
+    super.close();
   }
 
   /**

@@ -22,6 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.QueryHeapBudget;
+import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -181,6 +184,38 @@ class CypherQuantifiedPathPatternStreamingTest {
 
     database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 1000L);
     assertThat(rowsOf("MATCH (s:P {name:'n0'}) " + GROUP + " (t:P) RETURN t.name AS name")).hasSize(30);
+  }
+
+  @Test
+  void aSearchLeftOpenByAnEarlyEndGivesItsHeapBackWhenTheQueryIsClosed() {
+    // What queries of other tests abandoned is given back at any moment until then: the reservation read below is this test's own
+    QueryHeapBudgetTestSupport.awaitNoReservationLeft();
+    database.transaction(() -> {
+      MutableVertex previous = database.newVertex("P").set("name", "n0").save();
+      for (int i = 1; i <= 1300; i++) {
+        final MutableVertex next = database.newVertex("P").set("name", "n" + i).save();
+        previous.newEdge("R", next).save();
+        previous = next;
+      }
+    });
+    GlobalConfiguration.QUERY_MAX_HEAP_RAM.setValue(64);
+    try {
+      // the rows come in the order of the depth, so 1100 of them leave a search 1100 levels deep, which holds more than the budget
+      // lets a query hold without reserving
+      final ResultSet rows = database.query("opencypher", "MATCH (s:P {name:'n0'}) " + GROUP + " (t:P) RETURN t.name AS name");
+      try {
+        for (int i = 0; i < 1100; i++) {
+          assertThat(rows.hasNext()).isTrue();
+          rows.next();
+        }
+        assertThat(QueryHeapBudget.getReservedBytes()).as("the open search holds its levels").isPositive();
+      } finally {
+        rows.close();
+      }
+      assertThat(QueryHeapBudget.getReservedBytes()).as("closing the query gave them back").isZero();
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
+    }
   }
 
   private List<String> rowsOf(final String query) {
