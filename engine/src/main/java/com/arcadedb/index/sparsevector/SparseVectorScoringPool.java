@@ -87,6 +87,9 @@ import java.util.logging.Level;
  */
 public final class SparseVectorScoringPool extends DedicatedThreadPool {
 
+  /** How long a wait for a task of the pool lasts before the bound of the command is read again, see {@link #awaitGuarded}. */
+  private static final long GUARDED_WAIT_SLICE_MS = 50;
+
   // Lazy-init via the initialization-on-demand holder idiom. The pool only allocates its
   // ThreadPoolExecutor when something actually calls {@link #getInstance()} - which today is
   // either the server-side {@link com.arcadedb.server.monitor.PoolMetrics} binder (when a
@@ -112,9 +115,6 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
    * is the number to revisit, and it is named so it can be found.
    */
   private static final int CALLER_LOAD_GATE_FACTOR = 2;
-
-  /** How long a wait for a task of the pool lasts before the bound of the command is read again, see {@link #awaitGuarded}. */
-  private static final long GUARDED_WAIT_SLICE_MS = 50;
 
   /**
    * How far the ranges of concurrently forced splits may oversubscribe the pool before the setting is

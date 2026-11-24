@@ -323,8 +323,18 @@ public final class BmwScorer {
   public static List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
       final Set<Object> groupKeys, final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver,
       final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) throws IOException {
-    return topKForGroups(queryDims, queryWeights, cursors, groupKeys, groupSize, floor, groupKeyResolver, allowedRIDs,
-        excludedRIDs, WorkGuard.forCommandDeadline(null));
+    return topKForGroups(queryDims, queryWeights, cursors, new FixedGroups(groupKeys, groupSize, floor), groupKeyResolver,
+        allowedRIDs, excludedRIDs, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * The groups a fixed-group search fills, see {@link #topKForGroups}.
+   *
+   * @param keys     the groups to fill
+   * @param size     how many members each of them takes
+   * @param floor    the score above which a member matters, {@link Float#NEGATIVE_INFINITY} for none
+   */
+  public record FixedGroups(Set<Object> keys, int size, float floor) {
   }
 
   /**
@@ -332,8 +342,11 @@ public final class BmwScorer {
    * {@code guard} as soon as the scan sees it, see {@link #topK(int[], float[], DimCursor[], int, RID, RID, WorkGuard)}.
    */
   public static List<RidScore> topKForGroups(final int[] queryDims, final float[] queryWeights, final CursorSource cursors,
-      final Set<Object> groupKeys, final int groupSize, final float floor, final Function<RID, Object> groupKeyResolver,
-      final Set<RID> allowedRIDs, final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
+      final FixedGroups groups, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs, final WorkGuard guard) throws IOException {
+    final Set<Object> groupKeys = groups.keys();
+    final int groupSize = groups.size();
+    final float floor = groups.floor();
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
     if (Float.isNaN(floor))

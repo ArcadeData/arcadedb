@@ -948,8 +948,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (queryDims.length != queryWeights.length)
       throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
 
-    return groupedSearch(queryDims, cursors -> BmwScorer.topKForGroups(queryDims, queryWeights, cursors, groupKeys,
-        groupSize, floor, groupKeyResolver, allowedRIDs, excludedRIDs, guard));
+    return groupedSearch(queryDims, cursors -> BmwScorer.topKForGroups(queryDims, queryWeights, cursors,
+        new BmwScorer.FixedGroups(groupKeys, groupSize, floor), groupKeyResolver, allowedRIDs, excludedRIDs, guard));
   }
 
   @FunctionalInterface
