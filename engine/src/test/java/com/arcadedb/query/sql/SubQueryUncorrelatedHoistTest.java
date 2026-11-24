@@ -214,6 +214,26 @@ class SubQueryUncorrelatedHoistTest extends TestHelper {
   }
 
   @Test
+  void aSubQueryReadingTheOuterRowThroughAMapLiteralStillAnswersPerRow() {
+    // the $parent reference sits in a map literal of the sub-query's projection: the sub-query is correlated all the same
+    for (final String sql : new String[] {
+        "SELECT id, ((SELECT {'v': $parent.$current.id} AS m FROM M)[0].m.v + 0) AS c FROM T ORDER BY id",
+        "SELECT id, (SELECT {'v': $parent.$current.id} AS m FROM M)[0].m.v AS c FROM T ORDER BY id" }) {
+      final List<Result> rows = run(sql);
+      assertThat(rows).as(sql).hasSize(N);
+      for (final Result row : rows)
+        assertThat(row.<Integer>getProperty("c")).as(sql).isEqualTo(row.<Integer>getProperty("id"));
+    }
+
+    // a map literal that reads nothing of the outer row keeps the sub-query uncorrelated: once per execution
+    final List<Result> rows = run("SELECT id, ((SELECT {'v': " + COUNTED + "(id)} AS m FROM M)[0].m.v + 0) AS c FROM T");
+    assertThat(rows).hasSize(N);
+    for (final Result row : rows)
+      assertThat(row.<Integer>getProperty("c")).isEqualTo(N - 1);
+    assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
   void aSubQueryReadingAPerRecordLetInsideParenthesesStillAnswersPerRow() {
     final List<Result> rows = run(
         "SELECT id FROM T LET $a = g WHERE ((SELECT count(*) AS c FROM M WHERE " + COUNTED + "(g) = $a)[0].c + 0) > 0 ORDER BY id");
