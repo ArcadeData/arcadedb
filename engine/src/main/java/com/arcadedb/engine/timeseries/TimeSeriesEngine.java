@@ -1560,7 +1560,8 @@ public class TimeSeriesEngine implements AutoCloseable {
             // Only ship when the file actually changed, so a steady-state no-op cycle (nothing old
             // enough to trim/downsample) does not re-ship the whole sealed file every maintenance tick.
             // The counts say so for every rewrite: retention drops blocks, and a downsample only rewrites blocks that hold
-            // two samples of one (tag values, bucket), so it always leaves fewer samples than it found (issue #11984).
+            // two samples of one (tag values, bucket) that fold into one row (issue #11984; the mean row and the staleness
+            // marker row of a series that ended there are not, issue #12580), so it always leaves fewer samples than it found.
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
               db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
                   sealed.readWholeSealedFile());
