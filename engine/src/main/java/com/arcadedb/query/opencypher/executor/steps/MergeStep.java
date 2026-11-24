@@ -1972,7 +1972,8 @@ public class MergeStep extends AbstractExecutionStep {
         }
       }
       final int patternProperties = properties.size();
-      propertiesSet = patternProperties + NewNodeSetFolding.apply(foldedSet, properties, result, evaluator, context);
+      propertiesSet = patternProperties + NewNodeSetFolding.apply(foldedSet, context.getDatabase().getSchema().getType(type), properties, result,
+          evaluator, context);
 
       final Object[] keyValues = new Object[properties.size() * 2];
       int i = 0;
