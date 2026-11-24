@@ -587,12 +587,13 @@ public class MatchExecutionPlanner {
 
     // A NODE WITH NO rid:, type: OR bucket: HAS NO ESTIMATE, BUT IT CAN START A PATTERN TOO, FROM EVERY VERTEX (ISSUE #12743): LEFT
     // OUT, AN EDGE WALKED ONLY FORWARD WOULD NOT WAIT FOR SUCH A SOURCE AND WOULD BE WALKED BACKWARDS FROM ITS TARGET. NOT ONE
-    // WHOSE where: READS ANOTHER ALIAS THROUGH $matched: IT STARTS NOTHING BEFORE THAT ALIAS IS BOUND, SO AN EDGE THAT WAITED FOR
-    // IT WOULD BE LEFT TO A ROOT SCAN THAT REJECTS EVERY CANDIDATE, WHERE THE WALK FROM THE TARGET ANSWERS THE MATCH
+    // WHOSE where: READS ANOTHER ALIAS OF THIS PATTERN THROUGH $matched: IT STARTS NOTHING BEFORE THAT ALIAS IS BOUND, SO AN EDGE
+    // THAT WAITED FOR IT WOULD BE LEFT TO A ROOT SCAN THAT REJECTS EVERY CANDIDATE, WHERE THE WALK FROM THE TARGET ANSWERS THE
+    // MATCH. AN ALIAS BOUND BY ANOTHER SUB-PATTERN IS NOT IN THE DEPENDENCIES: THE OUTER TUPLE SUPPLIES IT
     final Set<String> rootCandidates = new HashSet<>(estimatedRootEntries.keySet());
     for (final String alias : pattern.aliasToNode.keySet())
       if (aliasRids.get(alias) == null && aliasTypes.get(alias) == null && aliasBuckets.get(alias) == null
-          && aliasesRead(alias).isEmpty())
+          && remainingDependencies.get(alias).isEmpty())
         rootCandidates.add(alias);
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.

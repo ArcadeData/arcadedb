@@ -132,6 +132,18 @@ class Issue12743MatchRootWithoutTypeTest extends TestHelper {
         RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("1-3", "2-3"));
   }
 
+  /**
+   * An alias bound by another disjoint sub-pattern is supplied by the outer tuple, so an untyped source that reads it can
+   * still start, and the recursive edge waits for it.
+   */
+  @Test
+  void recursiveEdgeWaitsForAnUntypedSourceThatReadsAnotherSubPattern() {
+    assertThat(pairs("""
+        MATCH {type: MB, as: seed, where: (id = 2)},
+              {as: n0, where: (id < $matched.seed.id)}.out('MR'){type: MC, as: n1, while: ($depth < 2), where: ($depth = 2)}
+        RETURN n0.id AS a, n1.id AS b ORDER BY a, b""")).isEqualTo(List.of("1-3"));
+  }
+
   private long count(final String match) {
     try (final ResultSet rs = database.query("sql", match)) {
       return ((Number) rs.next().getProperty("c")).longValue();
