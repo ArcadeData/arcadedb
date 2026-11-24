@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
@@ -2395,13 +2396,42 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Rolls back whatever is still open on {@code current} (this thread's context for {@code database} when null) and removes the
+   * context from the thread.
+   */
+  protected static void cleanTL(final DatabaseInternal database, DatabaseContext.DatabaseContextTL current) {
+    if (current == null)
+      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+
+    if (current != null) {
+      TransactionContext tx;
+      while ((tx = current.popIfNotLastTransaction()) != null) {
+        if (tx.isActive())
+          tx.rollback();
+        else
+          break;
+      }
+
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+    }
+  }
+
+  /**
    * Binds the authenticated principal onto this thread's {@link DatabaseContext} for {@code database}, so the engine's
-   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A no-op for a null user.
+   * per-type ACL layer enforces, and marks it for {@link #handleRequest}'s finally to clear. A transaction found open on the thread
+   * is rolled back first. A no-op for a null user.
    */
   protected void bindPrincipal(final ServerSecurityUser user, final DatabaseInternal database) {
     if (user == null)
       return;
     DatabaseContext.DatabaseContextTL context = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    if (context != null && context.hasActiveTransaction()) {
+      // A transaction still open on a pooled worker thread belongs to no request in flight: this request must neither run in it nor
+      // commit it, so it is rolled back and the thread starts from a clean context
+      LogManager.instance().log(this, Level.WARNING, "Found a pending transaction from a previous operation. Rolling it back...");
+      cleanTL(database, context);
+      context = null;
+    }
     if (context == null)
       context = DatabaseContext.INSTANCE.init(database);
     context.setCurrentUser(user.getDatabaseUser(database));

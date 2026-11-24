@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -74,6 +75,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -81,6 +83,7 @@ import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -484,10 +487,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
-          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
+      HttpResponse<String> response = sendBegin(payload);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
@@ -518,6 +518,68 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } finally {
       if (getSessionId() == null)
         setStickyTransactionServer(null);
+    }
+  }
+
+  /**
+   * Sends the begin request, moving to another server while it provably never reached one (issue #12615). No transaction exists
+   * yet, so unlike a request inside one this may go to any live server. Only {@code httpCommand()} failed over before, so with the
+   * server the client was connected to stopped, every {@code begin()} failed and nothing moved {@code currentServer} to a live node.
+   * The FIXED strategy keeps to its server, as it does for every other request.
+   * <p>
+   * The next server is chosen the way {@code httpCommand()} chooses it ({@link #nextFailoverServer}): the one that answered the
+   * reload, else the next known replica, never the advertised leader, which during an election can still be the stopped node. The
+   * server that answers becomes the one the transaction is routed to: the sticky pin for STICKY, the current server otherwise, so
+   * that the commands, the commit and the rollback reach the node that holds the session.
+   */
+  private HttpResponse<String> sendBegin(final String payload) throws IOException, InterruptedException {
+    final CONNECTION_STRATEGY strategy = getConnectionStrategy();
+    final int maxAttempts = strategy == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+    final String command = "begin/" + databaseName;
+
+    Pair<String, Integer> target = getRoutedServer();
+    boolean failedOver = false;
+    // Once a reload found no server able to answer, asking them all again on every attempt only multiplies the timeouts
+    boolean reloadFailed = false;
+    // The servers this begin could not reach, so the walk tries every known server once before it revisits one
+    Set<Pair<String, Integer>> unreachable = null;
+
+    for (int attempt = 1; ; attempt++) {
+      final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
+          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
+      try {
+        final HttpResponse<String> response = sendWithWatchdog(request);
+        if (failedOver) {
+          // The server answered, so it is alive: the rest of the transaction goes where the session is
+          if (strategy == CONNECTION_STRATEGY.STICKY)
+            setStickyTransactionServer(target);
+          else {
+            currentServer = target.getFirst();
+            currentPort = target.getSecond();
+          }
+        }
+        return response;
+      } catch (final IOException e) {
+        if (attempt >= maxAttempts || !provablyNeverSent(e))
+          throw e;
+
+        if (!reloadFailed)
+          reloadFailed = !reloadClusterConfiguration();
+
+        if (unreachable == null)
+          unreachable = new HashSet<>();
+        unreachable.add(target);
+        final Pair<String, Integer> next = nextFailoverServer(target, false, unreachable);
+        if (next == null)
+          throw e;
+
+        LogManager.instance()
+            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d to begin the transaction...",
+                target.getFirst(), target.getSecond(), next.getFirst(), next.getSecond());
+
+        target = next;
+        failedOver = true;
+      }
     }
   }
 
@@ -2020,18 +2082,42 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (value instanceof List<?> list) {
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item == null ? null : Type.convertOrKeep(null, item, elementImplementation));
+          converted.add(item == null ? null : bindLink(Type.convertOrKeep(null, item, elementImplementation)));
         return converted;
       }
       if (value instanceof Map<?, ?> map) {
         final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<?, ?> mapEntry : map.entrySet())
           converted.put(mapEntry.getKey(),
-              mapEntry.getValue() == null ? null : Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation));
+              mapEntry.getValue() == null ? null : bindLink(Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation)));
         return converted;
       }
     }
-    return Type.convertOrKeep(null, value, javaImplementationForType(hint.type()));
+    return bindLink(Type.convertOrKeep(null, value, javaImplementationForType(hint.type())));
+  }
+
+  /**
+   * A link this driver decoded, bound to this database, and any other value as it is. The conversion has no embedded database to
+   * give {@code RID.create()}, so it answers a plain {@link RID}, and {@code rid.asDocument()} on a plain RID looks for a database
+   * active on the calling thread, which an application that only uses a remote client never has (issue #12603). The record's own
+   * identity was already bound ({@link #newRID(String)}); this binds the links it holds the same way, as the embedded API does.
+   * Only a RID is touched: any other value costs one type check.
+   */
+  private Object bindLink(final Object value) {
+    return bindLink(this, value);
+  }
+
+  /** {@code value} with a link bound to {@code database}; see {@link #bindLink(Object)} (issue #12603). */
+  static Object bindLink(final RemoteDatabase database, final Object value) {
+    return value instanceof RID rid ? bindRID(database, rid) : value;
+  }
+
+  /**
+   * {@code rid} bound to {@code database} when it is a plain {@link RID} (issue #12603). Any subclass is kept as it is: a
+   * {@link DatabaseRID} is bound already, and another kind carries state a copy would drop.
+   */
+  static RID bindRID(final RemoteDatabase database, final RID rid) {
+    return rid.getClass() == RID.class ? new DatabaseRID(database, rid) : rid;
   }
 
   private Class<?> javaImplementationForType(final Type type) {

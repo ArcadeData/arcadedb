@@ -365,6 +365,69 @@ class LineProtocolParserTest {
   }
 
   /**
+   * Issue #12672: the text is cut into lines at \n, \r\n and \r only. A tag value, a quoted string or a key holding U+000B,
+   * U+000C, U+0085, U+2028 or U+2029 - which Java's {@code \R} also treats as line ends, and InfluxDB does not - is part of ONE
+   * line, not a cut between two malformed ones.
+   */
+  @Test
+  void charactersOnlyJavaTreatsAsLineEndsStayInsideTheValue() {
+    for (final char separator : new char[] { '\u000B', '\u000C', '\u0085', '\u2028', '\u2029' }) {
+      final List<Integer> malformedLines = new ArrayList<>();
+      final List<Sample> samples = LineProtocolParser.parse(
+          "cpu,ho" + separator + "st=a" + separator + "b,region=eu note=\"x" + separator + "y\",v=1 1000\n"
+              + "cpu,host=c v=2 2000\n", Precision.MILLISECONDS, malformedLines);
+
+      assertThat(malformedLines).as("U+%04X", (int) separator).isEmpty();
+      assertThat(samples).as("U+%04X", (int) separator).hasSize(2);
+      assertThat(samples.get(0).getTags()).as("U+%04X", (int) separator)
+          .containsExactly(Map.entry("ho" + separator + "st", "a" + separator + "b"), Map.entry("region", "eu"));
+      assertThat(samples.get(0).getFields()).as("U+%04X", (int) separator).containsEntry("note", "x" + separator + "y");
+      assertThat(samples.get(1).getTags()).containsExactlyEntriesOf(Map.of("host", "c"));
+    }
+  }
+
+  /**
+   * Issue #12672: the padding removed around a line is the space and the tab only. {@code String.trim()} removes every character
+   * up to U+0020, so a measurement starting with U+000B or U+000C (or any other control character) was stored without it, under
+   * the name of a different series.
+   */
+  @Test
+  void aControlCharacterAtTheStartOfTheLineIsPartOfTheMeasurement() {
+    for (final char leading : new char[] { '\u000B', '\u000C', '\u0001', '\u001F' }) {
+      final List<Integer> malformedLines = new ArrayList<>();
+      final List<Sample> samples = LineProtocolParser.parse(leading + "cpu,host=a v=1 1000\n", Precision.MILLISECONDS,
+          malformedLines);
+
+      assertThat(malformedLines).as("U+%04X", (int) leading).isEmpty();
+      assertThat(samples).as("U+%04X", (int) leading).hasSize(1);
+      assertThat(samples.get(0).getMeasurement()).as("U+%04X", (int) leading).isEqualTo(leading + "cpu");
+    }
+  }
+
+  /** Issue #12672: spaces and tabs around a line are still padding, around a comment and on a blank line too. */
+  @Test
+  void spacesAndTabsAroundALineAreStillPadding() {
+    final List<Integer> malformedLines = new ArrayList<>();
+    final List<Sample> samples = LineProtocolParser.parse(" \tcpu,host=a v=1 1000 \t\n \t \n\t# a comment\n  cpu,host=b v=2 2000\n",
+        Precision.MILLISECONDS, malformedLines);
+
+    assertThat(malformedLines).isEmpty();
+    assertThat(samples).extracting(Sample::getMeasurement).containsExactly("cpu", "cpu");
+    assertThat(samples).extracting(Sample::getTimestampMs).containsExactly(1000L, 2000L);
+  }
+
+  /** Issue #12672: the three line ends the parser documents still split, and a malformed line is numbered by its position. */
+  @Test
+  void unixWindowsAndClassicMacLineEndsStillSeparateTheLines() {
+    final List<Integer> malformedLines = new ArrayList<>();
+    final List<Sample> samples = LineProtocolParser.parse("m v=1 1\nm v=2 2\r\nm v=bad 3\rm v=4 4", Precision.MILLISECONDS,
+        malformedLines);
+
+    assertThat(samples).extracting(Sample::getTimestampMs).containsExactly(1L, 2L, 4L);
+    assertThat(malformedLines).containsExactly(3);
+  }
+
+  /**
    * Issue #8647, the value-side sibling of #8563: {@code cpu,host= value=1} used to be stored with {@code host=""}. The
    * InfluxDB line protocol rejects a tag with no value ("missing tag value"), so the line is now malformed, in every
    * position of the tag set, while the other lines of the batch still parse.

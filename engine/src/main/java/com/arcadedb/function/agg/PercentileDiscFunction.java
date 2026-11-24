@@ -24,6 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -94,7 +95,9 @@ public class PercentileDiscFunction implements StatelessFunction, HeapBufferingF
       limit.release();
     if (values.isEmpty())
       return null;
-    values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
+    // by value, not as doubles: an INTEGER past 2^53 is not the double it rounds to, and the percentile is one of the values
+    // (issue #12673)
+    values.sort(BinaryComparator::compareNumbers);
     final int index = (int) Math.ceil(percentile * values.size()) - 1;
     final Number result = values.get(Math.max(0, Math.min(index, values.size() - 1)));
     // Return as long if it's an integer type

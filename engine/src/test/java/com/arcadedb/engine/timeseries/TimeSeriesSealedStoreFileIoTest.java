@@ -736,8 +736,9 @@ class TimeSeriesSealedStoreFileIoTest {
       }
       if (leftover != Leftover.NONE) {
         assertThat(temp).as("the leftover must be in place").exists();
-        // the merge of small blocks writes to a path of its own: give it the same leftover
+        // the merge of small blocks and the downsample (issue #12610) write to paths of their own: give them the same leftover
         Files.copy(temp.toPath(), new File(basePath + TimeSeriesSealedStore.MERGE_TEMP_SUFFIX).toPath());
+        Files.copy(temp.toPath(), new File(basePath + TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX).toPath());
       }
     }
 
@@ -752,10 +753,14 @@ class TimeSeriesSealedStoreFileIoTest {
 
         rewrite.apply(store);
 
-        // the rewrite's own temp file is consumed by the swap (the merge has a path of its own; the planted copy at the other one
-        // is deleted by the next open)
-        assertThat(new File(basePath + (rewrite == Rewrite.MERGE ? TimeSeriesSealedStore.MERGE_TEMP_SUFFIX : ".ts.sealed.tmp")))
-            .as("the swap consumes the temp file").doesNotExist();
+        // the rewrite's own temp file is consumed by the swap (the merge and the downsample have paths of their own; the planted
+        // copies at the others are deleted by the next open)
+        final String ownTemp = switch (rewrite) {
+          case MERGE -> TimeSeriesSealedStore.MERGE_TEMP_SUFFIX;
+          case DOWNSAMPLE -> TimeSeriesSealedStore.DOWNSAMPLE_TEMP_SUFFIX;
+          default -> ".ts.sealed.tmp";
+        };
+        assertThat(new File(basePath + ownTemp)).as("the swap consumes the temp file").doesNotExist();
       }
 
       // what a restart sees: the directory is rebuilt by scanning the file, whatever its header says

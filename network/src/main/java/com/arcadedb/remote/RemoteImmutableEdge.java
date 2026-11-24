@@ -44,11 +44,11 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   /**
    * An endpoint as the transport delivered it: the rid text over HTTP, a {@link RID} over gRPC, which decodes a link as one
-   * (issue #12195).
+   * (issue #12195). Either way bound to the driver's database, so {@code getOut().asVertex()} works on any thread (issue #12603).
    */
   private RID endpoint(final Object value) {
     if (value instanceof RID rid)
-      return rid;
+      return RemoteDatabase.bindRID(remoteDatabase, rid);
     return remoteDatabase.newRID((String) value);
   }
 
