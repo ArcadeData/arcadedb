@@ -46,19 +46,24 @@ import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.ParameterExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.StringMatchExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.RowIndependentValues;
+import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.query.sql.executor.PhysicalOrderRidFetcher;
+import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -106,6 +111,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
   // The IN-lists of the WHERE filter a property index can answer, found once here rather than per input row (see InListSeek)
   private final List<InListSeek>    inListSeeks;
+  // The range and STARTS WITH predicates of the WHERE filter an ordered index can answer, found once too (see RangeBound)
+  private final List<RangeBound>    rangeBounds;
+  // The large range the step is reading in physical order, closed with the step: a LIMIT stops reading it before its last record
+  private       PhysicalOrderRidFetcher openRangeFetcher;
+  // The range seek gave way to the walk of the label for good: its range is the same for every row and holds too much of the
+  // label, or ranges only the row can tell did so several rows in a row
+  private       boolean             rangeSeekDeclined;
+  private       int                 rangeSeeksGivenWay;
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
   // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
@@ -242,6 +255,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
         ? stripIdEqualityForVariable(whereFilter, variable)
         : whereFilter;
     this.inListSeeks = this.whereFilter != null ? findInListSeeks(this.whereFilter) : List.of();
+    this.rangeBounds = this.whereFilter != null ? findRangeBounds(this.whereFilter) : List.of();
   }
 
   /**
@@ -305,6 +319,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       openSeek.close();
       openSeek = null;
     }
+    closeRangeFetcher();
     super.close();
   }
 
@@ -596,8 +611,35 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return false;
       if (seeksIndexPerRow(labels.getFirst()))
         return false;
+      if (seeksRangePerRow(labels.getFirst()))
+        return false;
     }
     return true;
+  }
+
+  /**
+   * True when a range of the WHERE filter is sought from an index between bounds only the input row can tell (issue #12664): every
+   * row then gets its own candidates, and the walk of the label that answers a row whose bounds the index cannot take must not be
+   * replayed for the rows whose bounds it can. Only a read-only statement seeks such a range (see {@link #tryRangeIndexSeek}), so a
+   * statement that writes keeps the candidates it cached.
+   */
+  private boolean seeksRangePerRow(final String label) {
+    if (rangeBounds.isEmpty() || rangeSeekDeclined || !Boolean.TRUE.equals(context.getVariable(READ_ONLY_STATEMENT_KEY)))
+      return false;
+    DocumentType type = null;
+    for (int i = 0; i < rangeBounds.size(); i++) {
+      final RangeBound bound = rangeBounds.get(i);
+      if (bound.rowIndependent())
+        continue;
+      if (type == null) {
+        if (!context.getDatabase().getSchema().existsType(label))
+          return false;
+        type = context.getDatabase().getSchema().getType(label);
+      }
+      if (rangeIndexOf(type, bound.propertyName()) != null)
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -793,6 +835,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
           final Iterator<Identifiable> hashed = tryScanHashIndex(label, rowProperties);
           if (hashed != null)
             return hashed;
+        }
+
+        // OPTIMIZATION: no equality reaches an index, so a range or a STARTS WITH of the WHERE clause on an indexed property may
+        // (issue #12664). Behind the permission asked above, like every other seek: whereFilter is not null when it has a range
+        if (type != null && !rangeBounds.isEmpty()) {
+          final Iterator<Identifiable> rangeIter = tryRangeIndexSeek(type, label, currentInputResult);
+          if (rangeIter != null)
+            return rangeIter;
         }
 
         // No index available - fall back to full type scan
@@ -1495,6 +1545,357 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (seek != null)
       usedIndexName = bestIndex.getTypeName() + "[" + bestProperty + "]";
     return seek;
+  }
+
+  /** What a predicate of the WHERE filter bounds the keys with: from below, from above, or to the strings that start with a prefix. */
+  private enum BoundSide {
+    LOWER, UPPER, PREFIX
+  }
+
+  /**
+   * A {@code variable.property <op> <value>} comparison ({@code <}, {@code <=}, {@code >}, {@code >=}, on either side) or a
+   * {@code variable.property STARTS WITH <value>} of the WHERE filter's top-level AND chain, which {@link #tryRangeIndexSeek} may
+   * answer from an ordered index (issue #12664). Found once, from the constructor, like the IN-lists.
+   *
+   * @param rowIndependent true when the value reads no variable (literals and parameters), so every input row reads the same range
+   */
+  private record RangeBound(String propertyName, Expression value, BoundSide side, boolean inclusive, boolean rowIndependent) {
+  }
+
+  private List<RangeBound> findRangeBounds(final BooleanExpression expr) {
+    final List<RangeBound> bounds = new ArrayList<>();
+    collectRangeBounds(expr, bounds);
+    return bounds.isEmpty() ? List.of() : bounds;
+  }
+
+  private void collectRangeBounds(final BooleanExpression expr, final List<RangeBound> bounds) {
+    if (expr instanceof ComparisonExpression comp) {
+      // the property on the right reads the comparison the other way round: 65 > n.age is n.age < 65
+      final boolean propertyOnTheLeft = isPropertyAccessOnOwnVariable(comp.getLeft());
+      if (!propertyOnTheLeft && !isPropertyAccessOnOwnVariable(comp.getRight()))
+        return;
+      final BoundSide side;
+      final boolean inclusive;
+      switch (comp.getOperator()) {
+      case GREATER_THAN, GREATER_THAN_OR_EQUAL -> {
+        side = propertyOnTheLeft ? BoundSide.LOWER : BoundSide.UPPER;
+        inclusive = comp.getOperator() == ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
+      }
+      case LESS_THAN, LESS_THAN_OR_EQUAL -> {
+        side = propertyOnTheLeft ? BoundSide.UPPER : BoundSide.LOWER;
+        inclusive = comp.getOperator() == ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+      }
+      default -> {
+        return;
+      }
+      }
+      final PropertyAccessExpression property = (PropertyAccessExpression) (propertyOnTheLeft ? comp.getLeft() : comp.getRight());
+      addRangeBound(bounds, property.getPropertyName(), propertyOnTheLeft ? comp.getRight() : comp.getLeft(), side, inclusive);
+    } else if (expr instanceof StringMatchExpression match && match.getMatchType() == StringMatchExpression.MatchType.STARTS_WITH
+        && match.getExpression() instanceof PropertyAccessExpression property && isPropertyAccessOnOwnVariable(property))
+      addRangeBound(bounds, property.getPropertyName(), match.getPattern(), BoundSide.PREFIX, true);
+    else if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      collectRangeBounds(logical.getLeft(), bounds);
+      collectRangeBounds(logical.getRight(), bounds);
+    }
+  }
+
+  /**
+   * Keeps a bound whose value can be told before the node is bound and is the same each time it is evaluated: one that reads the
+   * node being matched ({@code n.a < n.b}) evaluates to null while its candidates are chosen, one whose names are not all known is
+   * left to the filter, and one that draws a value ({@code rand()}) would be sought with one draw and checked with another.
+   */
+  private void addRangeBound(final List<RangeBound> bounds, final String propertyName, final Expression value, final BoundSide side,
+      final boolean inclusive) {
+    if (value == null || !RowIndependentValues.isDeterministic(value))
+      return;
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(value);
+    if (!referenced.isComplete() || referenced.referencesAny(List.of(variable)))
+      return;
+    bounds.add(new RangeBound(propertyName, value, side, inclusive, RowIndependentValues.isRowIndependent(value)));
+  }
+
+  /**
+   * The ordered index of {@code type} whose keys are read in the order of {@code propertyName}: one on that property alone, or else
+   * a composite one that leads with it, whose entries between two values of its leading column are a contiguous range. Not a hash
+   * index, which has no order to read (issue #8835); not a case-insensitive one, whose keys are folded so that no bound of the
+   * statement is a bound of them (issues #8666, #8699); not a composite one a record can be missing from or stand in several
+   * times ({@link TypeIndex#prefixReachesEveryRecord}).
+   */
+  private TypeIndex rangeIndexOf(final DocumentType type, final String propertyName) {
+    TypeIndex composite = null;
+    for (final TypeIndex index : polymorphicIndexesOf(type)) {
+      final List<String> indexProperties = index.getPropertyNamesIfExactKeyLookup();
+      if (indexProperties == null || indexProperties.isEmpty() || !indexProperties.getFirst().equals(propertyName))
+        continue;
+      try {
+        if (!index.supportsOrderedIterations() || SelectExecutionPlanner.holdsFoldedKeys(index))
+          continue;
+        if (indexProperties.size() == 1)
+          return index;
+        if (composite == null && index.prefixReachesEveryRecord(1))
+          composite = index;
+      } catch (final IndexException e) {
+        // dropped or rebuilt since it was checked: not a candidate, the scan answers
+      }
+    }
+    return composite;
+  }
+
+  /**
+   * Answers a range ({@code <}, {@code <=}, {@code >}, {@code >=}, one bound or two) or a {@code STARTS WITH} of the WHERE
+   * filter's top-level AND chain from an ordered index on the property, as the optimizer's {@code NodeIndexRangeScan} does for the
+   * same predicate (issue #12664). Every statement with a MATCH after a WITH, an UNWIND or an OPTIONAL MATCH runs here, and without
+   * this the label was walked whole, once per input row, for a range of a few keys.
+   * <p>
+   * The WHERE filter still runs on every record the range yields, so the range only has to hold every vertex the walk would have
+   * answered, and each bound narrows it on its own: a bound that cannot be told here, is null, or is not of the kind of the key
+   * (a string against a numeric key, a number a DOUBLE key rounds, a Cypher temporal value) is left out, never read as a key. A
+   * null bound in particular is not "no bound" for the predicate, which is null for every vertex: the walk and the filter answer
+   * it. With no bound left on any indexed property the method returns null and the walk answers.
+   * <p>
+   * A statement that writes reads a range only between bounds that are the same for every row: such a range is read before its
+   * first vertex is returned, so a key the statement moves is not met again (issue #10251), and its candidates are cached like those
+   * of the walk it replaces, so a vertex the statement creates for one row is not a candidate of the next (issue #6602). Between
+   * bounds the row decides, each row would read the index as the rows before it left it: the walk, which is cached, answers.
+   */
+  private Iterator<Identifiable> tryRangeIndexSeek(final DocumentType type, final String label, final Result currentInputResult) {
+    if (rangeSeekDeclined)
+      return null;
+    final boolean readOnly = Boolean.TRUE.equals(context.getVariable(READ_ONLY_STATEMENT_KEY));
+
+    TypeIndex bestIndex = null;
+    String bestProperty = null;
+    NodeIndexRangeScan.KeyBounds bestBounds = null;
+    boolean bestDependsOnTheRow = false;
+
+    final int size = rangeBounds.size();
+    for (int i = 0; i < size; i++) {
+      final String property = rangeBounds.get(i).propertyName();
+      boolean seenBefore = false;
+      for (int j = 0; j < i && !seenBefore; j++)
+        seenBefore = rangeBounds.get(j).propertyName().equals(property);
+      if (seenBefore)
+        continue;
+      final TypeIndex index = rangeIndexOf(type, property);
+      if (index == null)
+        continue;
+
+      Object lower = null;
+      boolean lowerInclusive = false;
+      Object upper = null;
+      boolean upperInclusive = false;
+      boolean dependsOnTheRow = false;
+      for (int j = i; j < size; j++) {
+        final RangeBound bound = rangeBounds.get(j);
+        if (!bound.propertyName().equals(property) || (!readOnly && !bound.rowIndependent()))
+          continue;
+        final Object value;
+        try {
+          value = evaluator.evaluate(bound.value(), currentInputResult, context);
+        } catch (final Exception e) {
+          // A value only an input row can answer (a leading MATCH has none): the WHERE filter answers it
+          continue;
+        }
+        if (!NodeIndexRangeScan.isBoundOfKeyKind(index, value))
+          continue;
+        boolean used = false;
+        if (bound.side() == BoundSide.PREFIX) {
+          // n.p STARTS WITH 'abc' is the range [abc, abd) (issue #8666); a prefix with no successor leaves it open above
+          if (!(value instanceof String prefix) || prefix.isEmpty())
+            continue;
+          if (lower == null) {
+            lower = prefix;
+            lowerInclusive = true;
+            used = true;
+          }
+          final String successor = upper == null ? QueryHelper.prefixSuccessor(prefix) : null;
+          if (successor != null) {
+            upper = successor;
+            upperInclusive = false;
+            used = true;
+          }
+        } else if (bound.side() == BoundSide.LOWER) {
+          if (lower == null) {
+            lower = value;
+            lowerInclusive = bound.inclusive();
+            used = true;
+          }
+        } else if (upper == null) {
+          upper = value;
+          upperInclusive = bound.inclusive();
+          used = true;
+        }
+        dependsOnTheRow |= used && !bound.rowIndependent();
+      }
+      if (lower == null && upper == null)
+        continue;
+
+      final NodeIndexRangeScan.KeyBounds bounds = NodeIndexRangeScan.keyBounds(index, lower, lowerInclusive, upper, upperInclusive);
+      if (bounds == null) {
+        // No key lies between the bounds (11.5 < n.i < 11.9 on an integer key): the predicates are true for no vertex
+        candidatesDependOnTheRow |= dependsOnTheRow;
+        usedIndexName = rangeSeekName(index, property);
+        return Collections.emptyIterator();
+      }
+      if (bounds.lower() == null && bounds.upper() == null)
+        continue;
+
+      // Two bounds read less than one: the first property bounded on both sides is sought, or else the first bounded at all
+      final boolean closed = bounds.lower() != null && bounds.upper() != null;
+      if (bestBounds == null || closed) {
+        bestIndex = index;
+        bestProperty = property;
+        bestBounds = bounds;
+        bestDependsOnTheRow = dependsOnTheRow;
+        if (closed)
+          break;
+      }
+    }
+    if (bestBounds == null)
+      return null;
+
+    final Iterator<Identifiable> seek = seekRange(type, bestIndex, label, bestBounds, readOnly, bestDependsOnTheRow);
+    // Only a seek that answered is reported: a null leaves the scan in charge
+    if (seek != null) {
+      candidatesDependOnTheRow |= bestDependsOnTheRow;
+      usedIndexName = rangeSeekName(bestIndex, bestProperty);
+    }
+    return seek;
+  }
+
+  /** How the profile names a range seek: after the type that DECLARES the index (issue #7021), with the column read of a composite key. */
+  private static String rangeSeekName(final TypeIndex index, final String property) {
+    final List<String> indexProperties = index.getPropertyNames();
+    return index.getTypeName() + "[" + String.join(", ", indexProperties) + "], range" + (indexProperties.size() > 1 ?
+        ": " + property :
+        "");
+  }
+
+  /**
+   * The records whose key lies between {@code bounds}. Up to {@link ConsistentKeyLookup#MAX_ENTRIES} entries are read whole, as
+   * {@link #prefixSeek} reads them. A range that holds more is read as {@code NodeIndexRangeScan} serves an adaptive one
+   * ({@link PhysicalOrderRidFetcher}, issue #8333): its entries are read first, without loading a record, and when they are a
+   * larger share of the label than a walk of it is worth, the method returns null and the walk answers; otherwise the records are
+   * loaded in physical order. Either way the entries are read before the first vertex is returned, which is what lets a statement
+   * that writes the key use it; one whose range is too large to hold at once is read a second time while it is served, so there
+   * the walk answers a statement that writes.
+   * <p>
+   * Null too when a concurrent DDL dropped or rebuilt the index meanwhile, for the scan to answer.
+   */
+  private Iterator<Identifiable> seekRange(final DocumentType type, final TypeIndex index, final String label,
+      final NodeIndexRangeScan.KeyBounds bounds, final boolean readOnly, final boolean dependsOnTheRow) {
+    final IndexInternal[] subIndexes = index.getIndexesOnBuckets();
+    final List<Identifiable> found = new ArrayList<>();
+    Iterator<Identifiable> result;
+    try {
+      boolean more = false;
+      final IndexCursor cursor = NodeIndexRangeScan.openAscending(index, bounds);
+      try {
+        while (cursor.hasNext()) {
+          if (found.size() >= ConsistentKeyLookup.MAX_ENTRIES) {
+            more = true;
+            break;
+          }
+          // at the tail of a range whose remaining keys are all deleted the cursor answers null, which is not an entry
+          final Identifiable entry = cursor.next();
+          if (entry != null)
+            found.add(entry);
+        }
+      } finally {
+        cursor.close();
+      }
+      result = more ? serveLargeRange(type, index, bounds, readOnly, dependsOnTheRow) : found.iterator();
+    } catch (final IndexException e) {
+      closeRangeFetcher();
+      return null;
+    } catch (final IllegalArgumentException e) {
+      closeRangeFetcher();
+      if (TypeIndex.isStaleRead(index, e) || !index.isReadyForQueries())
+        return null;
+      throw e;
+    }
+    if (result == null)
+      return null;
+    if (!index.isUnchangedSince(subIndexes)) {
+      closeRangeFetcher();
+      return null;
+    }
+    rangeSeeksGivenWay = 0;
+    return Labels.isInheritedIndex(index, label) ? Labels.filterByLabel(result, context.getDatabase(), label) : result;
+  }
+
+  /** The records of a range of more entries than are read whole, in physical order, or null when the walk of the label serves it better. */
+  private Iterator<Identifiable> serveLargeRange(final DocumentType type, final TypeIndex index,
+      final NodeIndexRangeScan.KeyBounds bounds, final boolean readOnly, final boolean dependsOnTheRow) {
+    // A chained MATCH opens a range per input row: the one before is done with
+    closeRangeFetcher();
+    // Read per execution: the walk the range gives way to reads the buckets of the label and of its subtypes
+    final long threshold = PhysicalOrderRidFetcher.scanThreshold(context.getDatabase(), type.getBucketIds(true), 1);
+    final PhysicalOrderRidFetcher fetcher = new PhysicalOrderRidFetcher(() -> {
+      final IndexCursor pass = NodeIndexRangeScan.openAscending(index, bounds);
+      return new PhysicalOrderRidFetcher.Source() {
+        @Override
+        public Object next() {
+          while (pass.hasNext()) {
+            final Identifiable entry = pass.next();
+            if (entry != null)
+              return entry.getIdentity();
+          }
+          return null;
+        }
+
+        @Override
+        public void close() {
+          pass.close();
+        }
+      };
+      // With no record count to take the share of, or the choice turned off, the index serves the range whatever it holds
+    }, threshold < 0 ? Long.MAX_VALUE : threshold);
+
+    final PhysicalOrderRidFetcher.Outcome outcome;
+    try {
+      outcome = fetcher.start(WorkGuard.forCommandDeadline(context));
+    } catch (final RuntimeException | Error e) {
+      fetcher.close();
+      throw e;
+    }
+    if (outcome == PhysicalOrderRidFetcher.Outcome.SCAN
+        || (outcome == PhysicalOrderRidFetcher.Outcome.PHYSICAL_ORDER_CHUNKED && !readOnly)) {
+      fetcher.close();
+      // The same range would be read, and given up, for every row; ranges the row decides are tried a few more times
+      if (!dependsOnTheRow || ++rangeSeeksGivenWay >= 8)
+        rangeSeekDeclined = true;
+      return null;
+    }
+
+    openRangeFetcher = fetcher;
+    return new Iterator<>() {
+      private Object next;
+
+      @Override
+      public boolean hasNext() {
+        if (next == null)
+          next = fetcher.nextRecord(context.getDatabase());
+        return next != null;
+      }
+
+      @Override
+      public Identifiable next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Identifiable result = (Identifiable) next;
+        next = null;
+        return result;
+      }
+    };
+  }
+
+  private void closeRangeFetcher() {
+    if (openRangeFetcher != null) {
+      openRangeFetcher.close();
+      openRangeFetcher = null;
+    }
   }
 
   private TypeIndex singlePropertyIndex(final DocumentType type, final String propertyName) {

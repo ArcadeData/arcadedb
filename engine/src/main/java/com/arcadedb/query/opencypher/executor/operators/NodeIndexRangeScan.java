@@ -845,6 +845,27 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
       }
     }
 
+    final KeyBounds bounds = keyBounds(typeIndex, lowerBound, lowerInclusive, upperBound, upperInclusive);
+    if (bounds == null)
+      return null;
+    return new Range(rangeIndex, Labels.isInheritedIndex(typeIndex, label), bounds.lower(), bounds.lowerInclusive(),
+        bounds.upper(), bounds.upperInclusive());
+  }
+
+  /** The bounds a range of an index is read between, as its keys hold them; a null bound is an open side. */
+  public record KeyBounds(Object lower, boolean lowerInclusive, Object upper, boolean upperInclusive) {
+  }
+
+  /**
+   * The bounds of the keys of {@code typeIndex} that the bounds of a statement select, shared by this scan and by the MATCH NODE of
+   * the step plan (issue #12664) so that both read the same range for the same predicate. Both bounds are dropped when one is not
+   * of the kind of the key: the range is then the whole index, and the predicate, which whoever reads the range evaluates on
+   * every row, decides.
+   *
+   * @return null when no key satisfies the bounds
+   */
+  public static KeyBounds keyBounds(final TypeIndex typeIndex, Object lowerBound, boolean lowerInclusive, Object upperBound,
+      boolean upperInclusive) {
     // A bound whose type does not match the index key type cannot be pushed into the index: the
     // engine would try to coerce/compare it against the (differently typed) stored keys and throw a
     // NumberFormatException or ClassCastException (e.g. `WHERE n.val < "zzz"` on a numeric index -
@@ -881,8 +902,31 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
         && !IntegralKeyBound.isInexact(leadingKeyType, lower) && !IntegralKeyBound.isInexact(leadingKeyType, upper)
         && lower.longValue() > upper.longValue())
       return null;
-    return new Range(rangeIndex, Labels.isInheritedIndex(typeIndex, label), lowerBound, lowerInclusive, upperBound,
-        upperInclusive);
+    return new KeyBounds(lowerBound, lowerInclusive, upperBound, upperInclusive);
+  }
+
+  /**
+   * Whether {@code bound} is a value of the kind the leading key of {@code typeIndex} holds (a number for a numeric key, a string
+   * for a STRING one, a boolean, a native temporal) that the key can be compared with exactly. Stricter than what
+   * {@link #keyBounds} lets through, which reads a bound of a kind it does not know as one of the key: a reader that can leave
+   * the predicate to a walk of the label asks this first, and walks for a bound that is not one (issue #12664).
+   */
+  public static boolean isBoundOfKeyKind(final TypeIndex typeIndex, final Object bound) {
+    final Type[] keyTypes = typeIndex.getKeyTypes();
+    if (bound == null || keyTypes == null || keyTypes.length == 0 || keyTypes[0] == null)
+      return false;
+    if (bound instanceof Double d && d.isNaN() || bound instanceof Float f && f.isNaN())
+      return false; // compares with nothing, and no key range says so
+    final int keyCategory = categoryOf(keyTypes[0]);
+    return keyCategory != 0 && keyCategory == categoryOfBound(bound) && boundMatchesIndexKey(keyTypes[0], bound);
+  }
+
+  /** Opens an ascending pass over the keys between {@code bounds}, of which one at least is set. */
+  public static IndexCursor openAscending(final RangeIndex rangeIndex, final KeyBounds bounds) {
+    if (bounds.upper() == null)
+      return rangeIndex.iterator(true, new Object[] { bounds.lower() }, bounds.lowerInclusive());
+    return rangeIndex.range(true, bounds.lower() != null ? new Object[] { bounds.lower() } : null, bounds.lowerInclusive(),
+        new Object[] { bounds.upper() }, bounds.upperInclusive());
   }
 
   /**

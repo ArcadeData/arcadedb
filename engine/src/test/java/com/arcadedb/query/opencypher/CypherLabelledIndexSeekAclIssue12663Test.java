@@ -76,7 +76,7 @@ class CypherLabelledIndexSeekAclIssue12663Test {
       new Shape("MATCH (p:Secret)-[e:K]->(q) WHERE e.w = $v RETURN id(q) AS r", 13, 100),
       new Shape("MATCH (q)<-[e:K]-(p:Secret) WHERE e.w = $v RETURN id(q) AS r", 13, 100),
       new Shape("MATCH (q:Open)-[e:K {w: $v}]->(p:Secret) RETURN id(q) AS r", 3, 100),
-      // the range, a control: that step walks the label, so it is refused for both
+      // the range: read from the index by the optimizer's scan and, since issue #12664, by the step, behind the same permission
       new Shape("MATCH (p:Secret) WHERE p.id < $v RETURN id(p) AS r", 100, -100));
 
   private DatabaseFactory factory;
