@@ -90,13 +90,22 @@ public final class SpecBuilders {
       "Echo of the session id this call ran inside. Absent when the call ran outside a transaction.";
 
   /**
+   * The one session refusal every operation of {@code DatabaseAbstractHandler} shares, the ones that degrade an id they cannot
+   * resolve included (issue #12810): the id resolves, but to a transaction of another database. Appended to the 404 of the
+   * operations whose text otherwise says a session id is never the reason for one.
+   */
+  public static final String SESSION_OF_ANOTHER_DATABASE_DESCRIPTION =
+      " A session id of a transaction begun on another database also answers 404: the call does not run, and that "
+          + "transaction is left as it was.";
+
+  /**
    * What a 404 covers on a session-aware READ. A read overrides {@code requiresTransaction()} to false and so
    * reaches {@code DatabaseAbstractHandler}'s degrading branch, exactly as {@code GET /query} does.
    */
   public static final String READ_STALE_SESSION_DESCRIPTION =
       "Database not found. A session id that no longer resolves is NOT an error here: the read degrades to "
           + "running outside the transaction and still answers 200, reporting the degrade in the "
-          + DatabaseAbstractHandler.SESSION_EXPIRED + " response header.";
+          + DatabaseAbstractHandler.SESSION_EXPIRED + " response header." + SESSION_OF_ANOTHER_DATABASE_DESCRIPTION;
 
   /**
    * The header {@code DatabaseAbstractHandler} sets on an operation that RAN a request naming a session it could

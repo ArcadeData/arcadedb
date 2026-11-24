@@ -393,8 +393,24 @@ class CoreApiSpecTest {
         .contains("Remote transaction session not found or expired")
         .contains("nothing was committed");
     assertThat(openAPI.getPaths().get("/api/v1/rollback/{database}").getPost().getResponses().get("404").getDescription())
-        .as("rollback still answers 204 for a stale id: its 404 is a missing database only")
-        .isEqualTo("Database not found");
+        .as("rollback still answers 204 for a stale id: its 404 is a missing database, or a session of another one (#12810)")
+        .isEqualTo("Database not found." + SpecBuilders.SESSION_OF_ANOTHER_DATABASE_DESCRIPTION);
+  }
+
+  /**
+   * Issue #12810: a session id that resolves to a transaction of another database is refused with 404 by every operation, the
+   * ones that degrade an unresolvable id included, so their 404 must not read as "a missing database only".
+   */
+  @Test
+  void theDegradingOperationsDeclareThatASessionOfAnotherDatabaseAnswers404() {
+    final List<Operation> degrading = List.of(
+        openAPI.getPaths().get("/api/v1/query/{database}/{language}/{command}").getGet(),
+        openAPI.getPaths().get("/api/v1/begin/{database}").getPost(),
+        openAPI.getPaths().get("/api/v1/commit/{database}").getPost(),
+        openAPI.getPaths().get("/api/v1/rollback/{database}").getPost());
+    for (final Operation operation : degrading)
+      assertThat(operation.getResponses().get("404").getDescription()).as(operation.getOperationId())
+          .contains("begun on another database").contains("left as it was");
   }
 
   /** Issue #10164: 'terminate query', 'terminate queries tag' and 'terminate transaction' read 'wait' from the payload. */

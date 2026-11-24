@@ -143,7 +143,8 @@ public class CoreApiSpec implements OpenApiContributor {
   private static final String COMMIT_404_DESCRIPTION = """
       Database not found, or the session id header names a transaction that no longer resolves \
       ("Remote transaction session not found or expired"): it was rolled back, terminated, expired or never \
-      existed, and nothing was committed""";
+      existed, and nothing was committed. The same answer for a session id of a transaction begun on another \
+      database: nothing was committed, and that transaction is left as it was""";
   // Issues #12440, #12441: the commit is where a conflict with a concurrent commit surfaces, and the route did not list it
   private static final String COMMIT_503_DESCRIPTION = """
       The commit lost a race with a concurrent commit that changed the same records (ConcurrentModificationException \
@@ -796,7 +797,7 @@ public class CoreApiSpec implements OpenApiContributor {
   // GetQueryHandler.requiresTransaction() returns false, so a stale session id on GET query degrades
   // session-less (DatabaseAbstractHandler.setTransactionInThreadLocal) and answers 200, never 404. The
   // POST endpoint overrides rejectsUnresolvableSession() to true (PostQueryHandler), so its 404 does cover the
-  // stale-session case.
+  // stale-session case. A session of ANOTHER database is not a stale one: it is refused with 404 on both (issue #12810).
   private ApiResponses createQueryResponses() {
     return createQueryResponses(true);
   }
@@ -812,7 +813,7 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(sessionAware
         ? STALE_SESSION_404_DESCRIPTION
-        : "Database not found"));
+        : "Database not found." + SpecBuilders.SESSION_OF_ANOTHER_DATABASE_DESCRIPTION));
     if (!sessionAware)
       // The GET operation is the degrading one: it overrides requiresTransaction() to false, so a stale id runs
       // session-less and says so in this header rather than answering 404 (issue #7714).
@@ -855,7 +856,9 @@ public class CoreApiSpec implements OpenApiContributor {
 
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    // An id that does not resolve is the degrade above, never a 404. One that resolves to another database's transaction is (#12810)
+    responses.addApiResponse("404", SpecBuilders.errorResponse(
+        "Database not found." + SpecBuilders.SESSION_OF_ANOTHER_DATABASE_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
 
     return responses;

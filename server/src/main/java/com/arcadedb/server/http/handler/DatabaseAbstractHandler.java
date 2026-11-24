@@ -836,9 +836,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId != null && !sessionId.isEmpty()) {
       // LOOK UP FOR THE SESSION ID
-      final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
+      if (session != null && endedWithItsDatabase(session))
+        session = null;
       if (session == null) {
-        // The session id is not resolvable (committed/rolled back, expired, or owned by another principal).
+        // The session id is not resolvable (committed/rolled back, expired, its database closed, or owned by another principal).
         // A write-capable handler MUST reject it: falling through session-less would run the command in an
         // implicit auto-committing transaction while the client believes it is inside a transaction it can
         // still roll back. Read-only handlers (GET /query, and the nine read routes under /api/v1/ts that
@@ -857,11 +859,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
       // A SESSION BELONGS TO THE DATABASE (INSTANCE) IT WAS BEGUN ON: ATTACHED TO ANOTHER ONE THE ENGINE REFUSES ITS TRANSACTION LATER,
       // AND THE FAILURE ROLLS THE SESSION BACK. THE REQUEST THAT NAMED THE WRONG DATABASE IS REFUSED HERE INSTEAD, BEFORE IT CAN
-      // TOUCH THE SESSION (issue #12810)
+      // TOUCH THE SESSION (issue #12810). EVERY ROUTE REFUSES, THE ONES THAT DEGRADE AN UNRESOLVABLE ID TOO: A DEGRADED /commit WOULD
+      // FIND THE SESSION BY ITS ID, COMMIT NOTHING, ANSWER 204 AND REMOVE IT
       final DatabaseInternal sessionDatabase = session.transaction != null ? session.transaction.getDatabase() : null;
       if (sessionDatabase != null && sessionDatabase.getEmbedded() != ((DatabaseInternal) database).getEmbedded())
         throw new HttpSessionException("Remote transaction '" + session.id + "' was not begun on database '" + database.getName()
-            + "' (or on the instance of it that is open now) and cannot run in it");
+            + "' and cannot run in it");
 
       // Before the binding below, so that once the session's transaction is on the thread nothing is left to fail before the caller
       // holds the session it has to release it with
@@ -877,6 +880,24 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       return session;
     }
     return null;
+  }
+
+  /**
+   * Ends a session whose database instance is closed (a {@code close database}, a drop, a copy replaced under it), and says
+   * whether it did (issue #12810). The transaction of such a session can never be committed: the engine refuses it on any
+   * instance but its own, and its own is gone. The session is therefore over, exactly as an expired one is, and the request
+   * that finds it is answered as one naming an id that no longer resolves. Left registered it answered every request, its
+   * {@code /rollback} included, with an error until the idle sweep, and kept the reopened database counted as in use.
+   * <p>
+   * Never waits: a request still running in the session rolls the transaction back as it lets go of it.
+   */
+  private boolean endedWithItsDatabase(final HttpSession session) {
+    final DatabaseInternal sessionDatabase = session.transaction != null ? session.transaction.getDatabase() : null;
+    if (sessionDatabase == null || sessionDatabase.getEmbedded().isOpen())
+      return false;
+    if (httpServer.getSessionManager().removeSession(session.id) != null)
+      session.cancel(0);
+    return true;
   }
 
   /**
