@@ -111,6 +111,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
       final long compactionBucketIntervalMs, final int mutableFormatVersion, final long sealedOwner) throws IOException {
+    // every file of the engine is named after the type
+    LocalTimeSeriesType.checkValidName(typeName);
     // LOADS THE SIMD OPS (AND STARTS THEIR WARM-UP) WHEN THE TYPE IS OPENED, NOT AT THE FIRST AGGREGATE (#9171)
     TimeSeriesVectorOpsProvider.getInstance();
     this.database = database;
@@ -1774,6 +1776,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * once the rename is published.
    */
   public void renameFiles(final String fromTypeName, final String toTypeName) throws IOException {
+    LocalTimeSeriesType.checkValidName(toTypeName);
     int movedShards = 0;
     try {
       for (final TimeSeriesShard shard : shards) {
