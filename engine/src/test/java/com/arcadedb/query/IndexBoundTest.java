@@ -829,6 +829,27 @@ class IndexBoundTest {
     }
 
     @Test
+    void anInListPrefixMapsEverySeekOfTheCompositeRange() {
+      // one seek per IN element, each of them mapped and then put in index order: every row of both prefixes, and no null key
+      final List<Integer> prefixes = List.of(1, 0, 2);
+      for (final String field : new String[] { "e", "f" }) {
+        try (final ResultSet rs = database.query("sql", "EXPLAIN SELECT id FROM I WHERE c IN ? AND " + field + " < ?", prefixes, 1.5d)) {
+          assertThat(rs.next().<String>getProperty("executionPlanAsString")).as(field).contains("FETCH FROM INDEX");
+        }
+        for (final String op : OPERATORS)
+          for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.NaN, 0.5d }) {
+            final String where = "c IN ? AND " + field + " " + op + " ?";
+            assertThat(ids("I", where, prefixes, bound)).as(where + " with " + describe(bound))
+                .isEqualTo(ids("S", where, prefixes, bound));
+            for (final String order : new String[] { " ORDER BY c, " + field, " ORDER BY c DESC, " + field + " DESC" })
+              assertThat(ordered("I", where + order, prefixes, bound)).as(where + order + " with " + describe(bound))
+                  .isEqualTo(ordered("S", where + order, prefixes, bound));
+          }
+        assertThat(ids("I", "c IN ? AND " + field + " < ?", prefixes, Double.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      }
+    }
+
+    @Test
     void descendingOrderAndInListsAgreeWithTheScan() {
       for (final String where : new String[] { "d < ? ORDER BY d DESC", "d > ? ORDER BY d DESC", "d >= ? ORDER BY d", "d <= ? ORDER BY d" })
         for (final Object bound : new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN })

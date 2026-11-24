@@ -499,6 +499,7 @@ class NumberComparisonTest {
         Float.NEGATIVE_INFINITY, Float.NaN };
 
     @Test
+    @SuppressWarnings("unchecked")
     void aDecimalOrdersBelowPositiveInfinityAndNaNAndAboveNegativeInfinityInBothOperandOrders() {
       for (final BigDecimal decimal : decimals)
         for (final Number nonFinite : nonFinites) {
