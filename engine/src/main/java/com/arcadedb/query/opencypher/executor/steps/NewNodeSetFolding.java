@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -125,7 +126,7 @@ final class NewNodeSetFolding {
    */
   static int apply(final List<SetClause.SetItem> items, final MutableVertex vertex, final Result result,
       final ExpressionEvaluator evaluator, final CommandContext context) {
-    return apply(items, new PropertyTarget() {
+    return apply(items, vertex.getType(), new PropertyTarget() {
       @Override
       public boolean has(final String property) {
         return vertex.has(property);
@@ -153,13 +154,14 @@ final class NewNodeSetFolding {
    * Result, ExpressionEvaluator, CommandContext)} applies them to a vertex: the relationship is then created once with all of
    * them, instead of created with its pattern's properties and written again by the SET.
    *
+   * @param type       the type of the relationship, whose NOTNULL properties refuse a null (issue #13227)
    * @param properties the pattern's properties, changed in place
    *
    * @return the number of properties the items count as set
    */
-  static int apply(final List<SetClause.SetItem> items, final Map<String, Object> properties, final Result result,
-      final ExpressionEvaluator evaluator, final CommandContext context) {
-    return apply(items, new PropertyTarget() {
+  static int apply(final List<SetClause.SetItem> items, final DocumentType type, final Map<String, Object> properties,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
+    return apply(items, type, new PropertyTarget() {
       @Override
       public boolean has(final String property) {
         return properties.containsKey(property);
@@ -193,8 +195,8 @@ final class NewNodeSetFolding {
     Set<String> names();
   }
 
-  private static int apply(final List<SetClause.SetItem> items, final PropertyTarget target, final Result result,
-      final ExpressionEvaluator evaluator, final CommandContext context) {
+  private static int apply(final List<SetClause.SetItem> items, final DocumentType type, final PropertyTarget target,
+      final Result result, final ExpressionEvaluator evaluator, final CommandContext context) {
     final Object[] values = new Object[items.size()];
     for (int i = 0; i < values.length; i++) {
       final SetClause.SetItem item = items.get(i);
@@ -204,6 +206,13 @@ final class NewNodeSetFolding {
         case REPLACE_MAP -> SetClauseApplier.toPropertyMap(value, "=", item.getValueExpression());
         default -> SetClauseApplier.toPropertyMap(value, "+=", item.getValueExpression());
       };
+      // A null written to a NOTNULL property is refused before any item is assigned, as SetClauseApplier refuses it: the
+      // null removes the property or is never stored, so the validator would not see it (issue #13227)
+      if (item.getType() == SetClause.SetType.PROPERTY) {
+        if (values[i] == null)
+          DocumentValidator.requireNullAllowed(type, item.getProperty(), null);
+      } else
+        SetClauseApplier.requireNullsAllowed(type, asPropertyMap(values[i]), null);
     }
 
     int counted = 0;
