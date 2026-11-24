@@ -35,8 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #12810: a request that carried a session id and named another database than the session was begun on attached the session's
  * transaction to that other database, and the engine refused it with an InvalidDatabaseInstanceException: a 500, and a failed command
  * that rolled the session back, so the work the client wrote before was lost. The request is refused without touching the session.
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue12810SessionOnAnotherDatabaseIT extends BaseGraphServerTest {
   private static final String OTHER_DATABASE = "Issue12810Other";
@@ -85,6 +83,42 @@ class Issue12810SessionOnAnotherDatabaseIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void aSessionNamedWithAnotherDatabaseIsRefusedAndKeepsItsWork() throws Exception {
+    createOtherDatabase();
+    try {
+      final String database = getDatabaseName();
+      assertThat(sql(database, "CREATE DOCUMENT TYPE Issue12810 IF NOT EXISTS", null).statusCode()).isEqualTo(200);
+
+      final HttpResponse<String> begun = post("/api/v1/begin/" + database, "{}", null);
+      assertThat(begun.statusCode()).isEqualTo(204);
+      final String session = begun.headers().firstValue(ARCADEDB_SESSION_ID).orElseThrow();
+      assertThat(sql(database, "INSERT INTO Issue12810 SET v = 1", session).statusCode()).isEqualTo(200);
+
+      // the id of a session of one database, the URL of another
+      final HttpResponse<String> wrong = sql(OTHER_DATABASE, "INSERT INTO Issue12810 SET v = 2", session);
+      assertThat(wrong.statusCode()).as("body=%s", wrong.body()).isEqualTo(404);
+      assertThat(wrong.body()).doesNotContain("InvalidDatabaseInstanceException");
+      // the answer says what is wrong with the id, in the terms of the request
+      assertThat(wrong.body()).contains("was not begun on database '" + OTHER_DATABASE + "'");
+      assertThat(get("/api/v1/query/" + OTHER_DATABASE + "/sql/select%20from%20Issue12810", session).statusCode()).isEqualTo(404);
+      // the routes that end a session refuse too: answered from outside the session, they would end it without committing anything
+      assertThat(post("/api/v1/commit/" + OTHER_DATABASE, "", session).statusCode()).isEqualTo(404);
+      assertThat(post("/api/v1/rollback/" + OTHER_DATABASE, "", session).statusCode()).isEqualTo(404);
+
+      // the session was not touched: it still sees its own write, and it commits
+      final HttpResponse<String> inside = sql(database, "SELECT count(*) AS c FROM Issue12810", session);
+      assertThat(inside.statusCode()).as("body=%s", inside.body()).isEqualTo(200);
+      assertThat(new JSONObject(inside.body()).getJSONArray("result").getJSONObject(0).getInt("c")).isEqualTo(1);
+      assertThat(post("/api/v1/commit/" + database, "", session).statusCode()).isEqualTo(204);
+
+      assertThat(count(database)).isEqualTo(1);
+      assertThat(count(OTHER_DATABASE)).isEqualTo(0);
+    } finally {
+      dropOtherDatabase();
+    }
+  }
+
   private String beginAndWriteOnOtherDatabaseThenReopenIt() throws Exception {
     final HttpResponse<String> begun = post("/api/v1/begin/" + OTHER_DATABASE, "{}", null);
     assertThat(begun.statusCode()).isEqualTo(204);
@@ -108,40 +142,6 @@ class Issue12810SessionOnAnotherDatabaseIT extends BaseGraphServerTest {
 
   private HttpResponse<String> serverCommand(final String command) throws Exception {
     return post("/api/v1/server", new JSONObject().put("command", command).toString(), null);
-  }
-
-  @Test
-  void aSessionNamedWithAnotherDatabaseIsRefusedAndKeepsItsWork() throws Exception {
-    createOtherDatabase();
-    try {
-      final String database = getDatabaseName();
-      assertThat(sql(database, "CREATE DOCUMENT TYPE Issue12810 IF NOT EXISTS", null).statusCode()).isEqualTo(200);
-
-      final HttpResponse<String> begun = post("/api/v1/begin/" + database, "{}", null);
-      assertThat(begun.statusCode()).isEqualTo(204);
-      final String session = begun.headers().firstValue(ARCADEDB_SESSION_ID).orElseThrow();
-      assertThat(sql(database, "INSERT INTO Issue12810 SET v = 1", session).statusCode()).isEqualTo(200);
-
-      // the id of a session of one database, the URL of another
-      final HttpResponse<String> wrong = sql(OTHER_DATABASE, "INSERT INTO Issue12810 SET v = 2", session);
-      assertThat(wrong.statusCode()).as("body=%s", wrong.body()).isEqualTo(404);
-      assertThat(wrong.body()).doesNotContain("InvalidDatabaseInstanceException");
-      assertThat(get("/api/v1/query/" + OTHER_DATABASE + "/sql/select%20from%20Issue12810", session).statusCode()).isEqualTo(404);
-      // the routes that end a session refuse too: answered from outside the session, they would end it without committing anything
-      assertThat(post("/api/v1/commit/" + OTHER_DATABASE, "", session).statusCode()).isEqualTo(404);
-      assertThat(post("/api/v1/rollback/" + OTHER_DATABASE, "", session).statusCode()).isEqualTo(404);
-
-      // the session was not touched: it still sees its own write, and it commits
-      final HttpResponse<String> inside = sql(database, "SELECT count(*) AS c FROM Issue12810", session);
-      assertThat(inside.statusCode()).as("body=%s", inside.body()).isEqualTo(200);
-      assertThat(new JSONObject(inside.body()).getJSONArray("result").getJSONObject(0).getInt("c")).isEqualTo(1);
-      assertThat(post("/api/v1/commit/" + database, "", session).statusCode()).isEqualTo(204);
-
-      assertThat(count(database)).isEqualTo(1);
-      assertThat(count(OTHER_DATABASE)).isEqualTo(0);
-    } finally {
-      dropOtherDatabase();
-    }
   }
 
   private int count(final String database) throws Exception {
