@@ -22,12 +22,17 @@
 //
 // This is the boundary between untrusted content and GitHub writes. The model read an untrusted
 // PR, so nothing it returns reaches the API unchecked:
+// - the decision is a file (DECISION_FILE) the classify job uploaded as an artifact and this job
+//   downloaded, never a job output: the runner drops a job output whose value contains a string it
+//   has masked, and a review can (#12492). The file is as untrusted as the model's answer;
 // - the verdict and severity must be one of the known levels, or they are dropped;
 // - an area must already be a repository label and must not be a process, owned or reserved one;
 // - the issue link is computed here from GraphQL, never taken from the model;
 // - the marker line is written here, and the model's review is scrubbed of anything that could
 //   forge a marker, ping people, or publish a secret before it is posted;
-// - nothing is written when the PR head moved since the model looked at it.
+// - nothing is written when the PR head moved since the model looked at it;
+// - when there is no usable decision, the `verdict=none` comment says which of the ways that
+//   happens it was (see noDecisionReason), and the file's content is never echoed.
 //
 // review-pr and resolve-issues trust the marker
 //   ^<!-- classify-pr sha=([0-9a-f]{40}) verdict=(lgtm|needs-changes|unsafe|none) -->$
@@ -35,6 +40,7 @@
 //
 // Tested by .github/scripts/tests/test-pr-workflow-scripts.js.
 
+const fs = require("fs");
 const {
   logSafe,
   SEVERITY_LEVELS,
@@ -68,6 +74,57 @@ const NOT_AN_AREA = new Set(
 );
 const isArea = (key) => !NOT_AN_AREA.has(key) && !key.startsWith("severity:") && !key.startsWith("triage:");
 
+// The model's decision is a verdict and a review, a few KiB at most. A file past this is not that,
+// and is not read.
+const MAX_DECISION_BYTES = 1024 * 1024;
+
+// What the workflow's `needs.classify.result` can be. Anything else is reported as `unknown`
+// rather than echoed.
+const CLASSIFY_RESULTS = new Set(["success", "failure", "cancelled", "skipped"]);
+
+/**
+ * The classify job's decision file. `status` is `present` with its `text`, `unusable` when the file
+ * is too large to be a decision, or `missing` when there is nothing to read: no path, no file, a
+ * directory or a symlink (never followed), an unreadable file, or an empty one. This does not parse
+ * the text; parseDecision does, and the caller never logs it.
+ */
+const readDecision = (file) => {
+  if (typeof file !== "string" || file.trim() === "") return { status: "missing" };
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile()) return { status: "missing" };
+    if (stat.size > MAX_DECISION_BYTES) return { status: "unusable" };
+    const text = fs.readFileSync(file, "utf8");
+    return text.trim() === "" ? { status: "missing" } : { status: "present", text };
+  } catch {
+    return { status: "missing" };
+  }
+};
+
+/**
+ * Why there is no decision, as a `code` for the audit line and a `text` that starts the comment.
+ * `status` is readDecision's, `classifyResult` is needs.classify.result and `decisionSaved` is
+ * needs.classify.outputs.decision_saved ("true" when the classify job wrote the decision file).
+ */
+const noDecisionReason = (status, classifyResult, decisionSaved) => {
+  if (status !== "missing") {
+    return { code: "unusable", text: "The classifier returned output that is not a valid decision" };
+  }
+  const result = CLASSIFY_RESULTS.has(classifyResult) ? classifyResult : "unknown";
+  if (result !== "success") {
+    return { code: "classify-failed", text: `The classifier job failed (result: \`${result}\`)` };
+  }
+  if (decisionSaved === "false") {
+    return { code: "no-output", text: "The classifier finished but returned no structured output" };
+  }
+  return {
+    code: "decision-lost",
+    text:
+      "The classifier finished, but its decision did not reach the apply job " +
+      "(the decision artifact is missing or empty)",
+  };
+};
+
 /**
  * The classify job's structured output, validated. Anything that is not a JSON object with a
  * known verdict and a string review is `{verdict: 'none'}`: a wrong verdict is worse than none.
@@ -79,7 +136,7 @@ const parseDecision = (raw) => {
   let d;
   try {
     d = JSON.parse(raw);
-    // Tolerate one level of double encoding; a job output is a string either way.
+    // Tolerate one level of double encoding.
     if (typeof d === "string") d = JSON.parse(d);
   } catch {
     return none;
@@ -177,10 +234,17 @@ const apply = async ({ github, context, core }) => {
   const headSha = (process.env.HEAD_SHA ?? "").trim();
   const dryRun = process.env.DRY_RUN === "true";
   const { owner, repo } = context.repo;
-  const decision = parseDecision(process.env.STRUCTURED_OUTPUT);
+  const input = readDecision(process.env.DECISION_FILE);
+  const decision = parseDecision(input.text);
+  // Set only when there is no decision, so the comment and the audit line say why.
+  const noDecision =
+    decision.verdict === "none"
+      ? noDecisionReason(input.status, process.env.CLASSIFY_RESULT, process.env.DECISION_SAVED)
+      : null;
 
   const state = {
     verdict: decision.verdict,
+    reason: noDecision?.code,
     severity: decision.severity ?? "-",
     areas: "-",
     link: "-",
@@ -190,6 +254,7 @@ const apply = async ({ github, context, core }) => {
     core.info(
       logSafe(
         `classify-pr: pr=${Number.isInteger(prNumber) ? prNumber : "-"}, verdict=${state.verdict}, ` +
+          (state.reason ? `reason=${state.reason}, ` : "") +
           `severity=${state.severity}, areas=${state.areas}, link=${state.link}, ` +
           `redacted=${state.redacted}, action=${action}`,
         1000,
@@ -315,10 +380,7 @@ const apply = async ({ github, context, core }) => {
   const linkText = link ? `\`${link.name}\`` : "issue link: unknown";
   if (decision.verdict === "none") {
     lines.push(`**Triage**: no verdict · ${linkText}`, "");
-    lines.push(
-      "The classifier returned no usable output, so no `triage:*` label was applied. " +
-        "This PR needs a manual review.",
-    );
+    lines.push(`${noDecision.text}, so no \`triage:*\` label was applied. This PR needs a manual review.`);
   } else {
     const sev = severity ? `\`${severity.name}\`` : "severity: none";
     const areaText = areas.length ? areas.map((a) => `\`${a}\``).join(", ") : "none";
@@ -390,6 +452,8 @@ const apply = async ({ github, context, core }) => {
 
 module.exports = apply;
 module.exports.parseDecision = parseDecision;
+module.exports.readDecision = readDecision;
+module.exports.noDecisionReason = noDecisionReason;
 module.exports.sanitizeReview = sanitizeReview;
 module.exports.markerLine = markerLine;
 module.exports.isArea = isArea;

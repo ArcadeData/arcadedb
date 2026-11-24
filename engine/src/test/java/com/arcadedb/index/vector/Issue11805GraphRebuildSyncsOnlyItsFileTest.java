@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
@@ -37,11 +38,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue11805GraphRebuildSyncsOnlyItsFileTest extends TestHelper {
-  private static final int DIMENSIONS = 16;
+  private static final int DIMENSIONS               = 16;
+  // The graph holds 100 vectors, so the ratio-scaled term of the threshold (20% of the graph) stays below this absolute one
+  private static final int MUTATIONS_BEFORE_REBUILD = 50;
 
   @Test
   void aGraphRebuildOnSearchLeavesTheOtherFilesUnsynced() {
     final DatabaseInternal db = (DatabaseInternal) database;
+    // Set on the database rather than read from the global default: the index decides from its own configuration, so the
+    // number of vectors the test writes to reach the threshold must be the one the index will use
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, MUTATIONS_BEFORE_REBUILD);
     database.command("sql", "CREATE VERTEX TYPE E BUCKETS 1");
     database.command("sql", "CREATE PROPERTY E.emb ARRAY_OF_FLOATS");
     database.command("sql", "CREATE INDEX ON E (emb) LSM_VECTOR METADATA {dimensions: " + DIMENSIONS + ", similarity: 'COSINE'}");
@@ -56,14 +62,16 @@ class Issue11805GraphRebuildSyncsOnlyItsFileTest extends TestHelper {
     });
     assertThat(search(vector(random))).isEqualTo(10);
 
-    // SETTLE EVERY FILE, THEN WRITE THE OTHER TYPE AND ONE MORE VECTOR: THE NEXT SEARCH REBUILDS THE SMALL GRAPH
+    // SETTLE EVERY FILE, THEN WRITE THE OTHER TYPE AND ENOUGH VECTORS TO REACH THE MUTATION THRESHOLD: THE NEXT SEARCH REBUILDS
+    // THE SMALL GRAPH (below the threshold it searches the new vectors through the delta buffer and does not rebuild)
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
     assertThat(db.getFileManager().syncFiles()).isTrue();
 
     database.transaction(() -> {
       for (int i = 0; i < 100; i++)
         database.newDocument("W").set("name", "w" + i).save();
-      database.newVertex("E").set("emb", vector(random)).save();
+      for (int i = 0; i < MUTATIONS_BEFORE_REBUILD; i++)
+        database.newVertex("E").set("emb", vector(random)).save();
     });
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
 

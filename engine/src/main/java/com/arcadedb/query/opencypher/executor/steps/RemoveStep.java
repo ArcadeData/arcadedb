@@ -28,6 +28,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
@@ -38,11 +39,14 @@ import com.arcadedb.query.opencypher.executor.HeldCollectionRefresher;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
 import com.arcadedb.query.opencypher.executor.RowAliases;
 import com.arcadedb.query.opencypher.executor.SelectionPredicates;
+import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -61,6 +65,11 @@ import java.util.NoSuchElementException;
  * The REMOVE step modifies documents in place and passes them through to the next step.
  */
 public class RemoveStep extends AbstractExecutionStep {
+  // THE ROWS A DRAINING WRITE HOLDS UNTIL IT HANDS THEM OUT, UNDER THE PER-OPERATION CAP AND THE HEAP BUDGET OF ALL THE QUERIES,
+  // AS EAGERSTEP HOLDS THEM (ISSUE #12656). ON THE STEP: THE CLOSE() OF A QUERY REACHES THE STEPS, NOT THEIR RESULT SETS
+  private       OperationHeapLimit  heapLimit;
+  // No clause after this one reads the rows: they are handed out as they are written, one pull batch at a time (issue #12656)
+  private       boolean             streamsRows;
   private final RemoveClause        removeClause;
   private final ExpressionEvaluator evaluator;
   // The predicates that selected the records the clause writes, evaluated again on a target reloaded with changed content (#11818)
@@ -107,7 +116,7 @@ public class RemoveStep extends AbstractExecutionStep {
         }
 
         // Fetch more results
-        fetchMore(nRecords);
+        fetchMore();
         return bufferIndex < buffer.size();
       }
 
@@ -121,10 +130,16 @@ public class RemoveStep extends AbstractExecutionStep {
         // re-attached to it - after this row was written: served with the live records, not the deleted ones (issue
         // #10614). Free while the statement replaced nothing
         replacements.redirect(result);
+        if (heapLimit != null && bufferIndex == buffer.size()) {
+          // EVERY ROW WAS SERVED: THE BUFFER IS NOT NEEDED ANYMORE, EVEN IF THE CONSUMER KEEPS THE RESULT SET OPEN
+          buffer.clear();
+          bufferIndex = 0;
+          releaseHeap();
+        }
         return result;
       }
 
-      private void fetchMore(final int n) {
+      private void fetchMore() {
         buffer.clear();
         bufferIndex = 0;
 
@@ -133,28 +148,46 @@ public class RemoveStep extends AbstractExecutionStep {
           prevResults = prev.syncPull(context, nRecords);
         }
 
-        // Process each input result
-        while (buffer.size() < n && prevResults.hasNext()) {
-          final Result inputResult = prevResults.next();
-          final long begin = context.isProfiling() ? System.nanoTime() : 0;
-          try {
-            if (context.isProfiling())
-              rowCount++;
+        // The REMOVE runs for every row before it hands out the first one, as Neo4j's Eager does: when several rows bind the
+        // same node, the clauses after the REMOVE read the write of every row, however many pull batches the input takes
+        // (issue #12656). The drain is one region the statement-level deadline check cannot reach (#6266)
+        final boolean drains = !streamsRows;
+        final WorkGuard guard = drains ? WorkGuard.forCommandDeadline(context) : null;
+        if (drains)
+          heapLimit = OperationHeapLimit.of(context, "REMOVE read/write barrier");
+        try {
+          while ((drains || buffer.size() < nRecords) && prevResults.hasNext()) {
+            if (guard != null)
+              guard.check();
+            final Result inputResult = prevResults.next();
+            final long begin = context.isProfiling() ? System.nanoTime() : 0;
+            try {
+              if (context.isProfiling())
+                rowCount++;
 
-            // Apply REMOVE operations to this result
-            applyRemoveOperations(inputResult, replacements);
+              // Apply REMOVE operations to this result
+              applyRemoveOperations(inputResult, replacements);
 
-            // Pass through the modified result
-            buffer.add(inputResult);
-          } finally {
-            if (context.isProfiling())
-              cost += System.nanoTime() - begin;
+              // Pass through the modified result
+              buffer.add(inputResult);
+              if (heapLimit != null)
+                heapLimit.add(buffer.size(), inputResult);
+            } finally {
+              if (context.isProfiling())
+                cost += System.nanoTime() - begin;
+            }
           }
+        } catch (final RuntimeException | Error e) {
+          // A FAILED DRAIN HANDS OUT NOTHING: ITS ROWS AND THEIR CHARGE GO NOW, NOT WHEN THE QUERY IS CLOSED
+          buffer.clear();
+          releaseHeap();
+          throw e;
         }
-
-        if (!prevResults.hasNext()) {
+        if (!prevResults.hasNext())
           finished = true;
-        }
+        // A row holding its own copy of a record a later row wrote is lined up with the copy the transaction wrote
+        if (drains)
+          WrittenCopy.resolveRows(context, buffer);
       }
 
       @Override
@@ -356,6 +389,9 @@ public class RemoveStep extends AbstractExecutionStep {
     DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
+    // A virtual node (create.vNode) has no stored type to rewrite under a smaller composite one (issue #12109)
+    if (vertex instanceof VirtualVertex virtual)
+      throw virtual.unsupported("relabelled");
 
     // If a prior row already relabelled this node, work on the replacement so the idempotency check below reads
     // the current type. The per-row redirect() reaches this alias too, so today this only re-confirms it; it stays
@@ -421,6 +457,24 @@ public class RemoveStep extends AbstractExecutionStep {
     context.getStatistics().addLabelsRemoved(removedLabelsCount);
 
     replacements.redirect(result);
+  }
+
+  /** Called when this step ends the statement: nothing reads its rows, so it does not hold them until every row has written. */
+  public void streamRows() {
+    streamsRows = true;
+  }
+
+  private void releaseHeap() {
+    if (heapLimit != null) {
+      heapLimit.release();
+      heapLimit = null;
+    }
+  }
+
+  @Override
+  public void close() {
+    releaseHeap();
+    super.close();
   }
 
   @Override

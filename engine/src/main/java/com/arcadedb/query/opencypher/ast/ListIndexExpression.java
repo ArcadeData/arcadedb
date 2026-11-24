@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -71,6 +72,7 @@ public class ListIndexExpression implements PropertyReadExpression {
 
     // Map/Document property access via bracket notation: map['key']
     if (indexValue instanceof String) {
+      DeletedEntityMarker.checkNotDeleted(listValue);
       final String key = (String) indexValue;
       if (listValue instanceof Map)
         return ((Map<?, ?>) listValue).get(key);
