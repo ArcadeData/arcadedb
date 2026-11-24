@@ -202,6 +202,77 @@ class CypherInLiteralListIssue12725Test extends TestHelper {
     assertThat(count(query, params)).isEqualTo(0L);
   }
 
+  /**
+   * Two executions of one cached plan with different lists, read in turns: each keeps the value it evaluated, and neither makes
+   * the other evaluate, and hash, its right side again. A single memo on the shared plan node took the slot from the other
+   * execution at every batch, which then paid the evaluation and the hash again (more than the walk it replaced).
+   */
+  @Test
+  void interleavedExecutionsOfOneCachedPlanEachEvaluateTheirRightSideOnce() {
+    final int rows = 1000;
+    final int size = 40;
+    final List<Object> rowValues = new ArrayList<>(rows);
+    for (int i = 0; i < rows; i++)
+      rowValues.add("s" + i);
+
+    final CountingMap evens = new CountingMap();
+    evens.put("rows", rowValues);
+    final CountingMap odds = new CountingMap();
+    odds.put("rows", rowValues);
+    final String query = "UNWIND $rows AS r RETURN r IN " + parameters(size, evens, i -> "s" + i * 2) + " AS r";
+    parameters(size, odds, i -> "s" + (i * 2 + 1));
+
+    int evenHits = 0;
+    int oddHits = 0;
+    int read = 0;
+    try (final ResultSet a = database.query("opencypher", query, evens);
+        final ResultSet b = database.query("opencypher", query, odds)) {
+      while (a.hasNext() && b.hasNext()) {
+        if (Boolean.TRUE.equals(a.next().getProperty("r")))
+          ++evenHits;
+        if (Boolean.TRUE.equals(b.next().getProperty("r")))
+          ++oddHits;
+        ++read;
+      }
+      assertThat(a.hasNext()).isFalse();
+      assertThat(b.hasNext()).isFalse();
+    }
+
+    assertThat(read).isEqualTo(rows);
+    assertThat(evenHits).isEqualTo(size);
+    assertThat(oddHits).isEqualTo(size);
+    assertThat(evens.reads("a0")).as("reads of the first execution's right side over %d interleaved rows", rows).isEqualTo(1);
+    assertThat(odds.reads("a0")).as("reads of the second execution's right side over %d interleaved rows", rows).isEqualTo(1);
+  }
+
+  /**
+   * The allow-list of what is evaluated once per execution holds only what answers from its operands alone. A function that does
+   * not ({@code rand()}) is evaluated on every row, and so is one reading the content of a parameter ({@code keys()}), and an
+   * index into a parameter, which can read a property of a record.
+   */
+  @Test
+  void aRightSideOutsideTheAllowListIsEvaluatedOnEveryRow() {
+    final List<Object> answers = answers("UNWIND range(1, 200) AS i RETURN 1 IN [toInteger(rand() * 2)] AS r", Map.of());
+    assertThat(answers).hasSize(200).contains(true, false);
+
+    final int rows = 100;
+    final List<Object> rowValues = new ArrayList<>(rows);
+    for (int i = 0; i < rows; i++)
+      rowValues.add("k" + i);
+
+    final CountingMap keys = new CountingMap();
+    keys.put("rows", rowValues);
+    keys.put("m", Map.of("k1", 1, "k2", 2));
+    assertThat(count("UNWIND $rows AS r RETURN count(CASE WHEN r IN [k IN keys($m) | k] THEN 1 END) AS c", keys)).isEqualTo(2L);
+    assertThat(keys.reads("m")).as("reads of the map whose keys are the right side").isGreaterThanOrEqualTo(rows);
+
+    final CountingMap indexed = new CountingMap();
+    indexed.put("rows", rowValues);
+    indexed.put("m", Map.of("names", List.of("k1", "k2")));
+    assertThat(count("UNWIND $rows AS r RETURN count(CASE WHEN r IN [$m['names'][0], 'k3'] THEN 1 END) AS c", indexed)).isEqualTo(2L);
+    assertThat(indexed.reads("m")).as("reads of the parameter indexed by the right side").isGreaterThanOrEqualTo(rows);
+  }
+
   @Test
   void aRightSideReadingTheRowIsEvaluatedOnEveryRow() {
     assertThat(answers("UNWIND [1, 2, 3] AS i RETURN 2 IN [x IN range(1, i) | x] AS r", Map.of())).containsExactly(false, true, true);

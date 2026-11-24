@@ -40,8 +40,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * IN expression for WHERE clauses.
@@ -68,13 +68,21 @@ public class InExpression implements BooleanExpression {
   private static final int MAX_MEMO_OWNERS = 64;
 
   /**
+   * The key the right sides a context evaluated once for its whole execution are kept under (see {@link #constantFor}).
+   * Space-prefixed like every internal name, so no Cypher or SQL variable can read or shadow it.
+   */
+  private static final String EXECUTION_CONSTANTS_KEY = " cypherInConstants";
+
+  /**
    * The expression types a right side evaluated once per execution may be built from (see {@link #isConstantPerExecution}): they
    * compute their value from their operands and read nothing else. Matched by exact class, so a subclass is not one of them.
+   * {@code ListIndexExpression} is not one: {@code $doc['name']} reads a property of the record a parameter holds, as
+   * {@code $doc.name} does.
    */
   private static final Set<Class<?>> PURE_EXPRESSIONS = Set.of(LiteralExpression.class, ParameterExpression.class,
       VariableExpression.class, ListExpression.class, MapExpression.class, ArithmeticExpression.class,
-      ListComprehensionExpression.class, ListIndexExpression.class, ListSliceExpression.class, FunctionCallExpression.class,
-      BooleanWrapperExpression.class, ComparisonExpressionWrapper.class);
+      ListComprehensionExpression.class, ListSliceExpression.class, FunctionCallExpression.class, BooleanWrapperExpression.class,
+      ComparisonExpressionWrapper.class);
 
   /** The predicate types such a right side may hold, in the filter of a comprehension. */
   private static final Set<Class<?>> PURE_PREDICATES = Set.of(ComparisonExpression.class, LogicalExpression.class,
@@ -82,7 +90,9 @@ public class InExpression implements BooleanExpression {
 
   /**
    * The functions such a right side may call: they answer from their arguments alone, the same on every call, and read no record
-   * (which {@code keys()} or {@code labels()} of a parameter would, and a statement may change it between two rows).
+   * (which {@code keys()} or {@code labels()} of a parameter would, and a statement may change it between two rows). Only a
+   * deterministic function that reads nothing but its arguments may be added: {@code rand()}, {@code timestamp()} or any function
+   * reading the database would be answered once for every row.
    */
   private static final Set<String> PURE_FUNCTIONS = Set.of("range", "tostring", "tointeger", "tofloat", "toboolean", "tolower",
       "toupper", "trim", "ltrim", "rtrim", "replace", "substring", "left", "right", "split", "reverse", "abs", "coalesce");
@@ -105,12 +115,6 @@ public class InExpression implements BooleanExpression {
    * which was walked, never hashed.
    */
   private final boolean constantPerExecution;
-
-  /**
-   * The right side as the executions reading it evaluated it, and its lookup; see {@link #constantFor}. Immutable, in a volatile
-   * field, for the same reason as {@link #listMemo}.
-   */
-  private volatile ConstantMemo constantMemo;
 
   /**
    * The list the last row was asked about, and its lookup once built; see {@link #lookupFor}. One immutable holder in a
@@ -167,12 +171,12 @@ public class InExpression implements BooleanExpression {
     if (list.size() == 1) {
       // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3]). Evaluate and unwrap.
       final Expression listItem = list.get(0);
-      final ConstantMemo constant = constantPerExecution && context != null ? constantFor(listItem, result, context) : null;
+      final ExecutionConstant constant = constantPerExecution && context != null ? constantFor(listItem, result, context) : null;
       final Object listValue;
       if (literalList != null)
         listValue = literalList;
       else if (constant != null)
-        listValue = constant.value();
+        listValue = constant.value;
       else
         listValue = evaluateOperand(listItem, result, context);
 
@@ -402,42 +406,26 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * The right side and its lookup as this context evaluated it, for a right side that is the same on every row of an execution
-   * (see {@link #constantPerExecution}): evaluated on the first row a context asks about, then reused for every later row of it.
+   * The right side as this context evaluated it, for a right side that is the same on every row of an execution (see
+   * {@link #constantPerExecution}): evaluated on the first row the context asks about, then reused for every later row of it.
    * <p>
-   * Keyed on the context, as {@link #lookupFor} is: a context is one execution, or one worker of it, and the parameters of a cached
-   * plan differ between executions, so one execution never answers from another's values. A context that evaluates the value the
-   * memo holds joins it, so the workers of a parallel scan, and executions with the same parameters, share one lookup instead of
-   * evicting each other's.
+   * Kept in the context, not in this node. The node of a cached plan is shared by the concurrent executions of every statement
+   * that differs from it only in its literals, each with its own parameters: one slot here made two of them take it from each
+   * other at every batch, evaluating and hashing the right side again each time, more than the walk it replaced. In the context,
+   * each execution evaluates its right side once whatever runs beside it, and the value and its hash are released with the
+   * execution rather than held by the plan cache. The workers of a parallel scan each have a context of their own, so each
+   * evaluates it once.
    */
-  private ConstantMemo constantFor(final Expression rightSide, final Result result, final CommandContext context) {
-    final ConstantMemo memo = constantMemo;
-    if (memo != null && memo.isOwnedBy(context))
-      return memo;
+  private ExecutionConstant constantFor(final Expression rightSide, final Result result, final CommandContext context) {
+    final ExecutionConstants constants = ExecutionConstants.of(context);
+    final ExecutionConstant constant = constants.values.get(this);
+    if (constant != null)
+      return constant;
 
-    // A benign race: two threads may both evaluate it, and a context an update loses only evaluates it again
-    final Object value = evaluateOperand(rightSide, result, context);
-    final ConstantMemo built;
-    if (memo != null && sameValue(memo.value(), value))
-      built = new ConstantMemo(memo.value(), memo.lookup(), memo.withOwner(context));
-    else {
-      // A short list is walked, as lookupFor leaves it; a range is answered from its bounds; a value that is no list is refused
-      final ListLookup lookup = value instanceof LongRangeList || sizeOf(value) <= LOOKUP_MIN_SIZE ? null : ListLookup.of(listOperand(value));
-      built = new ConstantMemo(value, lookup, new CommandContext[] { context });
-    }
-    constantMemo = built;
-    return built;
-  }
-
-  /**
-   * Whether two evaluations of a right side are the same value, so one answers for the other. A range is compared by its bounds,
-   * not element by element: {@code range(1, $n)} is a lazy list of any size.
-   */
-  private static boolean sameValue(final Object a, final Object b) {
-    if (a instanceof LongRangeList range)
-      return b instanceof LongRangeList other && range.getStart() == other.getStart() && range.getStep() == other.getStep()
-          && range.size() == other.size();
-    return !(b instanceof LongRangeList) && Objects.equals(a, b);
+    // Not computeIfAbsent: the evaluation may reach another IN of the statement, which asks the same map
+    final ExecutionConstant evaluated = new ExecutionConstant(evaluateOperand(rightSide, result, context));
+    final ExecutionConstant raced = constants.values.putIfAbsent(this, evaluated);
+    return raced != null ? raced : evaluated;
   }
 
   /** An operand evaluated as the expression evaluator has it for a function call, so its aggregation overrides apply. */
@@ -546,15 +534,32 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * A memo of this node and the contexts it answers for: those that built it, or found it equal to what they built. The contexts
-   * are held weakly: the node lives as long as the cached plan, and the memo must not keep the database, variables and parameters
-   * of a finished execution reachable after the query ends.
+   * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
+   * with the content the lookup was built from.
    */
-  private abstract static class ContextMemo {
+  private static final class ListMemo {
+    // The list and the contexts are held weakly: the node lives as long as the cached plan, and the memo must not keep the
+    // list, nor the database, variables and parameters of a finished execution, reachable after the query ends
+    private final WeakReference<Object>           listRef;
+    private final ListLookup                      lookup;
     private final WeakReference<CommandContext>[] owners;
 
-    ContextMemo(final CommandContext[] contexts) {
-      this.owners = weak(contexts);
+    private ListMemo(final Object list, final ListLookup lookup, final WeakReference<CommandContext>[] owners) {
+      this.listRef = new WeakReference<>(list);
+      this.lookup = lookup;
+      this.owners = owners;
+    }
+
+    ListMemo(final Object list, final ListLookup lookup, final CommandContext[] contexts) {
+      this(list, lookup, weak(contexts));
+    }
+
+    Object list() {
+      return listRef.get();
+    }
+
+    ListLookup lookup() {
+      return lookup;
     }
 
     @SuppressWarnings("unchecked")
@@ -602,49 +607,52 @@ public class InExpression implements BooleanExpression {
   }
 
   /**
-   * A list as met by {@link #lookupFor}, its lookup (null until the list is met a second time), and the contexts that met it
-   * with the content the lookup was built from.
+   * The right sides one context evaluated once for its whole execution, by node (see {@link #constantFor}). Tied to the context
+   * it was made for: {@code getCachedValue} also answers from a parent or a child context, whose parameters can differ, and the
+   * copy a parallel-scan worker gets shares its parent and child with the context it was copied from.
+   * <p>
+   * A context is read by one thread at a time (each worker of a parallel scan has its own copy), but not always by the same one:
+   * a result set can be pulled by another thread than the one that pulled its first rows. The map is concurrent so that neither
+   * case needs a check per row; a context read by two threads at once would at worst evaluate the right side twice.
    */
-  private static final class ListMemo extends ContextMemo {
-    // The list is held weakly too: it is the caller's, and the memo must not keep it reachable after the query ends
-    private final WeakReference<Object> listRef;
-    private final ListLookup            lookup;
+  private static final class ExecutionConstants {
+    private final CommandContext                                     context;
+    private final ConcurrentHashMap<InExpression, ExecutionConstant> values = new ConcurrentHashMap<>(4);
 
-    ListMemo(final Object list, final ListLookup lookup, final CommandContext[] contexts) {
-      super(contexts);
-      this.listRef = new WeakReference<>(list);
-      this.lookup = lookup;
+    private ExecutionConstants(final CommandContext context) {
+      this.context = context;
     }
 
-    Object list() {
-      return listRef.get();
-    }
-
-    ListLookup lookup() {
-      return lookup;
+    /** The constants of {@code context}, created on its first use. */
+    static ExecutionConstants of(final CommandContext context) {
+      if (context.getCachedValue(EXECUTION_CONSTANTS_KEY) instanceof ExecutionConstants existing && existing.context == context)
+        return existing;
+      final ExecutionConstants created = new ExecutionConstants(context);
+      context.setCachedValue(EXECUTION_CONSTANTS_KEY, created);
+      return created;
     }
   }
 
   /**
-   * A right side as {@link #constantFor} evaluated it, its lookup (null when it is walked: a short list, a range, a value that is
-   * no list), and the contexts that evaluated it to this value.
+   * A right side as one execution evaluated it, and its lookup. The lookup is built the second time a row asks about the value, as
+   * {@link #lookupFor} builds it: a context that asks once (the body of a subquery run for one outer row) walks it as before and
+   * pays for no hash it would not reuse.
    */
-  private static final class ConstantMemo extends ContextMemo {
-    // Held strongly: nothing else holds the value between two rows. Its lookup holds its elements anyway, as a ListMemo's does
-    private final Object     value;
-    private final ListLookup lookup;
+  private static final class ExecutionConstant {
+    private final    Object     value;
+    private volatile ListLookup lookup;
+    /** The rows that asked for the lookup, up to 2; racy on purpose: a lost increment only builds the lookup a row later. */
+    private          int        asked;
 
-    ConstantMemo(final Object value, final ListLookup lookup, final CommandContext[] contexts) {
-      super(contexts);
+    private ExecutionConstant(final Object value) {
       this.value = value;
-      this.lookup = lookup;
     }
 
-    Object value() {
-      return value;
-    }
-
+    /** The lookup answering membership in the value, or null when it is walked: a short list, a range, a value that is no list. */
     ListLookup lookup() {
+      // A short list is walked, as lookupFor leaves it; a range is answered from its bounds; a value that is no list is refused
+      if (asked < 2 && ++asked == 2 && !(value instanceof LongRangeList) && sizeOf(value) > LOOKUP_MIN_SIZE)
+        lookup = ListLookup.of(listOperand(value));
       return lookup;
     }
   }
