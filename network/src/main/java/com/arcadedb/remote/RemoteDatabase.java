@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -2081,18 +2082,42 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (value instanceof List<?> list) {
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item == null ? null : Type.convertOrKeep(null, item, elementImplementation));
+          converted.add(item == null ? null : bindLink(Type.convertOrKeep(null, item, elementImplementation)));
         return converted;
       }
       if (value instanceof Map<?, ?> map) {
         final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<?, ?> mapEntry : map.entrySet())
           converted.put(mapEntry.getKey(),
-              mapEntry.getValue() == null ? null : Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation));
+              mapEntry.getValue() == null ? null : bindLink(Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation)));
         return converted;
       }
     }
-    return Type.convertOrKeep(null, value, javaImplementationForType(hint.type()));
+    return bindLink(Type.convertOrKeep(null, value, javaImplementationForType(hint.type())));
+  }
+
+  /**
+   * A link this driver decoded, bound to this database, and any other value as it is. The conversion has no embedded database to
+   * give {@code RID.create()}, so it answers a plain {@link RID}, and {@code rid.asDocument()} on a plain RID looks for a database
+   * active on the calling thread, which an application that only uses a remote client never has (issue #12603). The record's own
+   * identity was already bound ({@link #newRID(String)}); this binds the links it holds the same way, as the embedded API does.
+   * Only a RID is touched: any other value costs one type check.
+   */
+  private Object bindLink(final Object value) {
+    return bindLink(this, value);
+  }
+
+  /** {@code value} with a link bound to {@code database}; see {@link #bindLink(Object)} (issue #12603). */
+  static Object bindLink(final RemoteDatabase database, final Object value) {
+    return value instanceof RID rid ? bindRID(database, rid) : value;
+  }
+
+  /**
+   * {@code rid} bound to {@code database} when it is a plain {@link RID} (issue #12603). Any subclass is kept as it is: a
+   * {@link DatabaseRID} is bound already, and another kind carries state a copy would drop.
+   */
+  static RID bindRID(final RemoteDatabase database, final RID rid) {
+    return rid.getClass() == RID.class ? new DatabaseRID(database, rid) : rid;
   }
 
   private Class<?> javaImplementationForType(final Type type) {
