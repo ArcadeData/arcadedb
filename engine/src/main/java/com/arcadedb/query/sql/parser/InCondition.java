@@ -63,7 +63,19 @@ public class InCondition extends BooleanExpression {
   private static final AtomicLong MEMO_KEY_SEQUENCE         = new AtomicLong();
 
   /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
-  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+  static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+
+  /** A list of sub-query rows shorter than this is scanned: a probe costs more to build than the scan it saves. */
+  private static final int ROWS_PROBE_MIN_SIZE = 32;
+
+  /**
+   * The state of an execution that was handed a different list on a later row: the right-hand side depends on the row (a
+   * correlated sub-query), so no probe is tried again and the rows are scanned without allocating anything per row.
+   */
+  private static final RowsProbe ROWS_CHANGE_PER_ROW = new RowsProbe(null, null, true);
+
+  /** Lazily assigned key of the per-execution {@link RowsProbe} of a sub-query result. */
+  private volatile String rowsKey;
 
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
@@ -73,6 +85,29 @@ public class InCondition extends BooleanExpression {
 
   /** The right-hand expression last found not to be a literal, so a non-constant list is not walked again for every row. */
   private volatile MathExpression notConstantRight;
+
+  /**
+   * What an execution knows about the sub-query rows it was handed: the list instance seen on the first row and, once the same
+   * instance has come back for a later row, the probe built from it ({@code null} when the rows cannot be probed). Immutable: a
+   * transition writes a new state into the context, so the state a reader sees is always a complete one.
+   * <p>
+   * The identity of the list stands for its contents. That holds because nothing refills a list of sub-query rows in place:
+   * {@link com.arcadedb.query.sql.executor.OperationHeapLimit#materialize} hands every LET evaluation a new list, the correlated
+   * sub-query cache hands the same instance back only for an equal correlation key, and {@link #source} keeps the list reachable,
+   * so its identity cannot be recycled by another list while the state exists. A change that reuses a list across rows has to
+   * revisit this.
+   */
+  private static final class RowsProbe {
+    final Object           source;
+    final InListMembership probe;
+    final boolean          built;
+
+    RowsProbe(final Object source, final InListMembership probe, final boolean built) {
+      this.source = source;
+      this.probe = probe;
+      this.built = built;
+    }
+  }
 
   public InCondition() {
   }
@@ -91,7 +126,7 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
@@ -131,12 +166,49 @@ public class InCondition extends BooleanExpression {
       final Object rightVal = evaluateRight(currentRecord, context);
       if (rightVal == null)
         return null;
-      result = evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+      result = evaluateAgainst(leftVal, rightVal, context);
     }
 
     if (result == null)
       return null;
     return not != result;
+  }
+
+  /**
+   * {@code IN} against a right-hand side that is evaluated per row. A sub-query of the statement that does not depend on the row
+   * is hoisted into a LET, so what arrives here is the same list of single-column rows for every outer row, and scanning it costs
+   * outer rows x sub-query rows (1,000 rows over 100,000 outer rows: 4 s). The second time the same list instance is handed in
+   * it is indexed into an {@link InListMembership}, which answers like the scan for the lists it accepts and falls back to the
+   * scan for everything else. A list that changes with the row (a correlated sub-query) is never indexed, and once one has been
+   * seen the execution stops looking.
+   * <p>
+   * The probe is held in the context's cache for the rest of the execution and is not charged to the query's heap budget: the cache
+   * has no release hook (the constant right-hand side memo above is held the same way), and what it holds is bounded by the rows the
+   * LET already charged when it materialised them - one hash entry per row, plus a decimal key for a number, where a string key is
+   * the row's own string.
+   */
+  private Boolean evaluateAgainst(final Object leftVal, final Object rightVal, final CommandContext context) {
+    if (rightVal instanceof List<?> rows && rows.size() >= ROWS_PROBE_MIN_SIZE) {
+      String key = rowsKey;
+      if (key == null) {
+        // A benign race: see memoKey
+        key = "$IN$R" + MEMO_KEY_SEQUENCE.incrementAndGet();
+        rowsKey = key;
+      }
+      RowsProbe state = (RowsProbe) context.getCachedValue(key);
+      if (state == null)
+        context.setCachedValue(key, new RowsProbe(rightVal, null, false));
+      else if (state.source == rightVal) { // NOPMD: by identity, the same list instance stands for the same rows (see RowsProbe)
+        if (!state.built) {
+          state = new RowsProbe(rightVal, InListMembership.buildFromRows(rows, operandIsSearched(context)), true);
+          context.setCachedValue(key, state);
+        }
+        if (state.probe != null)
+          return state.probe.evaluate(leftVal);
+      } else if (state != ROWS_CHANGE_PER_ROW)
+        context.setCachedValue(key, ROWS_CHANGE_PER_ROW);
+    }
+    return evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
   }
 
   /**
@@ -303,7 +375,7 @@ public class InCondition extends BooleanExpression {
    * for every sub-query row of every outer row; a subclass may resolve its properties differently, so it takes the
    * general route.
    */
-  private static Object singleRowValue(final Result row) {
+  static Object singleRowValue(final Result row) {
     if (row.getClass() == ResultInternal.class)
       return ((ResultInternal) row).getSingleValue(NOT_A_SINGLE_VALUE_ROW);
     if (row.isElement())

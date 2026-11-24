@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
@@ -26,6 +27,7 @@ import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -128,27 +130,71 @@ public final class InListMembership {
       // consume out from under the linear evaluator; a Map's membership semantics are the evaluator's to define.
       return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
-    int kind = KIND_NONE;
-    boolean containsNull = false;
-    Set<Float> narrowedDoubles = null;
-    Set<Float> floats = null;
-    final Set<Object> keys = new HashSet<>();
+    final KeyCollector collector = new KeyCollector(new HashSet<>());
+    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false))
+      if (!collector.add(item))
+        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
-    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
+    if (collector.kind == KIND_NONE)
+      // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
+      return new InListMembership(rightValue, null, KIND_NONE, collector.containsNull, convertOperand);
+
+    return collector.toMembership(rightValue, convertOperand);
+  }
+
+  /**
+   * The probe for the rows of a sub-query hoisted into a LET: every row a single-column result and the column a string or a number
+   * (a null column is a null element). A row's value is read through {@link InCondition#singleRowValue}, the definition the scan
+   * applies to a sub-query row, so the two cannot disagree on which rows stand for one value. The probe answers like
+   * {@link InCondition#evaluateExpressionThreeValued} over the rows wherever it takes the fast path, and hands every other left
+   * value to that evaluator with the rows themselves.
+   *
+   * @return the probe, or {@code null} when the rows hold anything else (records, several columns, lists, mixed kinds), which only the
+   * scan reads exactly
+   */
+  public static InListMembership buildFromRows(final List<?> rows, final boolean convertOperand) {
+    final KeyCollector collector = new KeyCollector(HashSet.newHashSet(rows.size()));
+    for (final Object item : rows) {
+      if (!(item instanceof Result row))
+        return null;
+      final Object value = InCondition.singleRowValue(row);
+      if (value == InCondition.NOT_A_SINGLE_VALUE_ROW || !collector.add(value))
+        return null;
+    }
+
+    if (collector.kind == KIND_NONE)
+      return null;
+    return collector.toMembership(rows, convertOperand);
+  }
+
+  /** The keys of a list's items, gathered one item at a time; {@link #add} declines the first item no key can stand for. */
+  private static final class KeyCollector {
+    private final Set<Object> keys;
+    private int               kind = KIND_NONE;
+    private boolean           containsNull;
+    private Set<Float>        narrowedDoubles;
+    private Set<Float>        floats;
+
+    private KeyCollector(final Set<Object> keys) {
+      this.keys = keys;
+    }
+
+    /** @return false when the item has no key: no fast path applies to the list */
+    private boolean add(final Object item) {
       if (item == null) {
         containsNull = true;
-        continue;
+        return true;
       }
 
       final int itemKind = kindOf(item);
       if (itemKind == KIND_NONE || (kind != KIND_NONE && kind != itemKind))
         // Unsupported element type, or a list mixing strings and numbers: the coercions between the two
         // kinds are the ones a hash set cannot reproduce, so decline rather than get them subtly wrong.
-        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
+        return false;
 
       final Object key = keyOf(item, itemKind);
       if (key == null)
-        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
+        return false;
 
       kind = itemKind;
       keys.add(key);
@@ -161,13 +207,13 @@ public final class InListMembership {
           narrowedDoubles = new HashSet<>();
         narrowedDoubles.add((float) (double) d + 0.0f);
       }
+      return true;
     }
 
-    if (kind == KIND_NONE)
-      // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
-      return new InListMembership(rightValue, null, KIND_NONE, containsNull, convertOperand);
-
-    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats), convertOperand);
+    private InListMembership toMembership(final Object rightValue, final boolean convertOperand) {
+      return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats),
+          convertOperand);
+    }
   }
 
   /**
