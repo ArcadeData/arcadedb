@@ -2268,6 +2268,13 @@ public class CypherOptimizer {
     if (targetNode == null || !targetNode.hasLabels())
       return input;
 
+    // A label disjunction does not fit the single targetLabel of the expand operators: pushing its first label would drop the rows that matched a
+    // later alternative. Every other node that carries one made the plan decline (hasUnanchoredLabelDisjunction), so this one is the anchor, which
+    // the disjunction scan has already filtered on every alternative - when the hop ends where it started, as (n:A|C)-[*0..1]->(n) does, there is
+    // nothing left to check here.
+    if (targetNode.isLabelDisjunction() && targetNode.getLabels().size() > 1)
+      return input;
+
     // Get the first label (for now we only support single labels)
     final String targetLabel = targetNode.getFirstLabel();
 
