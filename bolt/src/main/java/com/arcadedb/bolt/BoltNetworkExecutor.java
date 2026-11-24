@@ -269,7 +269,17 @@ public class BoltNetworkExecutor extends Thread {
       // Main message loop
       while (state != State.DISCONNECTED) {
         try {
-          final byte[] messageData = input.readMessage();
+          final byte[] messageData;
+          try {
+            messageData = input.readMessage();
+          } catch (final EOFException | SocketException | SocketTimeoutException e) {
+            throw e; // handled below
+          } catch (final IOException e) {
+            // The read stopped part way through a message (a size limit, a malformed frame, a broken transport), so the next
+            // byte on the stream is not the start of a request and there is no way to find where one starts: end the connection
+            closeAfterUnreadableMessage(e);
+            break;
+          }
           if (messageData.length == 0) {
             continue;
           }
@@ -344,6 +354,27 @@ public class BoltNetworkExecutor extends Thread {
       releasePreAuthTicket();
       cleanup();
     }
+  }
+
+  /**
+   * Ends the connection after {@link BoltChunkedInput#readMessage()} failed with something other than the peer going away.
+   * The failure leaves the stream anywhere inside the message (a chunk or a frame refused for its declared size is not even
+   * read), so what follows it is not framed as a request. Reading on, or reading the rest of the message to get back in step,
+   * would take bytes the peer chose for the start of the next request, or read without a bound. The peer is told once, best
+   * effort, and the caller leaves the loop, which closes the socket.
+   */
+  private void closeAfterUnreadableMessage(final IOException cause) {
+    final String reason = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+    if (isPreAuthentication())
+      logPeerError("BOLT closing the connection: an incoming message could not be read: %s", reason);
+    else
+      LogManager.instance().log(this, Level.WARNING, "BOLT closing the connection: an incoming message could not be read: %s", reason);
+    try {
+      sendFailure(BoltException.PROTOCOL_ERROR, loggedClientMessage(reason));
+    } catch (final IOException e) {
+      // The peer is gone or not reading: nobody left to tell
+    }
+    state = State.DISCONNECTED;
   }
 
   /**
