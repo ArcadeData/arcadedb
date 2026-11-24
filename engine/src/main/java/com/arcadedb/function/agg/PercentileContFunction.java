@@ -24,6 +24,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.OperationHeapLimit;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -94,7 +95,8 @@ public class PercentileContFunction implements StatelessFunction, HeapBufferingF
       limit.release();
     if (values.isEmpty())
       return null;
-    values.sort((a, b) -> Double.compare(a.doubleValue(), b.doubleValue()));
+    // By value, not as doubles: LONGs past 2^53 are not the doubles they round to (issue #12699)
+    values.sort(BinaryComparator::compareNumbers);
     if (percentile == 1.0)
       return values.getLast().doubleValue();
     if (percentile == 0.0)

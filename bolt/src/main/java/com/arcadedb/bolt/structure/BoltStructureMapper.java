@@ -22,6 +22,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.geo.CypherPointFunction;
@@ -29,11 +30,14 @@ import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.math.BigDecimal;
@@ -158,9 +162,8 @@ public class BoltStructureMapper {
    * in the BOLT node. This provides Neo4j-compatible multi-label support.
    */
   public static BoltNode toNode(final Vertex vertex) {
-    final RID rid = vertex.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final long id = idOf(vertex);
+    final String elementId = elementIdOf(vertex);
 
     // Every label the node answers to: its own type and its ancestors', minus the synthetic composite names
     final List<String> labels = Labels.getLabels(vertex);
@@ -175,18 +178,27 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT Relationship.
    */
   public static BoltRelationship toRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    // A lightweight edge's RID is shared by every lightweight edge of its type: the element id names the edge (issue #12132)
-    final String elementId = ElementIdFunction.of(rid);
-    final long id = relationshipId(rid, elementId);
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
-    final RID outRid = edge.getOut();
-    final RID inRid = edge.getIn();
-
-    final long startNodeId = ridToId(outRid);
-    final long endNodeId = ridToId(inRid);
-    final String startNodeElementId = outRid.toString();
-    final String endNodeElementId = inRid.toString();
+    final long startNodeId;
+    final long endNodeId;
+    final String startNodeElementId;
+    final String endNodeElementId;
+    if (edge instanceof VirtualEdge virtualEdge) {
+      // Either endpoint may itself be virtual: its ids are its own, not ones derived from a RID
+      startNodeId = idOf(virtualEdge.getOutVertex());
+      endNodeId = idOf(virtualEdge.getInVertex());
+      startNodeElementId = elementIdOf(virtualEdge.getOutVertex());
+      endNodeElementId = elementIdOf(virtualEdge.getInVertex());
+    } else {
+      final RID outRid = edge.getOut();
+      final RID inRid = edge.getIn();
+      startNodeId = ridToId(outRid);
+      endNodeId = ridToId(inRid);
+      startNodeElementId = outRid.toString();
+      endNodeElementId = inRid.toString();
+    }
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
@@ -198,9 +210,8 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT UnboundRelationship (for paths).
    */
   public static BoltUnboundRelationship toUnboundRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    final String elementId = ElementIdFunction.of(rid);
-    final long id = relationshipId(rid, elementId);
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
@@ -287,20 +298,32 @@ public class BoltStructureMapper {
 
   /**
    * Convert a Document to a properties map.
+   * <p>
+   * A stored record is read once: {@code ImmutableDocument.get(name)} walks the record header from its first byte until it
+   * meets the name, so asking for each name in turn cost a node or relationship of P properties P walks of the same record
+   * (issue #12582, as #11738 and #12558 were on the HTTP, gRPC and Postgres paths). A value that does not decode (a damaged
+   * record) is left out of the single read, where the read by name answered null: Bolt has no null property either way.
    */
   public static Map<String, Object> toProperties(final Document document) {
-    final Map<String, Object> properties = new LinkedHashMap<>();
-
-    for (final String propertyName : document.getPropertyNames()) {
-      // Skip internal properties
-      if (propertyName.startsWith("@")) {
-        continue;
-      }
-
-      final Object value = document.get(propertyName);
-      properties.put(propertyName, toPackStreamValue(value));
+    if (document instanceof ImmutableDocument stored) {
+      final Map<String, Object> read = stored.propertiesAsMap();
+      final Map<String, Object> properties = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+      for (final Map.Entry<String, Object> entry : read.entrySet())
+        // Skip internal properties
+        if (!entry.getKey().startsWith("@"))
+          properties.put(entry.getKey(), toPackStreamValue(entry.getValue()));
+      return properties;
     }
 
+    // A document held in memory (a mutable or a light edge, a wrapper that answers names its own way): its reads by name
+    // walk nothing, and its getPropertyNames() and get() are the answer it gives
+    final Map<String, Object> properties = new LinkedHashMap<>();
+    for (final String propertyName : document.getPropertyNames()) {
+      // Skip internal properties
+      if (propertyName.startsWith("@"))
+        continue;
+      properties.put(propertyName, toPackStreamValue(document.get(propertyName)));
+    }
     return properties;
   }
 
@@ -318,11 +341,11 @@ public class BoltStructureMapper {
       return toProperties(element);
     }
 
-    // For projections, return as map
-    final Map<String, Object> map = new LinkedHashMap<>();
-    for (final String prop : result.getPropertyNames()) {
-      map.put(prop, toPackStreamValue(result.getProperty(prop)));
-    }
+    // For projections, return as map. The row's properties are read in one pass (issue #12582)
+    final Map<String, Object> read = ResultInternal.propertiesOf(result);
+    final Map<String, Object> map = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+    for (final Map.Entry<String, Object> entry : read.entrySet())
+      map.put(entry.getKey(), toPackStreamValue(entry.getValue()));
     return map;
   }
 
@@ -399,6 +422,24 @@ public class BoltStructureMapper {
     if (rid == null)
       return -1;
     return IdFunction.encodeRidAsLong(rid);
+  }
+
+  /**
+   * The id {@code id()} answers for a node or relationship: a virtual one (create.vNode, meta.graph) carries its own
+   * negative id, as APOC's virtual entities do, a stored one the encoding of its RID.
+   */
+  private static long idOf(final Identifiable element) {
+    if (element instanceof VirtualElement virtual)
+      return virtual.getVirtualId();
+    final RID rid = element.getIdentity();
+    return relationshipId(rid, ElementIdFunction.of(rid));
+  }
+
+  /**
+   * The element id {@code elementId()} answers, with the same split as {@link #idOf}.
+   */
+  private static String elementIdOf(final Identifiable element) {
+    return element instanceof VirtualElement virtual ? virtual.getVirtualElementId() : ElementIdFunction.of(element.getIdentity());
   }
 
   // ---------------------------------------------------------------------------

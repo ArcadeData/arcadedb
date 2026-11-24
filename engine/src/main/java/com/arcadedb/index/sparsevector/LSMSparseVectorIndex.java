@@ -35,6 +35,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -43,6 +44,7 @@ import com.arcadedb.index.vector.GroupedTopUpPlanner;
 import com.arcadedb.index.vector.PredicateRidSet;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LSMSparseVectorIndexMetadata;
@@ -355,13 +357,26 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   public List<RidScore> topKWeighted(final int[] queryIndices, final float[] effectiveWeights, final int k,
       final Set<RID> allowedRIDs, final SparseTransactionOverlay overlay) {
+    return topKWeighted(queryIndices, effectiveWeights, k, allowedRIDs, overlay, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay)} bound by {@code guard}: the search stops with
+   * the abort of the guard (the command's deadline, or the termination of its statement) before each attempt, while it scans
+   * the postings and while it loads the candidates to rescore, instead of running to the end. A fan-out caller runs this on a
+   * pool thread, so the guard must leave the interrupt flag of the thread alone (see {@link WorkGuard#withoutInterrupt()}).
+   * The guard is also the one an embedded call gets when it passes none: the statement registered on the calling thread, if
+   * any.
+   */
+  public List<RidScore> topKWeighted(final int[] queryIndices, final float[] effectiveWeights, final int k,
+      final Set<RID> allowedRIDs, final SparseTransactionOverlay overlay, final WorkGuard guard) {
     checkIsValid();
     checkQueryArrays(queryIndices, effectiveWeights);
     if (k <= 0)
       throw new IndexException("k must be > 0");
 
     final List<RidScore> committed = committedTopK(queryIndices, effectiveWeights, k, allowedRIDs,
-        overlay != null ? overlay.touchedRIDs() : null, overlay != null ? overlay.touchedCount() : 0);
+        overlay != null ? overlay.touchedRIDs() : null, overlay != null ? overlay.touchedCount() : 0, guard);
 
     if (overlay == null)
       return committed;
@@ -371,7 +386,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // overlay holds the full-precision weights the transaction queued. The committed side is exact in its scores
     // when rescoring is on, but it is the top-k of the k * oversample candidates the quantized pass picked, so its
     // recall is bounded by rescoreOversample; with rescoring off it is exact only under the quantized scoring.
-    return mergeByScore(committed, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
+    return mergeByScore(committed, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k, guard), k);
   }
 
   /**
@@ -388,7 +403,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * returned as it is and the caller resolving it is the one that tops it up.
    */
   private List<RidScore> committedTopK(final int[] queryIndices, final float[] effectiveWeights, final int k,
-      final Set<RID> allowedRIDs, final Set<RID> pendingRIDs, final int touchedCount) {
+      final Set<RID> allowedRIDs, final Set<RID> pendingRIDs, final int touchedCount, final WorkGuard guard) {
     final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
     // With exact rescoring on (issue #8576) the committed side keeps k * oversample candidates for it to choose from:
     // their quantized scores decide only who is a candidate, never the final order.
@@ -403,6 +418,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     int filterMembers = -1;
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      guard.check();
       // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning fewer than K items
       // because the top-scored RIDs were filtered out: filterFanout candidates per row wanted, widened below while the
       // filter leaves the answer short. MAX_OVERFETCH_ROWS keeps worst-case work bounded even when the filter is very
@@ -426,7 +442,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
       final List<RidScore> raw;
       try {
-        raw = engine.topK(queryIndices, effectiveWeights, fetchK);
+        raw = engine.topK(queryIndices, effectiveWeights, fetchK, guard);
       } catch (final IOException e) {
         throw new IndexException("Sparse vector top-K failed", e);
       }
@@ -436,7 +452,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         candidates = raw.size() <= keep ? raw : raw.subList(0, keep);
       else {
         final List<RidScore> out = new ArrayList<>(Math.min(keep, raw.size()));
+        int examined = 0;
         for (final RidScore r : raw) {
+          guard.checkPeriodically(++examined);
           if (filtered && !allowedRIDs.contains(r.rid()))
             continue;
           if (pendingRIDs != null && pendingRIDs.contains(r.rid()))
@@ -467,7 +485,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       if (oversample == 0)
         return candidates.size() <= k ? candidates : candidates.subList(0, k);
 
-      committed = rescoreExactly(candidates, queryIndices, effectiveWeights, k);
+      committed = rescoreExactly(candidates, queryIndices, effectiveWeights, k, guard);
 
       // rescoreExactly keeps every candidate whose record it found, so an answer below both k and the candidate count
       // means records were gone. Anything else is the real answer: k found, or the index holding fewer.
@@ -531,7 +549,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * reason to drop a candidate here has to be told apart from it there, or it turns into needless retries.
    */
   private List<RidScore> rescoreExactly(final List<RidScore> candidates, final int[] queryIndices,
-      final float[] effectiveWeights, final int k) {
+      final float[] effectiveWeights, final int k, final WorkGuard guard) {
     if (candidates.isEmpty())
       return candidates;
 
@@ -572,7 +590,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (contextCreated)
       DatabaseContext.INSTANCE.init(db);
     try {
-      rescoreInto(candidates, rescored, db, tokensProperty, weightsProperty, dims, weights, m, matched);
+      rescoreInto(candidates, rescored, db, tokensProperty, weightsProperty, dims, weights, m, matched, guard);
     } finally {
       if (contextCreated)
         DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
@@ -583,8 +601,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   private static void rescoreInto(final List<RidScore> candidates, final List<RidScore> rescored, final DatabaseInternal db,
       final String tokensProperty, final String weightsProperty, final int[] dims, final double[] weights, final int m,
-      final boolean[] matched) {
+      final boolean[] matched, final WorkGuard guard) {
+    int loaded = 0;
     for (final RidScore candidate : candidates) {
+      // One record load per candidate, and a caller can ask for as many candidates as the index holds
+      guard.checkPeriodically(++loaded);
       final Document record;
       try {
         record = (Document) db.lookupByRID(candidate.rid(), true);
@@ -740,6 +761,17 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topKGroupedWeighted(final int[] queryIndices, final float[] effectiveWeights, final int limit,
       final int groupSize, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
       final SparseTransactionOverlay overlay) {
+    return topKGroupedWeighted(queryIndices, effectiveWeights, limit, groupSize, allowedRIDs, groupKeyResolver, overlay,
+        WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKGroupedWeighted(int[], float[], int, int, Set, Function, SparseTransactionOverlay)} bound by {@code guard},
+   * see {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay, WorkGuard)}.
+   */
+  public List<RidScore> topKGroupedWeighted(final int[] queryIndices, final float[] effectiveWeights, final int limit,
+      final int groupSize, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver,
+      final SparseTransactionOverlay overlay, final WorkGuard guard) {
     checkIsValid();
     checkQueryArrays(queryIndices, effectiveWeights);
     checkGroupedArguments(limit, groupSize, groupKeyResolver);
@@ -751,6 +783,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     int widening = groupedWidening(rows, oversample);
     List<RidScore> committed = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      guard.check();
       final int groupsAsked = oversampled(limit, widening);
       final int membersAsked = oversampled(groupSize, widening);
       final List<RidScore> candidates;
@@ -759,7 +792,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
         // with candidates still available (issue #7966).
         candidates = engine.topKGrouped(queryIndices, effectiveWeights, groupsAsked, membersAsked, groupKeyResolver, allowedRIDs,
-            overlay != null ? overlay.touchedRIDs() : null);
+            overlay != null ? overlay.touchedRIDs() : null, guard);
       } catch (final IOException e) {
         throw new IndexException("Sparse vector grouped top-K failed", e);
       }
@@ -768,7 +801,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         break;
       }
 
-      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
+      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE, guard);
       committed = admitGroups(rescored, limit, groupSize, groupKeyResolver);
 
       // Candidates dropped because their record was gone (issue #9692) may have cost a group its members or its place:
@@ -793,7 +826,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // search after the commit returns A and B. Only the admission pass knows which rows a cap can still take, so it
     // is the only thing allowed to drop one. The overlay already scores its whole pending set to sort it, so this
     // costs list length rather than work, and the admission loop stops as soon as the groups are full.
-    final List<RidScore> pending = overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE);
+    final List<RidScore> pending = overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE, guard);
     if (pending.isEmpty())
       return committed;
 
@@ -810,7 +843,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // The committed rows are the only capped source registered here; the pending ones hold every row there is.
       assert topUp.source() == 0 : "only the committed source can need a top-up, got source " + topUp.source();
       final List<RidScore> topUpRows = committedForGroups(queryIndices, effectiveWeights, topUp.groupKeys(), groupSize,
-          topUp.floor(), allowedRIDs, groupKeyResolver, overlay.touchedRIDs(), oversample);
+          topUp.floor(), allowedRIDs, groupKeyResolver, overlay.touchedRIDs(), oversample, guard);
       if (committedRows == committed)
         committedRows = new ArrayList<>(committed);
       committedRows.addAll(topUpRows);
@@ -876,6 +909,17 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public List<RidScore> topKForGroupsWeighted(final int[] queryIndices, final float[] effectiveWeights,
       final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
       final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
+    return topKForGroupsWeighted(queryIndices, effectiveWeights, groupKeys, groupSize, floor, allowedRIDs, groupKeyResolver,
+        overlay, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topKForGroupsWeighted(int[], float[], Set, int, float, Set, Function, SparseTransactionOverlay)} bound by
+   * {@code guard}, see {@link #topKWeighted(int[], float[], int, Set, SparseTransactionOverlay, WorkGuard)}.
+   */
+  public List<RidScore> topKForGroupsWeighted(final int[] queryIndices, final float[] effectiveWeights,
+      final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
+      final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay, final WorkGuard guard) {
     checkIsValid();
     checkQueryArrays(queryIndices, effectiveWeights);
     if (groupSize <= 0)
@@ -886,12 +930,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return List.of();
 
     final List<RidScore> committed = committedForGroups(queryIndices, effectiveWeights, groupKeys, groupSize, floor,
-        allowedRIDs, groupKeyResolver, overlay != null ? overlay.touchedRIDs() : null, rescoreOversample());
+        allowedRIDs, groupKeyResolver, overlay != null ? overlay.touchedRIDs() : null, rescoreOversample(), guard);
     if (overlay == null)
       return committed;
 
     final List<RidScore> merged = mergeByScore(committed,
-        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE), Integer.MAX_VALUE);
+        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE, guard), Integer.MAX_VALUE);
     final HashMap<Object, Integer> perGroup = new HashMap<>();
     final List<RidScore> out = new ArrayList<>();
     for (final RidScore candidate : merged) {
@@ -915,23 +959,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   private List<RidScore> committedForGroups(final int[] queryIndices, final float[] effectiveWeights,
       final Set<Object> groupKeys, final int groupSize, final float floor, final Set<RID> allowedRIDs,
-      final Function<RID, Object> groupKeyResolver, final Set<RID> excludedRIDs, final int oversample) {
+      final Function<RID, Object> groupKeyResolver, final Set<RID> excludedRIDs, final int oversample, final WorkGuard guard) {
     final long rows = (long) groupKeys.size() * groupSize;
     int widening = rowWidening(rows, oversample);
     List<RidScore> out = List.of();
     for (int attempt = 0; attempt < STALE_TOP_UP_MAX_ATTEMPTS; attempt++) {
+      guard.check();
       final int membersAsked = oversampled(groupSize, widening);
       final List<RidScore> candidates;
       try {
         candidates = engine.topKForGroups(queryIndices, effectiveWeights, groupKeys, membersAsked,
-            oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs);
+            oversample > 0 ? Float.NEGATIVE_INFINITY : floor, groupKeyResolver, allowedRIDs, excludedRIDs, guard);
       } catch (final IOException e) {
         throw new IndexException("Sparse vector grouped top-K failed", e);
       }
       if (oversample == 0)
         return candidates;
 
-      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE);
+      final List<RidScore> rescored = rescoreExactly(candidates, queryIndices, effectiveWeights, Integer.MAX_VALUE, guard);
       final HashMap<Object, Integer> perGroup = new HashMap<>();
       out = new ArrayList<>((int) Math.min(rescored.size(), rows));
       for (final RidScore candidate : rescored) {
@@ -1079,6 +1124,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * flushed) or is itself a pool worker.
    */
   public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues) {
+    return effectiveWeights(queryIndices, queryValues, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #effectiveWeights(int[], float[])} bound by {@code guard}: counting the postings under a query dim walks all of
+   * them, on every bucket index of the type, and stops with the abort of the guard. The counts run on pool threads, which
+   * read a copy of the guard that leaves the interrupt flag alone.
+   */
+  public float[] effectiveWeights(final int[] queryIndices, final float[] queryValues, final WorkGuard guard) {
     checkIsValid();
     checkQueryArrays(queryIndices, queryValues);
     final boolean useIDF = sparseMetadata != null
@@ -1086,15 +1140,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (!useIDF)
       return queryValues.clone();
 
+    final WorkGuard countGuard = guard.withoutInterrupt();
     final List<LSMSparseVectorIndex> typeIndexes = bucketIndexesOfType();
     final List<Callable<long[]>> counts = new ArrayList<>(typeIndexes.size());
     for (final LSMSparseVectorIndex bucketIndex : typeIndexes)
-      counts.add(() -> bucketIndex.countPostings(queryIndices, queryValues));
+      counts.add(() -> bucketIndex.countPostings(queryIndices, queryValues, countGuard));
     final boolean serial = SparseVectorScoringPool.callerHoldsUncommittedChanges(
         underlyingIndex.getMutableIndex().getDatabase().getDatabasePath());
 
     final long[] documentFrequency = new long[queryIndices.length];
-    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial))
+    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial, guard))
       for (int i = 0; i < documentFrequency.length; i++)
         documentFrequency[i] += partial[i];
 
@@ -1123,7 +1178,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * frequency one bucket index holds. A dim with a zero weight is not scored and is not counted (0), and a dim repeated in
    * the query is counted once. O(df) per distinct dim.
    */
-  private long[] countPostings(final int[] queryIndices, final float[] queryValues) {
+  private long[] countPostings(final int[] queryIndices, final float[] queryValues, final WorkGuard guard) {
     final long[] counts = new long[queryIndices.length];
     final HashMap<Integer, Long> dfCache = new HashMap<>();
     for (int i = 0; i < queryIndices.length; i++) {
@@ -1134,7 +1189,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         continue;
       Long df = dfCache.get(qDim);
       if (df == null) {
-        df = countPostings(qDim);
+        guard.check();
+        df = countPostings(qDim, guard);
         dfCache.put(qDim, df);
       }
       counts[i] = df;
@@ -1143,9 +1199,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
-  private long countPostings(final int dim) {
+  private long countPostings(final int dim, final WorkGuard guard) {
     try {
-      return engine.countDim(dim);
+      return engine.countDim(dim, guard);
     } catch (final IOException e) {
       throw new IndexException("Failed to count postings for dim " + dim, e);
     }
@@ -1713,7 +1769,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   private void checkIsValid() {
     if (!isValid())
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
   }
 
   @Override

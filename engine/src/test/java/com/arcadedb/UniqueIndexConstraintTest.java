@@ -440,9 +440,11 @@ class UniqueIndexConstraintTest {
       database.command("sql", "CREATE PROPERTY Shapes.code STRING");
       database.command("sql", "CREATE INDEX ON Shapes (code) UNIQUE");
 
-      // reversed equality, null key, and a modified/wrapped left side are not a plain full-key lookup
-      final String[] where = { "? = code", "code = ?", "code.toLowerCase() = ?", "code.length() = ?" };
-      final Object[] value = { "c1", null, "c1", 2 };
+      // reversed equality, null key, and a modified/wrapped left side are not a plain full-key lookup. The reversed equality and
+      // the double negation are keys the index answers (issue #12281), but not ones a new record can be built from: the UPSERT
+      // would insert it with no code, and every repeat would insert another
+      final String[] where = { "? = code", "NOT (code <> ?)", "code = ?", "code.toLowerCase() = ?", "code.length() = ?" };
+      final Object[] value = { "c1", "c1", null, "c1", 2 };
       for (int k = 0; k < where.length; k++) {
         final String condition = where[k];
         final Object parameter = value[k];
@@ -453,6 +455,51 @@ class UniqueIndexConstraintTest {
             .hasMessageContaining("UNIQUE index");
       }
       assertThat(database.countType("Shapes", false)).isZero();
+    }
+
+    @Test
+    void upsertWithTheKeyWrittenValueFirstIsRejectedWhetherOrNotTheRecordExists() {
+      database.command("sql", "CREATE DOCUMENT TYPE Rev");
+      database.command("sql", "CREATE PROPERTY Rev.code STRING");
+      database.command("sql", "CREATE INDEX ON Rev (code) UNIQUE NULL_STRATEGY SKIP");
+      database.transaction(() -> database.command("sql", "INSERT INTO Rev SET code = 'c1', name = 'old'"));
+
+      // The index answers these spellings since issue #12281, but an UPSERT builds the record it inserts from the plain
+      // "property = value" conditions of its WHERE: with the key written any other way it would insert a record with no code, which
+      // the NULL_STRATEGY SKIP unique index accepts any number of, and which no later UPSERT finds. The statement is refused whether
+      // the record is there or not, as it always was, not only when it has to insert
+      for (final String where : new String[] { "? = code", "NOT (code <> ?)", "NOT (? <> code)" })
+        for (final String key : new String[] { "c1", "c2" }) {
+          assertThatThrownBy(() -> database.transaction(
+              () -> database.command("sql", "UPDATE Rev SET name = 'new' UPSERT WHERE " + where, key)))
+              .as(where + " " + key)
+              .isInstanceOf(CommandSQLParsingException.class)
+              .hasMessageContaining("UNIQUE index");
+        }
+
+      assertThat(database.countType("Rev", false)).isEqualTo(1);
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Rev WHERE code IS NULL")) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+      try (final ResultSet rs = database.query("sql", "SELECT name FROM Rev")) {
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("old");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    }
+
+    @Test
+    void upsertOnCompositeKeyWithOneReversedEqualityIsRejected() {
+      database.command("sql", "CREATE DOCUMENT TYPE RevComp");
+      database.command("sql", "CREATE PROPERTY RevComp.tenant STRING");
+      database.command("sql", "CREATE PROPERTY RevComp.code STRING");
+      database.command("sql", "CREATE INDEX ON RevComp (tenant, code) UNIQUE NULL_STRATEGY SKIP");
+
+      // tenant is written plain, code value first: the new record would have a tenant and no code (issue #12281)
+      assertThatThrownBy(() -> database.transaction(
+          () -> database.command("sql", "UPDATE RevComp SET name = ? UPSERT WHERE tenant = ? AND ? = code", "x", "t", "c1")))
+          .isInstanceOf(CommandSQLParsingException.class)
+          .hasMessageContaining("UNIQUE index");
+      assertThat(database.countType("RevComp", false)).isZero();
     }
 
     @Test

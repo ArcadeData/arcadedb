@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.SourceText;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -276,6 +277,18 @@ class PostgresParameterBindingTest {
     assertThat(untyped("{\"k\": 1}")).isEqualTo("{\"k\": 1}");
     assertThat(untyped("{\"k\":{\"j\":[1,2]}}")).isEqualTo("{\"k\":{\"j\":[1,2]}}");
     assertThat(untyped("plain")).isEqualTo("plain");
+  }
+
+  // Regression: #12711
+  @Test
+  void anUntypedArrayLiteralRemembersTheTextItWasSentAs() {
+    // psycopg sends the Python str "{name}" exactly as it sends the list ["name"]: the list keeps the text for a STRING target
+    for (final String literal : List.of("{name}", "{a,b}", "{}", "{a, \"b c\"}")) {
+      final Object value = untyped(literal);
+      assertThat(value).as(literal).isInstanceOf(List.class).isInstanceOf(SourceText.class);
+      assertThat(((SourceText) value).sourceText()).as(literal).isEqualTo(literal);
+    }
+    assertThat((List<Object>) untyped("{a,b}")).containsExactly("a", "b");
   }
 
   // Regression: #10870

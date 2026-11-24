@@ -47,9 +47,9 @@ class Issue11588MCPCallInTransactionsTest extends BaseGraphServerTest {
     config.setEnabled(true);
     config.setAllowReads(true);
     config.setAllowInsert(true);
-    // The classifier does not look inside the CALL { ... } subquery and falls back to every write kind
-    config.setAllowUpdate(true);
-    config.setAllowDelete(true);
+    // A subquery that only creates is a create: the insert permission is all it needs
+    config.setAllowUpdate(false);
+    config.setAllowDelete(false);
     config.setAllowSchemaChange(true);
     config.setAllowedUsers(List.of("root"));
     final JSONObject clearOverrides = new JSONObject();

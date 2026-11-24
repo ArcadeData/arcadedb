@@ -28,7 +28,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -154,5 +156,33 @@ class AlgoGraphColoringTest {
     assertThat(colorA[0]).isNotEqualTo(-1);
     assertThat(colorB[0]).isNotEqualTo(-1);
     assertThat(colorA[0]).isNotEqualTo(colorB[0]);
+  }
+
+  /**
+   * Issue #12174: the forbidden-colour flags are cleared per vertex by unsetting only the colours its neighbours set,
+   * rather than by clearing an array of the vertex count. A flag left behind would push a later vertex past colour 0:
+   * after the triangle takes colours 0, 1 and 2, the isolated D must still get 0 and E, next to D only, must get 1.
+   */
+  @Test
+  void firstFitColoursAreNotPushedUpByAPreviousVertex() {
+    database.transaction(() -> {
+      final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+      final MutableVertex e = database.newVertex("Node").set("name", "E").save();
+      d.newEdge("LINK", e, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.graphColoring() YIELD node, color, chromaticNumber RETURN node.name AS name, color, chromaticNumber");
+    final Map<String, Integer> colours = new HashMap<>();
+    int chromaticNumber = -1;
+    while (rs.hasNext()) {
+      final Result r = rs.next();
+      colours.put(r.getProperty("name"), ((Number) r.getProperty("color")).intValue());
+      chromaticNumber = ((Number) r.getProperty("chromaticNumber")).intValue();
+    }
+
+    assertThat(colours).containsEntry("A", 0).containsEntry("B", 1).containsEntry("C", 2).containsEntry("D", 0)
+        .containsEntry("E", 1);
+    assertThat(chromaticNumber).isEqualTo(3);
   }
 }

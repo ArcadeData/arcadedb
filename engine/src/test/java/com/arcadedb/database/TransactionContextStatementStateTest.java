@@ -114,6 +114,10 @@ class TransactionContextStatementStateTest {
     CLASSIFICATION.put("probeReadTargets", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("probeReadKinds", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("suspendedProbes", NOT_STATEMENT_STATE);
+    // Issue #12612: the values the second write of a record a restore creates gave its READONLY properties, filled only inside a
+    // readonly deferral, which the restore opens around its own saves and no statement opens. A value a write taken back left could only
+    // allow the value that write completed the record with, never a value nobody was allowed to write
+    CLASSIFICATION.put("readonlyValuesOfDeferredWrites", NOT_STATEMENT_STATE);
     CLASSIFICATION.put("attachments", DELEGATED);
     // Issue #10687: work owed by a change made BESIDE the transaction (a TIMESERIES write commits its own), which a statement taken
     // back does not undo either: the callback has to stay, as it stays through a rollback of the whole transaction

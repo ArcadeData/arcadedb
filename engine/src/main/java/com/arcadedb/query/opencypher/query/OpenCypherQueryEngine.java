@@ -40,6 +40,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -109,6 +110,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -206,27 +208,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
           if (statement.isReadOnly())
             return CollectionUtils.singletonSet(OperationType.READ);
 
+          // Every write the statement can run, read from the whole clause tree: what a subquery, a FOREACH body or a union branch
+          // writes counts as what the top-level clauses write. A schema-changing procedure is a SCHEMA operation as its SQL
+          // statement is, not the CREATE/UPDATE/DELETE fallback below; data writes next to it keep their own types (issue #11438)
           final EnumSet<OperationType> ops = EnumSet.noneOf(OperationType.class);
-          // A schema-changing procedure is a SCHEMA operation as its SQL statement is, not the CREATE/UPDATE/DELETE fallback
-          // below; data writes next to it keep their own types (issue #11438)
-          final boolean schemaProcedureCall = statement.hasSchemaProcedureCall();
-          if (schemaProcedureCall)
-            ops.add(OperationType.SCHEMA);
-          if (statement.hasCreate())
-            ops.add(OperationType.CREATE);
-          if (statement.hasMerge()) {
-            ops.add(OperationType.CREATE);
-            ops.add(OperationType.UPDATE);
-          }
-          if (statement.hasDelete())
-            ops.add(OperationType.DELETE);
-          if (statement.hasSet())
-            ops.add(OperationType.UPDATE);
-          if (statement.hasRemove())
-            ops.add(OperationType.UPDATE);
+          statement.collectWriteOperations(ops);
           if (ops.isEmpty())
             return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
-          return schemaProcedureCall && ops.size() == 1 ? CollectionUtils.singletonSet(OperationType.SCHEMA) : Set.copyOf(ops);
+          return Set.copyOf(ops);
         }
       };
     } catch (final CommandParsingException e) {
@@ -685,10 +674,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction its CALLER owns (HTTP /begin,
       // Bolt BEGIN, an embedded begin() or transaction()) the caller's ROLLBACK could not undo them and the batches would not
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
-      // request keeps running it.
+      // request keeps running it. A server transaction shared by several statements that already holds an earlier statement's
+      // writes is no longer implicit either (a Postgres pipeline, issue #13222), so the message names that cause and the cure.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
         throw new ImplicitTransactionRequiredException(
-            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
+            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction"
+                + " or in one already holding the writes of earlier statements (such as an earlier statement of the same Postgres pipeline):"
+                + " commit those first (COMMIT, or Sync for a pipeline)");
       return executeWrite(plan, execDb, profile, timeExecution);
     }
 
@@ -704,8 +696,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The statement is also one unit for memory: a write over millions of records is held until its commit, as over HTTP
     // and in Neo4j, and CALL { ... } IN TRANSACTIONS is the way to commit it in batches.
     final ResultSet[] result = new ResultSet[1];
-    execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
-        statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    final boolean inTransactions = statement.hasSubqueryInTransactions();
+    execDb.transaction(() -> {
+      // Opened here around this one statement, as its auto-commit: an implicit transaction, which a CALL { ... } IN TRANSACTIONS
+      // commits before each of its batches so the batch sees what the statement wrote before it (issue #13172)
+      if (inTransactions)
+        execDb.getTransaction().setImplicit(true);
+      result[0] = executeWrite(plan, execDb, profile, timeExecution);
+    }, false, inTransactions ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
     return result[0];
   }
 
@@ -903,7 +901,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     type.dropProperty(propName);
     try {
-      final Property created = type.createProperty(propName, retyped);
+      // since #12040 the schema itself refuses a literal DEFAULT the new type cannot hold: that refusal is reported as the
+      // DEFAULT not carried over, as requireDefaultReadableAs reports a default that evaluates to no value of the new type
+      final Property created = type.createProperty(propName, retyped, (attribute, e) -> {
+        if ("default".equals(attribute))
+          throw refuseRetype(typeName, existing, newType, List.of(defaultNotCarried(existing.getDefaultValueDefinition(), newType)), e);
+        throw e;
+      });
       requireDefaultReadableAs(database, typeName, existing, created, newType);
       ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
@@ -911,7 +915,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       try {
         if (type.existsProperty(propName))
           type.dropProperty(propName);
-        type.createProperty(propName, previous);
+        // Every attribute that can be put back is. One the schema refuses now - a DEFAULT an earlier release accepted and the schema
+        // refuses at DDL time since #12040 (#6134 before it) - is left off: stopping at it would also drop every attribute applied
+        // after it (MANDATORY, READONLY, NOTNULL, the bounds, the pattern, the custom values), and the default was failing every
+        // record create of the type already.
+        type.createProperty(propName, previous, (attribute, refusal) -> LogManager.instance().log(this, Level.WARNING,
+            "The %s of property '%s.%s' was not put back after the refused change of its type, because the schema refuses it: %s",
+            attribute, typeName, propName, refusal.getMessage()));
       } catch (final Throwable restoreFailure) {
         e.addSuppressed(restoreFailure);
       }
@@ -1003,7 +1013,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (definition == null)
       return;
 
-    final String notCarried = "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
+    final String notCarried = defaultNotCarried(definition, newType);
     Object value;
     try {
       value = created.getDefaultValue();
@@ -1024,6 +1034,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
         && new BigDecimal(original.toString()).compareTo(new BigDecimal(converted.toString())) != 0)
       throw refuseRetype(typeName, existing, newType,
           List.of("DEFAULT `" + definition + "` (" + original + " becomes " + converted + " as a " + newType + ")"), null);
+  }
+
+  private static String defaultNotCarried(final Object definition, final Type newType) {
+    return "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
   }
 
   private static final String NUMERIC_MEASURE = DocumentValidator.boundMeasure(Type.LONG);

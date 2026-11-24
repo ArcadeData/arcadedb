@@ -518,9 +518,30 @@ public class TransactionIndexContext {
     }
     unorderedEntries.clear();
 
+    // The RIDs whose vectors a dense vector index retires, replayed together with that index's ADDs below, in one exclusive
+    // section (issue #13229): replayed here, apart from them, a search running between the two passes found neither the old vector
+    // of an updated record nor its new one, and dropped a record that is in the index before and after the commit.
+    Map<LSMVectorIndex, List<RID>> vectorRemovals = null;
+
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
+
+      if (index instanceof LSMVectorIndex vectorIndex) {
+        if (vectorRemovals == null)
+          vectorRemovals = new IdentityHashMap<>();
+        final List<RID> removed = vectorRemovals.computeIfAbsent(vectorIndex, i -> new ArrayList<>());
+        for (final Map<IndexKey, IndexKey> keyValueEntries : keys.values())
+          for (final IndexKey key : keyValueEntries.values()) {
+            if (key.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              removed.add(key.rid);
+              if (key.oldRid != null && !key.oldRid.equals(key.rid))
+                removed.add(key.oldRid);
+            } else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
+              removed.add(key.oldRid);
+          }
+        continue;
+      }
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
@@ -537,11 +558,11 @@ public class TransactionIndexContext {
       }
     }
 
-    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE - for a vector index as much as for
-    // any other - was already replayed through index.removeReplay() by the pass above, which is why the vector
-    // batch below can skip a RID whose last entry is a REMOVE without leaving it untombstoned: the tombstone has
-    // happened, and skipping only avoids adding it straight back (PR #8001 review asked for this to be said here
-    // rather than only at the skip itself).
+    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE of a non-vector index was already
+    // replayed through index.removeReplay() by the pass above; those of a dense vector index were collected there and
+    // are replayed by replayRemovalsAndBatch() BEFORE its ADDs, which is why the vector batch below can skip a RID
+    // whose last entry is a REMOVE without leaving it untombstoned: the tombstone happens, and skipping only avoids
+    // adding it straight back (PR #8001 review asked for this to be said here rather than only at the skip itself).
     //
     // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
     // same reason the lane map is: which index a batch belongs to is a question about the object.
@@ -613,22 +634,19 @@ public class TransactionIndexContext {
     // nothing measurable next to the page write and WAL append each row already pays for.
     for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
       final Map<RID, IndexKey> winners = batch.getValue();
-      if (winners.isEmpty())
-        continue;
+      final List<RID> removed = vectorRemovals != null ? vectorRemovals.get(batch.getKey()) : null;
 
       final List<Object[]> batchKeys = new ArrayList<>(winners.size());
       final List<RID> batchRids = new ArrayList<>(winners.size());
       for (final IndexKey key : winners.values()) {
         if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
-          // The transaction's last word on this RID was a removal, and the pass above has already replayed it.
+          // The transaction's last word on this RID was a removal, replayed with the removals of this index.
           // Re-adding it here is what made a record deleted after being added come back (PR #8001 review).
           continue;
         batchKeys.add(key.keyValues);
         batchRids.add(key.rid);
       }
-      if (batchKeys.isEmpty())
-        continue;
-      batch.getKey().putBatch(batchKeys, batchRids);
+      batch.getKey().replayRemovalsAndBatch(removed != null ? removed : List.of(), batchKeys, batchRids);
     }
 
     indexEntries.clear();

@@ -47,6 +47,10 @@ import java.util.regex.Pattern;
 public final class Marker {
   private static final int VERSION = 1;
 
+  private static final String NIGHTLY              = "nightly";
+  /** The scale of a nightly marker that records none: phase 3 measured nightlies at M only. */
+  private static final String LEGACY_NIGHTLY_SCALE = "M";
+
   private static final String PREFIX = "<!-- perf-regression ";
   private static final String SUFFIX = " -->";
 
@@ -82,6 +86,7 @@ public final class Marker {
 
   private String                        trigger;
   private String                        ref;
+  private String                        scale;
   private String                        baseRef;
   private final Map<String, JSONObject> lines = new LinkedHashMap<>();
 
@@ -89,9 +94,15 @@ public final class Marker {
   }
 
   public static Marker create(final String trigger, final String ref, final String baseRef) {
+    return create(trigger, ref, null, baseRef);
+  }
+
+  /** A marker of the run {@code trigger:ref}; {@code scale} is the scale of a nightly event, null for a release. */
+  public static Marker create(final String trigger, final String ref, final String scale, final String baseRef) {
     final Marker marker = new Marker();
     marker.trigger = trigger;
     marker.ref = ref;
+    marker.scale = scale;
     marker.baseRef = baseRef;
     return marker;
   }
@@ -124,7 +135,7 @@ public final class Marker {
       for (final String key : defaults.keySet())
         if (!BY_KEY.containsKey(key))
           return null;
-      final Marker marker = create(trigger, ref, json.getString("baseRef", null));
+      final Marker marker = create(trigger, ref, json.getString("scale", null), json.getString("baseRef", null));
       final JSONObject lineObjects = json.getJSONObject("lines", new JSONObject());
       for (final String id : lineObjects.keySet()) {
         final Object entry = lineObjects.get(id, null);
@@ -250,6 +261,8 @@ public final class Marker {
     json.put("v", VERSION);
     json.put("trigger", trigger);
     json.put("ref", ref);
+    if (scale != null)
+      json.put("scale", scale);
     if (baseRef != null)
       json.put("baseRef", baseRef);
     json.put("strings", new JSONArray(new ArrayList<>(strings.keySet())));
@@ -272,6 +285,16 @@ public final class Marker {
 
   public void setRef(final String ref) {
     this.ref = ref;
+  }
+
+  /**
+   * The scale of the nightly event: the lines of one commit measured at another scale are another event. A nightly marker written before
+   * the scale was recorded (phase 3) reads as {@code M}, the only nightly scale then; null for a release, whose scales are one run.
+   */
+  public String getScale() {
+    if (scale != null)
+      return scale;
+    return NIGHTLY.equals(trigger) ? LEGACY_NIGHTLY_SCALE : null;
   }
 
   public String getBaseRef() {
