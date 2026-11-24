@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.MultiTypeIndexes;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -120,10 +121,27 @@ public class FetchFromSchemaIndexesStep extends AbstractFetchFromSchemaListStep 
         if (index.getAssociatedBucketId() > -1)
           r.setProperty("associatedBucketId", index.getAssociatedBucketId());
         r.setProperty("nullStrategy", index.getNullStrategy());
+        setIndexMetadata(r, (IndexInternal) index);
       } catch (Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Requested information for index, but the index '%s' is not valid", e, index.getName());
       }
     }
+  }
+
+  /**
+   * Sets {@code metadata}: the settings of the {@code METADATA} clause in force on the index, by key, the defaults included
+   * (see {@link IndexMetadata#getUserSettings()}). Absent on an index type that has no setting, as on a plain LSM_TREE index.
+   * Shared with {@code schema:index:<name>}, so the listing and the detail agree.
+   */
+  static void setIndexMetadata(final ResultInternal r, final IndexInternal index) {
+    // getMetadataForNewFile(), not getMetadata(): a wrapper index type (full-text, geospatial, sparse vector, columnar) keeps
+    // its settings outside the underlying LSM-Tree, whose plain definition has none
+    final IndexMetadata metadata = index.getMetadataForNewFile();
+    if (metadata == null)
+      return;
+    final Map<String, Object> settings = metadata.getUserSettings();
+    if (!settings.isEmpty())
+      r.setProperty("metadata", settings);
   }
 
   private static SecurityDatabaseUser currentUser(final CommandContext context) {

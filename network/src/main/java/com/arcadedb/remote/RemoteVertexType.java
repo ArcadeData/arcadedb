@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.VertexType;
 
@@ -30,5 +31,13 @@ public class RemoteVertexType extends RemoteDocumentType implements VertexType {
 
   RemoteVertexType(final RemoteDatabase remoteDatabase, final Result record) {
     super(remoteDatabase, record);
+  }
+
+  /**
+   * A vertex, as {@code LocalVertexType.newRecord()} builds (issue #12190): the inherited one built a document that saved a vertex.
+   */
+  @Override
+  public MutableVertex newRecord() {
+    return remoteDatabase.newVertex(name);
   }
 }

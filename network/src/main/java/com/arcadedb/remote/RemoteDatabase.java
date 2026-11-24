@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -44,8 +45,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.engine.timeseries.LineProtocolWriter;
 import com.arcadedb.remote.timeseries.TimeSeriesBucket;
@@ -71,6 +75,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,6 +83,7 @@ import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -217,6 +223,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
+    // Issue #12190: as the embedded API, a vertex or edge type is refused here. Not checked, save() ran INSERT INTO <type>,
+    // which on a vertex type created a vertex. The kind is the one of the cached schema: the server stays the authority for a
+    // type another client recreated as a different kind since
+    final DocumentType type = getSchema().getType(typeName);
+    if (type instanceof VertexType || type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
+
     return new RemoteMutableDocument(this, typeName);
   }
 
@@ -232,6 +245,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
+
+    // Issue #12190: the embedded API's refusal, instead of the ClassCastException of RemoteMutableVertex's cast
+    if (!(getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
     return new RemoteMutableVertex(this, typeName);
   }
@@ -470,10 +487,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
-          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
+      HttpResponse<String> response = sendBegin(payload);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
@@ -504,6 +518,68 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } finally {
       if (getSessionId() == null)
         setStickyTransactionServer(null);
+    }
+  }
+
+  /**
+   * Sends the begin request, moving to another server while it provably never reached one (issue #12615). No transaction exists
+   * yet, so unlike a request inside one this may go to any live server. Only {@code httpCommand()} failed over before, so with the
+   * server the client was connected to stopped, every {@code begin()} failed and nothing moved {@code currentServer} to a live node.
+   * The FIXED strategy keeps to its server, as it does for every other request.
+   * <p>
+   * The next server is chosen the way {@code httpCommand()} chooses it ({@link #nextFailoverServer}): the one that answered the
+   * reload, else the next known replica, never the advertised leader, which during an election can still be the stopped node. The
+   * server that answers becomes the one the transaction is routed to: the sticky pin for STICKY, the current server otherwise, so
+   * that the commands, the commit and the rollback reach the node that holds the session.
+   */
+  private HttpResponse<String> sendBegin(final String payload) throws IOException, InterruptedException {
+    final CONNECTION_STRATEGY strategy = getConnectionStrategy();
+    final int maxAttempts = strategy == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+    final String command = "begin/" + databaseName;
+
+    Pair<String, Integer> target = getRoutedServer();
+    boolean failedOver = false;
+    // Once a reload found no server able to answer, asking them all again on every attempt only multiplies the timeouts
+    boolean reloadFailed = false;
+    // The servers this begin could not reach, so the walk tries every known server once before it revisits one
+    Set<Pair<String, Integer>> unreachable = null;
+
+    for (int attempt = 1; ; attempt++) {
+      final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
+          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
+      try {
+        final HttpResponse<String> response = sendWithWatchdog(request);
+        if (failedOver) {
+          // The server answered, so it is alive: the rest of the transaction goes where the session is
+          if (strategy == CONNECTION_STRATEGY.STICKY)
+            setStickyTransactionServer(target);
+          else {
+            currentServer = target.getFirst();
+            currentPort = target.getSecond();
+          }
+        }
+        return response;
+      } catch (final IOException e) {
+        if (attempt >= maxAttempts || !provablyNeverSent(e))
+          throw e;
+
+        if (!reloadFailed)
+          reloadFailed = !reloadClusterConfiguration();
+
+        if (unreachable == null)
+          unreachable = new HashSet<>();
+        unreachable.add(target);
+        final Pair<String, Integer> next = nextFailoverServer(target, false, unreachable);
+        if (next == null)
+          throw e;
+
+        LogManager.instance()
+            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d to begin the transaction...",
+                target.getFirst(), target.getSecond(), next.getFirst(), next.getSecond());
+
+        target = next;
+        failedOver = true;
+      }
     }
   }
 
@@ -857,7 +933,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     checkDatabaseIsOpen();
     stats.iterateType.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", query, polymorphic ? null : Map.of("typeName", typeName));
+    final ResultSet resultSet = queryAllRows(query, polymorphic ? null : Map.of("typeName", typeName));
     return countedRecordIterator(resultSet);
   }
 
@@ -898,7 +974,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public Iterator<Record> iterateBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.iterateBucket.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", "select from " + bucketTarget(bucketName), null);
+    final ResultSet resultSet = queryAllRows("select from " + bucketTarget(bucketName), null);
     return countedRecordIterator(resultSet);
   }
 
@@ -1021,6 +1097,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * a try-with-resources. It is also single-pass: {@code reset()} is not supported, and the rows are gone once
    * read. A caller that needs the whole result in memory, or the {@code explain} / {@code stats} envelope
    * properties, wants {@link #query(String, String, Map)} instead - which is unchanged.
+   * <p>
+   * Unlike the buffered {@link #query(String, String, Map)}, a stream is not capped by the server's default row limit
+   * ({@code arcadedb.server.httpQueryDefaultLimit}): it asks for every row unless {@link #setMaxResultRows(Integer)} set a
+   * cap of the application's own (issue #12185). The server's hard ceiling still applies and ends the stream with an
+   * error rather than a short result.
    *
    * @param params named parameters, or an empty map
    *
@@ -1177,9 +1258,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     // projection/aggregate column from the @props hint, so it has to ask for it.
     jsonRequest.put("typeHints", true);
     jsonRequest.put("retries", txRetries);
+    // Every row unless the application set its own cap: the default row limit of the server exists to bound a BUFFERED
+    // response, and a stream is the API for results too large to buffer (issue #12185)
     final Integer maxRows = getMaxResultRows();
-    if (maxRows != null)
-      jsonRequest.put("limit", maxRows);
+    jsonRequest.put("limit", maxRows != null ? maxRows : UNLIMITED_ROWS);
     if (params != null && !params.isEmpty())
       jsonRequest.put("params", new JSONObject(encodeParameters(params)));
 
@@ -1301,6 +1383,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true,
         callback);
+  }
+
+  /**
+   * Reads every row of a SQL query, whatever the server's default row limit and {@link #getMaxResultRows()}: for the
+   * driver's own iterations whose contract is the whole type or bucket ({@link #iterateType}, {@link #iterateBucket}),
+   * which the embedded engine answers in full. Stopping at the server default (20,000 rows) handed the caller a partial
+   * iteration that {@code countType()} contradicted (issue #12185). A result above the server's hard ceiling is refused
+   * (HTTP 413) rather than cut. Not counted in any statistic, as {@link #queryUncounted} is not.
+   */
+  private ResultSet queryAllRows(final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    return (ResultSet) httpQueryWithRowLimit(databaseName, "sql", query, params,
+        (connection, response) -> createResultSet(response), UNLIMITED_ROWS);
   }
 
   /**
@@ -1987,18 +2082,42 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (value instanceof List<?> list) {
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item == null ? null : Type.convertOrKeep(null, item, elementImplementation));
+          converted.add(item == null ? null : bindLink(Type.convertOrKeep(null, item, elementImplementation)));
         return converted;
       }
       if (value instanceof Map<?, ?> map) {
         final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<?, ?> mapEntry : map.entrySet())
           converted.put(mapEntry.getKey(),
-              mapEntry.getValue() == null ? null : Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation));
+              mapEntry.getValue() == null ? null : bindLink(Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation)));
         return converted;
       }
     }
-    return Type.convertOrKeep(null, value, javaImplementationForType(hint.type()));
+    return bindLink(Type.convertOrKeep(null, value, javaImplementationForType(hint.type())));
+  }
+
+  /**
+   * A link this driver decoded, bound to this database, and any other value as it is. The conversion has no embedded database to
+   * give {@code RID.create()}, so it answers a plain {@link RID}, and {@code rid.asDocument()} on a plain RID looks for a database
+   * active on the calling thread, which an application that only uses a remote client never has (issue #12603). The record's own
+   * identity was already bound ({@link #newRID(String)}); this binds the links it holds the same way, as the embedded API does.
+   * Only a RID is touched: any other value costs one type check.
+   */
+  private Object bindLink(final Object value) {
+    return bindLink(this, value);
+  }
+
+  /** {@code value} with a link bound to {@code database}; see {@link #bindLink(Object)} (issue #12603). */
+  static Object bindLink(final RemoteDatabase database, final Object value) {
+    return value instanceof RID rid ? bindRID(database, rid) : value;
+  }
+
+  /**
+   * {@code rid} bound to {@code database} when it is a plain {@link RID} (issue #12603). Any subclass is kept as it is: a
+   * {@link DatabaseRID} is bound already, and another kind carries state a copy would drop.
+   */
+  static RID bindRID(final RemoteDatabase database, final RID rid) {
+    return rid.getClass() == RID.class ? new DatabaseRID(database, rid) : rid;
   }
 
   private Class<?> javaImplementationForType(final Type type) {

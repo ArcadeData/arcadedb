@@ -189,6 +189,11 @@ public class SQLFunctionSearchFields extends SQLFunctionAbstract implements Inde
   }
 
   @Override
+  public boolean continuesPastLimit() {
+    return true;
+  }
+
+  @Override
   public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
       final CommandContext context, final Expression[] oExpressions) {
     final FullTextFunctionSearch search = search(target, context, oExpressions);

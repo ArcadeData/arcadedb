@@ -100,9 +100,9 @@ public class AlgoResourceAllocation extends AbstractAlgoProcedure {
     if (srcIdx < 0)
       return Stream.empty();
 
-    // score = the sum of 1 / degree(w) over the entries of v's row naming a neighbour w of the source
+    // score = the sum of 1 / degree(w) over the common neighbours w of the source and v, in the direction asked
     final NodeScores shared = scoresThroughNeighbours(graph, srcIdx, dir, w -> {
-      final int degree = graph.neighbors(w, dir).length;
+      final int degree = graph.distinctDegree(w, dir);
       return degree > 0 ? 1.0 / degree : 0.0;
     }, guard);
 

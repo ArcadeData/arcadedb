@@ -3076,6 +3076,54 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   @Override
+  public boolean isRatisCloseStuck() {
+    final Thread closer = stuckRatisClose;
+    return closer != null && closer.isAlive();
+  }
+
+  /**
+   * Why this node's replication has stopped while nothing is recovering it, or {@code null} when it has not (issue
+   * #12552): its StateMachineUpdater thread has terminated, so it applies no committed entry whatever its division
+   * reports; the close of a previous Ratis server never finished, so no in-place restart can run beside it; or the
+   * health monitor that runs those restarts has died or is stuck inside one tick. Each is a node that answered ready for
+   * an hour while out of the cluster. {@code null} while shutting down: the threads read here end on purpose then.
+   * <p>
+   * Read by {@link TrafficReadiness#isReadyForTraffic(long)} and, through {@code RaftHAPlugin}, by the readiness probe
+   * whether or not {@code arcadedb.server.readinessRequiresHA} is on, like a critical halt: the node is not behind, it
+   * has stopped.
+   * <p>
+   * A Raft layer that was stopped is reported as such and nothing else is read: the threads above end on purpose then. On
+   * a server shutting down the probe answers with the server status before it gets here; on a server that stays up, the
+   * one {@code disconnect cluster} leaves behind, this is what keeps it out of the Service.
+   */
+  public String getReplicationFailureReason() {
+    if (shutdownRequested)
+      return "the Raft layer of this node has been stopped: it is no longer a member of the cluster";
+    final String deadUpdater = getDeadStateMachineUpdater();
+    if (deadUpdater != null)
+      return "Raft state machine cannot apply entries: " + deadUpdater;
+    final Thread closer = stuckRatisClose;
+    if (closer != null && closer.isAlive())
+      return "the close of the previous Ratis server is still running on thread '" + closer.getName()
+          + "': the Raft layer cannot be restarted until it ends, and the server stops once "
+          + GlobalConfiguration.HA_RATIS_RESTART_MAX_RETRIES.getKey() + " restart attempts have failed";
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null ? monitor.describeTickLoopFailure(healthMonitorStallBoundMs()) : null;
+  }
+
+  /**
+   * How long the health monitor may go without ending a tick before it counts as stalled (issue #12552). One tick can
+   * hold an in-place restart, whose close of the old server and swap of the state machine are each bounded by
+   * {@code arcadedb.ha.ratisCloseTimeoutMs}, so the bound covers two of those plus a margin, and never less than ten
+   * tick intervals. A close timeout of 0 (no bound) leaves only the interval floor and a fixed margin.
+   */
+  long healthMonitorStallBoundMs() {
+    final long interval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
+    final long closeTimeout = Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_RATIS_CLOSE_TIMEOUT_MS));
+    return Math.max(10L * interval, 2L * closeTimeout + 60_000L);
+  }
+
+  @Override
   public boolean hasPersistedCrashLoopEscalation() {
     return storageFiles.crashLoopEscalationMarker().isFile();
   }
@@ -3780,6 +3828,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return appliedWaits.fetchReadIndex(expectSelfIsLeader);
   }
 
+  /** As {@link #fetchReadIndex(boolean)}, giving up after {@code timeoutMs} (issue #11739). */
+  public long fetchReadIndex(final boolean expectSelfIsLeader, final long timeoutMs) {
+    return appliedWaits.fetchReadIndex(expectSelfIsLeader, timeoutMs);
+  }
+
   /**
    * Lenient overload (READ_YOUR_WRITES / bookmark wait): on timeout it logs and returns,
    * allowing the read to proceed against possibly-stale local state. Never used by the
@@ -3822,6 +3875,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public void waitForAppliedIndex(final String databaseName, final long targetIndex, final boolean throwOnTimeout) {
     appliedWaits.awaitAppliedIndex(databaseName, targetIndex, throwOnTimeout, null);
+  }
+
+  /** As {@link #waitForAppliedIndex(long, boolean)}, giving up after {@code timeoutMs} instead of the quorum timeout (issue #11739). */
+  public void waitForAppliedIndex(final long targetIndex, final boolean throwOnTimeout, final long timeoutMs) {
+    appliedWaits.awaitAppliedIndex(null, targetIndex, throwOnTimeout, null, timeoutMs);
   }
 
   /**
@@ -4169,6 +4227,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     @Override
     public long triggerSnapshot(final long creationGap) {
+      // The data files are forced here first, on the scheduler's thread (issue #11989): the checkpoint forces them again on
+      // the apply thread, where every commit of the node waits for it, and only what was written in between is left there.
+      // Not when Ratis is going to skip the checkpoint (below the creation gap): that tick stays free
+      final ArcadeStateMachine sm = stateMachine;
+      if (sm != null)
+        sm.syncDataFilesAheadOfCheckpoint(creationGap);
       return takeLocalSnapshot(creationGap);
     }
 

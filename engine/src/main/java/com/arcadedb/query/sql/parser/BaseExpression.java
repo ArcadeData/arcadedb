@@ -27,9 +27,11 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexedFunctionPushdown;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -588,9 +590,36 @@ public class BaseExpression extends MathExpression {
         identifier.applyRemove(result, context);
       } else {
         final Object val = identifier.execute(result, context);
-        modifier.applyRemove(val, result, context);
+        // REMOVE l[0] on a list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES: the array cannot lose items in place, so the list of
+        // its items loses them and, when it lost any, is stored where the array was. It is stored after the removal and not
+        // before: a declared ARRAY_OF_* property turns the list it is given into a new array (issue #12896)
+        if (identifier.getSuffix() != null && modifier.removesItemsOf(val)) {
+          final List<Object> items = new ArrayList<>(MultiValue.getMultiValueAsList(val));
+          final int size = items.size();
+          modifier.applyRemove(items, result, context);
+          if (items.size() != size)
+            identifier.getSuffix().setValue(result, items, context);
+        } else
+          modifier.applyRemove(val, result, context);
       }
     }
+  }
+
+  /**
+   * Stores {@code value} where this expression reads from: the property of the record, or the property or the item reached by
+   * the modifiers that follow it. Answers false, and stores nothing, when the expression does not name a place that can be
+   * written (a function call, a method call, a filter), so a REMOVE of an item out of an array it reads can be written back
+   * (issue #12896).
+   */
+  @Override
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    if (identifier == null || identifier.getSuffix() == null)
+      return false;
+    if (modifier == null) {
+      identifier.getSuffix().setValue(result, value, context);
+      return true;
+    }
+    return modifier.writeBack(result, identifier.execute(result, context), value, context);
   }
 
   @Override
