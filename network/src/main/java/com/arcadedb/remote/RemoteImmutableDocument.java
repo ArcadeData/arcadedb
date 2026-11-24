@@ -71,7 +71,15 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         final Type elementType;
         if (property != null) {
           propType = property.getType();
-          elementType = property.getOfType() != null ? Type.getTypeByName(property.getOfType()) : null;
+          if (property.getOfType() != null)
+            elementType = Type.getTypeByName(property.getOfType());
+          else if (propType == Type.LIST || propType == Type.MAP) {
+            // Issue #12598: a LIST or MAP declared with no element type says nothing of its items, so the @props hint
+            // names them, as it does for a schemaless field (links, non-finite numbers)
+            final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
+            elementType = hint != null ? hint.elementType() : null;
+          } else
+            elementType = null;
         } else {
           // Schemaless field: the @props hint is all there is, element type included (e.g. "dates:9(6)").
           final RemoteDatabase.ColumnTypeHint hint = propTypes.get(fieldName);
