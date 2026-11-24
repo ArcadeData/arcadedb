@@ -3571,7 +3571,7 @@ public enum GlobalConfiguration {
 
   BOLT_WEBSOCKET_MAX_FRAME_SIZE("arcadedb.bolt.websocket.maxFrameSize", SCOPE.SERVER,
       "Maximum payload size in bytes accepted for a single BOLT WebSocket frame. Frames declaring a larger size are rejected before allocation, "
-          + "since the length is read off the wire before authentication. Default is 16MB",
+          + "since the length is read off the wire before authentication. The connection is closed after such a frame. Default is 16MB",
       Integer.class, 16 * 1024 * 1024),
 
   // The three *_SIZE/*_LENGTH settings below are defense in depth at different layers of the same BOLT ingest
@@ -3584,7 +3584,7 @@ public enum GlobalConfiguration {
       Maximum total size in bytes accepted for a single BOLT protocol message after chunk reassembly. BOLT frames \
       a message as a sequence of chunks terminated by a zero-length chunk; without a bound on the reassembled \
       total, a client that never sends the terminator grows the reassembly buffer unbounded, before the BOLT \
-      handshake or authentication. Default is 16MB""",
+      handshake or authentication. A larger message is refused and the connection is closed. Default is 16MB""",
       Integer.class, 16 * 1024 * 1024),
 
   BOLT_PACKSTREAM_MAX_VALUE_LENGTH("arcadedb.bolt.packstream.maxValueLength", SCOPE.SERVER, """
