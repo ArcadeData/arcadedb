@@ -91,6 +91,8 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private static final byte   SLOT_FIRST_ITEM              = 2;
   /** A CONTAINS over items that can nest: a one-item operand is its item and also the nested list it spells (issue #11730). */
   private static final byte   SLOT_ITEM_OR_WHOLE           = 3;
+  /** {@link #scalarsAsSingletonLists} answer for a scalar no element of the declared type equals: the seek matches nothing. */
+  private static final Object[] NO_KEY                     = new Object[0];
 
   protected final String                                         indexName;
   /** Package-private so a test can observe that a restart released them instead of only dropping the references. */
@@ -1047,9 +1049,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
     return elementTypes;
   }
-
-  /** {@link #scalarsAsSingletonLists} answer for a scalar no element of the declared type equals: the seek matches nothing. */
-  private static final Object[] NO_KEY = new Object[0];
 
   /**
    * A value that is not a list, in the slot of a whole LIST key, as the singleton list the SQL scan compares it as (issue #12792):
