@@ -282,6 +282,68 @@ class PropertyKindAcrossHierarchyIssue12732Test extends TestHelper {
     assertThat(database.getSchema().existsIndex("T4[p0]")).isTrue();
   }
 
+  @Test
+  void getOrCreatePropertyRefusesAnotherKindBeforeItDropsTheProperty() {
+    database.command("sql", "CREATE DOCUMENT TYPE A");
+    database.command("sql", "CREATE DOCUMENT TYPE B EXTENDS A");
+    database.command("sql", "CREATE PROPERTY B.p LONG");
+    database.command("sql", "CREATE PROPERTY A.p LONG (mandatory true)");
+
+    assertThatThrownBy(() -> database.getSchema().getType("A").getOrCreateProperty("p", Type.STRING))
+        .isInstanceOf(AlreadyExistsException.class)
+        .hasMessageContaining("'B'");
+    assertThat(database.getSchema().getType("A").getProperty("p").getType()).isEqualTo(Type.LONG);
+    assertThat(database.getSchema().getType("A").getProperty("p").isMandatory()).isTrue();
+
+    // a replacement nothing else in the hierarchy disagrees with still happens
+    database.command("sql", "CREATE DOCUMENT TYPE Z");
+    database.command("sql", "CREATE PROPERTY Z.p LONG");
+    assertThat(database.getSchema().getType("Z").getOrCreateProperty("p", Type.STRING).getType()).isEqualTo(Type.STRING);
+  }
+
+  @Test
+  void aDropIsStillRefusedWhenTheDeclarationLeftToTheIndexedSubTypeIsOfAnotherKind() throws Exception {
+    // a database written before #12732: C sees k as P's INTEGER, keyed so in C[k], and as Q's STRING. Without P.k, C[k] would be stale
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, Q");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    database.close();
+    editSchema(root -> root.getJSONObject("types").getJSONObject("Q").getJSONObject("properties").getJSONObject("k").put("type",
+        "STRING"));
+    database = factory.open();
+
+    assertThatThrownBy(() -> database.command("sql", "DROP PROPERTY P.k")).hasMessageContaining("C[k]");
+    assertThatThrownBy(() -> database.getSchema().getType("P").dropProperty("k")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("C[k]");
+    assertThatThrownBy(() -> database.getSchema().getType("P").renameProperty("k", "k2")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("C[k]");
+    assertThat(database.getSchema().getType("P").existsProperty("k")).isTrue();
+  }
+
+  @Test
+  void aSameKindSuperTypeDeclarationDoesNotHideAnotherKindBelowTheJoiningType() throws Exception {
+    // a database written before #12732: B.p LONG with C.p STRING below it. A.p LONG is a declaration B does not see yet, equal to
+    // B's own, and its index would reach C's records
+    database.command("sql", "CREATE DOCUMENT TYPE A");
+    database.command("sql", "CREATE PROPERTY A.p LONG");
+    database.command("sql", "CREATE INDEX ON A (p) NOTUNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE B");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS B");
+    database.command("sql", "CREATE PROPERTY C.p LONG");
+    database.command("sql", "CREATE PROPERTY B.p LONG");
+    database.close();
+    editSchema(root -> root.getJSONObject("types").getJSONObject("C").getJSONObject("properties").getJSONObject("p").put("type",
+        "STRING"));
+    database = factory.open();
+
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE B SUPERTYPE +A")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("'C'");
+    assertThat(database.getSchema().getType("B").getSuperTypes()).isEmpty();
+  }
+
   private long count(final String query) {
     try (final ResultSet rs = database.query("sql", query)) {
       return rs.stream().count();

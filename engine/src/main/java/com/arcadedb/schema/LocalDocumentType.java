@@ -1744,8 +1744,20 @@ public class LocalDocumentType implements DocumentType {
       if (p.getType().equals(propertyType) && Objects.equals(p.getOfType(), ofType))
         return p;
 
-      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE
-      dropProperty(propertyName);
+      // DIFFERENT TYPE: DROP THE PROPERTY AND CREATE A NEW ONE, in one frame. The replacement is checked against the rest of the
+      // hierarchy BEFORE the drop (issue #12732): refused after it, the call left the type without the property it had
+      checkForSchemaMutation();
+      return recordFileChanges(() -> {
+        final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
+        final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, p);
+        if (otherKind != null)
+          throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
+              "Cannot replace the property '" + propertyName + "' in type '" + name + "' with one of type " + describeKind(propertyType,
+                  resolvedOfType) + otherKindReason(otherKind));
+
+        dropProperty(propertyName);
+        return createProperty(propertyName, propertyType, ofType);
+      });
     }
     return createProperty(propertyName, propertyType, ofType);
   }
@@ -1785,40 +1797,51 @@ public class LocalDocumentType implements DocumentType {
   }
 
   private void collectSubTypeIndexesOnProperty(final String propertyName, final List<TypeIndex> result) {
-    collectSubTypeIndexesOnProperty(this, propertyName, result);
+    collectSubTypeIndexesOnProperty(this, properties.get(propertyName), propertyName, result);
   }
 
-  private void collectSubTypeIndexesOnProperty(final LocalDocumentType changed, final String propertyName, final List<TypeIndex> result) {
+  private void collectSubTypeIndexesOnProperty(final LocalDocumentType changed, final Property changedDeclaration, final String propertyName,
+      final List<TypeIndex> result) {
     for (final LocalDocumentType subType : subTypes) {
-      if (subType.seesDeclarationNotFrom(propertyName, changed, new HashSet<>()))
+      if (subType.getPropertyIfExists(propertyName) != null || subType.keepsDeclarationOfTheSameKind(propertyName, changed, changedDeclaration,
+          new HashSet<>()))
         // addSuperType lets a subtype declare its own property under a name a super type already uses - with the
         // same type, an overlap it only warns about (another type is refused, issue #12732). From here down, propertyName resolves to THIS subtype's
         // own, independently-declared property, not the one above being renamed or dropped: an index in this
         // branch belongs to that shadowing property, so it is not a reason to refuse the change higher up. The same
-        // for a declaration the subtype reaches through another super type (issue #12732): it keeps it whatever
-        // happens to the one above, so a refused CREATE PROPERTY could not even be undone.
+        // for a declaration OF THE SAME KIND the subtype reaches through another super type (issue #12732): it keeps
+        // it whatever happens to the one above, and its index keys stay what they are, so a refused CREATE PROPERTY
+        // could not even be undone. A declaration of another kind (a database written before #12732) does not count:
+        // the index would be left keyed by the type of the declaration that went.
         continue;
 
       for (final TypeIndex index : subType.getAllIndexes(false))
         if (index.getPropertyNames().contains(propertyName) && !result.contains(index))
           result.add(index);
 
-      subType.collectSubTypeIndexesOnProperty(changed, propertyName, result);
+      subType.collectSubTypeIndexesOnProperty(changed, changedDeclaration, propertyName, result);
     }
   }
 
   /**
-   * Whether this type sees a declaration of {@code propertyName} that does not come from {@code excluded}: its own, or one of a
-   * super type it reaches without going through {@code excluded}. Each type is visited once, so a lattice of diamonds costs its size.
+   * Whether a super type of this type, reached without going through {@code excluded}, declares {@code propertyName} with the type and
+   * the OF type of {@code declaration}, the declaration {@code excluded} is changing ({@code false} when there is none). Each type is
+   * visited once, so a lattice of diamonds costs its size.
    */
-  private boolean seesDeclarationNotFrom(final String propertyName, final LocalDocumentType excluded, final Set<LocalDocumentType> visited) {
-    if (this == excluded || !visited.add(this))
+  private boolean keepsDeclarationOfTheSameKind(final String propertyName, final LocalDocumentType excluded, final Property declaration,
+      final Set<LocalDocumentType> visited) {
+    if (declaration == null || !visited.add(this))
       return false;
-    if (properties.containsKey(propertyName))
-      return true;
-    for (final LocalDocumentType superType : superTypes)
-      if (superType.seesDeclarationNotFrom(propertyName, excluded, visited))
+    for (final LocalDocumentType superType : superTypes) {
+      if (superType == excluded)
+        continue;
+      final Property declared = superType.properties.get(propertyName);
+      if (declared != null) {
+        if (declared.getType() == declaration.getType() && Objects.equals(declared.getOfType(), declaration.getOfType()))
+          return true;
+      } else if (superType.keepsDeclarationOfTheSameKind(propertyName, excluded, declaration, visited))
         return true;
+    }
     return false;
   }
 
@@ -3871,8 +3894,14 @@ public class LocalDocumentType implements DocumentType {
    * A same-kind overlap stays accepted, with the warning {@link #addSuperTypeInternal} logs.
    */
   private void checkInheritedPropertiesKeepTheirKind(final LocalDocumentType superType) {
-    final Collection<? extends Property> seen = getPolymorphicProperties();
-    for (final Property inherited : superType.getPolymorphicProperties()) {
+    // By identity: getPolymorphicProperties() is a set by equals, where two declarations of one name and kind are one, and a separate
+    // declaration of the same kind is a new overlap, which a declaration of another kind below this type can still refuse
+    final Set<Property> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    collectDeclarationsAbove(seen, new HashSet<>());
+    final Set<Property> inheritedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
+    superType.collectDeclarationsAbove(inheritedDeclarations, new HashSet<>());
+
+    for (final Property inherited : inheritedDeclarations) {
       if (seen.contains(inherited))
         continue;
       final Property otherKind = findDeclarationOfAnotherKind(inherited.getName(), inherited.getType(), inherited.getOfType(), null);
@@ -3880,6 +3909,15 @@ public class LocalDocumentType implements DocumentType {
         throw new SchemaException("Cannot make type '" + name + "' a sub type of '" + superType.getName() + "', which declares the property '"
             + inherited.getName() + "' as " + describeKind(inherited.getType(), inherited.getOfType()) + otherKindReason(otherKind));
     }
+  }
+
+  /** Every declaration of this type and of the types above it, each type visited once. */
+  private void collectDeclarationsAbove(final Set<Property> result, final Set<LocalDocumentType> visited) {
+    if (!visited.add(this))
+      return;
+    result.addAll(properties.values());
+    for (final LocalDocumentType superType : superTypes)
+      superType.collectDeclarationsAbove(result, visited);
   }
 
   /**
