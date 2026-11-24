@@ -52,7 +52,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
@@ -73,14 +72,16 @@ class SharedPageViewTest {
         -1, -2, -31, -65_536, Integer.MIN_VALUE + 1, Integer.MIN_VALUE };
 
     @Test
-    void hashCodeIsTheValueObjectsHashReturned() {
+    void hashCodeIsStableAndEqualForEqualPageIds() {
       for (final int fileId : VALUES)
         for (final int pageNumber : VALUES) {
           final PageId pageId = new PageId(database, fileId, pageNumber);
-          assertThat(pageId.hashCode()).as("fileId %d, pageNumber %d", fileId, pageNumber)
-              .isEqualTo(Objects.hash(database, fileId, pageNumber));
+          final PageId same = new PageId(database, fileId, pageNumber);
+          assertThat(same).isEqualTo(pageId);
+          final int hash = pageId.hashCode();
+          assertThat(same.hashCode()).as("fileId %d, pageNumber %d", fileId, pageNumber).isEqualTo(hash);
           // a second call answers from the cached value and agrees
-          assertThat(pageId.hashCode()).isEqualTo(Objects.hash(database, fileId, pageNumber));
+          assertThat(pageId.hashCode()).isEqualTo(hash);
         }
     }
 

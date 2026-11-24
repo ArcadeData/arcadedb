@@ -24,6 +24,9 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CustomFunctionAdapter;
 import com.arcadedb.function.cypher.SQLFunctionBridge;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
+import com.arcadedb.query.opencypher.ast.CollectExpression;
+import com.arcadedb.query.opencypher.ast.CountExpression;
+import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -83,6 +86,20 @@ class ParallelSafeExpressionsStateTest {
           .isFalse();
     assertThat(ParallelSafeExpressions.isParallelSafe(new FunctionCallExpression("abs", List.of(new VariableExpression("m")),
         false), "n")).as("an argument reading another variable").isFalse();
+  }
+
+  /**
+   * A subquery never runs in the workers of a parallel scan. Besides needing the rest of the pipeline, it is a statement of its own
+   * that the row cap of a user's {@code resultSetLimit} recognises as a part of the capped one by the thread that runs it
+   * (issue #12888): in a worker it would be capped itself, and COUNT { } would answer the quota.
+   */
+  @Test
+  void subqueriesAreNotAdmitted() {
+    final String subquery = "MATCH (m) RETURN m";
+    assertThat(ParallelSafeExpressions.isParallelSafe(new CountExpression(subquery, "COUNT { " + subquery + " }", null), "n")).isFalse();
+    assertThat(ParallelSafeExpressions.isParallelSafe(new CollectExpression(subquery, "COLLECT { " + subquery + " }", null), "n"))
+        .isFalse();
+    assertThat(ParallelSafeExpressions.isParallelSafe(new ExistsExpression(subquery, "EXISTS { " + subquery + " }"), "n")).isFalse();
   }
 
   private static void collectUnsafeState(final String path, final Object value, final List<String> problems,

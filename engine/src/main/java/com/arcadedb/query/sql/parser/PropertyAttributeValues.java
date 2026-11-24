@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Locale;
@@ -46,11 +46,11 @@ final class PropertyAttributeValues {
   /**
    * Evaluates the value of an attribute, with no current record.
    *
-   * @throws CommandExecutionException when the value is a bare word, a field reference that could only evaluate to {@code null}
+   * @throws InvalidArgumentException when the value is a bare word, a field reference that could only evaluate to {@code null}
    */
   static Object evaluate(final String attribute, final Expression value, final CommandContext context) {
     if (value.isBaseIdentifier())
-      throw new CommandExecutionException(
+      throw new InvalidArgumentException(
           "The value `" + value + "` of " + attribute.toUpperCase(Locale.ENGLISH) + " is a field reference, not a value: there is"
               + " no record to read it from, so it would be read as null. Quote it as '" + value
               + "' to use it as a text, or write null to remove the attribute");
@@ -66,7 +66,7 @@ final class PropertyAttributeValues {
   static boolean asBoolean(final String attribute, final Object value) {
     if (value instanceof Boolean flag)
       return flag;
-    throw new CommandExecutionException(
+    throw new InvalidArgumentException(
         attribute.toUpperCase(Locale.ENGLISH) + " takes true or false, not " + (value == null ? "null" : "`" + value + "`"));
   }
 }

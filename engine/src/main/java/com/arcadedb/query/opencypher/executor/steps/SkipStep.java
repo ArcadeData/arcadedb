@@ -33,7 +33,9 @@ import java.util.NoSuchElementException;
  * Example: SKIP 10
  */
 public class SkipStep extends AbstractExecutionStep {
-  private final int skipCount;
+  private final int     skipCount;
+  // The index scan under the RETURN passes over the rows itself, without loading their vertices (issue #11954)
+  private final boolean skippedByScan;
 
   /**
    * Creates a skip step.
@@ -42,13 +44,24 @@ public class SkipStep extends AbstractExecutionStep {
    * @param context   command context
    */
   public SkipStep(final int skipCount, final CommandContext context) {
+    this(skipCount, false, context);
+  }
+
+  /**
+   * @param skippedByScan whether the index scan the rows come from passes over the first {@code skipCount} rows itself, leaving
+   *                      this step nothing to discard
+   */
+  public SkipStep(final int skipCount, final boolean skippedByScan, final CommandContext context) {
     super(context);
     this.skipCount = skipCount;
+    this.skippedByScan = skippedByScan;
   }
 
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     checkForPrevious("SkipStep requires a previous step");
+    if (skippedByScan)
+      return prev.syncPull(context, nRecords);
 
     return new ResultSet() {
       private ResultSet prevResults = null;
@@ -105,6 +118,6 @@ public class SkipStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String ind = "  ".repeat(Math.max(0, depth * indent));
-    return ind + "+ SKIP " + skipCount;
+    return ind + "+ SKIP " + skipCount + (skippedByScan ? " (passed over in the index scan)" : "");
   }
 }
