@@ -1093,8 +1093,9 @@ public enum GlobalConfiguration {
       shares ONE deadline for the whole command: not one per row, not one per function, and not one per worker of a \
       parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
-      wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
-      inside the regular expressions. SQL LIKE/ILIKE match their pattern without a regular expression, so they never \
+      wire protocol plugin and Gremlin's TextP.regex()/notRegex() predicates apply a regex filter the same way: one budget \
+      per command or statement, counting only the time spent inside the regular expressions. SQL LIKE/ILIKE match \
+      their pattern without a regular expression, so they never \
       backtrack catastrophically, but a huge value against a long pattern can still cost the product of their lengths, \
       and this bound applies to them as well (per row, or shared across the items of a multi-value property). A large, \
       legitimately slow (non-catastrophic) operation can hit this bound too, so raise it for workloads that need more \
