@@ -38,6 +38,16 @@ public class BetweenCondition extends BooleanExpression {
   public Expression second;
   public Expression third;
 
+  /** The keys of the memos an execution converts each bound with, assigned at their first use; see {@link #boundConversion}. */
+  private volatile String lowerConversionKey;
+  private volatile String upperConversionKey;
+  /**
+   * Whether each bound is a literal or a parameter, decided at its first use ({@link ConstantOperandConversion#literalState}), so a
+   * record does not walk the expression again. A benign race: two threads compute the same answer.
+   */
+  private          byte   lowerLiteralState = ConstantOperandConversion.UNKNOWN;
+  private          byte   upperLiteralState = ConstantOperandConversion.UNKNOWN;
+
   public BetweenCondition() {
   }
 
@@ -58,7 +68,7 @@ public class BetweenCondition extends BooleanExpression {
    * and a side that is false still decides the result, so {@code 1 BETWEEN 5 AND NULL} is false while
    * {@code 7 BETWEEN 5 AND NULL} is unknown (issue #8979).
    */
-  private static Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
+  private Boolean evaluate(final Object firstValue, Object secondValue, Object thirdValue, final CommandContext context) {
     if (firstValue == null)
       return null;
 
@@ -78,14 +88,18 @@ public class BetweenCondition extends BooleanExpression {
     Object lowerValue = firstValue;
     if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, secondValue)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
-      secondValue = Type.convertOrNull(context.getDatabase(), secondValue, lowerValue.getClass());
+      secondValue = ConstantOperandConversion.convertOrNull(
+          ConstantOperandConversion.isStringToConvert(firstValue, secondValue) && isBoundConstant(true) ? boundConversion(context, true) : null,
+          context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
     }
     Object upperValue = firstValue;
     if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !comparedAsNumbers(firstValue, integralValue, thirdValue)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
-      thirdValue = Type.convertOrNull(context.getDatabase(), thirdValue, upperValue.getClass());
+      thirdValue = ConstantOperandConversion.convertOrNull(
+          ConstantOperandConversion.isStringToConvert(firstValue, thirdValue) && isBoundConstant(false) ? boundConversion(context, false) : null,
+          context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
         return false;
     }
@@ -107,6 +121,38 @@ public class BetweenCondition extends BooleanExpression {
   private static boolean comparedAsNumbers(final Object value, final boolean integralValue, final Object bound) {
     return bound instanceof Number number && (integralValue || (value instanceof Number valueNumber && (!Type.isFinite(number)
         || !Type.isFinite(valueNumber))));
+  }
+
+  /**
+   * The memo the execution {@code context} runs converts a bound with, when it is the same string on every record compared with a
+   * value of another class: it is then parsed once, not once per record (issue #12713).
+   *
+   * @param lower true for the lower bound, false for the upper one
+   */
+  ConstantOperandConversion boundConversion(final CommandContext context, final boolean lower) {
+    String key = lower ? lowerConversionKey : upperConversionKey;
+    if (key == null) {
+      // A benign race, as the memo key of InCondition: two threads may give the node two keys, and the loser converts once more
+      key = ConstantOperandConversion.newKey();
+      if (lower)
+        lowerConversionKey = key;
+      else
+        upperConversionKey = key;
+    }
+    return ConstantOperandConversion.of(context, key);
+  }
+
+  /** @param lower true for the lower bound, false for the upper one */
+  private boolean isBoundConstant(final boolean lower) {
+    byte state = lower ? lowerLiteralState : upperLiteralState;
+    if (state == ConstantOperandConversion.UNKNOWN) {
+      state = ConstantOperandConversion.literalState(lower ? second : third);
+      if (lower)
+        lowerLiteralState = state;
+      else
+        upperLiteralState = state;
+    }
+    return state == ConstantOperandConversion.CONSTANT;
   }
 
   /**
