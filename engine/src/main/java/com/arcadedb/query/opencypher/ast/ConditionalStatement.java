@@ -18,9 +18,12 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.query.OperationType;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Cypher 25 conditional query (issue #9940):
@@ -154,6 +157,13 @@ public class ConditionalStatement implements CypherStatement {
       if (branch.hasSchemaProcedureCall())
         return true;
     return false;
+  }
+
+  /** The writes of every branch, the ones nested in a branch's subqueries and {@code FOREACH} bodies included. */
+  @Override
+  public void collectWriteOperations(final Set<OperationType> operations) {
+    for (final CypherStatement branch : getAllBranches())
+      branch.collectWriteOperations(operations);
   }
 
   private static void requireNotConditional(final CypherStatement branch) {
