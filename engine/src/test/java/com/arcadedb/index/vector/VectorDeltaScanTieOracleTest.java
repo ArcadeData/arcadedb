@@ -45,9 +45,10 @@ import static org.assertj.core.api.Assertions.within;
  * {@code min(k, live)} rows, each live record once, and the distance of rank {@code r} is the exact rank-{@code r} distance.
  */
 class VectorDeltaScanTieOracleTest extends TestHelper {
-  private static final int GRAPH_ROWS = 1_100; // a graph below 1000 nodes is rebuilt synchronously at search time
+  /** A graph below 1000 nodes is rebuilt synchronously at search time. */
+  private static final int    GRAPH_ROWS = 1_100;
   private static final int    DIMENSIONS = 16;
-  /** Wide enough to visit every node of these graphs, so the answer of a NONE index is the exact one. */
+  /** Above the 1,100 nodes of these graphs, so the walk visits every node and the answer of a NONE index is the exact one. */
   private static final int    EF_SEARCH  = 1500;
   private static final String INDEX_NAME = "Doc[vector]";
 

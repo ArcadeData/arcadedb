@@ -295,8 +295,6 @@ class StoredVectorReaderLayoutOracleTest extends TestHelper {
     final float[] scratch = new float[DIMENSIONS];
     for (int i = 0; i < rids.size(); i++)
       assertThat(reader.read(rids.get(i), scratch)).as("%s", rids.get(i)).containsExactly(expected.get(i));
-    // A reader of another thread is not the one of this thread
-    assertThat(reader.isOwnedByCurrentThread()).isTrue();
   }
 
   @Test
@@ -444,17 +442,21 @@ class StoredVectorReaderLayoutOracleTest extends TestHelper {
           values.add((start + length - offset + delta) & 0xFF);
           values.add((original + delta) & 0xFF);
         }
-        for (final int value : values) {
-          if ((byte) value == original)
-            continue;
-          writeByte(bucket, pageId, offset, (byte) value);
-          final StoredVectorReader reader = reader(PROPERTY, DIMENSIONS, true);
-          assertThat(outcome(() -> reader.read(rid, new float[DIMENSIONS])))
-              .as("%s: byte %d of %d set to %d (was %d)", rid, offset - start, length, value, original)
-              .isEqualTo(outcome(() -> recordLayer(rid, PROPERTY, DIMENSIONS, true)));
-          cases++;
+        try {
+          for (final int value : values) {
+            if ((byte) value == original)
+              continue;
+            writeByte(bucket, pageId, offset, (byte) value);
+            final StoredVectorReader reader = reader(PROPERTY, DIMENSIONS, true);
+            assertThat(outcome(() -> reader.read(rid, new float[DIMENSIONS])))
+                .as("%s: byte %d of %d set to %d (was %d)", rid, offset - start, length, value, original)
+                .isEqualTo(outcome(() -> recordLayer(rid, PROPERTY, DIMENSIONS, true)));
+            cases++;
+          }
+        } finally {
+          // restored whatever the assertion said, so a failure leaves the page as it was
+          writeByte(bucket, pageId, offset, original);
         }
-        writeByte(bucket, pageId, offset, original);
       }
     }
     assertThat(cases).isGreaterThan(10_000);

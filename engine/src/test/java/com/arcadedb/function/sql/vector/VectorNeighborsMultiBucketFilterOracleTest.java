@@ -132,6 +132,7 @@ class VectorNeighborsMultiBucketFilterOracleTest extends TestHelper {
 
   private List<RID> neighbors(final float[] q, final int k, final List<RID> filter) {
     final List<RID> out = new ArrayList<>();
+    // efSearch 2000 is above the 420 nodes of each bucket's graph: the walk visits every node, so the answer is the exact one
     try (final ResultSet rs = database.query("sql",
         "SELECT expand(`vector.neighbors`('Doc[vector]', :q, :k, { filter: :rids, efSearch: 2000 }))",
         Map.of("q", q, "k", k, "rids", filter))) {
