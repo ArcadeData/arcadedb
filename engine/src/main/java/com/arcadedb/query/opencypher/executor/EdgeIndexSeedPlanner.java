@@ -326,7 +326,7 @@ public final class EdgeIndexSeedPlanner {
   }
 
   /** An inline property value as the expression the seek evaluates: a literal, a parameter reference, or the expression itself. */
-  private static Expression asExpression(final Object value) {
+  static Expression asExpression(final Object value) {
     if (value instanceof Expression expression)
       return expression;
     if (value instanceof CypherASTBuilder.ParameterReference parameter)

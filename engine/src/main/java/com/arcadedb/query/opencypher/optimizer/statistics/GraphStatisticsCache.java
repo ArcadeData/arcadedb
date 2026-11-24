@@ -50,6 +50,12 @@ public class GraphStatisticsCache {
   private record DegreeStat(double value, long edgeCount, long sourceVertexCount, long targetVertexCount) {
   }
 
+  // The entries per distinct key of an ordered index, sampled from both ends of its key order, stamped with the entries it held
+  private record EntriesPerKeyStat(long perKey, long entries) {
+  }
+
+  private final Map<String, EntriesPerKeyStat> entriesPerKeyCache = new ConcurrentHashMap<>();
+
   private final Map<String, MultiplicityStat> meanEdgesPerConnectedPairCache = new ConcurrentHashMap<>();
   private final Map<String, DegreeStat> averageDegreeCache = new ConcurrentHashMap<>();
 
@@ -90,14 +96,30 @@ public class GraphStatisticsCache {
   }
 
   /**
+   * @param indexName     the index name
+   * @param currentEntries the number of entries the index holds now
+   * @return the cached entries per distinct key of the index (-1 when it could not be estimated), or {@code null} if absent or
+   *         stale (the index holds another number of entries than when it was sampled)
+   */
+  public Long getEntriesPerKey(final String indexName, final long currentEntries) {
+    final EntriesPerKeyStat entry = entriesPerKeyCache.get(indexName);
+    return entry != null && entry.entries() == currentEntries ? entry.perKey() : null;
+  }
+
+  public void putEntriesPerKey(final String indexName, final long perKey, final long currentEntries) {
+    entriesPerKeyCache.put(indexName, new EntriesPerKeyStat(perKey, currentEntries));
+  }
+
+  /**
    * Clears all cached statistics. Useful for testing.
    */
   public void clear() {
     meanEdgesPerConnectedPairCache.clear();
     averageDegreeCache.clear();
+    entriesPerKeyCache.clear();
   }
 
   public int size() {
-    return meanEdgesPerConnectedPairCache.size() + averageDegreeCache.size();
+    return meanEdgesPerConnectedPairCache.size() + averageDegreeCache.size() + entriesPerKeyCache.size();
   }
 }

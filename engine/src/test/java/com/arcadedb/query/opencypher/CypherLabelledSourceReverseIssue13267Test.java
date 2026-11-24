@@ -41,8 +41,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #13267: a hop from a labelled node to a node an index pins, after an UNWIND or a WITH, scanned the whole label of the first
  * node for every row and filtered on the pinned node last, where the same pattern written from the pinned end is a seek. The
- * step-based plan now starts from the pinned node when its seek finds fewer vertices than the label of the first node has. The
- * answer is the same either way; each test asserts which node the plan starts from (the first MATCH NODE step) and the rows.
+ * step-based plan now starts from the pinned node when the walk back reads fewer records than the label of the first node has: the
+ * seeks and every incoming relationship of the vertices they find, asked of the index when the keys are known at planning time. A
+ * hub, or a key with many entries, keeps the written order. The answer is the same either way; each test asserts which node the plan
+ * starts from (the first MATCH NODE step) and the rows.
  */
 class CypherLabelledSourceReverseIssue13267Test {
   private static final String PATH     = "./target/databases/cypher-labelled-source-reverse-13267";
@@ -64,6 +66,8 @@ class CypherLabelledSourceReverseIssue13267Test {
     database.command("sql", "CREATE INDEX ON Entity (uuid) NOTUNIQUE");
     database.command("sql", "CREATE PROPERTY Entity.grp INTEGER");
     database.command("sql", "CREATE INDEX ON Entity (grp) NOTUNIQUE");
+    database.command("sql", "CREATE PROPERTY Entity.status STRING");
+    database.command("sql", "CREATE INDEX ON Entity (status) NOTUNIQUE");
     database.command("sql", "CREATE VERTEX TYPE Person");
     database.command("sql", "CREATE VERTEX TYPE Doc");
     database.command("sql", "CREATE PROPERTY Doc.key STRING");
@@ -99,7 +103,7 @@ class CypherLabelledSourceReverseIssue13267Test {
       database.command("opencypher", "UNWIND range(0, 99) AS i CREATE (:Hashed {key: 'h' + i})");
       database.command("opencypher", "UNWIND range(0, 99) AS i CREATE (:Wide {a: 'a' + (i % 10), b: i})");
       database.command("opencypher", "UNWIND range(0, 299) AS i CREATE (:Grouped {grp: 'g', i: i})");
-      database.command("opencypher", "UNWIND range(0, 399) AS i CREATE (:Big {i: i})");
+      database.command("opencypher", "UNWIND range(0, 249) AS i CREATE (:Big {i: i})");
       database.command("opencypher", "MATCH (b:Big), (x:Grouped {i: 0}) CREATE (b)-[:MENTIONS]->(x)");
       database.command("opencypher", "MATCH (t:Tiny), (h:Hashed {key: 'h5'}), (w:Wide {b: 7}) CREATE (t)-[:MENTIONS]->(h), (t)-[:MENTIONS]->(w)");
       // episode j mentions entities 3j and 3j+1, and 3j again through a second edge; every Other vertex mentions entity 0
@@ -111,6 +115,17 @@ class CypherLabelledSourceReverseIssue13267Test {
       database.command("opencypher", "MATCH (t:Tiny), (e:Entity) WHERE e.grp = 1 CREATE (t)-[:MENTIONS]->(e)");
       database.command("opencypher", "MATCH (l:Lonely), (d:Doc {key: 'doc7'}) CREATE (l)-[:MENTIONS]->(d)");
       database.command("opencypher", "MATCH (e:Episodic {uuid: 'ep1'}), (a:Entity {uuid: 'ent5'}) CREATE (e)-[:ONEWAY]->(a)");
+      // doc7, the hashed key h5 and the wide key (a7, 7) are mentioned by two Episodic vertices as well
+      database.command("opencypher", "MATCH (e:Episodic), (d:Doc {key: 'doc7'}), (h:Hashed {key: 'h5'}), (w:Wide {b: 7}) WHERE e.uuid IN ['ep0', 'ep1'] "
+          + "CREATE (e)-[:MENTIONS]->(d), (e)-[:MENTIONS]->(h), (e)-[:MENTIONS]->(w)");
+      // a hub: 2,000 relationships from the Other vertices (another label than the Episodic one), and one from the first episode
+      database.command("opencypher", "CREATE (:Entity {uuid: 'hub'})");
+      database.command("opencypher", "MATCH (o:Other), (h:Entity {uuid: 'hub'}) UNWIND range(1, 200) AS k CREATE (o)-[:MENTIONS]->(h)");
+      database.command("opencypher", "MATCH (e:Episodic {uuid: 'ep0'}), (h:Entity {uuid: 'hub'}) CREATE (e)-[:MENTIONS]->(h)");
+      // a key that sorts last after 255 keys of one entry each, and holds 600 entries
+      database.command("opencypher", "UNWIND range(0, 254) AS i CREATE (:Entity {uuid: 'sr' + i, status: 'a' + (1000 + i)})");
+      database.command("opencypher", "UNWIND range(0, 599) AS i CREATE (:Entity {uuid: 'sz' + i, status: 'zzz'})");
+      database.command("opencypher", "MATCH (t:Tiny {uuid: 'ti0'}), (e:Entity {uuid: 'sz0'}) CREATE (t)-[:MENTIONS]->(e)");
     });
   }
 
@@ -175,57 +190,116 @@ class CypherLabelledSourceReverseIssue13267Test {
 
   @Test
   void aUniqueKeyStartsFromTheTargetToo() {
-    final String query = "UNWIND $keys AS k MATCH (t:Tiny)-[r:MENTIONS]->(d:Doc {key: k}) RETURN count(*) AS c";
-    // the 3 Tiny vertices are more than the one vertex a key finds
+    // doc7 has 6 incoming relationships (2 Episodic, 3 Tiny, 1 Lonely): the walk back reads about 8 records, the 30 Episodic vertices more
+    final String query = "UNWIND $keys AS k MATCH (e:Episodic)-[r:MENTIONS]->(d:Doc {key: k}) RETURN count(*) AS c";
     assertStartsFrom(query, Map.of("keys", List.of("doc7", "nokey")), "(d:Doc");
-    assertThat(longs(query, Map.of("keys", List.of("doc7", "nokey")))).containsExactly(3L);
+    assertThat(longs(query, Map.of("keys", List.of("doc7", "nokey")))).containsExactly(2L);
+    // the 3 Tiny vertices are fewer than that
+    final String tiny = "UNWIND $keys AS k MATCH (t:Tiny)-[r:MENTIONS]->(d:Doc {key: k}) RETURN count(*) AS c";
+    assertStartsFrom(tiny, Map.of("keys", List.of("doc7", "nokey")), "(t:Tiny");
+    assertThat(longs(tiny, Map.of("keys", List.of("doc7", "nokey")))).containsExactly(3L);
   }
 
   @Test
   void anInListStartsFromTheTargetOnlyWhenItsKeysAreFewerThanTheLabel() {
-    // the seeks of a list written out are one per element: 2 keys find at most 2 vertices, fewer than the 3 Tiny vertices; 3 do not
-    final String two = "WITH 1 AS one MATCH (t:Tiny)-[r:MENTIONS]->(d:Doc) WHERE d.key IN ['doc7', 'doc8'] RETURN count(*) AS c";
-    final String three = "WITH 1 AS one MATCH (t:Tiny)-[r:MENTIONS]->(d:Doc) WHERE d.key IN ['doc7', 'doc8', 'doc9'] RETURN count(*) AS c";
-    assertStartsFrom(two, Map.of(), "(d:Doc");
-    assertStartsFrom(three, Map.of(), "(t:Tiny");
-    assertThat(longs(two, Map.of())).containsExactly(3L);
-    assertThat(longs(three, Map.of())).containsExactly(3L);
+    // each key is one seek: 20 keys no vertex has read 20 records, 40 read more than the 30 Episodic vertices
+    final String few = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(d:Doc) WHERE d.key IN " + keys(20) + " RETURN count(*) AS c";
+    final String many = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(d:Doc) WHERE d.key IN " + keys(40) + " RETURN count(*) AS c";
+    assertStartsFrom(few, Map.of(), "(d:Doc");
+    assertStartsFrom(many, Map.of(), "(e:Episodic");
+    assertThat(longs(few, Map.of())).containsExactly(0L);
+    assertThat(longs(many, Map.of())).containsExactly(0L);
 
-    // a list that is one parameter or variable has a length only the row knows, and a million keys are a million seeks
-    final String parameter = "WITH 1 AS one MATCH (t:Tiny)-[r:MENTIONS]->(d:Doc) WHERE d.key IN $keys RETURN count(*) AS c";
-    assertStartsFrom(parameter, Map.of("keys", List.of("doc7")), "(t:Tiny");
-    assertThat(longs(parameter, Map.of("keys", List.of("doc7")))).containsExactly(3L);
+    // a list that is a parameter is as long as the parameter is: planned from it, not from a guess
+    final String parameter = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(d:Doc) WHERE d.key IN $keys RETURN count(*) AS c";
+    assertStartsFrom(parameter, Map.of("keys", List.of("doc7")), "(d:Doc");
+    assertThat(longs(parameter, Map.of("keys", List.of("doc7")))).containsExactly(2L);
+    final List<String> million = new ArrayList<>(List.of("doc7"));
+    for (int i = 0; i < 5000; i++)
+      million.add("absent" + i);
+    assertStartsFrom(parameter, Map.of("keys", million), "(e:Episodic");
+    assertThat(longs(parameter, Map.of("keys", million))).containsExactly(2L);
 
-    // the entities: 2 keys of a NOTUNIQUE index that holds one entry per key
-    final String entities = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN ['ent3', 'ent0'] RETURN n.uuid + '|' + e.uuid AS v";
+    // the entities: 2 keys of a NOTUNIQUE index that holds one entry per key, one with 3 incoming relationships and one with 1
+    final String entities = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN ['ent3', 'ent4'] RETURN n.uuid + '|' + e.uuid AS v";
     assertStartsFrom(entities, Map.of(), "(n:Entity");
-    assertThat(values(entities, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent0|ep0", "ent0|ep0");
+    assertThat(values(entities, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent4|ep1");
     final String list = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN $ids RETURN n.uuid + '|' + e.uuid AS v";
-    assertStartsFrom(list, Map.of("ids", IDS), "(e:Episodic");
-    assertThat(values(list, Map.of("ids", IDS))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent0|ep0", "ent0|ep0");
+    assertStartsFrom(list, Map.of("ids", List.of("ent3", "missing")), "(n:Entity");
+    assertThat(values(list, Map.of("ids", List.of("ent3", "missing")))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1");
   }
 
   @Test
-  void anIndexMatchNodeStepCannotSeekKeepsTheWrittenOrder() {
-    // a hash index of another kind than UNIQUE cannot be walked in order to estimate its keys, and a composite key is not seeked by a list
-    final String hashed = "UNWIND ['h5'] AS k MATCH (t:Tiny)-[r:MENTIONS]->(h:Hashed {key: k}) RETURN count(*) AS c";
-    assertStartsFrom(hashed, Map.of(), "(t:Tiny");
-    assertThat(longs(hashed, Map.of())).containsExactly(3L);
-    final String composite = "WITH 1 AS one MATCH (t:Tiny)-[r:MENTIONS]->(w:Wide) WHERE w.a IN ['a7', 'a8'] AND w.b IN [7, 8] RETURN count(*) AS c";
-    assertStartsFrom(composite, Map.of(), "(t:Tiny");
-    assertThat(longs(composite, Map.of())).containsExactly(3L);
-    // the whole composite key by equalities is a seek
-    final String whole = "UNWIND [7] AS b MATCH (t:Tiny)-[r:MENTIONS]->(w:Wide {a: 'a7', b: b}) RETURN count(*) AS c";
+  void aHashIndexIsAskedForItsKeysAndNeverWalkedInOrder() {
+    // the keys are known: the index is asked for them, whatever its kind
+    final String known = "UNWIND ['h5'] AS k MATCH (e:Episodic)-[r:MENTIONS]->(h:Hashed {key: k}) RETURN count(*) AS c";
+    assertStartsFrom(known, Map.of(), "(h:Hashed");
+    assertThat(longs(known, Map.of())).containsExactly(2L);
+    // a key only a row knows needs an estimate from the order of the index, which a hash index has not: written order, no failure
+    final String unknown = "WITH 'h5' AS k MATCH (e:Episodic)-[r:MENTIONS]->(h:Hashed {key: k}) RETURN count(*) AS c";
+    assertStartsFrom(unknown, Map.of(), "(e:Episodic");
+    assertThat(longs(unknown, Map.of())).containsExactly(2L);
+  }
+
+  @Test
+  void aCompositeKeyIsSeekedByEqualitiesNotByLists() {
+    final String lists = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(w:Wide) WHERE w.a IN ['a7', 'a8'] AND w.b IN [7, 8] RETURN count(*) AS c";
+    assertStartsFrom(lists, Map.of(), "(e:Episodic");
+    assertThat(longs(lists, Map.of())).containsExactly(2L);
+    // 250 Big vertices against the estimate of the walk back (one entry, and the average in-degree of the type)
+    final String whole = "UNWIND [7] AS b MATCH (g:Big)-[r:MENTIONS]->(w:Wide {a: 'a7', b: b}) RETURN count(*) AS c";
     assertStartsFrom(whole, Map.of(), "(w:Wide");
-    assertThat(longs(whole, Map.of())).containsExactly(3L);
+    assertThat(longs(whole, Map.of())).containsExactly(0L);
   }
 
   @Test
-  void aKeyOneGroupFillsTheSampleWithKeepsTheWrittenOrder() {
-    // all 300 Grouped vertices share one key: the 256 entries read say only that the key has at least that many, fewer than the 400 Big vertices
+  void aKeyWithManyEntriesKeepsTheWrittenOrder() {
+    // 300 Grouped vertices share the key: the seek alone reads more than the 250 Big vertices, whatever their in-degrees
     final String query = "UNWIND ['g'] AS g MATCH (b:Big)-[r:MENTIONS]->(x:Grouped {grp: g}) RETURN count(*) AS c";
     assertStartsFrom(query, Map.of(), "(b:Big");
-    assertThat(longs(query, Map.of())).containsExactly(400L);
+    assertThat(longs(query, Map.of())).containsExactly(250L);
+  }
+
+  @Test
+  void aKeyThatSortsLastAfterManyRareOnesIsCountedNotSampled() {
+    // 255 keys of one entry sort first and 'zzz' (600 entries) last: a sample of the first entries would read it as 1 entry per key
+    final String known = "UNWIND ['zzz'] AS s MATCH (t:Tiny)-[r:MENTIONS]->(n:Entity {status: s}) RETURN count(*) AS c";
+    assertStartsFrom(known, Map.of(), "(t:Tiny");
+    assertThat(longs(known, Map.of())).containsExactly(1L);
+    final String literal = "WITH 1 AS one MATCH (t:Tiny)-[r:MENTIONS]->(n:Entity) WHERE n.status = 'zzz' RETURN count(*) AS c";
+    assertStartsFrom(literal, Map.of(), "(t:Tiny");
+    assertThat(longs(literal, Map.of())).containsExactly(1L);
+    // a key only a row knows is estimated from both ends of the index: the end the key fills says nothing about its size
+    final String unknown = "WITH 'zzz' AS s MATCH (t:Tiny)-[r:MENTIONS]->(n:Entity {status: s}) RETURN count(*) AS c";
+    assertStartsFrom(unknown, Map.of(), "(t:Tiny");
+    assertThat(longs(unknown, Map.of())).containsExactly(1L);
+    // a rare key of the same index is the seek the plan starts from
+    final String rare = "UNWIND ['a1000'] AS s MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {status: s}) RETURN count(*) AS c";
+    assertStartsFrom(rare, Map.of(), "(n:Entity");
+    assertThat(longs(rare, Map.of())).containsExactly(0L);
+  }
+
+  @Test
+  void aHubTargetKeepsTheWrittenOrder() {
+    // the hub has 2,000 incoming relationships from vertices of another label and one from an Episodic: the 30 Episodic vertices are the cheaper side
+    final String literal = "UNWIND range(1, 5) AS i MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: 'hub'}) RETURN count(*) AS c";
+    assertStartsFrom(literal, Map.of(), "(e:Episodic");
+    assertThat(longs(literal, Map.of())).containsExactly(5L);
+    final String fromList = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN count(*) AS c";
+    assertStartsFrom(fromList, Map.of("ids", List.of("hub", "hub", "ent3")), "(e:Episodic");
+    assertThat(longs(fromList, Map.of("ids", List.of("hub", "hub", "ent3")))).containsExactly(4L);
+    final String where = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN $ids RETURN count(*) AS c";
+    assertStartsFrom(where, Map.of("ids", List.of("hub")), "(e:Episodic");
+    assertThat(longs(where, Map.of("ids", List.of("hub")))).containsExactly(1L);
+    // an entity next to the hub keeps the seek the Graphiti statement is planned with
+    assertStartsFrom(fromList, Map.of("ids", List.of("ent3", "ent4")), "(n:Entity");
+  }
+
+  private static String keys(final int count) {
+    final StringBuilder list = new StringBuilder("[");
+    for (int i = 0; i < count; i++)
+      list.append(i == 0 ? "'x" : ", 'x").append(i).append("'");
+    return list.append("]").toString();
   }
 
   @Test
