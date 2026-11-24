@@ -126,11 +126,17 @@ class Issue12805SessionRollbackRefreshTest extends BaseGraphServerTest {
     onWorker("issue12805-insert", () -> request(session, user, false, () -> database().command("sql", insertSample(2000, 10.0))));
     assertThat(aggregateTotals()).as("the refresh waits for the end of the transaction").isEqualTo(new Totals(1, 1.0));
 
+    // rolls back and ends the session, as PostRollbackHandler does: a session left registered would outlive the test
     onWorker("issue12805-rollback", () -> request(session, user, true, () -> {
-      database().rollback();
+      try {
+        database().rollback();
+      } finally {
+        sessions().removeSession(session.id);
+      }
       return null;
     }));
 
+    assertThat(sessions().isSessionRegistered(session.id)).isFalse();
     assertThat(definingQueryTotals()).isEqualTo(new Totals(2, 11.0));
     assertThat(aggregateTotals()).as("the rollback on another worker runs the refresh the insert owes").isEqualTo(new Totals(2, 11.0));
   }
