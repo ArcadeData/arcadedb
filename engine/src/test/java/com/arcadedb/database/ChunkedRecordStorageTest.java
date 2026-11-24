@@ -71,6 +71,17 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  */
 public class ChunkedRecordStorageTest {
   /**
+   * Which of two updated records a commit applies first: it walks the transaction's updated records in the iteration
+   * order of a {@link HashMap} keyed by RID ({@code TransactionContext.updatedRecords}), which this reproduces.
+   */
+  private static RID appliedFirstAtCommit(final RID first, final RID second) {
+    final Map<RID, Boolean> updated = new HashMap<>();
+    updated.put(first, true);
+    updated.put(second, true);
+    return updated.keySet().iterator().next();
+  }
+
+  /**
    * Issue #6129: the disjoint-slot merge (#5381, #5279, #5569) stopped at the page boundary - a record that outgrew its
    * page became a chunk chain or a placeholder, and every later update of it poisoned its page unconditionally. On a
    * single-bucket type whose records have all grown past the page size that turned concurrent updates of UNRELATED
@@ -1511,17 +1522,27 @@ public class ChunkedRecordStorageTest {
       final RID[] rids = createChunkedRecords(TYPE);
       final int bucketId = rids[0].getBucketId();
 
-      // head -> chunk1 -> chunk2 -> ... becomes head -> chunk1 -> chunk2 -> chunk1 -> ...
-      final long chunk1 = nextChunkPointerOf(bucketId, rids[0].getPosition(), FIRST_CHUNK_MARKER);
-      final long chunk2 = nextChunkPointerOf(bucketId, chunk1, NEXT_CHUNK_MARKER);
-      assertThat(chunk1).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
-      assertThat(chunk2).as("the fixture must give record 0 a chain of at least three chunks").isPositive();
+      // Which records of the fixture end up with a chain of three chunks or more is decided by the order the transaction applied
+      // their growth in, which is the iteration order of a map keyed by RID: take whichever record has one
+      RID chained = null;
+      long chunk1 = 0;
+      long chunk2 = 0;
+      for (final RID rid : rids) {
+        chunk1 = nextChunkPointerOf(bucketId, rid.getPosition(), FIRST_CHUNK_MARKER);
+        chunk2 = chunk1 > 0 ? nextChunkPointerOf(bucketId, chunk1, NEXT_CHUNK_MARKER) : 0;
+        if (chunk2 > 0) {
+          chained = rid;
+          break;
+        }
+      }
+      assertThat(chained).as("the fixture must give some record a chain of at least three chunks").isNotNull();
 
+      // head -> chunk1 -> chunk2 -> ... becomes head -> chunk1 -> chunk2 -> chunk1 -> ...
       writeNextChunkPointer(bucketId, chunk2, NEXT_CHUNK_MARKER, chunk1);
 
       // "visited twice" is the EXACT detector's wording, not the self-reference guard's: asserting it is what keeps
       // this test honest, since a cycle caught by the cheap guard would prove nothing about the one added here.
-      assertBrokenChainIsReportedWithoutRetrying(rids[0], "visited twice");
+      assertBrokenChainIsReportedWithoutRetrying(chained, "visited twice");
     }
 
     /**
@@ -3261,6 +3282,11 @@ public class ChunkedRecordStorageTest {
      * The holes are smaller than the growth, so the record still has to spill - but they are far more than the few bytes
      * a chunk header needs, so it spills into a chunk chain of its own instead of borrowing a pointer's bytes from a
      * neighbour: no live record is moved off its page when packing the page was enough.
+     * <p>
+     * The outcome depends on the order the commit applies the two updates in: the hole must be applied before the growth, as the
+     * growth then finds it packed. That order is the iteration order of a map keyed by RID, so it follows {@code RID.hashCode()}:
+     * the test picks the filler to empty with {@code appliedFirstAtCommit}, which reproduces that map, and asserts the
+     * premise, so a change of the hash cannot flip the scenario without the test saying so.
      */
     @Test
     void holesSmallerThanTheGrowthStillSpareANeighbourTheMove() {
@@ -3270,9 +3296,15 @@ public class ChunkedRecordStorageTest {
       final List<RID> fillers = layout.fillers();
       final long countBefore = countRecordsFromCounter("Spill10700");
 
+      // One transaction applies its updates in the iteration order of a map keyed by RID, and only the order "hole first" is
+      // the scenario under test: empty a filler the commit applies before the growth
+      final RID grown = empties.getFirst();
+      final RID hole = fillers.stream().filter(filler -> appliedFirstAtCommit(filler, grown).equals(filler)).findFirst().orElse(null);
+      assertThat(hole).as("the premise: the commit applies some filler's update before the growth").isNotNull();
+
       database.transaction(() -> {
-        emptied(fillers.getFirst());
-        empties.getFirst().asDocument(true).modify().set("v", BIG).save();
+        emptied(hole);
+        grown.asDocument(true).modify().set("v", BIG).save();
       });
 
       assertThat((Long) bucketStats("Spill10700").get("totalPlaceholderRecords"))
@@ -3284,10 +3316,12 @@ public class ChunkedRecordStorageTest {
       checkDatabase();
 
       database.transaction(() -> {
-        assertThat(empties.getFirst().asDocument(true).getString("v")).isEqualTo(BIG);
-        assertThat(fillers.getFirst().asDocument(true).has("v")).isFalse();
-        for (int i = 1; i < fillers.size(); i++)
-          assertThat(fillers.get(i).asDocument(true).getString("v")).isEqualTo(FILLER);
+        assertThat(grown.asDocument(true).getString("v")).isEqualTo(BIG);
+        for (final RID filler : fillers)
+          if (filler.equals(hole))
+            assertThat(filler.asDocument(true).has("v")).isFalse();
+          else
+            assertThat(filler.asDocument(true).getString("v")).isEqualTo(FILLER);
         assertThat(sealer.asDocument(true).getString("v")).isEqualTo(SEAL);
       });
     }
@@ -3701,17 +3735,6 @@ public class ChunkedRecordStorageTest {
       System.arraycopy(body, 0, content, 0, Math.min(length, bodyLength));
       page.writeByteArray(end + marker, content, 0, length);
       return end + marker + length;
-    }
-
-    /**
-     * Which of two updated records a commit applies first: it walks the transaction's updated records in the iteration
-     * order of a {@link HashMap} keyed by RID ({@code TransactionContext.updatedRecords}), which this reproduces.
-     */
-    private static RID appliedFirstAtCommit(final RID first, final RID second) {
-      final Map<RID, Boolean> updated = new HashMap<>();
-      updated.put(first, true);
-      updated.put(second, true);
-      return updated.keySet().iterator().next();
     }
 
     private static void grow(final RID rid) {

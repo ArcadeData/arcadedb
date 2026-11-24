@@ -35,7 +35,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: meta.schema()
+ * Procedure: meta.schema([config])
  * <p>
  * Returns detailed schema information including all types and their properties.
  * </p>
@@ -64,7 +64,8 @@ public class MetaSchema extends AbstractMetaProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 0;
+    // APOC's optional config map is accepted; none of its keys changes this schema listing
+    return 1;
   }
 
   @Override

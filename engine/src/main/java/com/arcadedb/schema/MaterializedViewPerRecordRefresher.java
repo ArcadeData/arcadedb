@@ -128,8 +128,17 @@ final class MaterializedViewPerRecordRefresher {
    * record whose source produced no row (deleted, or no longer matching the WHERE) is deleted. One transaction, under the
    * backing type's write scope, for the same reasons as {@code MaterializedViewRefresher.writeSnapshot}.
    * <p>
-   * The records to delete are collected during the scan and deleted after it, never during it: an update whose content no
-   * longer fits its slot can relocate a record, and the scan must not meet the same record twice or skip one.
+   * The pairing is read in ONE scan of the backing type, before any write, into primitive arrays sorted by source
+   * ({@link SourceLinks}, issue #11551): each query row then finds its backing record by a binary search instead of a descent of
+   * the {@link #SOURCE_RID} index, and the backing records no row claimed are the orphans, with no second scan. Every write
+   * happens after that scan, so an update whose content no longer fits its slot cannot make the scan meet a record twice or
+   * skip one, and the orphans are deleted after the query, as before.
+   * <p>
+   * A row whose source has no backing record is created. The classifier lets through only queries that produce at most one row
+   * per source record, so the index is not asked whether an earlier row of this pass created it, except for a source not past
+   * every source this pass created so far, where it costs one lookup to keep a second row of a source on the row the first one
+   * made. A type scan reads the source in RID order (its buckets sorted, each in position order), so that lookup is paid only
+   * when the planner reads the source through an index, in key order, as every created row paid it before.
    */
   static void fullPass(final Database database, final MaterializedViewImpl view) {
     final String backingTypeName = view.getBackingTypeName();
@@ -138,30 +147,52 @@ final class MaterializedViewPerRecordRefresher {
     try (final BackingTypeWriteScope ignored = BackingTypeWriteScope.open(view)) {
       database.transaction(() -> {
         final long count = database.countType(backingTypeName, false);
-        final RecordIdentities produced = new RecordIdentities(count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);
+        final int capacity = count > 0 && count < Integer.MAX_VALUE ? (int) count : 16;
+        final SourceLinks links = new SourceLinks(capacity);
+        final RecordIdentities unlinked = new RecordIdentities(16);
+        database.scanType(backingTypeName, false, record -> {
+          final RID source = sourceOf(((Document) record).get(SOURCE_RID));
+          if (source == null)
+            unlinked.add(record.getIdentity());
+          else
+            links.add(source, record.getIdentity());
+          return true;
+        });
+        links.sort();
 
+        // the greatest source this pass created a row for: a source past it cannot have one yet
+        int createdBucket = Integer.MIN_VALUE;
+        long createdPosition = Long.MIN_VALUE;
         try (final ResultSet rs = database.query("sql", derivedQuery)) {
           while (rs.hasNext()) {
             final Result row = rs.next();
             final RID source = sourceOf(row.getProperty(SOURCE_RID));
             if (source == null)
               continue;
-            produced.add(source);
-            writeRow(database, backingTypeName, source, row);
+            final int linked = links.match(source);
+            final MutableDocument doc;
+            if (linked >= 0)
+              doc = ((Document) database.lookupByRID(links.row(linked), true)).modify();
+            else if (SourceLinks.compare(source.getBucketId(), source.getPosition(), createdBucket, createdPosition) > 0) {
+              doc = database.newDocument(backingTypeName);
+              createdBucket = source.getBucketId();
+              createdPosition = source.getPosition();
+            } else {
+              writeRow(database, backingTypeName, source, row);
+              continue;
+            }
+            // The row comes from the defining query, not from the existing record: no stale-read refusal (#8610)
+            doc.clearBasedOnStaleRead();
+            MaterializedViewRefresher.applyRow(doc, row);
+            doc.save();
           }
         }
 
-        produced.sortAndDeduplicate();
-
-        final RecordIdentities orphans = new RecordIdentities(16);
-        database.scanType(backingTypeName, false, record -> {
-          final RID source = sourceOf(((Document) record).get(SOURCE_RID));
-          if (source == null || !produced.contains(source))
-            orphans.add(record.getIdentity());
-          return true;
-        });
-        for (int i = 0; i < orphans.size(); i++)
-          database.lookupByRID(orphans.get(i), true).delete();
+        for (int i = 0; i < links.size(); i++)
+          if (!links.isMatched(i))
+            database.lookupByRID(links.row(i), true).delete();
+        for (int i = 0; i < unlinked.size(); i++)
+          database.lookupByRID(unlinked.get(i), true).delete();
       }, false);
     }
   }
