@@ -312,7 +312,9 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               } else if (sourceObj instanceof Vertex)
                 sourceVertex = (Vertex) sourceObj;
 
-              if (sourceVertex != null || sourceNodeId >= 0) {
+              // A relationship variable an earlier clause bound to no edge (null, as an OPTIONAL MATCH that found nothing
+              // leaves it) matches no edge from this source either (#12621)
+              if ((sourceVertex != null || sourceNodeId >= 0) && !isRelationshipBoundToNoEdge(lastResult)) {
 
                 // Determine if we can use fast path for this vertex
                 useFastPath = canUseFastPath(lastResult);
@@ -742,6 +744,17 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (edgeType.instanceOf(t))
         return true;
     return false;
+  }
+
+  /**
+   * Whether the row already binds the user's relationship variable to something no edge can be: null, as an OPTIONAL MATCH
+   * that found nothing leaves it, or a value of another kind. The row holding the NAME is what makes the variable bound,
+   * never its value: the plan-time {@link #boundVariableNames} also lists the name this hop is about to bind, and only the
+   * row tells the two apart (#12621). Internal names are never bound by an earlier clause.
+   */
+  private boolean isRelationshipBoundToNoEdge(final Result row) {
+    return relationshipVariable != null && !relationshipVariable.isEmpty() && !relationshipVariable.startsWith("  ")
+        && !(row.getProperty(relationshipVariable) instanceof Edge) && row.hasProperty(relationshipVariable);
   }
 
   /**
