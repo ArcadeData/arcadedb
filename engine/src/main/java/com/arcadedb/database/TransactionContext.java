@@ -3713,9 +3713,9 @@ public class TransactionContext implements Transaction {
     if (Arrays.equals(read, current))
       return true;
 
-    if (read.length != current.length || read.length < VERTEX_HEADS_END || read[0] != Vertex.RECORD_TYPE
-        || current[0] != Vertex.RECORD_TYPE || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END,
-        current.length))
+    if (read.length != current.length || read.length < VERTEX_HEADS_END
+        || read[0] != Vertex.RECORD_TYPE || current[0] != Vertex.RECORD_TYPE
+        || !Arrays.equals(read, VERTEX_HEADS_END, read.length, current, VERTEX_HEADS_END, current.length))
       return false;
 
     final boolean outMoved = !Arrays.equals(read, VERTEX_OUT_HEAD_OFFSET, VERTEX_IN_HEAD_OFFSET, current, VERTEX_OUT_HEAD_OFFSET,

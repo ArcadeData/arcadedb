@@ -72,6 +72,20 @@ class Issue12642VertexReadWithUnreadMovedHeadTest extends TestHelper {
   }
 
   @Test
+  void aVertexThisTransactionWritesIsStillRefusedWhenAConcurrentTransactionMovedItsHead() throws Exception {
+    createGraph();
+
+    database.begin();
+    // the vertex itself is written: its slot is replayed by the merges, not checked as a read, and two writers of one record conflict
+    database.command("opencypher", "MATCH (a:V {id: 2}) SET a.f = 1").close();
+    commitFromAnotherThread("MATCH (a:V {id: 3}), (b:V {id: 2}) CREATE (a)-[:E]->(b)");
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(valueOf("MATCH (a:V {id: 2}) RETURN a.f AS v")).isNull();
+    assertThat(valueOf("MATCH (b:V {id: 2})<-[e:E]-() RETURN count(e) AS v")).isEqualTo(1L);
+  }
+
+  @Test
   void aVertexReadForItsPropertiesIsCurrentWhenOnlyAnUnreadOutgoingHeadMoved() throws Exception {
     createGraph();
 
