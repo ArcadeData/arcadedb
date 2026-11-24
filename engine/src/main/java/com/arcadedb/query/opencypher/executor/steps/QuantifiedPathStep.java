@@ -469,7 +469,7 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
           final Iterator<Edge> hopCandidates = candidates[hop];
           boolean deeper = false;
 
-          while (hopCandidates.hasNext()) {
+          while (!deeper && hopCandidates.hasNext()) {
             guard.check();
             final Edge edge = hopCandidates.next();
             final RID edgeId = edge.getIdentity();
@@ -494,11 +494,11 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
               continue;
             }
 
+            // The rest of this hop waits until the hops after it are done: opening the next one ends this loop
             usedEdges.add(edgeId);
             held[hop] = edgeId;
             open(hop + 1);
             deeper = true;
-            break;
           }
 
           if (!deeper) {

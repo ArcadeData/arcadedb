@@ -43,7 +43,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * first of them is returned, and the repetitions that start at a vertex are matched one at a time, as the search reaches them.
  *
  * <p>The graph is the complete directed graph over four vertices, which has 5250 trails starting at one of them: an open-ended
- * quantifier over it is a search whose size is far above any batch a consumer asks for.
+ * quantifier over it is a search whose size is far above any batch a consumer asks for. The levels a search stacks count against the
+ * per-operation element cap.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
