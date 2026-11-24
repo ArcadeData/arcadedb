@@ -247,7 +247,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
    */
   private void logFailure(final MongoMessage message, final MongoServerException error) {
     final boolean fault = !(error instanceof MongoServerError) && error.isLogError();
-    final Level level = fault && authenticatedUsers.containsKey(message.getChannel()) ? Level.SEVERE : Level.FINE;
+    final boolean severe = fault && authenticatedUsers.containsKey(message.getChannel());
+    final Level level = severe ? Level.SEVERE : Level.FINE;
     if (!LogManager.instance().isLoggable(this, level))
       return;
 
@@ -260,8 +261,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
               reason);
     else
       LogManager.instance()
-          .log(this, level, "MongoDB command '%s' failed: %s", level == Level.SEVERE ? MongoWireText.forLog(error) : null, command,
-              reason);
+          .log(this, level, "MongoDB command '%s' failed: %s", severe ? MongoWireText.forLog(error) : null, command, reason);
   }
 
   /**
@@ -413,6 +413,8 @@ public class MongoDBBackend extends AbstractMongoBackend {
    * nothing to that line, so it carries none.
    */
   private static final class Refusal extends MongoServerError {
+    private static final long serialVersionUID = 1L;
+
     Refusal(final int code, final String codeName, final String message) {
       super(code, codeName, message);
     }

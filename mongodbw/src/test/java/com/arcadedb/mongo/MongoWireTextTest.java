@@ -141,10 +141,10 @@ class MongoWireTextTest {
     final Throwable logged = MongoWireText.forLog(original);
 
     assertThat(logged.getStackTrace()).isEqualTo(original.getStackTrace());
-    assertThat(logged.toString()).isEqualTo("java.lang.IllegalArgumentException: outer?second-line?[31m");
+    assertThat(logged.getMessage()).isEqualTo("java.lang.IllegalArgumentException: outer?second-line?[31m");
     assertThat(logged.getCause()).isNotNull();
     assertThat(logged.getCause().getStackTrace()).isEqualTo(cause.getStackTrace());
-    assertThat(logged.getCause().toString()).startsWith("java.lang.IllegalStateException: cause?second-line yyy").endsWith("...")
+    assertThat(logged.getCause().getMessage()).startsWith("java.lang.IllegalStateException: cause?second-line yyy").endsWith("...")
         .hasSizeLessThan(MongoWireText.MAX_MESSAGE_LENGTH + 64);
 
     // what the log prints: no escape, no text of the original on a line of its own
@@ -156,7 +156,7 @@ class MongoWireTextTest {
 
   @Test
   void aLoggedThrowableWithoutAMessageIsNamedByItsClass() {
-    assertThat(MongoWireText.forLog(new IllegalStateException()).toString()).isEqualTo("java.lang.IllegalStateException");
+    assertThat(MongoWireText.forLog(new IllegalStateException()).getMessage()).isEqualTo("java.lang.IllegalStateException");
     assertThat(MongoWireText.forLog(null)).isNull();
   }
 

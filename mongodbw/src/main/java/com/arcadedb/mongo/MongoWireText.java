@@ -34,6 +34,10 @@ final class MongoWireText {
 
   private static final String ELLIPSIS = "...";
 
+  /** The ASCII characters between the space and the tilde are printable; the ones before are control characters, DEL follows. */
+  private static final int FIRST_PRINTABLE      = 0x20;
+  private static final int LAST_ASCII_PRINTABLE = 0x7E;
+
   /** The line and the paragraph separators of Unicode: not control characters, and they end a line all the same. */
   private static final int LINE_SEPARATOR      = 0x2028;
   private static final int PARAGRAPH_SEPARATOR = 0x2029;
@@ -104,7 +108,7 @@ final class MongoWireText {
   }
 
   private static boolean isPrintable(final int codePoint) {
-    if (codePoint >= ' ' && codePoint < 0x7F)
+    if (codePoint >= FIRST_PRINTABLE && codePoint <= LAST_ASCII_PRINTABLE)
       return true;
     if (Character.isISOControl(codePoint) || codePoint == LINE_SEPARATOR || codePoint == PARAGRAPH_SEPARATOR)
       return false;
@@ -126,12 +130,6 @@ final class MongoWireText {
     private static String summaryOf(final Throwable original) {
       final String name = original.getClass().getName();
       return original.getMessage() == null ? name : name + ": " + clean(original.getMessage(), MAX_MESSAGE_LENGTH);
-    }
-
-    /** The class and the message of the original: what the log prints ahead of the frames. */
-    @Override
-    public String toString() {
-      return getMessage();
     }
   }
 }
