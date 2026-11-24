@@ -1,0 +1,288 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-11-20T12-43-46Z-e5040d0339-jvm-ldbc",
+  "startedAt": "2026-11-20T12:43:46Z",
+  "finishedAt": "2026-11-20T12:43:46Z",
+  "trigger": "release",
+  "source": "ldbc",
+  "arcadedb": {
+    "commit": "e5040d03399113b4f12081692f556160a7a9f696",
+    "commitDate": "2026-10-15T17:42:09Z",
+    "version": "26.10.2",
+    "variant": "jvm",
+    "image": "embedded",
+    "imageDigest": "n/a",
+    "revision": "e5040d03399113b4f12081692f556160a7a9f696",
+    "tag": "26.10.2"
+  },
+  "machine": {
+    "id": "perf-01",
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13500",
+    "cores": 20,
+    "memGb": 63,
+    "os": "Ubuntu 24.04.5 LTS",
+    "kernel": "6.8.0-149-generic",
+    "governor": "performance",
+    "noTurbo": "1"
+  },
+  "config": {
+    "dataset": "datagen-7_5-fb",
+    "framework": "graphalytics",
+    "mode1": true,
+    "benchCommit": "c686325fe99e1d4ccf79791fa7dd21308d281ea6"
+  },
+  "results": [
+    {
+      "workload": "graph-analytics",
+      "case": "olap-bfs",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 12.783,
+          "values": [
+            12.783
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "olap-cdlp",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 32.683,
+          "values": [
+            32.683
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "olap-wcc",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 9.745,
+          "values": [
+            9.745
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "olap-lcc",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 11.944,
+          "values": [
+            11.944
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "olap-pr",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 8.711,
+          "values": [
+            8.711
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "olap-sssp",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 14.232,
+          "values": [
+            14.232
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-cdlp",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 98.75,
+          "values": [
+            98.75
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-sssp",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 83.647,
+          "values": [
+            83.647
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-pr",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 72.445,
+          "values": [
+            72.445
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-bfs",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 137.005,
+          "values": [
+            137.005
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-lcc",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 324.319,
+          "values": [
+            324.319
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    },
+    {
+      "workload": "graph-analytics",
+      "case": "oltp-wcc",
+      "scale": "datagen-7_5-fb",
+      "params": {},
+      "reps": 1,
+      "warmup": 0,
+      "metrics": [
+        {
+          "name": "processing_s",
+          "unit": "s",
+          "better": "lower",
+          "median": 117.413,
+          "values": [
+            117.413
+          ]
+        }
+      ],
+      "status": "ok",
+      "error": null
+    }
+  ]
+}

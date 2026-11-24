@@ -326,9 +326,13 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
   }
 
   /**
-   * And what that buys, measured: a body reading nothing the seed carries costs, per outer row, exactly what the
+   * And what that buys, measured: a body reading nothing the seed carries costs, per outer row, no more than the
    * identical body costs written with no outer row at all. Before this change the seed row alone took the push-down
    * away, and the body paid a full count once per outer row - 300 records read per row for the first of these.
+   * <p>
+   * The first outer row pays exactly that cost; a later one may pay less, because a statement that cannot write runs the
+   * body again on the step chain it built for the first row, whose scan of the label already holds its records (issue
+   * #12136).
    */
   @Test
   void anUncorrelatedBodyCostsPerRowWhatItCostsWithNoOuterRow() {
@@ -338,7 +342,8 @@ class CypherUncorrelatedSubqueryCountPushDownIssue5686Test extends TestHelper {
     for (final String body : PUSHED_DOWN_BODIES) {
       final long alone = recordsReadBy("RETURN COLLECT { " + body + " } AS c");
       final String correlated = "MATCH (n:P) RETURN COLLECT { " + body + " } AS c";
-      assertThat(recordsReadBy(correlated)).as(correlated).isEqualTo(outerAlone + outerRows * alone);
+      assertThat(recordsReadBy(correlated)).as(correlated)
+          .isBetween(outerAlone + alone, outerAlone + outerRows * alone);
     }
   }
 

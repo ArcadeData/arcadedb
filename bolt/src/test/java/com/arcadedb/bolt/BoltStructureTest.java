@@ -31,6 +31,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.graph.IdFunction;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualVertex;
 
 import org.junit.jupiter.api.Test;
 
@@ -478,7 +480,7 @@ class BoltStructureTest {
   @Test
   void mapperOffsetDateTime() throws Exception {
     final OffsetDateTime dateTime = OffsetDateTime.of(2024, 1, 15, 10, 30, 45, 0, ZoneOffset.ofHours(2));
-    assertThat(wireRoundTrip(dateTime)).isEqualTo(dateTime);
+    assertThat(wireRoundTrip(dateTime)).isEqualTo(dateTime.toZonedDateTime());
   }
 
   @Test
@@ -497,13 +499,13 @@ class BoltStructureTest {
   void mapperInstant() throws Exception {
     final Instant instant = Instant.parse("2024-01-15T10:30:45Z");
     // Instant maps to a DateTime struct; assert the instant survives the round-trip.
-    assertThat(((OffsetDateTime) wireRoundTrip(instant)).toInstant()).isEqualTo(instant);
+    assertThat(((ZonedDateTime) wireRoundTrip(instant)).toInstant()).isEqualTo(instant);
   }
 
   @Test
   void mapperJavaDate() throws Exception {
     final Date date = Date.from(Instant.parse("2024-01-15T10:30:45Z"));
-    assertThat(((OffsetDateTime) wireRoundTrip(date)).toInstant()).isEqualTo(date.toInstant());
+    assertThat(((ZonedDateTime) wireRoundTrip(date)).toInstant()).isEqualTo(date.toInstant());
   }
 
   @Test
@@ -644,5 +646,27 @@ class BoltStructureTest {
     final Map<String, Object> result = (Map<String, Object>) BoltStructureMapper.toPackStreamValue(nested);
     assertThat(result).containsKey("inner");
     assertThat(result).containsKey("list");
+  }
+
+  // Issue #12109: a virtual node / relationship (create.vNode, meta.graph) has no RID to encode: it goes out with its
+  // own negative id and labels, as APOC's virtual entities do, and a relationship names its endpoints by their ids
+  @Test
+  void mapperVirtualNodeAndRelationship() {
+    final VirtualVertex a = new VirtualVertex(null, List.of("B", "A"), Map.of("x", 1L));
+    final VirtualVertex b = new VirtualVertex(null, List.of(), Map.of());
+    final VirtualEdge r = new VirtualEdge(null, a, "V", Map.of("w", 2L), b);
+
+    final BoltNode node = (BoltNode) BoltStructureMapper.toPackStreamValue(a);
+    assertThat(node.getId()).isEqualTo(a.getVirtualId()).isNegative();
+    assertThat(node.getElementId()).isEqualTo(Long.toString(a.getVirtualId()));
+    assertThat(node.getLabels()).containsExactly("A", "B");
+    assertThat(node.getProperties()).containsEntry("x", 1L);
+
+    final BoltRelationship rel = (BoltRelationship) BoltStructureMapper.toPackStreamValue(r);
+    assertThat(rel.getId()).isEqualTo(r.getVirtualId()).isNegative();
+    assertThat(rel.getType()).isEqualTo("V");
+    assertThat(rel.getStartNodeId()).isEqualTo(a.getVirtualId());
+    assertThat(rel.getEndNodeId()).isEqualTo(b.getVirtualId());
+    assertThat(rel.getProperties()).containsEntry("w", 2L);
   }
 }

@@ -21,7 +21,8 @@ package com.arcadedb.function.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * text.levenshteinSimilarity(str1, str2) - Calculate similarity (0-1) based on edit distance.
+ * text.levenshteinSimilarity(str1, str2) - Calculate similarity (0-1) based on edit distance. The distance costs O(n*m), so an argument
+ * is limited to {@link TextLevenshteinDistance#MAX_STRING_LENGTH} characters, as in {@code text.levenshteinDistance}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -56,6 +57,9 @@ public class TextLevenshteinSimilarity extends AbstractTextFunction {
 
     if (str1.isEmpty() && str2.isEmpty())
       return 1.0;
+
+    // the distance is O(n*m): the lengths are bounded as text.levenshteinDistance bounds them, before the strings are copied
+    TextLevenshteinDistance.requireWithinMaxLength("Levenshtein similarity", str1, str2);
 
     // characters, not UTF-16 units: the distance and the length it is divided by must count the same thing
     final int[] chars1 = codePointsOf(str1);

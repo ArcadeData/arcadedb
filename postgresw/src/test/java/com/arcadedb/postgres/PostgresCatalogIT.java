@@ -409,6 +409,29 @@ class PostgresCatalogIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  /**
+   * A catalog pattern that can take many steps without reading a character is refused the same way, over both protocols and
+   * whether it filters a relation or is evaluated on its own, and the connection goes on working.
+   */
+  @Test
+  void aCatalogPatternThatStepsWithoutReadingIsRefusedWithSqlState54000() throws Exception {
+    for (final String mode : List.of("extended", "simple")) {
+      try (final Connection connection = openJdbcConnection(mode)) {
+        for (final String pattern : List.of("((){1000}){1000}", "(|)".repeat(12) + "(?!)", "^?".repeat(12) + "(?!)")) {
+          assertThatThrownBy(() -> strings(connection, "select relname from pg_catalog.pg_class where relname ~ '" + pattern + "'"))
+              .isInstanceOf(SQLException.class)
+              .satisfies(e -> assertThat(((SQLException) e).getSQLState()).as("%s: %s", mode, pattern).isEqualTo("54000"));
+          assertThatThrownBy(() -> strings(connection, "select '' ~ '" + pattern + "', pg_catalog.version()"))
+              .isInstanceOf(SQLException.class)
+              .satisfies(e -> assertThat(((SQLException) e).getSQLState()).as("%s: %s", mode, pattern).isEqualTo("54000"));
+        }
+
+        assertThat(strings(connection, "select relname from pg_catalog.pg_class where relname ~ '^Person10228$'")).as(mode)
+            .isEmpty();
+      }
+    }
+  }
+
   // Regression: #10228
   /** A set operation over the user's own types is not a catalog query: the SQL engine still answers it. */
   @Test

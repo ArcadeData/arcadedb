@@ -461,15 +461,17 @@ public class CreateStep extends AbstractExecutionStep {
     }
 
     final int patternProperties = vertex.getPropertyNames().size();
-    int assignedBySet = 0;
-    if (absorbedSetItems != null && nodePattern.getVariable() != null) {
-      final List<SetClause.SetItem> folded = absorbedSetItems.get(nodePattern.getVariable());
-      if (folded != null)
-        assignedBySet = NewNodeSetFolding.apply(folded, vertex, currentResult, evaluator, context);
-    }
+    final List<SetClause.SetItem> folded =
+        absorbedSetItems != null && nodePattern.getVariable() != null ? absorbedSetItems.get(nodePattern.getVariable()) : null;
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
-    vertex.save();
+    final int assignedBySet;
+    if (folded != null)
+      assignedBySet = NewNodeSetFolding.applyAndSave(folded, vertex, currentResult, evaluator, context);
+    else {
+      assignedBySet = 0;
+      vertex.save();
+    }
 
     final QueryStatistics stats = context.getStatistics();
     stats.incNodesCreated();

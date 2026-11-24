@@ -44,6 +44,7 @@ import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.PendingIndexRemovals;
 import com.arcadedb.index.RangeIndex;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -1366,7 +1367,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + name + "' is not valid. Probably has been drop or rebuilt");
   }
 
   DatabaseInternal getDatabase() {

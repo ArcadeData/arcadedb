@@ -54,6 +54,7 @@ import com.arcadedb.schema.InternalBucketNaming;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -310,6 +311,7 @@ public class GraphEngine {
     checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
 
     final EdgeType edgeType = getEdgeType(database, edgeTypeName);
+    checkCreateGrant(database, edgeType);
     if (!edgeType.isBidirectional())
       checkUnidirectionalDestinationExists(database.getTransactionIfExists(), toVertex.getIdentity());
 
@@ -486,6 +488,11 @@ public class GraphEngine {
     if (toVertex instanceof MutableDocument && toVertex.getIdentity() == null)
       throw new IllegalArgumentException("Target vertex is not persistent. Call save() on vertex first");
 
+    // A virtual node (create.vNode, meta.graph) is never stored: an edge to it would name a record that does not exist (issue
+    // #12109)
+    if (toVertex instanceof VirtualElement virtual)
+      throw virtual.unsupported("connected by a stored relationship");
+
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
     checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
 
@@ -501,6 +508,7 @@ public class GraphEngine {
       bucketName = null;
 
     final EdgeType type = getEdgeType(database, edgeTypeName);
+    checkCreateGrant(database, type);
     if (!type.isBidirectional())
       checkUnidirectionalDestinationExists(database.getTransactionIfExists(), toVertex.getIdentity());
 
@@ -585,6 +593,16 @@ public class GraphEngine {
   }
 
   /**
+   * Checks the create grant of an edge type before anything is looked up for the edge (its destination, an edge that exists
+   * already), the order a record follows through {@code LocalDatabase.createRecordNoLock}. A lightweight edge owns no record, so
+   * this is the first point its grant is asked. Every bucket of a type carries the same access array, so the first one answers
+   * for the type.
+   */
+  private static void checkCreateGrant(final DatabaseInternal database, final EdgeType edgeType) {
+    SecurityHelper.checkAccessOnType(database, edgeType, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+  }
+
+  /**
    * Resolves an edge type by name validating its kind. Vertex and edge types share the same schema namespace: using a
    * vertex or document type name where an edge type is required must surface as a clean schema error, not as an
    * internal {@link ClassCastException} (issue #5194).
@@ -660,6 +678,7 @@ public class GraphEngine {
     for (int i = 0; i < size; ++i) {
       final CreateEdgeOperation connection = connections.get(i);
       final EdgeType edgeType = getEdgeType(database, connection.edgeTypeName);
+      checkCreateGrant(database, edgeType);
       if (!bidirectional && edgeType.isBidirectional())
         throw new IllegalArgumentException(unidirectionalEdgeOnBidirectionalTypeMessage(edgeType.getName()));
       final RID destinationRID = connection.destinationVertex.getIdentity();

@@ -62,11 +62,20 @@ describe("E2E tests using pg client", () => {
     });
   });
 
-//  it("should run parametrixed query", async () => {
-//    const query = "select from Beer where name = $1 limit 10";
-//    const res = await postgresClient.query(query, ['Stout']);
-//    expect(res.rows.length).toBe(10);
-//  });
+  it("should run parameterized query", async () => {
+    // Read a name the OpenBeer dataset holds, then query it back through a $1 placeholder (Parse/Bind/Execute)
+    const sample = await postgresClient.query("select name from Beer where name is not null limit 1");
+    expect(sample.rows.length).toBe(1);
+    const name = sample.rows[0].name;
+
+    const res = await postgresClient.query("select from Beer where name = $1", [name]);
+    expect(res.rows.length).toBeGreaterThan(0);
+    res.rows.forEach((row) => expect(row.name).toBe(name));
+
+    // The bound value must filter: a name no beer carries answers no rows
+    const none = await postgresClient.query("select from Beer where name = $1", ["no beer is named like this"]);
+    expect(none.rows.length).toBe(0);
+  });
 
 
 });

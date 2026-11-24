@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Interruptions;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
@@ -102,6 +103,7 @@ public class ImmutableDocument extends BaseDocument {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
       return null;
     }
@@ -122,6 +124,7 @@ public class ImmutableDocument extends BaseDocument {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
       // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
       // NOT null, IS STILL THE RIGHT ANSWER IF IT EVER DOES FIRE: null WOULD SILENTLY BREAK THE "TELL ABSENT FROM
@@ -424,7 +427,7 @@ public class ImmutableDocument extends BaseDocument {
     checkForLazyLoading();
     final Binary content = requireBuffer("modify");
     content.rewind();
-    return markIfReadWentStale(new MutableDocument(database, type, rid, content.copyOfContent()));
+    return markIfReadWentStale(new MutableDocument(database, type, rid, copyOfContentForModify(content)));
   }
 
   @Override
@@ -704,8 +707,13 @@ public class ImmutableDocument extends BaseDocument {
         // serializeForRead() INSTEAD OF serialize(): THIS IS A READ, SO AN EXTERNAL PROPERTY MUST BE RENDERED INLINE
         // INSTEAD OF BEING WRITTEN TO (OR DELETED FROM) THE PAIRED EXTERNAL BUCKET (ISSUE #5770).
         // getNotReusable() IS MANDATORY: FOR A DIRTY RECORD THE SERIALIZER RETURNS THE PER-THREAD SCRATCH BUFFER, WHICH
-        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS
-        content = database.getSerializer().serializeForRead(database, loaded).getNotReusable();
+        // IT COPIES OUT, WHILE THE ALREADY-PRIVATE BUFFER OF THE OTHER BRANCH IS KEPT AS IS.
+        // THE STORED IMAGE IS KEPT WITH IT (ISSUE #12579): A WRITE OR A DELETE OF THIS RECORD COMPARES THAT ONE WITH THE SLOT, NOT
+        // THE CONTENT THE LISTENER RETURNED. A LISTENER THAT MODIFIES THE RECORD RELOADS IT ITSELF (NOTHING FIRES THEN), SO THE
+        // IMAGE LOADED LAST IS THE ONE THE RETURNED RECORD WAS BUILT FROM
+        final Binary stored = buffer != null ? buffer : content;
+        content = ListenerRewrittenBinary.of(database.getSerializer().serializeForRead(database, loaded).getNotReusable(),
+            stored.copyOfContent());
         buffer = content;
         // THE SERIALIZER HANDS THE BUFFER BACK AT 0 OR AT 1 DEPENDING ON THE BRANCH IT TOOK: NORMALISE IT SO THE
         // POSTCONDITION OF THIS METHOD HOLDS ON EVERY PATH
