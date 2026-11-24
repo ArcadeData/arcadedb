@@ -74,6 +74,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -81,6 +82,7 @@ import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -484,10 +486,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
 
-      HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
-          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
-
-      HttpResponse<String> response = sendWithWatchdog(request);
+      HttpResponse<String> response = sendBegin(payload);
 
       if (response.statusCode() != 204) {
         final Exception detail = manageException(response, "begin transaction");
@@ -518,6 +517,68 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } finally {
       if (getSessionId() == null)
         setStickyTransactionServer(null);
+    }
+  }
+
+  /**
+   * Sends the begin request, moving to another server while it provably never reached one (issue #12615). No transaction exists
+   * yet, so unlike a request inside one this may go to any live server. Only {@code httpCommand()} failed over before, so with the
+   * server the client was connected to stopped, every {@code begin()} failed and nothing moved {@code currentServer} to a live node.
+   * The FIXED strategy keeps to its server, as it does for every other request.
+   * <p>
+   * The next server is chosen the way {@code httpCommand()} chooses it ({@link #nextFailoverServer}): the one that answered the
+   * reload, else the next known replica, never the advertised leader, which during an election can still be the stopped node. The
+   * server that answers becomes the one the transaction is routed to: the sticky pin for STICKY, the current server otherwise, so
+   * that the commands, the commit and the rollback reach the node that holds the session.
+   */
+  private HttpResponse<String> sendBegin(final String payload) throws IOException, InterruptedException {
+    final CONNECTION_STRATEGY strategy = getConnectionStrategy();
+    final int maxAttempts = strategy == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+    final String command = "begin/" + databaseName;
+
+    Pair<String, Integer> target = getRoutedServer();
+    boolean failedOver = false;
+    // Once a reload found no server able to answer, asking them all again on every attempt only multiplies the timeouts
+    boolean reloadFailed = false;
+    // The servers this begin could not reach, so the walk tries every known server once before it revisits one
+    Set<Pair<String, Integer>> unreachable = null;
+
+    for (int attempt = 1; ; attempt++) {
+      final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
+          HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
+      try {
+        final HttpResponse<String> response = sendWithWatchdog(request);
+        if (failedOver) {
+          // The server answered, so it is alive: the rest of the transaction goes where the session is
+          if (strategy == CONNECTION_STRATEGY.STICKY)
+            setStickyTransactionServer(target);
+          else {
+            currentServer = target.getFirst();
+            currentPort = target.getSecond();
+          }
+        }
+        return response;
+      } catch (final IOException e) {
+        if (attempt >= maxAttempts || !provablyNeverSent(e))
+          throw e;
+
+        if (!reloadFailed)
+          reloadFailed = !reloadClusterConfiguration();
+
+        if (unreachable == null)
+          unreachable = new HashSet<>();
+        unreachable.add(target);
+        final Pair<String, Integer> next = nextFailoverServer(target, false, unreachable);
+        if (next == null)
+          throw e;
+
+        LogManager.instance()
+            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d to begin the transaction...",
+                target.getFirst(), target.getSecond(), next.getFirst(), next.getSecond());
+
+        target = next;
+        failedOver = true;
+      }
     }
   }
 
