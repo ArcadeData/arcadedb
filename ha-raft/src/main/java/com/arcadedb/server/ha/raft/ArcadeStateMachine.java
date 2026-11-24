@@ -38,6 +38,7 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.index.columnar.ColumnarIndexManager;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.ReplicatedEntryTooLargeException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
@@ -56,6 +57,7 @@ import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.FileInfo;
@@ -248,6 +250,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Raft term seen at the last notifyLeaderChanged. Lets us tell a genuine re-election (term
   // advanced) from a same-term re-notification, so we only warn about real leader churn (#4809 follow-up).
   private volatile long                      lastNotifiedLeaderTerm = -1;
+  // Largest payload this node's Raft log accepts for one entry, resolved on first use (see replicatedPayloadLimit()); -1 = not yet.
+  private volatile long                      replicatedPayloadLimit = -1L;
 
   volatile ArcadeDBServer server;
   volatile RaftHAServer   raftHAServer;
@@ -1196,10 +1200,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
         .setStateMachine(this)
         .setClientRequest(request);
 
+    // An entry whose payload, once Ratis wraps it, is above this leader's own appender byte limit is refused here through the
+    // context, before it is appended. The originator already measures against its own configuration, so this covers a peer
+    // configured with a larger limit.
+    final ByteString content = request.getMessage() != null ? request.getMessage().getContent() : null;
+    final long payloadLimit = replicatedPayloadLimit();
+    if (content != null && content.size() > payloadLimit)
+      return context.build().setException(new ReplicatedEntryTooLargeException(String.format(
+          "Replicated entry size %d bytes exceeds the maximum replicated Raft entry size of %d bytes accepted by this node "
+              + "(arcadedb.ha.appendBufferSize). Reduce the batch size or the size of the records, or raise "
+              + "arcadedb.ha.appendBufferSize on every node of the cluster", content.size(), payloadLimit)));
+
     // A schema entry allocates file ids from its proposer's local file manager, so it may only enter the log from the
     // session that allocated them, on this leader, in the term that session was bound to (issue #9547). Checked only when
     // the origin of the request can be told at all: with no client of our own there is nothing to compare against.
-    final ByteString content = request.getMessage() != null ? request.getMessage().getContent() : null;
     if (localClientId != null && content != null && !content.isEmpty()
         && RaftLogEntryType.fromId(content.byteAt(0)) == RaftLogEntryType.SCHEMA_ENTRY) {
       final NeedRetryException refusal;
@@ -1407,6 +1421,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   int schemaChangesAppliedBetween(final String databaseName, final long fromExclusive, final long toInclusive) {
     return schemaHistory.schemaChangesAppliedBetween(databaseName, fromExclusive, toInclusive);
+  }
+
+  /**
+   * The largest payload this node's Raft log accepts for one entry: its appender byte limit less the framing Ratis wraps
+   * around the payload, or {@link Long#MAX_VALUE} while the limit cannot be read (no Raft server attached yet). Resolved once
+   * per state machine, which lives exactly as long as the Raft server whose properties it reads, so the hot path pays a
+   * volatile read.
+   */
+  private long replicatedPayloadLimit() {
+    long limit = replicatedPayloadLimit;
+    if (limit < 0L) {
+      final long appenderLimit = appenderByteLimit();
+      if (appenderLimit <= 0L)
+        return Long.MAX_VALUE;
+      limit = GlobalConfiguration.replicatedPayloadLimit(appenderLimit);
+      replicatedPayloadLimit = limit;
+    }
+    return limit;
+  }
+
+  /** The appender byte limit the Raft server of this node was built with, or {@code -1} when it cannot be read. */
+  // @VisibleForTesting
+  long appenderByteLimit() {
+    try {
+      final CompletableFuture<RaftServer> raftServer = getServer();
+      if (raftServer == null || !raftServer.isDone())
+        return -1L;
+      return RaftServerConfigKeys.Log.Appender.bufferByteLimit(raftServer.join().getProperties()).getSize();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not read the appender byte limit of the Raft server: %s", e.getMessage());
+      return -1L;
+    }
   }
 
   /** The id of the Raft client this node submits its own entries through, or {@code null} when it has none yet. */

@@ -379,9 +379,10 @@ class SealedStoreSliceShippingTest {
       configuration.setValue(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE, 512L * 1024 * 1024);
       configuration.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "1048576");
 
-      assertThat(GlobalConfiguration.maxReplicatedSealedEntrySize(configuration)).isEqualTo(1024L * 1024);
+      final long perEntry = 1024L * 1024 - GlobalConfiguration.REPLICATED_ENTRY_FRAMING_BYTES;
+      assertThat(GlobalConfiguration.maxReplicatedSealedEntrySize(configuration)).isEqualTo(perEntry);
       assertThat(GlobalConfiguration.replicatedSealedChunkBudget(configuration))
-          .isEqualTo(1024L * 1024 - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES - (1024L * 1024) / 128);
+          .isEqualTo(perEntry - GlobalConfiguration.REPLICATED_SEALED_CHUNK_FRAMING_BYTES - perEntry / 128);
     }
 
     /**

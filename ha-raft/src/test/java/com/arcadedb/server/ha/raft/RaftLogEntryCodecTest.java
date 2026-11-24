@@ -875,17 +875,21 @@ class RaftLogEntryCodecTest {
     void effectiveEntrySizeIsTheSmallerOfTheTwoRatisLimits() {
       final ContextConfiguration cfg = new ContextConfiguration();
 
-      // Stock defaults: the appender byte limit binds, NOT grpcMessageSizeMax (128MB).
-      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(32L * 1024 * 1024);
+      // Stock defaults: the appender byte limit binds, NOT grpcMessageSizeMax (128MB). The payload keeps clear of the
+      // framing Ratis wraps around it, which the log measures against the same limit.
+      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg))
+          .isEqualTo(32L * 1024 * 1024 - GlobalConfiguration.REPLICATED_ENTRY_FRAMING_BYTES);
 
       // Raising only the appender limit above the gRPC cap makes the gRPC cap bind again.
       cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "256MB");
       assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg))
-          .isEqualTo(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX));
+          .isEqualTo(cfg.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX)
+              - GlobalConfiguration.REPLICATED_ENTRY_FRAMING_BYTES);
 
       // Lowering it below the gRPC cap makes THAT the effective ceiling again.
       cfg.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "8MB");
-      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg)).isEqualTo(8L * 1024 * 1024);
+      assertThat(GlobalConfiguration.maxReplicatedRaftEntrySize(cfg))
+          .isEqualTo(8L * 1024 * 1024 - GlobalConfiguration.REPLICATED_ENTRY_FRAMING_BYTES);
 
       // RaftPropertiesBuilder must agree: one definition, no drift between engine and ha-raft.
       assertThat(RaftPropertiesBuilder.maxReplicatedEntrySize(cfg))

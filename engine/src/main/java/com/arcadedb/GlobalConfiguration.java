@@ -2664,7 +2664,8 @@ public enum GlobalConfiguration {
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       """
       AppendEntries batch byte limit for replication (e.g. '32MB'). Ratis applies this limit per ENTRY as \
-      well as per batch, so it is also the HARD MAXIMUM SIZE OF A SINGLE REPLICATED TRANSACTION - usually \
+      well as per batch, so it is also the HARD MAXIMUM SIZE OF A SINGLE REPLICATED TRANSACTION (less the 1KB \
+      Ratis wraps around every entry) - usually \
       lower than arcadedb.ha.grpcMessageSizeMax and therefore the limit that actually binds. An entry above \
       it is rejected with a state-machine error that makes the leader step down; the write then fails with \
       ReplicatedEntryTooLargeException naming this setting. The size compared against it is the COMPRESSED \
@@ -4279,8 +4280,28 @@ public enum GlobalConfiguration {
   public static final int MAX_REPLICATED_UNCOMPRESSED_ENTRY_BYTES = 64 * 1024 * 1024;
 
   /**
-   * Maximum size, in bytes, of a SINGLE replicated Raft log entry: the smaller of
-   * {@link #HA_GRPC_MESSAGE_SIZE_MAX} and {@link #HA_APPEND_BUFFER_SIZE}.
+   * Bytes kept free, in every replicated Raft entry, for what Ratis wraps around the payload before the entry is
+   * measured against the appender byte limit and the gRPC frame cap: the term and the index (up to 10 bytes each), the
+   * client id (16 bytes), the call id (up to 10 bytes), the entry type and the length prefixes. That is about 65 bytes
+   * in the worst case; the reserve is deliberately generous because it is subtracted from a limit of megabytes, so
+   * over-reserving costs nothing worth counting, while a payload measured against the bare limit comes out above it once
+   * wrapped and is rejected by the log (issue #4743).
+   */
+  public static final int REPLICATED_ENTRY_FRAMING_BYTES = 1024;
+
+  /**
+   * The largest payload, in bytes, that fits a transport limit of {@code limit} bytes once Ratis has wrapped it in a log
+   * entry: the limit less {@link #REPLICATED_ENTRY_FRAMING_BYTES}. A limit too small to spare the whole reserve gives up
+   * half of itself instead, so a deliberately tiny limit still leaves room for a payload.
+   */
+  public static long replicatedPayloadLimit(final long limit) {
+    return limit - Math.min(REPLICATED_ENTRY_FRAMING_BYTES, Math.max(0L, limit) / 2);
+  }
+
+  /**
+   * Maximum size, in bytes, of the PAYLOAD of a SINGLE replicated Raft log entry: the smaller of
+   * {@link #HA_GRPC_MESSAGE_SIZE_MAX} and {@link #HA_APPEND_BUFFER_SIZE}, less the
+   * {@link #REPLICATED_ENTRY_FRAMING_BYTES} Ratis adds around the payload.
    * <p>
    * Issue #4743: the gRPC frame cap is NOT the effective ceiling. Ratis also enforces the appender
    * buffer byte limit per entry, and rejects an entry above it with a {@code StateMachineException}
@@ -4289,13 +4310,16 @@ public enum GlobalConfiguration {
    * elections while the write never lands. Since the appender default (4MB) is far below the gRPC
    * default (128MB), in practice the appender limit is what binds.
    * <p>
+   * Ratis measures the WRAPPED entry, not the payload, so a payload equal to the bare limit is already
+   * above it; the framing reserve is what keeps a payload at this value inside both limits.
+   * <p>
    * Every component that produces or projects the size of a replicated entry must measure itself
    * against this value, not against either knob alone.
    */
   public static long maxReplicatedRaftEntrySize(final ContextConfiguration configuration) {
     final long grpcMessageSizeMax = configuration.getValueAsLong(HA_GRPC_MESSAGE_SIZE_MAX);
     final long appendBufferSize = FileUtils.getSizeAsNumber(configuration.getValueAsString(HA_APPEND_BUFFER_SIZE));
-    return Math.min(grpcMessageSizeMax, appendBufferSize);
+    return replicatedPayloadLimit(Math.min(grpcMessageSizeMax, appendBufferSize));
   }
 
   /**
