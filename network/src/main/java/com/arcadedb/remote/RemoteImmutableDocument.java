@@ -98,10 +98,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         // implementation. Converting it as a whole first, with the declared property, rebuilt a LIST OF DATE as
         // java.util.Date items (the zone-dependent midnight), which the item pass below then read as the previous day
         // wherever the zone is ahead of UTC.
+        // Issue #12603: a link is bound to the remote database, as the embedded API answers it, so rid.asDocument() follows it on
+        // a thread with no embedded database active
         if ((propType == Type.MAP || propType == Type.LIST) && elementType != null && (value instanceof List || value instanceof Map))
           value = convertNestedOfType(value, elementType);
         else
-          value = Type.convertOrKeep(null, value, javaImplementation, property);
+          value = RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, value, javaImplementation, property));
 
         map.put(fieldName, value);
       }
@@ -112,7 +114,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     // The rid text over HTTP; a RID when a gRPC row carries @rid as a property, since gRPC decodes a link as one (#12195)
     final Object ridValue = attributes.get(RID_PROPERTY);
     if (ridValue instanceof RID ridObject)
-      this.rid = ridObject;
+      this.rid = RemoteDatabase.bindRID(remoteDatabase, ridObject);
     else if (ridValue != null)
       this.rid = remoteDatabase.newRID((String) ridValue);
     else
@@ -247,12 +249,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     if (value instanceof Map<?, ?> mapValue) {
       final Map<Object, Object> converted = new LinkedHashMap<>(mapValue.size());
       for (final Map.Entry<?, ?> entry : mapValue.entrySet())
-        converted.put(entry.getKey(), Type.convertOrKeep(null, entry.getValue(), javaType));
+        converted.put(entry.getKey(), RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, entry.getValue(), javaType)));
       return converted;
     } else if (value instanceof List<?> listValue) {
       final List<Object> converted = new ArrayList<>(listValue.size());
       for (final Object item : listValue)
-        converted.add(Type.convertOrKeep(null, item, javaType));
+        converted.add(RemoteDatabase.bindLink(remoteDatabase, Type.convertOrKeep(null, item, javaType)));
       return converted;
     }
 
