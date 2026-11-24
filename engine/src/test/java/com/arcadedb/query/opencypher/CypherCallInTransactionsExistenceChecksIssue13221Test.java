@@ -49,6 +49,10 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
   private static final String BATCHED = "UNWIND range(10, 19) AS i "//
       + "CALL (i) { CREATE (x:T {id: i}) SET x.m = CASE WHEN i = 15 THEN null ELSE 'y' END } IN TRANSACTIONS OF 3 ROWS";
 
+  /** A batch body holding 1200 provisional records at once (past the sweep threshold of 1000), then completing every one of them. */
+  private static final String CREATE_1200_THEN_COMPLETE = //
+      "UNWIND range(1, 1200) AS j CREATE (x:T {id: j}) WITH collect(x) AS xs UNWIND xs AS x SET x.m = 'y'";
+
   @Override
   protected void beginTest() {
     database.command("sql", "CREATE VERTEX TYPE T");
@@ -202,6 +206,74 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
 
     assertThat(count("MATCH (n:Person {name: 'a'}) RETURN count(n) AS c")).isEqualTo(2L);
     assertThat(ids()).containsExactly(1, 2);
+  }
+
+  /**
+   * A batch that fails for another reason while one of its records is still provisional (created, not yet completed) is undone
+   * under ON ERROR CONTINUE: the record goes with the batch, nothing of it is checked or reported, and the later batches commit.
+   */
+  @Test
+  void aBatchFailingForAnotherReasonWhileARecordIsProvisionalIsUndoneUnderOnErrorContinue() {
+    final List<Result> rows = rows("UNWIND range(10, 19) AS i "//
+        + "CALL (i) { CREATE (x:T {id: i}) WITH x, 10 / (i - 15) AS q SET x.m = toString(q) } "//
+        + "IN TRANSACTIONS OF 3 ROWS ON ERROR CONTINUE REPORT STATUS AS s RETURN i, s");
+
+    assertThat(incompleteTs()).isEmpty();
+    assertThat(ids()).containsExactly(10, 11, 12, 16, 17, 18, 19);
+    for (final Result row : rows) {
+      final int i = row.<Number>getProperty("i").intValue();
+      final Map<String, Object> status = row.getProperty("s");
+      assertThat(status.get("committed")).isEqualTo(i < 13 || i > 15);
+      if (i >= 13 && i <= 15)
+        assertThat((String) status.get("errorMessage")).contains("by zero").doesNotContain("mandatory");
+    }
+  }
+
+  /** The same under ON ERROR FAIL: the statement fails with the batch's own error, not with an existence violation. */
+  @Test
+  void aBatchFailingForAnotherReasonWhileARecordIsProvisionalFailsTheStatementWithItsOwnError() {
+    assertThatThrownBy(() -> drain("UNWIND range(10, 19) AS i "//
+        + "CALL (i) { CREATE (x:T {id: i}) WITH x, 10 / (i - 15) AS q SET x.m = toString(q) } IN TRANSACTIONS OF 3 ROWS"))
+        .satisfies(e -> {
+          Throwable cause = e;
+          while (cause != null) {
+            assertThat(cause).isNotInstanceOf(ValidationException.class);
+            cause = cause.getCause();
+          }
+        });
+
+    assertThat(incompleteTs()).isEmpty();
+    assertThat(ids()).containsExactly(10, 11, 12);
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  /**
+   * A batch that holds more than a thousand provisional records at once sweeps its pending set, and the deferral still works: every
+   * record is completed after all of them were created, and all of them are committed.
+   */
+  @Test
+  void aBatchThatSweepsItsPendingRecordsCommitsTheCompletedOnes() {
+    drain("UNWIND [1] AS i CALL (i) { " + CREATE_1200_THEN_COMPLETE + " } IN TRANSACTIONS");
+
+    assertThat(incompleteTs()).isEmpty();
+    assertThat(ids()).hasSize(1200);
+  }
+
+  /**
+   * A sweep inside a nested batch leaves the records of the enclosing batch alone: it cannot read them from the nested transaction,
+   * and dropping them from the pending set there, as a record no longer found, would let the enclosing batch commit an incomplete
+   * record.
+   */
+  @Test
+  void aSweepInsideANestedBatchKeepsTheIncompleteRecordOfTheEnclosingBatch() {
+    assertThatThrownBy(() -> drain("UNWIND [1] AS i CALL (i) { CREATE (p:Person {id: i}) WITH p, i "//
+        + "CALL (i) { " + CREATE_1200_THEN_COMPLETE + " } IN TRANSACTIONS } IN TRANSACTIONS"))
+        .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
+
+    assertThat(nodes("Person")).isEmpty();
+    // the nested batch committed on its own
+    assertThat(ids()).hasSize(1200);
+    assertThat(database.isTransactionActive()).isFalse();
   }
 
   /**
