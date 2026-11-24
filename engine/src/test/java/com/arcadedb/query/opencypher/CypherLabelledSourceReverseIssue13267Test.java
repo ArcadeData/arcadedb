@@ -126,6 +126,12 @@ class CypherLabelledSourceReverseIssue13267Test {
       database.command("opencypher", "UNWIND range(0, 254) AS i CREATE (:Entity {uuid: 'sr' + i, status: 'a' + (1000 + i)})");
       database.command("opencypher", "UNWIND range(0, 599) AS i CREATE (:Entity {uuid: 'sz' + i, status: 'zzz'})");
       database.command("opencypher", "MATCH (t:Tiny {uuid: 'ti0'}), (e:Entity {uuid: 'sz0'}) CREATE (t)-[:MENTIONS]->(e)");
+      database.command("opencypher", "MATCH (n:Entity {uuid: 'ent3'}) SET n.episode = 'ep1'");
+      database.command("opencypher", "MATCH (n:Entity {uuid: 'ent4'}) SET n.episode = 'ep9'");
+      database.command("opencypher", "MATCH (:Episodic {uuid: 'ep1'})-[r:MENTIONS]->(:Entity {uuid: 'ent4'}) SET r.tag = 'ep1'");
+      // a second hub whose relationships are outgoing, to the Other vertices
+      database.command("opencypher", "CREATE (:Entity {uuid: 'hub2'})");
+      database.command("opencypher", "MATCH (o:Other), (h:Entity {uuid: 'hub2'}) UNWIND range(1, 200) AS k CREATE (h)-[:BACK]->(o)");
     });
   }
 
@@ -295,6 +301,78 @@ class CypherLabelledSourceReverseIssue13267Test {
     assertStartsFrom(fromList, Map.of("ids", List.of("ent3", "ent4")), "(n:Entity");
   }
 
+  @Test
+  void aTargetMapThatReadsTheFirstNodeKeepsTheWrittenOrderAndItsRows() {
+    // ent3 says it was mentioned by ep1, ent4 by ep9: only the first pair is a row, twice (two relationships), once per listed id
+    final List<Object> ids = Arrays.asList("ent3", "ent3", null, "ent4", "ent119");
+    final String query = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id, episode: e.uuid}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(query, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(query, Map.of("ids", ids))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1");
+    // a value no vertex has is null, which equals nothing
+    final String missing = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id, episode: e.missing}) RETURN id AS v";
+    assertStartsFrom(missing, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(missing, Map.of("ids", ids))).isEmpty();
+  }
+
+  @Test
+  void aRelationshipPredicateThatReadsTheFirstNodeKeepsTheWrittenOrderAndItsRows() {
+    final List<Object> ids = Arrays.asList("ent3", "ent3", null, "ent4", "ent0");
+    final String where = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS WHERE e.uuid = 'ep1']->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(where, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(where, Map.of("ids", ids))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1", "ent4|ep1");
+    final String map = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS {tag: e.uuid}]->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(map, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(map, Map.of("ids", ids))).containsExactlyInAnyOrder("ent4|ep1");
+    // a predicate that reads only the relationship is evaluated whichever end the plan starts from
+    final String own = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS WHERE r.tag = 'ep1']->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(own, Map.of("ids", ids), "(n:Entity");
+    assertThat(values(own, Map.of("ids", ids))).containsExactlyInAnyOrder("ent4|ep1");
+  }
+
+  @Test
+  void anOrOfTwoKeysIsAScanOfTheTypeNotTwoSeeks() {
+    // the node step seeks the conjuncts of the WHERE clause, not a disjunction: it would scan the 976 Entity vertices
+    final String query = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid = 'ent3' OR n.uuid = 'ent4' RETURN n.uuid + '|' + e.uuid AS v";
+    assertStartsFrom(query, Map.of(), "(e:Episodic");
+    assertThat(values(query, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent4|ep1");
+  }
+
+  @Test
+  void aListInsideTheKeyListIsNotCountedAsKeys() {
+    final String query = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid IN [['x'], 'ent3'] RETURN n.uuid + '|' + e.uuid AS v";
+    assertStartsFrom(query, Map.of(), "(e:Episodic");
+    assertThat(values(query, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1");
+  }
+
+  @Test
+  void aNameAWithGivesAnotherValueIsNotPricedAsTheUnwoundList() {
+    // id is the hub in the UNWIND and ent3 after the WITH: the plan weighs ent3, which the 30 Episodic vertices outnumber
+    final String query = "UNWIND ['hub', 'hub'] AS id WITH 'ent3' AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(query, Map.of(), "(n:Entity");
+    assertThat(values(query, Map.of())).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1");
+  }
+
+  @Test
+  void theKeysAreWeightedByTheRowsThatHoldThem() {
+    // 100 rows read ent3 (about 7 records each) and one reads the hub (counted at the ceiling): the mean over the rows is under the 30
+    // Episodic vertices, the mean over the two distinct keys is not
+    final List<String> ids = new ArrayList<>();
+    for (int i = 0; i < 100; i++)
+      ids.add("ent3");
+    ids.add("hub");
+    final String query = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN count(*) AS c";
+    assertStartsFrom(query, Map.of("ids", ids), "(n:Entity");
+    assertThat(longs(query, Map.of("ids", ids))).containsExactly(201L);
+  }
+
+  @Test
+  void aHopWrittenTowardsTheFirstNodeIsWeighedByTheEdgesTheWalkFollows() {
+    // the hub has 2,000 outgoing BACK relationships and none incoming: written (o)<-[:BACK]-(hub) the walk from the hub follows them
+    final String query = "UNWIND range(1, 5) AS i MATCH (o:Other)<-[r:BACK]-(n:Entity {uuid: 'hub2'}) RETURN count(*) AS c";
+    assertStartsFrom(query, Map.of(), "(o:Other");
+    assertThat(longs(query, Map.of())).containsExactly(5L * 2000L);
+  }
+
   private static String keys(final int count) {
     final StringBuilder list = new StringBuilder("[");
     for (int i = 0; i < count; i++)
@@ -377,6 +455,7 @@ class CypherLabelledSourceReverseIssue13267Test {
       aclDatabase.command("sql", "CREATE VERTEX TYPE Episodic");
       aclDatabase.command("sql", "CREATE VERTEX TYPE Secret");
       aclDatabase.command("sql", "CREATE EDGE TYPE MENTIONS");
+      aclDatabase.command("sql", "CREATE VERTEX TYPE Hidden EXTENDS Entity");
       aclDatabase.transaction(() -> {
         aclDatabase.command("opencypher", "UNWIND range(1, 5) AS i CREATE (:Entity {uuid: 'e' + i})");
         aclDatabase.command("opencypher", "MATCH (n:Entity {uuid: 'e1'}) UNWIND range(1, 5) AS i "
@@ -401,6 +480,17 @@ class CypherLabelledSourceReverseIssue13267Test {
       final String outcome = outcomeOf(written);
       assertThat(outcome).as("no vertex of the denied type is read").isIn("[]", "SecurityException");
       assertThat(outcomeOf(reversed)).isEqualTo(outcome);
+    }
+
+    @Test
+    void aDeniedSubtypeOfTheTargetDoesNotFailThePlanning() {
+      // the counts the plan weighs are read at planning time: a user denied a subtype of the target must get what the written order
+      // answers, which never reads that subtype, and not the refusal of a count it asked for itself
+      final String query = "UNWIND ['e1'] AS id MATCH (s:Episodic)-[:MENTIONS]->(n:Entity {uuid: id}) RETURN s.i AS i";
+      assertThat(outcomeOf(query)).isEqualTo("[1, 2, 3, 4, 5]");
+
+      bindUserDenying("Hidden");
+      assertThat(outcomeOf(query)).isEqualTo("[1, 2, 3, 4, 5]");
     }
 
     private void bindUserDenying(final String typeName) {

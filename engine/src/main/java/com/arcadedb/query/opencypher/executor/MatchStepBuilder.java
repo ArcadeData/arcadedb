@@ -873,19 +873,51 @@ final class MatchStepBuilder {
       return false;
     if (targetVar != null && (targetVar.equals(sourceVar) || boundVariables.contains(targetVar) || matchVariables.contains(targetVar)))
       return false;
+    // the reversed plan binds the target first: nothing the target or the relationship reads may be bound by the source side or later
+    // (a map value or a relationship predicate that reads the written first node would be evaluated before it is bound)
+    if (target.hasProperties() && !readsOnlyEarlierClauses(target.getProperties(), boundVariables))
+      return false;
+    if (!relationshipReadsOnlyEarlierClauses(rel, boundVariables, targetVar))
+      return false;
     if (!sourceNode.hasLabels())
       return isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
           || targetVar != null && isUniquelyKeyedByWhere(target, targetVar, where, boundVariables);
 
     // a labelled source is a scan of its label, repeated for every row an UNWIND or a WITH hands over: the walk back from the target
-    // reads fewer records than that scan (issue #13267), judged from the keys and vertices the index finds, see IndexedTargetCost
-    final long scanned = new StatisticsProvider(database).getMatchingVertexCardinality(sourceNode.getLabels(),
-        sourceNode.isLabelDisjunction());
-    final long targetCount = target.hasLabels() && target.getLabels().size() == 1
-        && database.getSchema().existsType(target.getLabels().getFirst()) ? database.countType(target.getLabels().getFirst(), true) : 0L;
-    final double walked = new IndexedTargetCost(database, context, statement).rowsPerRow(target, targetVar, where, boundVariables,
-        rel.getTypes(), targetCount, scanned);
-    return walked >= 0D && walked < scanned;
+    // reads fewer records than that scan (issue #13267), judged from the keys and vertices the index finds, see IndexedTargetCost.
+    // The counts of the types are read at planning time, which a user denied a subtype of the target or of the source may not do:
+    // main plans such a statement without them, so the written order stays
+    try {
+      final long scanned = new StatisticsProvider(database).getMatchingVertexCardinality(sourceNode.getLabels(),
+          sourceNode.isLabelDisjunction());
+      final long targetCount = target.hasLabels() && target.getLabels().size() == 1
+          && database.getSchema().existsType(target.getLabels().getFirst()) ? database.countType(target.getLabels().getFirst(), true) : 0L;
+      final double walked = new IndexedTargetCost(database, context, statement).rowsPerRow(target, targetVar, where, boundVariables,
+          rel.getTypes(), rel.getDirection(), targetCount, scanned);
+      return walked >= 0D && walked < scanned;
+    } catch (final SecurityException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether the relationship of a hop reads nothing but what an earlier clause bound, its own variable and the target: the inline
+   * property map and the inline {@code WHERE} of {@code -[r:T {k: e.x} WHERE e.y = 1]->} may not read the node written first, which
+   * a plan that starts from the target has not bound yet.
+   */
+  private boolean relationshipReadsOnlyEarlierClauses(final RelationshipPattern rel, final Set<String> boundVariables,
+      final String targetVar) {
+    if (rel.hasProperties() && rel.getProperties() != null && !readsOnlyEarlierClauses(rel.getProperties(), boundVariables))
+      return false;
+    if (!rel.hasWhereExpression())
+      return true;
+    final CypherReferencedVariables referenced = CypherReferencedVariables.of(rel.getWhereExpression());
+    if (!referenced.isComplete())
+      return false;
+    for (final String name : referenced.getNames())
+      if (!boundVariables.contains(name) && !name.equals(rel.getVariable()) && !name.equals(targetVar))
+        return false;
+    return true;
   }
 
   /**

@@ -33,16 +33,18 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.CypherReferencedVariables;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
+import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
+import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.ast.UnwindClause;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
-import com.arcadedb.query.opencypher.executor.operators.InListValues;
-import com.arcadedb.query.opencypher.optimizer.statistics.GraphStatisticsCache;
+import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -53,7 +55,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -96,6 +97,8 @@ final class IndexedTargetCost {
   private final CommandContext    context;
   private final CypherStatement   statement;
   private final ExpressionEvaluator evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
+  /** The direction the walk back follows from the target: set by {@link #rowsPerRow}, which an instance serves once. */
+  private Vertex.DIRECTION        walk;
 
   IndexedTargetCost(final DatabaseInternal database, final CommandContext context, final CypherStatement statement) {
     this.database = database;
@@ -107,12 +110,14 @@ final class IndexedTargetCost {
    * The records the walk back reads for one row, or -1 when no index of the target's label can seek its pins, or the cost cannot
    * be known.
    *
-   * @param edgeTypes   the types of the hop, whose incoming relationships the walk reads
-   * @param labelCount  the vertices of the target's label, for the average in-degree
+   * @param edgeTypes   the types of the hop, whose relationships of the vertices found the walk reads
+   * @param written     the direction the hop is written in: the walk from the target follows the opposite one
+   * @param labelCount  the vertices of the target's label, for the average degree
    * @param limit       the cost of the scan the walk is weighed against: counting stops there
    */
   double rowsPerRow(final NodePattern target, final String targetVar, final BooleanExpression where, final Set<String> boundVariables,
-      final List<String> edgeTypes, final long labelCount, final long limit) {
+      final List<String> edgeTypes, final Direction written, final long labelCount, final long limit) {
+    walk = written == Direction.BOTH ? Vertex.DIRECTION.BOTH : written == Direction.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
     if (!target.hasLabels() || target.getLabels().size() != 1 || !database.getSchema().existsType(target.getLabels().getFirst()))
       return -1D;
     final Map<String, Pin> pins = collectPins(target, targetVar, where, boundVariables);
@@ -165,12 +170,7 @@ final class IndexedTargetCost {
     if (targetVar == null || where == null)
       return pins;
 
-    final Map<String, Object> rowIndependent = new LinkedHashMap<>();
-    EdgeIndexSeedPlanner.collectWherePredicates(targetVar, where, rowIndependent);
-    for (final Map.Entry<String, Object> entry : rowIndependent.entrySet())
-      keepFewer(pins, entry.getKey(), entry.getValue() instanceof InListValues inList ? new Pin(inList.getValues(), true)
-          : new Pin(List.of((Expression) entry.getValue()), false));
-
+    // top-level conjuncts only, as the node step reads them: an OR of two equalities is a scan of the type there, not two seeks
     for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where)) {
       if (conjunct instanceof ComparisonExpression comparison && comparison.getOperator() == ComparisonExpression.Operator.EQUALS) {
         if (comparison.getLeft() instanceof PropertyAccessExpression left && targetVar.equals(left.getVariableName())
@@ -208,13 +208,20 @@ final class IndexedTargetCost {
 
   // ---- keys known at planning time ----
 
-  /** The keys of a pin as the index holds them, and whether one row seeks them all ({@code true}) or one of them ({@code false}). */
-  private record Keys(List<Object> values, boolean allOfThemPerRow) {
+  /**
+   * The keys of a pin as the index holds them, and whether one row seeks them all ({@code true}) or one of them ({@code false}).
+   * {@code occurrences} is the number of rows that hold each key (null: one each).
+   */
+  private record Keys(List<Object> values, int[] occurrences, boolean allOfThemPerRow) {
+    double weight(final int position) {
+      return occurrences == null ? 1D : occurrences[position];
+    }
   }
 
   /**
-   * The keys the pin names in this execution, or null when they depend on something planning cannot read (a row). An expression the
-   * evaluator refuses is not caught here: {@link #rowsPerRow} keeps the written order for it.
+   * The keys the pin names in this execution, or null when they depend on something planning cannot read (a row, or a variable that is
+   * not bound by one UNWIND of a literal or a parameter) or hold a list or a map, which the node step does not seek. An expression
+   * the evaluator refuses is not caught here: {@link #rowsPerRow} keeps the written order for it.
    */
   private Keys resolve(final Pin pin) {
     if (pin.fromIn()) {
@@ -226,28 +233,56 @@ final class IndexedTargetCost {
         final Object value = evaluator.evaluate(element, NO_ROW, context);
         if (list.size() == 1 && !(element instanceof LiteralExpression) && value instanceof Collection<?> collection)
           elements.addAll(collection);
-        else if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
-          return null;
         else
           elements.add(value);
       }
-      return new Keys(distinctKeys(elements), true);
+      return isScalars(elements) ? new Keys(distinctKeys(elements), null, true) : null;
     }
     final Expression element = pin.elements().getFirst();
     if (RowIndependentValues.isRowIndependent(element)) {
       final Object value = evaluator.evaluate(element, NO_ROW, context);
-      if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
-        return null;
-      return new Keys(distinctKeys(Collections.singletonList(value)), true);
+      return isScalars(Collections.singletonList(value)) ? new Keys(distinctKeys(Collections.singletonList(value)), null, true) : null;
     }
-    if (element instanceof VariableExpression variable)
-      for (final UnwindClause unwind : statement.getUnwindClauses())
-        if (variable.getVariableName().equals(unwind.getVariable()) && RowIndependentValues.isRowIndependent(unwind.getListExpression())) {
-          final Object list = evaluator.evaluate(unwind.getListExpression(), NO_ROW, context);
-          if (list instanceof Collection<?> collection)
-            return new Keys(distinctKeys(collection), false);
-        }
+    if (element instanceof VariableExpression variable) {
+      final Expression unwound = unwoundList(variable.getVariableName());
+      if (unwound != null && evaluator.evaluate(unwound, NO_ROW, context) instanceof Collection<?> rows && isScalars(rows)) {
+        final Map<Object, Integer> occurrences = new LinkedHashMap<>();
+        for (final Object row : rows)
+          if (row != null)
+            occurrences.merge(TemporalUtil.toIndexKey(row), 1, Integer::sum);
+        return new Keys(new ArrayList<>(occurrences.keySet()), occurrences.values().stream().mapToInt(Integer::intValue).toArray(), false);
+      }
+    }
     return null;
+  }
+
+  /**
+   * The list a variable is bound to when one UNWIND of a literal or a parameter binds it and no WITH gives the name another value;
+   * null otherwise, where the name may stand for something else than that list.
+   */
+  private Expression unwoundList(final String name) {
+    Expression list = null;
+    for (final UnwindClause unwind : statement.getUnwindClauses())
+      if (name.equals(unwind.getVariable())) {
+        if (list != null)
+          return null;
+        list = unwind.getListExpression();
+      }
+    if (list == null || !RowIndependentValues.isRowIndependent(list))
+      return null;
+    for (final WithClause with : statement.getWithClauses())
+      for (final ReturnClause.ReturnItem item : with.getItems())
+        if (name.equals(item.getAlias()) && !(item.getExpression() instanceof VariableExpression same && name.equals(same.getVariableName())))
+          return null;
+    return list;
+  }
+
+  /** Whether no value is a list, a map or an array: none of those is a key the node step seeks. */
+  private static boolean isScalars(final Collection<?> values) {
+    for (final Object value : values)
+      if (value instanceof Collection<?> || value instanceof Map<?, ?> || value != null && value.getClass().isArray())
+        return false;
+    return true;
   }
 
   private static List<Object> distinctKeys(final Collection<?> values) {
@@ -258,7 +293,10 @@ final class IndexedTargetCost {
     return new ArrayList<>(distinct);
   }
 
-  /** The cost of the keys a pin names, from the index and the vertices it finds; -1 when the keys are not known. */
+  /**
+   * The cost of the keys a pin names, from the index and the vertices it finds; -1 when the keys are not known. For one key per row
+   * (an UNWIND) it is the mean over the rows, each key weighted by the rows that hold it; for the keys of one row (an IN-list) the sum.
+   */
   private double probedCost(final TypeIndex index, final Pin pin, final List<String> edgeTypes, final long limit) {
     final Keys keys = resolve(pin);
     if (keys == null)
@@ -268,14 +306,20 @@ final class IndexedTargetCost {
       return 0D;
 
     final int probed = Math.min(PROBED_KEYS, values.size());
+    final int[] chosen = new int[probed];
+    double weights = 0D;
+    for (int i = 0; i < probed; i++) {
+      chosen[i] = (int) ((long) i * values.size() / probed);
+      weights += keys.weight(chosen[i]);
+    }
     double sum = 0D;
     for (int i = 0; i < probed; i++) {
-      sum += costOfKey(index, values.get((int) ((long) i * values.size() / probed)), edgeTypes, limit);
+      sum += keys.weight(chosen[i]) * costOfKey(index, values.get(chosen[i]), edgeTypes, limit);
       // what the keys read so far is a lower bound of the mean: once it fills the scan the rest cannot bring it under
-      if (sum / probed >= limit)
+      if (sum / weights >= limit)
         break;
     }
-    final double mean = sum / probed;
+    final double mean = sum / weights;
     return keys.allOfThemPerRow() ? mean * values.size() : mean;
   }
 
@@ -309,10 +353,12 @@ final class IndexedTargetCost {
     }
     // the walk back from a vertex reads as many entries as it has incoming relationships, which is not bounded for a hub: they are
     // counted, with no record read, up to OVER_LIMIT times the cost of the scan it is weighed against, and a key that already fills
-    // that cost is not looked into at all. Both stand for "far more than the scan reads" in the mean over the keys of a list
+    // that cost is not looked into at all. Both stand for "far more than the scan reads" in the mean over the keys of a list.
+    // A probe stopped by the hard cap before it filled the scan says only that the key is large: it is over the scan too
     final long ceiling = overLimit(limit);
-    if (entries >= limit)
-      return 1D + ceiling;
+    final double over = 1D + Math.max(ceiling, limit);
+    if (entries >= limit || entries >= MAX_PROBED_ENTRIES)
+      return over;
     final String[] types = edgeTypes.toArray(new String[0]);
     final int probed = Math.min(PROBED_VERTICES, kept.size());
     long inEdges = 0L;
@@ -320,9 +366,12 @@ final class IndexedTargetCost {
     for (int i = 0; i < probed; i++)
       if (kept.get((int) ((long) i * kept.size() / probed)).getRecord(false) instanceof Vertex vertex) {
         long degree = 0L;
-        for (final RID ignored : vertex.getConnectedVertexRIDs(Vertex.DIRECTION.IN, types))
+        for (final RID ignored : vertex.getConnectedVertexRIDs(walk, types))
           if (++degree >= ceiling)
             break;
+        // a vertex stopped by the hard cap before it filled the scan is a hub of unknown size: over the scan as well
+        if (degree >= ceiling && ceiling < limit)
+          return over;
         inEdges += degree;
         ++loaded;
       }
@@ -355,57 +404,56 @@ final class IndexedTargetCost {
     long edges = 0L;
     for (final String type : edgeTypes)
       edges += database.countType(type, true);
-    final double averageInDegree = labelCount > 0L ? (double) edges / labelCount : 0D;
-    return seeks * (1D + perKey * (1D + averageInDegree));
-  }
-
-  /** The keys of a pin when only the plan can count them: its elements, -1 for one parameter or variable that stands for a list. */
-  private static long keysOf(final Pin pin) {
-    final List<Expression> list = pin.elements();
-    return pin.fromIn() && list.size() == 1 && !(list.getFirst() instanceof LiteralExpression) ? -1L : list.size();
+    // the average over the target label: an undirected hop walks both lists of a vertex
+    final double averageDegree = labelCount > 0L ? (double) edges * (walk == Vertex.DIRECTION.BOTH ? 2D : 1D) / labelCount : 0D;
+    return seeks * (1D + perKey * (1D + averageDegree));
   }
 
   /**
-   * The entries per distinct key of an ordered, NOTUNIQUE index, from its first and its last {@value #KEY_SAMPLE_ENTRIES} entries in
-   * key order, the larger of the two. A sample that one key fills only says the key holds at least that many entries: -1, no
-   * estimate. A key that is large in the middle of the key order is the limit of the sample.
-   * <p>
-   * The answer is kept on the database, stamped with the record count of the index's type (an O(1) read, where counting the entries
-   * of the index walks all of them) and the time it was taken: it is read again when the count changes or after
-   * {@link GraphStatisticsCache#ENTRIES_PER_KEY_TTL_MILLIS}. A delete and an insert that leave the count alone therefore leave
-   * the answer standing for at most that long, which is the staleness bound of an estimate that only chooses between two plans.
+   * The keys of a pin when only the plan can count them: its elements, -1 for one parameter or variable that stands for a list and
+   * for a list that holds a list or a map (which the node step does not seek: it scans the type).
    */
-  private long entriesPerKey(final TypeIndex index) {
-    final GraphStatisticsCache cache = database.getGraphStatisticsCache();
-    final long records = database.countType(index.getTypeName(), true);
-    if (cache != null) {
-      final Long cached = cache.getEntriesPerKey(index.getName(), records);
-      if (cached != null)
-        return cached;
-    }
-    final long ascending = sampleEntriesPerKey(index, true);
-    final long descending = ascending < 0L ? -1L : sampleEntriesPerKey(index, false);
-    final long perKey = ascending < 0L || descending < 0L ? -1L : Math.max(ascending, descending);
-    if (cache != null)
-      cache.putEntriesPerKey(index.getName(), perKey, records);
-    return perKey;
+  private static long keysOf(final Pin pin) {
+    final List<Expression> list = pin.elements();
+    if (pin.fromIn() && list.size() == 1 && !(list.getFirst() instanceof LiteralExpression))
+      return -1L;
+    for (final Expression element : list)
+      if (element instanceof ListExpression || element instanceof MapExpression)
+        return -1L;
+    return list.size();
   }
 
-  private static long sampleEntriesPerKey(final TypeIndex index, final boolean ascending) {
-    final Set<List<Object>> keys = new HashSet<>();
+  /**
+   * The entries of the largest key at either end of an ordered, NOTUNIQUE index: the longest run of equal keys in its first and in its
+   * last {@value #KEY_SAMPLE_ENTRIES} entries in key order, the larger of the two. A run that fills the sample says only that the key
+   * holds at least that many entries: -1, no estimate. The largest run, not the mean, because the plan weighs the seek of one key:
+   * a key that became large after an earlier statement was planned is seen as long as it sorts at an end, with nothing kept between
+   * statements to go stale. A key that is large in the middle of the key order is the limit of the sample.
+   */
+  private static long entriesPerKey(final TypeIndex index) {
+    final long ascending = largestRunAtAnEnd(index, true);
+    final long descending = ascending < 0L ? -1L : largestRunAtAnEnd(index, false);
+    return ascending < 0L || descending < 0L ? -1L : Math.max(ascending, descending);
+  }
+
+  private static long largestRunAtAnEnd(final TypeIndex index, final boolean ascending) {
     long entries = 0L;
+    long run = 0L;
+    long largest = 1L;
+    List<Object> previous = null;
     final IndexCursor cursor = index.iterator(ascending);
     try {
       while (entries < KEY_SAMPLE_ENTRIES && cursor.hasNext()) {
         cursor.next();
-        keys.add(Arrays.asList(cursor.getKeys()));
+        final List<Object> key = Arrays.asList(cursor.getKeys());
+        run = key.equals(previous) ? run + 1L : 1L;
+        previous = key;
+        largest = Math.max(largest, run);
         ++entries;
       }
     } finally {
       cursor.close();
     }
-    if (keys.isEmpty())
-      return 1L;
-    return entries == KEY_SAMPLE_ENTRIES && keys.size() == 1 ? -1L : Math.max(1L, (entries + keys.size() - 1L) / keys.size());
+    return largest >= KEY_SAMPLE_ENTRIES ? -1L : largest;
   }
 }

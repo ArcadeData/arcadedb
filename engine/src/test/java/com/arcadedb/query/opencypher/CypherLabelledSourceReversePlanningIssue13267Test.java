@@ -70,6 +70,20 @@ class CypherLabelledSourceReversePlanningIssue13267Test {
   }
 
   @Test
+  void aKeyThatBecameLargeAtAnEndOfTheKeyOrderIsSeenByTheNextPlanning() {
+    // nothing about the index is kept between statements: 60 entries of one key, 7.5 percent of the records and sorting last, are
+    // read as 60 by the plan of the very next statement, which the 5 Src vertices then beat
+    assertThat(lineOf(profile(ROW_ONLY_KEY), "MATCH NODE")).contains("(n:Key");
+    database.transaction(() -> database.command("opencypher", "UNWIND range(1, 60) AS i CREATE (:Key {k: 'k9999'})"));
+    final String largeKey = "WITH 'k9999' AS s MATCH (a:Src)-[r:E]->(n:Key {k: s}) RETURN count(*) AS c";
+    assertThat(lineOf(profile(largeKey), "MATCH NODE")).contains("(a:Src");
+    assertThat(count(largeKey)).isEqualTo(0L);
+    // the estimate of a key only a row knows is the largest key at the ends: a rare key is weighed as that one too, so the written
+    // order, which is what main does, stays for the whole index until the large key is gone
+    assertThat(lineOf(profile(ROW_ONLY_KEY), "MATCH NODE")).contains("(a:Src");
+  }
+
+  @Test
   void aKeyOnlyARowKnowsIsEstimatedFromTheIndexAndStartsFromTheTarget() {
     // 5 Src vertices against one entry per key and next to no incoming relationships per Key vertex
     final String plan = profile(ROW_ONLY_KEY);

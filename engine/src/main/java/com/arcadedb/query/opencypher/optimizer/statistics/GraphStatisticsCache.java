@@ -50,17 +50,6 @@ public class GraphStatisticsCache {
   private record DegreeStat(double value, long edgeCount, long sourceVertexCount, long targetVertexCount) {
   }
 
-  /** How long a sample of the entries per key is kept, and how far the record count of the type may move from it, in percent. */
-  public static final long ENTRIES_PER_KEY_TTL_MILLIS    = 30_000L;
-  public static final long ENTRIES_PER_KEY_DRIFT_PERCENT = 10L;
-
-  // The entries per distinct key of an ordered index, sampled from both ends of its key order, stamped with the record count of its
-  // type and the time it was taken
-  private record EntriesPerKeyStat(long perKey, long records, long sampledAtNanos) {
-  }
-
-  private final Map<String, EntriesPerKeyStat> entriesPerKeyCache = new ConcurrentHashMap<>();
-
   private final Map<String, MultiplicityStat> meanEdgesPerConnectedPairCache = new ConcurrentHashMap<>();
   private final Map<String, DegreeStat> averageDegreeCache = new ConcurrentHashMap<>();
 
@@ -101,43 +90,14 @@ public class GraphStatisticsCache {
   }
 
   /**
-   * @param indexName      the index name
-   * @param currentRecords the record count of the index's type now (an O(1) read)
-   * @return the cached entries per distinct key of the index (-1 when it could not be estimated), or {@code null} if absent or stale:
-   *         the type holds more than {@link #ENTRIES_PER_KEY_DRIFT_PERCENT} percent more or fewer records than when it was sampled,
-   *         or the sample is older than {@link #ENTRIES_PER_KEY_TTL_MILLIS}. A delete and an insert that leave the count alone are
-   *         therefore not seen for at most that long
-   */
-  public Long getEntriesPerKey(final String indexName, final long currentRecords) {
-    return getEntriesPerKey(indexName, currentRecords, System.nanoTime());
-  }
-
-  Long getEntriesPerKey(final String indexName, final long currentRecords, final long nowNanos) {
-    final EntriesPerKeyStat entry = entriesPerKeyCache.get(indexName);
-    if (entry == null || (nowNanos - entry.sampledAtNanos()) / 1_000_000L >= ENTRIES_PER_KEY_TTL_MILLIS)
-      return null;
-    final long allowed = entry.records() * ENTRIES_PER_KEY_DRIFT_PERCENT / 100L;
-    return Math.abs(currentRecords - entry.records()) <= allowed ? entry.perKey() : null;
-  }
-
-  public void putEntriesPerKey(final String indexName, final long perKey, final long currentRecords) {
-    putEntriesPerKey(indexName, perKey, currentRecords, System.nanoTime());
-  }
-
-  void putEntriesPerKey(final String indexName, final long perKey, final long currentRecords, final long nowNanos) {
-    entriesPerKeyCache.put(indexName, new EntriesPerKeyStat(perKey, currentRecords, nowNanos));
-  }
-
-  /**
    * Clears all cached statistics. Useful for testing.
    */
   public void clear() {
     meanEdgesPerConnectedPairCache.clear();
     averageDegreeCache.clear();
-    entriesPerKeyCache.clear();
   }
 
   public int size() {
-    return meanEdgesPerConnectedPairCache.size() + averageDegreeCache.size() + entriesPerKeyCache.size();
+    return meanEdgesPerConnectedPairCache.size() + averageDegreeCache.size();
   }
 }
