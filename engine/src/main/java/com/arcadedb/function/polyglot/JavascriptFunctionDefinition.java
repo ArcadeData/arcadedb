@@ -87,7 +87,9 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
   /**
    * Tells if {@code name} can be used as it is for the name of a function or of a parameter: a non empty sequence of
-   * letters, digits, {@code $} and {@code _} that does not start with a digit and is not a reserved word.
+   * the characters the language allows in an identifier (letters, {@code $} and {@code _} to start with, then also
+   * combining marks, digits and connector punctuation) that is not a reserved word. No other character is accepted, so
+   * a name never holds an operator, a quote, a bracket, a space or a line break.
    */
   private static boolean isPlainIdentifier(final String name) {
     if (name == null || name.isEmpty() || RESERVED_WORDS.contains(name))
@@ -96,11 +98,34 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     final int length = name.length();
     for (int i = 0; i < length; ) {
       final int codePoint = name.codePointAt(i);
-      if (!(codePoint == '$' || codePoint == '_' || Character.isLetter(codePoint) || (i > 0 && Character.isDigit(codePoint))))
+      if (!(isIdentifierStart(codePoint) || (i > 0 && isIdentifierContinuation(codePoint))))
         return false;
       i += Character.charCount(codePoint);
     }
     return true;
+  }
+
+  private static boolean isIdentifierStart(final int codePoint) {
+    if (codePoint == '$' || codePoint == '_')
+      return true;
+
+    return switch (Character.getType(codePoint)) {
+      case Character.UPPERCASE_LETTER, Character.LOWERCASE_LETTER, Character.TITLECASE_LETTER, Character.MODIFIER_LETTER,
+           Character.OTHER_LETTER, Character.LETTER_NUMBER -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean isIdentifierContinuation(final int codePoint) {
+    // ZERO WIDTH NON-JOINER AND ZERO WIDTH JOINER
+    if (codePoint == 0x200C || codePoint == 0x200D)
+      return true;
+
+    return switch (Character.getType(codePoint)) {
+      case Character.NON_SPACING_MARK, Character.COMBINING_SPACING_MARK, Character.DECIMAL_DIGIT_NUMBER,
+           Character.CONNECTOR_PUNCTUATION -> true;
+      default -> false;
+    };
   }
 
   /**
@@ -142,7 +167,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
   @Override
   public String[] getParameters() {
-    return parameters;
+    // A COPY, SO THE NAMES THAT WERE CHECKED CANNOT BE CHANGED THROUGH THE ARRAY OF A CALLER
+    return parameters.clone();
   }
 
   @Override

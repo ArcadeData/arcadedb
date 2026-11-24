@@ -79,7 +79,7 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
   @Test
   void functionNameMustBeAnIdentifier() {
     for (final String name : new String[] { "z(){} globalThis.declaredMarker = 1; function y", "a b", "a-b", "a.b", "1a", "", " ",
-        "a;", "a\n", "if", "class", "null" })
+        "a;", "a\n", "if", "class", "null", "́a", "a b", "a b", "a\u0000", "a'b", "a\"b", "a`b", "a/b", "a\\b" })
       assertThatThrownBy(() -> new JavascriptFunctionDefinition(name, "return 1;"))
           .as("function name '%s'", name)
           .isInstanceOf(IllegalArgumentException.class);
@@ -105,10 +105,32 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
     library.registerFunction(new JavascriptFunctionDefinition("$dollar", "return $a + _b;", "$a", "_b"));
     library.registerFunction(new JavascriptFunctionDefinition("_under_score9", "return x9;", "x9"));
     library.registerFunction(new JavascriptFunctionDefinition("città", "return perché;", "perché"));
+    // A LETTER FOLLOWED BY A COMBINING MARK, IN THE NAME AND IN A PARAMETER
+    library.registerFunction(new JavascriptFunctionDefinition("café", "return x́;", "x́"));
+    library.registerFunction(new JavascriptFunctionDefinition("joined‍", "return a_‿;", "a_‿"));
 
     assertThat(library.getFunction("$dollar").execute(1, 2)).isEqualTo(3);
     assertThat(library.getFunction("_under_score9").execute("v")).isEqualTo("v");
     assertThat(library.getFunction("città").execute("ok")).isEqualTo("ok");
+    assertThat(library.getFunction("café").execute("ok")).isEqualTo("ok");
+    assertThat(library.getFunction("joined‍").execute("ok")).isEqualTo("ok");
+  }
+
+  @Test
+  void parametersCannotBeChangedOnceTheDefinitionIsBuilt() {
+    final String[] given = { "a", "b" };
+    final JavascriptFunctionDefinition definition = new JavascriptFunctionDefinition("sum", "return a + b;", given);
+
+    given[0] = "a=1";
+    definition.getParameters()[1] = "b=2";
+
+    assertThat(definition.getParameters()).containsExactly("a", "b");
+
+    final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "decl");
+    library.registerFunction(definition);
+    assertThat(library.getFunction("sum").execute(1, 2)).isEqualTo(3);
+    assertThat(library.toJSON().getJSONObject("functions").getJSONObject("sum").getJSONArray("parameters").toListOfStrings())
+        .containsExactly("a", "b");
   }
 
   @Test
