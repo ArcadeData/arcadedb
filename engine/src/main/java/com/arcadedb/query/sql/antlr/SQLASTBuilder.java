@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.parser.AlterMaterializedViewStatement;
 import com.arcadedb.query.sql.parser.AlterPropertyStatement;
 import com.arcadedb.query.sql.parser.AlterTimeSeriesTypeStatement;
 import com.arcadedb.query.sql.parser.AlterTypeStatement;
+import com.arcadedb.query.sql.parser.CastExpression;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.ArrayConcatExpression;
 import com.arcadedb.query.sql.parser.ArrayConcatExpressionElement;
@@ -3313,6 +3314,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   @Override
   public MathExpression visitBase(final SQLParser.BaseContext ctx) {
     return (MathExpression) visit(ctx.baseExpression());
+  }
+
+  /**
+   * {@code x::type} (issue #13384): the operand is the whole math expression to the left, which binds looser than the cast.
+   */
+  @Override
+  public MathExpression visitCastSuffix(final SQLParser.CastSuffixContext ctx) {
+    final Expression operand = new Expression();
+    operand.mathExpression = (MathExpression) visit(ctx.mathExpression());
+    return new CastExpression(operand, ctx.identifier().getText());
+  }
+
+  /**
+   * {@code CAST(x AS type)}: the first identifier is the function name, the rest (one word, or two as in DOUBLE PRECISION) the type.
+   */
+  @Override
+  public MathExpression visitCastFunction(final SQLParser.CastFunctionContext ctx) {
+    final StringBuilder typeName = new StringBuilder();
+    for (int i = 1; i < ctx.identifier().size(); i++) {
+      if (typeName.length() > 0)
+        typeName.append(' ');
+      typeName.append(ctx.identifier(i).getText());
+    }
+    return new CastExpression((Expression) visit(ctx.expression()), typeName.toString());
   }
 
   /**
