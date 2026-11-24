@@ -20,11 +20,13 @@ package com.arcadedb.server.ha.raft;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Unit tests for {@link RaftLogCompactionScheduler}, the periodic snapshot trigger that keeps the
@@ -34,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RaftLogCompactionSchedulerTest {
 
   static final class FakeCompactionTarget implements RaftLogCompactionScheduler.CompactionTarget {
-    final    List<Long> requestedGaps     = new ArrayList<>();
+    // Written by the scheduler's thread for an early checkpoint (issue #12587)
+    final    List<Long> requestedGaps     = new CopyOnWriteArrayList<>();
     volatile boolean    shutdownRequested = false;
     volatile boolean    failSnapshot      = false;
     volatile long       usableSpace       = 900L;
@@ -331,5 +334,96 @@ class RaftLogCompactionSchedulerTest {
     scheduler.tick();
     assertThat(scheduler.isUnderDiskPressure()).isFalse();
     assertThat(target.requestedGaps).containsExactly(1L, 64L);
+  }
+
+  // Regression for #12587: an early checkpoint is taken on the scheduler's thread with the gap it was asked with
+  @Test
+  void anEarlyCheckpointIsTakenWithTheGapItWasAskedWith() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+    scheduler.start();
+    try {
+      assertThat(scheduler.requestEarlyCheckpoint(75_000L)).as("queued").isTrue();
+      await().atMost(Duration.ofSeconds(10)).until(() -> !target.requestedGaps.isEmpty());
+      assertThat(target.requestedGaps)
+          .as("the early checkpoint's own gap, not minEntries: a checkpoint another trigger took meanwhile is not taken twice")
+          .containsExactly(75_000L);
+    } finally {
+      scheduler.stop();
+    }
+  }
+
+  // Regression for #12587: arcadedb.ha.snapshotInterval=0 turns the periodic tick off, not the early checkpoints
+  @Test
+  void anEarlyCheckpointIsTakenWhenThePeriodicCompactionIsDisabled() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    final RaftLogCompactionScheduler scheduler = new RaftLogCompactionScheduler(target, 0L, 64L, 20);
+    scheduler.start();
+    try {
+      assertThat(scheduler.isRunning()).as("no periodic tick").isFalse();
+      assertThat(scheduler.acceptsEarlyCheckpoints()).isTrue();
+      scheduler.requestEarlyCheckpoint(30L);
+      await().atMost(Duration.ofSeconds(10)).until(() -> !target.requestedGaps.isEmpty());
+      assertThat(target.requestedGaps).containsExactly(30L);
+    } finally {
+      scheduler.stop();
+    }
+    assertThat(scheduler.acceptsEarlyCheckpoints()).isFalse();
+  }
+
+  // Regression for #12587: disk pressure purges as far as possible, whoever asked for the checkpoint
+  @Test
+  void anEarlyCheckpointUnderDiskPressureUsesTheSmallestGap() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    target.usableSpace = 100L;
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+    scheduler.start();
+    try {
+      scheduler.requestEarlyCheckpoint(30L);
+      await().atMost(Duration.ofSeconds(10)).until(() -> !target.requestedGaps.isEmpty());
+      assertThat(target.requestedGaps).containsExactly(RaftLogCompactionScheduler.DISK_PRESSURE_CREATION_GAP);
+    } finally {
+      scheduler.stop();
+    }
+  }
+
+  // Regression for #12587: the apply thread asks, so a request to a scheduler that is not running is refused without a throw
+  @Test
+  void anEarlyCheckpointAskedOfASchedulerNotRunningIsRefused() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+
+    assertThat(scheduler.requestEarlyCheckpoint(30L)).as("not started yet: asked again with the next entry").isFalse();
+    scheduler.start();
+    scheduler.stop();
+    assertThat(scheduler.requestEarlyCheckpoint(30L)).as("stopped").isFalse();
+
+    assertThat(target.requestedGaps).isEmpty();
+  }
+
+  // Regression for #12587: a failed early checkpoint neither escapes nor kills the scheduler's thread
+  @Test
+  void aFailedEarlyCheckpointDoesNotKillTheSchedulerThread() {
+    final FakeCompactionTarget target = new FakeCompactionTarget();
+    target.failSnapshot = true;
+    final RaftLogCompactionScheduler scheduler = newScheduler(target);
+    scheduler.start();
+    try {
+      scheduler.requestEarlyCheckpoint(30L);
+      scheduler.requestEarlyCheckpoint(31L);
+      await().atMost(Duration.ofSeconds(10)).until(() -> target.requestedGaps.size() == 2);
+      assertThat(target.requestedGaps).containsExactly(30L, 31L);
+    } finally {
+      scheduler.stop();
+    }
+  }
+
+  // Regression for #12587: the early checkpoint is asked at three quarters of the auto-trigger, never at 0
+  @Test
+  void theEarlyCheckpointGapIsThreeQuartersOfTheAutoTrigger() {
+    assertThat(ArcadeStateMachine.earlyCheckpointGapFor(100_000L)).isEqualTo(75_000L);
+    assertThat(ArcadeStateMachine.earlyCheckpointGapFor(40L)).isEqualTo(30L);
+    assertThat(ArcadeStateMachine.earlyCheckpointGapFor(1L)).isEqualTo(1L);
+    assertThat(ArcadeStateMachine.earlyCheckpointGapFor(0L)).as("no auto-trigger, no early checkpoint").isZero();
   }
 }

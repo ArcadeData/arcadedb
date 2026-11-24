@@ -2760,8 +2760,10 @@ public enum GlobalConfiguration {
 
   HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
       """
-      Number of Raft log entries after which the leader automatically takes a snapshot. \
-      Lower values cause more frequent snapshots and earlier log compaction.""",
+      Number of Raft log entries after which every node automatically takes a snapshot. \
+      Lower values cause more frequent snapshots and earlier log compaction. The snapshot is normally taken \
+      at three quarters of this count by the log compaction thread, which forces the data files ahead of it \
+      so the apply thread does not stall on them; the count itself is the backstop.""",
       Long.class, 100_000L),
 
   HA_SNAPSHOT_INTERVAL("arcadedb.ha.snapshotInterval", SCOPE.SERVER,

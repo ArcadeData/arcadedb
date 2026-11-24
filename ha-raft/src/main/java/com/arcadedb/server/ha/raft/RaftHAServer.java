@@ -393,8 +393,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // isCrashLoopEscalated() (issue #7622), same reasoning as raftServer above.
   private volatile HealthMonitor             healthMonitor;
   // Periodic Raft snapshot/log-purge trigger (issue #5345). Runs on every node, leader and follower
-  // alike, because each Ratis server purges its own log against its own snapshot index.
-  private          RaftLogCompactionScheduler logCompactionScheduler;
+  // alike, because each Ratis server purges its own log against its own snapshot index. Volatile: the apply thread reads it
+  // to ask for an early checkpoint (issue #12587)
+  private volatile RaftLogCompactionScheduler logCompactionScheduler;
   // Client identity and call-id sequence for the local snapshot-management requests the compaction
   // scheduler issues. A stable ClientId keeps the requests distinguishable in Ratis's logs.
   private final    ClientId                  snapshotClientId      = ClientId.randomId();
@@ -1974,7 +1975,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     sm.setRuntimeJoinDetector(runtimeJoinDetector);
     sm.setLocalDropVerbs(localDropVerbs);
     sm.shareRestoreHolds(databasesHeldForRestore);
+    // The entry-count checkpoints are taken on the compaction scheduler's thread, early pass first, ahead of the Ratis
+    // auto-trigger that would take them on the apply thread (issue #12587)
+    sm.setEarlyCheckpointWake(configuration.getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_THRESHOLD), this::requestEarlyCheckpoint);
     return sm;
+  }
+
+  /**
+   * Hands an early checkpoint the apply path asked for to the compaction scheduler (issue #12587).
+   *
+   * @return false while the scheduler is not running (the startup replay, a shutdown), so the apply path asks again with
+   * the next entry
+   */
+  private boolean requestEarlyCheckpoint(final long creationGap) {
+    final RaftLogCompactionScheduler scheduler = logCompactionScheduler;
+    return scheduler != null && scheduler.requestEarlyCheckpoint(creationGap);
   }
 
   /**

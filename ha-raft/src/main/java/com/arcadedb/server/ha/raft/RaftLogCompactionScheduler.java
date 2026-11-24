@@ -21,7 +21,9 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -52,6 +54,12 @@ import java.util.logging.Level;
  * When free space on the Raft storage volume drops below the configured percentage the gap is
  * lowered to 1, purging as aggressively as Ratis allows, and a throttled WARNING surfaces the
  * condition before the disk fills.
+ * <p>
+ * The same thread takes the entry-count checkpoints too (issue #12587): the apply path asks for one through
+ * {@link #requestEarlyCheckpoint(long)} when the entries applied since the latest snapshot approach
+ * {@code arcadedb.ha.snapshotThreshold}, so the Ratis auto-trigger, which would force the data files on the apply
+ * thread, finds the checkpoint already taken. That is why the thread runs even when {@code arcadedb.ha.snapshotInterval}
+ * disables the periodic tick.
  * <p>
  * <b>Note on pool metrics:</b> this class owns a single-thread scheduled executor, but it is
  * deliberately not registered with the engine's {@code PoolMetrics} binder. That binder covers pools
@@ -107,6 +115,8 @@ public final class RaftLogCompactionScheduler {
   private final    long                     minEntries;
   private final    int                      minFreeSpacePerc;
   private volatile ScheduledExecutorService executor;
+  // The periodic tick, null when arcadedb.ha.snapshotInterval disables it or the scheduler is stopped
+  private volatile ScheduledFuture<?>       periodicTask;
   private volatile boolean                  underDiskPressure = false;
   // Wall-clock time (ms) of the last emitted disk-pressure WARNING; -1 = never warned.
   private          long                     lastDiskWarningMs = -1L;
@@ -136,26 +146,64 @@ public final class RaftLogCompactionScheduler {
   }
 
   public void start() {
-    if (intervalMs <= 0) {
-      LogManager.instance().log(this, Level.FINE,
-          "Raft log compaction scheduler disabled (arcadedb.ha.snapshotInterval=%d)", intervalMs);
-      return;
-    }
-    executor = Executors.newSingleThreadScheduledExecutor(r -> {
+    // The thread is started even when the periodic compaction is disabled: it also takes the early checkpoints the apply
+    // path asks for ahead of the Ratis entry-count auto-trigger (issue #12587), which arcadedb.ha.snapshotInterval=0 keeps
+    final ScheduledExecutorService started = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-raft-log-compaction");
       t.setDaemon(true);
       return t;
     });
+    executor = started;
+    if (intervalMs <= 0) {
+      LogManager.instance().log(this, Level.FINE,
+          "Raft log compaction scheduler disabled (arcadedb.ha.snapshotInterval=%d), early checkpoints only", intervalMs);
+      return;
+    }
     // Start one full interval in so the first tick does not race Ratis's initial election and log replay.
-    executor.scheduleWithFixedDelay(this::tickSafely, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+    periodicTask = started.scheduleWithFixedDelay(this::tickSafely, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
     LogManager.instance().log(this, Level.FINE,
         "Raft log compaction scheduler started (interval=%dms, minEntries=%d, minFreeSpacePerc=%d%%)",
         intervalMs, minEntries, minFreeSpacePerc);
   }
 
+  /**
+   * Asks for a checkpoint on this scheduler's thread, now rather than at the next tick (issue #12587). The apply path calls
+   * it when the entries applied since the latest snapshot approach the Ratis entry-count auto-trigger, which would
+   * otherwise take the checkpoint on the apply thread itself and force every data file written since the previous one
+   * there, holding every commit of the node: here the target forces them first, off the apply thread, and the checkpoint
+   * finds only what was written in between. Called on the apply thread, so it only queues the request: it never blocks and
+   * never throws, and a request arriving while the scheduler is not running is refused (the auto-trigger is still behind it).
+   *
+   * @param creationGap the entries the checkpoint needs past the latest snapshot; Ratis answers below it without one, so
+   *                    a checkpoint some other trigger took in the meantime is not taken twice
+   *
+   * @return whether the request was queued
+   */
+  boolean requestEarlyCheckpoint(final long creationGap) {
+    final ScheduledExecutorService current = executor;
+    if (current == null)
+      return false;
+    try {
+      current.execute(() -> earlyCheckpointSafely(creationGap));
+      return true;
+    } catch (final RejectedExecutionException e) {
+      // Stopping: the auto-trigger and the shutdown snapshot are still behind it
+      return false;
+    }
+  }
+
+  private void earlyCheckpointSafely(final long creationGap) {
+    try {
+      tick(Math.max(1L, creationGap));
+    } catch (final Throwable t) {
+      LogManager.instance().log(this, Level.WARNING, "Raft early checkpoint failed: %s", t.getMessage());
+    }
+  }
+
   public void stop() {
     final ScheduledExecutorService current = executor;
     if (current != null) {
+      periodicTask = null;
       current.shutdownNow();
       // Briefly await termination so a tick already inside a snapshot request (which carries a 30s Ratis
       // timeout) finishes before RaftHAServer.stop() tears Ratis down. Re-entry is already blocked by the
@@ -171,6 +219,11 @@ public final class RaftLogCompactionScheduler {
 
   /** Visible for tests: whether the periodic task is scheduled. */
   boolean isRunning() {
+    return executor != null && periodicTask != null;
+  }
+
+  /** Visible for tests: whether an early checkpoint asked now would be taken (issue #12587). */
+  boolean acceptsEarlyCheckpoints() {
     return executor != null;
   }
 
@@ -207,11 +260,19 @@ public final class RaftLogCompactionScheduler {
    * Package-private for tests. Runs one compaction check synchronously.
    */
   void tick() {
+    tick(minEntries);
+  }
+
+  /**
+   * One compaction check with {@code normalGap} as the creation gap while the volume is not under disk pressure:
+   * {@link #minEntries} for the periodic tick, the early checkpoint's own gap for {@link #requestEarlyCheckpoint}.
+   */
+  private void tick(final long normalGap) {
     if (target.isShutdownRequested())
       return;
 
     final boolean pressure = evaluateDiskPressure();
-    final long creationGap = pressure ? DISK_PRESSURE_CREATION_GAP : minEntries;
+    final long creationGap = pressure ? DISK_PRESSURE_CREATION_GAP : normalGap;
 
     final long snapshotIndex = target.triggerSnapshot(creationGap);
     // Ratis answers a short-circuited (below the creation gap) request with a SUCCESS reply carrying the

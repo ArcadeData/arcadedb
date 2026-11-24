@@ -98,6 +98,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.function.LongConsumer;
+import java.util.function.LongPredicate;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
@@ -215,6 +216,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private static final long                  PAGES_LEFT_TO_RECOVERY_REMINDER_MS = 300_000L;
   // When it last did; Long.MIN_VALUE / 2 so the first refusal always does. Only the checkpoint reads and writes it
   private volatile long                      pagesLeftToRecoveryReminderMs      = Long.MIN_VALUE / 2;
+  // The early checkpoint ahead of the Ratis entry-count auto-trigger (issue #12587), see setEarlyCheckpointWake: how many
+  // entries past a marker the apply path asks for one (0: never), whom it asks, and the index it asks at (Long.MAX_VALUE:
+  // not armed, or already asked in this window). The index is read by the apply thread on every entry, a volatile read;
+  // it is written once per snapshot window
+  private volatile long                      earlyCheckpointGap                 = 0L;
+  private volatile LongPredicate             earlyCheckpointWake;
+  private volatile long                      earlyCheckpointWakeIndex           = Long.MAX_VALUE;
   // Set once isNodeShuttingDown() has seen the JVM running its shutdown hooks (issue #9550); never cleared.
   private volatile boolean                   jvmShutdownSeen;
   // The highest index a leader-driven Raft install covered (issues #8577, #8651): a replayed entry at or below it is
@@ -1018,6 +1026,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
     // What the schema did up to the seeded position is not in this instance's memory (issue #10067)
     schemaHistory.schemaHistoryIncompleteUpTo(lastAppliedIndex.get());
+    // The next early checkpoint counts from the marker Ratis counts its auto-trigger from (issue #12587)
+    armEarlyCheckpointWake(snapshotInfo != null ? snapshotInfo.getIndex() : -1L);
 
     // When called from StateMachineUpdater.reload() after a snapshot install, the lifecycle is
     // PAUSED (pause() was called by SnapshotInstallationHandler). Transition back to RUNNING so
@@ -1734,6 +1744,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
           appliedIndexes.recordDatabaseCreated(index, decoded.databaseName());
       }
 
+      // Close to the entry-count auto-trigger: the checkpoint is asked for off this thread, early pass first (issue #12587)
+      if (index >= earlyCheckpointWakeIndex)
+        wakeEarlyCheckpoint(index);
+
       // A security document pinned by a failed write is written again from time to time, on this thread, so a volume
       // that is writable again stops pinning the log without waiting for the next security change (issue #7752)
       final ArcadeDBServer srv = this.server;
@@ -2103,6 +2117,75 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Has the apply path ask {@code wake} for a checkpoint once {@link #earlyCheckpointGapFor(long) three quarters} of
+   * {@code autoTriggerThreshold} entries were applied past the latest marker (issue #12587). The Ratis entry-count
+   * auto-trigger ({@code arcadedb.ha.snapshotThreshold}) runs {@link #takeSnapshot()} straight from the
+   * StateMachineUpdater, the apply thread, with no early pass ahead of it ({@link #syncDataFilesAheadOfCheckpoint}), so
+   * every data file written since the previous checkpoint was forced there and every commit of the node waited for it: a
+   * node applying more than the threshold within one compaction interval, heavy ingest, reached it before the periodic
+   * compaction ever did. {@code wake} asks for the checkpoint from its own thread, early pass first, before the threshold
+   * is reached; the auto-trigger stays on as the backstop, for a request that is refused, times out or arrives late, and
+   * for the shutdown snapshot, which Ratis takes only while it is on.
+   * <p>
+   * Asked once per snapshot window: re-armed when a marker is registered (a checkpoint, an install) and when the state
+   * machine is reinitialized, counted from the higher of the marker and the applied index, so a checkpoint clamped below
+   * a held entry does not ask again on every entry. Not armed while {@code wake} is null or the threshold is not positive.
+   *
+   * @param autoTriggerThreshold the entry count of the Ratis auto-trigger
+   * @param wake                 receives the creation gap to ask the checkpoint with and answers whether it took the
+   *                             request (false: asked again with the next entry); runs on the apply thread, so it only
+   *                             hands the request over, it must neither block nor force anything
+   */
+  void setEarlyCheckpointWake(final long autoTriggerThreshold, final LongPredicate wake) {
+    this.earlyCheckpointWake = wake;
+    this.earlyCheckpointGap = wake != null ? earlyCheckpointGapFor(autoTriggerThreshold) : 0L;
+    // Counted from the applied index for now: the storage may not be initialized yet, and reinitialize() re-arms from the marker
+    armEarlyCheckpointWake(-1L);
+  }
+
+  /**
+   * The entries past the latest marker the early checkpoint is asked at, for an auto-trigger at {@code autoTriggerThreshold}
+   * (issue #12587): three quarters of it, so a quarter of the window is left for the early pass and the checkpoint to land
+   * before the auto-trigger; 0 (never) for a threshold that is not positive.
+   */
+  static long earlyCheckpointGapFor(final long autoTriggerThreshold) {
+    return autoTriggerThreshold > 0 ? Math.max(1L, autoTriggerThreshold - autoTriggerThreshold / 4) : 0L;
+  }
+
+  /** The gap the early checkpoint is asked at, 0 when it is not; visible for tests. */
+  long getEarlyCheckpointGap() {
+    return earlyCheckpointGap;
+  }
+
+  /** The applied index the next early checkpoint is asked at, {@link Long#MAX_VALUE} when none is armed; visible for tests. */
+  long getEarlyCheckpointWakeIndex() {
+    return earlyCheckpointWakeIndex;
+  }
+
+  private void armEarlyCheckpointWake(final long snapshotIndex) {
+    final long gap = earlyCheckpointGap;
+    earlyCheckpointWakeIndex = gap > 0 ? Math.max(0L, Math.max(snapshotIndex, lastAppliedIndex.get())) + gap : Long.MAX_VALUE;
+  }
+
+  /**
+   * Hands the early checkpoint over (issue #12587), once per window: disarmed once taken, re-armed by the next marker. A
+   * request nobody took yet (the scheduler starts after the startup replay) is asked again with the next entry. Nothing
+   * thrown by the hand-over may fail the entry that was just applied: the auto-trigger is still there behind it.
+   */
+  private void wakeEarlyCheckpoint(final long index) {
+    final LongPredicate wake = earlyCheckpointWake;
+    if (wake == null)
+      return;
+    try {
+      if (wake.test(earlyCheckpointGap))
+        earlyCheckpointWakeIndex = Long.MAX_VALUE;
+    } catch (final RuntimeException e) {
+      earlyCheckpointWakeIndex = Long.MAX_VALUE;
+      LogManager.instance().log(this, Level.FINE, "Could not ask for the early checkpoint at index %d: %s", index, e.getMessage());
+    }
+  }
+
+  /**
    * Makes the pages written so far by every open database durable in its data files, for {@link #takeSnapshot()} (issue
    * #11258). Iterates the engine's registry of open instances, as {@link #persistColumnarRecoverySets()} does and for the
    * same reasons. Waits up to {@link #SNAPSHOT_DATA_FLUSH_WAIT_MS} in all, across every database, for the pages pending in
@@ -2221,6 +2304,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         snapshotFile.createNewFile();
       storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
           new FileInfo(snapshotFile.toPath(), null), term, index));
+      armEarlyCheckpointWake(index);
       // Keep only the marker just registered; older zero-byte markers are obsolete once a newer one
       // exists. This used to be storage.cleanupOldSnapshots(policy), which deletes nothing for
       // ArcadeDB (issue #7209): Ratis 3.3.0's SimpleStateMachineStorage advances its delete index
