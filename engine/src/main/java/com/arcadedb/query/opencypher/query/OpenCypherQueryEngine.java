@@ -314,7 +314,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && statement instanceof CypherShowSchemaStatement show)
         return CypherSchemaCommands.execute(database, show, actualQuery, effectiveParameters);
 
-      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(planCacheKey(lookup), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException
              | NeedRetryException e) {
       // A NeedRetryException keeps its type: Database.transaction(..., retries) retries on it, and SQL lets it through (#9487)
@@ -490,7 +490,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherSessionStatement)
         return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
-      return execute(lookup.cacheKey(), statement, configuration, effectiveParameters, explain, profile, timeExecution);
+      return execute(planCacheKey(lookup), statement, configuration, effectiveParameters, explain, profile, timeExecution);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException | NeedRetryException e) {
       // See query(): a retryable conflict must reach Database.transaction(..., retries) with its own type (#9487)
       throw e;
@@ -580,9 +580,18 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
+   * The key the plan of a looked-up statement is cached under, or null when it must not be cached: a text with more literals than
+   * a shape records is keyed as written, so only an exact resend could hit its entry, while the plan holds the whole statement
+   * (issue #12605). Such a text is kept out of the statement cache for the same reason (issue #12350).
+   */
+  private static String planCacheKey(final Lookup<ParsedQuery> lookup) {
+    return lookup.statement().bulk() ? null : lookup.cacheKey();
+  }
+
+  /**
    * Executes a parsed Cypher statement.
    *
-   * @param queryString   the original query string (for plan cache key)
+   * @param queryString   the plan cache key (see {@link #planCacheKey}), null to plan without the cache
    * @param statement     the parsed Cypher statement
    * @param configuration context configuration
    * @param parameters    query parameters
@@ -625,11 +634,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return executeStatement(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters,
-              explain, profile, timeExecution);
+          return executeStatement(queryString == null ? null : WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i),
+              configuration, parameters, explain, profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return executeStatement(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
-            profile, timeExecution);
+        return executeStatement(queryString == null ? null : ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(),
+            configuration, parameters, explain, profile, timeExecution);
       return new InternalResultSet();
     }
 
@@ -639,7 +648,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // A transaction holding uncommitted changes gets no Graph Analytical View: a cached plan may carry one it would
     // read past those changes, and a plan built now carries none, so it must not reach the cache either
-    if (!explain && !profile && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
+    if (!explain && !profile && queryString != null && !GraphTraversalProviderRegistry.isWithheld(execDb)) {
       // Only use plan cache for normal execution (not explain/profile)
       final PhysicalPlan physicalPlan = database.getCypherPlanCache().get(queryString);
       // A cached plan that reads a view no longer usable (gone stale, dropped), or that walks the records because a view was
@@ -666,7 +675,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
         }
       }
     } else {
-      // explain/profile mode, or views withheld: always create new plan without caching
+      // explain/profile mode, a bulk text (no key), or views withheld: always create new plan without caching
       final CypherExecutionPlanner planner = new CypherExecutionPlanner(execDb, statement, parameters,
           EXPRESSION_EVALUATOR);
       plan = planner.createExecutionPlan(configuration);

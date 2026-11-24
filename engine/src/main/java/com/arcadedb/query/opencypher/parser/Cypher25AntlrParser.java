@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.function.CypherBuiltinFunctions;
 import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.query.literal.LiteralParameterizer;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
@@ -83,8 +84,12 @@ public class Cypher25AntlrParser {
    *                                user-defined function, so they are resolved before every execution, where an
    *                                unknown one is refused as an unknown plain function is at parse time (issue #11115);
    *                                empty for the common query that calls none
+   * @param bulk                    whether the text holds more literals than a shape records
+   *                                ({@link LiteralParameterizer#MAX_LITERALS}): the data of a bulk write written in, kept out of
+   *                                the statement cache (issue #12350) and out of the plan cache, whose key would be the whole
+   *                                text (issue #12605)
    */
-  public record ParsedQuery(CypherStatement statement, Set<String> parameters, List<String> namespacedFunctionCalls) {
+  public record ParsedQuery(CypherStatement statement, Set<String> parameters, List<String> namespacedFunctionCalls, boolean bulk) {
   }
 
   /**
@@ -217,7 +222,7 @@ public class Cypher25AntlrParser {
 
       // After validation, so that an error names the query as written (issue #9598)
       return new ParsedTree(new ParsedQuery(OptionalMatchAntiJoinRewriter.rewrite(statement), collectParameterNames(statementContext, query),
-          collectNamespacedFunctionCalls(statementContext)), statementContext);
+          collectNamespacedFunctionCalls(statementContext), holdsMoreLiteralsThanAShape(tokens)), statementContext);
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -231,6 +236,23 @@ public class Cypher25AntlrParser {
     } finally {
       ExpressionRewriter.restoreMaxExpressionDepth(previousMaxDepth);
     }
+  }
+
+  /**
+   * Whether the query holds more literals than a shape records ({@link LiteralParameterizer#MAX_LITERALS}), counted as the
+   * literal scan counts them, so the statement and the plan caches agree on which texts are bulk (issue #12605). The tokens are
+   * the ones the parser read, so nothing is lexed again, and a query with fewer tokens than the limit is not walked.
+   */
+  private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
+    final List<Token> all = tokens.getTokens();
+    if (all.size() <= LiteralParameterizer.MAX_LITERALS)
+      return false;
+    int literals = 0;
+    for (final Token token : all)
+      if (token.getChannel() == Token.DEFAULT_CHANNEL && CypherLiteralParameterizer.isCandidate(token)
+          && ++literals > LiteralParameterizer.MAX_LITERALS)
+        return true;
+    return false;
   }
 
   private static boolean containsToken(final CommonTokenStream tokens, final int type) {

@@ -64,9 +64,10 @@ public abstract class LiteralParameterizer<S> {
    * Beyond this many literals a text is keyed as written: the shape records literal positions in one character each. Such a
    * text is the data of a bulk write written in, and only an exact resend would share its entry, so it is not cached either, on
    * any path (see {@link #parseAsWritten}): its parse tree holds a node chain per literal, 17 to 34 times the text, for as long
-   * as the entry lives (issue #12350).
+   * as the entry lives (issue #12350). The parsers apply the same limit to the plan caches: a statement parsed from such a text is
+   * never planned into one either, its plan being keyed by a text that holds every literal (issue #12605).
    */
-  private static final int    MAX_LITERALS = 4096;
+  public static final  int    MAX_LITERALS = 4096;
 
   private final SegmentedLRUCache<String, Lookup<S>> statements;
   private final SegmentedLRUCache<String, byte[]>    policies;
