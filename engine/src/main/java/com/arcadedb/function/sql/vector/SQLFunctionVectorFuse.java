@@ -119,7 +119,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
     final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
     final Strategy strategy = parseStrategy(opts.getString("fusion", "RRF"));
-    final long k = opts.getLong("k", DEFAULT_K);
+    final long k = opts.getNonNegativeLong("k", DEFAULT_K);
     final float[] weights = parseWeights(opts.getList("weights"), sourceCount);
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
@@ -150,7 +150,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
     for (final Map.Entry<RID, Float> e : fused.entrySet())
       ranked.add(new RidScore(e.getKey(), e.getValue()));
-    ranked.sort((a, b) -> Float.compare(b.score(), a.score()));
+    // Equal fused scores are common (RRF ranks sum to the same value): break them by RID, not by the iteration order of `fused`, which
+    // is whatever RID.hashCode() makes it
+    ranked.sort((a, b) -> {
+      final int byScore = Float.compare(b.score(), a.score());
+      return byScore != 0 ? byScore : a.rid().compareTo(b.rid());
+    });
 
     // Single pass: one record per RID - the one a source row carried, else lookupByRID - applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for

@@ -54,6 +54,6 @@ public class RelationshipsFunction implements StatelessFunction {
     final TraversalPath path = TraversalPath.of(args[0]);
     if (path == null)
       throw CypherFunctionHelper.typeMismatch(getName(), "a PATH", args[0]);
-    return new ArrayList<>(path.getEdges());
+    return new ArrayList<>(path.getRelationshipsOrDeleted());
   }
 }

@@ -20,9 +20,10 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionIndexContext;
+import com.arcadedb.query.sql.executor.WorkGuard;
+
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -120,13 +121,24 @@ public final class SparseTransactionOverlay {
    * @param k            how many to keep
    */
   public List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final Set<RID> allowedRIDs, final int k) {
+    return topK(queryDims, queryWeights, allowedRIDs, k, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #topK(int[], float[], Set, int)} that stops with the abort of {@code guard} while it walks the pending RIDs: a
+   * transaction can hold as many of them as it has written, and an allow-list that is a predicate loads a record for each.
+   */
+  public List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final Set<RID> allowedRIDs, final int k,
+      final WorkGuard guard) {
     if (k <= 0)
       return List.of();
 
     final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
     final List<RidScore> scored = new ArrayList<>(Math.min(k, pending.size()));
 
+    int steps = 0;
     for (final Map.Entry<RID, Map<Integer, Float>> entry : pending.entrySet()) {
+      guard.checkPeriodically(++steps);
       final Map<Integer, Float> vector = entry.getValue();
       if (vector.isEmpty())
         // Deleted by this transaction: it has no vector to be near anything.
@@ -152,7 +164,12 @@ public final class SparseTransactionOverlay {
     if (scored.isEmpty())
       return List.of();
 
-    scored.sort(Comparator.comparingDouble((RidScore r) -> r.score()).reversed());
+    // Best score first, equal scores by RID ascending: the order BmwScorer gives the committed side, so the two halves of a merged
+    // answer agree at the top-k boundary, and not the iteration order of `pending`, which is whatever RID.hashCode() makes it
+    scored.sort((a, b) -> {
+      final int byScore = Float.compare(b.score(), a.score());
+      return byScore != 0 ? byScore : SparseSegmentBuilder.compareRid(a.rid(), b.rid());
+    });
     return scored.size() <= k ? scored : scored.subList(0, k);
   }
 }

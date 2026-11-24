@@ -48,6 +48,8 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -520,9 +522,62 @@ class GraphAnalyticalViewCCHTest {
 
   @Test
   void aGraphWithoutSmallSeparatorsIsRefusedAndStillAnswered() {
-    database.getConfiguration().setValue(GlobalConfiguration.GAV_CCH_MAX_ARCS_PER_EDGE, 1);
-    // a random graph of average degree 20: its separators are a sizeable fraction of it, the supergraph near complete
     final Random random = new Random(6);
+    withoutSmallSeparators(random);
+
+    final GraphAnalyticalView view = syncView("social");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isFalse();
+    assertThat(cch.getStatus()).isEqualTo(ContractionHierarchy.Status.UNSUITABLE);
+    assertThat(cch.getStatusReason()).contains("supergraph arcs");
+
+    assertRandomPairs(random, 30, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.VIEW);
+  }
+
+  /**
+   * The status and its reason are one publication (issue #11996): a reader that sees UNSUITABLE also sees why. The
+   * hierarchy is refused again and again while another thread reads the two back to back, so a reader landing between
+   * two separate writes is caught. The test's own reset back to PREPARING is a status change between the two reads too,
+   * so the reads it overlaps are left out, seqlock style.
+   */
+  @Test
+  void anUnsuitableStatusIsNeverSeenWithoutItsReason() throws Exception {
+    withoutSmallSeparators(new Random(6));
+    final GraphAnalyticalView view = syncView("social");
+    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
+
+    final AtomicBoolean refusing = new AtomicBoolean(true);
+    // odd while the test resets the hierarchy
+    final AtomicInteger resets = new AtomicInteger();
+    final AtomicInteger withoutReason = new AtomicInteger();
+    final Thread reader = new Thread(() -> {
+      while (refusing.get()) {
+        final int before = resets.get();
+        if (cch.getStatus() == ContractionHierarchy.Status.UNSUITABLE && cch.getStatusReason() == null && before % 2 == 0
+            && resets.get() == before)
+          withoutReason.incrementAndGet();
+      }
+    });
+    reader.start();
+    try {
+      for (int refusal = 0; refusal < 20; refusal++) {
+        assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isFalse();
+        assertThat(cch.getStatus()).isEqualTo(ContractionHierarchy.Status.UNSUITABLE);
+        // as a rebuild of the view does: the graph may have become suitable, so the next request prepares it again
+        resets.incrementAndGet();
+        cch.onRebuildRequested();
+        resets.incrementAndGet();
+      }
+    } finally {
+      refusing.set(false);
+      reader.join();
+    }
+    assertThat(withoutReason.get()).as("reads of UNSUITABLE that found no reason").isZero();
+  }
+
+  /** A random graph of average degree 20: its separators are a sizeable fraction of it, the supergraph near complete. */
+  private void withoutSmallSeparators(final Random random) {
+    database.getConfiguration().setValue(GlobalConfiguration.GAV_CCH_MAX_ARCS_PER_EDGE, 1);
     final int n = 1500;
     database.transaction(() -> {
       junctions = new RID[n];
@@ -533,14 +588,6 @@ class GraphAnalyticalViewCCHTest {
       for (int i = 0; i < n * 10; i++)
         road(random.nextInt(n), random.nextInt(n), 1 + random.nextInt(9));
     });
-
-    final GraphAnalyticalView view = syncView("social");
-    final ContractionHierarchy cch = view.getContractionHierarchy("distance", "ROAD");
-    assertThat(cch.awaitReady(false, 60, TimeUnit.SECONDS)).isFalse();
-    assertThat(cch.getStatus()).isEqualTo(ContractionHierarchy.Status.UNSUITABLE);
-    assertThat(cch.getStatusReason()).contains("supergraph arcs");
-
-    assertRandomPairs(random, 30, Vertex.DIRECTION.OUT, ShortestPathFinder.Engine.VIEW);
   }
 
   /**

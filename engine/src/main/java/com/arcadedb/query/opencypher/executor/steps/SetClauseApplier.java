@@ -27,6 +27,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualVertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.SetClause;
@@ -722,6 +723,9 @@ public final class SetClauseApplier {
     DeletedEntityMarker.checkNotDeleted(obj);
     if (!(obj instanceof Vertex vertex))
       return;
+    // A virtual node (create.vNode) has no stored type to rewrite under a composite one (issue #12109)
+    if (vertex instanceof VirtualVertex virtual)
+      throw virtual.unsupported("relabelled");
 
     // If this vertex was already replaced on a prior row (row fanout hitting the same node), redirect to the
     // replacement so the idempotency check below reads the current type. The per-row redirect() at the top of

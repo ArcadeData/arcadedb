@@ -72,6 +72,9 @@ public final class InListMembership {
   private static final int KIND_STRING = 1;
   private static final int KIND_NUMBER = 2;
 
+  /** The item memos of a right-hand value with no string to convert. */
+  private static final ConstantOperandConversion[] NO_CONVERSIONS = new ConstantOperandConversion[0];
+
   /** The right-hand value exactly as evaluated, and the authority whenever the fast path declines. */
   private final Object      rightValue;
   /** Normalized keys of every non-null element, or {@code null} when no fast path applies. */
@@ -87,6 +90,12 @@ public final class InListMembership {
    */
   private final float[]    narrowedDoubles;
   private final float[]    floats;
+  /**
+   * The memo of each item that is a string, at the item's position in the list (or of the right-hand value itself when it is a
+   * string), which converts it once for the execution rather than once per row when a left value of another class is compared
+   * with it: a datetime against a list of date strings (issue #12713). Built for the first such left value.
+   */
+  private volatile ConstantOperandConversion[] itemConversions;
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
       final boolean convertOperand) {
@@ -225,7 +234,54 @@ public final class InListMembership {
         }
       }
     }
-    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand);
+    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand,
+        left == null || left instanceof String ? null : itemConversions());
+  }
+
+  private ConstantOperandConversion[] itemConversions() {
+    ConstantOperandConversion[] conversions = itemConversions;
+    if (conversions == null) {
+      // A benign race: two threads may build two arrays, and either one serves the rows that follow
+      conversions = conversionsOf(rightValue);
+      itemConversions = conversions;
+    }
+    return conversions;
+  }
+
+  /**
+   * A memo for each item of {@code rightValue} that is a string, by position, or for {@code rightValue} itself when it is one. A set
+   * has none: it is probed by hash, and only a searched value is ever converted to one of its items.
+   */
+  private static ConstantOperandConversion[] conversionsOf(final Object rightValue) {
+    if (rightValue instanceof String)
+      return new ConstantOperandConversion[] { new ConstantOperandConversion() };
+    if (rightValue instanceof Set || !(rightValue instanceof Collection || MultiValue.isSequenceArray(rightValue)))
+      return NO_CONVERSIONS;
+
+    final ConstantOperandConversion[] conversions = new ConstantOperandConversion[MultiValue.getSize(rightValue)];
+    boolean anyString = false;
+    int index = 0;
+    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
+      if (index == conversions.length)
+        break;
+      if (item instanceof String) {
+        conversions[index] = new ConstantOperandConversion();
+        anyString = true;
+      }
+      ++index;
+    }
+    return anyString ? conversions : NO_CONVERSIONS;
+  }
+
+  /** How many conversions the memos of the items made. Surfaced for tests. */
+  int conversions() {
+    final ConstantOperandConversion[] conversions = itemConversions;
+    int total = 0;
+    if (conversions != null)
+      for (final ConstantOperandConversion conversion : conversions)
+        if (conversion != null)
+          total += conversion.conversions();
+    return total;
   }
 
   private static float[] sortedFloats(final Set<Float> set) {

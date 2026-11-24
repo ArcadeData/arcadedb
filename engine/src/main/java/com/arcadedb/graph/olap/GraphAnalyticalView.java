@@ -45,6 +45,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
@@ -258,6 +259,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // knows (a CSR restored from disk)
     final long                           uncoveredWritesMark;
     final IntHashSet                     uncoveredEdgeBuckets;
+    // The buckets each concrete edge type the scan materialized owned as it started, by the type's name, sorted (issue #12507): what a
+    // slice is made of, and what tells the type it was scanned from from another that took its name later. The name alone cannot: a
+    // type dropped and created again, or one renamed over another, answers to the name of the slice with other buckets, and file ids
+    // are not reused. The object identity of the type cannot either, a follower reloads every type instance for each replicated DDL
+    // statement. Null when nobody knows (a legacy snapshot), which falls back to the name
+    final Map<String, int[]>             edgeTypeBuckets;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
@@ -276,6 +283,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // Whether every edge slice of this snapshot is of a type the filter still covers, for one schema version (issues #12032,
     // #12039): see holdsOnlyCoveredEdgeTypes()
     final AtomicReference<SliceCoverage> sliceCoverage = new AtomicReference<>();
+    // Whether every vertex bucket of this snapshot, in its node mapping or in its overlay, is still owned by a vertex type the filter
+    // covers, for one schema version (issue #12549): see holdsOnlyCoveredVertexTypes()
+    final AtomicReference<SliceCoverage> nodeBucketCoverage = new AtomicReference<>();
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
         final ColumnStore[] bucketColumns, final Map<String, ColumnStore> edgeColumnStores,
@@ -284,7 +294,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
-          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null);
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null, null);
     }
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
@@ -294,7 +304,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
         final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
-        final IntHashSet uncoveredEdgeBuckets) {
+        final IntHashSet uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) {
+      this.edgeTypeBuckets = edgeTypeBuckets;
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
       this.uncoveredWritesMark = uncoveredWritesMark;
@@ -319,7 +330,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
           vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes, uncoveredWritesMark,
-          uncoveredEdgeBuckets);
+          uncoveredEdgeBuckets, edgeTypeBuckets);
     }
 
   }
@@ -387,9 +398,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
-  // Whether a snapshot's edge slices are all of types the filter still covers, for one schema version and one types-change serial
-  // (issues #12032, #12039). The serial moves the moment a type changes, the version only when the schema is saved: for a DDL
-  // statement in an open transaction that is its commit, and until then a verdict keyed on the version alone is served as it was
+  // Whether a snapshot's edge slices (issues #12032, #12039), or its vertex buckets (issue #12549), are all of types the filter still
+  // covers, for one schema version and one types-change serial. The serial moves the moment a type changes, the version only when the
+  // schema is saved: for a DDL statement in an open transaction that is its commit, and until then a verdict keyed on the version alone
+  // is served as it was
   private record SliceCoverage(long schemaVersion, long typesSerial, boolean allCovered) {
     boolean isCurrent(final long version, final long serial) {
       return schemaVersion == version && typesSerial == serial;
@@ -1469,8 +1481,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * The view's CSR no longer matches its types: a type holding records no scan read joined the listed family (see
-   * {@link #holdsJoinedVertexType} and {@link #holdsJoinedEdgeTypes}), or an edge type its CSR holds left it (see
-   * {@link #holdsOnlyCoveredEdgeTypes}).
+   * {@link #holdsJoinedVertexType} and {@link #holdsJoinedEdgeTypes}), or an edge or vertex type its CSR holds left it (see
+   * {@link #holdsOnlyCoveredEdgeTypes} and {@link #holdsOnlyCoveredVertexTypes}).
    */
   synchronized void onTypeChange(final String change, final BooleanSupplier stillNeeded) {
     // A rebuild (a REBUILD of an OFF view, or one that ran for another reason) may have published since the check that found the
@@ -1645,17 +1657,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * met none of its buckets among the edges it did not materialize, and none was written while the type was not covered since the
    * scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record, and a transaction still open
    * holds edges no count shows yet.
+   * <p>
+   * A type the scan materialized is not held on its name alone (issue #12507): it may have left the filter since (detached from the
+   * listed type) and been written to there, an edge no listener of the view heard, before it was attached again.
    */
   private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
     final String name = type.getName();
+    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
-      return true;
+      // THE SCAN READ A TYPE OF THIS NAME, BUT AN EDGE WRITTEN SINCE, WHILE THE TYPE WAS NOT COVERED, WAS HEARD BY NOBODY: A TYPE
+      // DETACHED, WRITTEN TO AND ATTACHED AGAIN HOLDS AN EDGE THE CSR LACKS (#12507). A MARK THAT IS NOT KNOWN PROVES NOTHING
+      return written == null || (snap.uncoveredWritesMark >= 0 && written.lastWrite.get() <= snap.uncoveredWritesMark);
     if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null || edgeTypesWhenArmed.contains(name))
       return false;
     for (final int bucketId : type.getBucketIds(false))
       if (snap.uncoveredEdgeBuckets.contains(bucketId))
         return false;
-    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
@@ -1669,9 +1686,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
    * decision that finds a slice left behind dispatches the rebuild.
    * <p>
-   * Known limit (issue #12507): a slice is looked up by its NAME, so a name that resolves to another type after two DDL
-   * statements with no read of the view between them (a type dropped and created again, a rename swap) is not seen, nor is a type
-   * detached, written to and attached again.
+   * A slice is identified by the buckets of the type it was scanned from, not by its name alone (issue #12507): a name that
+   * resolves to another type after two DDL statements with no read of the view between them, a type dropped and created again or a
+   * rename swap, owns other buckets, and file ids are not reused. A type that owns more than the slice was scanned from (ALTER TYPE
+   * ... BUCKET +) still holds it. A type detached, written to and attached again is not seen here, its slice is still its own: see
+   * {@link #holdsJoinedEdgeType}.
    */
   private boolean holdsOnlyCoveredEdgeTypes() {
     final Snapshot snap = snapshot;
@@ -1688,13 +1707,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // The slices of the base, then the ones only the overlay holds: no merged set is built per decision (a snapshot a commit
     // replaces is decided again)
-    String left = firstLeftEdgeSlice(snap.csrPerType.keySet());
+    String left = firstLeftEdgeSlice(snap, snap.csrPerType.keySet(), null);
     if (left == null && snap.overlay != null)
-      left = firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes());
+      left = firstLeftEdgeSlice(snap, snap.overlay.getAddedEdgeTypes(), snap.overlay);
     // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
     if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
-          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
+          + "', which the view's edge types no longer cover (dropped, renamed, detached from a listed type or replaced by another type of "
+          + "that name)",
           unlessRebuiltSince(snap));
     return left == null;
   }
@@ -1720,23 +1740,127 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap == null ? () -> false : unlessRebuiltSince(snap);
   }
 
-  /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */
-  private String firstLeftEdgeSlice(final Collection<String> slices) {
+  /**
+   * The first of {@code slices} that is no longer the edge type the filter covers that it was scanned from, or null when all still
+   * are: no type of that name, not an edge type, not covered, or another type that owns other buckets (issue #12507).
+   *
+   * @param overlay the overlay the slices are the added edge types of, null for the slices of the base: the slice of a type the scan
+   *                did not read has no scanned buckets, and is told by the buckets of the edges the overlay holds for it
+   */
+  private String firstLeftEdgeSlice(final Snapshot snap, final Collection<String> slices, final DeltaOverlay overlay) {
     for (final String slice : slices) {
       final DocumentType type = database.getSchema().getTypeOrNull(slice);
-      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type))
+      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type) || !ownsSliceBuckets(snap,
+          overlay, type))
         return slice;
     }
     return null;
   }
 
-  /** Whether the snapshot is known to hold an edge slice its types no longer cover: see {@link #holdsOnlyCoveredEdgeTypes}. */
-  private boolean holdsLeftEdgeTypes(final Snapshot snap) {
-    final SliceCoverage verdict = snap != null ? snap.sliceCoverage.get() : null;
-    if (verdict == null || verdict.allCovered())
+  /**
+   * Whether {@code type}, the type now holding the name of a slice, owns every bucket the slice was scanned from, or written to when
+   * the scan did not read the type. A subset, not an equality: a type given another bucket keeps its slice, and the edges written
+   * to that bucket are heard like any other of a covered type. Without a record of the buckets (a legacy snapshot), the name stands.
+   */
+  private static boolean ownsSliceBuckets(final Snapshot snap, final DeltaOverlay overlay, final DocumentType type) {
+    final String slice = type.getName();
+    int[] recorded = snap.edgeTypeBuckets != null ? snap.edgeTypeBuckets.get(slice) : null;
+    if (recorded == null && overlay != null)
+      recorded = overlay.getAddedEdgeBuckets(slice);
+    if (recorded == null)
+      return true;
+    final List<Integer> owned = type.getBucketIds(false);
+    for (final int bucketId : recorded)
+      if (!owned.contains(bucketId))
+        return false;
+    return true;
+  }
+
+  /**
+   * Whether the snapshot is known to hold an edge slice (see {@link #holdsOnlyCoveredEdgeTypes}) or the vertices of a bucket (see
+   * {@link #holdsOnlyCoveredVertexTypes}) its types no longer cover.
+   */
+  private boolean holdsLeftTypes(final Snapshot snap) {
+    if (snap == null)
+      return false;
+    final SliceCoverage edges = snap.sliceCoverage.get();
+    final SliceCoverage vertices = snap.nodeBucketCoverage.get();
+    final boolean edgesLeft = edges != null && !edges.allCovered();
+    final boolean verticesLeft = vertices != null && !vertices.allCovered();
+    if (!edgesLeft && !verticesLeft)
       return false;
     final LocalSchema schema = database.getSchema().getEmbedded();
-    return verdict.isCurrent(schema.getVersion(), schema.getTypesChangeSerial());
+    final long version = schema.getVersion();
+    final long serial = schema.getTypesChangeSerial();
+    return (edgesLeft && edges.isCurrent(version, serial)) || (verticesLeft && vertices.isCurrent(version, serial));
+  }
+
+  /**
+   * Whether every vertex the snapshot holds, in its node mapping or in its overlay, is in a bucket still owned by a vertex type the
+   * filter covers (issue #12549): the vertex-side counterpart of {@link #holdsOnlyCoveredEdgeTypes}. A sub-type of a listed type
+   * leaves the view while the snapshot keeps its vertices: dropped ({@code DROP TYPE ... UNSAFE} is not refused for a sub-type),
+   * detached from the listed type ({@code SUPERTYPE -}), renamed (the node mapping names each bucket by the type it was scanned
+   * from), or dropped and created again under the same name. The coverage checks that start from the schema
+   * ({@link #coversVertexType}) cannot see a type that is no longer in it, so the view went on answering every whole-graph procedure
+   * and count with the vertices of the dropped type. This one starts from what the snapshot holds. The view is not served until it
+   * has rebuilt (OFF: it turns STALE). Decided once per snapshot, schema version and types-change serial; the decision that finds a
+   * bucket left behind dispatches the rebuild.
+   * <p>
+   * A bucket is identified by its file id, which is never reused: a type of the same name that does not own it is not the type the
+   * vertices were scanned from. A type that owns more buckets than it did ({@code ALTER TYPE ... BUCKET +}) still holds them.
+   */
+  private boolean holdsOnlyCoveredVertexTypes() {
+    final Snapshot snap = snapshot;
+    if (snap == null)
+      return true;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    // Both read BEFORE the buckets are looked at, as in holdsOnlyCoveredEdgeTypes()
+    final long version = schema.getVersion();
+    final long serial = schema.getTypesChangeSerial();
+    final SliceCoverage cached = snap.nodeBucketCoverage.get();
+    if (cached != null && cached.isCurrent(version, serial))
+      return cached.allCovered();
+
+    final String left = firstLeftNodeBucket(snap);
+    // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
+    if (snap.nodeBucketCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
+      dispatchTypeChangeRebuild("the CSR holds the vertices of " + left
+              + ", which the view's vertex types no longer cover (dropped, renamed, detached from a listed type or replaced by another type "
+              + "of that name)",
+          unlessRebuiltSince(snap));
+    return left == null;
+  }
+
+  /**
+   * What the first bucket of the snapshot whose vertex type has left the view was scanned as, or null when every bucket is still owned
+   * by the covered vertex type it was scanned from. The buckets of the node mapping are told by the type name the scan recorded; the
+   * ones only the overlay holds vertices of (a type created after the scan) by any covered vertex type that owns them.
+   */
+  private String firstLeftNodeBucket(final Snapshot snap) {
+    final Schema schema = database.getSchema();
+    final NodeIdMapping mapping = snap.nodeMapping;
+    for (int i = 0, buckets = mapping.getNumBuckets(); i < buckets; i++) {
+      final String typeName = mapping.getBucketTypeName(i);
+      final int bucketId = mapping.getBucketId(i);
+      if (!ownsVertexBucket(schema.getTypeOrNull(typeName), typeName, bucketId))
+        return "type '" + typeName + "'";
+    }
+    final int[] added = snap.overlay != null ? snap.overlay.getOverflowVertexBuckets() : null;
+    if (added != null)
+      for (final int bucketId : added)
+        if (mapping.getBucketIdxForBucketId(bucketId) < 0) {
+          // The type the bucket map names is asked again by its name: the map is published apart from the type registry
+          final DocumentType owner = schema.getTypeByBucketId(bucketId);
+          if (owner == null || !ownsVertexBucket(schema.getTypeOrNull(owner.getName()), owner.getName(), bucketId))
+            return "bucket #" + bucketId + (owner != null ? " of type '" + owner.getName() + "'" : "");
+        }
+    return null;
+  }
+
+  /** Whether {@code type} is the vertex type named {@code typeName}, still covered by the filter, and owns {@code bucketId}. */
+  private boolean ownsVertexBucket(final DocumentType type, final String typeName, final int bucketId) {
+    return type instanceof VertexType && type.getName().equals(typeName) && coversVertexTypeByFilter(type) && type.getBucketIds(false)
+        .contains(bucketId);
   }
 
   /** A builder whose scan reports whether it met an edge of a type the view does not materialize (issue #9915). */
@@ -1875,21 +1999,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
-  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    getDegrees(checkBuilt(), degrees, direction, edgeType);
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    getDegrees(checkBuilt(), degrees, direction, edgeTypes);
   }
 
-  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    final String[] resolved = expandEdgeType(edgeType);
-    if (resolved.length == 1) {
-      degreesOfSlice(snap, degrees, direction, resolved[0]);
+  /**
+   * The degrees over the slices {@code edgeTypes} resolve to (every slice the snapshot holds when none is given), each slice read
+   * once. The types asked are resolved together, not one at a time: asked for a type and its sub-type, or for every type the view
+   * holds, a per-type sum read the sub-type's slice once for itself and again inside its super type (issue #12075).
+   */
+  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Collection<String> slices = edgeTypes == null || edgeTypes.length == 0 ?
+        allEdgeTypes(snap) :
+        new LinkedHashSet<>(Arrays.asList(resolveEdgeTypes(edgeTypes)));
+    if (slices.size() == 1) {
+      degreesOfSlice(snap, degrees, direction, slices.iterator().next());
       return;
     }
 
-    // A type with sub-types: the degree is the sum over their slices, each read exactly once
     Arrays.fill(degrees, 0);
     final int[] slice = new int[degrees.length];
-    for (final String concrete : resolved) {
+    for (final String concrete : slices) {
       degreesOfSlice(snap, slice, direction, concrete);
       for (int v = 0; v < degrees.length; v++)
         degrees[v] += slice[v];
@@ -3118,8 +3249,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     @Override
-    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-      view.getDegrees(snap, degrees, direction, edgeType);
+    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      view.getDegrees(snap, degrees, direction, edgeTypes);
     }
 
     @Override
@@ -3531,13 +3662,13 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
-   * STALE (issue #10189), so does a view whose snapshot was found holding the edges of a type it no longer covers, until the
-   * rebuild that finding started replaces it (issue #12032), and so does a view whose base predates a commit that reached the node
+   * STALE (issue #10189), so does a view whose snapshot was found holding the edges (issue #12032) or the vertices (issue #12549) of
+   * a type it no longer covers, until the rebuild that finding started replaces it, and so does a view whose base predates a commit that reached the node
    * as pages (issue #12250).
    */
   public Status getStatus() {
     final Status s = status;
-    return s == Status.READY && (hasUnmergedAsyncChanges() || holdsLeftEdgeTypes(snapshot) || isBehindReplicatedCommits()) ?
+    return s == Status.READY && (hasUnmergedAsyncChanges() || holdsLeftTypes(snapshot) || isBehindReplicatedCommits()) ?
         Status.STALE :
         s;
   }
@@ -3710,8 +3841,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
       return false;
     // AN EDGE TYPE ATTACHED TO A LISTED ONE SINCE THE SCAN BRINGS EDGES THE CSR DOES NOT HAVE: NOT SERVED, EVEN STALE (#10214).
-    // NOR WHILE THE CSR HOLDS THE EDGES OF A TYPE DROPPED, RENAMED OR DETACHED FROM THE LISTED ONES SINCE (#12032, #12039)
-    return holdsJoinedEdgeTypes() && holdsOnlyCoveredEdgeTypes();
+    // NOR WHILE THE CSR HOLDS THE EDGES OF A TYPE DROPPED, RENAMED OR DETACHED FROM THE LISTED ONES SINCE (#12032, #12039), OR THE
+    // VERTICES OF SUCH A TYPE (#12549)
+    return holdsJoinedEdgeTypes() && holdsOnlyCoveredEdgeTypes() && holdsOnlyCoveredVertexTypes();
   }
 
   /**
@@ -4312,7 +4444,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
         builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
-        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets());
+        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets(), result.getEdgeTypeBuckets());
   }
 
   /**
@@ -4379,7 +4511,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
           snap.edgePropertyFilter, snap, snap.scannedEdgeTypes != null ? snap.scannedEdgeTypes.toArray(new String[0]) : null,
-          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null);
+          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null,
+          snap.edgeTypeBuckets);
     } catch (final OutOfMemoryError | Exception e) {
       // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
       // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
@@ -4496,12 +4629,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * nothing else would ever resolve it for a caller that only looks. Asking for the state is an explicit wait, like
    * {@link #awaitReady}, so it dispatches what that dispatches. For the same reason it checks the edge types the snapshot holds
    * against the schema, which a query asks first otherwise: a READY view holding the edges of a type it no longer covers reads
-   * STALE, with the rebuild started, rather than READY with those edges counted (issue #12032).
+   * STALE, with the rebuild started, rather than READY with those edges counted (issue #12032), and so does one holding the vertices
+   * of such a type (issue #12549).
    */
   public void startPendingRestore() {
     triggerDeferredDiskRestoreIfPending();
-    if (status == Status.READY)
+    if (status == Status.READY) {
       holdsOnlyCoveredEdgeTypes();
+      holdsOnlyCoveredVertexTypes();
+    }
   }
 
   /**
