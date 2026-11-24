@@ -417,7 +417,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 1: the merge drops 2_400 rows; brand (0.6) and tags (0.6) are compacted
     deleteBrands(0, 1_200);
     FacetOracle.awaitCaughtUp(database);
-    maintainUntilMerged(stats, 1);
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "brand")).isEqualTo(1);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -426,7 +426,7 @@ class DictionaryCompactorTest extends TestHelper {
     // round 2, same minute: one record of every surviving brand deleted, tags reach 0.5 again, but the property was checked just now
     deleteOnePerBrand(1_200, 2_000, 0);
     FacetOracle.awaitCaughtUp(database);
-    maintainUntilMerged(stats, 2);
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(2);
     assertThat(DictionaryCompactor.deadOrdinalRatio(projection(), "tags")).isEqualTo(0.5);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(1);
@@ -435,7 +435,7 @@ class DictionaryCompactorTest extends TestHelper {
     now[0] += TEN_MINUTES;
     deleteOnePerBrand(1_200, 1_600, 1);
     FacetOracle.awaitCaughtUp(database);
-    maintainUntilMerged(stats, 3);
+    maintainAlone();
     assertThat(stats.mergeCount(TYPE)).isEqualTo(3);
     assertThat(stats.dictionaryCompactions(TYPE, "tags")).isEqualTo(2);
     assertThat(stats.dictionaryOrdinalsReclaimed(TYPE, "tags")).isEqualTo(2_400 + 1_200);
@@ -489,15 +489,18 @@ class DictionaryCompactorTest extends TestHelper {
   }
 
   /**
-   * One maintenance pass of the bucket, made again while a job of the background pool holds the projection's maintenance slot (the
-   * pass skips then, as the pool's own next pass retries): ends once the merge is counted and no job of the pool is left.
+   * One maintenance pass of the bucket with no job of the background pool beside it (#12763). A pool job holding the projection's
+   * maintenance slot (the first rank view rebuild: the frozen clock still lets the tick queue it) makes the flush of the pass skip, and
+   * the merge with it, or makes the compaction after the merge skip, which no later pass retries without a new merge that drops rows.
+   * So the apply passes, which are what queue the pool's jobs, are held (the running one is waited for) and the jobs they queued already
+   * are waited for: the pass is then the only maintenance of the projection.
    */
-  private void maintainUntilMerged(final ColumnarStats stats, final long merges) {
-    Awaitility.await("the pass merges once no background job holds the maintenance slot").atMost(30, TimeUnit.SECONDS)
-        .pollInterval(1, TimeUnit.MILLISECONDS).until(() -> {
-          manager().maintainForTesting(bucketId());
-          return stats.mergeCount(TYPE) >= merges && manager().isMaintenanceIdleForTesting();
-        });
+  private void maintainAlone() throws Exception {
+    try (final AutoCloseable ignored = manager().suspendApply()) {
+      Awaitility.await("the maintenance jobs the background pool queued end").atMost(HANG_MS, TimeUnit.MILLISECONDS)
+          .pollInterval(5, TimeUnit.MILLISECONDS).until(manager()::isMaintenanceIdleForTesting);
+      manager().maintainForTesting(bucketId());
+    }
   }
 
   /** Applies, flushes (dead sets persisted) and merges every segment into one, dropping the dead rows. */
