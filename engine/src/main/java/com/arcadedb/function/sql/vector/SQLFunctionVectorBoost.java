@@ -91,11 +91,14 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     if (rawBoosts == null || rawBoosts.isEmpty())
       throw new CommandSQLParsingException(NAME + " 'boosts' option is required and must be non-empty");
     // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused
-    final int limit = opts.get("limit") == null ? Integer.MAX_VALUE : opts.getNonNegativeInt("limit", 0);
+    final int limit = opts.getNonNegativeInt("limit", Integer.MAX_VALUE);
 
     final Boost[] boosts = parseBoosts(rawBoosts);
 
     final List<Scored> scored = materialize(source, boosts);
+    // A limit of 0 returns here, after the source was validated, without sorting what it would drop
+    if (limit == 0)
+      return new ArrayList<>(0);
     scored.sort((a, b) -> Float.compare(b.boostedScore(), a.boostedScore()));
 
     final int targetSize = Math.min(limit, scored.size());

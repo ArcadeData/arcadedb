@@ -124,7 +124,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final String groupBy = opts.getString("groupBy", null);
     final int groupSize = opts.getInt("groupSize", 1);
     // Absent (or null) is no cap; 0 is a cap of no row and a negative one is refused, as the count of vector.neighbors is
-    final int targetSize = opts.get("limit") == null ? Integer.MAX_VALUE : opts.getNonNegativeInt("limit", 0);
+    final int targetSize = opts.getNonNegativeInt("limit", Integer.MAX_VALUE);
 
     if (groupSize < 1)
       throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
@@ -145,7 +145,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     case DBSF -> applyDBSF(sources, weights, fused);
     }
 
-    if (fused.isEmpty())
+    // A limit of 0 returns here, after every source and score was validated, without ranking and sorting what it would drop
+    if (fused.isEmpty() || targetSize == 0)
       return new ArrayList<>(0);
 
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
