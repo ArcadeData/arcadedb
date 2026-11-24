@@ -76,6 +76,9 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
     // a WITH can rebind the map variable
     assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) WITH n, row AS r, {uuid: 'x'} AS row SET n = row"))
         .contains("EAGER");
+    // an UNWIND binds the map variable anew
+    assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) UNWIND [{uuid: 'x'}] AS row SET n = row"))
+        .contains("EAGER");
     // the FOREACH variable shadows the row the key came from
     assertThat(explain("UNWIND $rows AS row MERGE (n:Entity {uuid: row.uuid}) FOREACH (row IN [{uuid: 'x'}] | SET n = row)"))
         .contains("EAGER");

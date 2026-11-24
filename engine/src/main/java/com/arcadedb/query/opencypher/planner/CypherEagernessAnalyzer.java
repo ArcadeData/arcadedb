@@ -882,9 +882,14 @@ public final class CypherEagernessAnalyzer {
    * @param boundVariables  the names bound before the clause runs
    */
   public void observeClause(final ClauseEntry entry, final boolean startsStatement, final Set<String> boundVariables) {
-    // a WITH can rebind either name of a pair of mergeKeyPairs to another value
-    if (entry != null && entry.getType() == ClauseEntry.ClauseType.WITH)
-      mergeKeyPairs.clear();
+    // a clause that binds names can rebind either name of a pair of mergeKeyPairs to another value: a WITH, and an UNWIND, a
+    // LOAD CSV, a procedure's YIELD or a subquery's RETURN, which may shadow a name already in scope
+    if (entry != null)
+      switch (entry.getType()) {
+      case WITH, UNWIND, LOAD_CSV, CALL, SUBQUERY -> mergeKeyPairs.clear();
+      default -> {
+      }
+      }
     if (entry == null || !tracksPropertyReads)
       return;
     observeEmbeddedReads(entry);
