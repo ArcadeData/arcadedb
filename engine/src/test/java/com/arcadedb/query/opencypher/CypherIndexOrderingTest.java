@@ -1254,6 +1254,7 @@ class CypherIndexOrderingTest {
   class Issue12141CypherWithOrderByIndexOrder extends TestHelper {
     private static final int VERTICES = 2_000;
     private static final int NO_KEY_VERTICES = 2;
+    private static final Pattern WITH_ROWS = Pattern.compile("\\+ WITH [^\\n]*?(\\d[\\d,]*) rows?\\)");
 
     @Override
     protected void beginTest() {
@@ -1281,6 +1282,8 @@ class CypherIndexOrderingTest {
 
       final String profile = profile(query, Map.of("after", key(100)));
       assertThat(profile).contains("NodeIndexRangeScan").contains("index order").doesNotContain("+ ORDER BY ");
+      // The LIMIT stops the read: the WITH takes a handful of rows, not the ~1,900 of the range (main sorted all of them)
+      assertThat(withRows(profile)).isLessThan(100);
     }
 
     @Test
@@ -1361,7 +1364,9 @@ class CypherIndexOrderingTest {
       final Map<String, Object> none = Map.of();
       final String ascending = "MATCH (d:Doc) WITH d ORDER BY d.key LIMIT 3 RETURN d.key AS k";
       assertThat(column(ascending, none)).containsExactlyElementsOf(keys(0, 3));
-      assertThat(profile(ascending, none)).contains("index order").doesNotContain("+ ORDER BY ");
+      final String ascendingProfile = profile(ascending, none);
+      assertThat(ascendingProfile).contains("index order").doesNotContain("+ ORDER BY ");
+      assertThat(withRows(ascendingProfile)).isLessThan(100);
 
       final String acrossTheLastKey = "MATCH (d:Doc) WITH d ORDER BY d.key SKIP 1998 LIMIT 5 RETURN d.key AS k";
       assertThat(column(acrossTheLastKey, none)).containsExactly(key(1998), key(1999), null, null);
@@ -1418,6 +1423,13 @@ class CypherIndexOrderingTest {
           rs.next();
         return rs.getExecutionPlan().get().prettyPrint(0, 2);
       }
+    }
+
+    /** The rows the WITH step of the profile took from the operators. */
+    private static long withRows(final String profile) {
+      final Matcher matcher = WITH_ROWS.matcher(profile);
+      assertThat(matcher.find()).as(profile).isTrue();
+      return Long.parseLong(matcher.group(1).replace(",", ""));
     }
   }
 }
