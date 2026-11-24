@@ -861,7 +861,7 @@ public class PostgresNetworkExecutor extends Thread {
    * returned by the query" rather than yielding an empty result. Only two things reach here with no column
    * to name - a command with nothing to return ({@code {cypher} CREATE (n)}) and a query whose rows simply
    * did not match, an unmodelled catalog relation included (issue #6412, pinned by
-   * {@code Issue6412CatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
+   * {@code PostgresCatalogIT.anUnmodelledCatalogRelationIsDeclinedRatherThanGuessedAt}) - and for a
    * language this server does not parse, nothing distinguishes them: the row count cannot, since both come
    * back empty, and the query text cannot without a parser per language. Announcing an empty result set is
    * the answer that is merely uninformative for the first and correct for the second; {@code NoData} would
@@ -1396,6 +1396,9 @@ public class PostgresNetworkExecutor extends Thread {
    * around a read in it costs nothing that matters.
    */
   private void beginSimpleQueryBlock() {
+    // A simple query interleaved into a pipeline's implicit block joins it, writes of the pipeline included (issue #13222)
+    if (database.isTransactionActive())
+      endImplicitOnceItHoldsEarlierWrites();
     if (!simpleQueryBlockContinues)
       return;
     if (!database.isTransactionActive())
@@ -1992,6 +1995,11 @@ public class PostgresNetworkExecutor extends Thread {
         atLeastOneElement = true;
       }
 
+      // The row's properties are read once, not once per column: a row backed by a stored record answers a name by walking
+      // the record header from its first byte until it meets the name, so a row of P columns cost P walks of the same record.
+      // The columns are typed from every row (issue #9009), so the walk was paid once per row per column (#12558).
+      final Map<String, Object> rowProperties = ResultInternal.propertiesOf(row);
+
       for (final String p : columnNamesOf(row)) {
         // Determine the PostgreSQL type based on the actual value.
         // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
@@ -2000,7 +2008,7 @@ public class PostgresNetworkExecutor extends Thread {
         // round-trip through clients as strings and parameter comparisons fail silently.
         // EMBEDDED documents and MAP values (issue #5253) are advertised as JSON so clients parse
         // the nested object instead of re-escaping it as an opaque VARCHAR string.
-        final Object value = propertyOf(row, p);
+        final Object value = propertyOf(row, p, rowProperties);
         final boolean known = columns.containsKey(p);
         if (value == null) {
           if (!known) {
@@ -3071,9 +3079,10 @@ public class PostgresNetworkExecutor extends Thread {
     bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
     int colIndex = 0;
+    final Map<String, Object> properties = ResultInternal.propertiesOf(row);
     for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
       final String propertyName = postgresTypeEntry.getKey();
-      final Object value = columnValue(row, propertyName);
+      final Object value = columnValue(row, propertyName, properties);
 
       final PostgresType columnType = postgresTypeEntry.getValue();
       if (resolveResultFormat(resultFormats, colIndex++) == 1)
@@ -3105,9 +3114,11 @@ public class PostgresNetworkExecutor extends Thread {
    * The value a row carries for a column: the property of that name, or for the metadata columns ({@code @rid},
    * {@code @type}, {@code @cat}, {@code @in}, {@code @out}) what the row's element answers. Shared by the
    * {@code DataRow} writer and by {@code COPY ... TO STDOUT} (issue #7188), so the two encode the same value for
-   * the same column.
+   * the same column. The row's properties are read once by the caller, not once per column: asking the record for every
+   * column walked the record header once per column, so the time per row grew with P squared (#12558).
    */
-  private static Object columnValue(final Result row, final String propertyName) {
+  // Package-private, not private, only so PostgresOnePassRowReadTest can call it: visible for testing
+  static Object columnValue(final Result row, final String propertyName, final Map<String, Object> properties) {
     // a column the projection excluded is not read off the element (issue #11941): only what the row itself wrote answers
     if (row.isElement() && isExcludedFromElement(row, propertyName))
       return propertyOf(row, propertyName);
@@ -3147,10 +3158,13 @@ public class PostgresNetworkExecutor extends Thread {
         yield row.getProperty(propertyName);
       }
       default -> {
-        Object v = propertyOf(row, propertyName);
+        Object v = propertyOf(row, propertyName, properties);
         // When content map exists but doesn't have the property (e.g., OpenCypher RETURN n
         // sets content with variable name but element has the actual properties), fall back to element
-        if (v == null && row.isElement())
+        // ...but only for a name the row does not list: a null the row wrote itself (a projection that set the column to
+        // null) is the row's answer and must not be replaced by the element's value. Before #12558 the fallback fired on
+        // any null, which answered such a column with the element's property instead.
+        if (v == null && row.isElement() && !properties.containsKey(propertyName))
           v = row.getElement().get().get(propertyName);
         yield v;
       }
@@ -3163,7 +3177,18 @@ public class PostgresNetworkExecutor extends Thread {
    * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
    */
   private static Object propertyOf(final Result row, final String name) {
-    final Object value = row.getProperty(name);
+    return propertyOf(row, name, null);
+  }
+
+  /**
+   * The property of a row, a lazy multi-value read as the list of its elements (issue #11957, see
+   * {@link PostgresType#materializeLazyMultiValue}). In a projection row the list replaces the value, so the DataRow writer
+   * serializes the elements the column was typed from: the iterator of a nested result set cannot be walked twice.
+   *
+   * @param properties the row's properties already read, or null to read the one property the name asks for
+   */
+  private static Object propertyOf(final Result row, final String name, final Map<String, Object> properties) {
+    final Object value = properties != null && properties.containsKey(name) ? properties.get(name) : row.getProperty(name);
     final Object list = PostgresType.materializeLazyMultiValue(value);
     if (list != value && !row.isElement() && row instanceof ResultInternal internal)
       internal.setProperty(name, list);
@@ -3306,14 +3331,15 @@ public class PostgresNetworkExecutor extends Thread {
 
       checkRowFitsAnnouncedColumns(row, columns);
 
+      final Map<String, Object> properties = ResultInternal.propertiesOf(row);
       if (binary) {
         payload.putShort((short) names.length);
         for (int i = 0; i < names.length; i++)
-          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i]));
+          types[i].serializeAsBinary(types[i], payload, columnValue(row, names[i], properties));
         appendCopyData(out, payload);
       } else {
         for (int i = 0; i < names.length; i++)
-          texts[i] = types[i].toText(types[i], columnValue(row, names[i]));
+          texts[i] = types[i].toText(types[i], columnValue(row, names[i], properties));
         copy.appendRow(line, texts, names);
         encoded = appendCopyData(out, line, encoder, encoded);
       }
@@ -4233,7 +4259,7 @@ public class PostgresNetworkExecutor extends Thread {
    * 34000} (portal missing) before it ever reaches this method. Inside an explicit block, the refusal aborts the
    * block and {@code ROLLBACK TO SAVEPOINT} is refused at Parse (#7846), so nothing can recover the block and retry
    * the same portal either. Static and package-private so {@code PostgresApplyPendingSettingTest} pins the ordering
-   * directly; {@code Issue8135SetAppliedAtExecuteIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
+   * directly; {@code PostgresSessionSettingsIT.refusedSetIsRefusedAgainOnReplay} pins what the wire still shows,
    * that a replay is answered as an error and never as {@code CommandComplete SET}.
    * <p>
    * Recorded in this connection's own settings (issue #8217), never in the database: a {@code SET datestyle} used to
@@ -5389,7 +5415,24 @@ public class PostgresNetworkExecutor extends Thread {
       // Opened by this server, not by a client BEGIN: an implicit transaction, where CALL { ... } IN TRANSACTIONS runs
       // (issue #11588). A BEGIN that joins it later declares it the client's, which ends that
       ((DatabaseInternal) database).getTransaction().setImplicit(true);
-    }
+    } else
+      endImplicitOnceItHoldsEarlierWrites();
+  }
+
+  /**
+   * Stops treating the implicit block a statement is about to join as that statement's own transaction once an earlier
+   * statement of the block wrote into it (issue #13222). {@code CALL { ... } IN TRANSACTIONS} commits what its statement wrote
+   * before its first batch (#13172), and in a block shared by several statements that commit took the earlier statements'
+   * writes with it: a later failure in the same pipeline, which PostgreSQL rolls the whole block back for, could no longer
+   * undo them. Such a block is no longer implicit, so the statement is refused before anything runs, as inside a client's
+   * transaction (#11588). A block nothing has written into yet stays implicit: a lone CALL, or one following statements that
+   * wrote nothing - a read, an UPDATE matching no row, an earlier CALL whose batches committed on their own - keeps running.
+   * The block's own commit at Sync, or at the end of a simple query, is unchanged. Released with the transaction.
+   */
+  private void endImplicitOnceItHoldsEarlierWrites() {
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    if (tx.isImplicit() && !tx.hasChangedNothing())
+      tx.setImplicit(false);
   }
 
   /**

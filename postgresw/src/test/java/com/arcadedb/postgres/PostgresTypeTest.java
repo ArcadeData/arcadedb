@@ -19,11 +19,17 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -34,7 +40,10 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.OffsetTime;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -581,12 +590,10 @@ class PostgresTypeTest {
 
   @Test
   void deserializeTextDateIsoFormat() {
-    // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text
-    Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
-    assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = LocalDate.of(2024, 8, 22)
-        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
+    // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text, decoded to the engine's default DATE
+    // value: a java.util.Date at UTC midnight was a datetime to openCypher (issue #11956)
+    final Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
+    assertThat(result).isEqualTo(LocalDate.of(2024, 8, 22));
   }
 
   @Test
@@ -1034,11 +1041,8 @@ class PostgresTypeTest {
     final int daysSince2000 = 9000; // 2000-01-01 + 9000 days = 2024-08-22
     ByteBuffer buffer = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
     buffer.putInt(daysSince2000);
-    Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
-    assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = LocalDate.of(2000, 1, 1).plusDays(daysSince2000)
-        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
+    final Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
+    assertThat(result).isEqualTo(LocalDate.of(2000, 1, 1).plusDays(daysSince2000));
   }
 
   @Test
@@ -1523,8 +1527,7 @@ class PostgresTypeTest {
     final byte[] bytes = new byte[4];
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
-    assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate()).isEqualTo(ld);
+    assertThat(decoded).isEqualTo(ld);
   }
 
   @Test
@@ -2234,9 +2237,7 @@ class PostgresTypeTest {
     final byte[] bytes = new byte[4];
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
-    assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate())
-        .isEqualTo(LocalDate.of(2024, 8, 22));
+    assertThat(decoded).isEqualTo(LocalDate.of(2024, 8, 22));
   }
 
   @Test
@@ -2521,5 +2522,103 @@ class PostgresTypeTest {
     PostgresType.ARRAY_JSON.serializeAsBinary(PostgresType.ARRAY_JSON, buffer, List.of(path));
     final String written = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     assertThat(written).contains("\"_type\":\"path\"");
+  }
+
+  /**
+   * Issue #11955: a Cypher date, time or datetime is typed and written as the {@code java.time} value it wraps, so a property read
+   * through Cypher travels as the type and text SQL gives the same property. Each case pairs the Cypher value with its wrapped value.
+   */
+  @Nested
+  class CypherTemporalValues {
+    private final LocalDate     localDate     = LocalDate.of(2024, 2, 29);
+    private final LocalDateTime localDateTime = LocalDateTime.of(2024, 2, 29, 13, 14, 15, 123_000_000);
+    private final ZonedDateTime zonedDateTime = ZonedDateTime.of(localDateTime, ZoneOffset.UTC);
+    private final LocalTime     localTime     = LocalTime.of(10, 0);
+    private final OffsetTime    offsetTime    = OffsetTime.of(localTime, ZoneOffset.ofHours(1));
+
+    private Object[][] pairs() {
+      return new Object[][] { { new CypherDate(localDate), localDate }, { new CypherLocalDateTime(localDateTime), localDateTime },
+          { new CypherDateTime(zonedDateTime), zonedDateTime }, { new CypherLocalTime(localTime), localTime },
+          { new CypherTime(offsetTime), offsetTime } };
+    }
+
+    // Regression: #11955
+    @Test
+    void aDateAndALocalDateTimeAreTypedAsDateAndTimestamp() {
+      assertThat(PostgresType.getTypeForValue(new CypherDate(localDate))).isEqualTo(PostgresType.DATE);
+      assertThat(PostgresType.getTypeForValue(new CypherLocalDateTime(localDateTime))).isEqualTo(PostgresType.TIMESTAMP);
+    }
+
+    // Regression: #11955
+    @Test
+    void everyWrapperIsTypedAsItsWrappedValueIs() {
+      for (final Object[] pair : pairs())
+        assertThat(PostgresType.getTypeForValue(pair[0])).as(pair[0].getClass().getSimpleName())
+            .isEqualTo(PostgresType.getTypeForValue(pair[1]));
+    }
+
+    // Regression: #11955
+    @Test
+    void everyWrapperIsWrittenAsTextAsItsWrappedValueIs() {
+      for (final Object[] pair : pairs()) {
+        final PostgresType type = PostgresType.getTypeForValue(pair[0]);
+        assertThat(type.toText(type, pair[0])).as(pair[0].getClass().getSimpleName()).isEqualTo(type.toText(type, pair[1]));
+      }
+      assertThat(PostgresType.TIMESTAMP.toText(PostgresType.TIMESTAMP, new CypherLocalDateTime(localDateTime))).isEqualTo(
+          "2024-02-29 13:14:15.123000");
+      assertThat(PostgresType.DATE.toText(PostgresType.DATE, new CypherDate(localDate))).isEqualTo("2024-02-29");
+    }
+
+    // Regression: #11955
+    @Test
+    void everyWrapperIsWrittenInBinaryAsItsWrappedValueIs() {
+      for (final Object[] pair : pairs()) {
+        final PostgresType type = PostgresType.getTypeForValue(pair[0]);
+        final Binary cypher = new Binary();
+        type.serializeAsBinary(type, cypher, pair[0]);
+        final Binary sql = new Binary();
+        type.serializeAsBinary(type, sql, pair[1]);
+        assertThat(cypher.toByteArray()).as(pair[0].getClass().getSimpleName()).isEqualTo(sql.toByteArray());
+      }
+
+      // the binary form is the real one, not the text fallback: a date is the days since 2000-01-01
+      final Binary date = new Binary();
+      PostgresType.DATE.serializeAsBinary(PostgresType.DATE, date, new CypherDate(localDate));
+      date.flip();
+      assertThat(date.getInt()).isEqualTo(4);
+      assertThat(date.getInt()).isEqualTo((int) (localDate.toEpochDay() - LocalDate.of(2000, 1, 1).toEpochDay()));
+    }
+
+    // Regression: #11955
+    @Test
+    void aListOfWrappersIsWrittenAsAListOfTheWrappedValues() {
+      final List<Object> cypher = new ArrayList<>();
+      final List<Object> sql = new ArrayList<>();
+      for (final Object[] pair : pairs()) {
+        cypher.add(pair[0]);
+        sql.add(pair[1]);
+      }
+
+      assertThat(PostgresType.getTypeForValue(cypher)).isEqualTo(PostgresType.getTypeForValue(sql));
+      final PostgresType type = PostgresType.getTypeForValue(cypher);
+      assertThat(type.toText(type, cypher)).isEqualTo(type.toText(type, sql));
+      assertThat(type.toText(type, cypher)).contains("2024-02-29 13:14:15.123000");
+
+      final Binary cypherBinary = new Binary();
+      type.serializeAsBinary(type, cypherBinary, cypher);
+      final Binary sqlBinary = new Binary();
+      type.serializeAsBinary(type, sqlBinary, sql);
+      assertThat(cypherBinary.toByteArray()).isEqualTo(sqlBinary.toByteArray());
+    }
+
+    // Regression: #11955
+    @Test
+    void aWrapperInANestedListIsWrittenAsTheWrappedValueIs() {
+      final List<Object> cypher = List.of(List.of(new CypherLocalDateTime(localDateTime)));
+      final List<Object> sql = List.of(List.of(localDateTime));
+      assertThat(PostgresType.getTypeForValue(cypher)).isEqualTo(PostgresType.JSON);
+      assertThat(PostgresType.JSON.toText(PostgresType.JSON, cypher)).isEqualTo(PostgresType.JSON.toText(PostgresType.JSON, sql));
+      assertThat(PostgresType.JSON.toText(PostgresType.JSON, cypher)).contains("2024-02-29 13:14:15.123000");
+    }
   }
 }

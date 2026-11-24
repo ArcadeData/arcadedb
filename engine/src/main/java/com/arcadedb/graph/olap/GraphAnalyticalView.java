@@ -258,6 +258,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // knows (a CSR restored from disk)
     final long                           uncoveredWritesMark;
     final IntHashSet                     uncoveredEdgeBuckets;
+    // The buckets each concrete edge type the scan materialized owned as it started, by the type's name, sorted (issue #12507): what a
+    // slice is made of, and what tells the type it was scanned from from another that took its name later. The name alone cannot: a
+    // type dropped and created again, or one renamed over another, answers to the name of the slice with other buckets, and file ids
+    // are not reused. The object identity of the type cannot either, a follower reloads every type instance for each replicated DDL
+    // statement. Null when nobody knows (a legacy snapshot), which falls back to the name
+    final Map<String, int[]>             edgeTypeBuckets;
     // Merged (undirected or multi-type) neighbour views, built on first request. A snapshot never changes, so a view stays
     // valid for its life, and merging plus sorting the whole adjacency costs far more than the traversal that asks for it
     // (issue #9282). Soft, so a view over a huge edge set is given back under memory pressure rather than pinned.
@@ -284,7 +290,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter) {
       this(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd, overlay, buildTimestamp, buildDurationMs,
-          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null);
+          asOfTransactionId, restoredFromDisk, vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L, null, -1L, null, null);
     }
 
     Snapshot(final Map<String, CSRAdjacencyIndex> csrPerType, final NodeIdMapping nodeMapping,
@@ -294,7 +300,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         final long asOfTransactionId, final boolean restoredFromDisk,
         final String[] vertexTypes, final String[] edgeTypes, final String[] propertyFilter, final String[] edgePropertyFilter,
         final long uncoveredEdgeFreeAsOf, final Set<String> scannedEdgeTypes, final long uncoveredWritesMark,
-        final IntHashSet uncoveredEdgeBuckets) {
+        final IntHashSet uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) {
+      this.edgeTypeBuckets = edgeTypeBuckets;
       this.uncoveredEdgeFreeAsOf = uncoveredEdgeFreeAsOf;
       this.scannedEdgeTypes = scannedEdgeTypes;
       this.uncoveredWritesMark = uncoveredWritesMark;
@@ -319,7 +326,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       return new Snapshot(csrPerType, nodeMapping, bucketColumns, edgeColumnStores, bwdToFwd,
           newOverlay, buildTimestamp, buildDurationMs, asOfTransactionId, restoredFromDisk,
           vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, uncoveredEdgeFreeAsOf, scannedEdgeTypes, uncoveredWritesMark,
-          uncoveredEdgeBuckets);
+          uncoveredEdgeBuckets, edgeTypeBuckets);
     }
 
   }
@@ -459,6 +466,20 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean                     asyncMergeQueued = new AtomicBoolean();
   // Set by the first commit that finds the queue full, cleared by the merge task that drops the queue for a rebuild
   private final AtomicBoolean                     asyncQueueOverflowed = new AtomicBoolean();
+  // Transactions that reached the covered buckets as pages, which no record listener hears (issue #12250): a follower applying the
+  // replicated log, the leader applying a commit a follower made in its own transaction. Only ever grows
+  private final AtomicLong                        replicatedCommits = new AtomicLong();
+  // replicatedCommits when the scan of the base being served started: a base whose value is behind lacks a change it cannot get by
+  // a delta, and the view reports STALE until a scan reads it. 0 for a CSR restored from disk, which predates this view instance
+  private volatile long                           replicatedCommitsInBase;
+  // One rebuild asked for by a query on a view behind on replicated commits at a time, and when the last one was asked for
+  private final AtomicBoolean                     replicatedRebuildRequested = new AtomicBoolean();
+  private volatile long                           lastReplicatedRebuildNanos = System.nanoTime() - TimeUnit.HOURS.toNanos(1);
+  // Rebuilds asked for in a row with no query finding the view current in between: the commits keep coming faster than a rebuild
+  // can serve, and each one doubles the wait before the next. Incremented only by the thread that won replicatedRebuildRequested and
+  // reset by any query that finds the view current, with no atomic update: a lost one moves the backoff by a single step, which
+  // is all it is for
+  private volatile int                            replicatedRebuildsInARow;
   // How many queued changes a merge task merges under this instance's monitor before releasing it, so a status check, a
   // compaction swap or a build publication never waits behind a long backlog
   private static final int                        ASYNC_MERGE_BATCH = 64;
@@ -531,6 +552,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /** Maximum time shutdown() waits for an in-flight async build/compaction to settle. */
   private static final long      SHUTDOWN_AWAIT_MS  = 30_000L;
+  /**
+   * Least time between the starts of two rebuilds that queries ask for on a view behind on replicated commits (issue #12250). The
+   * wait is the longer of this and twice the last build's duration, so the rebuilds keep one build thread busy half of the time
+   * at most, and none run while nobody queries the view. It doubles with every rebuild a query finds overtaken by a newer commit,
+   * up to {@link #REPLICATED_REBUILD_MAX_INTERVAL_MS}, and drops back once a query finds the view current.
+   */
+  static final long              REPLICATED_REBUILD_MIN_INTERVAL_MS = 1_000L;
+  static final long              REPLICATED_REBUILD_MAX_INTERVAL_MS = 30_000L;
 
   /**
    * Creates a builder for configuring the analytical view.
@@ -595,8 +624,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     // transaction already cached, treat the certificate as unusable whenever that risk exists at all, rather
     // than trying to bound it: asOfTransactionId=-1 makes persistCsrIfPossible() skip persisting this snapshot
     // (see its existing "< 0" guard), the same way a snapshot that must never be persisted already reads.
-    final boolean certificateMayBeUnsound = database.isTransactionActive()
-        && database.getTransactionIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+    // The level of the transaction the scan runs in, which begin(level) can set apart from the database's default
+    final boolean certificateMayBeUnsound = database.isTransactionActive() && ((DatabaseInternal) database).getTransaction()
+        .getIsolationLevel() == Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
 
     // The scan runs on the calling thread but OUTSIDE this instance's monitor, exactly as buildAsync()'s runs on its
     // worker: holding the monitor for a scan as long as the graph is big stalled every commit callback, status wait
@@ -631,6 +661,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
     try {
       final long asOfTransactionId = certificateMayBeUnsound ? -1L : currentLastTransactionId();
+      // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it
+      // reads. A scan in the caller's REPEATABLE_READ transaction may read pages that transaction holds from before a
+      // commit counted already, so it vouches for none once one was counted: the view then reports STALE, and the next
+      // query rebuilds it in a fresh transaction
+      final long replicated = replicatedCommits.get();
+      final long replicatedMark = certificateMayBeUnsound && replicated > 0 ? -1L : replicated;
       final long buildStart = System.currentTimeMillis();
       final Runnable beforeScan = beforeBuildScanForTest;
       if (beforeScan != null)
@@ -646,6 +682,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       synchronized (this) {
         if (myGeneration == generation) {
           // Atomic swap — readers see all-or-nothing
+          replicatedCommitsInBase = replicatedMark;
           publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
           this.notifyAll();
           committed = true;
@@ -928,6 +965,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         BUILD_PERMITS.acquireUninterruptibly();
         try {
           final long asOfTransactionId = currentLastTransactionId();
+          // Before the scan, like the certificate: a replicated commit counted after this point may be missing from what it reads
+          final long replicatedMark = replicatedCommits.get();
           // The build thread needs its own read transaction for database iteration
           database.begin();
           try {
@@ -943,6 +982,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             boolean committed = false;
             synchronized (GraphAnalyticalView.this) {
               if (myGeneration == generation) {
+                replicatedCommitsInBase = replicatedMark;
                 publishBuild(result, durationMs, asOfTransactionId, vertexTypes, edgeTypes, watch);
                 GraphAnalyticalView.this.notifyAll();
                 committed = true;
@@ -1003,6 +1043,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * a legitimate signal that the caller wants the view actually resolved, not just optimistically READY.
    *
    * An {@code ASYNCHRONOUS} view also waits for the commits not merged yet (issue #10189).
+   * <p>
+   * A view behind on commits that reached the node as pages (issue #12250) asks for the rebuild it needs while it waits, no more
+   * often than the backoff of {@link #REPLICATED_REBUILD_MIN_INTERVAL_MS} allows. Under commits that arrive faster than a rebuild
+   * serves, it can stay behind and the wait runs to its timeout. An {@code OFF} view is rebuilt by nothing but an explicit rebuild,
+   * so the wait returns false at once.
    *
    * @return true if the view is READY, false if the timeout elapsed or the build failed
    */
@@ -1017,16 +1062,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           currentStatus = status;
           latch = readyLatch;
           if (currentStatus == Status.READY) {
-            if (!hasUnmergedAsyncChanges())
+            final boolean behindReplicated = isBehindReplicatedCommits();
+            if (!hasUnmergedAsyncChanges() && !behindReplicated)
               return true;
-            // Shut down: what is still queued is never merged
-            if (shutDown)
+            // Shut down: what is still queued is never merged. OFF: a replicated commit leaves it STALE until it is rebuilt
+            if (shutDown || (behindReplicated && updateMode == UpdateMode.OFF))
               return false;
-            // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
             final long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0)
               return false;
-            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
+            if (behindReplicated) {
+              // Waiting is asking for the view: the rebuild it needs (issue #12250), asked for again once the backoff allows
+              requestRebuildForReplicatedCommits();
+              TimeUnit.NANOSECONDS.timedWait(this, Math.min(remainingNanos, TimeUnit.MILLISECONDS.toNanos(100)));
+            } else
+              // ASYNCHRONOUS: committed changes not merged yet (issue #10189). The merge notifies under this monitor
+              TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
             continue;
           }
         }
@@ -1601,17 +1652,22 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * met none of its buckets among the edges it did not materialize, and none was written while the type was not covered since the
    * scan started. A bucket count cannot prove an edge type empty: a lightweight edge has no record, and a transaction still open
    * holds edges no count shows yet.
+   * <p>
+   * A type the scan materialized is not held on its name alone (issue #12507): it may have left the filter since (detached from the
+   * listed type) and been written to there, an edge no listener of the view heard, before it was attached again.
    */
   private boolean holdsJoinedEdgeType(final DocumentType type, final Snapshot snap) {
     final String name = type.getName();
+    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     if (snap.csrPerType.containsKey(name) || (snap.scannedEdgeTypes != null && snap.scannedEdgeTypes.contains(name)))
-      return true;
+      // THE SCAN READ A TYPE OF THIS NAME, BUT AN EDGE WRITTEN SINCE, WHILE THE TYPE WAS NOT COVERED, WAS HEARD BY NOBODY: A TYPE
+      // DETACHED, WRITTEN TO AND ATTACHED AGAIN HOLDS AN EDGE THE CSR LACKS (#12507). A MARK THAT IS NOT KNOWN PROVES NOTHING
+      return written == null || (snap.uncoveredWritesMark >= 0 && written.lastWrite.get() <= snap.uncoveredWritesMark);
     if (snap.uncoveredWritesMark < 0 || snap.uncoveredEdgeBuckets == null || edgeTypesWhenArmed.contains(name))
       return false;
     for (final int bucketId : type.getBucketIds(false))
       if (snap.uncoveredEdgeBuckets.contains(bucketId))
         return false;
-    final UncoveredEdgeType written = uncoveredEdgeTypes.get(name);
     return written == null || written.lastWrite.get() <= snap.uncoveredWritesMark;
   }
 
@@ -1625,9 +1681,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * (the serial is what moves for a DDL statement inside an open transaction, whose schema save waits for the commit); the
    * decision that finds a slice left behind dispatches the rebuild.
    * <p>
-   * Known limit (issue #12507): a slice is looked up by its NAME, so a name that resolves to another type after two DDL
-   * statements with no read of the view between them (a type dropped and created again, a rename swap) is not seen, nor is a type
-   * detached, written to and attached again.
+   * A slice is identified by the buckets of the type it was scanned from, not by its name alone (issue #12507): a name that
+   * resolves to another type after two DDL statements with no read of the view between them, a type dropped and created again or a
+   * rename swap, owns other buckets, and file ids are not reused. A type that owns more than the slice was scanned from (ALTER TYPE
+   * ... BUCKET +) still holds it. A type detached, written to and attached again is not seen here, its slice is still its own: see
+   * {@link #holdsJoinedEdgeType}.
    */
   private boolean holdsOnlyCoveredEdgeTypes() {
     final Snapshot snap = snapshot;
@@ -1644,13 +1702,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
     // The slices of the base, then the ones only the overlay holds: no merged set is built per decision (a snapshot a commit
     // replaces is decided again)
-    String left = firstLeftEdgeSlice(snap.csrPerType.keySet());
+    String left = firstLeftEdgeSlice(snap, snap.csrPerType.keySet(), null);
     if (left == null && snap.overlay != null)
-      left = firstLeftEdgeSlice(snap.overlay.getAddedEdgeTypes());
+      left = firstLeftEdgeSlice(snap, snap.overlay.getAddedEdgeTypes(), snap.overlay);
     // Two threads missing the verdict at once compute the same one; only the one that publishes it dispatches the rebuild
     if (snap.sliceCoverage.compareAndSet(cached, new SliceCoverage(version, serial, left == null)) && left != null)
       dispatchTypeChangeRebuild("the CSR holds the edges of type '" + left
-          + "', which the view's edge types no longer cover (dropped, renamed or detached from a listed type)",
+          + "', which the view's edge types no longer cover (dropped, renamed, detached from a listed type or replaced by another type of "
+          + "that name)",
           unlessRebuiltSince(snap));
     return left == null;
   }
@@ -1676,14 +1735,40 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     return snap == null ? () -> false : unlessRebuiltSince(snap);
   }
 
-  /** The first of {@code slices} that is no longer an edge type of that name the filter covers, or null when all still are. */
-  private String firstLeftEdgeSlice(final Collection<String> slices) {
+  /**
+   * The first of {@code slices} that is no longer the edge type the filter covers that it was scanned from, or null when all still
+   * are: no type of that name, not an edge type, not covered, or another type that owns other buckets (issue #12507).
+   *
+   * @param overlay the overlay the slices are the added edge types of, null for the slices of the base: the slice of a type the scan
+   *                did not read has no scanned buckets, and is told by the buckets of the edges the overlay holds for it
+   */
+  private String firstLeftEdgeSlice(final Snapshot snap, final Collection<String> slices, final DeltaOverlay overlay) {
     for (final String slice : slices) {
       final DocumentType type = database.getSchema().getTypeOrNull(slice);
-      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type))
+      if (!(type instanceof EdgeType) || !type.getName().equals(slice) || !coversEdgeTypeByFilter(type) || !ownsSliceBuckets(snap,
+          overlay, type))
         return slice;
     }
     return null;
+  }
+
+  /**
+   * Whether {@code type}, the type now holding the name of a slice, owns every bucket the slice was scanned from, or written to when
+   * the scan did not read the type. A subset, not an equality: a type given another bucket keeps its slice, and the edges written
+   * to that bucket are heard like any other of a covered type. Without a record of the buckets (a legacy snapshot), the name stands.
+   */
+  private static boolean ownsSliceBuckets(final Snapshot snap, final DeltaOverlay overlay, final DocumentType type) {
+    final String slice = type.getName();
+    int[] recorded = snap.edgeTypeBuckets != null ? snap.edgeTypeBuckets.get(slice) : null;
+    if (recorded == null && overlay != null)
+      recorded = overlay.getAddedEdgeBuckets(slice);
+    if (recorded == null)
+      return true;
+    final List<Integer> owned = type.getBucketIds(false);
+    for (final int bucketId : recorded)
+      if (!owned.contains(bucketId))
+        return false;
+    return true;
   }
 
   /** Whether the snapshot is known to hold an edge slice its types no longer cover: see {@link #holdsOnlyCoveredEdgeTypes}. */
@@ -1831,21 +1916,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   @Override
-  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    getDegrees(checkBuilt(), degrees, direction, edgeType);
+  public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+    getDegrees(checkBuilt(), degrees, direction, edgeTypes);
   }
 
-  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-    final String[] resolved = expandEdgeType(edgeType);
-    if (resolved.length == 1) {
-      degreesOfSlice(snap, degrees, direction, resolved[0]);
+  /**
+   * The degrees over the slices {@code edgeTypes} resolve to (every slice the snapshot holds when none is given), each slice read
+   * once. The types asked are resolved together, not one at a time: asked for a type and its sub-type, or for every type the view
+   * holds, a per-type sum read the sub-type's slice once for itself and again inside its super type (issue #12075).
+   */
+  private void getDegrees(final Snapshot snap, final int[] degrees, final Vertex.DIRECTION direction,
+      final String... edgeTypes) {
+    final Collection<String> slices = edgeTypes == null || edgeTypes.length == 0 ?
+        allEdgeTypes(snap) :
+        new LinkedHashSet<>(Arrays.asList(resolveEdgeTypes(edgeTypes)));
+    if (slices.size() == 1) {
+      degreesOfSlice(snap, degrees, direction, slices.iterator().next());
       return;
     }
 
-    // A type with sub-types: the degree is the sum over their slices, each read exactly once
     Arrays.fill(degrees, 0);
     final int[] slice = new int[degrees.length];
-    for (final String concrete : resolved) {
+    for (final String concrete : slices) {
       degreesOfSlice(snap, slice, direction, concrete);
       for (int v = 0; v < degrees.length; v++)
         degrees[v] += slice[v];
@@ -3074,8 +3166,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     }
 
     @Override
-    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
-      view.getDegrees(snap, degrees, direction, edgeType);
+    public void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
+      view.getDegrees(snap, degrees, direction, edgeTypes);
     }
 
     @Override
@@ -3487,17 +3579,85 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   /**
    * The view's status. An {@code ASYNCHRONOUS} view whose snapshot is READY but behind a commit not merged yet reports
-   * STALE (issue #10189), and so does a view whose snapshot was found holding the edges of a type it no longer covers, until
-   * the rebuild that finding started replaces it (issue #12032).
+   * STALE (issue #10189), so does a view whose snapshot was found holding the edges of a type it no longer covers, until the
+   * rebuild that finding started replaces it (issue #12032), and so does a view whose base predates a commit that reached the node
+   * as pages (issue #12250).
    */
   public Status getStatus() {
     final Status s = status;
-    return s == Status.READY && (hasUnmergedAsyncChanges() || holdsLeftEdgeTypes(snapshot)) ? Status.STALE : s;
+    return s == Status.READY && (hasUnmergedAsyncChanges() || holdsLeftEdgeTypes(snapshot) || isBehindReplicatedCommits()) ?
+        Status.STALE :
+        s;
   }
 
   /** Whether a committed change is not in the view yet: queued for the merge, or dropped by an overflow for a rebuild. */
   private boolean hasUnmergedAsyncChanges() {
     return asyncDeltaLag.get() > 0 || asyncQueueOverflowed.get();
+  }
+
+  /**
+   * Whether a transaction applied as pages since the scan of the base may be missing from it (issue #12250). The two volatile reads
+   * are not one snapshot, and need not be: the count is made after the pages are written and before the entry is reported applied,
+   * so what a reader that waited for the entry sees is always counted, and a build publishes its base before its status.
+   */
+  private boolean isBehindReplicatedCommits() {
+    return replicatedCommits.get() != replicatedCommitsInBase;
+  }
+
+  /**
+   * A transaction reached a bucket the view may read as pages, with no record event and no delta to merge (issue #12250): see
+   * {@link GraphAnalyticalViewRegistry#onTransactionApplied}. Called on the thread that applies the replicated log, so it only
+   * counts the commit: from now on the view reports STALE and queries take the record path, and an incremental view rebuilds
+   * when a query asks for it ({@link #requestRebuildForReplicatedCommits()}), never on this thread. A build in flight sampled
+   * the count before its scan, so it publishes behind the commit and the next query asks for one more. An OFF view stays STALE
+   * until it is rebuilt, as after a local commit.
+   * <p>
+   * The first one also deletes the CSR and contraction orders an earlier close persisted: the transaction counter their
+   * certificate checks does not move for such a commit, so the next open would restore them as current. Deleted here rather than
+   * at the next close, which a crash can skip. A later close persists the view again once a scan has read every commit counted.
+   */
+  void onReplicatedCommit() {
+    if (replicatedCommits.incrementAndGet() == 1 && name != null) {
+      GraphAnalyticalViewCSRPersistence.delete(database, name);
+      for (final ContractionHierarchy hierarchy : contractionHierarchies)
+        CCHOrderPersistence.delete(hierarchy.orderFile());
+    }
+  }
+
+  /**
+   * Rebuilds, off the calling thread, an incremental view whose base is behind on replicated commits, at most once per interval
+   * (see {@link #REPLICATED_REBUILD_MIN_INTERVAL_MS}). Only from a READY view: a build in flight takes in what it can and the
+   * next query asks again, and a view STALE for another reason already has its rebuild on the way or waits for an explicit one.
+   * Takes no monitor: the caller may be a query holding the registry's lock.
+   */
+  private void requestRebuildForReplicatedCommits() {
+    if (updateMode == UpdateMode.OFF || shutDown || status != Status.READY)
+      return;
+    final Snapshot snap = snapshot;
+    final long backoffMs = Math.min(REPLICATED_REBUILD_MAX_INTERVAL_MS,
+        REPLICATED_REBUILD_MIN_INTERVAL_MS << Math.min(replicatedRebuildsInARow, 5));
+    final long intervalNanos = TimeUnit.MILLISECONDS.toNanos(Math.max(backoffMs, snap != null ? 2 * snap.buildDurationMs : 0L));
+    final long now = System.nanoTime();
+    if (now - lastReplicatedRebuildNanos < intervalNanos || !replicatedRebuildRequested.compareAndSet(false, true))
+      return;
+    lastReplicatedRebuildNanos = now;
+    ++replicatedRebuildsInARow;
+    inFlightTasks.incrementAndGet();
+    try {
+      getExecutor().execute(() -> {
+        try {
+          rebuildAfterPublication();
+        } finally {
+          replicatedRebuildRequested.set(false);
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+          taskCompleted();
+        }
+      });
+    } catch (final RejectedExecutionException e) {
+      // Shutting down: nothing left to serve
+      replicatedRebuildRequested.set(false);
+      taskCompleted();
+    }
   }
 
   /**
@@ -3589,6 +3749,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    */
   public boolean isReady() {
     triggerDeferredDiskRestoreIfPending();
+    // A query asking for a view behind on replicated commits is what rebuilds it (issue #12250); this one takes the record path
+    if (isBehindReplicatedCommits())
+      requestRebuildForReplicatedCommits();
+    else if (replicatedRebuildsInARow != 0)
+      replicatedRebuildsInARow = 0;
     final Status s = getStatus();
     if (s != Status.READY && (s != Status.STALE || !isUseWhenStale()))
       return false;
@@ -4195,7 +4360,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         result.getEdgeColumnStores(), result.getBwdToFwd(),
         null, System.currentTimeMillis(), durationMs, asOfTransactionId, false,
         builtVertexTypes, builtEdgeTypes, builtPropertyFilter, builtEdgePropertyFilter, result.getUncoveredEdgeFreeAsOf(),
-        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets());
+        result.getScannedEdgeTypes(), result.getUncoveredWritesMark(), result.getUncoveredEdgeBuckets(), result.getEdgeTypeBuckets());
   }
 
   /**
@@ -4226,7 +4391,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * exactly as it always has.
    */
   private void persistCsrIfPossible() {
-    if (name == null || status != Status.READY)
+    // Behind on a replicated commit (issue #12250): the certificate cannot tell, the transaction counter does not move for one
+    if (name == null || status != Status.READY || isBehindReplicatedCommits())
       return;
     // The certificate is only sound where TransactionManager.getLastTransactionId() reflects every commit that
     // could have touched the covered types. That holds for a standalone database or an HA leader (the only paths
@@ -4261,7 +4427,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // silently under-covers what the view claims to (#6583 review).
       GraphAnalyticalViewCSRPersistence.save(database, name, snap.vertexTypes, snap.edgeTypes, snap.propertyFilter,
           snap.edgePropertyFilter, snap, snap.scannedEdgeTypes != null ? snap.scannedEdgeTypes.toArray(new String[0]) : null,
-          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null);
+          snap.uncoveredWritesMark >= 0 && snap.uncoveredEdgeBuckets != null ? snap.uncoveredEdgeBuckets.toArray() : null,
+          snap.edgeTypeBuckets);
     } catch (final OutOfMemoryError | Exception e) {
       // OutOfMemoryError is caught deliberately, matching load()'s equivalent guard: save() assembles the whole
       // CSR payload into one contiguous byte[] (and a second one if encryption is configured) before writing
@@ -4281,7 +4448,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * the next open just computes the order again.
    */
   private void persistContractionOrdersIfPossible() {
-    if (name == null || status != Status.READY || contractionHierarchies.length == 0)
+    if (name == null || status != Status.READY || isBehindReplicatedCommits() || contractionHierarchies.length == 0)
       return;
     final DatabaseInternal dbInternal = (DatabaseInternal) database;
     if (dbInternal.isFollower())

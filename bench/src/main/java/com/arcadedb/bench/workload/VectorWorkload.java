@@ -37,6 +37,8 @@ import java.util.Map;
 
 /**
  * Vector index: build time and size, then k=10 nearest-neighbor queries with their recall against a client-side brute force.
+ * The vectors are drawn like embeddings ({@link DatasetGenerator#embeddings}), and the queries run with the engine's default
+ * search width: the case measures what a user gets out of the box.
  * A case whose recall falls under {@link #MIN_RECALL} is recorded as failed, with its metrics, so a fast but wrong index can
  * never look like an improvement.
  */
@@ -47,12 +49,18 @@ public class VectorWorkload implements Workload {
   static final String BUILD = "build";
   static final String KNN = "knn-k10";
 
-  private static final String TYPE   = "Vec";
-  private static final String INDEX  = "Vec[v]";
+  /** {@code vectors} param: embedding-like vectors, the default. */
+  static final String EMBEDDINGS = "embeddings";
+  /** {@code vectors} param: uniform directions, the worst case for approximate search. */
+  static final String UNIFORM    = "uniform";
+
   private static final int    DIM    = 128;
   private static final int    K      = 10;
   private static final int    BATCH  = 200;
 
+  // one type per kind of vectors, so a stored data set is never reused for the other kind
+  private String    type;
+  private boolean   uniform;
   private float[][] base;
   private float[][] queries;
   private int[][]   exact;
@@ -87,6 +95,11 @@ public class VectorWorkload implements Workload {
 
   @Override
   public void prepare(final WorkloadContext ctx, final String caseName) {
+    final String kind = ctx.params() == null ? EMBEDDINGS : ctx.params().getString("vectors", EMBEDDINGS);
+    if (!EMBEDDINGS.equals(kind) && !UNIFORM.equals(kind))
+      throw new IllegalArgumentException("vectors must be '" + EMBEDDINGS + "' or '" + UNIFORM + "', not '" + kind + "'");
+    uniform = UNIFORM.equals(kind);
+    type = uniform ? "VecUniform" : "Vec";
     RemoteClients.ensureDatabase(ctx.server(), DATABASE);
     loadData(ctx);
     try (final RemoteDatabase db = RemoteClients.open(ctx.server(), DATABASE)) {
@@ -97,7 +110,9 @@ public class VectorWorkload implements Workload {
       }
       if (KNN.equals(caseName)) {
         if (queries == null) {
-          queries = new DatasetGenerator(ctx.seed() + 1).vectors(queryCount(ctx.scale()), DIM);
+          queries = uniform ?
+              new DatasetGenerator(ctx.seed() + 1).vectors(queryCount(ctx.scale()), DIM) :
+              new DatasetGenerator(ctx.seed() + 1).embeddings(queryCount(ctx.scale()), space(ctx));
           baseNorms = VectorRecall.norms(base);
           exact = new int[queries.length][];
           for (int i = 0; i < queries.length; i++)
@@ -129,14 +144,21 @@ public class VectorWorkload implements Workload {
 
   private void loadData(final WorkloadContext ctx) {
     if (base == null)
-      base = new DatasetGenerator(ctx.seed()).vectors(vectors(ctx.scale()), DIM);
+      base = uniform ?
+          new DatasetGenerator(ctx.seed()).vectors(vectors(ctx.scale()), DIM) :
+          new DatasetGenerator(ctx.seed()).embeddings(vectors(ctx.scale()), space(ctx));
+  }
+
+  // base vectors and queries come from the same space, as a corpus and its queries go through the same embedding model
+  private static DatasetGenerator.EmbeddingSpace space(final WorkloadContext ctx) {
+    return new DatasetGenerator(ctx.seed() + 2).embeddingSpace(DIM);
   }
 
   private Measurement build(final WorkloadContext ctx) {
     final ServerUnderTest server = ctx.server();
     try (final RemoteDatabase db = RemoteClients.open(server, DATABASE)) {
       if (indexReady(db))
-        db.command("sql", "DROP INDEX `" + INDEX + "`").close();
+        db.command("sql", "DROP INDEX `" + index() + "`").close();
       server.resetPeak();
       final long start = System.nanoTime();
       createIndex(db);
@@ -148,7 +170,7 @@ public class VectorWorkload implements Workload {
 
   private Measurement knn(final WorkloadContext ctx) throws CaseFailedWithMetrics {
     final int efSearch = ctx.params() == null ? -1 : ctx.params().getInt("efSearch", -1);
-    final String sql = "SELECT id FROM (SELECT expand(vectorNeighbors('" + TYPE + "[v]', :q, " + K
+    final String sql = "SELECT id FROM (SELECT expand(vectorNeighbors('" + index() + "', :q, " + K
         + (efSearch > 0 ? ", " + efSearch : "") + ")))";
     final LatencyRecorder latencies = new LatencyRecorder(queries.length);
     double recallSum = 0;
@@ -178,14 +200,18 @@ public class VectorWorkload implements Workload {
     metrics.add(Metrics.of("recall_at_10", "ratio", Metric.Better.HIGHER, recall));
     if (recall < MIN_RECALL)
       throw new CaseFailedWithMetrics("recall@10 " + recall + " is below the minimum " + MIN_RECALL, metrics);
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
-  private static void createType(final RemoteDatabase db) {
-    db.command("sql", "DROP TYPE " + TYPE + " IF EXISTS UNSAFE").close();
-    db.command("sql", "CREATE DOCUMENT TYPE " + TYPE).close();
-    db.command("sql", "CREATE PROPERTY " + TYPE + ".id INTEGER").close();
-    db.command("sql", "CREATE PROPERTY " + TYPE + ".v ARRAY_OF_FLOATS").close();
+  private String index() {
+    return type + "[v]";
+  }
+
+  private void createType(final RemoteDatabase db) {
+    db.command("sql", "DROP TYPE " + type + " IF EXISTS UNSAFE").close();
+    db.command("sql", "CREATE DOCUMENT TYPE " + type).close();
+    db.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
+    db.command("sql", "CREATE PROPERTY " + type + ".v ARRAY_OF_FLOATS").close();
   }
 
   private void insertAll(final RemoteDatabase db) {
@@ -195,7 +221,7 @@ public class VectorWorkload implements Workload {
       script.append("BEGIN;\n");
       final int to = Math.min(from + BATCH, base.length);
       for (int i = from; i < to; i++) {
-        script.append("INSERT INTO ").append(TYPE).append(" SET id = ").append(i).append(", v = [");
+        script.append("INSERT INTO ").append(type).append(" SET id = ").append(i).append(", v = [");
         final float[] v = base[i];
         for (int j = 0; j < v.length; j++) {
           if (j > 0)
@@ -209,21 +235,21 @@ public class VectorWorkload implements Workload {
     }
   }
 
-  private static void createIndex(final RemoteDatabase db) {
-    db.command("sql", "CREATE INDEX ON " + TYPE + " (v) LSM_VECTOR METADATA {dimensions: " + DIM + ", similarity: 'COSINE'}")
+  private void createIndex(final RemoteDatabase db) {
+    db.command("sql", "CREATE INDEX ON " + type + " (v) LSM_VECTOR METADATA {dimensions: " + DIM + ", similarity: 'COSINE'}")
         .close();
   }
 
   private boolean dataReady(final RemoteDatabase db, final Scale scale) {
     try {
-      return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + TYPE) == vectors(scale);
+      return RemoteClients.count(db, "sql", "SELECT count(*) AS n FROM " + type) == vectors(scale);
     } catch (final RuntimeException e) {
       return false;
     }
   }
 
-  private static boolean indexReady(final RemoteDatabase db) {
-    try (final ResultSet rs = db.query("sql", "SELECT FROM schema:indexes WHERE name = '" + INDEX + "'")) {
+  private boolean indexReady(final RemoteDatabase db) {
+    try (final ResultSet rs = db.query("sql", "SELECT FROM schema:indexes WHERE name = '" + index() + "'")) {
       return rs.hasNext();
     } catch (final RuntimeException e) {
       return false;

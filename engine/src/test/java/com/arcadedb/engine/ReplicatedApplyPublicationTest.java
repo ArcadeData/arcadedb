@@ -550,20 +550,7 @@ class ReplicatedApplyPublicationTest {
       final AtomicBoolean stop = new AtomicBoolean();
       final AtomicInteger applied = new AtomicInteger();
 
-      final Thread applier = new Thread(() -> {
-        while (!stop.get()) {
-          pageManager.beginPublication();
-          try {
-            final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
-            while (System.nanoTime() < until)
-              Thread.onSpinWait();
-          } finally {
-            pageManager.endPublication();
-          }
-          applied.incrementAndGet();
-        }
-      });
-      applier.start();
+      final Thread applier = applyBackToBack(pageManager, stop, applied);
       try {
         for (int i = 0; i < 50; i++) {
           final String[] read = new String[1];
@@ -994,11 +981,18 @@ class ReplicatedApplyPublicationTest {
   /**
    * Plays the replicated apply of a busy replica: publications opened and closed back to back, each held for 200 microseconds,
    * until {@code stop} is set. The sequence is even only for the instants between two of them.
+   * <p>
+   * Returns once the first publication is open, so the work the caller does next starts while an apply is in flight. Returning
+   * as soon as the thread was started let a slow runner finish all of that work before the applier had published once, and the
+   * caller's "the applier kept publishing" check then failed on a run that had exercised nothing (#12501).
    */
-  private static Thread applyBackToBack(final PageManager pageManager, final AtomicBoolean stop, final AtomicInteger applied) {
+  private static Thread applyBackToBack(final PageManager pageManager, final AtomicBoolean stop, final AtomicInteger applied)
+      throws InterruptedException {
+    final CountDownLatch firstPublicationOpen = new CountDownLatch(1);
     final Thread applier = new Thread(() -> {
       while (!stop.get()) {
         pageManager.beginPublication();
+        firstPublicationOpen.countDown();
         try {
           final long until = System.nanoTime() + TimeUnit.MICROSECONDS.toNanos(200);
           while (System.nanoTime() < until)
@@ -1010,6 +1004,11 @@ class ReplicatedApplyPublicationTest {
       }
     });
     applier.start();
+    if (!firstPublicationOpen.await(30, TimeUnit.SECONDS)) {
+      stop.set(true);
+      applier.join();
+      throw new AssertionError("the applier thread did not open a publication within 30 seconds");
+    }
     return applier;
   }
 }

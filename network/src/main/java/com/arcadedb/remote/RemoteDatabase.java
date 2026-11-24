@@ -44,8 +44,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.engine.timeseries.LineProtocolWriter;
 import com.arcadedb.remote.timeseries.TimeSeriesBucket;
@@ -74,6 +77,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -82,7 +86,6 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
-import static com.arcadedb.schema.Property.RID_PROPERTY;
 
 /**
  * Remote Database implementation. It's not thread safe. For multi-thread usage create one instance of RemoteDatabase
@@ -217,6 +220,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
+    // Issue #12190: as the embedded API, a vertex or edge type is refused here. Not checked, save() ran INSERT INTO <type>,
+    // which on a vertex type created a vertex. The kind is the one of the cached schema: the server stays the authority for a
+    // type another client recreated as a different kind since
+    final DocumentType type = getSchema().getType(typeName);
+    if (type instanceof VertexType || type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
+
     return new RemoteMutableDocument(this, typeName);
   }
 
@@ -232,6 +242,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
+
+    // Issue #12190: the embedded API's refusal, instead of the ClassCastException of RemoteMutableVertex's cast
+    if (!(getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
     return new RemoteMutableVertex(this, typeName);
   }
@@ -857,7 +871,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     checkDatabaseIsOpen();
     stats.iterateType.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", query, polymorphic ? null : Map.of("typeName", typeName));
+    final ResultSet resultSet = queryAllRows(query, polymorphic ? null : Map.of("typeName", typeName));
     return countedRecordIterator(resultSet);
   }
 
@@ -898,7 +912,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public Iterator<Record> iterateBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.iterateBucket.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", "select from " + bucketTarget(bucketName), null);
+    final ResultSet resultSet = queryAllRows("select from " + bucketTarget(bucketName), null);
     return countedRecordIterator(resultSet);
   }
 
@@ -1021,6 +1035,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * a try-with-resources. It is also single-pass: {@code reset()} is not supported, and the rows are gone once
    * read. A caller that needs the whole result in memory, or the {@code explain} / {@code stats} envelope
    * properties, wants {@link #query(String, String, Map)} instead - which is unchanged.
+   * <p>
+   * Unlike the buffered {@link #query(String, String, Map)}, a stream is not capped by the server's default row limit
+   * ({@code arcadedb.server.httpQueryDefaultLimit}): it asks for every row unless {@link #setMaxResultRows(Integer)} set a
+   * cap of the application's own (issue #12185). The server's hard ceiling still applies and ends the stream with an
+   * error rather than a short result.
    *
    * @param params named parameters, or an empty map
    *
@@ -1177,9 +1196,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     // projection/aggregate column from the @props hint, so it has to ask for it.
     jsonRequest.put("typeHints", true);
     jsonRequest.put("retries", txRetries);
+    // Every row unless the application set its own cap: the default row limit of the server exists to bound a BUFFERED
+    // response, and a stream is the API for results too large to buffer (issue #12185)
     final Integer maxRows = getMaxResultRows();
-    if (maxRows != null)
-      jsonRequest.put("limit", maxRows);
+    jsonRequest.put("limit", maxRows != null ? maxRows : UNLIMITED_ROWS);
     if (params != null && !params.isEmpty())
       jsonRequest.put("params", new JSONObject(encodeParameters(params)));
 
@@ -1301,6 +1321,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true,
         callback);
+  }
+
+  /**
+   * Reads every row of a SQL query, whatever the server's default row limit and {@link #getMaxResultRows()}: for the
+   * driver's own iterations whose contract is the whole type or bucket ({@link #iterateType}, {@link #iterateBucket}),
+   * which the embedded engine answers in full. Stopping at the server default (20,000 rows) handed the caller a partial
+   * iteration that {@code countType()} contradicted (issue #12185). A result above the server's hard ceiling is refused
+   * (HTTP 413) rather than cut. Not counted in any statistic, as {@link #queryUncounted} is not.
+   */
+  private ResultSet queryAllRows(final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    return (ResultSet) httpQueryWithRowLimit(databaseName, "sql", query, params,
+        (connection, response) -> createResultSet(response), UNLIMITED_ROWS);
   }
 
   /**
@@ -1872,24 +1905,84 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     // toMap() hands back a fresh LinkedHashMap nobody else holds, so the row is typed and stripped in place.
     final Map<String, Object> map = result.toMap();
-    if (map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
-      // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
-      // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
-      // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
-      // behavior of the gRPC client, which already routes the value through a typed channel.
-      final Map<String, ColumnTypeHint> propTypes = propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY));
-      // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
-      // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
-      // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
-      // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
-      for (final Map.Entry<String, Object> entry : map.entrySet()) {
-        final ColumnTypeHint hint = propTypes.get(entry.getKey());
-        final Object value = entry.getValue();
-        if (hint != null && value != null)
-          entry.setValue(convertWithHint(value, hint));
+    // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
+    // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
+    // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
+    // behavior of the gRPC client, which already routes the value through a typed channel.
+    final Map<String, ColumnTypeHint> propTypes = map.containsKey(Property.PROPERTY_TYPES_PROPERTY) ?
+        propertyTypeHints((String) map.remove(Property.PROPERTY_TYPES_PROPERTY)) :
+        Collections.emptyMap();
+    // Issue #9804: the hint is the ONLY key of the metadata vocabulary this row can carry. The row has no @cat, so it is a
+    // projection and the server wrote every other key as a column name chosen by the query: a record never carries @props
+    // (serializeResult emits it for a non-element row alone), and a row carrying @rid, @type, @in or @out is one that selected
+    // them - SELECT @rid always does, its LINK column being what arms the hint - or a Gremlin map named by ArcadeGremlin
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = entry.getValue();
+      if (value == null)
+        continue;
+      // Issue #12184: a column holding a record (Cypher RETURN a, r, b; SQL @this, first(out())), or a list, map or path holding
+      // records (collect(a), {who: a}, a path's nodes and relationships), arrives as the records' JSON with their @cat, and is
+      // rebuilt as the records a whole-row record is. The column's hint must not touch what was rebuilt: it is written for the
+      // JSON, and a LINK hint converted the record's map to an Identifiable, which kept the strings that parse as RIDs (@rid,
+      // @in, @out) and dropped every property.
+      final Record record = recordOf(value);
+      if (record != null) {
+        entry.setValue(record);
+        continue;
       }
+      if (rebuildRecordsIn(value))
+        continue;
+      final ColumnTypeHint hint = propTypes.get(entry.getKey());
+      if (hint != null)
+        entry.setValue(convertWithHint(value, hint));
     }
     return new ResultInternal(map);
+  }
+
+  /**
+   * The record a value of a projection column describes as JSON, or null when the value is not one: a map that carries a record's
+   * {@code @cat} and the {@code @type} that names its type (issue #12184). A map with the key and no type is a map the query built,
+   * and building it as a record would ask the schema for a type it does not have.
+   */
+  private Record recordOf(final Object value) {
+    return value instanceof Map<?, ?> map && map.get(Property.TYPE_PROPERTY) instanceof String ? map2Record(map) : null;
+  }
+
+  /**
+   * Replaces, in place, every record held as JSON by the list or map {@code container} - at any depth, in the lists, maps and
+   * path objects it holds - with the record it describes, and tells whether it replaced any (issue #12184). Nothing is allocated for
+   * a container that holds none. In place is safe: a row is converted by {@code toMap()}, which hands back a tree of fresh
+   * {@code LinkedHashMap}s and {@code ArrayList}s that nobody else holds. A record's own map is never walked: it is the record's
+   * attributes, and the record reads its nested values itself.
+   *
+   * @return false when {@code container} is not a list or a map, or holds no record
+   */
+  @SuppressWarnings("unchecked")
+  private boolean rebuildRecordsIn(final Object container) {
+    boolean rebuilt = false;
+    if (container instanceof List<?> list) {
+      final ListIterator<Object> iterator = ((List<Object>) list).listIterator();
+      while (iterator.hasNext()) {
+        final Object item = iterator.next();
+        final Record record = recordOf(item);
+        if (record != null) {
+          iterator.set(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
+      }
+    } else if (container instanceof Map<?, ?> map) {
+      for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) map).entrySet()) {
+        final Object item = entry.getValue();
+        final Record record = recordOf(item);
+        if (record != null) {
+          entry.setValue(record);
+          rebuilt = true;
+        } else
+          rebuilt |= rebuildRecordsIn(item);
+      }
+    }
+    return rebuilt;
   }
 
   /**
@@ -2008,26 +2101,45 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (!result.has(CAT_PROPERTY))
       return null;
 
+    // A category no record has is answered on the parsed JSON too, so the projection it falls back to is converted once (#8332)
     final String cat = result.getString(CAT_PROPERTY);
+    if (!"d".equals(cat) && !"v".equals(cat) && !"e".equals(cat))
+      return null;
+
+    return map2Record(result.toMap());
+  }
+
+  /**
+   * Builds the record a parsed record JSON describes, or returns null when its {@code @cat} names no record category: the
+   * shared step of a whole-row record ({@link #json2Record}) and a record held by a projection column (issue #12184).
+   */
+  @SuppressWarnings("unchecked")
+  private Record map2Record(final Map<?, ?> map) {
+    if (!(map.get(CAT_PROPERTY) instanceof String cat))
+      return null;
+
+    final Map<String, Object> attributes = (Map<String, Object>) map;
     return switch (cat) {
-      case "d" -> new RemoteImmutableDocument(this, result.toMap());
-      case "v" -> new RemoteImmutableVertex(this, result.toMap());
-      case "e" -> new RemoteImmutableEdge(this, result.toMap());
+      case "d" -> new RemoteImmutableDocument(this, attributes);
+      case "v" -> new RemoteImmutableVertex(this, attributes);
+      case "e" -> new RemoteImmutableEdge(this, attributes);
       default -> null; // Or throw an exception for unknown category
     };
   }
 
   protected RID saveRecord(final MutableDocument record) {
     RID rid = record.getIdentity();
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // Each value travels as a PARAMETER of the CONTENT document, not as JSON text spliced into the statement: the parameter
+    // encoding keeps the Java type of every value (a link, a decimal, binary, a date-time), which a JSON literal cannot, so an
+    // undeclared property is stored as the embedded API stores it (issue #12186)
+    final Content content = Content.of(record);
     if (rid != null) {
       // SQL UPDATE matches zero records both when the RID no longer exists (e.g. the record was deleted or the transaction
       // that created it was rolled back) and when a before-update listener vetoed the write. The first must fail with
       // RecordNotFoundException to be consistent with the embedded engine and the gRPC remote (issue #4562), the second with
       // RecordVetoedException, as the gRPC remote does (issue #10161): the probe tells them apart, on the refusal path only
       final long updated;
-      try (final ResultSet result = command("sql", "update " + rid + " content " + json)) {
+      try (final ResultSet result = command("sql", "update " + rid + " content " + content.json(), content.params())) {
         updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
       }
       if (updated == 0) {
@@ -2039,7 +2151,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       stats.updateRecord.incrementAndGet();
     } else {
       final ResultSet result = command("sql",
-          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
+          "insert into " + Identifier.quote(record.getTypeName()) + " content " + content.json(), content.params());
       rid = insertedRID(result, record);
       trackCreatedRecord(record);
       stats.createRecord.incrementAndGet();
@@ -2052,17 +2164,68 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (rid != null)
       throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-    final JSONObject json = record.toJSON();
-    json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    final Content content = Content.of(record);
     // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
     // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
         "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
-            + " content " + json);
+            + " content " + content.json(), content.params());
     final RID newRID = insertedRID(result, record);
     trackCreatedRecord(record);
     stats.createRecord.incrementAndGet();
     return newRID;
+  }
+
+  /**
+   * The CONTENT document of the INSERT/UPDATE that saves a record: its property names as JSON keys, each value bound to its
+   * own top-level parameter ({@code {"name": :p0, ...}}), metadata left out. One parameter per property rather than the whole
+   * document as one map parameter: the server reads a numeric array nested in a map parameter as a primitive array, which
+   * would store a schemaless LIST as an ARRAY_OF_LONGS, while a top-level parameter's array stays a list (#9002). A null
+   * value is written as the literal {@code null}.
+   */
+  private record Content(String json, Map<String, Object> params) {
+    static Content of(final MutableDocument record) {
+      final Map<String, Object> properties = record.toMap(false);
+      final Map<String, Object> params = new HashMap<>((int) (properties.size() / 0.75f) + 1);
+      final StringBuilder json = new StringBuilder(16 + properties.size() * 16).append('{');
+      for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+        if (json.length() > 1)
+          json.append(", ");
+        appendJsonString(json, entry.getKey()).append(": ");
+        if (entry.getValue() == null)
+          json.append("null");
+        else {
+          final String param = "p" + params.size();
+          json.append(':').append(param);
+          params.put(param, entry.getValue());
+        }
+      }
+      return new Content(json.append('}').toString(), params);
+    }
+
+    /** A property name as a double-quoted JSON string, escaped the way the SQL parser reads a JSON key back. */
+    private static StringBuilder appendJsonString(final StringBuilder buffer, final String text) {
+      buffer.append('"');
+      for (int i = 0; i < text.length(); i++) {
+        final char c = text.charAt(i);
+        switch (c) {
+        case '"' -> buffer.append("\\\"");
+        case '\\' -> buffer.append("\\\\");
+        case '\n' -> buffer.append("\\n");
+        case '\r' -> buffer.append("\\r");
+        case '\t' -> buffer.append("\\t");
+        case '\b' -> buffer.append("\\b");
+        case '\f' -> buffer.append("\\f");
+        default -> {
+          if (c < 0x20)
+            buffer.append("\\u00").append(Character.forDigit(c >> 4, 16)).append(Character.forDigit(c & 0xF, 16));
+          else
+            buffer.append(c);
+        }
+        }
+      }
+      return buffer.append('"');
+    }
   }
 
   /**

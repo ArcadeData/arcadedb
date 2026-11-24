@@ -280,10 +280,40 @@ public class RemoteSchema implements Schema {
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
         .collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
+    final ResultSet result = remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
+    return createdIndex(result, typeName);
+  }
+
+  /**
+   * The index a CREATE INDEX answered, as the server lists it (issue #12193): the methods creating an index returned null, so
+   * {@code createTypeIndex(...).setNullStrategy(...)} threw a {@link NullPointerException}.
+   * <p>
+   * The index is the one the statement names, which for {@code CREATE INDEX IF NOT EXISTS} can be one a super type of
+   * {@code typeName} declares: it is described by the type the listing names. Null only when the server does not list the index
+   * afterwards: another client dropped it in between, or the user may create indexes on the type but not read it (the listing
+   * hides the indexes of a type the user cannot read), never for an index that is there for the caller to see.
+   */
+  private TypeIndex createdIndex(final ResultSet result, final String typeName) {
+    final String indexName;
+    try (result) {
+      indexName = result.hasNext() ? result.next().getProperty("name") : null;
+    }
+    if (indexName == null)
+      return null;
+
+    try (final ResultSet rows = remoteDatabase.commandUncounted("sql", "select from schema:indexes where name = :name",
+        Map.of("name", indexName))) {
+      while (rows.hasNext()) {
+        final Result row = rows.next();
+        if (RemoteTypeIndex.isTypeIndexRow(row)) {
+          final String declaringTypeName = row.getProperty("typeName");
+          return new RemoteTypeIndex(remoteDatabase, getType(declaringTypeName != null ? declaringTypeName : typeName), row);
+        }
+      }
+    }
     return null;
   }
 
@@ -311,11 +341,11 @@ public class RemoteSchema implements Schema {
       final String... propertyNames) {
     final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
         .collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
+    final ResultSet result = remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
-    return null;
+    return createdIndex(result, typeName);
   }
 
   @Override
