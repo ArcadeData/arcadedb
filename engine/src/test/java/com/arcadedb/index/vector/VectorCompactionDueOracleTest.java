@@ -53,7 +53,6 @@ class VectorCompactionDueOracleTest extends TestHelper {
       insertVertices();
       for (int cycle = 1; cycle <= 40; cycle++)
         updateAllVertices(cycle);
-      database.async().waitCompletion(30_000);
 
       final LSMVectorIndex index = vectorIndex();
       final int total = (int) call(index, "totalPagesForBloatRatio");
@@ -134,7 +133,6 @@ class VectorCompactionDueOracleTest extends TestHelper {
       for (int cycle = 1; cycle <= 10; cycle++)
         updateAllVertices(cycle);
       database.transaction(() -> database.command("sql", "DELETE FROM Doc"));
-      database.async().waitCompletion(30_000);
 
       final LSMVectorIndex index = vectorIndex();
       assertThat(index.estimatePagesForLiveSetForTest()).as("every vector is deleted: the live set needs no page").isZero();
