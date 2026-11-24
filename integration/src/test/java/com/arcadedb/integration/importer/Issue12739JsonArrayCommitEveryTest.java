@@ -20,17 +20,21 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.log.WarningCapture;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -48,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>
  * The batches are observed from ANOTHER thread, which reads committed state only, while the import is still running.
  *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12739JsonArrayCommitEveryTest {
   private static final String DATABASE_PATH = "target/databases/test-import-12739-json-array-commit-every";
@@ -60,7 +64,7 @@ class Issue12739JsonArrayCommitEveryTest {
 
   @BeforeEach
   void createDatabase() {
-    FileUtils.deleteRecursively(new java.io.File(DATABASE_PATH));
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
     database = new DatabaseFactory(DATABASE_PATH).create();
     database.command("sql", "CREATE DOCUMENT TYPE Widget");
     database.command("sql", "CREATE PROPERTY Widget.Name STRING (mandatory true)");
@@ -73,7 +77,7 @@ class Issue12739JsonArrayCommitEveryTest {
         database.rollback();
       database.drop();
     }
-    FileUtils.deleteRecursively(new java.io.File(DATABASE_PATH));
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 
   @Test
@@ -105,13 +109,68 @@ class Issue12739JsonArrayCommitEveryTest {
   void anAbortedImportKeepsTheBatchesAlreadyCommitted() throws IOException {
     final Importer importer = importer(writeJson(250, 250), 100, false);
 
-    assertThatThrownBy(importer::load).isInstanceOf(ImportException.class);
+    final List<String> warnings = warningsOfTheRefusedImport(importer);
 
-    assertThat(database.isTransactionActive()).as("a refused import does not leave its own transaction on the thread").isFalse();
-    assertThat(database.countType("Widget", true)).as("the two batches of 100 records are durable, the 49 records after them are not")
-        .isEqualTo(200);
-    assertThat(importer.getContext().createdDocuments.get()).as("the report credits the records a commit made durable, no more")
-        .isEqualTo(200);
+    assertPartialImport(importer, warnings, 200, 50);
+  }
+
+  /**
+   * A source cut in the middle of record 251 fails in the JSON reader, with an {@code IOException} that no handler of a record
+   * sees: the 50 records of the batch in flight were rolled back and still counted as created, and nothing said the import was
+   * partial.
+   */
+  @Test
+  void aTruncatedSourceKeepsTheBatchesAlreadyCommittedAndCountsThemAlone() throws IOException {
+    final Importer importer = importer(writeJson(250, -1, ",{\"Id\":251,\"Na"), 100, false);
+
+    final List<String> warnings = warningsOfTheRefusedImport(importer);
+
+    assertPartialImport(importer, warnings, 200, 51);
+  }
+
+  /** An array entry that is not an object is refused outside the handler of a record too. */
+  @Test
+  void anEntryThatIsNotAnObjectKeepsTheBatchesAlreadyCommittedAndCountsThemAlone() throws IOException {
+    final Importer importer = importer(writeJson(250, -1, ",42]"), 100, false);
+
+    final List<String> warnings = warningsOfTheRefusedImport(importer);
+
+    assertPartialImport(importer, warnings, 200, 50);
+  }
+
+  /** The commit after the last record carries the last, partial batch: refused, its 50 records are not counted as created. */
+  @Test
+  void aRefusedLastCommitKeepsTheBatchesAlreadyCommittedAndCountsThemAlone() throws IOException {
+    final AtomicInteger saved = new AtomicInteger();
+    database.getSchema().getType("Widget").getEvents().registerListener((AfterRecordCreateListener) record -> {
+      if (saved.incrementAndGet() == 150)
+        ((DatabaseInternal) database).getTransaction().setRollbackOnly("issue 12739: refused commit");
+    });
+    final Importer importer = importer(writeJson(150, -1), 100, false);
+
+    final List<String> warnings = warningsOfTheRefusedImport(importer);
+
+    assertPartialImport(importer, warnings, 100, 50);
+  }
+
+  /**
+   * Under a caller's transaction nothing is committed and nothing is rolled back here: the records before the failing one are
+   * still in that transaction, so they stay in the report, which leaves out the failing record alone.
+   */
+  @Test
+  void aFailingRecordUnderACallerOwnedTransactionIsTheOnlyOneLeftOutOfTheReport() throws IOException {
+    database.begin();
+    final Importer importer = importer(writeJson(250, 250), 100, false);
+
+    final List<String> warnings = warningsOfTheRefusedImport(importer);
+
+    assertThat(database.isTransactionActive()).as("the caller's transaction is the caller's to resolve").isTrue();
+    assertThat(importer.getContext().createdDocuments.get()).isEqualTo(249);
+    assertThat(warnings).as("nothing was committed, so nothing is partial").noneMatch(warning -> warning.contains("PARTIAL"));
+
+    database.rollback();
+
+    assertThat(database.countType("Widget", true)).isZero();
   }
 
   /** {@code skip} mode commits every record on its own: the failing record alone is discarded, and the batch size is not read. */
@@ -156,6 +215,11 @@ class Issue12739JsonArrayCommitEveryTest {
 
   /** A JSON array of {@code records} objects, record number {@code badRecord} (1-based) without the mandatory {@code Name}. */
   private Path writeJson(final int records, final int badRecord) throws IOException {
+    return writeJson(records, badRecord, "]");
+  }
+
+  /** The same array, ended by {@code tail} in place of the closing bracket. */
+  private Path writeJson(final int records, final int badRecord, final String tail) throws IOException {
     final StringBuilder sb = new StringBuilder("[");
     for (int i = 1; i <= records; i++) {
       if (i > 1)
@@ -166,8 +230,24 @@ class Issue12739JsonArrayCommitEveryTest {
       sb.append('}');
     }
     final Path file = tempDir.resolve("records.json");
-    Files.writeString(file, sb.append(']').toString(), StandardCharsets.UTF_8);
+    Files.writeString(file, sb.append(tail).toString(), StandardCharsets.UTF_8);
     return file;
+  }
+
+  /** The WARNING lines of an import that is refused. */
+  private static List<String> warningsOfTheRefusedImport(final Importer importer) {
+    return WarningCapture.captureWarnings(() -> assertThatThrownBy(importer::load).isInstanceOf(ImportException.class));
+  }
+
+  /** What every import that fails after a batch commit owes: the batches stay, the report counts them alone, and it says so. */
+  private void assertPartialImport(final Importer importer, final List<String> warnings, final long durable, final long rolledBack) {
+    assertThat(database.isTransactionActive()).as("a refused import does not leave its own transaction on the thread").isFalse();
+    assertThat(database.countType("Widget", true)).as("the committed batches are durable, the batch in flight is not").isEqualTo(durable);
+    assertThat(importer.getContext().createdDocuments.get()).as("the report credits the records a commit made durable, no more")
+        .isEqualTo(durable);
+    assertThat(warnings).as("the import says it is partial").anySatisfy(
+        warning -> assertThat(warning).contains("the import is PARTIAL").contains(durable + " records were made durable")
+            .contains("the other " + rolledBack + " read since the last commit were rolled back"));
   }
 
   /** The number of Widgets another thread, which sees committed state only, counts right after the importing thread saved the n-th. */
