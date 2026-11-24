@@ -158,22 +158,31 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
     checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
-      final LocalSchema schema = (LocalSchema) owner.getSchema();
-      String resolved = ofType;
-      if (type == Type.LIST || type == Type.MAP) {
-        // a scalar is normalised whenever it is set, the load included: the load depends on it
-        if (Type.getTypeByName(ofType) != null)
-          resolved = ofType.toUpperCase(Locale.ENGLISH);
-        else
-          checkOfTypeExists(schema, ofType);
-      } else if (type == Type.LINK || type == Type.EMBEDDED)
-        checkOfTypeExists(schema, ofType);
-
-      final String newOfType = resolved;
+      final String newOfType = resolveOfType((LocalSchema) owner.getSchema(), owner.getName(), name, type, ofType);
       publish(() -> this.ofType = newOfType);
     }
     forgetUnrestoredAttribute("of");
     return this;
+  }
+
+  /**
+   * Validates and normalises the OF of a property of {@code type} named {@code ownerName.propertyName}, returning the value to store.
+   * Static, and not tied to a property instance, so that {@code CREATE PROPERTY} can refuse an OF naming no type BEFORE it builds the
+   * property: the constructor registers the property name in the dictionary, which commits a transaction of its own, and on a Raft
+   * leader that commit is a change the session's refusal then leaves on this node only (issue #12958).
+   */
+  static String resolveOfType(final LocalSchema schema, final String ownerName, final String propertyName, final Type type,
+      final String ofType) {
+    String resolved = ofType;
+    if (type == Type.LIST || type == Type.MAP) {
+      // a scalar is normalised whenever it is set, the load included: the load depends on it
+      if (Type.getTypeByName(ofType) != null)
+        resolved = ofType.toUpperCase(Locale.ENGLISH);
+      else
+        checkOfTypeExists(schema, ownerName, propertyName, type, ofType);
+    } else if (type == Type.LINK || type == Type.EMBEDDED)
+      checkOfTypeExists(schema, ownerName, propertyName, type, ofType);
+    return resolved;
   }
 
   /**
@@ -183,19 +192,20 @@ public class LocalProperty extends AbstractProperty implements TypeNameDependant
    * exemption and the LIST/MAP branch did not, so one LIST OF a dropped type aborted the load of every property after it
    * (issue #11301).
    */
-  private void checkOfTypeExists(final LocalSchema schema, final String ofType) {
+  private static void checkOfTypeExists(final LocalSchema schema, final String ownerName, final String propertyName, final Type type,
+      final String ofType) {
     if (schema.existsType(ofType))
       return;
 
     if (!schema.isSchemaLoaded()) {
       if (schema.isReadingFromFile())
-        LogManager.instance().log(this, Level.WARNING,
+        LogManager.instance().log(LocalProperty.class, Level.WARNING,
             "Property '%s.%s' is declared %s OF '%s', a type the schema does not define: a record or document stored in the "
-                + "property is refused until the type exists again", owner.getName(), name, type, ofType);
+                + "property is refused until the type exists again", ownerName, propertyName, type, ofType);
       return;
     }
 
-    throw new SchemaException("Error on set property " + owner.getName() + "." + name + " " + type + " type to '" + ofType
+    throw new SchemaException("Error on set property " + ownerName + "." + propertyName + " " + type + " type to '" + ofType
         + "' because the type is not defined");
   }
 

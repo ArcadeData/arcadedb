@@ -32,6 +32,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -49,6 +50,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * What a data file owes the disk (issue #8626). A file is forced only when something happened to it since its last
@@ -250,6 +253,220 @@ class PaginatedComponentFileSyncStateTest {
   }
 
   @Test
+  void syncOfOneFileDoesNotWaitForAPassStuckOnAnotherFile() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      final PaginatedComponentFile stuck = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("stuck"));
+      final PaginatedComponentFile mine = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID + 1,
+          tempDir.resolve("mine." + (FILE_ID + 1) + "." + PAGE_SIZE + ".v0.arc").toString());
+      writePage(stuck, 0);
+      final ReentrantReadWriteLock channelLock = channelLock(stuck);
+
+      final Future<Boolean> pass;
+      channelLock.writeLock().lock();
+      try {
+        // A pass over every file (the WAL housekeeping's) gets stuck on one of them, holding the syncFiles() lock.
+        pass = executor.submit(fileManager::syncFiles);
+        awaitQueued(channelLock, 1);
+
+        // A writer that owes the durability of ANOTHER file only must not wait for that pass (issue #11932).
+        final AtomicReference<Thread> syncThread = new AtomicReference<>();
+        final Future<Boolean> sync = executor.submit(() -> {
+          syncThread.set(Thread.currentThread());
+          return fileManager.syncFile(FILE_ID + 1);
+        });
+        final ReentrantLock syncLock = syncLock(fileManager);
+        final StallAwareStopwatch wait = StallAwareStopwatch.start();
+        while (!sync.isDone()) {
+          assertThat(syncThread.get() != null && syncLock.hasQueuedThread(syncThread.get()))
+              .as("the sync of one file queued behind a pass over the other files (issue #11932)").isFalse();
+          wait.assertGaveUpWithin(30_000L, "a sync of one file that returns from one that never does");
+          Thread.sleep(1);
+        }
+        assertThat(sync.get()).isTrue();
+        assertThat(mine.isModifiedSinceLastSync()).isFalse();
+        assertThat(pass.isDone()).as("the pass is still stuck on the other file").isFalse();
+      } finally {
+        channelLock.writeLock().unlock();
+      }
+      assertThat(pass.get(30, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      executor.shutdownNow();
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void aPassForcesTheDirectoryASyncOfOneFileStillOwes() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("created"));
+
+      // A syncFile() of the created file has forced it, metadata included, and not yet reached its directory force
+      assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+      assertThat(file.directorySyncOwed()).as("the created file owes its directory entry").isPositive();
+
+      // A pass finds the file itself clean, and cannot report it durable without its directory entry (issue #11932)
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(file.directorySyncOwed()).as("the pass forced the directory the file still owed").isZero();
+    } finally {
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void aDirectoryForceAcknowledgesOnlyTheMetadataItCovered() throws Exception {
+    final PaginatedComponentFile file = open(filePath("renamedMeanwhile"));
+    assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+    // A directory force reads what it covers before it runs...
+    final long covered = file.directorySyncOwed();
+    assertThat(covered).isPositive();
+
+    // ...and meanwhile the file is renamed and forced again by another caller, whose directory force is still to come
+    file.markUnsynced();
+    assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+
+    file.directorySynced(covered);
+    assertThat(file.directorySyncOwed())
+        .as("the earlier directory force must not acknowledge the metadata forced after it read the generation (issue #11932)")
+        .isGreaterThan(covered);
+  }
+
+  /**
+   * The same interleaving through {@link FileManager#syncFile(int)} (issue #11932): the file is renamed and forced by another
+   * caller after the sync read the generation it owes and before it forced the directory. That force covers only the
+   * generation it read, so the rename stays owed, and the next sync of the file forces the directory again for it.
+   */
+  @Test
+  void aRenameForcedWhileASyncOfTheFileForcesItsDirectoryStaysOwedToTheNextSync() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("renamedInWindow"));
+      final List<Long> owedAtEachDirectoryForce = new ArrayList<>();
+      final AtomicBoolean renamed = new AtomicBoolean();
+      fileManager.beforeDirectoryForceForTesting = () -> {
+        owedAtEachDirectoryForce.add(file.directorySyncOwed());
+        if (renamed.compareAndSet(false, true))
+          try {
+            file.renameComponent("renamedInWindowAgain");
+            assertThat(file.forceIfModified()).as("the rename forced by another caller").isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+          } catch (final IOException e) {
+            throw new RuntimeException(e);
+          }
+      };
+
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("directory forces of the first sync").hasSize(1);
+      final long coveredByTheFirst = owedAtEachDirectoryForce.getFirst();
+      assertThat(coveredByTheFirst).isPositive();
+      assertThat(file.directorySyncOwed()).as("the rename forced after the first sync read its generation is still owed")
+          .isGreaterThan(coveredByTheFirst);
+
+      // The file itself is clean now: only the directory entry of the rename is owed, and the next sync forces it
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("the next sync forced the directory").hasSize(2);
+      assertThat(file.directorySyncOwed()).as("the directory force of the next sync covered the rename").isZero();
+
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(owedAtEachDirectoryForce).as("a sync that owes nothing forces no directory").hasSize(2);
+    } finally {
+      fileManager.beforeDirectoryForceForTesting = null;
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void aDirectoryForceThatFailedLeavesItsGenerationOwed() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final File directory = tempDir.toFile();
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("created"));
+
+      // A directory that cannot be opened for reading cannot be forced: FileUtils.forceDirectory() answers false
+      assumeTrue(directory.setReadable(false), "the file system has no read permission to take away");
+      assumeFalse(Files.isReadable(tempDir), "the process reads the directory whatever its permissions (root)");
+
+      assertThat(fileManager.syncFile(FILE_ID)).as("a directory that cannot be forced does not fail the sync").isTrue();
+      assertThat(file.directorySyncOwed())
+          .as("the created file still owes its directory entry: the force did not happen (issue #11932)").isPositive();
+      assertThat(fileManager.syncFiles()).isTrue();
+      assertThat(file.directorySyncOwed()).as("nor did the pass force it").isPositive();
+
+      assertThat(directory.setReadable(true)).isTrue();
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(file.directorySyncOwed()).as("the next sync that can force the directory pays what is owed").isZero();
+    } finally {
+      directory.setReadable(true);
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void aSkippedDirectoryForceOwesNothing() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("unsynced"));
+      assertThat(file.forceIfModified()).isEqualTo(PaginatedComponentFile.SYNC_METADATA);
+      assertThat(file.directorySyncOwed()).isPositive();
+
+      // With fsync off FileUtils.forceDirectory() returns false without trying: not a failure, nothing to retry
+      GlobalConfiguration.FILE_SYNC.setValue(false);
+      assertThat(fileManager.syncFile(FILE_ID)).isTrue();
+      assertThat(file.directorySyncOwed()).as("a skipped directory force must not stay owed on every later pass").isZero();
+    } finally {
+      fileManager.close();
+    }
+  }
+
+  @Test
+  void syncOfOneFileWaitsForThePassForcingItAndSeesItsFailure() throws Exception {
+    final FileManager fileManager = new FileManager(tempDir.toString(), ComponentFile.MODE.READ_WRITE, Set.of("arc"));
+    final ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      final PaginatedComponentFile file = (PaginatedComponentFile) fileManager.getOrCreateFile(FILE_ID, filePath("shared"));
+      writePage(file, 0);
+      final ReentrantReadWriteLock channelLock = channelLock(file);
+
+      final Future<Boolean> pass;
+      final Future<Boolean> sync;
+      final AtomicReference<Thread> syncThread = new AtomicReference<>();
+      channelLock.writeLock().lock();
+      try {
+        // The pass claims the file and queues behind the channel lock, its fsync not done yet.
+        pass = executor.submit(fileManager::syncFiles);
+        awaitQueued(channelLock, 1);
+
+        // The sync of that same file must not find it clean and report it durable: it waits for the pass's fsync.
+        sync = executor.submit(() -> {
+          syncThread.set(Thread.currentThread());
+          return fileManager.syncFile(FILE_ID);
+        });
+        final ReentrantLock forceLock = forceLock(file);
+        final StallAwareStopwatch wait = StallAwareStopwatch.start();
+        while (syncThread.get() == null || !forceLock.hasQueuedThread(syncThread.get())) {
+          assertThat(sync.isDone()).as("the sync returned while the pass's fsync of the file was still in flight").isFalse();
+          wait.assertGaveUpWithin(30_000L, "a sync that queues on the file's force lock from one that never does");
+          Thread.sleep(1);
+        }
+
+        // Now make the in-flight fsync fail, as #4934 does: channel closed underneath and the OS file gone.
+        breakFile(file);
+      } finally {
+        channelLock.writeLock().unlock();
+      }
+
+      assertThat(pass.get(30, TimeUnit.SECONDS)).isFalse();
+      assertThat(sync.get(30, TimeUnit.SECONDS))
+          .as("a sync that waited for a failed fsync of its file must not report the file durable").isFalse();
+      assertThat(file.isModifiedSinceLastSync()).isTrue();
+    } finally {
+      executor.shutdownNow();
+      fileManager.close();
+    }
+  }
+
+  @Test
   void concurrentWritesAndSyncsLoseNeitherPagesNorPendingState() throws Exception {
     final int writers = 4;
     final int syncers = 2;
@@ -352,9 +569,7 @@ class PaginatedComponentFileSyncStateTest {
    */
   private static void awaitQueuedOnSyncLock(final FileManager fileManager, final AtomicReference<Thread> thread,
       final Future<?> future) throws Exception {
-    final Field field = FileManager.class.getDeclaredField("syncLock");
-    field.setAccessible(true);
-    final ReentrantLock syncLock = (ReentrantLock) field.get(fileManager);
+    final ReentrantLock syncLock = syncLock(fileManager);
 
     final StallAwareStopwatch wait = StallAwareStopwatch.start();
     while (thread.get() == null || !syncLock.hasQueuedThread(thread.get())) {
@@ -362,6 +577,18 @@ class PaginatedComponentFileSyncStateTest {
       wait.assertGaveUpWithin(TimeUnit.SECONDS.toMillis(30), "the second sync never queued on the sync lock");
       Thread.sleep(1);
     }
+  }
+
+  private static ReentrantLock syncLock(final FileManager fileManager) throws Exception {
+    final Field field = FileManager.class.getDeclaredField("syncLock");
+    field.setAccessible(true);
+    return (ReentrantLock) field.get(fileManager);
+  }
+
+  private static ReentrantLock forceLock(final PaginatedComponentFile file) throws Exception {
+    final Field field = PaginatedComponentFile.class.getDeclaredField("forceLock");
+    field.setAccessible(true);
+    return (ReentrantLock) field.get(file);
   }
 
   private static void breakFile(final PaginatedComponentFile file) throws Exception {

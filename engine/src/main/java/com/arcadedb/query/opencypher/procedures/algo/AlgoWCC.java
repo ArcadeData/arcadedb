@@ -105,7 +105,7 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     }
 
     // Fall back to OLTP path
-    return executeWithOLTP(db, relTypes);
+    return executeWithOLTP(db, relTypes, context);
   }
 
   private Stream<Result> executeWithCSR(final GraphAnalyticalView.Pinned gav, final String[] relTypes) {
@@ -123,14 +123,16 @@ public class AlgoWCC extends AbstractAlgoProcedure {
     });
   }
 
-  private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes) {
-    final GraphData graph = loadGraph(db, null, relTypes, null);
+  private Stream<Result> executeWithOLTP(final Database db, final String[] relTypes, final CommandContext context) {
+    final GraphData graph = loadGraph(db, null, relTypes, context);
 
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    final int[][] adj = graph.adjacency(newWorkGuard(context), Vertex.DIRECTION.BOTH, relTypes);
 
+    // The component of every node, which the rows are read from, and the queue of the walk (issue #12554)
+    graph.memory().reserve(saturatingProduct(n, 2L * INT_BYTES), "the component ids and the walk queue", n + " nodes");
     final int[] componentId = new int[n];
     for (int i = 0; i < n; i++)
       componentId[i] = -1;

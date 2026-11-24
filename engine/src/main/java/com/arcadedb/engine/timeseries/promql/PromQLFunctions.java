@@ -34,6 +34,33 @@ public final class PromQLFunctions {
   }
 
   /**
+   * Whether the range function {@code function} answers anything for {@code series} (issue #11980). Prometheus emits NO sample for
+   * a series {@code rate()}/{@code increase()} cannot compute a rate for - fewer than two samples in the window - nor for one whose
+   * last two samples {@code irate()} cannot divide by; every other range function answers any series the selector returned.
+   * The window's samples are in timestamp order (see {@code evaluateMatrixSelector}).
+   * <p>
+   * This is the one statement of that rule: {@link #rate}, {@link #increase} and {@link #irate} ask it too, and answer
+   * {@link TimeSeriesNaN#ABSENT} - never a {@code 0} nobody measured - to a caller that did not.
+   */
+  public static boolean answers(final String function, final RangeSeries series) {
+    return switch (function) {
+      case "rate", "increase" -> hasSampledInterval(series.values());
+      case "irate" -> hasInstantInterval(series.values());
+      default -> true;
+    };
+  }
+
+  /** {@code rate()}/{@code increase()}: at least two samples, the first and the last at different times. */
+  private static boolean hasSampledInterval(final List<double[]> values) {
+    return values.size() >= 2 && values.getLast()[0] > values.getFirst()[0];
+  }
+
+  /** {@code irate()}: at least two samples, the last two at different times. */
+  private static boolean hasInstantInterval(final List<double[]> values) {
+    return values.size() >= 2 && values.getLast()[0] > values.get(values.size() - 2)[0];
+  }
+
+  /**
    * Per-second rate of increase, with counter-reset handling.
    * <p>
    * Extrapolates the sampled increase to the full matrix range window, matching Prometheus
@@ -50,13 +77,11 @@ public final class PromQLFunctions {
    */
   public static double irate(final RangeSeries series) {
     final List<double[]> values = series.values();
-    if (values.size() < 2)
-      return 0.0;
+    if (!hasInstantInterval(values))
+      return TimeSeriesNaN.ABSENT;
     final double[] prev = values.get(values.size() - 2);
     final double[] last = values.getLast();
     final double durationSec = (last[0] - prev[0]) / 1000.0;
-    if (durationSec <= 0)
-      return 0.0;
     double diff = last[1] - prev[1];
     if (diff < 0)
       diff = last[1]; // counter reset
@@ -76,7 +101,8 @@ public final class PromQLFunctions {
 
   /**
    * Shared extrapolation logic for {@code rate()} and {@code increase()}, faithfully porting
-   * Prometheus' {@code extrapolatedRate}. The counter-reset-corrected total increase is scaled so it
+   * Prometheus' {@code extrapolatedRate} as it is since Prometheus 2.51 (prometheus/prometheus#13725, checked against
+   * v3.5.0 {@code promql/functions.go}). The counter-reset-corrected total increase is scaled so it
    * covers the full requested matrix window, with boundary handling that avoids over-extrapolating
    * beyond the available samples and prevents extrapolating a counter below zero.
    *
@@ -86,8 +112,8 @@ public final class PromQLFunctions {
    */
   private static double extrapolatedRate(final RangeSeries series, final boolean isRate) {
     final List<double[]> values = series.values();
-    if (values.size() < 2)
-      return 0.0;
+    if (!hasSampledInterval(values))
+      return TimeSeriesNaN.ABSENT;
 
     final double[] first = values.getFirst();
     final double[] last = values.getLast();
@@ -105,39 +131,37 @@ public final class PromQLFunctions {
     }
 
     final double sampledInterval = (last[0] - first[0]) / 1000.0;
-    if (sampledInterval <= 0)
-      return 0.0;
 
     final double rangeStartSec = series.rangeStartMs() / 1000.0;
     final double rangeEndSec = series.rangeEndMs() / 1000.0;
     final double rangeSec = rangeEndSec - rangeStartSec;
     if (rangeSec <= 0)
-      return 0.0;
+      return TimeSeriesNaN.ABSENT;
 
     double durationToStart = (first[0] / 1000.0) - rangeStartSec;
-    final double durationToEnd = rangeEndSec - (last[0] / 1000.0);
+    double durationToEnd = rangeEndSec - (last[0] / 1000.0);
     final double averageDurationBetweenSamples = sampledInterval / (values.size() - 1);
 
-    // Counters can't be negative. If the counter has positive slope and a non-negative first value,
-    // extrapolate back only as far as the projected zero point to avoid producing negative values.
+    // A boundary farther than 10% past the average spacing means the series starts or ends inside the window: extrapolate
+    // only half a spacing toward it.
+    final double extrapolationThreshold = averageDurationBetweenSamples * 1.1;
+    if (durationToStart >= extrapolationThreshold)
+      durationToStart = averageDurationBetweenSamples / 2;
+
+    // Counters can't be negative. If the counter has positive slope and a non-negative first value, extrapolate back only as far
+    // as the projected zero point. AFTER the threshold, as Prometheus does since 2.51 (prometheus/prometheus#13725): the zero
+    // point used to be applied first, and a zero point under the threshold then extrapolated past the half spacing the series
+    // start had already been limited to (issue #11981)
     if (resultValue > 0 && first[1] >= 0) {
       final double durationToZero = sampledInterval * (first[1] / resultValue);
       if (durationToZero < durationToStart)
         durationToStart = durationToZero;
     }
 
-    final double extrapolationThreshold = averageDurationBetweenSamples * 1.1;
-    double extrapolateToInterval = sampledInterval;
+    if (durationToEnd >= extrapolationThreshold)
+      durationToEnd = averageDurationBetweenSamples / 2;
 
-    if (durationToStart < extrapolationThreshold)
-      extrapolateToInterval += durationToStart;
-    else
-      extrapolateToInterval += averageDurationBetweenSamples / 2;
-
-    if (durationToEnd < extrapolationThreshold)
-      extrapolateToInterval += durationToEnd;
-    else
-      extrapolateToInterval += averageDurationBetweenSamples / 2;
+    final double extrapolateToInterval = sampledInterval + durationToStart + durationToEnd;
 
     double factor = extrapolateToInterval / sampledInterval;
     if (isRate)

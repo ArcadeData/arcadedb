@@ -801,7 +801,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // -9223372036854775808: only the negated literal fits a long
       if (negative)
         try {
-          return Long.parseLong("-" + (text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text));
+          return parseNegatedLongLiteral(text);
         } catch (final NumberFormatException ignored) {
           // reported below
         }
@@ -3433,17 +3433,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     for (int i = 0; i < text.length(); i++)
       if (!Character.isDigit(text.charAt(i)))
-        return null; // hex/octal-shaped: not the plain-decimal shape we fold here
+        return null; // hex-shaped: not the digits-only shape we fold here
 
+    // a leading 0 makes the digits octal (#12082): the magnitude of Long.MIN_VALUE is 01000000000000000000000. `text` is the
+    // digits without the L suffix, tested for fit here; the fold below takes `originalText` and strips the suffix itself
+    final int radix = integerLiteralRadix(text);
     try {
-      Long.parseLong(text);
+      Long.parseLong(text, radix);
       return null; // magnitude fits on its own: let the existing 0 - X handling run as before
     } catch (final NumberFormatException magnitudeOverflow) {
       // only Long.MIN_VALUE's magnitude can still be represented once the sign is folded in;
       // anything larger is a genuine overflow and keeps raising the original error
       try {
         final BaseExpression baseExpr = new BaseExpression();
-        baseExpr.number = new PInteger().setValue(Long.parseLong("-" + text));
+        baseExpr.number = new PInteger().setValue(parseNegatedLongLiteral(originalText));
         return baseExpr;
       } catch (final NumberFormatException stillInvalid) {
         throw new CommandSQLParsingException("Invalid integer: " + originalText);
@@ -3578,15 +3581,20 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Parses an {@code INTEGER_LITERAL} token: decimal or hexadecimal ({@code 0xFF}), with an optional {@code L} suffix. A value
-   * above {@code Integer.MAX_VALUE} (hexadecimal included, so {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * Parses the {@code INTEGER_LITERAL} token of a numeric literal: decimal, hexadecimal ({@code 0xFF}) or octal (a leading
+   * {@code 0} followed by more digits: {@code 010} is 8, as the documentation and the lexer's {@code OCTAL_LITERAL} say, issue
+   * #12082), with an optional {@code L} suffix. A value above {@code Integer.MAX_VALUE} (hexadecimal and octal included, so
+   * {@code 0xFFFFFFFF} is 4294967295 and not -1) is a long.
+   * <p>
+   * Only the positions that read a numeric value come here. The positions that name something with a number (a bucket id, a
+   * bucket or shard count, a page size, a retry count, a {@code $N} parameter, the parts of a RID) keep reading plain decimal
+   * digits, as they always did: {@code bucket:010} is bucket 10, like {@code #10:0}.
    */
   static Number parseIntegerLiteral(final String text) {
     final boolean isLong = text.endsWith("L") || text.endsWith("l");
     final String digits = isLong ? text.substring(0, text.length() - 1) : text;
-    final boolean isHex = digits.length() > 2 && digits.charAt(0) == '0' && (digits.charAt(1) == 'x' || digits.charAt(1) == 'X');
-    final String body = isHex ? digits.substring(2) : digits;
-    final int radix = isHex ? 16 : 10;
+    final int radix = integerLiteralRadix(digits);
+    final String body = radix == 16 ? digits.substring(2) : digits;
     if (isLong)
       return Long.parseLong(body, radix);
     try {
@@ -3595,6 +3603,30 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // If it's too large for int, try long
       return Long.parseLong(body, radix);
     }
+  }
+
+  /**
+   * The value of a directly negated {@code INTEGER_LITERAL} (optionally {@code L}-suffixed) whose magnitude does not fit a
+   * long on its own: only the magnitude of {@code Long.MIN_VALUE} can still be represented once the sign is folded in, anything
+   * larger raises {@link NumberFormatException}. The digits are read in the radix {@link #parseIntegerLiteral} reads them in,
+   * except that a hexadecimal one is refused (the {@code x} of its prefix is no digit): folding the minimum of a hexadecimal
+   * literal was never accepted.
+   */
+  static long parseNegatedLongLiteral(final String text) {
+    final String digits = text.endsWith("L") || text.endsWith("l") ? text.substring(0, text.length() - 1) : text;
+    return Long.parseLong("-" + digits, integerLiteralRadix(digits));
+  }
+
+  /**
+   * The radix of the digits of an {@code INTEGER_LITERAL} without its {@code L} suffix: 16 for {@code 0x}, 8 for a leading
+   * {@code 0} followed by more digits, 10 otherwise ({@code 0} alone is 0).
+   */
+  private static int integerLiteralRadix(final String digits) {
+    if (digits.length() > 1 && digits.charAt(0) == '0') {
+      final char second = digits.charAt(1);
+      return second == 'x' || second == 'X' ? 16 : 8;
+    }
+    return 10;
   }
 
   /**
@@ -4767,7 +4799,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
-   * Visit integer (positive or negative integer for RIDs).
+   * Visit integer (positive or negative integer for RIDs). The parts of a RID are read in decimal, as the RID's own text form
+   * ({@code #12:10}, {@code new RID("#12:010")}) is: a record address, not a numeric literal, so {@code #12:010} is
+   * {@code #12:10} and not the octal {@code #12:8} (issue #12082).
    */
   @Override
   public PInteger visitInteger(final SQLParser.IntegerContext ctx) {
@@ -7213,7 +7247,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       // The first tsRetentionUnit after RETENTION belongs to RETENTION
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, SQLParser.RETENTION, 86400000L);
-      stmt.retentionMs = retentionValue * multiplier;
+      stmt.retentionMs = Math.multiplyExact(retentionValue, multiplier);
     }
 
     // COMPACTION_INTERVAL or COMPACTION INTERVAL - value with optional time unit
@@ -7237,7 +7271,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
 
       final long multiplier = resolveTimeUnitAfterKeyword(bodyCtx, compactionTokenType, 3600000L);
-      stmt.compactionIntervalMs = compactionValue * multiplier;
+      stmt.compactionIntervalMs = Math.multiplyExact(compactionValue, multiplier);
     }
 
     // DOWNSAMPLING POLICY AFTER ... GRANULARITY ... (issue #7689). Same tier clause, and the same ascending sort,
@@ -7879,8 +7913,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     final ConsoleStatement stmt = new ConsoleStatement();
     final SQLParser.ConsoleStatementContext consoleCtx = ctx.consoleStatement();
 
-    // LOG LEVEL: log, output, error, warn, debug
+    // LOG LEVEL: log, output, error, warn, debug. Any other is refused here, before a statement of the script runs (issue #11893)
     stmt.logLevel = (Identifier) visit(consoleCtx.identifier());
+    ConsoleStatement.validateLevel(stmt.logLevel);
 
     // MESSAGE: expression to log
     stmt.message = (Expression) visit(consoleCtx.expression());
@@ -8572,8 +8607,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       final String[] parts = inclusive ? tokenText.split("\\.\\.\\.") : tokenText.split("\\.\\.");
 
       if (parts.length == 2) {
-        final int from = Integer.parseInt(parts[0].trim());
-        final int to = Integer.parseInt(parts[1].trim());
+        final int from = parseRangeBound(parts[0].trim());
+        final int to = parseRangeBound(parts[1].trim());
 
         // Set from and to fields
         selector.from = from;
@@ -8591,6 +8626,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     return selector;
+  }
+
+  /**
+   * A bound of an integer range token ({@code [01..010]}, optionally negative): a leading {@code 0} followed by more digits is
+   * octal like in every numeric literal, so the token and {@code [01 .. 010]}, which goes through the expression parser, agree
+   * (issue #12082). Hexadecimal and the {@code L} suffix were never accepted in the token and still raise
+   * {@link NumberFormatException}: neither the {@code x} nor the {@code L} is a digit of the radix chosen.
+   */
+  private static int parseRangeBound(final String text) {
+    return Integer.parseInt(text, integerLiteralRadix(text.startsWith("-") ? text.substring(1) : text));
   }
 
   /**

@@ -229,6 +229,43 @@ class LSMTreeFullTextIndexMLTTest {
   }
 
   /**
+   * Documents that match the source on exactly the same terms have the same score, and equal scores come back in RID order: not in
+   * the iteration order of the map the scores are accumulated in, which is whatever {@code RID.hashCode()} makes it.
+   */
+  @Test
+  void searchMoreLikeThisRanksEqualScoresByRid() {
+    final DocumentType tied = db.getSchema().createDocumentType("Tied", 1);
+    tied.createProperty("content", String.class);
+    tied.createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "content");
+
+    final List<RID> rids = new ArrayList<>();
+    db.transaction(() -> {
+      for (int i = 0; i < 30; i++) {
+        final MutableDocument doc = db.newDocument("Tied");
+        doc.set("content", "tiebreak alpha beta gamma");
+        doc.save();
+        rids.add(doc.getIdentity());
+      }
+    });
+
+    final LSMTreeFullTextIndex index = (LSMTreeFullTextIndex) tied.getAllIndexes(false).iterator().next().getIndexesOnBuckets()[0];
+    final MoreLikeThisConfig config = new MoreLikeThisConfig().setMinTermFreq(1).setMinDocFreq(1).setMaxQueryTerms(10);
+
+    final IndexCursor cursor = index.searchMoreLikeThis(Set.of(rids.getFirst()), config);
+    final List<RID> results = new ArrayList<>();
+    final Set<Integer> scores = new HashSet<>();
+    while (cursor.hasNext()) {
+      results.add(cursor.next().getIdentity());
+      scores.add(cursor.getScore());
+    }
+
+    assertThat(scores).as("every other document matches on the same terms").hasSize(1);
+    final List<RID> expected = new ArrayList<>(rids.subList(1, rids.size()));
+    expected.sort(null);
+    assertThat(results).containsExactlyElementsOf(expected);
+  }
+
+  /**
    * Helper method to get the full-text index from the schema.
    */
   private LSMTreeFullTextIndex getFullTextIndex() {

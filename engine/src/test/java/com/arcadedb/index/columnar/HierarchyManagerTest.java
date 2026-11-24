@@ -516,8 +516,8 @@ class HierarchyManagerTest extends TestHelper {
   }
 
   @Test
-  void sharedViewIgnoresTheCallerResultSetLimit() {
-    // a database with a security manager, so the context user's limits apply to the scans
+  void sharedViewIsBuiltWithoutTheCallerUser() {
+    // a database with a security manager, so the context user's quotas apply
     database.close();
     factory.setSecurity(db -> {
     });
@@ -527,8 +527,8 @@ class HierarchyManagerTest extends TestHelper {
       final SecurityDatabaseUser limited = limitedUser(2);
       context.setCurrentUser(limited);
       try {
-        // the limit is real: a plain scan of the tags stops at 2
-        assertThat(countIterated(ColumnarTestData.TAG_TYPE)).isEqualTo(2);
+        // a quota caps the rows of a query, not a scan: a plain scan of the tags reads all 5 (issue #12888)
+        assertThat(countIterated(ColumnarTestData.TAG_TYPE)).isEqualTo(5);
 
         final HierarchyView view = columnar().hierarchy(ColumnarTestData.TYPE, "tags").view();
         // the shared view is every user's: built with no user, all 5 tags and their links
@@ -1130,7 +1130,7 @@ class HierarchyManagerTest extends TestHelper {
     }
   }
 
-  /** The records a plain polymorphic scan of the type hands out (the context user's result-set limit applies). */
+  /** The records a plain polymorphic scan of the type hands out. */
   private long countIterated(final String type) {
     long count = 0;
     for (final Iterator<?> it = database.iterateType(type, true); it.hasNext(); it.next())
@@ -1156,7 +1156,7 @@ class HierarchyManagerTest extends TestHelper {
     return ((Number) ((LocalDatabase) ((DatabaseInternal) database).getEmbedded()).getStats().get("txRollbacks")).longValue();
   }
 
-  /** A user that may do everything and whose scans stop after {@code limit} records. */
+  /** A user that may do everything, under a {@code resultSetLimit} of {@code limit} rows a query. */
   private static SecurityDatabaseUser limitedUser(final long limit) {
     return new SecurityDatabaseUser() {
       @Override

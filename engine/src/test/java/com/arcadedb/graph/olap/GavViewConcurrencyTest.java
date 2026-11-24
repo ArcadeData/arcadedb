@@ -928,6 +928,8 @@ class GavViewConcurrencyTest {
       database.command("sql", "CREATE VERTEX TYPE R");
       database.command("sql", "CREATE EDGE TYPE K");
       database.command("sql", "CREATE EDGE TYPE L");
+      // the view's edge property: a view refuses one the schema does not declare (issue #12177)
+      database.command("sql", "CREATE PROPERTY L.ep INTEGER");
     }
 
     /** The reporter's sequence: the edge created and its source deleted by one transaction leaves the base in place. */

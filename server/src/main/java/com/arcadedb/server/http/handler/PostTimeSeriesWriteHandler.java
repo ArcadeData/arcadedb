@@ -188,11 +188,18 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     // through emitCommitIndexBookmarkOnResponseCommit, on a response this method throws out of as well, which
     // the hand-rolled finally this replaced did not cover any better.
 
-    // Get precision from query parameter
+    // Get precision from query parameter. An unknown one is answered here, with the accepted values in the 'error' label:
+    // thrown out of execute() it maps to "Cannot execute command" with the message in 'detail', which production mode
+    // conceals, so the caller would not learn what to send instead (issue #11875, review of PR #11876).
     final Deque<String> precisionParam = exchange.getQueryParameters().get("precision");
-    final Precision precision = precisionParam != null && !precisionParam.isEmpty()
-        ? Precision.fromString(precisionParam.getFirst())
-        : Precision.NANOSECONDS;
+    final Precision precision;
+    try {
+      precision = precisionParam != null && !precisionParam.isEmpty()
+          ? Precision.fromString(precisionParam.getFirst())
+          : Precision.NANOSECONDS;
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, error2json(e.getMessage(), null, null, null, null));
+    }
 
     if (rawPayload == null || rawPayload.isBlank())
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");

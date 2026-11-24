@@ -32,6 +32,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.SourceText;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
@@ -75,6 +76,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected static final LSMTreeIndexCompacted.LookupResult HIGHER    = new LSMTreeIndexCompacted.LookupResult(false, true, 0,
       null);
   protected static final byte                               valueType = BinaryTypes.TYPE_COMPRESSED_RID;
+
+  // the shapes numberTextKind() tells a key text apart by, see there
+  /** The text is none of the shapes below. */
+  private static final int NOT_A_NUMBER    = 0;
+  /** {@code -?digits}: the canonical text of a whole number. */
+  private static final int WHOLE_NUMBER    = 1;
+  /** {@code -?digits.digits}: the canonical text of a fraction, and what Java writes for a double or a decimal of a moderate size. */
+  private static final int DECIMAL_NUMBER  = 2;
+  /** {@code -?digits[.digits](e|E)[+|-]digits}: what Java writes for a double or a decimal of an extreme size. */
+  private static final int EXPONENT_NUMBER = 3;
 
   protected       LSMTreeIndex     mainIndex;
   protected final BinaryComparator comparator;
@@ -722,6 +733,140 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         convertedKeys[i] = string.toLowerCase(Locale.ROOT);
     }
     return convertedKeys;
+  }
+
+  /**
+   * The keys as an older build wrote them, or null when it wrote them the same way. On a property nothing declares, two builds
+   * keyed a value by the text Java gives it where {@link #convertKeysToDeclaredTypes} now writes a canonical text, and an index
+   * they wrote keeps those entries until it is rebuilt, so a seek, a removal and a uniqueness check look under both texts:
+   * <ul>
+   * <li>a floating point or decimal number, by {@code toString()} before #9132 (26.9.1): {@code 1.0}, {@code -0.0},
+   * {@code 1.0E300} where the canonical key is {@code 1}, {@code 0} and the plain digits (issue #12233);</li>
+   * <li>a list, by {@code List.toString()} before #11615: {@code [1.5, 2.0]} where the canonical key is {@code [1.5, 2]}
+   * (issue #12160).</li>
+   * </ul>
+   * The old text is rebuilt with {@link Type#convertIndexKeyOrNull} to STRING, which still turns a list or a number into the text
+   * those builds wrote (pinned by {@code LSMTreeIndexLegacyKeysTest} and the {@code UndeclaredIndexLegacy*} tests, which write the old
+   * text by hand: a change of that conversion turns them red instead of silently ending the lookups of the old entries). Arrays have
+   * no old text to look under: those builds keyed an array by its identity text
+   * ({@code [I@1b6d3586}), which differs for every array instance, so no seek ever found such an entry.
+   *
+   * @param keys          the keys as the caller gave them, before any conversion: the list or the number itself
+   * @param convertedKeys the same keys after {@link #convertKeysToDeclaredTypes}, as the index stores them today
+   *
+   * @return a copy of {@code convertedKeys} with each key that had an old text replaced by that text, or null when no key had one
+   */
+  Object[] legacyKeys(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return null;
+    Object[] legacyKeys = null;
+    for (int i = 0; i < keys.length && i < convertedKeys.length; ++i) {
+      final Object key = keys[i];
+      if (!(key instanceof Collection || key instanceof Double || key instanceof Float || key instanceof BigDecimal)
+          || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING || !isUndeclaredProperty(i))
+        continue;
+      // a list read from untyped text is the list here, as in convertKeysToDeclaredTypes: an older build wrote the text of its
+      // elements, never the text a client sent it as (issue #12711)
+      Object legacyKey = Type.convertIndexKeyOrNull(database,
+          key instanceof SourceText && key instanceof Collection<?> collection ? new ArrayList<>(collection) : key, String.class);
+      if (legacyKey instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
+          && caseInsensitiveKeys[i])
+        legacyKey = string.toLowerCase(Locale.ROOT);
+      if (legacyKey == null || legacyKey.equals(convertedKeys[i]))
+        continue;
+      if (legacyKeys == null)
+        legacyKeys = convertedKeys.clone();
+      legacyKeys[i] = legacyKey;
+    }
+    return legacyKeys;
+  }
+
+  /**
+   * Whether converted keys can be the canonical key of a value an older build keyed another way ({@link #legacyKeys}): a STRING key
+   * of a property nothing declares that reads as a list ({@code [1.5, 2]}) or as the canonical text of a number ({@code 1},
+   * {@code 2.5}). Answers without loading anything, so that a caller holding only converted keys loads the record they came from only
+   * when it can matter: a date, a version, an address or any other text that is no list and no number loads nothing.
+   */
+  boolean mayBeCanonicalKeyOfLegacyValue(final Object[] convertedKeys) {
+    if (convertedKeys == null)
+      return false;
+    for (int i = 0; i < convertedKeys.length && i < binaryKeyTypes.length; ++i)
+      if (binaryKeyTypes[i] == BinaryTypes.TYPE_STRING && convertedKeys[i] instanceof String string
+          && (isListText(string) || numberTextKind(string) != NOT_A_NUMBER) && isUndeclaredProperty(i))
+        return true;
+    return false;
+  }
+
+  /**
+   * Whether a STRING given as a key on a property nothing declares can be spelled as an older build spelled the key of a list or a
+   * number ({@link #legacyKeys}), so that an entry such a build wrote for that list or number is under it too (PR #12166 review).
+   * Those spellings differ from the canonical ones by a decimal point or an exponent ({@code 1.0}, {@code -0.0}, {@code 1.0E300},
+   * {@code 2.500}, {@code [1.5, 2.0]}), and are the text Java gives a number or a list: {@code 3.1.4}, {@code 10.0.0.1}, a timestamp or
+   * {@code 1.5 kg} are none of them. Answers without loading anything.
+   */
+  boolean maySpellALegacyKey(final Object[] keys, final Object[] convertedKeys) {
+    if (keys == null || convertedKeys == null)
+      return false;
+    for (int i = 0; i < keys.length && i < convertedKeys.length && i < binaryKeyTypes.length; ++i) {
+      if (!(keys[i] instanceof CharSequence) || binaryKeyTypes[i] != BinaryTypes.TYPE_STRING
+          || !(convertedKeys[i] instanceof String string))
+        continue;
+      final boolean spellsOne;
+      if (isListText(string))
+        spellsOne = string.indexOf('.') >= 0 || string.indexOf('e') >= 0 || string.indexOf('E') >= 0;
+      else {
+        final int kind = numberTextKind(string);
+        spellsOne = kind == DECIMAL_NUMBER || kind == EXPONENT_NUMBER;
+      }
+      if (spellsOne && isUndeclaredProperty(i))
+        return true;
+    }
+    return false;
+  }
+
+  /** Whether a key text is the text of a list: the one {@code List.toString()} writes and {@link Type#canonicalListKey} keeps. */
+  private static boolean isListText(final String text) {
+    return text.length() > 1 && text.charAt(0) == '[' && text.charAt(text.length() - 1) == ']';
+  }
+
+  /**
+   * The shape of a key text that is a number as Java writes one ({@code Double.toString}, {@code BigDecimal.toString}) or as
+   * {@link Type#canonicalNumberKey} does: {@link #WHOLE_NUMBER}, {@link #DECIMAL_NUMBER}, {@link #EXPONENT_NUMBER}, or
+   * {@link #NOT_A_NUMBER} for any other text. One pass, no allocation.
+   */
+  private static int numberTextKind(final String text) {
+    final int length = text.length();
+    int i = length > 0 && text.charAt(0) == '-' ? 1 : 0;
+    final int integerStart = i;
+    while (i < length && isAsciiDigit(text.charAt(i)))
+      ++i;
+    if (i == integerStart)
+      return NOT_A_NUMBER;
+    int kind = WHOLE_NUMBER;
+    if (i < length && text.charAt(i) == '.') {
+      final int fractionStart = ++i;
+      while (i < length && isAsciiDigit(text.charAt(i)))
+        ++i;
+      if (i == fractionStart)
+        return NOT_A_NUMBER;
+      kind = DECIMAL_NUMBER;
+    }
+    if (i < length && (text.charAt(i) == 'e' || text.charAt(i) == 'E')) {
+      ++i;
+      if (i < length && (text.charAt(i) == '+' || text.charAt(i) == '-'))
+        ++i;
+      final int exponentStart = i;
+      while (i < length && isAsciiDigit(text.charAt(i)))
+        ++i;
+      if (i == exponentStart)
+        return NOT_A_NUMBER;
+      kind = EXPONENT_NUMBER;
+    }
+    return i == length ? kind : NOT_A_NUMBER;
+  }
+
+  private static boolean isAsciiDigit(final char c) {
+    return c >= '0' && c <= '9';
   }
 
   /** True when the schema declares no property for the i-th key: the Cypher fallback of an index created before any value existed. */

@@ -18,25 +18,45 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.QueryAdmissionGate;
 import com.arcadedb.server.AdmissionSlotConformance;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Issue #10235 over the Postgres protocol: a statement that gives its admission slot back before a wait finds the slot on
  * the thread that runs it, on the simple and the extended protocol, in auto-commit and inside a client transaction. See
  * {@link AdmissionSlotConformance}.
+ * <p>
+ * Also the query admission gate itself over the Postgres protocol (issue #9518), see the tests below.
  */
 class AdmissionSlotConformancePostgresIT extends PostgresWireProtocolTestBase {
   private static final String TYPE = "Conformance10235";
+  private final QueryAdmissionGate gate = QueryAdmissionGate.getInstance();
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.reset();
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.reset();
+    super.endTest();
+  }
 
   @Test
   void aStatementGivesItsSlotBackFromTheThreadThatRunsIt() throws Exception {
@@ -56,6 +76,69 @@ class AdmissionSlotConformancePostgresIT extends PostgresWireProtocolTestBase {
         }
       }
     assertThat(database.countType(TYPE, false)).isEqualTo(4);
+  }
+
+  /*
+   * Issue #9518 over the Postgres protocol: a statement waits for the query admission gate like an HTTP request, on both
+   * the simple and the extended protocol; one the gate does not start is refused with SQLSTATE 40001, the code drivers
+   * retry on; and every statement gives its slot back.
+   * <p>
+   * The test takes the only slot itself, through the JVM-wide gate the protocol uses, so what a statement does while it
+   * is taken does not depend on timing.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #9518
+  @Test
+  void aStatementTheGateDoesNotStartIsRefusedWithARetryableStateOnBothProtocols() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(0L);
+
+    for (final String mode : new String[] { "simple", "extended" }) {
+      try (final Connection conn = getConnection(mode); final Statement st = conn.createStatement()) {
+        try (final QueryAdmissionGate.Ticket ignored = gate.admit()) {
+          assertThatThrownBy(() -> st.executeQuery("SELECT 1 AS one")).as(mode).isInstanceOf(SQLException.class)
+              .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("40001"));
+        }
+
+        // EVERY STATEMENT GIVES ITS SLOT BACK: WITH ONE SLOT AND NO WAITING, A LEAKED ONE WOULD REFUSE THE SECOND
+        for (int i = 0; i < 2; i++)
+          try (final ResultSet rs = st.executeQuery("SELECT 1 AS one")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getInt("one")).isEqualTo(1);
+          }
+      }
+      assertThat(gate.getRunning()).as(mode).isZero();
+    }
+  }
+
+  // Regression: #9518
+  @Test
+  void aStatementWaitsForAFreeSlot() throws Exception {
+    GlobalConfiguration.QUERY_MAX_CONCURRENT.setValue(1);
+    GlobalConfiguration.QUERY_QUEUE_TIMEOUT.setValue(60_000L);
+
+    for (final String mode : new String[] { "simple", "extended" }) {
+      try (final Connection conn = getConnection(mode); final Statement st = conn.createStatement()) {
+        final int queuedBefore = gate.getQueued();
+        final CompletableFuture<Integer> answer;
+        final QueryAdmissionGate.Ticket held = gate.admit();
+        try {
+          answer = CompletableFuture.supplyAsync(() -> {
+            try (final ResultSet rs = st.executeQuery("SELECT 1 AS one")) {
+              return rs.next() ? rs.getInt("one") : -1;
+            } catch (final SQLException e) {
+              throw new RuntimeException(e);
+            }
+          });
+          await().atMost(Duration.ofSeconds(30)).until(() -> gate.getQueued() == queuedBefore + 1 || answer.isDone());
+          assertThat(answer).as(mode + ": the statement waits while the only slot is taken").isNotDone();
+        } finally {
+          held.close();
+        }
+        assertThat(answer.get(30, TimeUnit.SECONDS)).as(mode).isEqualTo(1);
+      }
+    }
   }
 
   private Connection getConnection(final String mode) throws SQLException, ClassNotFoundException {

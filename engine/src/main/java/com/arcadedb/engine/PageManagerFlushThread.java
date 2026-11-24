@@ -97,6 +97,10 @@ public class PageManagerFlushThread extends Thread {
   // deferred entry the snapshot did not capture (a genuine "newDeferred") instead of racing thread scheduling to
   // land one there by chance. No-op (null) outside tests.
   volatile              Runnable                                                testHookAfterDeferredBacklogSnapshot;
+  // Test-only: runs on the flush thread while it defers a batch, after it resolved the backlog the batch joins and
+  // before the batch is in it, so a test can hold that moment open and run the resume's detach inside it. No-op (null)
+  // outside tests.
+  volatile              Runnable                                                testHookWhileABatchIsBeingDeferred;
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
   /** Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} - see {@link #flushWaitPollMillis}. */
   private final static long                                                     DEFAULT_FLUSH_WAIT_POLL_MILLIS = 10;
@@ -820,8 +824,26 @@ public class PageManagerFlushThread extends Thread {
                 }
 
                 if (isSuspended(db)) {
-                  deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
+                  // The charge goes in BEFORE the batch becomes visible to the resume: a resume that took the batch out
+                  // and released its bytes first would find nothing charged to release, and a charge made after it
+                  // would then outlive the backlog.
                   addDeferredRAM(db, batchRAM(pagesToFlush));
+                  // ONE ATOMIC STEP ON THE MAP, not computeIfAbsent(...).offer(...): the resume's Phase 1 detaches this
+                  // database's backlog with deferredByDatabase.remove() WITHOUT suspendLock (it writes the batches for as
+                  // long as the backlog takes, and the flush thread needs that monitor to decide), so a remove landing
+                  // between the lookup and the offer left the batch in a queue nothing referenced any more: Phase 1 had
+                  // already walked it and Phase 2 finds no entry, so the batch was never written, its pages stayed in
+                  // pageIndex and pinned the database's pending count above zero until close() gave up on it. compute()
+                  // runs the offer inside the map's own section for the key, so the detach sees the batch or is followed
+                  // by an entry of its own, which Phase 2 re-enqueues.
+                  deferredByDatabase.compute(db, (key, backlog) -> {
+                    final ConcurrentLinkedQueue<PagesToFlush> deferred = backlog != null ? backlog : new ConcurrentLinkedQueue<>();
+                    final Runnable hook = testHookWhileABatchIsBeingDeferred;
+                    if (hook != null)
+                      hook.run();
+                    deferred.offer(pagesToFlush);
+                    return deferred;
+                  });
                   return;
                 }
               }
@@ -1476,7 +1498,8 @@ public class PageManagerFlushThread extends Thread {
     return suspendLocks.computeIfAbsent(database, k -> new Object());
   }
 
-  private Object replayDrainLock(final Database database) {
+  /** Package-private so a white-box test can hold the monitor the resume's Phase 1 starts with. */
+  Object replayDrainLock(final Database database) {
     return replayDrainLocks.computeIfAbsent(database, k -> new Object());
   }
 
@@ -1795,7 +1818,7 @@ public class PageManagerFlushThread extends Thread {
       version = page.getVersion();
     if (!failedFlushPages.isEmpty()) {
       final MutablePage failed = failedFlushPages.get(pageId);
-      if (failed != null)
+      if (failed != null && isOfOpenInstance(failed))
         version = Math.max(version, failed.getVersion());
     }
     return version;
@@ -1805,7 +1828,9 @@ public class PageManagerFlushThread extends Thread {
     MutablePage page = pageIndex.get(pageId);
     if (!failedFlushPages.isEmpty()) {
       final MutablePage failed = failedFlushPages.get(pageId);
-      if (failed != null && (page == null || failed.getVersion() > page.getVersion()))
+      // A copy of a closed instance of the path is never served to the instance asking (#12857): its own database is gone, so the
+      // commit-time version probe of the page would ask it for its file manager and fail with DatabaseIsClosedException
+      if (failed != null && (page == null || failed.getVersion() > page.getVersion()) && isOfOpenInstance(failed))
         page = failed;
     }
     if (page != null)
@@ -1824,12 +1849,65 @@ public class PageManagerFlushThread extends Thread {
    * recovered from the WAL on the next open exactly as before; this only stops the running database from reading
    * behind its own commits, and lets {@link #retryFailedFlushes} put the page on disk once the disk accepts it again.
    * <p>
+   * A page of an instance that is closed, or is closing, is never kept (issue #12857): its purge ({@link #removeAllPagesOfDatabase})
+   * runs once, after the instance reports itself closed, so a failure reported after it - the flush thread was inside the write of
+   * the page when the instance was dropped - registered a page nothing would ever remove: the retry skips the pages of a closed
+   * database. {@link PageId} compares its database by PATH, so the next instance created on the same path found it as the flush
+   * image of its own page, and its first commit failed with {@code DatabaseIsClosedException}, asked of the dropped instance by the
+   * commit-time version probe. The check is made again AFTER the registration, as {@link PageManager#putPageInReadCache} does: the
+   * close marks the instance closed (a volatile write) before it purges, so either the purge sees this page or this call sees the
+   * instance closed and takes the page back itself.
+   * <p>
+   * The page taken back releases its WAL ack, unlike the purge of a plain close, which withholds it so the preserved WAL replays
+   * the page. Both are right: a failure is reported BEFORE the page leaves {@link #pageIndex}, and a close's
+   * {@link #waitAllPagesOfDatabaseAreFlushed} returns true only once every page has left it, so a failure reported after the
+   * instance closed belongs to a drop (whose WAL is deleted, and whose close would otherwise wait on the ack) or to a close whose
+   * wait gave up, which preserves the WAL whatever the acks say.
+   * <p>
    * Not counted as pending: {@link #waitAllPagesOfDatabaseAreFlushed} keeps the #4928 guarantee of never hanging on a
    * page the disk refuses.
    */
   void registerFailedFlush(final MutablePage page) {
-    failedFlushPages.merge(page.getPageId(), page,
-        (current, failed) -> failed.getVersion() >= current.getVersion() ? failed : current);
+    final Database database = (Database) page.getPageId().getDatabase();
+    if (!database.isOpen()) {
+      ackWalFileOfAbandonedPage(page);
+      return;
+    }
+
+    failedFlushPages.merge(page.getPageId(), page, PageManagerFlushThread::newerFailedCopy);
+
+    if (!database.isOpen()) {
+      // By identity, as the purge does: another instance of the path can hold the entry of an equal PageId
+      final boolean[] removed = new boolean[1];
+      failedFlushPages.computeIfPresent(page.getPageId(), (id, kept) -> {
+        if (kept != page)
+          return kept;
+        removed[0] = true;
+        return null;
+      });
+      if (removed[0])
+        ackWalFileOfAbandonedPage(page);
+    }
+  }
+
+  /**
+   * The copy {@link #registerFailedFlush} keeps when the page already has one. Same instance: the newer version. Two instances of the
+   * same path (equal {@link PageId}s): the copy of the instance that is still open, whatever the versions say. Without that, a failure
+   * of a closing instance that passed the first open check could replace the copy of the next instance on the path, and the second
+   * check would then take it out by identity, leaving the next instance with no copy and the stale file image. Open state rather than
+   * database identity: a {@link PageId} can carry the embedded database or a wrapper of the same instance.
+   */
+  private static MutablePage newerFailedCopy(final MutablePage current, final MutablePage failed) {
+    if (!isOfOpenInstance(current))
+      return failed;
+    if (!isOfOpenInstance(failed))
+      return current;
+    return failed.getVersion() >= current.getVersion() ? failed : current;
+  }
+
+  /** Whether the instance the page belongs to is still open: a failed copy of a closed one is never served or kept (#12857). */
+  private static boolean isOfOpenInstance(final MutablePage page) {
+    return ((Database) page.getPageId().getDatabase()).isOpen();
   }
 
   /**
@@ -1940,14 +2018,15 @@ public class PageManagerFlushThread extends Thread {
     pageIndex.removeAllOfDatabase(database);
 
     // Failed copies go with the instance, by reference identity for the same reason as above. Their WAL acks stay
-    // withheld: on a close they are what the next open replays (#4928).
-    failedFlushPages.values().removeIf(page -> page.getPageId().getDatabase() == database);
+    // withheld: on a close they are what the next open replays (#4928). A copy of any other instance that is closed goes too
+    // (#12857): nothing retries or serves it, and a copy whose PageId carries a wrapper of the instance is not matched by identity.
+    failedFlushPages.values().removeIf(page -> page.getPageId().getDatabase() == database || !isOfOpenInstance(page));
 
     // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     //
     // The suspension flag and the deferred batches are dropped UNDER the database's own suspend monitor - the same
-    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.offer, and the
+    // one flushPagesFromQueueToDisk holds across its isSuspended check AND its deferredByDatabase.compute defer, and the
     // same argument Phase 2 of the resume rests on. Without it the flush thread could observe "suspended" just
     // before this method runs and offer its batch just after, re-creating a deferred queue for a database this
     // method has already forgotten: nothing would ever resume it, so the batch, the map entry pinning the closed

@@ -85,6 +85,9 @@ EXPOSE 6379
 # MongoDB Protocol
 EXPOSE 27017
 
+# Neo4j Bolt protocol
+EXPOSE 7687
+
 # gRPC service
 EXPOSE 50051
 
