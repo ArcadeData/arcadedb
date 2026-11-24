@@ -1796,7 +1796,7 @@ public class TimeSeriesShard implements AutoCloseable {
           final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
           for (int i = chunkStart; i < chunkEnd; i++) {
             final Object val = sortedColArrays[c][i];
-            distinctSet.add(val != null ? val.toString() : "");
+            distinctSet.add(TimeSeriesNaN.dictionaryText(val));
           }
           chunkTagDistinctValues[c] = distinctSet.toArray(new String[0]);
         }

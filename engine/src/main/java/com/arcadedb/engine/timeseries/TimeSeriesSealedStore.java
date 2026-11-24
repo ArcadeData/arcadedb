@@ -1531,7 +1531,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * <p>
    * The declaration is not an approximation and not a Bloom-style superset: {@code TimeSeriesShard}'s
    * {@code buildCompressedBlocks} and {@link #downsampleBlocks} both build it from the very {@code Object[]} they
-   * hand to {@link #compressColumn}, with the same {@code val != null ? val.toString() : ""} normalisation the
+   * hand to {@link #compressColumn}, with the same {@link TimeSeriesNaN#dictionaryText} normalisation the
    * block's dictionary is built with, so the declared set IS that dictionary. The paths that rewrite a block
    * afterwards keep it true: {@link #truncateBefore} and {@link #truncateToBlockCount} drop whole blocks and copy
    * every retained one verbatim, compaction's {@link #writeTempCompactionFile} does the same, and
@@ -1638,7 +1638,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * so a declared value may be handed back in place of the value the scan would have decoded.
    * <p>
    * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}. The declaration is always TEXT -
-   * every writer builds it with {@code val != null ? val.toString() : ""} - while {@link #decompressColumns} puts
+   * every writer builds it with {@link TimeSeriesNaN#dictionaryText} - while {@link #decompressColumns} puts
    * a dictionary entry through {@link ColumnDefinition#boxString} and a {@code SIMPLE8B} one through
    * {@link ColumnDefinition#boxRaw}, either of which can hand back something a string is not. For a
    * {@code STRING} column {@code boxString} returns its argument unchanged, and only there are the two the same.
@@ -3094,7 +3094,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
         final LinkedHashSet<String> distinct = new LinkedHashSet<>();
         for (final Object value : values) {
-          final String text = value != null ? value.toString() : "";
+          final String text = TimeSeriesNaN.dictionaryText(value);
           final String shared = canonical.get(text);
           distinct.add(shared != null ? shared : text);
         }
@@ -3112,7 +3112,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * Every other block is left untouched, which is what makes a pass idempotent: a block already downsampled to the target
    * granularity or coarser (its marker says so, and without the marker, after a restart, it has one sample per group) and a
    * block whose samples all sit in groups of their own.
-   * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved.
+   * Numeric fields are averaged per (bucketTs, tagKey) group; tag columns preserved. A group whose series ended in the bucket (its
+   * newest sample is the Prometheus staleness marker, issue #12580) keeps the marker in a row of its own, at the marker's timestamp,
+   * after the mean row: two samples of a group that fold into those same two rows do not make a block reducible.
    */
   public void downsampleBlocks(final long cutoffTs, final long granularityMs,
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
@@ -3135,6 +3137,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int tsColIdx, final List<Integer> tagColIndices, final List<Integer> numericColIndices) throws IOException {
     final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
     final int[] tagCols = toIntArray(tagColIndices);
+    final int[] numericCols = toIntArray(numericColIndices);
 
     directoryLock.writeLock().lock();
     try {
@@ -3169,7 +3172,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // A block that cannot be read (its CRC does not match) fails the pass, and that is on purpose: a rewrite copies the blocks it
         // keeps and stamps a CRC computed over the bytes it copied, so a rewrite that went on around a damaged block would make the
         // damage look like data from then on. The pass fails before anything is written, and says which block.
-        if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols)) {
+        if (!hasSamplesSharingAGroup(entry, grid, tsColIdx, tagCols, numericCols)) {
           entry.markIrreducibleOn(grid);
           toKeep.add(entry);
           continue;
@@ -3227,6 +3230,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final List<Integer> tagColIndices) {
     final DownsampleGrid grid = new DownsampleGrid(granularityMs, gridOffsetMs);
     final int[] tagCols = toIntArray(tagColIndices);
+    final int[] numericCols = numericColumnsOf(tsColIdx, tagCols);
     final List<BlockEntry> candidates = new ArrayList<>();
     directoryLock.readLock().lock();
     try {
@@ -3242,7 +3246,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       directoryLock.readLock().lock();
       try {
         final BlockEntry live = resolveLiveBlock(candidate, Integer.MAX_VALUE);
-        if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols))
+        if (live != null && !hasSamplesSharingAGroup(live, grid, tsColIdx, tagCols, numericCols))
           live.markIrreducibleOn(grid);
       } catch (final IOException e) {
         // no verdict for a block that cannot be read: downsampleBlocks meets it and fails on it before it writes anything
@@ -3268,10 +3272,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * A block is sorted by time, so the samples of one bucket are adjacent and only the ones of the same run can share a group: a
    * block with at most one sample per bucket, which is what a downsample leaves of a single series, costs one pass over its
    * timestamps and allocates nothing besides them. A block that is not in order is judged by the slower
-   * {@link #hasSamplesSharingAGroupAnyOrder}.
+   * {@link #hasSamplesSharingAGroupAnyOrder}, and so is one where two samples share a group but a series may have ended
+   * ({@link #sharedGroupIsReduced}, issue #12580).
+   *
+   * @param numericCols the columns the pass folds, which decide whether a group folds to one row or to two
    */
-  private boolean hasSamplesSharingAGroup(final BlockEntry entry, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols)
-      throws IOException {
+  private boolean hasSamplesSharingAGroup(final BlockEntry entry, final DownsampleGrid grid, final int tsColIdx, final int[] tagCols,
+      final int[] numericCols) throws IOException {
     // a block is never read before its CRC is checked, whoever reads it
     validateBlockCRC(entry);
     // not through the decoded-column cache: a pass over the whole history would push the blocks the queries are using out of it
@@ -3287,7 +3294,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long bucket = TimeBucketGrid.bucketStart(timestamps[i], grid.granularityMs(), grid.offsetMs());
       if (bucket != runBucket) {
         if (bucket < runBucket)
-          return hasSamplesSharingAGroupAnyOrder(entry, timestamps, grid, tagCols);
+          return hasSamplesSharingAGroupAnyOrder(entry, timestamps, grid, tagCols, numericCols);
         runBucket = bucket;
         runStart = i;
         if (runGroups != null)
@@ -3297,7 +3304,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // the second sample of a bucket: with no tag it shares the group of the first, with tags it does when their values agree
       if (tagCols.length == 0)
-        return true;
+        return sharedGroupIsReduced(entry, timestamps, grid, tagCols, numericCols);
       if (tagData == null) {
         tagData = readTagColumns(entry, tagCols);
         runGroups = new HashSet<>();
@@ -3305,30 +3312,132 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (runGroups.isEmpty())
         runGroups.add(groupOf(tagData, tagCols, runStart));
       if (!runGroups.add(groupOf(tagData, tagCols, i)))
-        return true;
+        return sharedGroupIsReduced(entry, timestamps, grid, tagCols, numericCols);
     }
     return false;
   }
 
   /**
+   * Answers {@link #hasSamplesSharingAGroup} once two samples of a group have been met. With no floating-point field a bucket always
+   * folds to one row, so they are. With one, a series that ENDED in the bucket folds to two rows, the mean of its real samples and its
+   * staleness marker (issue #12580), so the block is asked the whole question: a block a pass already downsampled holds exactly those
+   * two rows for such a series, and reading them as reducible would rewrite it, for nothing, on every first pass after a restart.
+   */
+  private boolean sharedGroupIsReduced(final BlockEntry entry, final long[] timestamps, final DownsampleGrid grid, final int[] tagCols,
+      final int[] numericCols) throws IOException {
+    if (!canHoldAStalenessMarker(numericCols))
+      return true;
+    return hasSamplesSharingAGroupAnyOrder(entry, timestamps, grid, tagCols, numericCols);
+  }
+
+  /** Whether one of the columns is a floating-point one, the only kind of column a staleness marker can end a series in. */
+  private boolean canHoldAStalenessMarker(final int[] numericCols) {
+    for (final int c : numericCols)
+      if (columns.get(c).storesAbsentMarker())
+        return true;
+    return false;
+  }
+
+  /**
    * {@link #hasSamplesSharingAGroup} for a block whose samples are not sorted by bucket (or whose bucket arithmetic wrapped, within
-   * one bucket of {@link Long#MIN_VALUE}, see {@link TimeBucketGrid#bucketStart}), where the samples of a group are not adjacent:
-   * one set of every (bucket, tag values) met. The sweep folds such a block as it does any other, so it has to be asked the same
-   * question, and the answer is what keeps a rewrite from ever leaving as many samples as it found.
+   * one bucket of {@link Long#MIN_VALUE}, see {@link TimeBucketGrid#bucketStart}), where the samples of a group are not adjacent,
+   * and for one where a group may fold to two rows ({@link #sharedGroupIsReduced}): the samples of every (bucket, tag values) met.
+   * The sweep folds such a block as it does any other, so it has to be asked the same question, and the answer is what keeps a
+   * rewrite from ever leaving as many samples as it found.
+   * <p>
+   * A group folds to two rows at most, so one of three samples is reduced. One of two is reduced unless the fold keeps both, which
+   * the very {@link Fold} of the pass says from their values (issue #12580): the mean row of the real samples and the row of the
+   * staleness marker of a series that ended in the bucket.
    */
   private boolean hasSamplesSharingAGroupAnyOrder(final BlockEntry entry, final long[] timestamps, final DownsampleGrid grid,
-      final int[] tagCols) throws IOException {
+      final int[] tagCols, final int[] numericCols) throws IOException {
     final Object[][] tagData = readTagColumns(entry, tagCols);
-    final Set<List<Object>> groups = new HashSet<>(timestamps.length * 2);
+    // per group, the first two samples: {first, second}, -1 while there is no second
+    final Map<List<Object>, int[]> groups = new HashMap<>(timestamps.length * 2);
+    boolean pairs = false;
     for (int i = 0; i < timestamps.length; i++) {
       final List<Object> group = new ArrayList<>(tagCols.length + 1);
       group.add(TimeBucketGrid.bucketStart(timestamps[i], grid.granularityMs(), grid.offsetMs()));
       for (int t = 0; t < tagCols.length; t++)
         group.add(canonicalStoredValue(columns.get(tagCols[t]), tagData[t][i]));
-      if (!groups.add(group))
+      final int[] members = groups.get(group);
+      if (members == null)
+        groups.put(group, new int[] { i, -1 });
+      else if (members[1] < 0) {
+        members[1] = i;
+        pairs = true;
+      } else
+        return true;
+    }
+    if (!pairs)
+      return false;
+    if (!canHoldAStalenessMarker(numericCols))
+      return true;
+
+    final boolean[] integralField = integralFields(numericCols);
+    // not through the decoded-column cache, for the reason the timestamps are not (see hasSamplesSharingAGroup)
+    final double[][] numData = new double[numericCols.length][];
+    final IntegralColumn[] intData = new IntegralColumn[numericCols.length];
+    for (int n = 0; n < numericCols.length; n++) {
+      if (integralField[n])
+        intData[n] = IntegralColumn.decode(readBytes(entry.columnOffsets[numericCols[n]], entry.columnSizes[numericCols[n]]));
+      else
+        numData[n] = decodeDoubleColumn(entry, numericCols[n]);
+    }
+    for (final int[] members : groups.values()) {
+      if (members[1] < 0)
+        continue;
+      final Fold fold = new Fold(numericCols.length * 2, true);
+      foldSample(fold, integralField, numData, intData, timestamps[members[0]], members[0]);
+      foldSample(fold, integralField, numData, intData, timestamps[members[1]], members[1]);
+      if (fold.rowCount() < 2)
         return true;
     }
     return false;
+  }
+
+  /** The numeric columns a downsampling pass folds, as {@code TimeSeriesEngine.applyDownsampling} names them: all but the timestamp and the tags. */
+  private int[] numericColumnsOf(final int tsColIdx, final int[] tagCols) {
+    final boolean[] excluded = new boolean[columns.size()];
+    excluded[tsColIdx] = true;
+    for (final int tagCol : tagCols)
+      excluded[tagCol] = true;
+    int count = 0;
+    for (final boolean e : excluded)
+      if (!e)
+        count++;
+    final int[] numericCols = new int[count];
+    for (int c = 0, next = 0; c < excluded.length; c++)
+      if (!excluded[c])
+        numericCols[next++] = c;
+    return numericCols;
+  }
+
+  /** Per numeric column, whether it is folded as an exact integer (issue #9718) rather than as a double. */
+  private boolean[] integralFields(final int[] numericCols) {
+    final boolean[] integralField = new boolean[numericCols.length];
+    for (int n = 0; n < numericCols.length; n++)
+      integralField[n] = columns.get(numericCols[n]).storesExactIntegers();
+    return integralField;
+  }
+
+  private static boolean hasFloatingField(final boolean[] integralField) {
+    for (final boolean integral : integralField)
+      if (!integral)
+        return true;
+    return false;
+  }
+
+  /** Folds every numeric field of sample {@code i}, taken at {@code ts}, into {@code fold}: a sample with no value is no sample. */
+  private static void foldSample(final Fold fold, final boolean[] integralField, final double[][] numData, final IntegralColumn[] intData,
+      final long ts, final int i) {
+    for (int n = 0; n < integralField.length; n++) {
+      if (integralField[n]) {
+        if (!intData[n].isNull(i))
+          fold.addIntegral(n, intData[n].values[i]);
+      } else
+        fold.addFloating(n, ts, numData[n][i]);
+    }
   }
 
   /** The tag columns of {@code entry}, each decoded through the codec it was written with, as {@code [tag][sample]}. */
@@ -3358,9 +3467,86 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final double[] acc;
     /** Per integral field, the two words of its exact total (issue #9718); allocated by the first integral sample. */
     long[]         exact;
+    /**
+     * Per floating-point field, {@code [newest real sample, newest staleness marker]} by timestamp, {@link Long#MIN_VALUE} for none
+     * (issue #12580): whether the field's series ENDED in the bucket, which the mean of its real samples cannot say. By timestamp and
+     * not by the order of the fold, because the blocks of a pass may overlap. Null when no field is a floating-point one.
+     */
+    final long[]   newest;
 
-    Fold(final int accSize) {
+    Fold(final int accSize, final boolean floatingFields) {
       acc = new double[accSize];
+      if (floatingFields) {
+        newest = new long[accSize];
+        Arrays.fill(newest, Long.MIN_VALUE);
+      } else
+        newest = null;
+    }
+
+    /**
+     * Folds the sample at {@code ts} of floating-point field {@code n}. The mean is the one of the REAL samples (issue #7089): a NaN
+     * neither poisons the sum nor counts toward the denominator, the same policy the aggregation push-down applies. The staleness
+     * marker is a NaN too, but it says the series ended, so it is remembered by its timestamp (issue #12580).
+     */
+    void addFloating(final int n, final long ts, final double value) {
+      if (Double.isNaN(value)) {
+        if (TimeSeriesNaN.isStaleMarker(value))
+          newest[n * 2 + 1] = Math.max(newest[n * 2 + 1], ts);
+        return;
+      }
+      acc[n * 2] += value;
+      acc[n * 2 + 1] += 1.0;
+      newest[n * 2] = Math.max(newest[n * 2], ts);
+    }
+
+    /** Folds a value of integral field {@code n}: its exact total, and its count. */
+    void addIntegral(final int n, final long value) {
+      if (exact == null)
+        exact = new long[acc.length];
+      ExactLongSum.add(exact, n * 2, value);
+      acc[n * 2 + 1] += 1.0;
+    }
+
+    /**
+     * Whether the series of floating-point field {@code n} ended in the bucket: its newest sample is the staleness marker. A real
+     * sample at the very timestamp of the marker does not take it back: the marker is the last word on that instant, as it is for the
+     * raw samples, whose newest sample PromQL picks by timestamp.
+     */
+    boolean ended(final int n) {
+      return newest != null && newest[n * 2 + 1] != Long.MIN_VALUE && newest[n * 2 + 1] >= newest[n * 2];
+    }
+
+    /** Whether the series of some floating-point field ended in the bucket. */
+    boolean anyEnded() {
+      if (newest != null)
+        for (int n = 0; n < newest.length / 2; n++)
+          if (ended(n))
+            return true;
+      return false;
+    }
+
+    /**
+     * How many rows the bucket downsamples to: the mean row of the real samples, the row of the staleness markers, or both (issue
+     * #12580). The rows {@link DownsampleSweep#row} and {@link DownsampleSweep#markerRow} build, counted the same way, so the test of
+     * whether a pass reduces a block ({@link #hasSamplesSharingAGroup}) cannot disagree with what the pass writes.
+     */
+    int rowCount() {
+      if (!anyEnded())
+        return 1;
+      return hasValue() ? 2 : 1;
+    }
+
+    /** The timestamp of the newest staleness marker of field {@code n}. */
+    long newestMarker(final int n) {
+      return newest[n * 2 + 1];
+    }
+
+    /** Whether some field holds a real sample, which is what the bucket's mean row is made of. */
+    boolean hasValue() {
+      for (int i = 1; i < acc.length; i += 2)
+        if (acc[i] > 0)
+          return true;
+      return false;
     }
   }
 
@@ -3379,6 +3565,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // An integral field is averaged exactly, as longs (issue #9718): the double sum rounded a total past 2^53, and the mean of
     // such samples - epoch nanoseconds, 64-bit ids - came out as a different sample
     private final boolean[]                              integralField;
+    private final boolean                                floatingFields;
     private final int                                    accSize;
     // bucket start -> tag values -> fold. The tag values are held in their STORED form, not their text: the row rebuilt from them is
     // handed straight back to compressColumn, which reads a SIMPLE8B or GORILLA_XOR column's value as a Number (issue #7711). A List
@@ -3400,12 +3587,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         tagCols[t] = tagColIndices.get(t);
         tagDefs[t] = columns.get(tagCols[t]);
       }
-      numericCols = new int[numericColIndices.size()];
-      integralField = new boolean[numericCols.length];
-      for (int n = 0; n < numericCols.length; n++) {
-        numericCols[n] = numericColIndices.get(n);
-        integralField[n] = columns.get(numericCols[n]).storesExactIntegers();
-      }
+      numericCols = toIntArray(numericColIndices);
+      integralField = integralFields(numericCols);
+      floatingFields = hasFloatingField(integralField);
       accSize = numericCols.length * 2; // sum + count per numeric field
     }
 
@@ -3465,25 +3649,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           foldKey = tagKey;
         }
 
-        final double[] acc = fold.acc;
-        // The downsampled value is the mean of the REAL samples (issue #7089): a NaN sample neither poisons the
-        // sum nor counts toward the denominator, the same policy the aggregation push-down applies.
-        for (int n = 0; n < numFields; n++) {
-          if (integralField[n]) {
-            if (intData[n].isNull(i))
-              continue;
-            if (fold.exact == null)
-              fold.exact = new long[accSize];
-            ExactLongSum.add(fold.exact, n * 2, intData[n].values[i]);
-            acc[n * 2 + 1] += 1.0;
-            continue;
-          }
-          final double v = numData[n][i];
-          if (Double.isNaN(v))
-            continue;
-          acc[n * 2] += v;                   // sum
-          acc[n * 2 + 1] += 1.0;             // count
-        }
+        foldSample(fold, integralField, numData, intData, timestamps[i], i);
       }
       // the most a block adds: draining only ever takes accumulators away
       peak = Math.max(peak, live);
@@ -3505,7 +3671,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
       Fold fold = tags.get(tagKey);
       if (fold == null) {
-        fold = new Fold(accSize);
+        fold = new Fold(accSize, floatingFields);
         tags.put(tagKey, fold);
         live++;
       }
@@ -3533,12 +3699,56 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         closeFirstBucket(rows);
     }
 
+    /**
+     * Turns the first open bucket into its rows. A (tag set, bucket) whose series ended in it (issue #12580) adds the row of its
+     * staleness markers, at the timestamp of the newest one, after the mean row of its real samples if it had any: the end of the
+     * series is where it was, so PromQL drops the series from there on as it did on the raw samples, and the mean is kept for the
+     * evaluations before it. The marker rows of the bucket come after its mean rows, which are all at the bucket start, and in their
+     * timestamp order, so the rows stay in ascending timestamp order: a block is binary-searched by timestamp.
+     */
     private void closeFirstBucket(final List<Object[]> rows) {
       final Map.Entry<Long, Map<List<Object>, Fold>> bucket = open.pollFirstEntry();
       final long bucketTs = bucket.getKey();
-      for (final Map.Entry<List<Object>, Fold> tag : bucket.getValue().entrySet())
-        rows.add(row(tag.getKey(), bucketTs, tag.getValue()));
+      List<Object[]> markerRows = null;
+      for (final Map.Entry<List<Object>, Fold> tag : bucket.getValue().entrySet()) {
+        final Fold fold = tag.getValue();
+        if (!fold.anyEnded()) {
+          rows.add(row(tag.getKey(), bucketTs, fold));
+          continue;
+        }
+        if (fold.hasValue())
+          rows.add(row(tag.getKey(), bucketTs, fold));
+        if (markerRows == null)
+          markerRows = new ArrayList<>();
+        markerRows.add(markerRow(tag.getKey(), fold));
+      }
+      if (markerRows != null) {
+        markerRows.sort(Comparator.comparingLong(row -> (long) row[tsColIdx]));
+        rows.addAll(markerRows);
+      }
       live -= bucket.getValue().size();
+    }
+
+    /**
+     * The row of the staleness markers of {@code fold} (issue #12580): every field whose series ended holds the marker, every other
+     * one holds no value, at the timestamp of the newest marker.
+     */
+    private Object[] markerRow(final List<Object> tagParts, final Fold fold) {
+      final Object[] row = new Object[columns.size()];
+      long ts = Long.MIN_VALUE;
+      for (int t = 0; t < tagCols.length; t++)
+        row[tagCols[t]] = tagParts.get(t);
+      for (int n = 0; n < numericCols.length; n++) {
+        if (integralField[n])
+          continue; // null: no value
+        if (fold.ended(n)) {
+          row[numericCols[n]] = TimeSeriesNaN.STALE_MARKER;
+          ts = Math.max(ts, fold.newestMarker(n));
+        } else
+          row[numericCols[n]] = TimeSeriesNaN.ABSENT;
+      }
+      row[tsColIdx] = ts;
+      return row;
     }
 
     /** The row {@code fold} downsamples to: {@code [timestamp, tag0, tag1, ..., field0, field1, ...]}, ordered by column index. */
@@ -3638,7 +3848,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
           for (int i = from; i < to; i++) {
             final Object val = pending.get(i)[c];
-            distinctSet.add(val != null ? val.toString() : "");
+            distinctSet.add(TimeSeriesNaN.dictionaryText(val));
           }
           chunkTagDV[c] = distinctSet.toArray(new String[0]);
         }
@@ -3911,7 +4121,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (column.getRole() == ColumnDefinition.ColumnRole.TAG) {
         final LinkedHashSet<String> distinctSet = new LinkedHashSet<>();
         for (final Object v : values[c]) {
-          final String text = v != null ? v.toString() : "";
+          final String text = TimeSeriesNaN.dictionaryText(v);
           final String shared = canonical.get(text);
           distinctSet.add(shared != null ? shared : text);
         }
@@ -4702,8 +4912,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
       case DICTIONARY -> {
         final String[] strings = new String[values.length];
+        // the staleness marker as its own text, not as the NaN that reads back as an ordinary one (issue #12580)
         for (int i = 0; i < values.length; i++)
-          strings[i] = values[i] != null ? values[i].toString() : "";
+          strings[i] = TimeSeriesNaN.dictionaryText(values[i]);
         yield DictionaryCodec.encode(strings);
       }
       default -> throw new IllegalStateException("Unknown compression codec: " + codec);
@@ -6884,7 +7095,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private static Object canonicalStoredValue(final ColumnDefinition col, final Object value) {
     if (col.getCompressionHint() == TimeSeriesCodec.DICTIONARY)
-      return value != null ? value.toString() : "";
+      return TimeSeriesNaN.dictionaryText(value);
     return value;
   }
 
