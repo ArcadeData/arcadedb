@@ -152,6 +152,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     // ABSENT OR CUSTOM) gremlin-server.yaml, BY ENSURING ArcadeIoRegistry IS REGISTERED ON EVERY SERIALIZER (#5309).
     ensureArcadeIoRegistry(settings);
 
+    // THE VARIABLES OF A gremlin-lang SCRIPT RESOLVE TO THE VALUES OF THE REQUEST: THE GRAPHS AND TRAVERSAL SOURCES REGISTERED UNDER A DATABASE NAME ARE NOT VALUES
+    GremlinLangVariableResolverPlugin.registerIn(settings);
+
     // Supply the Gremlin execution pool ourselves so we can bind the authenticated principal into the
     // engine on the worker thread that actually runs each traversal (both bytecode and script paths use
     // this single pool). This is what makes ArcadeDB's per-user ACLs enforce for Gremlin (GHSA-c287).
