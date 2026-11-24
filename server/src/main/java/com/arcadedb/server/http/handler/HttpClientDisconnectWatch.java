@@ -51,12 +51,13 @@ import java.util.logging.Level;
  * sending the request and still waits for the response cannot be told from one that left, and is taken for one that
  * left; {@code arcadedb.server.httpTerminateOnClientDisconnect=false} turns the watch off for such clients.
  * <p>
- * The read timeout is lifted only where the watch arms, and that is not where it is needed for a TLS connection or an
- * HTTP/2 one. Over TLS with HTTP/1.1 Undertow suspends reads while the request runs, so no read timer fires and a long
- * statement is answered. An HTTP/2 connection keeps reading frames while a stream waits, so a client that speaks it, with
- * no frame to send until the answer arrives, loses the connection to the read timeout one {@code socketTimeout} into the
- * statement (issue #12442). The follower-to-leader forwards of a cluster are therefore sent on HTTP/1.1
- * ({@link LeaderDial#FORWARD_HTTP_VERSION}).
+ * The watch lifts the read timeout only where it arms, which is the only place its own reads would run under it. Over TLS
+ * with HTTP/1.1 Undertow suspends reads while the request runs, so no read timer fires and a long statement is answered.
+ * An HTTP/2 connection keeps reading frames while a stream waits, and a client with no frame to send until the answer
+ * arrives lost the connection to the read timeout one {@code socketTimeout} into the statement (issues #12442, #12606):
+ * {@link com.arcadedb.server.http.Http2ReadTimeoutLift} lifts it there, for every request rather than only a watched
+ * statement, since the connection is read whatever the request does. The follower-to-leader forwards of a cluster are
+ * sent on HTTP/1.1 all the same ({@link LeaderDial#FORWARD_HTTP_VERSION}): the leader may be a release without that lift.
  * <p>
  * <b>Why the swap is safe.</b> Undertow suspends reads on the connection once it has parsed the request and resumes them
  * only when the exchange completes, and the watch is disarmed before that, under the same monitor its reads take: when

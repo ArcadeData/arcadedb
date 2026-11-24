@@ -72,12 +72,21 @@ public final class Http2StreamReset {
   private Http2StreamReset() {
   }
 
+  /**
+   * The HTTP/2 connection {@code connection} is a stream of, or {@code null} when it is not an HTTP/2 stream or the field
+   * cannot be read. Each stream has a {@link Http2ServerConnection} of its own; the channel is what they share, and the
+   * only place a connection-wide option can be set: {@code Http2ServerConnection.setOption} does nothing.
+   */
+  static Http2Channel channelOf(final ServerConnection connection) {
+    return connection instanceof Http2ServerConnection http2 && CHANNEL != null ? (Http2Channel) CHANNEL.get(http2) : null;
+  }
+
   /** Resets the exchange's stream with {@code NO_ERROR}, or with {@code CANCEL} when that cannot be done. */
   public static void resetWithNoError(final HttpServerExchange exchange) {
     final ServerConnection connection = exchange.getConnection();
     if (connection instanceof Http2ServerConnection && CHANNEL != null && REQUEST_CHANNEL != null)
       try {
-        final Http2Channel channel = (Http2Channel) CHANNEL.get((Http2ServerConnection) connection);
+        final Http2Channel channel = channelOf(connection);
         final Http2StreamSourceChannel stream = (Http2StreamSourceChannel) REQUEST_CHANNEL.get(
             (Http2ServerConnection) connection);
         if (channel != null && stream != null) {
@@ -101,7 +110,8 @@ public final class Http2StreamReset {
     } catch (final ReflectiveOperationException | RuntimeException e) {
       LogManager.instance().log(Http2StreamReset.class, Level.WARNING,
           "Undertow's Http2ServerConnection has no accessible '%s': a request body refused on HTTP/2 is reset with "
-              + "CANCEL rather than NO_ERROR, which some clients report as a failed request instead of the 413", name);
+              + "CANCEL rather than NO_ERROR, which some clients report as a failed request instead of the 413, and the read "
+              + "timeout of an HTTP/2 connection is not lifted while a statement runs", name);
       return null;
     }
   }

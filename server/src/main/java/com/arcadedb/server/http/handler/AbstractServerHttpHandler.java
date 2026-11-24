@@ -45,6 +45,7 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.LeaderForwardContext;
 import com.arcadedb.server.PeerRequest;
 import com.arcadedb.server.http.ClusterAuthSessionResolver;
+import com.arcadedb.server.http.Http2ReadTimeoutLift;
 import com.arcadedb.server.http.Http2StreamReset;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
@@ -661,6 +662,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // beside this request's own key and settled with it.
     String                       clientKey              = null;
     IdempotencyCache.Reservation clientKeyReservation   = null;
+    // The read timeout of the HTTP/2 connection, lifted while this request is served and put back by the finally block
+    Http2ReadTimeoutLift         http2ReadTimeoutLift   = null;
 
     try {
       observationScope = observation.openScope();
@@ -947,6 +950,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         }
       }
 
+      // An HTTP/2 connection is read while its streams are served, so its read timeout would end any request that takes
+      // longer than arcadedb.network.socketTimeout to answer: the client has no frame to send until then (issue #12606).
+      // Lifted from here, where the caller is authenticated and the body read, so before anything that can wait: the
+      // idempotency claim, the admission gate, the statement. An anonymous request never lifts it
+      if (user != null)
+        http2ReadTimeoutLift = Http2ReadTimeoutLift.acquire(exchange);
+
       // Idempotency applies only to POST requests that carry a non-blank X-Request-Id and are NOT part of
       // an open, client-managed session transaction (a session-scoped request's outcome is not settled
       // until the client commits, so it must never be cached/replayed). A blank id is ignored: distinct
@@ -1054,6 +1064,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       failure = e;
       sendMappedErrorResponse(exchange, e);
     } finally {
+      // The answer is written or on its way: from here the connection is guarded by its read timeout again, unless another
+      // of its streams is still being served
+      if (http2ReadTimeoutLift != null)
+        http2ReadTimeoutLift.release();
+
       // Drop any principal this request bound onto the thread's DatabaseContext in
       // checkAuthorizationOnDatabase (GHSA-c23x-pqcj-7hfm). This runs on a pooled worker thread, so a
       // leaked binding would be inherited by the next request served by the same thread. Only the current
