@@ -35,6 +35,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -327,9 +328,10 @@ public class RemoteDocumentType implements DocumentType {
   public boolean existsPolymorphicProperty(final String propertyName) {
     if (existsProperty(propertyName))
       return true;
-    // the whole hierarchy, not only the direct parents: a property declared on a grandparent is inherited too (issue #10865)
-    for (final DocumentType s : getSuperTypes())
-      if (s.existsPolymorphicProperty(propertyName))
+    // the whole hierarchy, not only the direct parents: a property declared on a grandparent is inherited too (issue #10865), each
+    // type once, whatever the number of paths that lead up to it
+    for (final DocumentType s : TypeHierarchy.allSuperTypes(this))
+      if (s.existsProperty(propertyName))
         return true;
     return false;
   }
@@ -340,8 +342,8 @@ public class RemoteDocumentType implements DocumentType {
       if (parentTypes.contains(type))
         return true;
 
-      for (DocumentType s : getSuperTypes())
-        if (s.isSubTypeOf(type))
+      for (final DocumentType s : TypeHierarchy.allSuperTypes(this))
+        if (s.getName().equals(type))
           return true;
     }
     return false;
@@ -369,8 +371,9 @@ public class RemoteDocumentType implements DocumentType {
 
     final List<Bucket> result = new ArrayList<>();
     result.addAll(buckets.stream().map(bucketName -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
-    for (String parent : parentTypes)
-      result.addAll(getSchema().getType(parent).getBuckets(true));
+    // each type above once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this))
+      result.addAll(superType.getBuckets(false));
     return result;
   }
 
@@ -387,8 +390,9 @@ public class RemoteDocumentType implements DocumentType {
   public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
     final Set<TypeIndex> result = new LinkedHashSet<>(ownIndexes());
     if (polymorphic)
-      for (final DocumentType superType : getSuperTypes())
-        result.addAll(superType.getAllIndexes(true));
+      // each type above once, whatever the number of paths that lead up to it
+      for (final DocumentType superType : TypeHierarchy.allSuperTypes(this))
+        result.addAll(superType.getAllIndexes(false));
     return Collections.unmodifiableSet(result);
   }
 
@@ -422,8 +426,9 @@ public class RemoteDocumentType implements DocumentType {
     final TypeIndex index = getIndexByProperties(properties);
     if (index != null)
       return index;
-    for (final DocumentType superType : getSuperTypes()) {
-      final TypeIndex inherited = superType.getPolymorphicIndexByProperties(properties);
+    // each type above once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this)) {
+      final TypeIndex inherited = superType.getIndexByProperties(properties);
       if (inherited != null)
         return inherited;
     }
@@ -464,8 +469,9 @@ public class RemoteDocumentType implements DocumentType {
     final TypeIndex index = getColumnarIndex(property);
     if (index != null)
       return index;
-    for (final DocumentType superType : getSuperTypes()) {
-      final TypeIndex inherited = superType.getPolymorphicColumnarIndex(property);
+    // each type above once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this)) {
+      final TypeIndex inherited = superType.getColumnarIndex(property);
       if (inherited != null)
         return inherited;
     }
@@ -569,8 +575,9 @@ public class RemoteDocumentType implements DocumentType {
       return getProperties();
 
     final Set<Property> allProperties = new HashSet<>(getProperties());
-    for (final String parentName : parentTypes)
-      allProperties.addAll(getSchema().getType(parentName).getPolymorphicProperties());
+    // each type above once, whatever the number of paths that lead up to it
+    for (final DocumentType superType : TypeHierarchy.allSuperTypes(this))
+      allProperties.addAll(superType.getProperties());
     return allProperties;
   }
 

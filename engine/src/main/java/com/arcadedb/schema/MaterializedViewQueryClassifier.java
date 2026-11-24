@@ -141,11 +141,18 @@ public class MaterializedViewQueryClassifier {
     if (!schema.existsType(typeName))
       return false;
     final DocumentType type = schema.getType(typeName);
+    if (declaresSourceRid(type))
+      return true;
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      if (declaresSourceRid(subType))
+        return true;
+    return false;
+  }
+
+  private static boolean declaresSourceRid(final DocumentType type) {
     for (final String name : type.getPolymorphicPropertyNames())
       if (MaterializedViewPerRecordRefresher.SOURCE_RID.equalsIgnoreCase(name))
-        return true;
-    for (final DocumentType subType : type.getSubTypes())
-      if (declaresSourceRid(schema, subType.getName()))
         return true;
     return false;
   }

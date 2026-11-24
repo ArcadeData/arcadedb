@@ -37,6 +37,7 @@ import com.arcadedb.schema.ColumnarIndexMetadata;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 
 import java.time.DateTimeException;
 import java.time.ZoneId;
@@ -120,8 +121,9 @@ public final class FacetSpecCompiler {
   private static boolean anyTypeMatches(final DocumentType type, final Predicate<DocumentType> predicate) {
     if (predicate.test(type))
       return true;
-    for (final DocumentType sub : type.getSubTypes())
-      if (anyTypeMatches(sub, predicate))
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType sub : TypeHierarchy.allSubTypes(type))
+      if (predicate.test(sub))
         return true;
     return false;
   }

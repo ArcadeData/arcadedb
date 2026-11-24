@@ -128,6 +128,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeHierarchy;
 import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -2912,6 +2913,16 @@ public class SelectExecutionPlanner {
   }
 
   private static boolean canReadTypeHierarchy(final DatabaseInternal database, final DocumentType type) {
+    if (!canReadType(database, type))
+      return false;
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      if (!canReadType(database, subType))
+        return false;
+    return true;
+  }
+
+  private static boolean canReadType(final DatabaseInternal database, final DocumentType type) {
     final List<Integer> bucketIds = type.getBucketIds(false);
     if (bucketIds.isEmpty()) {
       // A type with no bucket of its own is granted by name
@@ -2924,17 +2935,15 @@ public class SelectExecutionPlanner {
       for (final Integer bucketId : bucketIds)
         if (!SecurityHelper.canAccessFile(database, bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD))
           return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!canReadTypeHierarchy(database, subType))
-        return false;
     return true;
   }
 
   private static boolean keepsIncomingLists(final DocumentType type) {
     if (type instanceof EdgeType edgeType && !edgeType.isBidirectional())
       return false;
-    for (final DocumentType subType : type.getSubTypes())
-      if (!keepsIncomingLists(subType))
+    // each type below once, whatever the number of paths that lead down to it
+    for (final DocumentType subType : TypeHierarchy.allSubTypes(type))
+      if (subType instanceof EdgeType edgeType && !edgeType.isBidirectional())
         return false;
     return true;
   }
