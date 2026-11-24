@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -315,10 +316,21 @@ public class ArithmeticExpression implements Expression {
   /**
    * Evaluate temporal arithmetic with pre-evaluated operands.
    * Can be called from ExpressionEvaluator with already-resolved values.
+   * <p>
+   * A date or datetime moved out of the java.time range is an {@link ArithmeticErrorException}, a client error like every other
+   * overflow, not the raw {@code DateTimeException} of {@code plusMonths()} (issue #12706).
    *
    * @return the result, or null if not a temporal arithmetic operation
    */
   public static Object evaluateTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
+    try {
+      return applyTemporalArithmetic(leftValue, rightValue, op);
+    } catch (final DateTimeException | ArithmeticException e) {
+      throw new ArithmeticErrorException("Temporal overflow: " + e.getMessage(), e);
+    }
+  }
+
+  private static Object applyTemporalArithmetic(final Object leftValue, final Object rightValue, final Operator op) {
     // Duration + Duration or Duration - Duration
     if (leftValue instanceof CypherDuration ld && rightValue instanceof CypherDuration rd) {
       if (op == Operator.ADD)
@@ -343,7 +355,7 @@ public class ArithmeticExpression implements Expression {
     // Instant ± duration is only defined for + and -; * / % are a type error and must fall through (issue #9338).
     // + is also defined with the duration on the left, since duration + instant is the same operation.
     if (op == Operator.ADD && leftValue instanceof CypherDuration && isInstant(rightValue))
-      return evaluateTemporalArithmetic(rightValue, leftValue, op);
+      return applyTemporalArithmetic(rightValue, leftValue, op);
     if (op != Operator.ADD && op != Operator.SUBTRACT)
       return null;
 
