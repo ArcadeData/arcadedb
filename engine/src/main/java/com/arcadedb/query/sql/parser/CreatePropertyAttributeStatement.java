@@ -101,10 +101,14 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
       // A refusal of the value - a flag that is not a boolean, a bound or a default the type cannot take (issue #6134) - names the
       // attribute and says what is wrong and how to write it instead. It is passed on as it is, so its type decides how the caller is
       // answered and its message is not repeated under a wrapper that says the same thing again (issue #12809). Only a fault of the
-      // server is wrapped, and its message stays in the chain under the wrapper rather than being copied into it
+      // server is wrapped, and its message is carried in the text and not just in the chain: the wrapper is what a client sees over
+      // HTTP. A cause with no message (an NPE, say) contributes nothing, so it is left off rather than rendered as ": null"
       if (ErrorCategory.of(e) != ErrorCategory.SERVER)
         throw e;
-      throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
+      throw new CommandExecutionException(
+          "Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue + (e.getMessage() == null ?
+              "" :
+              ": " + e.getMessage()), e);
     }
     return attrValue;
   }

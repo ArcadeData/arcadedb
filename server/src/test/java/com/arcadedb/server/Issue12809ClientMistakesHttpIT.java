@@ -21,7 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.InvalidArgumentException;
-import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #12809, over the wire: a property attribute, an index definition, a script statement or a procedure argument the statement
- * alone decides is wrong answers 400 with its message, and a constraint the stored records violate answers 409, never 500 with a
+ * alone decides is wrong answers 400 with its message, and so does a constraint the stored records violate, never 500 with a
  * stack trace in the server log. The engine half is {@code Issue12809ClientMistakesTest}; this pins the status each type is
  * answered with by {@code AbstractServerHttpHandler}.
  */
@@ -112,13 +112,18 @@ class Issue12809ClientMistakesHttpIT extends BaseGraphServerTest {
   }
 
   @Test
-  void aConstraintTheRecordsViolateReturns409() throws Exception {
+  void aConstraintTheRecordsViolateReturns400WithItsKind() throws Exception {
     testEachServer(serverIndex -> {
       createType(serverIndex);
-      assertAnswer(serverIndex, "sql", "CREATE PROPERTY Q12809.p2 BOOLEAN (MANDATORY true)", 409, ObjectInUseException.class,
-          "Cannot create property 'Q12809.p2': record #");
-      assertAnswer(serverIndex, "sql", "ALTER PROPERTY Q12809.s notnull true", 409, ObjectInUseException.class,
-          "Cannot set NOTNULL: record #");
+      // the SQL spellings answered so already (issue #12436); the openCypher type constraint answered 500
+      assertThat(assertAnswer(serverIndex, "sql", "CREATE PROPERTY Q12809.p2 BOOLEAN (MANDATORY true)", 400, ValidationException.class,
+          "Cannot create property 'Q12809.p2': record #").getString("error")).isEqualTo("Constraint violated (MANDATORY)");
+      assertThat(assertAnswer(serverIndex, "sql", "ALTER PROPERTY Q12809.s notnull true", 400, ValidationException.class,
+          "Cannot set NOTNULL: record #").getString("error")).isEqualTo("Constraint violated (NOT_NULL)");
+      execute(serverIndex, "sql", "UPDATE Q12809 SET loose = 'x' WHERE k = 1", 200);
+      assertThat(assertAnswer(serverIndex, "opencypher", "CREATE CONSTRAINT q12809_loose_int FOR (n:Q12809) REQUIRE n.loose IS :: INTEGER",
+          400, ValidationException.class, "Cannot require Q12809.loose IS :: INTEGER: record #").getString("error")).isEqualTo(
+          "Constraint violated (TYPE)");
     });
   }
 

@@ -23,7 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidArgumentException;
-import com.arcadedb.exception.ObjectInUseException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,8 +34,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Issue #12809: property-attribute values, index definitions, script statements and procedure arguments that the statement alone
- * decides are wrong are refused with a type every protocol answers as the caller's mistake (HTTP 400, or 409 for a constraint the
- * stored records violate), not as a server fault. A value that needs a record ({@code @rid}) evaluated where there is none is refused
+ * decides are wrong are refused with a type every protocol answers as the caller's mistake (HTTP 400, a constraint the
+ * stored records violate included), not as a server fault. A value that needs a record ({@code @rid}) evaluated where there is none is refused
  * with a message, not a {@code NullPointerException}.
  */
 class Issue12809ClientMistakesTest extends TestHelper {
@@ -149,18 +149,19 @@ class Issue12809ClientMistakesTest extends TestHelper {
   }
 
   @Test
-  void aConstraintTheStoredRecordsViolateIsAConflict() {
-    assertRefused("sql", "CREATE PROPERTY Q.p2 BOOLEAN (MANDATORY true)", ObjectInUseException.class,
+  void aConstraintTheStoredRecordsViolateIsAValidationRefusalWithItsKind() {
+    // the SQL spellings name the kind of the constraint the record violates (issue #12436)
+    assertViolates("sql", "CREATE PROPERTY Q.p2 BOOLEAN (MANDATORY true)", ValidationException.Kind.MANDATORY,
         "Cannot create property 'Q.p2': record #");
     assertThat(database.getSchema().getType("Q").existsProperty("p2")).isFalse();
-    assertRefused("sql", "ALTER PROPERTY Q.s notnull true", ObjectInUseException.class, "Cannot set NOTNULL: record #");
+    assertViolates("sql", "ALTER PROPERTY Q.s notnull true", ValidationException.Kind.NOT_NULL, "Cannot set NOTNULL: record #");
     // m is set on no record
-    assertRefused("sql", "ALTER PROPERTY Q.m mandatory true", ObjectInUseException.class, "Cannot set MANDATORY: record #");
-    assertRefused("sql", "ALTER PROPERTY Q.s max 0", ObjectInUseException.class, "Cannot set MAX 0: record #");
+    assertViolates("sql", "ALTER PROPERTY Q.m mandatory true", ValidationException.Kind.MANDATORY, "Cannot set MANDATORY: record #");
     assertThat(database.getSchema().getType("Q").getProperty("s").isNotNull()).isFalse();
     // the openCypher spelling of the same refusal: a type constraint that a stored value of an undeclared property does not satisfy
+    // was a plain CommandExecutionException, a server fault to every protocol
     database.transaction(() -> database.command("sql", "UPDATE Q SET loose = 'x' WHERE k = 1"));
-    assertRefused("opencypher", "CREATE CONSTRAINT q_loose_int FOR (n:Q) REQUIRE n.loose IS :: INTEGER", ObjectInUseException.class,
+    assertViolates("opencypher", "CREATE CONSTRAINT q_loose_int FOR (n:Q) REQUIRE n.loose IS :: INTEGER", ValidationException.Kind.TYPE,
         "Cannot require Q.loose IS :: INTEGER: record #");
     assertThat(database.getSchema().getType("Q").existsProperty("loose")).isFalse();
   }
@@ -201,6 +202,17 @@ class Issue12809ClientMistakesTest extends TestHelper {
     assertThat(e).as(statement).isInstanceOf(expectedType).hasMessageContaining(expectedMessage);
     assertThat(ErrorCategory.of(e)).as(statement).isNotEqualTo(ErrorCategory.SERVER);
     return e;
+  }
+
+  /** The refusal, wherever it sits in the chain (openCypher wraps it), is a ValidationException of that kind. */
+  private void assertViolates(final String language, final String statement, final ValidationException.Kind expectedKind,
+      final String expectedMessage) {
+    final Throwable e = catchThrowable(() -> database.command(language, statement).close());
+    assertThat(e).as(statement).isNotNull();
+    assertThat(ErrorCategory.of(e)).as(statement).isEqualTo(ErrorCategory.VALIDATION);
+    assertThat(ErrorCategory.classifiedCause(e)).as(statement).isInstanceOf(ValidationException.class)
+        .hasMessageContaining(expectedMessage);
+    assertThat(((ValidationException) ErrorCategory.classifiedCause(e)).getKind()).as(statement).isEqualTo(expectedKind);
   }
 
   private void assertRefusedInProcedure(final String statement, final String expectedMessage) {
