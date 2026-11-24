@@ -602,6 +602,7 @@ public class MergeStep extends AbstractExecutionStep {
         ? evaluateMatchProperties(relPattern.getProperties(), baseResult) : null;
     final Direction dir = relPattern.getDirection();
 
+    final List<Edge> matchingEdges = new ArrayList<>(2);
     while (indexIter.hasNext()) {
       final Identifiable identifiable = indexIter.next();
       if (identifiable == null)
@@ -615,25 +616,26 @@ public class MergeStep extends AbstractExecutionStep {
       if (!matchesNodePattern(candidate, unboundPattern, baseResult))
         continue;
 
-      final Edge matchingEdge = findEdgeBetweenForMerge(candidate, anchorVertex, unboundIdx, dir, relType, relProps);
-      if (matchingEdge == null)
-        continue;
+      // One path per relationship between the two nodes: parallel relationships are as many matches (issue #13137)
+      matchingEdges.clear();
+      collectEdgesBetweenForMerge(candidate, anchorVertex, unboundIdx, dir, relType, relProps, matchingEdges);
+      for (final Edge matchingEdge : matchingEdges) {
+        final ResultInternal r = copyResult(baseResult);
+        if (anchorPattern.getVariable() != null)
+          r.setProperty(anchorPattern.getVariable(), anchorVertex);
+        if (unboundPattern.getVariable() != null)
+          r.setProperty(unboundPattern.getVariable(), candidate);
+        if (relPattern.getVariable() != null)
+          r.setProperty(relPattern.getVariable(), matchingEdge);
+        r.setProperty(WAS_CREATED, false);
 
-      final ResultInternal r = copyResult(baseResult);
-      if (anchorPattern.getVariable() != null)
-        r.setProperty(anchorPattern.getVariable(), anchorVertex);
-      if (unboundPattern.getVariable() != null)
-        r.setProperty(unboundPattern.getVariable(), candidate);
-      if (relPattern.getVariable() != null)
-        r.setProperty(relPattern.getVariable(), matchingEdge);
-      r.setProperty(WAS_CREATED, false);
-
-      final Object[] trace = newPathTrace(pathPattern);
-      tracePathElement(trace, 2 * anchorIdx, anchorVertex);
-      tracePathElement(trace, 2 * unboundIdx, candidate);
-      tracePathElement(trace, 1, matchingEdge);
-      addPathBinding(r, pathPattern, trace);
-      results.add(r);
+        final Object[] trace = newPathTrace(pathPattern);
+        tracePathElement(trace, 2 * anchorIdx, anchorVertex);
+        tracePathElement(trace, 2 * unboundIdx, candidate);
+        tracePathElement(trace, 1, matchingEdge);
+        addPathBinding(r, pathPattern, trace);
+        results.add(r);
+      }
     }
 
     return true;
@@ -766,32 +768,28 @@ public class MergeStep extends AbstractExecutionStep {
   }
 
   /**
-   * Returns an edge between {@code candidate} and {@code anchor} satisfying the
+   * Adds to {@code found} every edge between {@code candidate} and {@code anchor} satisfying the
    * pattern direction and properties, read off whichever of the two has the
-   * shorter edge list (issue #11699). Returns {@code null} when no such edge exists.
+   * shorter edge list (issue #11699). Adds nothing when no such edge exists.
    *
    * @param unboundIdx position of {@code candidate} in the pattern: 0 means the
    *                   candidate is on the left of the edge, 1 means on the right.
    */
-  private Edge findEdgeBetweenForMerge(final Vertex candidate, final Vertex anchor, final int unboundIdx,
-      final Direction dir, final String relType, final Map<String, Object> relProps) {
+  private void collectEdgesBetweenForMerge(final Vertex candidate, final Vertex anchor, final int unboundIdx,
+      final Direction dir, final String relType, final Map<String, Object> relProps, final List<Edge> found) {
     if (dir == Direction.OUT || dir == Direction.BOTH) {
       // Pattern: node0 -OUT-> node1.  Candidate side dictates the lookup direction.
       final Vertex.DIRECTION candDir = unboundIdx == 0 ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
       final Vertex.DIRECTION otherEnd = unboundIdx == 0 ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
-      final Edge e = findFirstEdgeTo(candidate, anchor, candDir, otherEnd, relType, relProps);
-      if (e != null)
-        return e;
+      collectEdgesTo(candidate, anchor, candDir, otherEnd, relType, relProps, false, found);
     }
     if (dir == Direction.IN || dir == Direction.BOTH) {
       // Pattern: node0 <-IN- node1.  Mirror of the OUT case.
       final Vertex.DIRECTION candDir = unboundIdx == 0 ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
       final Vertex.DIRECTION otherEnd = unboundIdx == 0 ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
-      final Edge e = findFirstEdgeTo(candidate, anchor, candDir, otherEnd, relType, relProps);
-      if (e != null)
-        return e;
+      // An undirected pattern reads a self-loop in this pass again: a loop is one relationship
+      collectEdgesTo(candidate, anchor, candDir, otherEnd, relType, relProps, dir == Direction.BOTH, found);
     }
-    return null;
   }
 
   /**
@@ -829,9 +827,16 @@ public class MergeStep extends AbstractExecutionStep {
     return () -> ((DatabaseInternal) context.getDatabase()).getGraphEngine().getEdgesConnectedTo(from, direction, to, relType);
   }
 
-  private Edge findFirstEdgeTo(final Vertex from, final Vertex target,
+  /**
+   * Adds to {@code found} every relationship joining {@code from} to {@code target} that the pattern's properties accept, as
+   * many as there are: parallel relationships are as many matches of the pattern (issue #13137).
+   *
+   * @param skipSelfLoops the pass of an undirected pattern that reads the edges the first pass read already: a relationship whose two
+   *                      ends are the same vertex is one match, not two
+   */
+  private void collectEdgesTo(final Vertex from, final Vertex target,
       final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
-      final String relType, final Map<String, Object> relProps) {
+      final String relType, final Map<String, Object> relProps, final boolean skipSelfLoops, final List<Edge> found) {
     final Iterable<Edge> candidates = from instanceof VertexInternal internal && target.getIdentity() != null ?
         edgesBetween(internal, fromDir, target.getIdentity(), relType) :
         from.getEdges(fromDir, relType);
@@ -839,15 +844,16 @@ public class MergeStep extends AbstractExecutionStep {
       try {
         if (!target.equals(edge.getVertex(otherEnd)))
           continue;
+        if (skipSelfLoops && edge.getOut().equals(edge.getIn()))
+          continue;
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
-        return edge;
+        found.add(edge);
       } catch (final RecordNotFoundException e) {
         // Ghost edge: record was concurrently deleted. Skip and continue.
         GhostEdgeReporter.reportSkipped(e);
       }
     }
-    return null;
   }
 
   /**
