@@ -32,6 +32,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -85,6 +86,17 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * Javadoc of each).
  */
 public class TransactionRetryAndRollbackTest {
+  /**
+   * Issue #13251: the conflict a retry loop refuses to replay reaches the caller as a failure no layer retries, with the conflict
+   * suppressed under it, and not as the retryable conflict, which a client or a load balancer would retry anyway.
+   */
+  public static void assertNotReplayable(final Throwable failure) {
+    assertThat(failure).isInstanceOf(TransactionException.class).isNotInstanceOf(NeedRetryException.class);
+    assertThat(failure.getCause()).as("a cause would be looked through to the retryable conflict").isNull();
+    assertThat(failure.getSuppressed()).hasAtLeastOneElementOfType(ConcurrentModificationException.class);
+    assertThat(ErrorCategory.of(failure)).isNotEqualTo(ErrorCategory.RETRY);
+  }
+
   /**
    * Regression test for #5587: before this fix, every {@code database.transaction(...)} retry slept a flat
    * {@code U(1, TX_RETRY_DELAY)} interval no matter how many times the transaction had already lost, so a
@@ -1524,7 +1536,7 @@ public class TransactionRetryAndRollbackTest {
         database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10");
         // ... and then the block fails, the way a genuine MVCC conflict on a later statement would.
         throw new ConcurrentModificationException("simulated conflict after the batch boundary");
-      }, true, 3, okCalls::incrementAndGet, null)).isInstanceOf(NeedRetryException.class);
+      }, true, 3, okCalls::incrementAndGet, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
       assertThat(okCalls.get()).as("and a block that failed must not report success").isZero();
@@ -1569,7 +1581,7 @@ public class TransactionRetryAndRollbackTest {
         attempts.incrementAndGet();
         database.command("sql", "DELETE FROM " + ROWS + " BATCH 10");
         throw new ConcurrentModificationException("simulated conflict after the batch boundary");
-      }, true, 3, null, null)).isInstanceOf(NeedRetryException.class);
+      }, true, 3, null, null)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).isEqualTo(1);
       // 20 rows are durably gone, the last 5 deletes were rolled back.
@@ -1636,7 +1648,7 @@ public class TransactionRetryAndRollbackTest {
       database.async().waitCompletion();
 
       assertThat(attempts.get()).as("the block must be run ONCE: its durable half cannot be replayed").isEqualTo(1);
-      assertThat(failure.get()).isInstanceOf(NeedRetryException.class);
+      assertNotReplayable(failure.get());
 
       assertThat(countRowsWithSeq(1)).isEqualTo(20);
       assertThat(countRowsWithSeq(0)).isEqualTo(5);
@@ -1932,7 +1944,7 @@ public class TransactionRetryAndRollbackTest {
         attempts.incrementAndGet();
         reportForwardedWrite();
         throw new ConcurrentModificationException("a conflict after the forward (issue #12635 test)");
-      }, false, 3)).isInstanceOf(ConcurrentModificationException.class);
+      }, false, 3)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).isEqualTo(1);
     }
@@ -1948,7 +1960,7 @@ public class TransactionRetryAndRollbackTest {
         reportForwardedWrite();
         database.commit();
         throw new ConcurrentModificationException("a conflict after the nested commit (issue #12635 test)");
-      }, false, 3)).isInstanceOf(ConcurrentModificationException.class);
+      }, false, 3)).satisfies(TransactionRetryAndRollbackTest::assertNotReplayable);
 
       assertThat(attempts.get()).isEqualTo(1);
     }

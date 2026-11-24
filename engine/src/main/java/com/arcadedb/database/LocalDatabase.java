@@ -2891,14 +2891,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // take that part back, and a second pass would apply it twice and then report clean success. The commit
         // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
         // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
-        // caller, who is the only one who knows how to compensate for the half that stands.
+        // caller, who is the only one who knows how to compensate for the half that stands. Not as the retryable conflict
+        // it is, which every layer above would retry anyway (#13251)
         if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
           LogManager.instance().log(this, Level.WARNING,
               "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
                   + "boundary, a Cypher CALL IN TRANSACTIONS, or a write forwarded to the leader): NOT retrying, because replaying it would apply the "
                   + "already durable half a second time. Propagating %s to the caller",
               null, name, e.getClass().getSimpleName());
-          throw e;
+          throw TransactionContext.notReplayable(e, "Transaction block");
         }
 
         // #9995: a refusal this node repeats until something outside it changes - a follower refusing leader-only work
