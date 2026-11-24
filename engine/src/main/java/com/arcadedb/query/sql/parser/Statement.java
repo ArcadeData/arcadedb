@@ -75,8 +75,9 @@ public class Statement extends SimpleNode {
   // Memo of placeholders(): the ? and :name nodes of the tree, in the order the walk meets them, or null when it cannot be read
   private transient volatile InputParameter[] placeholders;
   // Set by the parser, before the statement is handed out, on a statement written with more literals than a shape records
-  // (issue #12605, see excludeFromPlanCache()). A copy of a statement whose plans can reach the cache carries it: the planners
-  // work on copies of the nested statements
+  // (issue #12605, see excludeFromPlanCache()). A copy of a statement whose plans can reach the cache carries it, since the
+  // planners work on copies of the nested statements: SELECT (its own plan) and UPDATE/DELETE (their source plan) do. A statement
+  // type that starts caching a plan of its own must carry it in its copy() too
   transient boolean excludedFromPlanCache;
 
   /**

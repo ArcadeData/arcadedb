@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.query.CypherPlanCache;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
+import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -119,6 +120,19 @@ class BulkLiteralPlanNotCachedIssue12605Test extends TestHelper {
     }
     assertThat(cypherPlans().contains(bulk)).as("a bulk openCypher query").isFalse();
     assertThat(cypherPlans().size()).as("a bulk openCypher query").isZero();
+  }
+
+  @Test
+  void theMarkSurvivesACopyOfTheStatementsWhosePlansReachTheCache() {
+    // the planners work on copies: a copy that dropped the mark would plan into the cache again
+    for (final String bulk : new String[] { "SELECT FROM T WHERE k IN " + list(BULK, 0), "UPDATE T SET z = 1 WHERE k IN " + list(BULK, 0),
+        "DELETE FROM T WHERE k IN " + list(BULK, 0) }) {
+      final Statement statement = ((DatabaseInternal) database).getStatementCache().get(bulk);
+      assertThat(statement.isExcludedFromPlanCache()).as("parsed: %s", statement.getClass().getSimpleName()).isTrue();
+      assertThat(statement.copy().isExcludedFromPlanCache()).as("copied: %s", statement.getClass().getSimpleName()).isTrue();
+    }
+    final Statement small = ((DatabaseInternal) database).getStatementCache().get("SELECT FROM T WHERE k IN " + list(100, 0));
+    assertThat(small.isExcludedFromPlanCache()).as("a text under the limit").isFalse();
   }
 
   @Test

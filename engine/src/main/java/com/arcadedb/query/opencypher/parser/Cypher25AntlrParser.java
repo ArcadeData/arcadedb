@@ -239,20 +239,12 @@ public class Cypher25AntlrParser {
   }
 
   /**
-   * Whether the query holds more literals than a shape records ({@link LiteralParameterizer#MAX_LITERALS}), counted as the
-   * literal scan counts them, so the statement and the plan caches agree on which texts are bulk (issue #12605). The tokens are
-   * the ones the parser read, so nothing is lexed again, and a query with fewer tokens than the limit is not walked.
+   * Whether the query holds more literals than a shape records, counted as the openCypher literal scan counts them (see
+   * {@link LiteralParameterizer#holdsMoreLiteralsThanAShape}, issue #12605). Called once the parser has read the whole query, so
+   * every token is in the stream.
    */
   private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
-    final List<Token> all = tokens.getTokens();
-    if (all.size() <= LiteralParameterizer.MAX_LITERALS)
-      return false;
-    int literals = 0;
-    for (final Token token : all)
-      if (token.getChannel() == Token.DEFAULT_CHANNEL && CypherLiteralParameterizer.isCandidate(token)
-          && ++literals > LiteralParameterizer.MAX_LITERALS)
-        return true;
-    return false;
+    return LiteralParameterizer.holdsMoreLiteralsThanAShape(tokens.getTokens(), CypherLiteralParameterizer::isCandidate);
   }
 
   private static boolean containsToken(final CommonTokenStream tokens, final int type) {

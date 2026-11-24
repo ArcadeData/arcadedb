@@ -20,10 +20,13 @@ package com.arcadedb.query.literal;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.SegmentedLRUCache;
+import org.antlr.v4.runtime.Token;
 
 import java.lang.ref.SoftReference;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -268,6 +271,25 @@ public abstract class LiteralParameterizer<S> {
       parameterizedTexts.put(text, remembered);
     }
     return new Lookup<>(cached.statement(), key, values);
+  }
+
+  /**
+   * Whether a lexed text holds more literals than a shape records ({@link #MAX_LITERALS}), counted over the default-channel
+   * tokens with the predicate the language's {@link #scan} uses, so the statement and the plan caches agree on which texts are
+   * bulk. A parser asks it of the tokens it already read, so nothing is lexed again, and a text with no more tokens than the
+   * limit is not walked (issue #12605).
+   *
+   * @param tokens    every token of the text, as the parser's buffered stream holds them
+   * @param isLiteral the literal tokens the language's scan records
+   */
+  public static boolean holdsMoreLiteralsThanAShape(final List<? extends Token> tokens, final Predicate<Token> isLiteral) {
+    if (tokens.size() <= MAX_LITERALS)
+      return false;
+    int literals = 0;
+    for (final Token token : tokens)
+      if (token.getChannel() == Token.DEFAULT_CHANNEL && isLiteral.test(token) && ++literals > MAX_LITERALS)
+        return true;
+    return false;
   }
 
   public boolean contains(final String text) {

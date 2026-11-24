@@ -346,6 +346,15 @@ public record SQLAntlrParser(Database database) {
   }
 
   /**
+   * Whether the text holds more literals than a shape records, counted as the SQL literal scan counts them (see
+   * {@link LiteralParameterizer#holdsMoreLiteralsThanAShape}). Such a text is the data of a bulk write written in: its statement
+   * is kept out of the statement cache (issue #12350) and its plans out of the plan cache (issue #12605).
+   */
+  private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
+    return LiteralParameterizer.holdsMoreLiteralsThanAShape(tokens.getTokens(), SQLLiteralParameterizer::isCandidate);
+  }
+
+  /**
    * Builds the token stream and bounds its parenthesis nesting depth before any parse is attempted.
    * <p>
    * The grammar resolves the ambiguity between the several rules that all start with a bare '(' - a
@@ -358,24 +367,6 @@ public record SQLAntlrParser(Database database) {
    * token stream rather than raw characters means a '(' inside a string literal or comment - already lexed
    * as part of that token, never as a standalone LPAREN - is not miscounted.
    */
-  /**
-   * Whether the text holds more literals than a shape records ({@link LiteralParameterizer#MAX_LITERALS}), counted as the literal
-   * scan counts them, so the statement and the plan caches agree on which texts are bulk. Such a text is the data of a bulk write
-   * written in: its statement is kept out of the statement cache (issue #12350) and its plans out of the plan cache (issue #12605).
-   * The tokens are the ones the parser read, so nothing is lexed again, and a text with fewer tokens than the limit is not walked.
-   */
-  private static boolean holdsMoreLiteralsThanAShape(final CommonTokenStream tokens) {
-    final List<Token> all = tokens.getTokens();
-    if (all.size() <= LiteralParameterizer.MAX_LITERALS)
-      return false;
-    int literals = 0;
-    for (final Token token : all)
-      if (token.getChannel() == Token.DEFAULT_CHANNEL && SQLLiteralParameterizer.isCandidate(token)
-          && ++literals > LiteralParameterizer.MAX_LITERALS)
-        return true;
-    return false;
-  }
-
   private CommonTokenStream tokenize(final SQLLexer lexer) {
     final CommonTokenStream tokens = new CommonTokenStream(lexer);
     tokens.fill(); // the parser reuses this same fully-buffered stream
