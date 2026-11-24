@@ -93,6 +93,49 @@ class Issue12615RemoteBeginFailoverTest {
     assertThat(liveReplica.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
   }
 
+  /**
+   * During an election the live replica still names the stopped node as leader. Re-pinning to the advertised leader would send every
+   * retry back to the dead node: the begin goes to the server that answered the reload instead, as {@code httpCommand()} does.
+   */
+  @Test
+  void stickyBeginIgnoresAStaleLeaderAdvertisedDuringAnElection() throws Exception {
+    final Node original = node();
+    final Node liveReplica = node();
+
+    original.answer(cluster(original.address(), liveReplica.address()));
+    liveReplica.answer(cluster(original.address(), liveReplica.address()));
+    database = connect(original, RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+
+    original.stop();
+
+    database.begin();
+    database.rollback();
+
+    assertThat(liveReplica.requestsTo(BEGIN_ROUTE)).isEqualTo(1);
+    assertThat(liveReplica.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
+  }
+
+  /**
+   * No server can give the topology (the live replica refuses the cluster route), so the reload fails and changes nothing the client
+   * routes by. The begin still walks the replica list the client kept, and the rest of the transaction follows it there.
+   */
+  @Test
+  void beginWalksTheKnownReplicasWhenTheReloadFails() throws Exception {
+    final Node original = node();
+    final Node liveReplica = node();
+
+    original.answer(cluster(original.address(), liveReplica.address()));
+    database = connect(original, RemoteHttpComponent.CONNECTION_STRATEGY.ROUND_ROBIN);
+
+    original.stop();
+
+    database.begin();
+    database.rollback();
+
+    assertThat(liveReplica.requestsTo(BEGIN_ROUTE)).isEqualTo(1);
+    assertThat(liveReplica.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
+  }
+
   /** FIXED means the same server, as it does for every other request: a stopped one is reported, not routed around. */
   @Test
   void fixedStrategyDoesNotLeaveTheServer() throws Exception {

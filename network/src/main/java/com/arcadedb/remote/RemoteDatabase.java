@@ -509,27 +509,58 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * yet, so unlike a request inside one this may go to any live server. Only {@code httpCommand()} failed over before, so with the
    * server the client was connected to stopped, every {@code begin()} failed and nothing moved {@code currentServer} to a live node.
    * The FIXED strategy keeps to its server, as it does for every other request.
+   * <p>
+   * The next server is chosen the way {@code httpCommand()} chooses it ({@link #nextFailoverServer}): the one that answered the
+   * reload, else the next known replica, never the advertised leader, which during an election can still be the stopped node. The
+   * server that answers becomes the one the transaction is routed to: the sticky pin for STICKY, the current server otherwise, so
+   * that the commands, the commit and the rollback reach the node that holds the session.
    */
   private HttpResponse<String> sendBegin(final String payload) throws IOException, InterruptedException {
-    final int maxAttempts = getConnectionStrategy() == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+    final CONNECTION_STRATEGY strategy = getConnectionStrategy();
+    final int maxAttempts = strategy == CONNECTION_STRATEGY.FIXED ? 1 : maxFailoverAttempts();
+    final String command = "begin/" + databaseName;
+
+    Pair<String, Integer> target = getRoutedServer();
+    boolean failedOver = false;
+    // Once a reload found no server able to answer, asking them all again on every attempt only multiplies the timeouts
+    boolean reloadFailed = false;
 
     for (int attempt = 1; ; attempt++) {
-      final HttpRequest request = createRequestBuilder("POST", getUrl("begin", databaseName)).POST(
+      final HttpRequest request = createRequestBuilder("POST", getUrl(target, command)).POST(
           HttpRequest.BodyPublishers.ofString(payload)).header("Content-Type", "application/json").build();
+      final HttpResponse<String> response;
       try {
-        return sendWithWatchdog(request);
+        response = sendWithWatchdog(request);
       } catch (final IOException e) {
         if (attempt >= maxAttempts || !provablyNeverSent(e))
           throw e;
 
-        LogManager.instance()
-            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching server to begin the transaction...",
-                currentServer, currentPort);
+        if (!reloadFailed)
+          reloadFailed = !reloadClusterConfiguration();
 
-        reloadClusterConfiguration();
-        if (getConnectionStrategy() == CONNECTION_STRATEGY.STICKY)
-          setStickyTransactionServer(resolveStickyTargetServer());
+        final Pair<String, Integer> next = nextFailoverServer(target, false);
+        if (next == null)
+          throw e;
+
+        LogManager.instance()
+            .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d to begin the transaction...",
+                target.getFirst(), target.getSecond(), next.getFirst(), next.getSecond());
+
+        target = next;
+        failedOver = true;
+        continue;
       }
+
+      if (failedOver) {
+        // The server answered, so it is alive: the rest of the transaction goes where the session is
+        if (strategy == CONNECTION_STRATEGY.STICKY)
+          setStickyTransactionServer(target);
+        else {
+          currentServer = target.getFirst();
+          currentPort = target.getSecond();
+        }
+      }
+      return response;
     }
   }
 

@@ -387,6 +387,40 @@ public class RemoteHttpComponent extends RWLockContext {
     return Math.max(1, haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries);
   }
 
+  /**
+   * The server a request that failed over goes to next, once the caller has run {@link #reloadClusterConfiguration()}: the leader
+   * when the request prefers it, else the server that answered the reload, else the next known replica. Shared by
+   * {@code httpCommand()} and {@code RemoteDatabase.begin()} so the two failover paths cannot drift (issue #12615). The advertised
+   * leader is not trusted otherwise: during an election the server that answered can still name the stopped node as leader.
+   *
+   * @param failed the server the last attempt could not reach
+   *
+   * @return the server to try next, or {@code null} when none is known
+   */
+  Pair<String, Integer> nextFailoverServer(final Pair<String, Integer> failed, final boolean leaderIsPreferable) {
+    final Pair<String, Integer> snapshotLeader = leaderServer;
+    if (leaderIsPreferable && snapshotLeader != null && !failed.equals(snapshotLeader))
+      return snapshotLeader;
+
+    // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304)
+    final Pair<String, Integer> answeringServer = lastConfigurationSource;
+    if (answeringServer != null && !answeringServer.equals(failed))
+      return answeringServer;
+
+    return getNextReplicaAddress();
+  }
+
+  /** The server a raw request ({@link #getUrl(String)}) is routed to: the sticky pin, else the current server. */
+  Pair<String, Integer> getRoutedServer() {
+    final Pair<String, Integer> pin = getStickyPin();
+    return pin != null ? pin : new Pair<>(currentServer, currentPort);
+  }
+
+  /** The URL of {@code command} on an explicit server, for a raw request that failed over away from {@link #getUrl(String)}. */
+  String getUrl(final Pair<String, Integer> server, final String command) {
+    return buildUrl(server.getFirst(), server.getSecond(), command);
+  }
+
   List<Pair<String, Integer>> getReplicaServerList() {
     return replicaServerList;
   }
@@ -690,16 +724,7 @@ public class RemoteHttpComponent extends RWLockContext {
             reloadFailed = !reloadClusterConfiguration();
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
-          final Pair<String, Integer> snapshotLeader = leaderServer;
-          final Pair<String, Integer> answeringServer = lastConfigurationSource;
-
-          if (leaderIsPreferable && snapshotLeader != null && !currentConnectToServer.equals(snapshotLeader)) {
-            connectToServer = snapshotLeader;
-          } else if (answeringServer != null && !answeringServer.equals(currentConnectToServer))
-            // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304)
-            connectToServer = answeringServer;
-          else
-            connectToServer = getNextReplicaAddress();
+          connectToServer = nextFailoverServer(currentConnectToServer, leaderIsPreferable);
 
           if (connectToServer != null)
             LogManager.instance()
