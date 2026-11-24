@@ -29,7 +29,7 @@ import java.util.Set;
 
 /**
  * What a catalog query does to the values of its rows once they are computed (issue #10228): combines the arms
- * of a set operation, tells two rows apart for DISTINCT, GROUP BY and count(DISTINCT), orders values, and computes
+ * of a set operation (telling two rows apart by {@link PostgresCatalogRowKey}), orders values, and computes
  * an aggregate over a group. Nothing here knows where the rows came from.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -141,22 +141,22 @@ final class PostgresCatalogRowSets {
         result.addAll(right);
         return result;
       }
-      final Set<List<Object>> seen = new HashSet<>();
+      final Set<PostgresCatalogRowKey> seen = new HashSet<>();
       for (final List<List<Object>> side : List.of(left, right))
         for (final List<Object> row : side)
-          if (seen.add(distinctKey(row)))
+          if (seen.add(PostgresCatalogRowKey.of(row)))
             result.add(row);
       return result;
     }
 
-    final Map<List<Object>, Integer> inRight = new HashMap<>();
+    final Map<PostgresCatalogRowKey, Integer> inRight = new HashMap<>();
     for (final List<Object> row : right)
-      inRight.merge(distinctKey(row), 1, Integer::sum);
+      inRight.merge(PostgresCatalogRowKey.of(row), 1, Integer::sum);
 
-    final Set<List<Object>> emitted = new HashSet<>();
+    final Set<PostgresCatalogRowKey> emitted = new HashSet<>();
     final boolean intersect = "INTERSECT".equals(operator);
     for (final List<Object> row : left) {
-      final List<Object> key = distinctKey(row);
+      final PostgresCatalogRowKey key = PostgresCatalogRowKey.of(row);
       final int count = inRight.getOrDefault(key, 0);
       if (all) {
         // The ALL forms are bag operations: each row of the right side matches one row of the left at most.
@@ -168,24 +168,6 @@ final class PostgresCatalogRowSets {
         result.add(row);
     }
     return result;
-  }
-
-  /**
-   * The key two rows are compared by when a set operation, DISTINCT, GROUP BY or count(DISTINCT) decides whether
-   * they are the same row. Numbers compare by value, as in SQL: the literal {@code 1} is a Long and an OID is an
-   * Integer, and {@code List.equals} would tell them apart.
-   */
-  static List<Object> distinctKey(final List<Object> values) {
-    List<Object> key = null;
-    for (int i = 0; i < values.size(); i++) {
-      final Object value = values.get(i);
-      if (!(value instanceof Number number) || value instanceof Long)
-        continue;
-      if (key == null)
-        key = new ArrayList<>(values);
-      key.set(i, numberKey(number));
-    }
-    return key == null ? values : key;
   }
 
   /**
