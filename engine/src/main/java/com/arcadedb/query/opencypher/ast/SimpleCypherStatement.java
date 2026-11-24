@@ -378,6 +378,16 @@ public class SimpleCypherStatement implements CypherStatement {
     return detector.found;
   }
 
+  /**
+   * The same question for one expression that belongs to no clause, such as the {@code WHEN} condition of a conditional query:
+   * true when it calls a function whose write-or-not status cannot be confirmed ({@link #isConfirmedPureFunctionName}).
+   */
+  static boolean callsUnresolvedFunction(final Expression expression) {
+    final UnresolvedFunctionCallDetector detector = new UnresolvedFunctionCallDetector();
+    CypherExpressionWalker.walk(expression, detector);
+    return detector.found;
+  }
+
   private static final class UnresolvedFunctionCallDetector implements CypherExpressionWalker.Visitor {
     private boolean found = false;
 
@@ -489,7 +499,7 @@ public class SimpleCypherStatement implements CypherStatement {
       addEveryDataWrite(operations);
   }
 
-  private static void addEveryDataWrite(final Set<OperationType> operations) {
+  static void addEveryDataWrite(final Set<OperationType> operations) {
     operations.add(OperationType.CREATE);
     operations.add(OperationType.UPDATE);
     operations.add(OperationType.DELETE);

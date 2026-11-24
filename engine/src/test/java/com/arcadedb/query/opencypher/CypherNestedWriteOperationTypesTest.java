@@ -156,6 +156,26 @@ class CypherNestedWriteOperationTypesTest extends TestHelper {
   }
 
   @Test
+  void aFunctionCalledInAWhenConditionDeclaresEveryDataWrite() {
+    final Set<OperationType> everyDataWrite = Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    final String readOnlyBranches = " THEN MATCH (m:Person) RETURN m AS n ELSE MATCH (m:Person) RETURN m AS n";
+    assertThat(operationTypes("WHEN unknownlibrary.run($mode)" + readOnlyBranches)).isEqualTo(everyDataWrite);
+    assertThat(operationTypes("WHEN $mode = 1 THEN MATCH (m:Person) RETURN m AS n WHEN unknownlibrary.run($mode) THEN MATCH (m:Person) "
+        + "RETURN m AS n")).isEqualTo(everyDataWrite);
+    assertThat(operationTypes("WHEN unknownlibrary.run($mode) THEN CREATE (a:Person) RETURN a AS n ELSE MATCH (m:Person) RETURN m AS n"))
+        .isEqualTo(everyDataWrite);
+    assertThat(database.getQueryEngine("opencypher").analyze("WHEN unknownlibrary.run($mode)" + readOnlyBranches).isIdempotent())
+        .isFalse();
+  }
+
+  @Test
+  void aBuiltInFunctionCalledInAWhenConditionStaysARead() {
+    final String query = "WHEN toInteger($mode) = 1 THEN MATCH (m:Person) RETURN m AS n ELSE MATCH (m:Person) RETURN m AS n";
+    assertThat(operationTypes(query)).containsExactly(OperationType.READ);
+    assertThat(database.getQueryEngine("opencypher").analyze(query).isIdempotent()).isTrue();
+  }
+
+  @Test
   void aSchemaProcedureInASubqueryDeclaresTheSchemaChange() {
     assertThat(operationTypes("CALL { CALL db.analyticalView.drop('roads') YIELD name RETURN name } RETURN name"))
         .containsExactly(OperationType.SCHEMA);

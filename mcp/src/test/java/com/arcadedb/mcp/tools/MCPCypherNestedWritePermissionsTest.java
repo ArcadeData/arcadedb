@@ -107,6 +107,7 @@ class MCPCypherNestedWritePermissionsTest extends BaseGraphServerTest {
         created + "RETURN a AS n UNION MATCH (m:" + VERTEX1_TYPE_NAME + ") FOREACH (i IN [1] | SET m.name = 'changed') RETURN m AS n", //
         "WHEN true THEN " + created + "RETURN a AS n ELSE MATCH (m:" + VERTEX1_TYPE_NAME
             + ") CALL (m) { DETACH DELETE m } RETURN m AS n", //
+        "WHEN mcpnestedlibrary.run(1) THEN " + created + "RETURN a AS n ELSE RETURN 1 AS n", //
         created + "WITH a CALL merge.node(['" + VERTEX1_TYPE_NAME + "'], {" + MARKER_PROPERTY + ": 2}, {}) YIELD node RETURN node" })
       assertRefusedWithoutChange(command, "not allowed by MCP configuration");
   }

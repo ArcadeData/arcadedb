@@ -47,6 +47,7 @@ public class ConditionalStatement implements CypherStatement {
   private final List<CypherStatement> branches;
   private final CypherStatement       elseBranch;
   private final List<CypherStatement> allBranches;
+  private final boolean               conditionsMayWrite;
 
   /**
    * @param conditions one condition per {@code WHEN} branch, in written order
@@ -70,6 +71,15 @@ public class ConditionalStatement implements CypherStatement {
     if (elseBranch != null)
       all.add(elseBranch);
     this.allBranches = Collections.unmodifiableList(all);
+    // A condition is evaluated before any branch runs, so a function it calls that may run a body of its own counts as a write
+    // of the statement, as it does in a clause (issue #6418)
+    boolean mayWrite = false;
+    for (final Expression condition : this.conditions)
+      if (SimpleCypherStatement.callsUnresolvedFunction(condition)) {
+        mayWrite = true;
+        break;
+      }
+    this.conditionsMayWrite = mayWrite;
   }
 
   public List<Expression> getConditions() {
@@ -96,6 +106,8 @@ public class ConditionalStatement implements CypherStatement {
 
   @Override
   public boolean isReadOnly() {
+    if (conditionsMayWrite)
+      return false;
     for (final CypherStatement branch : getAllBranches())
       if (!branch.isReadOnly())
         return false;
@@ -159,9 +171,14 @@ public class ConditionalStatement implements CypherStatement {
     return false;
   }
 
-  /** The writes of every branch, the ones nested in a branch's subqueries and {@code FOREACH} bodies included. */
+  /**
+   * The writes of every branch, the ones nested in a branch's subqueries and {@code FOREACH} bodies included, and every data
+   * write when a condition calls a function that may run a body of its own.
+   */
   @Override
   public void collectWriteOperations(final Set<OperationType> operations) {
+    if (conditionsMayWrite)
+      SimpleCypherStatement.addEveryDataWrite(operations);
     for (final CypherStatement branch : getAllBranches())
       branch.collectWriteOperations(operations);
   }
