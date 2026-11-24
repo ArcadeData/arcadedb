@@ -33,6 +33,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * A JavaScript user function is declared from its name, its parameter names and its body, and the declaration must
  * only ever declare: the body is compiled on its own, and the name and the parameters must be plain identifiers.
  * Nothing of the definition runs when the function is declared, only when it is called.
+ * <p>
+ * The characters that are not plain ASCII are built from their code point, never typed in the source: most of them are
+ * invisible, and an editor or a normalization pass would change them without a trace.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
@@ -42,6 +45,15 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
 
   /** The same, for a declaration that is wrapped in parentheses. */
   private static final String BODY_ENDING_INTO_AN_EXPRESSION = "}), (globalThis.declaredMarker = 1, function() {";
+
+  private static final String COMBINING_ACUTE   = Character.toString(0x0301);
+  private static final String ZERO_WIDTH_JOINER = Character.toString(0x200D);
+  private static final String UNDERTIE          = Character.toString(0x203F);
+  private static final String NO_BREAK_SPACE    = Character.toString(0x00A0);
+  private static final String LINE_SEPARATOR    = Character.toString(0x2028);
+  private static final String NUL               = Character.toString(0);
+  private static final String A_GRAVE           = Character.toString(0x00E0);
+  private static final String E_ACUTE           = Character.toString(0x00E9);
 
   @Test
   void bodyIsCompiledOnItsOwn() {
@@ -79,7 +91,8 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
   @Test
   void functionNameMustBeAnIdentifier() {
     for (final String name : new String[] { "z(){} globalThis.declaredMarker = 1; function y", "a b", "a-b", "a.b", "1a", "", " ",
-        "a;", "a\n", "if", "class", "null", "́a", "a b", "a b", "a\u0000", "a'b", "a\"b", "a`b", "a/b", "a\\b" })
+        "a;", "a\n", "if", "class", "null", COMBINING_ACUTE + "a", "a" + NO_BREAK_SPACE + "b", "a" + LINE_SEPARATOR + "b",
+        "a" + NUL, "a'b", "a\"b", "a`b", "a/b", "a\\b" })
       assertThatThrownBy(() -> new JavascriptFunctionDefinition(name, "return 1;"))
           .as("function name '%s'", name)
           .isInstanceOf(IllegalArgumentException.class);
@@ -90,7 +103,7 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
   @Test
   void parameterNameMustBeAnIdentifier() {
     for (final String parameter : new String[] { "a){} globalThis.declaredMarker = 1; function y(b", "a b", "a,b", "a=1", "...a",
-        "{a}", "", "1a", "a/*", "this" })
+        "{a}", "", "1a", "a/*", "this", COMBINING_ACUTE + "a" })
       assertThatThrownBy(() -> new JavascriptFunctionDefinition("f", "return 1;", "ok", parameter))
           .as("parameter '%s'", parameter)
           .isInstanceOf(IllegalArgumentException.class);
@@ -104,16 +117,26 @@ class JavascriptFunctionDeclarationTest extends TestHelper {
     final JavascriptFunctionLibraryDefinition library = new JavascriptFunctionLibraryDefinition(database, "decl");
     library.registerFunction(new JavascriptFunctionDefinition("$dollar", "return $a + _b;", "$a", "_b"));
     library.registerFunction(new JavascriptFunctionDefinition("_under_score9", "return x9;", "x9"));
-    library.registerFunction(new JavascriptFunctionDefinition("città", "return perché;", "perché"));
+
+    final String accented = "citt" + A_GRAVE;
+    final String accentedParameter = "perch" + E_ACUTE;
+    library.registerFunction(new JavascriptFunctionDefinition(accented, "return " + accentedParameter + ";", accentedParameter));
+
     // A LETTER FOLLOWED BY A COMBINING MARK, IN THE NAME AND IN A PARAMETER
-    library.registerFunction(new JavascriptFunctionDefinition("café", "return x́;", "x́"));
-    library.registerFunction(new JavascriptFunctionDefinition("joined‍", "return a_‿;", "a_‿"));
+    final String marked = "cafe" + COMBINING_ACUTE;
+    final String markedParameter = "x" + COMBINING_ACUTE;
+    library.registerFunction(new JavascriptFunctionDefinition(marked, "return " + markedParameter + ";", markedParameter));
+
+    // A JOINER AT THE END OF THE NAME, A CONNECTOR PUNCTUATION IN A PARAMETER
+    final String joined = "joined" + ZERO_WIDTH_JOINER;
+    final String tiedParameter = "a_" + UNDERTIE;
+    library.registerFunction(new JavascriptFunctionDefinition(joined, "return " + tiedParameter + ";", tiedParameter));
 
     assertThat(library.getFunction("$dollar").execute(1, 2)).isEqualTo(3);
     assertThat(library.getFunction("_under_score9").execute("v")).isEqualTo("v");
-    assertThat(library.getFunction("città").execute("ok")).isEqualTo("ok");
-    assertThat(library.getFunction("café").execute("ok")).isEqualTo("ok");
-    assertThat(library.getFunction("joined‍").execute("ok")).isEqualTo("ok");
+    assertThat(library.getFunction(accented).execute("ok")).isEqualTo("ok");
+    assertThat(library.getFunction(marked).execute("ok")).isEqualTo("ok");
+    assertThat(library.getFunction(joined).execute("ok")).isEqualTo("ok");
   }
 
   @Test
