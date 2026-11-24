@@ -80,6 +80,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ErrorConcealment;
 import com.arcadedb.server.ServerControlPlane;
+import com.arcadedb.server.StandaloneTransactionControl;
 import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -740,13 +741,15 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Rolls back the explicit transaction, if any, and forgets it. Never throws: it runs on the teardown paths,
+   * Rolls back the explicit transaction, if any, and forgets it. Whatever else this connection's thread still holds open on the
+   * database goes with it, nested levels included, whether or not the connection tracks it: nothing the connection began outlives
+   * the state (a RESET, a LOGOFF) or the identity (a new LOGON) it began under. Never throws: it runs on the teardown paths,
    * where a rollback failure must not stop the rest of the teardown.
    */
   private void rollbackExplicitTransaction() {
-    if (explicitTransaction && database != null) {
+    if (database != null) {
       try {
-        database.rollback();
+        database.rollbackAllNested();
       } catch (final Exception e) {
         // WARNING, not FINE: teardown carries on either way, but a rollback that threw may have left the
         // transaction only half cleaned up, which is worth seeing in the log.
@@ -910,6 +913,16 @@ public class BoltNetworkExecutor extends Thread {
     // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
+
+    // The transaction of a connection is the one its BEGIN, COMMIT and ROLLBACK messages manage. The statement of the same name
+    // would begin or end one this connection does not track, so nothing that ends the connection's transaction state (RESET,
+    // LOGOFF, a new LOGON, the close) would end it. Refused before anything runs, in READY and inside a transaction alike
+    if (StandaloneTransactionControl.isTransactionControl(database, "opencypher", query)) {
+      sendFailure(BoltErrorCodes.SEMANTIC_ERROR, "A transaction control statement is not accepted as a query: use the BEGIN, COMMIT "
+          + "and ROLLBACK messages of the protocol (the transaction functions of the driver)");
+      state = State.FAILED;
+      return;
+    }
 
     // The time this statement may run (issue #11392): what is left of the explicit transaction's timeout, or the auto-commit
     // query's own tx_timeout. A transaction already past its timeout runs nothing more
@@ -1354,7 +1367,7 @@ public class BoltNetworkExecutor extends Thread {
     try {
       closeAllStreams("ROLLBACK");
       if (database != null) {
-        database.rollback();
+        database.rollbackAllNested();
       }
       explicitTransaction = false;
 
@@ -2081,6 +2094,9 @@ public class BoltNetworkExecutor extends Thread {
     // it back to READY serving the previous user. "Authentication did not succeed" always means no principal and the bounded
     // pre-authentication read timeout armed, as LOGOFF leaves it.
     final boolean wasAuthenticated = user != null;
+    if (wasAuthenticated)
+      // The identity is about to change: what the previous one left open on this connection is not for the next one to join
+      rollbackExplicitTransaction();
     user = null;
 
     ServerSecurityUser authenticated = null;

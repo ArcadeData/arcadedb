@@ -48,26 +48,32 @@ public final class StandaloneTransactionControl {
    * caller.
    */
   public static void refuse(final Database database, final String language, final String command) {
-    if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
-        || !startsWithTransactionControl(command))
-      return;
-
-    final boolean transactionControl;
-    try {
-      transactionControl = database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
-    } catch (final Exception e) {
-      // Not a single statement the parser accepts (a script sent as "sql", a typo): the execution reports it, or runs it, as before
-      LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
-          "Could not analyze the command to look for a transaction control: %s", e, e.getMessage());
-      return;
-    }
-
-    if (transactionControl)
+    if (isTransactionControl(database, language, command))
       throw new CommandSemanticException("'" + command.trim()
           + "' cannot run as a command of its own outside a transaction: each such request runs in its own transaction, which it "
           + "would begin, commit or roll back alone. Use the transaction API of the client (RemoteDatabase.begin() or "
           + "RemoteGrpcDatabase.begin(), then commit() or rollback(), or transaction()), the HTTP /begin, /commit and /rollback "
           + "endpoints with the arcadedb-session-id header, or, in SQL, send the whole block as one 'sqlscript' command");
+  }
+
+  /**
+   * Whether {@code command}, in {@code language} (SQL or openCypher), is a transaction control statement: the test {@link #refuse}
+   * applies, for a protocol that words its own refusal. A text that does not start with one of the four words costs no parse, and a
+   * text the parser does not accept is not one (the execution reports it, or runs it, as before).
+   */
+  public static boolean isTransactionControl(final Database database, final String language, final String command) {
+    if (database == null || command == null || language == null || !LANGUAGES.contains(language.toLowerCase(Locale.ENGLISH))
+        || !startsWithTransactionControl(command))
+      return false;
+
+    try {
+      return database.getQueryEngine(language).analyze(command.trim()).isTransactionControl();
+    } catch (final Exception e) {
+      // Not a single statement the parser accepts (a script sent as "sql", a typo): the execution reports it, or runs it, as before
+      LogManager.instance().log(StandaloneTransactionControl.class, Level.FINE,
+          "Could not analyze the command to look for a transaction control: %s", e, e.getMessage());
+      return false;
+    }
   }
 
   /**
