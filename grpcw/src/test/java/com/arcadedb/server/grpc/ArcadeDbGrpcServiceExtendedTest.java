@@ -141,16 +141,26 @@ public class ArcadeDbGrpcServiceExtendedTest extends BaseGrpcServerTest {
 
   // ========== ExecuteQuery Edge Cases ==========
 
+  /**
+   * Issue #13380: a text that holds no statement is an empty statement, which the SQL engine answers with an empty result as
+   * PostgreSQL does. It used to be a syntax error, and this test asserted the error; the service has no blank-query check of its own
+   * (it hands the text to the engine), so the answer is one result with no rows.
+   */
   @Test
-  void executeQueryWithEmptyStringReturnsError() {
-    final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
-        .setDatabase(getDatabaseName())
-        .setCredentials(credentials())
-        .setQuery("")
-        .build();
+  void executeQueryWithEmptyStringReturnsNoRows() {
+    for (final String text : new String[] { "", "   ", ";", "-- ping", "/* keepalive */;" }) {
+      final ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setQuery(text)
+          .build();
 
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class);
+      final ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
+
+      assertThat(response.getResultsCount()).as("'%s'", text).isEqualTo(1);
+      assertThat(response.getResults(0).getRecordsCount()).as("'%s'", text).isZero();
+      assertThat(response.getResults(0).getTotalRecordsInBatch()).as("'%s'", text).isZero();
+    }
   }
 
   @Test
