@@ -133,7 +133,7 @@ public class LineProtocolParser {
     // ordinary characters of a tag value or a quoted string and must not cut the line in two (issue #12672)
     final String[] lines = LINE_END.split(text);
     for (int i = 0; i < lines.length; i++) {
-      final String line = lines[i].trim();
+      final String line = stripPadding(lines[i]);
       if (line.isEmpty() || line.startsWith("#"))
         continue;
 
@@ -149,6 +149,25 @@ public class LineProtocolParser {
       }
     }
     return samples;
+  }
+
+  /**
+   * Removes the spaces and tabs around a line. {@code String.trim()} is not used on purpose: it removes every character up to
+   * U+0020, so a measurement starting with U+000B, U+000C or any other control character lost it and the sample was stored
+   * under the name of another series (issue #12672).
+   */
+  private static String stripPadding(final String line) {
+    int start = 0;
+    int end = line.length();
+    while (start < end && isPadding(line.charAt(start)))
+      start++;
+    while (end > start && isPadding(line.charAt(end - 1)))
+      end--;
+    return start == 0 && end == line.length() ? line : line.substring(start, end);
+  }
+
+  private static boolean isPadding(final char c) {
+    return c == ' ' || c == '\t';
   }
 
   /**
