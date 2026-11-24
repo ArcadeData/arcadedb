@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.executor.SelfLoops;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OperationHeapLimit;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -69,7 +70,8 @@ import java.util.function.Predicate;
  * at the vertex bound to the left boundary variable. Repetition {@code i+1} starts where repetition
  * {@code i} ended, the inner {@code WHERE} is evaluated once per repetition against that repetition's
  * own bindings, and a row is emitted for every reachable end vertex whose repetition count lies inside
- * the quantifier's bounds.
+ * the quantifier's bounds. The search is resumable, so the rows of one input row are built as they are pulled
+ * and not all before the first of them is returned.
  *
  * <p>Variables written inside the group are <b>group variables</b>: each binds outside the group to a
  * list with one element per repetition ({@code LIST<NODE>} for a node variable,
@@ -82,6 +84,12 @@ import java.util.function.Predicate;
  * is also what terminates an open-ended quantifier on a cyclic graph.
  */
 public class QuantifiedPathStep extends AbstractExecutionStep {
+  /** The most rows one pull builds, whatever batch the consumer asked for: the rows a search yields are built as they are pulled. */
+  private static final int MAX_BATCH_ROWS = 1024;
+  /** What one stacked level of a search holds, estimated: its repetition and its cursor, whose arrays grow with the hops of the group. */
+  private static final int LEVEL_BYTES          = 256;
+  private static final int LEVEL_BYTES_PER_HOP  = 64;
+
   private final String                sourceVariable;
   private final String                targetVariable;
   private final String                pathVariable;
@@ -151,6 +159,8 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private ResultSet     prevResults = null;
+      // The search of the input row being expanded: it is resumed by the next pull when the batch filled up before it ended
+      private RowSearch     search      = null;
       private List<Result>  buffer      = new ArrayList<>();
       private int           bufferIndex = 0;
       private boolean       finished    = false;
@@ -176,19 +186,27 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
         buffer = new ArrayList<>();
         bufferIndex = 0;
 
-        while (buffer.size() < n) {
+        // A batch is a hint, not a promise: a pull of "everything" is answered in batches too, and hasNext() asks for the next one
+        final int batch = Math.min(n, MAX_BATCH_ROWS);
+        while (buffer.size() < batch) {
           guard.check();
-          if (prevResults == null)
-            prevResults = prev.syncPull(context, n);
-          if (!prevResults.hasNext()) {
-            finished = true;
-            break;
+          if (search == null) {
+            if (prevResults == null)
+              prevResults = prev.syncPull(context, n);
+            if (!prevResults.hasNext()) {
+              finished = true;
+              break;
+            }
+
+            search = openSearch(prevResults.next(), guard);
+            if (search == null)
+              continue;
           }
 
-          final Result input = prevResults.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
-            expand(input, buffer, guard);
+            if (search.advance(buffer, batch))
+              search = null;
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;
@@ -200,23 +218,29 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
+        if (search != null) {
+          search.release();
+          search = null;
+        }
         QuantifiedPathStep.this.close();
       }
     };
   }
 
   /**
-   * Depth-first-searches every legal repetition count from the row's left boundary vertex and appends
-   * one output row per accepted end vertex.
+   * Prepares the depth-first search of every legal repetition count from the row's left boundary vertex, which answers one output
+   * row per accepted end vertex as it is advanced.
+   *
+   * @return the search, or null when the row binds no vertex to the left boundary
    */
-  private void expand(final Result input, final List<Result> out, final WorkGuard guard) {
+  private RowSearch openSearch(final Result input, final WorkGuard guard) {
     if (!(input.getProperty(sourceVariable) instanceof Vertex start))
-      return;
+      return null;
 
     final Object targetValue = input.getProperty(targetVariable);
     final Vertex boundTarget = targetValue instanceof Vertex vertex ? vertex : null;
 
-    new RowSearch(input, boundTarget, out, guard).run(start);
+    return new RowSearch(input, boundTarget, start, guard);
   }
 
   /**
@@ -224,27 +248,38 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
    * candidate - resolved inline property maps, inline relationship predicates, the resolved boundary
    * labels - is computed once here rather than per candidate relationship, which is where a group over a
    * dense vertex spends its time.
+   * <p>
+   * The search is resumable: {@link #advance} runs it until the caller's batch is full and keeps where it stopped, so the rows of
+   * one input row are built as they are pulled and not all before the first of them is returned.
    */
   private final class RowSearch {
-    private final Result                input;
-    private final Vertex                boundTarget;
-    private final List<Result>          out;
-    private final WorkGuard             guard;
+    private final Result                          input;
+    private final Vertex                          boundTarget;
+    private final Vertex                          start;
+    private final WorkGuard                       guard;
     // NOT A Set<RID>: PARALLEL LIGHTWEIGHT TWINS SHARE THEIR RID AND ARE STILL TWO RELATIONSHIPS (ISSUE #9983)
-    private final EdgeIdentityMultiset  usedEdges;
-    private final List<Repetition>      repetitions = new ArrayList<>();
-    private final Map<String, Object>[] relationshipProperties;
-    private final Predicate<Edge>[]     relationshipPredicates;
-    private final String[][]            relationshipTypes;
-    private final Map<String, Object>[] nodeProperties;
-    private final List<String>          targetLabels;
+    private final EdgeIdentityMultiset            usedEdges;
+    private final List<Repetition>                repetitions = new ArrayList<>();
+    // One iterator per visited level, see #advance
+    private final Deque<Iterator<Repetition>>     pending     = new ArrayDeque<>();
+    private final Map<String, Object>[]           relationshipProperties;
+    private final Predicate<Edge>[]               relationshipPredicates;
+    private final String[][]                      relationshipTypes;
+    private final Map<String, Object>[]           nodeProperties;
+    private final List<String>                    targetLabels;
+    // What the levels of the search hold: charged to the element cap and the query's heap budget while they are stacked
+    private final OperationHeapLimit              heapLimit;
+    private final int                             levelBytes;
+    private       boolean                         started     = false;
 
     @SuppressWarnings("unchecked")
-    private RowSearch(final Result input, final Vertex boundTarget, final List<Result> out, final WorkGuard guard) {
+    private RowSearch(final Result input, final Vertex boundTarget, final Vertex start, final WorkGuard guard) {
       this.input = input;
       this.boundTarget = boundTarget;
-      this.out = out;
+      this.start = start;
       this.guard = guard;
+      this.heapLimit = OperationHeapLimit.of(context, "repetitions", "quantified path pattern");
+      this.levelBytes = LEVEL_BYTES + LEVEL_BYTES_PER_HOP * innerRelationships.size();
       // Seeding the used-relationship set with the ones the row already binds makes isomorphism a single
       // check inside the search instead of a whole-match rejection at the end, so a conflicting branch is
       // pruned as soon as it appears.
@@ -281,18 +316,29 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
      * The number of repetitions is bounded only by the quantifier and by relationship isomorphism, so on
      * a long chain it reaches the thousands - and a Java frame per repetition overflowed the stack at
      * around five thousand, which a graph of that size reaches trivially. Only this level is iterative:
-     * {@link #matchRepetition} still recurses, but its depth is the number of hops the user wrote inside
-     * the group, which is a constant of the query.
+     * {@link RepetitionCursor} walks the hops the user wrote inside the group the same way, so a level
+     * costs a few arrays however many relationships the vertex has.
+     * <p>
+     * Resumable: everything the search holds - {@code pending}, {@code repetitions}, {@code usedEdges} - is a field, so the search
+     * stops as soon as {@code out} holds {@code limit} rows and the next call goes on from there. The rows one input row yields
+     * are therefore built as they are pulled, in the order a run to the end gives them.
      * <p>
      * Invariant: {@code pending} always holds exactly one iterator per visited level, so its size is
      * {@code repetitions.size() + 1}. Popping a level therefore undoes exactly the repetition that
      * entered it, releasing that repetition's relationships back to the isomorphism set.
+     *
+     * @param out   receives the rows
+     * @param limit the size of {@code out} at which the search stops
+     *
+     * @return true when the search is over, false when it stopped because {@code out} is full
      */
-    private void run(final Vertex start) {
-      final Deque<Iterator<Repetition>> pending = new ArrayDeque<>();
-      visit(start, pending);
+    private boolean advance(final List<Result> out, final int limit) {
+      if (!started) {
+        started = true;
+        visit(start, out);
+      }
 
-      while (!pending.isEmpty()) {
+      while (!pending.isEmpty() && out.size() < limit) {
         guard.check();
         final Iterator<Repetition> candidates = pending.peek();
         if (candidates.hasNext()) {
@@ -300,9 +346,10 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
           for (final Edge edge : next.edges())
             usedEdges.add(edge.getIdentity());
           repetitions.add(next);
-          visit(next.nodes()[next.nodes().length - 1], pending);
+          visit(next.nodes()[next.nodes().length - 1], out);
         } else {
           pending.pop();
+          heapLimit.release(levelBytes);
           if (!repetitions.isEmpty()) {
             final Repetition undone = repetitions.remove(repetitions.size() - 1);
             for (final Edge edge : undone.edges())
@@ -310,16 +357,31 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
           }
         }
       }
+      if (pending.isEmpty()) {
+        release();
+        return true;
+      }
+      return false;
     }
 
     /** Emits {@code current} when the repetition count is in range, then stacks the ways to go deeper. */
-    private void visit(final Vertex current, final Deque<Iterator<Repetition>> pending) {
+    private void visit(final Vertex current, final List<Result> out) {
       final int done = repetitions.size();
       if (done >= group.getMinRepetitions() && acceptsEndpoint(current) && (!innerWhereReadsTarget || innerWhereHolds(current)))
         out.add(buildRow(input, current, repetitions));
 
-      pending.push(done < group.getMaxRepetitions() ?
-          repetitionsFrom(current).iterator() : Collections.emptyIterator());
+      pending.push(done < group.getMaxRepetitions() ? new RepetitionCursor(current) : Collections.emptyIterator());
+      // A level is a few arrays however many relationships its vertex has, but a chain of them is as long as the trail
+      if (heapLimit.isExceededBy(pending.size())) {
+        release();
+        heapLimit.check(pending.size());
+      }
+      heapLimit.charge(levelBytes);
+    }
+
+    /** Gives back what the stacked levels hold: when the search ends, or is dropped before it does. */
+    private void release() {
+      heapLimit.release();
     }
 
     /**
@@ -337,68 +399,117 @@ public class QuantifiedPathStep extends AbstractExecutionStep {
       return true;
     }
 
-    /** Every way the inner pattern matches once starting at {@code current}, in written hop order. */
-    private List<Repetition> repetitionsFrom(final Vertex current) {
-      final Vertex[] nodes = new Vertex[innerNodes.size()];
-      final Edge[] edges = new Edge[innerRelationships.size()];
-      nodes[0] = current;
-
-      // The inner start node's own constraints hold for every repetition, not only the first: the outer
-      // boundary node can only carry them for the vertex it binds.
-      if (!matchesInnerNode(nodes, edges, 0))
-        return Collections.emptyList();
-
-      final List<Repetition> found = new ArrayList<>();
-      matchRepetition(nodes, edges, 0, found);
-      return found;
-    }
-
     /**
-     * Matches one repetition of the inner pattern hop by hop, collecting every complete assignment.
-     * Relationships consumed by the branch are held in {@code usedEdges} for the duration of the
-     * recursion below them and released on backtracking; the ones of an accepted repetition are re-taken
-     * by {@link #run} when it descends into that repetition.
+     * Every way the inner pattern matches once starting at one vertex, in written hop order, found one at a time as they are asked
+     * for: a vertex with many relationships, or an inner pattern of several hops, is not matched in full before the first
+     * repetition is taken.
+     * <p>
+     * The hops are walked depth first with one open iterator per hop, so the state is a few arrays and not a call stack, and
+     * stopping between two repetitions costs nothing. Relationships taken by the branch in progress are held in
+     * {@code usedEdges} until the branch is left; the ones of a repetition that was handed out are re-taken by {@link #advance}
+     * when it descends into that repetition (the set counts, so holding one twice is fine).
      */
-    private void matchRepetition(final Vertex[] nodes, final Edge[] edges, final int hop,
-        final List<Repetition> found) {
-      if (hop == innerRelationships.size()) {
-        if (group.getInnerWhere() == null || innerWhereReadsTarget
-            || group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
-          found.add(new Repetition(nodes.clone(), edges.clone()));
-        return;
+    private final class RepetitionCursor implements Iterator<Repetition> {
+      private final Vertex[]         nodes;
+      private final Edge[]           edges;
+      private final RID[]            held;       // the identity each hop added to usedEdges, to give back the very same one
+      private final Iterator<Edge>[] candidates; // the relationships of each hop not tried yet, while the hop is open
+      private       int              hop;        // the hop being extended, -1 when nothing is left to try
+      private       Repetition       ready;      // found by hasNext() and not handed out yet
+
+      @SuppressWarnings("unchecked")
+      private RepetitionCursor(final Vertex current) {
+        nodes = new Vertex[innerNodes.size()];
+        edges = new Edge[innerRelationships.size()];
+        held = new RID[edges.length];
+        candidates = new Iterator[edges.length];
+        nodes[0] = current;
+
+        // The inner start node's own constraints hold for every repetition, not only the first: the outer
+        // boundary node can only carry them for the vertex it binds.
+        if (matchesInnerNode(nodes, edges, 0))
+          open(0);
+        else
+          hop = -1;
       }
 
-      final Direction direction = innerRelationships.get(hop).getDirection();
-      final Vertex from = nodes[hop];
-      final String[] types = relationshipTypes[hop];
+      @Override
+      public boolean hasNext() {
+        if (ready == null && hop >= 0)
+          ready = findNext();
+        return ready != null;
+      }
 
-      // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
-      final Iterator<Edge> lookup = IncomingEdgeLookup.getEdges(context, from, direction.toArcadeDirection(), types);
-      // An undirected hop reaches a self-loop from both lists of its vertex: it is one relationship, and the plain and the
-      // variable-length patterns match it once (issue #10559)
-      final Iterator<Edge> candidates = direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(lookup) : lookup;
+      @Override
+      public Repetition next() {
+        if (!hasNext())
+          throw new NoSuchElementException();
+        final Repetition found = ready;
+        ready = null;
+        return found;
+      }
 
-      while (candidates.hasNext()) {
-        guard.check();
-        final Edge edge = candidates.next();
-        final RID edgeId = edge.getIdentity();
-        if (usedEdges.contains(edgeId))
-          continue;
-        if (relationshipProperties[hop] != null && !matchesResolved(edge, relationshipProperties[hop]))
-          continue;
-        if (relationshipPredicates[hop] != null && !relationshipPredicates[hop].test(edge))
-          continue;
+      /** Starts walking the relationships of {@code hopIndex} from the vertex the hops before it reached. */
+      private void open(final int hopIndex) {
+        final Direction direction = innerRelationships.get(hopIndex).getDirection();
+        // The incoming side of a unidirectional edge type comes from the query's lookup (issue #8625)
+        final Iterator<Edge> lookup = IncomingEdgeLookup.getEdges(context, nodes[hopIndex], direction.toArcadeDirection(),
+            relationshipTypes[hopIndex]);
+        // An undirected hop reaches a self-loop from both lists of its vertex: it is one relationship, and the plain and the
+        // variable-length patterns match it once (issue #10559)
+        candidates[hopIndex] = direction == Direction.BOTH ? SelfLoops.deduplicatingEdges(lookup) : lookup;
+        hop = hopIndex;
+      }
 
-        // Written into the arrays before the check so the node's own inline WHERE is evaluated in the
-        // scope the repetition has built so far - the relationship that reached it included.
-        edges[hop] = edge;
-        nodes[hop + 1] = otherEnd(edge, from, direction);
-        if (!matchesInnerNode(nodes, edges, hop + 1))
-          continue;
+      /** Goes on from where the last repetition was found, to the next complete assignment or to the end of the search. */
+      private Repetition findNext() {
+        final int lastHop = edges.length - 1;
+        while (hop >= 0) {
+          final Direction direction = innerRelationships.get(hop).getDirection();
+          final Iterator<Edge> hopCandidates = candidates[hop];
+          boolean deeper = false;
 
-        usedEdges.add(edgeId);
-        matchRepetition(nodes, edges, hop + 1, found);
-        usedEdges.remove(edgeId);
+          while (hopCandidates.hasNext()) {
+            guard.check();
+            final Edge edge = hopCandidates.next();
+            final RID edgeId = edge.getIdentity();
+            if (usedEdges.contains(edgeId))
+              continue;
+            if (relationshipProperties[hop] != null && !matchesResolved(edge, relationshipProperties[hop]))
+              continue;
+            if (relationshipPredicates[hop] != null && !relationshipPredicates[hop].test(edge))
+              continue;
+
+            // Written into the arrays before the check so the node's own inline WHERE is evaluated in the
+            // scope the repetition has built so far - the relationship that reached it included.
+            edges[hop] = edge;
+            nodes[hop + 1] = otherEnd(edge, nodes[hop], direction);
+            if (!matchesInnerNode(nodes, edges, hop + 1))
+              continue;
+
+            if (hop == lastHop) {
+              if (group.getInnerWhere() == null || innerWhereReadsTarget
+                  || group.getInnerWhere().evaluate(repetitionScope(input, nodes, edges, nodes.length - 1), context))
+                return new Repetition(nodes.clone(), edges.clone());
+              continue;
+            }
+
+            usedEdges.add(edgeId);
+            held[hop] = edgeId;
+            open(hop + 1);
+            deeper = true;
+            break;
+          }
+
+          if (!deeper) {
+            // Every relationship of this hop was tried: back to the hop before it, giving back the one it was extended with
+            candidates[hop] = null;
+            hop--;
+            if (hop >= 0)
+              usedEdges.remove(held[hop]);
+          }
+        }
+        return null;
       }
     }
 
