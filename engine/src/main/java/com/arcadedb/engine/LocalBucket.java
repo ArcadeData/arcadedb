@@ -1279,6 +1279,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         final TransactionContext transaction = database.getTransaction();
         final BasePage page = transaction.getPage(new PageId(database, file.getFileId(), pageId), pageSize);
         final boolean ownImage = transaction.trackScanOfPage(page);
+        // #12575: THE TRANSACTION THAT READ THE PAGE, HANDED TO EVERY RECORD OF IT AS ITS READ MARKER. A CALLBACK THAT COMMITS
+        // MID-PAGE LEAVES THE REST OF THE PAGE MARKED WITH THE TRANSACTION THAT READ IT, WHICH IS WHAT THE MARKER SAYS
+        final long readInTransaction = transaction.getBeginSequence();
         final short recordCountInPage = page.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
 
         if (recordCountInPage > 0) {
@@ -1301,7 +1304,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize);
 
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
 
               } else if (recordSize == RECORD_PLACEHOLDER_POINTER) {
@@ -1309,14 +1312,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong(recordPositionInPage + recordHeaderSize));
                 final Binary view = getRecordInternal(placeHolderPointer, true, false);
-                if (view != null && !callback.onRecord(rid, view, ownImage))
+                if (view != null && !callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               } else if (recordSize == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS. #6196: FIRST_CHUNK and not isChunkHead() - a scan hands out
                 // records, and the head chunk of a placeholder's CONTENT is not one. Its bytes reach the caller
                 // through the pointer branch above, under the RID the user knows, and exactly once.
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize, recordHeaderSize);
-                if (!callback.onRecord(rid, view, ownImage))
+                if (!callback.onRecord(rid, view, ownImage, readInTransaction))
                   return;
               }
 
