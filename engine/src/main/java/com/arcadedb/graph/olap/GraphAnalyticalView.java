@@ -47,6 +47,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
 
@@ -367,6 +368,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   private volatile JoinedCoverage joinedCoverage;
+  // The buckets whose records the view holds, for one snapshot, schema version and types-change serial: what a user has to be
+  // allowed to read for the view to answer on that user's behalf (see isReadableBy)
+  private record CoveredBuckets(Snapshot snapshot, long schemaVersion, long typesSerial, int[] bucketIds) {
+  }
+
+  private volatile CoveredBuckets coveredBuckets;
   // Edges written of a type the view does not materialize, since it started tracking changes: what tells a snapshot that
   // its scan's "no such edge" no longer holds (issue #9915). Only ever grows
   private final AtomicLong uncoveredEdgeWrites = new AtomicLong();
@@ -1306,6 +1313,53 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   }
 
   // --- GraphTraversalProvider SPI ---
+
+  /**
+   * Whether {@code user} may read the records of every bucket this view holds: the buckets of every vertex and edge type its filter
+   * covers, sub-types included, and the ones its snapshot was scanned from, which a type that left the filter may still own until
+   * the view has rebuilt. One read check per bucket, the one the record path makes when it opens the bucket.
+   */
+  @Override
+  public boolean isReadableBy(final SecurityDatabaseUser user) {
+    if (user == null)
+      return true;
+    final int[] bucketIds = coveredBucketIds();
+    for (int i = 0; i < bucketIds.length; i++)
+      if (!user.requestAccessOnFile(bucketIds[i], SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return false;
+    return true;
+  }
+
+  /** The file ids {@link #isReadableBy} checks, computed once per snapshot, schema version and types-change serial. */
+  private int[] coveredBucketIds() {
+    final Snapshot snap = snapshot;
+    final LocalSchema schema = database.getSchema().getEmbedded();
+    // Both read BEFORE the types are walked: a change made meanwhile leaves an entry for the older version
+    final long version = schema.getVersion();
+    final long serial = schema.getTypesChangeSerial();
+    final CoveredBuckets cached = coveredBuckets;
+    if (cached != null && cached.snapshot() == snap && cached.schemaVersion() == version && cached.typesSerial() == serial)
+      return cached.bucketIds();
+
+    final IntHashSet ids = new IntHashSet();
+    for (final DocumentType type : schema.getTypes())
+      if ((type instanceof VertexType && coversVertexTypeByFilter(type)) || (type instanceof EdgeType && coversEdgeTypeByFilter(type)))
+        for (final Bucket bucket : type.getBuckets(false))
+          ids.add(bucket.getFileId());
+    if (snap != null) {
+      final NodeIdMapping mapping = snap.nodeMapping;
+      if (mapping != null)
+        for (int i = 0; i < mapping.getNumBuckets(); i++)
+          ids.add(mapping.getBucketId(i));
+      if (snap.edgeTypeBuckets != null)
+        for (final int[] edgeBuckets : snap.edgeTypeBuckets.values())
+          for (final int bucketId : edgeBuckets)
+            ids.add(bucketId);
+    }
+    final int[] bucketIds = ids.toArray();
+    coveredBuckets = new CoveredBuckets(snap, version, serial, bucketIds);
+    return bucketIds;
+  }
 
   @Override
   public boolean coversVertexType(final String typeName) {
@@ -3100,6 +3154,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     @Override
     public String getName() {
       return view.getName();
+    }
+
+    @Override
+    public boolean isReadableBy(final SecurityDatabaseUser user) {
+      return view.isReadableBy(user);
     }
 
     @Override

@@ -25,6 +25,8 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -202,6 +204,10 @@ public class GraphTraversalProviderRegistry {
    * provider serves the committed graph only, so a query reading through it would not see its own transaction's
    * writes - a count push-down counted the committed edges and missed the one the transaction had just created
    * (found with issue #8335). Every caller already falls back to the records when no provider is found.
+   * <p>
+   * A provider is selected only for a user who may read every record it holds ({@link GraphTraversalProvider#isReadableBy}): it
+   * answers without loading a record, so without the per-bucket read check the record path makes. Any other user gets the record
+   * path, which applies that check. Applies to the three lookups of this class that select a view.
    *
    * @param database  the database
    * @param edgeTypes the edge types needed (null or empty = all types)
@@ -291,6 +297,9 @@ public class GraphTraversalProviderRegistry {
     long deadlineNanos = 0;
     boolean deadlineSet = false;
     boolean mayWait = awaitRestore;
+    // Resolved on the first provider that covers the request: most calls never get that far
+    SecurityDatabaseUser user = null;
+    boolean userResolved = false;
     final Iterator<GraphTraversalProvider> iterator = list.iterator();
     while (found == null && iterator.hasNext()) {
       final GraphTraversalProvider provider = iterator.next();
@@ -299,6 +308,14 @@ public class GraphTraversalProviderRegistry {
       // ever runs on a provider that could actually be selected, not on every registered one #6632's
       // "a view a session never actually needs shouldn't cost anything" goal for a multi-view database.
       if (!coversEdgeTypes(provider, edgeTypes) || !coversVertexTypes.test(provider))
+        continue;
+      // A provider answers without loading a record, so without the read check of each bucket the record path makes: it serves
+      // only a user who may read every record it holds, and any other user takes the record path, which checks
+      if (!userResolved) {
+        user = SecurityHelper.currentUser(database);
+        userResolved = true;
+      }
+      if (user != null && !provider.isReadableBy(user))
         continue;
       if (provider.isReady())
         found = provider;
@@ -379,8 +396,10 @@ public class GraphTraversalProviderRegistry {
       return false;
 
     List<GraphTraversalProvider> restoring = null;
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
     for (final GraphTraversalProvider provider : getProviders(database))
-      if (coversEdgeTypes(provider, edgeTypes) && provider.coversVertexType(null) && provider.isRestoring()) {
+      if (coversEdgeTypes(provider, edgeTypes) && provider.coversVertexType(null) && (user == null || provider.isReadableBy(user))
+          && provider.isRestoring()) {
         if (restoring == null)
           restoring = new ArrayList<>(2);
         restoring.add(provider);
@@ -484,6 +503,34 @@ public class GraphTraversalProviderRegistry {
    */
   public static boolean isWithheld(final Database database) {
     return hasAnyProviders && hasUncommittedChanges(database);
+  }
+
+  /**
+   * Whether the user bound to {@code database}'s context may read every record {@code provider} holds, the condition the lookups
+   * of this class select a provider on (see {@link GraphTraversalProvider#isReadableBy}). For a caller that walks
+   * {@link #getProviders} itself. No bound user (embedded use, an internal caller) may read everything.
+   */
+  public static boolean isReadableByCurrentUser(final Database database, final GraphTraversalProvider provider) {
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
+    return user == null || provider.isReadableBy(user);
+  }
+
+  /**
+   * True when some provider registered for {@code database} is withheld from the user bound to its context, because that user may
+   * not read every record it holds. A plan built for such a user leaves that provider out, and a plan built for another user may
+   * hold it: a caller that caches plans built around providers must neither reuse nor cache a plan for this user. False with no
+   * bound user, and with no provider registered (a single volatile read).
+   */
+  public static boolean isWithheldFromCurrentUser(final Database database) {
+    if (!hasAnyProviders)
+      return false;
+    final SecurityDatabaseUser user = SecurityHelper.currentUser(database);
+    if (user == null)
+      return false;
+    for (final GraphTraversalProvider provider : getProviders(database))
+      if (!provider.isReadableBy(user))
+        return true;
+    return false;
   }
 
   private static boolean hasUncommittedChanges(final Database database) {

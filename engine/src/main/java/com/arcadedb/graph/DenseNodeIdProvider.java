@@ -20,6 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.lang.ref.SoftReference;
 import java.util.Arrays;
@@ -182,6 +183,11 @@ public class DenseNodeIdProvider implements GraphTraversalProvider {
   @Override
   public String getName() {
     return delegate.getName();
+  }
+
+  @Override
+  public boolean isReadableBy(final SecurityDatabaseUser user) {
+    return delegate.isReadableBy(user);
   }
 
   @Override

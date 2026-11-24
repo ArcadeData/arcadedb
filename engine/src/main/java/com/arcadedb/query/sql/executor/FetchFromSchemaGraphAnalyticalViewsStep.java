@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.olap.ContractionHierarchy;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
@@ -79,7 +80,15 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSc
         if (liveView != null)
           liveView.startPendingRestore();
         final GraphAnalyticalView.Status liveStatus = liveView != null ? liveView.getStatus() : null;
-        if (liveView != null && liveView.isBuilt()) {
+        // The figures of the view describe the records it holds: listed only for a user who may read all of them, the rule
+        // queries are answered from the view on
+        if (liveView != null && liveView.isBuilt() && !GraphTraversalProviderRegistry.isReadableByCurrentUser(database, liveView)) {
+          r.setProperty("status", liveStatus.name());
+          r.setProperty("nodeCount", 0);
+          r.setProperty("edgeCount", 0);
+          r.setProperty("memoryUsageBytes", 0L);
+          r.setProperty("buildDurationMs", 0L);
+        } else if (liveView != null && liveView.isBuilt()) {
           r.setProperty("status", liveView.getStatus().name());
           r.setProperty("nodeCount", liveView.getNodeCount());
           r.setProperty("edgeCount", liveView.getEdgeCount());
