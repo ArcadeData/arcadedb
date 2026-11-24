@@ -2595,9 +2595,6 @@ public class SelectExecutionPlanner {
 
     try {
       skipSize = info.skip == null ? 0 : info.skip.getValue(context);
-      if (skipSize < 0)
-        throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
-
       limitSize = info.limit == null ? -1 : info.limit.getValue(context);
     } catch (final Exception e) {
       // Limit/skip value depends on runtime context (e.g., LET variables)
@@ -6375,7 +6372,8 @@ public class SelectExecutionPlanner {
       final boolean indexOrderApplied =
           orderAsc != null && info.orderBy != null && fullySorted(info, (AndBlock) desc.keyCondition, desc.getIndex());
       result.add(new GetValueFromIndexEntryStep(context, filterClusterIds,
-          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context)));
+          indexOrderApplied ? null : scanFallbackFor(desc, clazz, filterClusters, info, context),
+          readsEveryEntry(info, indexOrderApplied) ? planIndexIntersection(desc, clazz, info, context) : null));
       if (desc.requiresDistinctStep()) {
         result.add(new DistinctExecutionStep(context));
       }
@@ -6417,6 +6415,81 @@ public class SelectExecutionPlanner {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether the statement reads every entry of its index search, whatever rows it returns: it has no LIMIT, or its rows are consumed
+   * whole before the LIMIT applies, by an aggregation or by a sort the order of the index does not spare. Only then is an
+   * {@link IndexIntersection} planned: reading other indexes whole for a search that a LIMIT stops after its first rows could cost
+   * more than the records it spares.
+   */
+  private static boolean readsEveryEntry(final QueryPlanningInfo info, final boolean indexOrderApplied) {
+    if (info.limit == null || info.aggregateProjection != null || info.groupBy != null)
+      return true;
+    return info.orderBy != null && !indexOrderApplied && !info.orderApplied;
+  }
+
+  /**
+   * The other indexes of the type that answer conditions the index search {@code desc} leaves to the filter, for the search to load
+   * only the records they all name (issue #13289): {@code WHERE updated_at = ? AND id > ?} with an index on each property loaded
+   * every record of one index to evaluate the other condition on it. Each index is picked as the search itself is, among the indexes
+   * not taken yet and on the conditions not answered yet, until no condition is left that an index answers. The conditions stay in
+   * the filter: the intersection only spares the load of records that cannot pass it, and decides at execution time whether each
+   * index is worth reading (see {@link IndexIntersection}).
+   *
+   * @return null when no other index answers a condition left, the search is a lookup of whole keys of a unique index (one record
+   * per key), or a full-text search
+   */
+  private IndexIntersection planIndexIntersection(final IndexSearchDescriptor desc, final DocumentType type, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (isUniqueKeyLookup(desc) || isFullText(desc.getIndex()))
+      return null;
+    // commonFactor() hands the residual on as an OR of the residuals of the branches it merged: with several, a record passes when
+    // any of them holds, which the indexes of one cannot decide
+    BooleanExpression residual = desc.getRemainingCondition();
+    if (residual instanceof OrBlock or && or.getSubBlocks().size() == 1)
+      residual = or.getSubBlocks().getFirst();
+    if (!(residual instanceof AndBlock remaining))
+      return null;
+
+    final List<TypeIndex> indexes = plannableIndexes(type.getAllIndexes(true));
+    final Set<String> taken = new HashSet<>();
+    taken.add(desc.getIndex().getName());
+    final List<FetchFromIndexStep> searches = new ArrayList<>(2);
+    AndBlock left = remaining;
+    while (!left.getSubBlocks().isEmpty()) {
+      final List<IndexSearchDescriptor> candidates = new ArrayList<>();
+      for (final TypeIndex index : indexes) {
+        if (taken.contains(index.getName()))
+          continue;
+        final IndexSearchDescriptor candidate = buildIndexSearchDescriptor(context, index, left, type);
+        if (candidate == null || candidate.keyCondition == null || candidate.getSubBlocks().isEmpty())
+          continue;
+        // a key read before the records are loaded cannot use what the per-record LET computes for each of them
+        final List<BooleanExpression> key = new ArrayList<>(candidate.getSubBlocks());
+        if (candidate.additionalRangeCondition != null)
+          key.add(candidate.additionalRangeCondition);
+        if (!refersToLet(key, info.perRecordLetClause))
+          candidates.add(candidate);
+      }
+      if (candidates.isEmpty())
+        break;
+
+      final IndexSearchDescriptor best;
+      try {
+        best = pickBestDescriptor(context, candidates);
+      } catch (final IndexException e) {
+        // dropped or rebuilt while it was ranked: the intersection keeps the indexes taken so far
+        LogManager.instance().log(this, Level.FINE, "Index intersection stopped while planning: %s", e.getMessage());
+        break;
+      }
+      taken.add(best.getIndex().getName());
+      searches.add(new FetchFromIndexStep(best.index, best.keyCondition, best.additionalRangeCondition, context));
+      if (!(best.getRemainingCondition() instanceof AndBlock next))
+        break;
+      left = next;
+    }
+    return searches.isEmpty() ? null : new IndexIntersection(searches);
   }
 
   /**

@@ -449,8 +449,9 @@ final class MongoFilter {
   }
 
   /**
-   * A regular expression operand (alone or in a list) is a pattern only the matcher evaluates, and an embedded document or a list
-   * is compared by SQL in ways (key order) not proven to match MongoDB's: SQL compares them as a value, so none of them narrows.
+   * A regular expression operand (alone or in a list) is evaluated by the matcher only, as a pattern or, under {@code $eq}, as a value
+   * compared with a stored regular expression; an embedded document or a list is compared by SQL in ways (key order) not proven to
+   * match MongoDB's: SQL compares them as a value, so none of them narrows.
    */
   private static boolean isNonScalarOperand(final Object operand) {
     if (operand instanceof BsonRegularExpression || operand instanceof Document)

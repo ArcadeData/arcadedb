@@ -27,6 +27,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.lang.reflect.Array;
 import java.util.ArrayList;
@@ -913,14 +914,16 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * Same as {@link #materialiseListElements} for the values of a {@code MAP OF <document type>}.
    */
   @SuppressWarnings("unchecked")
-  private Map<String, Object> materialiseMapValues(final Map<String, Object> map, final String propertyName) {
+  private <K> Map<K, Object> materialiseMapValues(final Map<K, Object> map, final String propertyName) {
     final String ofType = map.isEmpty() ? null : documentTypeOfCollectionElements(propertyName);
     if (ofType == null)
       return map;
 
-    Map<String, Object> result = map;
+    // GENERIC IN THE KEY ON PURPOSE: THE KEYS ARE THE CALLER'S AND ARE NOT ALWAYS STRINGS (A Character IS STORED AS ITS TEXT, #12021),
+    // SO THEY MUST NEVER BE READ AS ONE HERE (#12590)
+    Map<K, Object> result = map;
     boolean copied = false;
-    for (final Map.Entry<String, Object> entry : map.entrySet())
+    for (final Map.Entry<K, Object> entry : map.entrySet())
       if (entry.getValue() instanceof Map<?, ?> element) {
         if (!copied) {
           result = new LinkedHashMap<>(map);
@@ -965,7 +968,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       // subclasses override convertValueToSchemaType() to a pass-through
       return map;
 
-    final Object explicitType = map.get("@type");
+    // A MAP THAT CANNOT BE ASKED FOR A STRING KEY (A SORTED MAP OF Character OR Integer KEYS) CANNOT CARRY THE "@type" ENTRY: IT IS A PLAIN
+    // MAP, AS THE SAME ENTRIES IN A LinkedHashMap ARE (#12590)
+    final Object explicitType = CollectionUtils.getOrNullIfKeyRefused(map, TYPE_PROPERTY);
 
     final Property property = type != null ? type.getPolymorphicPropertyIfExists(propertyName) : null;
     final boolean embeddedProperty = property != null && property.getType() == Type.EMBEDDED;
@@ -991,7 +996,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   private MutableEmbeddedDocument mapToEmbedded(final Map<String, Object> map, final String propertyName, final String ofType) {
-    final Object explicitType = map.get("@type");
+    final Object explicitType = CollectionUtils.getOrNullIfKeyRefused(map, TYPE_PROPERTY);
     final String embType = explicitType != null ? explicitType.toString() : ofType;
     requireEmbeddedTypeCompatible(embType, ofType, propertyName);
     final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);

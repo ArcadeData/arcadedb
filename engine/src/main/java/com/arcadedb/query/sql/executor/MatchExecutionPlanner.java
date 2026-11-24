@@ -152,6 +152,9 @@ public class MatchExecutionPlanner {
     // AN OPTIONAL NODE WITH NOTHING TO MATCH IS BOUND TO null, IT DOES NOT EMPTY THE RESULT (ISSUE #12749)
     if (hasMandatoryEmptyAlias(estimatedRootEntries)) {
       result.chain(new EmptyStep(context));
+      // the SKIP step is what refuses a negative SKIP, also when no row can come (issue #12683), as on a SELECT folded empty
+      if (skip != null)
+        result.chain(new SkipExecutionStep(skip, context));
       return result;
     }
 
@@ -206,9 +209,9 @@ public class MatchExecutionPlanner {
         result.chain(new UnwindStep(unwind, context));
       }
 
-      if (this.skip != null && skip.getValue(context) >= 0) {
+      // a negative SKIP is refused by the step, as on the projection branch below (issue #12683)
+      if (this.skip != null)
         result.chain(new SkipExecutionStep(skip, context));
-      }
       if (this.limit != null && limit.getValue(context) >= 0) {
         result.chain(new LimitExecutionStep(limit, context));
       }

@@ -192,12 +192,15 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // TimeSeriesShard.appendSamples commits its own shard transaction, so a denial discovered mid-loop would
     // return 403 with the earlier series already durable. Checked by NAME so a denied metric is refused without
     // its type being auto-created first; an unknown name is answered from the group definitions as the type will
-    // be once created, so auto-create works for a principal granted createRecord on that name or on "*".
+    // be once created, so auto-create works for a principal granted createRecord on that name or on "*". The name
+    // checked is the one an existing type is registered under: the metric can be named by an alias of it.
     for (final TimeSeries ts : writeRequest.getTimeSeries()) {
       final String metricName = ts.getMetricName();
       if (metricName == null || metricName.isEmpty())
         continue;
-      database.checkPermissionsOnType(sanitizeTypeName(metricName), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+      final String typeName = sanitizeTypeName(metricName);
+      final DocumentType existing = database.getSchema().getTypeOrNull(typeName);
+      database.checkPermissionsOnType(existing != null ? existing.getName() : typeName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
     }
 
     // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own

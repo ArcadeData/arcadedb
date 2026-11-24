@@ -34,4 +34,14 @@ public interface RawRecordCallback {
   default boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
     return onRecord(rid, view);
   }
+
+  /**
+   * {@link #onRecord(RID, Binary, boolean)} for a scan that also knows the transaction the view was read in (#12575): the begin
+   * sequence of the transaction that read the page, {@code -1} outside a transaction. A record built from the view carries it as
+   * its read marker, as one built by {@code BucketIterator} or {@code lookupByRID} does, so a delete or a property write that
+   * finds a concurrent commit in between is told it is a retryable conflict. Taken once per page by the scan, not per record.
+   */
+  default boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
+    return onRecord(rid, view, fromOwnImage);
+  }
 }
