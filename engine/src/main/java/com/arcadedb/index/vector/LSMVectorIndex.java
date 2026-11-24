@@ -10148,35 +10148,67 @@ public class LSMVectorIndex implements Index, IndexInternal {
       lock.readLock().lock();
       try {
         return search.call();
-      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException e) {
-        // The guard stopped the search (issue #9896): the statement's own answer, not a failure of the index
+      } catch (final QueryTerminatedException | TimeoutException | CommandExecutionException | NeedRetryException e) {
+        // The guard stopped the search (issue #9896), or the engine reported a conflict its caller retries, such as a page of a file
+        // dropped under the read (issue #12139): the statement's own answer, not a failure of the index. Wrapped, it would reach the
+        // client as an IndexException, which no retry loop retries
         throw e;
       } catch (final Exception e) {
+        // Whatever a search reads from a file a schema change has just retired fails in a way that says nothing about the index:
+        // the caller retries, as for the check before it (issue #13296)
+        final int fileId = getFileId();
+        if (isFileRetired(fileId))
+          throw retiredBySchemaChange(fileId, e);
         LogManager.instance().log(this, Level.SEVERE, failure, e);
         throw new IndexException(failure, e);
       } finally {
         lock.readLock().unlock();
       }
     });
-    // Also afterwards: a file retired while the search ran leaves it with whatever its lazy reads found, which is nothing
+    // Also afterwards: a cold index whose file was retired while the search ran leaves it with whatever its lazy reads found, which is
+    // nothing
     failIfFileRetired();
     return answered;
   }
 
   /**
-   * Refuses a search of an index whose own data file has been retired by a schema change (issue #13296). A Raft follower applies a
-   * replicated {@code COMPACT INDEX} by deleting the superseded files and only then reloading the schema, which publishes the new
-   * index objects, so a search that resolved the previous generation in between reads a file that is gone. Its location load logs
-   * the failure and carries on with no entries, and the search answered normally without that sub-index's rows. An exhaustive search
-   * lacked whole buckets for the 1 to 2 seconds the apply takes. The caller retries, as for any other conflict with a schema change.
+   * Refuses a search of an index that has to read its own data file, which a schema change has retired (issue #13296). A Raft follower
+   * applies a replicated {@code COMPACT INDEX} by deleting the superseded files and only then reloading the schema, which publishes the
+   * new index objects, so a search that resolved the previous generation in between reads a file that is gone. Those index objects were
+   * made by the previous entry of the same statement, so they are cold: the location load of the first search logs the failure and
+   * carries on with no entries, and the search answered normally without that sub-index's rows. An exhaustive search lacked whole
+   * buckets for the 1 to 2 seconds the apply takes. The caller retries, as for any other conflict with a schema change.
    * <p>
-   * The leader's own compaction is not affected: it swaps {@code mutable}, and so {@link #getFileId()}, before it drops the old file.
+   * Only an index that has to read the file is refused: one whose locations are resident and complete answers from memory, and reads
+   * the vectors it scores from the records when a page is not there, so its answer is complete and refusing it would turn a correct
+   * answer into an error. An index whose location load failed stays refused: its answer lacks the entries it did not read.
+   * <p>
+   * The leader's own compaction is not affected: it swaps {@code mutable}, and so {@link #getFileId()}, before it drops the old file,
+   * which {@link #isFileRetired(int)} takes into account.
    */
   private void failIfFileRetired() {
+    if (locationsMaterialized && locationLoadIncomplete == null)
+      return;
     final int fileId = getFileId();
-    if (!getDatabase().getFileManager().existsFile(fileId))
-      throw new ConcurrentModificationException(
-          "Vector index '" + indexName + "' was retired by a schema change (its file " + fileId + " is gone): retry the search");
+    if (isFileRetired(fileId))
+      throw retiredBySchemaChange(fileId, null);
+  }
+
+  /**
+   * Whether the file {@code seenFileId}, which this index owned when the caller read {@link #getFileId()}, is gone and is still the
+   * one it owns. Two reads cannot be atomic, so the id is read again once the file is found missing: a compaction swaps {@code mutable}
+   * and only then drops the file it replaced (that is what a leader does to a healthy index), so an id that is no longer the index's
+   * is a swap and not a retirement. The drop the first read observes follows the swap, and the file manager's map orders the two, so
+   * the second read sees the new id.
+   */
+  boolean isFileRetired(final int seenFileId) {
+    return !getDatabase().getFileManager().existsFile(seenFileId) && seenFileId == getFileId();
+  }
+
+  private ConcurrentModificationException retiredBySchemaChange(final int fileId, final Throwable cause) {
+    final String message =
+        "Vector index '" + indexName + "' was retired by a schema change (its file " + fileId + " is gone): retry the search";
+    return cause == null ? new ConcurrentModificationException(message) : new ConcurrentModificationException(message, cause);
   }
 
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
