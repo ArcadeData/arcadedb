@@ -330,6 +330,49 @@ class CypherLabelledSourceReverseIssue13267Test {
   }
 
   @Test
+  void aRelationshipPredicateThatReadsTheTargetKeepsTheWrittenOrderWhateverItAnswers() {
+    // the written order evaluates a relationship predicate before the target is bound, so n.uuid reads null there and no row passes;
+    // a plan that starts from the target would bind it first and answer rows. Which of the two is right was not checked against Neo4j;
+    // the safe choice is the answer of main, which never reversed this hop: the written order, whatever it answers
+    final String query = "UNWIND ['ent3'] AS id MATCH (e:Episodic)-[r:MENTIONS WHERE n.uuid = 'ent3']->(n:Entity {uuid: id}) RETURN count(*) AS c";
+    assertStartsFrom(query, Map.of(), "(e:Episodic");
+    final String blocked = "UNWIND ['ent3'] AS id MATCH (e:Episodic)-[r:MENTIONS WHERE n.uuid = 'ent3']->(n:Entity {uuid: id}) WHERE e.uuid = e.uuid "
+        + "RETURN count(*) AS c";
+    assertThat(longs(query, Map.of())).isEqualTo(longs(blocked, Map.of()));
+  }
+
+  @Test
+  void aComprehensionAndAnExistsSubqueryThatReadTheFirstNodeKeepTheWrittenOrderAndItsRows() {
+    final List<Object> ids = Arrays.asList("ent3", "ent3", null, "ent4", "ent119");
+    final String list = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id, episode: head([x IN [e.uuid] | x])}) "
+        + "RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(list, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(list, Map.of("ids", ids))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1");
+    final String pattern = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id, "
+        + "episode: head([(e)-[:MENTIONS]->(m:Entity {uuid: 'ent3'}) | e.uuid])}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(pattern, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(pattern, Map.of("ids", ids))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1");
+    final String exists = "UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS WHERE EXISTS { MATCH (e)-[:MENTIONS]->(:Entity {uuid: 'ent4'}) }]->"
+        + "(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(exists, Map.of("ids", ids), "(e:Episodic");
+    assertThat(values(exists, Map.of("ids", ids))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent3|ep1", "ent3|ep1", "ent4|ep1");
+  }
+
+  @Test
+  void aCommaPatternAndAnUnwindAfterAWithKeepTheRows() {
+    // the second pattern ends on the vertex the first one found: 2 relationships from ep0 times the 10 Other vertices that mention ent0
+    final String comma = "UNWIND ['ent0'] AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}), (o:Other)-[:MENTIONS]->(n) RETURN count(*) AS c";
+    assertThat(longs(comma, Map.of())).containsExactly(20L);
+    final String commaBlocked = "UNWIND ['ent0'] AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}), (o:Other)-[:MENTIONS]->(n) "
+        + "WHERE e.uuid = e.uuid RETURN count(*) AS c";
+    assertThat(longs(commaBlocked, Map.of())).containsExactly(20L);
+
+    final String afterWith = "WITH 1 AS one UNWIND $ids AS id MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity {uuid: id}) RETURN id + '|' + e.uuid AS v";
+    assertStartsFrom(afterWith, Map.of("ids", List.of("ent3", "ent4")), "(n:Entity");
+    assertThat(values(afterWith, Map.of("ids", List.of("ent3", "ent4")))).containsExactlyInAnyOrder("ent3|ep1", "ent3|ep1", "ent4|ep1");
+  }
+
+  @Test
   void anOrOfTwoKeysIsAScanOfTheTypeNotTwoSeeks() {
     // the node step seeks the conjuncts of the WHERE clause, not a disjunction: it would scan the 976 Entity vertices
     final String query = "WITH 1 AS one MATCH (e:Episodic)-[r:MENTIONS]->(n:Entity) WHERE n.uuid = 'ent3' OR n.uuid = 'ent4' RETURN n.uuid + '|' + e.uuid AS v";

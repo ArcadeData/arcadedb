@@ -877,7 +877,7 @@ final class MatchStepBuilder {
     // (a map value or a relationship predicate that reads the written first node would be evaluated before it is bound)
     if (target.hasProperties() && !readsOnlyEarlierClauses(target.getProperties(), boundVariables))
       return false;
-    if (!relationshipReadsOnlyEarlierClauses(rel, boundVariables, targetVar))
+    if (!relationshipReadsOnlyEarlierClauses(rel, boundVariables))
       return false;
     if (!sourceNode.hasLabels())
       return isUniquelyKeyed(target) && readsOnlyEarlierClauses(target.getProperties(), boundVariables)
@@ -901,12 +901,12 @@ final class MatchStepBuilder {
   }
 
   /**
-   * Whether the relationship of a hop reads nothing but what an earlier clause bound, its own variable and the target: the inline
-   * property map and the inline {@code WHERE} of {@code -[r:T {k: e.x} WHERE e.y = 1]->} may not read the node written first, which
-   * a plan that starts from the target has not bound yet.
+   * Whether the relationship of a hop reads nothing but what an earlier clause bound and its own variable: the inline property map and
+   * the inline {@code WHERE} of {@code -[r:T {k: e.x} WHERE e.y = 1]->} may read neither the node written first, which a plan that
+   * starts from the target has not bound yet, nor the target, which the written order has not bound yet when it evaluates them (a
+   * reversed plan would bind it first and answer rows the written order does not).
    */
-  private boolean relationshipReadsOnlyEarlierClauses(final RelationshipPattern rel, final Set<String> boundVariables,
-      final String targetVar) {
+  private boolean relationshipReadsOnlyEarlierClauses(final RelationshipPattern rel, final Set<String> boundVariables) {
     if (rel.hasProperties() && rel.getProperties() != null && !readsOnlyEarlierClauses(rel.getProperties(), boundVariables))
       return false;
     if (!rel.hasWhereExpression())
@@ -915,7 +915,7 @@ final class MatchStepBuilder {
     if (!referenced.isComplete())
       return false;
     for (final String name : referenced.getNames())
-      if (!boundVariables.contains(name) && !name.equals(rel.getVariable()) && !name.equals(targetVar))
+      if (!boundVariables.contains(name) && !name.equals(rel.getVariable()))
         return false;
     return true;
   }
