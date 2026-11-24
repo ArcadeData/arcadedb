@@ -18,9 +18,13 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.TypeMismatchException;
+import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -176,13 +180,9 @@ public class ArithmeticExpression implements Expression {
 
     // String concatenation for + operator
     if (operator == Operator.ADD && (leftValue instanceof String || rightValue instanceof String)) {
-      // A map has no string form a query can rely on: Neo4j refuses to concatenate one, and ArcadeDB used to answer
-      // the Java Map.toString() form, which prints the internal keys of a point (srid included) in a shape no point
-      // constructor or toString() accepts (issue #12397).
-      final Object other = leftValue instanceof String ? rightValue : leftValue;
-      if (other instanceof Map<?, ?> map)
-        throw new TypeMismatchException(
-            "Type mismatch: expected Float, Integer, String or List<T> but was " + (CypherValues.isPointShaped(map) ? "Point" : "Map"));
+      final String refusedType = notConcatenableTypeName(leftValue instanceof String ? rightValue : leftValue);
+      if (refusedType != null)
+        throw new TypeMismatchException("Type mismatch: expected Float, Integer, String or List<T> but was " + refusedType);
       return leftValue.toString() + rightValue.toString();
     }
 
@@ -260,6 +260,30 @@ public class ArithmeticExpression implements Expression {
     } catch (final ArithmeticException e) {
       throw new ArithmeticErrorException("long overflow", e);
     }
+  }
+
+  /**
+   * The Neo4j name of the type of an operand that {@code +} must not concatenate with a STRING, or {@code null} when the
+   * operand concatenates as its string form. Neo4j concatenates a STRING only with a storable value (a number, a boolean, a
+   * string, a temporal value); a node, a relationship, a path, a map and a point are refused with a type error.
+   * <p>
+   * ArcadeDB used to answer the Java {@code toString()} of these: the {@code Map.toString()} form, which prints the internal
+   * keys of a point (srid included) in a shape no point constructor accepts (issue #12397), and the record form of a node,
+   * relationship or path ({@code #1:0[name=Alice]}), which leaks the internal RID and the storage spelling (issue #12622).
+   * A plain document is a map of properties to the language, so it is refused as a map.
+   */
+  private static String notConcatenableTypeName(final Object operand) {
+    if (operand instanceof Vertex)
+      return "Node";
+    if (operand instanceof Edge)
+      return "Relationship";
+    if (CypherFunctionHelper.isPathValue(operand))
+      return "Path";
+    if (operand instanceof Map<?, ?> map)
+      return CypherValues.isPointShaped(map) ? "Point" : "Map";
+    if (operand instanceof Document)
+      return "Map";
+    return null;
   }
 
   /**
