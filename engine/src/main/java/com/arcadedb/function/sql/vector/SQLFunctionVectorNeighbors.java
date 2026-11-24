@@ -487,6 +487,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * type sees (and can veto) every record the search hands out, and an index the calling transaction wrote to answers its own
    * rows from the transaction, not from the committed locations. The permission to read the bucket is asked by
    * {@link #neighbourRecord} for each row it makes, as the read did, since no read will ask it for a row that is never loaded.
+   * <p>
+   * The record is read as well for an index that a replicated entry is being applied to ({@link LSMVectorIndex#hasReplicatedApplyInFlight},
+   * issue #13369): the entry's pages reach the read cache one by one, so a vector the search answers can be of a record the entry has not
+   * written yet, or already removed, which only the read tells from a record that is there. Read now, such a record is no row of the answer
+   * (it costs a candidate, as a committed delete does). The question is asked after the searches, so a vector found of an entry that
+   * concluded since is found published.
    */
   private static LSMVectorIndex[] deferredRecordReads(final BasicDatabase db, final List<LSMVectorIndex> vectorIndexes) {
     if (!(db instanceof DatabaseInternal database) || !(database.getEvents() instanceof RecordEventsRegistry events)
@@ -497,7 +503,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     for (int i = 0; i < vectorIndexes.size(); i++) {
       final LSMVectorIndex index = vectorIndexes.get(i);
       final int bucketId = index.getAssociatedBucketId();
-      if (bucketId < 0 || index.isWrittenByCurrentTransaction())
+      if (bucketId < 0 || index.isWrittenByCurrentTransaction() || index.hasReplicatedApplyInFlight())
         continue;
       if (!(database.getSchema().getTypeByBucketId(bucketId) instanceof LocalDocumentType type) || type.hasBeforeReadListeners()
           || type.hasAfterReadListeners())

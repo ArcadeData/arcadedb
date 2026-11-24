@@ -274,8 +274,8 @@ public class TransactionManager {
   private final ReentrantReadWriteLock       applyLock           = new ReentrantReadWriteLock();
   /**
    * Test-only seam run by {@link #applyChanges}, with the publication open, once the first page of the entry is in the read cache and
-   * before the others (Task 14 of #10662): the twin of {@code PageManager.publishPagesHookForTesting} for the replicated apply, which
-   * does not hold the page-manager lock. Null in production.
+   * the index or bucket it belongs to has taken it in, before the others (Task 14 of #10662): the twin of
+   * {@code PageManager.publishPagesHookForTesting} for the replicated apply, which does not hold the page-manager lock. Null in production.
    */
   static volatile Runnable                   applyChangesHookForTesting;
 
@@ -2139,6 +2139,10 @@ public class TransactionManager {
     // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
     // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
     final PageManager pageManager = database.getPageManager();
+    // The pages of the entry reach the read cache one by one and a vector index learns of its page as that page is applied, so a
+    // search can find a vector whose record page the entry has not written yet, or whose record page it wrote before the page that
+    // removes the vector: marked from before the first page is written to after the last one is published (issue #13369)
+    final LSMVectorIndex[] vectorIndexes = markVectorIndexesApplying(tx);
     pageManager.beginPublication();
     try {
       // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
@@ -2149,6 +2153,9 @@ public class TransactionManager {
       return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
     } finally {
       pageManager.endPublication();
+      if (vectorIndexes != null)
+        for (final LSMVectorIndex index : vectorIndexes)
+          index.replicatedApplyConcluded();
       try {
         if (reached != null)
           reached.mark(columnar);
@@ -2158,6 +2165,42 @@ public class TransactionManager {
         FullTextCorpusDeltas.replicatedApplyFinished(applying);
       }
     }
+  }
+
+  /**
+   * Marks the vector indexes whose pages {@code tx} carries as applying an entry ({@link LSMVectorIndex#replicatedApplyStarted()}),
+   * before the entry writes its first page: a search of such an index reads the record of every row it answers, as it does while a
+   * commit replays into the index on the node that originated it, and a vector whose record the entry has not published (or already
+   * removed) is then no row of the answer instead of a row without properties. Pages of the compacted file are left out: a compaction
+   * adds and removes no vector. The caller ends the marks with {@link LSMVectorIndex#replicatedApplyConcluded()}, after the last page
+   * of the entry is published.
+   *
+   * @return the indexes marked, or null when the entry carries no page of a vector index (the steady state of every other workload,
+   * which allocates nothing)
+   */
+  private LSMVectorIndex[] markVectorIndexesApplying(final WALFile.WALTransaction tx) {
+    if (Thread.currentThread().equals(ownWALReplayThread))
+      // the replay of this database's own WAL runs inside the open, before any search can
+      return null;
+    LSMVectorIndex[] marked = null;
+    int count = 0;
+    for (final WALFile.WALPage page : tx.pages) {
+      if (!(database.getSchema().getFileByIdIfExists(page.fileId) instanceof LSMVectorIndexMutable vectorMutable))
+        continue;
+      final LSMVectorIndex index = vectorMutable.getMainIndex();
+      if (index == null)
+        continue;
+      if (marked == null)
+        marked = new LSMVectorIndex[tx.pages.length];
+      boolean known = false;
+      for (int i = 0; i < count && !known; i++)
+        known = marked[i] == index;
+      if (!known) {
+        index.replicatedApplyStarted();
+        marked[count++] = index;
+      }
+    }
+    return marked == null || count == marked.length ? marked : Arrays.copyOf(marked, count);
   }
 
   /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */
@@ -2432,11 +2475,6 @@ public class TransactionManager {
         // entry on the page failed with a false WAL version gap. A copy, because the vector index below still reads
         // modifiedPage.
         database.getPageManager().putPageInReadCache(new CachedPage(modifiedPage, true));
-        if (midway != null) {
-          // the first page of the entry is visible, the others are not yet
-          midway.run();
-          midway = null;
-        }
 
         final PaginatedComponent component = (PaginatedComponent) database.getSchema().getFileByIdIfExists(txPage.fileId);
         if (component != null) {
@@ -2473,6 +2511,12 @@ public class TransactionManager {
               mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
             }
           }
+        }
+
+        if (midway != null) {
+          // the first page of the entry is visible, with what the index it belongs to makes of it: the others are not yet
+          midway.run();
+          midway = null;
         }
 
         if (file.getFileId() == dictionaryId)

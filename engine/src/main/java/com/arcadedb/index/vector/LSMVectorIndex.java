@@ -605,6 +605,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
 
   /**
+   * The replicated entries being applied on this node that carry pages of this index (issue #13369): from before the first page
+   * of the entry is written until the last one is published, see {@link #hasReplicatedApplyInFlight()}.
+   */
+  private final AtomicInteger replicatedAppliesInFlight = new AtomicInteger();
+
+  /**
    * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
    * each one by its state before the page (issue #9857). Only touched under {@link #lock}'s write lock, so one instance
    * serves every page instead of an allocation per page on the replication path.
@@ -11916,6 +11922,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       lock.readLock().unlock();
     }
+  }
+
+  /**
+   * Whether a replicated entry that carries pages of this index is being applied on this node (issue #13369): the entry's pages reach
+   * the read cache one by one and the index learns of each vector page as it is applied, so a vector it answers can be of a record
+   * whose page the entry has not written yet (an insert), or already removed (a delete). Only reading the record tells that from a
+   * record that is there, so a caller that hands a search result on without reading its record (issue #10973) reads it while this
+   * holds. An entry that concluded published all its pages first.
+   */
+  public boolean hasReplicatedApplyInFlight() {
+    return replicatedAppliesInFlight.get() > 0;
+  }
+
+  /** Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. */
+  public void replicatedApplyStarted() {
+    replicatedAppliesInFlight.incrementAndGet();
+  }
+
+  /** Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. */
+  public void replicatedApplyConcluded() {
+    replicatedAppliesInFlight.decrementAndGet();
   }
 
   /**
