@@ -52,12 +52,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * and the search answered normally without its rows: an exhaustive search lacked whole buckets for the 1 to 2 seconds the apply takes.
  * It now fails with a retryable exception instead.
  * <p>
- * The refusal is for that case only. A sub-index whose locations are resident and complete answers from memory, and from the records
- * where it needs a vector, so its retired file is not read at all: it answers every row, and refusing it would turn a correct answer
- * into a failure for the first of the sixteen entries of a compaction. A search that fails while its file is retired, or with a
+ * The refusal is for the searches that read the files. A sub-index whose locations and graph are both resident answers from memory,
+ * and from the records where it needs a vector, so its retired files are not read at all: it answers every row, and refusing it
+ * would turn a correct answer into a failure for the first of the sixteen entries of a compaction. One whose locations are resident
+ * but whose graph is not rebuilds the graph from the files that are gone, and answers without its rows (a cluster run of the first
+ * version of this change found that, 94 control records of one bucket). A search that fails while its file is retired, or with a
  * conflict of the engine's own (a page of a file dropped under a read), is reported as that conflict and not as an index failure.
  * <p>
- * The tests do by hand what the apply does to the files of one sub-index of a 4-bucket index.
+ * The tests do by hand what the apply does to the files of one sub-index of a 4-bucket index: its data file and its graph file.
  */
 class Issue13296SearchOnRetiredIndexTest extends TestHelper {
   private static final int    DIMENSIONS = 8;
@@ -102,6 +104,24 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
   }
 
   @ParameterizedTest
+  @MethodSource("layouts")
+  void aSubIndexWithResidentLocationsButNoGraphIsRefusedWhenItsFilesAreRetired(final String quantization,
+      final boolean storeVectorsInGraph) {
+    final float[] query = createIndexAndRecords(quantization, storeVectorsInGraph);
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+
+    // Reopened, then its locations are loaded and no search has loaded its graph: the first search has to read the graph from its
+    // file or rebuild it from the data file, and with both gone it would build it from nothing
+    reopenDatabase();
+    final LSMVectorIndex subIndex = subIndex();
+    assertThat(subIndex.getVectorIndex().size()).as("the locations are resident").isEqualTo(RECORDS / BUCKETS);
+    retire(subIndex);
+
+    assertThatThrownBy(() -> exhaustiveRows(query, 100_000)).as("a search that has to rebuild its graph from retired files is refused")
+        .isInstanceOf(NeedRetryException.class).hasMessageContaining("retired by a schema change");
+  }
+
+  @ParameterizedTest
   @MethodSource("layoutsAndRequestedRows")
   void aWarmSubIndexWhoseFileWasRetiredStillAnswersEveryRecord(final String quantization, final boolean storeVectorsInGraph,
       final int k) {
@@ -110,7 +130,7 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
 
     retire(subIndex());
 
-    assertThat(exhaustiveRows(query, k)).as("its locations and graph are resident: the retired file is not what it answers from")
+    assertThat(exhaustiveRows(query, k)).as("its locations and graph are resident: the retired files are not what it answers from")
         .isEqualTo(Math.min(k, RECORDS));
   }
 
@@ -227,9 +247,15 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
     return (LSMVectorIndex) typeIndex.getIndexesOnBuckets()[VICTIM];
   }
 
-  /** What a follower's apply thread does to the files an entry supersedes. */
+  /** What a follower's apply thread does to the files an entry supersedes: the data file and the graph file of the sub-index. */
   private void retire(final LSMVectorIndex subIndex) {
-    final int fileId = subIndex.getFileId();
+    final LSMVectorIndexGraphFile graphFile = subIndex.getGraphFile();
+    retireFile(subIndex.getFileId());
+    if (graphFile != null)
+      retireFile(graphFile.getFileId());
+  }
+
+  private void retireFile(final int fileId) {
     final DatabaseInternal internal = (DatabaseInternal) database;
     try {
       internal.getPageManager().deleteFile(internal, fileId);

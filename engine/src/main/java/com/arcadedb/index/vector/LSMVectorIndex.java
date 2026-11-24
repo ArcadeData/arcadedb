@@ -10140,10 +10140,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * build reads through the database while it holds {@code graphBuildLock}, so a search waiting for that lock under the
    * database read lock would deadlock with it behind a queued schema change.
    *
-   * @param failure what a failure of the search is reported as
+   * @param failure    what a failure of the search is reported as
+   * @param fromMemory the graph the search could answer from memory when it started, see {@link #graphAnsweringFromMemory()}
    */
-  private <T> T underSearchLocks(final String failure, final Callable<T> search) {
-    failIfFileRetired();
+  private <T> T underSearchLocks(final String failure, final ImmutableGraphIndex fromMemory, final Callable<T> search) {
+    failIfFileRetired(fromMemory);
     final T answered = getDatabase().executeInReadLock(() -> {
       lock.readLock().lock();
       try {
@@ -10165,29 +10166,43 @@ public class LSMVectorIndex implements Index, IndexInternal {
         lock.readLock().unlock();
       }
     });
-    // Also afterwards: a cold index whose file was retired while the search ran leaves it with whatever its lazy reads found, which is
-    // nothing
-    failIfFileRetired();
+    // Also afterwards: a search that had to load or build the graph, or the locations, from a file retired while it ran has what it
+    // could read of it, which is nothing
+    failIfFileRetired(fromMemory);
     return answered;
   }
 
   /**
-   * Refuses a search of an index that has to read its own data file, which a schema change has retired (issue #13296). A Raft follower
-   * applies a replicated {@code COMPACT INDEX} by deleting the superseded files and only then reloading the schema, which publishes the
-   * new index objects, so a search that resolved the previous generation in between reads a file that is gone. Those index objects were
-   * made by the previous entry of the same statement, so they are cold: the location load of the first search logs the failure and
-   * carries on with no entries, and the search answered normally without that sub-index's rows. An exhaustive search lacked whole
-   * buckets for the 1 to 2 seconds the apply takes. The caller retries, as for any other conflict with a schema change.
+   * The graph a search started now can answer from memory: the locations are resident and complete and a graph is resident, so
+   * nothing it needs is read from a file; null when it has to load or build one of them.
+   */
+  private ImmutableGraphIndex graphAnsweringFromMemory() {
+    return locationsMaterialized && locationLoadIncomplete == null ? graphIndex : null;
+  }
+
+  /**
+   * Refuses a search that reads the data file of its index, which a schema change has retired (issue #13296). A Raft follower applies
+   * a replicated {@code COMPACT INDEX} by deleting the superseded files (the data file and the graph file of each sub-index) and only
+   * then reloading the schema, which publishes the new index objects, so a search that resolved the previous generation in between
+   * reads files that are gone. Those index objects were made by the previous entry of the same statement, so they are cold: the
+   * location load logs the failure and carries on with no entries, or, with the locations loaded, the graph, whose persisted file is
+   * gone too, is rebuilt from the pages of the data file, which cannot be read, and the search answered normally without the rows of
+   * that sub-index. An exhaustive search lacked whole buckets for the 1 to 2 seconds the apply takes. The
+   * caller retries, as for any other conflict with a schema change.
    * <p>
-   * Only an index that has to read the file is refused: one whose locations are resident and complete answers from memory, and reads
-   * the vectors it scores from the records when a page is not there, so its answer is complete and refusing it would turn a correct
-   * answer into an error. An index whose location load failed stays refused: its answer lacks the entries it did not read.
+   * Only a search that reads the files is refused. One that started with the locations resident and complete and the graph resident
+   * answers from memory, and reads the vectors it scores from the records when a page is not there, so its answer is complete and
+   * refusing it would turn a correct answer into an error. It is refused all the same when the graph it used is not the one it
+   * started with (a rebuild replaced it, and a rebuild reads the files), and when the location load failed. A graph that is not
+   * resident is not "warm": with its persisted graph and its data file gone it is rebuilt from nothing.
    * <p>
    * The leader's own compaction is not affected: it swaps {@code mutable}, and so {@link #getFileId()}, before it drops the old file,
    * which {@link #isFileRetired(int)} takes into account.
+   *
+   * @param fromMemory the graph the search could answer from memory when it started, or null if it could not
    */
-  private void failIfFileRetired() {
-    if (locationsMaterialized && locationLoadIncomplete == null)
+  private void failIfFileRetired(final ImmutableGraphIndex fromMemory) {
+    if (fromMemory != null && fromMemory == graphIndex && locationsMaterialized && locationLoadIncomplete == null)
       return;
     final int fileId = getFileId();
     if (isFileRetired(fileId))
@@ -10218,7 +10233,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     metrics.incrementSearchOperations();
 
     try {
-      failIfFileRetired();
+      // What this search can answer from memory, before it loads or builds anything (issue #13296)
+      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+      failIfFileRetired(fromMemory);
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
       if (requestedK < 0)
@@ -10282,7 +10299,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
-      return underSearchLocks("Error performing vector search", () -> {
+      return underSearchLocks("Error performing vector search", fromMemory, () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet — still return delta-only results if available, and the calling transaction's own
           // uncommitted rows are such results too (issue #7378): an empty index written to inside one transaction
@@ -10783,6 +10800,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       checkCosineQueryVector(queryVector);
 
+      // What this search can answer from memory, before it loads or builds anything (issue #13296)
+      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
       guard.check();
       ensureGraphAvailable(guard);
@@ -10814,7 +10834,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           guard);
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
-      return underSearchLocks("Error performing grouped vector search", () -> {
+      return underSearchLocks("Error performing grouped vector search", fromMemory, () -> {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         // Volatile read pinned for the whole query, taken under the read lock because writers mutate this list in
@@ -11585,6 +11605,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (requestedK == 0)
         return Collections.emptyList();
 
+      // What this search can answer from memory, before it loads or builds anything (issue #13296)
+      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
       guard.check();
 
@@ -11612,7 +11635,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (allowedRIDs != null && allowedRIDs.isEmpty() && !allowList.isEmpty())
         return Collections.emptyList();
 
-      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", () -> {
+      final List<Pair<RID, Float>> answered = underSearchLocks("Error performing PQ approximate search", fromMemory, () -> {
         if (graphIndex == null || vectorIndex().size() == 0) {
           // No graph yet - still return delta-only results if available.
           //
