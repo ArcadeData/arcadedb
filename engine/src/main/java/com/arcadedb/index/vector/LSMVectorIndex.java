@@ -1009,6 +1009,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // that resolves this index from now on cannot ship its entries into it ahead of the entry creating it: the followers skipped
         // such a page (the file did not exist there yet), created the file one version behind and refused the next commit on it as
         // a WAL version gap. Same as the LSM tree split (issue #12236).
+        // Unlike the split, the publication comes after the whole graph build here, so the hold spans it. That costs no new stall:
+        // a leader commit already waits at the recording-session gate for the whole session (up to the HA quorum timeout), and the
+        // only commits this lock adds a wait to are those on this index that passed the gate before the session opened or gave up
+        // on it. One that still finds the lock held after COMMIT_LOCK_TIMEOUT fails with a retryable LockTimeoutException, where
+        // before it shipped its pages ahead of the file and sent every follower into a resync.
         if (database.getWrappedDatabaseInstance().keepLockedUntilCompactionIsPublished(newFileId))
           newFileLockKept = true;
 

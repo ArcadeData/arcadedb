@@ -49,6 +49,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -60,6 +61,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 /**
@@ -110,7 +112,8 @@ class VectorCompactionNewFileHeldUntilPublishedTest {
     FileUtils.copyDirectory(leaderPath.toFile(), followerPath.toFile());
     leaderDb = (LocalDatabase) new DatabaseFactory(leaderPath.toString()).open();
     followerDb = (LocalDatabase) new DatabaseFactory(followerPath.toString()).open();
-    // The racing commit waits on file locks while the test stages the interleaving
+    // The racing commit waits on the bucket lock the test holds while it stages the interleaving, and then on the new data file
+    // until the fake broker lets the compaction's entry out: a hang detector for those staged waits, not a latency bound
     leaderDb.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, HANG.toMillis());
     racer = Executors.newSingleThreadExecutor();
     compactor = Executors.newSingleThreadExecutor();
@@ -134,8 +137,9 @@ class VectorCompactionNewFileHeldUntilPublishedTest {
    * A commit that is past the check for an open recording session and queued for a lock when the compaction starts reaches
    * its locks after the swap, while the compaction is still on its way to the log (the slow side on a loaded leader). Its
    * entry must land after the compaction's, so a follower applies both, and the next commit on the same page, without a gap.
+   * Regression for #13336: without the held lock the log reads TX, SCHEMA, TX and the follower refuses the second TX as a WAL
+   * version gap on the compaction's new file.
    */
-  // Regression for #12236: a commit racing the swap reaches the log after the entry creating its file
   @Test
   void aCommitRacingTheSwapReachesTheLogAfterTheEntryCreatingItsFile() throws Exception {
     final List<LogEntry> log = new CopyOnWriteArrayList<>();
@@ -229,9 +233,8 @@ class VectorCompactionNewFileHeldUntilPublishedTest {
 
   /**
    * The lock of the new file the compaction took over must go with the session when the entry publishing it is refused, so a
-   * later commit on the index does not wait on a file nobody will ever release.
+   * later commit on the index does not wait on a file nobody will ever release (issue #13336).
    */
-  // Regression for #12236: the held lock is released when publishing the compaction fails
   @Test
   void theHeldLockIsReleasedWhenPublishingTheCompactionFails() {
     final Set<Integer> createdByCompaction = ConcurrentHashMap.newKeySet();
@@ -246,11 +249,9 @@ class VectorCompactionNewFileHeldUntilPublishedTest {
 
     final TypeIndex leaderIndex = (TypeIndex) leaderDb.getSchema().getIndexByName(INDEX_NAME);
     leaderIndex.scheduleCompaction();
-    try {
-      leaderIndex.compact();
-    } catch (final Exception expected) {
-      // the failed publication is rethrown after the quarantine
-    }
+    // the failed publication is rethrown after the quarantine, and it is the broker's refusal, not an earlier failure of the
+    // compaction that never reached the swap
+    assertThatThrownBy(leaderIndex::compact).hasStackTraceContaining("the broker refuses the compaction entry");
 
     assertThat(createdByCompaction).as("the compaction reached its publishing entry").isNotEmpty();
     for (final LockManager.LockStats lock : leaderDb.getTransactionManager().getLockStats())
@@ -259,10 +260,11 @@ class VectorCompactionNewFileHeldUntilPublishedTest {
 
     // A commit on the compacted index goes through instead of waiting on a leaked lock
     // (a commit blocked on it would throw after COMMIT_LOCK_TIMEOUT, the hang detector set in setUp)
-    leaderDb.transaction(() -> leaderDb.newDocument("Work").set("embedding", vector(100_003)).save());  }
+    leaderDb.transaction(() -> leaderDb.newDocument("Work").set("embedding", vector(100_003)).save());
+  }
 
   private static float[] vector(final int seed) {
-    final java.util.Random random = new java.util.Random(seed);
+    final Random random = new Random(seed);
     final float[] vector = new float[DIMENSIONS];
     for (int i = 0; i < DIMENSIONS; i++)
       vector[i] = (float) random.nextGaussian();
