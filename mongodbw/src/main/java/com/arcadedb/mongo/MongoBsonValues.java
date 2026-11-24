@@ -62,7 +62,7 @@ import java.util.logging.Level;
  * <p>
  * A tagged value is a map to the engine, so SQL compares maps: the plugin's own filters and sorts compare the BSON value it is
  * read back as ({@link MongoQueryMatcher}, {@link MongoSortOrder}), a statement written in SQL does not. A DECIMAL beyond
- * Decimal128 (more than 34 digits) is read back as a double rather than failing the read.
+ * Decimal128 (more than 34 digits, or an exponent out of its range) is read back as a double rather than failing the read.
  * <p>
  * The field name {@code $bson} is reserved for the tag: a map with a string {@code $bson} key written through SQL or another
  * protocol is read back by the MongoDB plugin as the BSON value it names (a malformed or unknown tag stays a plain map).
@@ -73,6 +73,10 @@ final class MongoBsonValues {
   static final String TAG = "$bson";
 
   private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
+
+  // the widest unscaled value a Decimal128 can take, in bits: 34 digits of coefficient and an exponent from -6176 to 6111 make 12321
+  // digits at most, which is under 2^40930. A wider value is returned as a double without converting its digits
+  private static final int MAX_DECIMAL128_BITS = 40_930;
 
   // an ObjectId outside _id is kept as a prefixed string, not a map, so that it stays comparable and usable as an index key
   static final String OBJECT_ID_PREFIX = "$oid:";
@@ -260,17 +264,8 @@ final class MongoBsonValues {
    * Turns a stored tagged map or DECIMAL back into the BSON object it was written from; any other value is returned as is.
    */
   static Object toBson(final Object value) {
-    if (value instanceof BigDecimal decimal) {
-      try {
-        return new Decimal128(decimal);
-      } catch (final ArithmeticException | IllegalArgumentException e) {
-        // more than 34 significant digits or an exponent out of range: keep the response readable
-        // warn once: a large result set would otherwise flood the log
-        LogManager.instance().log(MongoBsonValues.class, WIDE_DECIMAL_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
-            "A DECIMAL beyond Decimal128 is returned as a double (value %s)", decimal);
-        return decimal.doubleValue();
-      }
-    }
+    if (value instanceof BigDecimal decimal)
+      return decimalToBson(decimal);
     if (value instanceof String string && string.startsWith(ESCAPED_PREFIX))
       return string.substring(ESCAPED_PREFIX.length());
     if (value instanceof String string && isStoredObjectId(string)) {
@@ -283,6 +278,24 @@ final class MongoBsonValues {
     if (value instanceof Map<?, ?> map && map.get(TAG) instanceof String kind)
       return fromTagged(kind, map);
     return value;
+  }
+
+  /**
+   * A DECIMAL as a Decimal128, or as a double when no Decimal128 can hold it (more than 34 significant digits, or an exponent out of
+   * range), so that the response stays readable. The size of the value is checked first, which costs nothing, so that a value wider
+   * than any Decimal128 is not converted digit by digit by the library to find that out.
+   */
+  private static Object decimalToBson(final BigDecimal decimal) {
+    if (decimal.unscaledValue().bitLength() <= MAX_DECIMAL128_BITS)
+      try {
+        return new Decimal128(decimal);
+      } catch (final ArithmeticException | IllegalArgumentException | AssertionError e) {
+        // the library reports an exponent out of range as an assertion error, a coefficient it cannot round exactly as an exception
+      }
+    // warn once: a large result set would otherwise flood the log
+    LogManager.instance().log(MongoBsonValues.class, WIDE_DECIMAL_WARNED.compareAndSet(false, true) ? Level.WARNING : Level.FINE,
+        "A DECIMAL beyond Decimal128 is returned as a double (scale %d)", decimal.scale());
+    return decimal.doubleValue();
   }
 
   static boolean isStoredObjectId(final String string) {
