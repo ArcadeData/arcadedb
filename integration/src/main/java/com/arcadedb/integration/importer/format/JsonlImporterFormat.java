@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.DocumentValidator.LinkTargetTypeDeferral;
+import com.arcadedb.database.DocumentValidator.ReadonlyDeferral;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
@@ -105,7 +106,7 @@ import java.util.logging.Level;
  * command and the server runs this importer against its own embedded database. {@code CREATE TIMESERIES TYPE}
  * carries the per-column codecs (issue #7689) and the column ORDER (issue #7702) that a TIMESERIES restore needs,
  * so the type it rebuilds on that path is the one the export recorded.
- * {@code Issue7701RemoteTimeSeriesLogicalRestoreIT} drives the whole round trip through remote handles only.
+ * {@code RemoteTimeSeriesIT.LogicalRestore} drives the whole round trip through remote handles only.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -1480,7 +1481,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
         final MutableDocument mutable = document.modify();
         // The references are rewritten from this very record's reloaded content: no stale-read refusal (#8610)
         mutable.clearBasedOnStaleRead();
-        boolean changed = false;
+        // The properties whose links are rewritten, null while there is none
+        Set<String> rewritten = null;
 
         // HIGHEST LIST POSITION FIRST: AN ELEMENT REMOVED FROM A TYPED LIST SHIFTS ONLY THE ONES AFTER IT
         final List<PendingLink> links = new ArrayList<>(entry.getValue());
@@ -1502,7 +1504,9 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
             continue;
 
           mutable.set(link.property(), updated);
-          changed = true;
+          if (rewritten == null)
+            rewritten = new HashSet<>();
+          rewritten.add(link.property());
           if (newRid == null) {
             context.danglingLinks.incrementAndGet();
             LogManager.instance().log(this, Level.FINE, "Record %s: the link %s in property '%s' points to a record that is not in the "
@@ -1512,10 +1516,15 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
         // The record was saved with the check of its links' target types suspended (see saveReadRecord): this is where it is made.
         // A save validates the whole record; a record none of whose links was found to replace is validated as it stands. That is one
-        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore
-        if (changed)
-          mutable.save();
-        else
+        // more validation for each record that waited for a link, and only for those: the price of keeping the check on a big restore.
+        // The rewrite of the links is the second half of creating the record, so a READONLY link property is not refused as altered
+        // here (issue #12722): only for the one save, of this record, and for the properties rewritten above. Every other constraint
+        // is checked as always, and so is READONLY on anything a listener of this save writes
+        if (rewritten != null) {
+          try (final ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks(mutable, rewritten)) {
+            mutable.save();
+          }
+        } else
           mutable.validate();
 
         // Skip mode commits each record inside its handler, as load() does, so a refused commit skips this record only

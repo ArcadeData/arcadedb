@@ -1049,7 +1049,7 @@ class AlgoWorkGuardTest {
   class WeightedAdjacencyRecordsCheckpoint {
     /** Below the every-1024-nodes checkpoint boundary and far below ADJACENCY_CHECKPOINT_ENTRIES (1_048_576). */
     private static final int  NODE_COUNT  = 200;
-    private static final long GRAPH_BYTES = (NODE_COUNT + 1) * 96L; // OLTP_VERTEX_BYTES, +1 for the load's own headroom check
+    private static final long GRAPH_BYTES = (NODE_COUNT + 1) * 16L; // LOADED_NODE_BYTES, +1 for the load's own headroom check
     private static final long ROW_HEADER_BYTES = NODE_COUNT * 64L; // 2 * MATRIX_ROW_OVERHEAD_BYTES per node
 
     private Database database;

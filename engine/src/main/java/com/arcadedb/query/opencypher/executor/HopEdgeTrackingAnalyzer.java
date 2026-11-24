@@ -24,6 +24,8 @@ import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.InExpression;
+import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
 import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.NodePattern;
@@ -361,6 +363,31 @@ final class HopEdgeTrackingAnalyzer {
       result.add(new PathPattern(nodes, pattern.getRelationships()));
     }
     return result;
+  }
+
+  /**
+   * The properties of each variable a top-level {@code v.key IN <list>} conjunct of a {@code WHERE} keys, when the list is one
+   * an index seek takes: a parameter, or a non-empty list literal of literals and parameters (issue #11715).
+   */
+  static Map<String, Set<String>> whereInListKeys(final WhereClause where) {
+    if (where == null || where.getConditionExpression() == null)
+      return Map.of();
+    final Map<String, Set<String>> keys = new HashMap<>();
+    for (final BooleanExpression conjunct : CountPushDownPredicates.conjuncts(where.getConditionExpression())) {
+      if (!(conjunct instanceof InExpression in) || !(in.getExpression() instanceof PropertyAccessExpression property))
+        continue;
+      List<Expression> list = in.getList();
+      if (list != null && list.size() == 1 && list.getFirst() instanceof ListExpression literal)
+        list = literal.getElements();
+      if (list == null || list.isEmpty())
+        continue;
+      boolean seekable = true;
+      for (final Expression element : list)
+        seekable &= RowIndependentValues.isSeekable(element);
+      if (seekable)
+        keys.computeIfAbsent(property.getVariableName(), k -> new HashSet<>()).add(property.getPropertyName());
+    }
+    return keys;
   }
 
   /** Whether the hop is pinned to zero edges, and so binds none at all. */

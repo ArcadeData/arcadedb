@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
@@ -94,6 +95,14 @@ public class ExpandAll extends AbstractPhysicalOperator {
     this.edgeTrackingVar = edgeTrackingVar;
   }
 
+  public String getEdgeTrackingVar() {
+    return edgeTrackingVar;
+  }
+
+  public Set<String> getSameClausePrecedingRelVars() {
+    return sameClausePrecedingRelVars;
+  }
+
   public void setTargetLabel(final String targetLabel) {
     this.targetLabel = targetLabel;
   }
@@ -104,10 +113,18 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
   @Override
   public ResultSet execute(final CommandContext context, final int nRecords) {
+    return expand(context, nRecords, child.execute(context, nRecords));
+  }
+
+  /**
+   * Expands the rows of {@code inputResults} instead of the rows of the child, which is not executed: an operator that
+   * decides per row how the hop is answered hands each row it walks to this hop (issue #11715). Closing the result closes
+   * {@code inputResults}.
+   */
+  public ResultSet expand(final CommandContext context, final int nRecords, final ResultSet inputResults) {
     // Bounds this operator's row loop by the command deadline - see WorkGuard for why between-batches is
     // not enough (issue #6266).
     final WorkGuard guard = WorkGuard.forCommandDeadline(context);
-    final ResultSet inputResults = child.execute(context, nRecords);
     // A hop that reaches the incoming side of a unidirectional edge type asks the query's lookup for it, since no vertex
     // stores it (issue #8625)
     final boolean incomingLookup = IncomingEdgeLookup.isNeeded(context, context.getDatabase(), direction.toArcadeDirection(),
@@ -115,6 +132,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
     return new ResultSet() {
       private Result currentInputResult = null;
+      // The source vertex of currentInputResult, read off the row once instead of once per edge
+      private Vertex currentSourceVertex = null;
+      // The far vertices this execution already reached, see ExpandedVertexCache
+      private final ExpandedVertexCache reached = ExpandedVertexCache.of(context);
       private Iterator<Edge> edgeIterator = null;
       // Walked instead of edgeIterator when no edge object is needed: neighbours come straight from
       // the adjacency lists, so no edge record is ever loaded.
@@ -159,6 +180,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
         final boolean edgeNeeded = edgeVariable != null || edgeTrackingVar != null
             || (sameClausePrecedingRelVars != null && !sameClausePrecedingRelVars.isEmpty());
 
+        if (edgeNeeded)
+          reached.startBatch(context.getDatabase());
+
         while (buffer.size() < n) {
           guard.check();
           if (!edgeNeeded) {
@@ -176,6 +200,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
             currentInputResult = inputResults.next();
             final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
+            currentSourceVertex = sourceVertex;
 
             if (sourceVertex == null) {
               continue; // Skip if source vertex is null (OPTIONAL MATCH)
@@ -198,10 +223,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
           // Expand edges to target vertices
           if (edgeIterator.hasNext()) {
             final Edge edge = edgeIterator.next();
-            final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
             final Vertex targetVertex;
             try {
-              targetVertex = getTargetVertex(edge, sourceVertex);
+              targetVertex = getTargetVertex(edge, currentSourceVertex, reached);
             } catch (final RecordNotFoundException e) {
               // Ghost edge: a dangling segment pointer to a missing edge/target record (e.g. left by an
               // HA resync or a rolled-back transaction). Skip it - it cannot contribute a row.
@@ -368,14 +392,19 @@ public class ExpandAll extends AbstractPhysicalOperator {
   /**
    * Gets the target vertex from an edge based on direction.
    */
-  private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex) {
+  private Vertex getTargetVertex(final Edge edge, final Vertex sourceVertex, final ExpandedVertexCache reached) {
     // Only the far end is resolved: an edge from getEdgesKnowingEndpoints() answers both endpoints without its
-    // record, so neither this nor the RID comparison below loads it (issue #8537)
-    if (direction == Direction.OUT)
-      return edge.getInVertex();
-    else if (direction == Direction.IN)
-      return edge.getOutVertex();
-    // BOTH direction - return the vertex that's not the source
-    return edge.getOut().equals(sourceVertex.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
+    // record, so neither this nor the RID comparison below loads it (issue #8537).
+    // BOTH direction - the far end is the vertex that's not the source
+    final boolean farEndIsIn = direction == Direction.OUT || (direction != Direction.IN && edge.getOut()
+        .equals(sourceVertex.getIdentity()));
+    final RID farEnd = farEndIsIn ? edge.getIn() : edge.getOut();
+
+    Vertex target = reached.get(farEnd);
+    if (target == null) {
+      target = farEndIsIn ? edge.getInVertex() : edge.getOutVertex();
+      reached.put(farEnd, target);
+    }
+    return target;
   }
 }

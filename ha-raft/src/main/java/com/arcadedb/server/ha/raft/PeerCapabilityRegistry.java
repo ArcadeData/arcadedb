@@ -88,10 +88,15 @@ public final class PeerCapabilityRegistry {
 
   /** One peer's last successful answer. */
   public record Advertisement(Set<String> capabilities, String version, long observedAtMs, boolean serviceGap,
-      Set<String> quarantined, long appliedIndex) {
+      Set<String> quarantined, long appliedIndex, long applyBacklogBudget) {
     public Advertisement {
       if (quarantined == null)
         quarantined = Set.of();
+    }
+
+    public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
+        final boolean serviceGap, final Set<String> quarantined, final long appliedIndex) {
+      this(capabilities, version, observedAtMs, serviceGap, quarantined, appliedIndex, -1L);
     }
 
     public Advertisement(final Set<String> capabilities, final String version, final long observedAtMs,
@@ -251,12 +256,24 @@ public final class PeerCapabilityRegistry {
    */
   public boolean record(final long generation, final String peerId, final Set<String> capabilities,
       final String version, final boolean serviceGap, final Set<String> quarantined, final long appliedIndex) {
+    return record(generation, peerId, capabilities, version, serviceGap, quarantined, appliedIndex, -1L);
+  }
+
+  /**
+   * As {@link #record(long, String, Set, String, boolean, Set, long)}, also holding the byte budget the peer advertises
+   * for its own apply backlog ({@code -1} when it advertises none), which the leader reads to hold a follower to the
+   * smaller of the two nodes' budgets (issue #11508). Not a transition to report either.
+   */
+  public boolean record(final long generation, final String peerId, final Set<String> capabilities,
+      final String version, final boolean serviceGap, final Set<String> quarantined, final long appliedIndex,
+      final long applyBacklogBudget) {
     final Set<String> frozen = Set.copyOf(capabilities);
     final Set<String> frozenQuarantined = quarantined == null || quarantined.isEmpty() ? Set.of() : Set.copyOf(quarantined);
     synchronized (writeLock) {
       if (generation != this.generation)
         return false;
-      advertisements.put(peerId, new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined, appliedIndex));
+      advertisements.put(peerId,
+          new Advertisement(frozen, version, clock.getAsLong(), serviceGap, frozenQuarantined, appliedIndex, applyBacklogBudget));
       lastAnswered.put(peerId, frozen);
       unknownReasons.remove(peerId);
       return !frozen.equals(lastReported.put(peerId, frozen));
@@ -484,6 +501,16 @@ public final class PeerCapabilityRegistry {
   public long freshAppliedIndexOf(final String peerId) {
     final Advertisement advertisement = freshAdvertisementOf(peerId);
     return advertisement == null ? -1L : advertisement.appliedIndex();
+  }
+
+  /**
+   * The byte budget {@code peerId} advertised for its own apply backlog in its last fresh answer, or {@code -1} when it
+   * is unknown, expired or never said (a build that predates the field, or a node with the budget set to 0). Unknown
+   * reads as "the leader's budget alone", which is what bound every follower before the field (issue #11508).
+   */
+  public long freshApplyBacklogBudgetOf(final String peerId) {
+    final Advertisement advertisement = freshAdvertisementOf(peerId);
+    return advertisement == null ? -1L : advertisement.applyBacklogBudget();
   }
 
   /**

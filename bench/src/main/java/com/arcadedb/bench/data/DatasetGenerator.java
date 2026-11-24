@@ -97,6 +97,75 @@ public final class DatasetGenerator {
     return result;
   }
 
+  /** Clusters of an {@link EmbeddingSpace}. */
+  static final int    EMBEDDING_CLUSTERS = 64;
+  /** Dimensions the points of a cluster actually vary in, whatever the dimension of the vectors. */
+  static final int    EMBEDDING_LATENT   = 16;
+  /** Typical distance of a point from its cluster center, the centers being unit vectors. */
+  static final double EMBEDDING_SPREAD   = 0.5;
+  /** Typical length of the isotropic noise added to every point, in all the dimensions. */
+  static final double EMBEDDING_NOISE    = 0.05;
+
+  /**
+   * The shape shared by a set of embeddings and the queries run against them: cluster centers and the projection of the latent
+   * space into the vector space. Base vectors and queries must be drawn from the same space.
+   */
+  public record EmbeddingSpace(float[][] centers, float[][] projection) {
+    public int dimensions() {
+      return projection.length;
+    }
+  }
+
+  /**
+   * An embedding space of {@code dim} dimensions: {@link #EMBEDDING_CLUSTERS} uniform unit centers, and a random projection
+   * from {@link #EMBEDDING_LATENT} latent dimensions scaled so a latent point lands about {@link #EMBEDDING_SPREAD} from its
+   * center.
+   */
+  public EmbeddingSpace embeddingSpace(final int dim) {
+    final float[][] centers = vectors(EMBEDDING_CLUSTERS, dim);
+    final SplittableRandom random = new SplittableRandom(seed + 1);
+    final double scale = EMBEDDING_SPREAD / StrictMath.sqrt((double) dim * EMBEDDING_LATENT);
+    final float[][] projection = new float[dim][EMBEDDING_LATENT];
+    for (final float[] row : projection)
+      for (int k = 0; k < EMBEDDING_LATENT; k++)
+        row[k] = (float) (gaussian(random) * scale);
+    return new EmbeddingSpace(centers, projection);
+  }
+
+  /**
+   * {@code n} unit-normalized vectors drawn like real embeddings rather than uniformly: a random center of {@code space}, plus
+   * a Gaussian latent point projected into the vector space, plus a little isotropic noise. Uniform directions in a high
+   * dimension are all nearly orthogonal, so their nearest neighbors are barely nearer than any other point; these vectors
+   * have a low intrinsic dimension and neighbors an approximate index can find, as embeddings do.
+   */
+  public float[][] embeddings(final int n, final EmbeddingSpace space) {
+    final int dim = space.dimensions();
+    final SplittableRandom random = new SplittableRandom(seed);
+    final double noise = EMBEDDING_NOISE / StrictMath.sqrt(dim);
+    final float[][] result = new float[n][dim];
+    final double[] latent = new double[EMBEDDING_LATENT];
+    final double[] tmp = new double[dim];
+    for (int i = 0; i < n; i++) {
+      final float[] center = space.centers()[random.nextInt(space.centers().length)];
+      for (int k = 0; k < EMBEDDING_LATENT; k++)
+        latent[k] = gaussian(random);
+      double sum = 0;
+      for (int j = 0; j < dim; j++) {
+        final float[] row = space.projection()[j];
+        double x = center[j] + gaussian(random) * noise;
+        for (int k = 0; k < EMBEDDING_LATENT; k++)
+          x += row[k] * latent[k];
+        tmp[j] = x;
+        sum += x * x;
+      }
+      final double norm = StrictMath.sqrt(sum);
+      final float[] v = result[i];
+      for (int j = 0; j < dim; j++)
+        v[j] = (float) (tmp[j] / norm);
+    }
+    return result;
+  }
+
   /**
    * {@code words} space-separated words of {@code english_words.txt}.
    */

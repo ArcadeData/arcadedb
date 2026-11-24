@@ -22,20 +22,22 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.function.geo.CypherPointFunction;
+import com.arcadedb.function.graph.ElementIdFunction;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VirtualEdge;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.opencypher.Labels;
-import com.arcadedb.query.opencypher.temporal.CypherDate;
-import com.arcadedb.query.opencypher.temporal.CypherDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
-import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
-import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
-import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.math.BigDecimal;
@@ -160,9 +162,8 @@ public class BoltStructureMapper {
    * in the BOLT node. This provides Neo4j-compatible multi-label support.
    */
   public static BoltNode toNode(final Vertex vertex) {
-    final RID rid = vertex.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final long id = idOf(vertex);
+    final String elementId = elementIdOf(vertex);
 
     // Every label the node answers to: its own type and its ancestors', minus the synthetic composite names
     final List<String> labels = Labels.getLabels(vertex);
@@ -177,17 +178,27 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT Relationship.
    */
   public static BoltRelationship toRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
-    final RID outRid = edge.getOut();
-    final RID inRid = edge.getIn();
-
-    final long startNodeId = ridToId(outRid);
-    final long endNodeId = ridToId(inRid);
-    final String startNodeElementId = outRid.toString();
-    final String endNodeElementId = inRid.toString();
+    final long startNodeId;
+    final long endNodeId;
+    final String startNodeElementId;
+    final String endNodeElementId;
+    if (edge instanceof VirtualEdge virtualEdge) {
+      // Either endpoint may itself be virtual: its ids are its own, not ones derived from a RID
+      startNodeId = idOf(virtualEdge.getOutVertex());
+      endNodeId = idOf(virtualEdge.getInVertex());
+      startNodeElementId = elementIdOf(virtualEdge.getOutVertex());
+      endNodeElementId = elementIdOf(virtualEdge.getInVertex());
+    } else {
+      final RID outRid = edge.getOut();
+      final RID inRid = edge.getIn();
+      startNodeId = ridToId(outRid);
+      endNodeId = ridToId(inRid);
+      startNodeElementId = outRid.toString();
+      endNodeElementId = inRid.toString();
+    }
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
@@ -199,14 +210,32 @@ public class BoltStructureMapper {
    * Convert an ArcadeDB Edge to a BOLT UnboundRelationship (for paths).
    */
   public static BoltUnboundRelationship toUnboundRelationship(final Edge edge) {
-    final RID rid = edge.getIdentity();
-    final long id = ridToId(rid);
-    final String elementId = rid.toString();
+    final long id = idOf(edge);
+    final String elementId = elementIdOf(edge);
 
     final String type = edge.getTypeName();
     final Map<String, Object> properties = toProperties(edge);
 
     return new BoltUnboundRelationship(id, type, properties, elementId);
+  }
+
+  /**
+   * The numeric id of a relationship. A lightweight edge has no record position to encode (its id() is null, and encoding its
+   * {@code #bucket:-1} marker throws): it gets a negative id hashed (FNV-1a, 63 bits) from the element id that names it, which
+   * no record id, never negative, can equal (issue #12132).
+   * <p>
+   * The numeric id is a best effort, as a hash is: two lightweight edges whose element ids collide (about 2^-63 for a pair)
+   * would share it. The element id is the identity of the relationship, and the one a client must send back to name it.
+   */
+  private static long relationshipId(final RID rid, final String elementId) {
+    if (rid.getPosition() >= 0)
+      return ridToId(rid);
+    long hash = 0xcbf29ce484222325L;
+    for (int i = 0; i < elementId.length(); i++) {
+      hash ^= elementId.charAt(i);
+      hash *= 0x100000001b3L;
+    }
+    return -1L - (hash & Long.MAX_VALUE);
   }
 
   /**
@@ -228,7 +257,9 @@ public class BoltStructureMapper {
     final List<BoltNode> nodes = new ArrayList<>();
     final Map<RID, Integer> nodeIndex = new HashMap<>();
     final List<BoltUnboundRelationship> rels = new ArrayList<>();
-    final Map<RID, Integer> relIndex = new HashMap<>();
+    // Keyed by what tells one relationship from another: the RID of a record-backed edge, and for a lightweight edge its
+    // distinct key, so that two parallel twins of one path stay two relationships (issue #12132)
+    final Map<Object, Integer> relIndex = new HashMap<>();
     final List<Long> indices = new ArrayList<>(edges.size() * 2);
 
     addPathNode(vertices.get(0), nodes, nodeIndex);
@@ -240,12 +271,12 @@ public class BoltStructureMapper {
       final Vertex from = vertices.get(i);
       final Vertex to = vertices.get(i + 1);
 
-      final RID relRid = edge.getIdentity();
-      Integer ri = relIndex.get(relRid);
+      final Object relKey = DistinctNumericKey.canonicalize(edge);
+      Integer ri = relIndex.get(relKey);
       if (ri == null) {
         rels.add(toUnboundRelationship(edge));
         ri = rels.size(); // 1-based
-        relIndex.put(relRid, ri);
+        relIndex.put(relKey, ri);
       }
       final boolean forward = edge.getOut().equals(from.getIdentity());
       indices.add((long) (forward ? ri : -ri));
@@ -267,20 +298,32 @@ public class BoltStructureMapper {
 
   /**
    * Convert a Document to a properties map.
+   * <p>
+   * A stored record is read once: {@code ImmutableDocument.get(name)} walks the record header from its first byte until it
+   * meets the name, so asking for each name in turn cost a node or relationship of P properties P walks of the same record
+   * (issue #12582, as #11738 and #12558 were on the HTTP, gRPC and Postgres paths). A value that does not decode (a damaged
+   * record) is left out of the single read, where the read by name answered null: Bolt has no null property either way.
    */
   public static Map<String, Object> toProperties(final Document document) {
-    final Map<String, Object> properties = new LinkedHashMap<>();
-
-    for (final String propertyName : document.getPropertyNames()) {
-      // Skip internal properties
-      if (propertyName.startsWith("@")) {
-        continue;
-      }
-
-      final Object value = document.get(propertyName);
-      properties.put(propertyName, toPackStreamValue(value));
+    if (document instanceof ImmutableDocument stored) {
+      final Map<String, Object> read = stored.propertiesAsMap();
+      final Map<String, Object> properties = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+      for (final Map.Entry<String, Object> entry : read.entrySet())
+        // Skip internal properties
+        if (!entry.getKey().startsWith("@"))
+          properties.put(entry.getKey(), toPackStreamValue(entry.getValue()));
+      return properties;
     }
 
+    // A document held in memory (a mutable or a light edge, a wrapper that answers names its own way): its reads by name
+    // walk nothing, and its getPropertyNames() and get() are the answer it gives
+    final Map<String, Object> properties = new LinkedHashMap<>();
+    for (final String propertyName : document.getPropertyNames()) {
+      // Skip internal properties
+      if (propertyName.startsWith("@"))
+        continue;
+      properties.put(propertyName, toPackStreamValue(document.get(propertyName)));
+    }
     return properties;
   }
 
@@ -298,11 +341,11 @@ public class BoltStructureMapper {
       return toProperties(element);
     }
 
-    // For projections, return as map
-    final Map<String, Object> map = new LinkedHashMap<>();
-    for (final String prop : result.getPropertyNames()) {
-      map.put(prop, toPackStreamValue(result.getProperty(prop)));
-    }
+    // For projections, return as map. The row's properties are read in one pass (issue #12582)
+    final Map<String, Object> read = ResultInternal.propertiesOf(result);
+    final Map<String, Object> map = new LinkedHashMap<>(read.size() * 4 / 3 + 1);
+    for (final Map.Entry<String, Object> entry : read.entrySet())
+      map.put(entry.getKey(), toPackStreamValue(entry.getValue()));
     return map;
   }
 
@@ -379,6 +422,24 @@ public class BoltStructureMapper {
     if (rid == null)
       return -1;
     return IdFunction.encodeRidAsLong(rid);
+  }
+
+  /**
+   * The id {@code id()} answers for a node or relationship: a virtual one (create.vNode, meta.graph) carries its own
+   * negative id, as APOC's virtual entities do, a stored one the encoding of its RID.
+   */
+  private static long idOf(final Identifiable element) {
+    if (element instanceof VirtualElement virtual)
+      return virtual.getVirtualId();
+    final RID rid = element.getIdentity();
+    return relationshipId(rid, ElementIdFunction.of(rid));
+  }
+
+  /**
+   * The element id {@code elementId()} answers, with the same split as {@link #idOf}.
+   */
+  private static String elementIdOf(final Identifiable element) {
+    return element instanceof VirtualElement virtual ? virtual.getVirtualElementId() : ElementIdFunction.of(element.getIdentity());
   }
 
   // ---------------------------------------------------------------------------
@@ -472,7 +533,8 @@ public class BoltStructureMapper {
    * (Date, Time, LocalTime, LocalDateTime, Duration) are version-invariant and stay on {@link BoltTemporalStructure}.
    */
   static PackStreamStructure toTemporalStructure(final Object rawValue) {
-    final Object value = unwrapCypherTemporal(rawValue);
+    // a CypherDuration stays as it is and is emitted as a SIG_DURATION struct below
+    final Object value = CypherTemporalValue.toJavaTime(rawValue);
 
     if (value instanceof LocalDate d)
       return new BoltTemporalStructure(SIG_DATE, d.toEpochDay());
@@ -516,23 +578,6 @@ public class BoltStructureMapper {
     // localEpoch: wall clock treated as UTC (legacy basis). utcEpoch: the true instant (5.0+ basis).
     return BoltDateTimeStructure.offset(local.toEpochSecond(ZoneOffset.UTC), local.toEpochSecond(offset),
         local.getNano(), offset.getTotalSeconds());
-  }
-
-  private static Object unwrapCypherTemporal(final Object value) {
-    if (value instanceof CypherDate d)
-      return d.getValue();
-    if (value instanceof CypherLocalTime t)
-      return t.getValue();
-    if (value instanceof CypherTime t)
-      return t.getValue();
-    if (value instanceof CypherLocalDateTime ldt)
-      return ldt.getValue();
-    if (value instanceof CypherDateTime dt)
-      return dt.getValue();
-    // NOTE: CypherDuration is intentionally not unwrapped to a java.time value - Bolt has a native Duration
-    // struct but there is no single java.time type for it (months + days + seconds together). It is matched
-    // directly as CypherDuration in toTemporalStructure below and emitted as a SIG_DURATION struct.
-    return value;
   }
 
   /**
@@ -591,9 +636,11 @@ public class BoltStructureMapper {
         return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
 
       case SIG_DATE_TIME_OFFSET_LEGACY: {
-        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
+        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset. Decoded as a
+        // ZonedDateTime whose zone is the offset (#12778), like Cypher datetime('...+05:30'), so a schemaless property
+        // stores a ZONED DATETIME and keeps the offset instead of the UTC wall clock of an OffsetDateTime.
         final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
-        return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+        return ZonedDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_LEGACY: {
@@ -602,9 +649,9 @@ public class BoltStructureMapper {
       }
 
       case SIG_DATE_TIME_OFFSET_UTC: {
-        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
+        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second. ZonedDateTime at the offset, see the legacy case.
         final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
-        return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+        return ZonedDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
       }
 
       case SIG_DATE_TIME_ZONEID_UTC: {

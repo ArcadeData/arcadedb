@@ -272,6 +272,26 @@ class Issue7346RdfShapeDetectionTest {
         .as("a run of the separator is one gap, not three empty terms").isEqualTo(' ');
   }
 
+  /**
+   * An IRI may hold a {@code \}{@code u} (4 hexadecimal digits) or {@code \}{@code U} (8) escape, which the RDF format decodes, so a
+   * first statement with one is RDF: it was refused, and the file went to the delimited-text reading (issue #12049). Any other
+   * backslash is still refused, and so is an escape cut short or with a character that is not an ASCII hexadecimal digit.
+   */
+  @Test
+  void anEscapeInAnIriIsRecognisedAnyOtherBackslashIsNot() {
+    assertThat(SourceDiscovery.nTriplesSeparator("<http://a/caf\\u00E9> <http://a/p> <http://a/o> .")).as("subject").isEqualTo(' ');
+    assertThat(SourceDiscovery.nTriplesSeparator("<http://a/s> <http://a/p\\u00e9> <http://a/o> .")).as("predicate, lower case")
+        .isEqualTo(' ');
+    assertThat(SourceDiscovery.nTriplesSeparator("<http://a/s> <http://a/p> <http://a/\\U0001F600> .")).as("object, 8 digits")
+        .isEqualTo(' ');
+    assertThat(SourceDiscovery.nTriplesSeparator("<http://a/s> <http://a/p> \"x\"^^<http://a/t\\u0041> .")).as("datatype")
+        .isEqualTo(' ');
+
+    for (final String refused : new String[] { "<http://a/\\x41>", "<http://a/s\\>", "<http://a/\\u00E>", "<http://a/\\u00G1>",
+        "<http://a/\\u+041>", "<http://a/\\u０００１>", "<http://a/\\U0001F60>", "<http://a/\\u00" })
+      assertThat(SourceDiscovery.nTriplesSeparator(refused + " <http://a/p> <http://a/o> .")).as(refused).isEqualTo((char) 0);
+  }
+
   // -----------------------------------------------------------------------------------------------------------
 
   /**

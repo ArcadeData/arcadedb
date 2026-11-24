@@ -199,8 +199,8 @@
         },
         {
           "name": "rectangle",
-          "syntax": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]",
-          "description": "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]",
+          "syntax": "rectangle(<west-x>,<y1>,<east-x>,<y2>) [deprecated: use geo.geomFromText with POLYGON WKT]",
+          "description": "rectangle(<west-x>,<y1>,<east-x>,<y2>) [deprecated: use geo.geomFromText with POLYGON WKT]",
           "since": "sql"
         },
         {
@@ -1638,7 +1638,7 @@
         {
           "name": "create.vRelationship",
           "syntax": "create.vRelationship(...)",
-          "description": "Create a virtual relationship (not persisted) between two nodes",
+          "description": "Create a virtual relationship (not persisted) between two nodes: (from, type, properties, to)",
           "since": "cypher"
         }
       ],
@@ -1844,7 +1844,7 @@
         {
           "name": "node.relationship.types",
           "syntax": "node.relationship.types(...)",
-          "description": "Get all relationship types connected to a node",
+          "description": "Get the relationship types connected to a node, optionally filtered by an APOC relationship pattern and a direction",
           "since": "cypher"
         },
         {
@@ -1888,7 +1888,7 @@
         {
           "name": "path.slice",
           "syntax": "path.slice(...)",
-          "description": "Extract a subpath from index 'from' to 'to' (based on relationship count)",
+          "description": "Extract the subpath of 'length' relationships starting at relationship 'offset' (length -1 = to the end)",
           "since": "cypher"
         },
         {
@@ -1940,7 +1940,7 @@
         {
           "name": "text.charAt",
           "syntax": "text.charAt(...)",
-          "description": "Get the character at the specified index (0-based)",
+          "description": "Get the Unicode code point (INTEGER) of the character at the specified index (0-based)",
           "since": "cypher"
         },
         {
@@ -1952,37 +1952,37 @@
         {
           "name": "text.replace",
           "syntax": "text.replace(...)",
-          "description": "Replace all occurrences of search string with replacement",
+          "description": "Replace every match of a regular expression with the replacement, which can refer to groups as $1 or ${name}",
           "since": "cypher"
         },
         {
           "name": "text.hexValue",
           "syntax": "text.hexValue(...)",
-          "description": "Convert value to hexadecimal string representation",
+          "description": "Convert value to upper-case hexadecimal, zero-padded to 4, 8 or 16 digits",
           "since": "cypher"
         },
         {
           "name": "text.split",
           "syntax": "text.split(...)",
-          "description": "Split string into a list using the specified delimiter",
+          "description": "Split a string around the matches of a regular expression; a positive limit caps the number of pieces, a negative one keeps the trailing empty pieces and 0 (the default) drops them",
           "since": "cypher"
         },
         {
           "name": "text.join",
           "syntax": "text.join(...)",
-          "description": "Join list elements into a string with the specified delimiter",
+          "description": "Join list elements into a string with the specified delimiter, a null element written as null",
           "since": "cypher"
         },
         {
           "name": "text.capitalizeAll",
           "syntax": "text.capitalizeAll(...)",
-          "description": "Capitalize the first letter of each word in the string",
+          "description": "Capitalize the first letter of each space-separated word in the string, then trim it",
           "since": "cypher"
         },
         {
           "name": "text.code",
           "syntax": "text.code(...)",
-          "description": "Get the Unicode code point of the first character",
+          "description": "Get the one-character string of a Unicode code point",
           "since": "cypher"
         },
         {
@@ -2006,25 +2006,25 @@
         {
           "name": "text.decapitalizeAll",
           "syntax": "text.decapitalizeAll(...)",
-          "description": "Lowercase the first letter of each word in the string",
+          "description": "Lowercase the first letter of each space-separated word in the string, then trim it",
           "since": "cypher"
         },
         {
           "name": "text.jaroWinklerDistance",
           "syntax": "text.jaroWinklerDistance(...)",
-          "description": "Calculate the Jaro-Winkler similarity (0-1) between two strings",
+          "description": "Calculate the Jaro-Winkler distance (0-1, 0 for equal strings) between two strings",
           "since": "cypher"
         },
         {
           "name": "text.format",
           "syntax": "text.format(...)",
-          "description": "Format string using Java's String.format() with the provided arguments",
+          "description": "Format string using Java's String.format() with the parameters given as one list, in the language given (default 'en')",
           "since": "cypher"
         },
         {
           "name": "text.snakeCase",
           "syntax": "text.snakeCase(...)",
-          "description": "Convert string to snake_case (lowercase with underscores)",
+          "description": "Convert string to snake case: lower-case words joined by '-', a word starting at each upper-case letter or separator",
           "since": "cypher"
         },
         {
@@ -2048,7 +2048,7 @@
         {
           "name": "text.slug",
           "syntax": "text.slug(...)",
-          "description": "Create a URL-friendly slug from the string",
+          "description": "Trim the string and replace every run of characters other than letters, digits and '_' with the delimiter (default '-')",
           "since": "cypher"
         },
         {
@@ -2072,19 +2072,19 @@
         {
           "name": "text.sorensenDiceSimilarity",
           "syntax": "text.sorensenDiceSimilarity(...)",
-          "description": "Calculate the Sorensen-Dice similarity coefficient based on bigrams",
+          "description": "Calculate the Sorensen-Dice similarity coefficient of the bigrams of the words, upper-cased in the language given (default 'en')",
           "since": "cypher"
         },
         {
           "name": "text.upperCamelCase",
           "syntax": "text.upperCamelCase(...)",
-          "description": "Convert string to UpperCamelCase (PascalCase)",
+          "description": "Convert string to UpperCamelCase (PascalCase): camelCase with the first character upper case",
           "since": "cypher"
         },
         {
           "name": "text.camelCase",
           "syntax": "text.camelCase(...)",
-          "description": "Convert string to camelCase (first letter lowercase, words capitalized)",
+          "description": "Convert string to camelCase: the words (letters and digits) lower-cased and capitalized, the first character lower case",
           "since": "cypher"
         },
         {

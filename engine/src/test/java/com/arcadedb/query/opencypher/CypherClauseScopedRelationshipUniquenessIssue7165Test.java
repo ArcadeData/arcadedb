@@ -131,9 +131,10 @@ class CypherClauseScopedRelationshipUniquenessIssue7165Test extends TestHelper {
     final List<Object> bare = new ArrayList<>();
     final List<Object> yielded = new ArrayList<>();
     database.transaction(() -> {
-      bare.addAll(commandColumn("CALL math.abs(-3) MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
+      // the SQL function through the explicit sql. prefix: CALL math.abs(...) only reached it by its last segment (issue #12110)
+      bare.addAll(commandColumn("CALL sql.abs(-3) MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
       yielded.addAll(commandColumn(
-          "CALL math.abs(-3) YIELD value AS v MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
+          "CALL sql.abs(-3) YIELD value AS v MATCH (n)-[e:LINK]->(m) RETURN e.uuid AS uuid", "uuid"));
     });
 
     assertThat(bare).containsExactly("r1");

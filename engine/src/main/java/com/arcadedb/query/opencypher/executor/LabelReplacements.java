@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
@@ -523,7 +524,9 @@ public final class LabelReplacements {
     final TraversalPath rebuilt = new TraversalPath(liveVertices.get(0));
     for (int i = 0; i < liveEdges.size(); i++)
       rebuilt.addStep(liveEdges.get(i), liveVertices.get(i + 1));
-    return rebuilt;
+    // The rebuilt path reads what the statement deleted as the original did (issue #12548)
+    final DeletedReferences.Deletions deletions = path.getDeletions();
+    return deletions != null ? rebuilt.withDeletions(deletions) : rebuilt;
   }
 
   /**
@@ -735,7 +738,10 @@ public final class LabelReplacements {
 
   /**
    * Flattens an edge's properties into the alternating name/value array {@code Vertex.newEdge()} expects. Returns
-   * an empty array for a lightweight edge, whose type rejects any property at all.
+   * an empty array for a lightweight edge, whose type rejects any property at all. A reserved name is left behind, as
+   * {@code GraphEngine.moveEdge} leaves it: an edge can carry a phantom {@code @in} / {@code @out} key (one stored before
+   * #9799, or by a {@code GraphBatch}), and handed on it would name an endpoint of the new edge, which is wired to the vertex its
+   * record names (issue #12247) instead of the one it is re-attached to.
    */
   private static Object[] propertiesOf(final Edge edge) {
     final Set<String> names = edge.getPropertyNames();
@@ -743,9 +749,11 @@ public final class LabelReplacements {
       return NO_PROPERTIES;
     final List<Object> flattened = new ArrayList<>(names.size() * 2);
     for (final String name : names) {
+      if (MutableDocument.isReservedName(name))
+        continue;
       flattened.add(name);
       flattened.add(edge.get(name));
     }
-    return flattened.toArray();
+    return flattened.isEmpty() ? NO_PROPERTIES : flattened.toArray();
   }
 }

@@ -42,7 +42,7 @@ import java.util.List;
  * (a {@code SchemaException}) carrying the same sentence: the embedded {@code create()} raises it before touching storage, and
  * this one, which has no client-side existence check - the rendered DDL carries no {@code IF NOT EXISTS} and no check would be
  * race-free anyway - rebuilds it from the server's 409 (issue #10153). They used to differ, the remote one coming back as a
- * {@link RemoteException}; {@code Issue7399RemoteTimeSeriesTypeBuilderIT} pins that they no longer do.
+ * {@link RemoteException}; {@code RemoteTimeSeriesIT.TypeBuilder} pins that they no longer do.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

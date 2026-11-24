@@ -293,19 +293,22 @@ public class LogicalPlan {
 
   /**
    * Returns true when every node in the pattern carries a label set the physical operators can
-   * represent: exactly one label, or a disjunction the anchor scan can enumerate.
+   * represent: exactly one label, a disjunction the anchor scan can enumerate, or no label at all on a
+   * node a relationship reaches.
    * <p>
    * {@code (a:A:B)} - written that way, or arrived at by merging {@code (a:A)} with a later
    * {@code (a:B)} - names the composite type {@code A~B}, which a vertex labelled {@code A:B:C} does
    * not extend, so a scan of it would miss rows. A disjunction merged with any further label is not
    * expressible at all. Both send the query to the ordinary pipeline, which evaluates the labels one
-   * by one (issue #6322).
+   * by one (issue #6322). A node with no label is only ever reached by an expansion, which accepts any
+   * vertex: the anchor selection never starts from it (issue #11904). A lone one would have to be a scan of
+   * every vertex type, which no anchor operator is.
    */
   public boolean hasRepresentableLabelSets() {
     if (!mixedLabelDisjunctions.isEmpty())
       return false;
     for (final LogicalNode node : patternNodes.values()) {
-      if (node.getLabels().isEmpty())
+      if (node.getLabels().isEmpty() && !isNodeConnected(node.getVariable()))
         return false;
       if (node.getLabels().size() > 1 && !node.isLabelDisjunction())
         return false;
