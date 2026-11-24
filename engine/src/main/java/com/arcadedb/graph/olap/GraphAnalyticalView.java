@@ -45,6 +45,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.IntHashSet;
@@ -398,8 +399,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
 
   private final AtomicReference<JoinedEdgeCoverage> joinedEdgeCoverage = new AtomicReference<>();
   // Whether a snapshot's edge slices (issues #12032, #12039), or its vertex buckets (issue #12549), are all of types the filter still
-  // covers, for one schema version and one types-change serial. The serial moves the moment a type changes, the version only when the schema is saved: for a DDL
-  // statement in an open transaction that is its commit, and until then a verdict keyed on the version alone is served as it was
+  // covers, for one schema version and one types-change serial. The serial moves the moment a type changes, the version only when the
+  // schema is saved: for a DDL statement in an open transaction that is its commit, and until then a verdict keyed on the version alone
+  // is served as it was
   private record SliceCoverage(long schemaVersion, long typesSerial, boolean allCovered) {
     boolean isCurrent(final long version, final long serial) {
       return schemaVersion == version && typesSerial == serial;
@@ -1835,11 +1837,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * ones only the overlay holds vertices of (a type created after the scan) by any covered vertex type that owns them.
    */
   private String firstLeftNodeBucket(final Snapshot snap) {
+    final Schema schema = database.getSchema();
     final NodeIdMapping mapping = snap.nodeMapping;
     for (int i = 0, buckets = mapping.getNumBuckets(); i < buckets; i++) {
       final String typeName = mapping.getBucketTypeName(i);
       final int bucketId = mapping.getBucketId(i);
-      if (!ownsVertexBucket(database.getSchema().getTypeOrNull(typeName), typeName, bucketId))
+      if (!ownsVertexBucket(schema.getTypeOrNull(typeName), typeName, bucketId))
         return "type '" + typeName + "'";
     }
     final int[] added = snap.overlay != null ? snap.overlay.getOverflowVertexBuckets() : null;
@@ -1847,8 +1850,8 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       for (final int bucketId : added)
         if (mapping.getBucketIdxForBucketId(bucketId) < 0) {
           // The type the bucket map names is asked again by its name: the map is published apart from the type registry
-          final DocumentType owner = database.getSchema().getTypeByBucketId(bucketId);
-          if (owner == null || !ownsVertexBucket(database.getSchema().getTypeOrNull(owner.getName()), owner.getName(), bucketId))
+          final DocumentType owner = schema.getTypeByBucketId(bucketId);
+          if (owner == null || !ownsVertexBucket(schema.getTypeOrNull(owner.getName()), owner.getName(), bucketId))
             return "bucket #" + bucketId + (owner != null ? " of type '" + owner.getName() + "'" : "");
         }
     return null;
