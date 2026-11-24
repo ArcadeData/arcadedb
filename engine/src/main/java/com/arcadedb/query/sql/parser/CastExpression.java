@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -26,9 +27,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.FileUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.ParsePosition;
+import java.text.SimpleDateFormat;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -37,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -205,9 +210,9 @@ public class CastExpression extends MathExpression {
     if (converted == null)
       throw new CommandExecutionException("Cannot cast " + describe(value) + " to " + target.name());
     // Type.convert reads a text with a lenient date format, which turns 2020-02-30 into 2020-03-01 and 25:00:00 into the next day: a
-    // cast is strict, so the calendar fields of a text in the usual yyyy-MM-dd[ HH:mm[:ss]] spelling are checked as written
+    // cast is strict, so the calendar fields of a text are checked as written, with the format that reads it
     if (value instanceof CharSequence text)
-      requireValidCalendarFields(text.toString().trim(), target);
+      requireValidCalendarFields(context == null ? null : context.getDatabase(), text.toString().trim(), target);
     // both types are a java.util.Date and Type.convert hands one back unchanged, so a DATE drops its time of day here: the days
     // since the epoch, as a DATE property stores them
     if (target == Type.DATE && converted instanceof Date date)
@@ -215,7 +220,26 @@ public class CastExpression extends MathExpression {
     return converted;
   }
 
-  private static void requireValidCalendarFields(final String text, final Type target) {
+  /**
+   * Type.convert reads a text with the date-time format of the schema, then with its date format (both through a lenient
+   * SimpleDateFormat), and last through the shared ISO chain. The check follows the reader that takes the text: the first schema
+   * format that reads the whole of it must read it again without leniency (in UTC, so that only the calendar is judged, not the
+   * hours a zone skips), and a text that no schema format reads is judged as the ISO text it has to be. A format is never
+   * guessed from the shape of the text, so a schema format such as yyyy-dd-MM keeps its meaning.
+   */
+  private static void requireValidCalendarFields(final Database database, final String text, final Type target) {
+    // a number is a count of milliseconds to Type.convert, whatever the formats say
+    if (FileUtils.isLong(text))
+      return;
+    if (database != null)
+      for (final String pattern : new String[] { database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat() })
+        if (readsWholeText(pattern, text, true)) {
+          if (!readsWholeText(pattern, text, false))
+            throw new CommandExecutionException(
+                "Cannot cast " + describe(text) + " to " + target.name() + ": it is not a valid date for the format " + pattern);
+          return;
+        }
+
     final Matcher matcher = ISO_DATE_TIME.matcher(text);
     if (!matcher.find())
       return;
@@ -227,6 +251,15 @@ public class CastExpression extends MathExpression {
     } catch (final DateTimeException e) {
       throw new CommandExecutionException("Cannot cast " + describe(text) + " to " + target.name() + ": " + e.getMessage());
     }
+  }
+
+  private static boolean readsWholeText(final String pattern, final String text, final boolean lenient) {
+    final SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.ENGLISH);
+    format.setLenient(lenient);
+    if (!lenient)
+      format.setTimeZone(TimeZone.getTimeZone("UTC"));
+    final ParsePosition position = new ParsePosition(0);
+    return format.parse(text, position) != null && position.getIndex() == text.length();
   }
 
   @Override

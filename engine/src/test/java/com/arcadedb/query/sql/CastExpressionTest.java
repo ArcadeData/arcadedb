@@ -214,6 +214,34 @@ class CastExpressionTest extends TestHelper {
     assertThat(value("'2020-2-3 4:5:6'::TIMESTAMP")).isEqualTo(value("'2020-02-03 04:05:06'::TIMESTAMP"));
   }
 
+  /** The strict check follows the format that reads the text, as Type.convert picks it: the schema's date-time and date formats first. */
+  @Test
+  void aCustomDateFormatIsFollowedByTheCalendarCheck() {
+    final Object january31 = value("'2020-01-31'::DATE");
+    database.getSchema().setDateFormat("yyyy-dd-MM");
+
+    // 31 is the day here, and 1 the month, padded or not
+    assertThat(value("'2020-31-1'::DATE")).isEqualTo(january31);
+    assertThat(value("'2020-31-01'::DATE")).isEqualTo(january31);
+    assertThat(value("'2020-29-2'::DATE")).isNotNull();
+    // impossible in that format: the 30th of February, a 30th month, and a 29th of February in a year that has none
+    for (final String text : List.of("2020-30-2", "2020-30-02", "2020-2-30", "2021-29-2"))
+      assertThatThrownBy(() -> value("'" + text + "'::DATE")).as(text).isInstanceOf(CommandExecutionException.class);
+  }
+
+  @Test
+  void aCustomDateTimeFormatIsFollowedByTheCalendarCheck() {
+    final Object expected = value("'2020-01-31 04:05:06'::TIMESTAMP");
+    database.getSchema().setDateTimeFormat("dd/MM/yyyy HH:mm:ss");
+
+    assertThat(value("'31/01/2020 04:05:06'::TIMESTAMP")).isEqualTo(expected);
+    assertThat(value("'31/1/2020 4:5:6'::TIMESTAMP")).isEqualTo(expected);
+    for (final String text : List.of("30/2/2020 4:5:6", "31/04/2020 04:05:06", "1/13/2020 04:05:06", "31/01/2020 25:00:00"))
+      assertThatThrownBy(() -> value("'" + text + "'::TIMESTAMP")).as(text).isInstanceOf(CommandExecutionException.class);
+    // a text that no schema format reads is an ISO one, and its fields are checked as ISO ones
+    assertThatThrownBy(() -> value("'2020-02-30 12:00:00'::TIMESTAMP")).isInstanceOf(CommandExecutionException.class);
+  }
+
   @Test
   void aDateHasNoTimeOfDayAndATimestampKeepsIt() {
     final Object timestamp = value("CAST('2020-01-02 12:34:56' AS TIMESTAMP)");
