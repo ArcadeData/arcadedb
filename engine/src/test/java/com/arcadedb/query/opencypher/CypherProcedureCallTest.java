@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.UnknownProcedureException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
@@ -914,6 +915,72 @@ class CypherProcedureCallTest {
         final List<Result> rows = rs.stream().toList();
         assertThat(rows).hasSize(1);
         return rows.getFirst();
+      }
+    }
+  }
+
+  /**
+   * Regression tests for issue #12110: a {@code CALL} whose name no procedure, function or library function answers ran the
+   * built-in SQL function named by the LAST SEGMENT of the name, whatever the namespace. {@code CALL apoc.atomic.concat(n, 'name',
+   * 'zz')} ran SQL {@code concat()}, answered no row and changed nothing, and {@code CALL nosuch.max(1, 2)} answered 2, where
+   * Neo4j refuses both with ProcedureNotFound.
+   */
+  @Nested
+  class Issue12110UnknownNamespacedProcedure extends TestHelper {
+
+    @Test
+    void anUnimplementedApocWriteProcedureIsRefusedAndWritesNothing() {
+      database.transaction(() -> database.command("opencypher", "CREATE (:Issue12110 {name: 'a'})"));
+
+      assertUnknownProcedure("MATCH (n:Issue12110) CALL apoc.atomic.concat(n, 'name', 'zz') YIELD newValue RETURN newValue",
+          "apoc.atomic.concat");
+
+      try (final ResultSet rs = database.query("opencypher", "MATCH (n:Issue12110) RETURN n.name AS name")) {
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("a");
+      }
+    }
+
+    @Test
+    void theLastSegmentOfAnUnknownNameIsNeverAnSqlFunction() {
+      assertUnknownProcedure("CALL nosuch.max(1, 2)", "nosuch.max");
+      assertUnknownProcedure("CALL apoc.anything.abs(-5)", "apoc.anything.abs");
+      assertUnknownProcedure("CALL apoc.trigger.list() YIELD name RETURN name", "apoc.trigger.list");
+      assertUnknownProcedure("OPTIONAL CALL foo.concat('a', 'b')", "foo.concat");
+    }
+
+    @Test
+    void sqlFunctionsNamedInFullOrThroughTheSqlPrefixStillRun() {
+      assertThat(single("CALL abs(-5)")).isEqualTo(5);
+      assertThat(single("CALL sql.abs(-6)")).isEqualTo(6);
+      assertThat(single("CALL SQL.max(1, 7)")).isEqualTo(7);
+    }
+
+    /** {@code sql.} before a dotted SQL function name ({@code geo.asText}), as expression position reads it. */
+    @Test
+    void theSqlPrefixAlsoNamesADottedSqlFunction() {
+      assertThat(singleText("CALL sql.geo.asText('POINT (1 2)')")).isEqualTo("POINT (1 2)");
+      assertThat(singleText("CALL SQL.geo.asText('POINT (3 4)')")).isEqualTo("POINT (3 4)");
+    }
+
+    private void assertUnknownProcedure(final String query, final String writtenName) {
+      assertThatThrownBy(() -> database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", query)) {
+          rs.stream().toList();
+        }
+      })).as(query).isInstanceOf(UnknownProcedureException.class).hasMessageContaining("Unknown procedure/function: " + writtenName);
+    }
+
+    private int single(final String query) {
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        final Result row = rs.next();
+        return ((Number) row.getProperty(row.getPropertyNames().iterator().next())).intValue();
+      }
+    }
+
+    private String singleText(final String query) {
+      try (final ResultSet rs = database.query("opencypher", query)) {
+        final Result row = rs.next();
+        return row.getProperty(row.getPropertyNames().iterator().next());
       }
     }
   }

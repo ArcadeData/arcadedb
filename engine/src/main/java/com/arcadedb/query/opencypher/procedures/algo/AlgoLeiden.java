@@ -19,24 +19,30 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 
-import com.arcadedb.utility.IntIntHashMap;
-
+import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 /**
  * Procedure: algo.leiden(relTypes?, maxIterations?, resolution?)
  * <p>
- * Detects communities using the Leiden algorithm, an improved version of Louvain with a
- * refinement phase that guarantees well-connected communities. The resolution parameter γ
- * controls community granularity.
+ * Detects communities by modularity optimisation, then refines them so that every community is connected: the local-moving
+ * passes of {@link AlgoLouvain#detect} (a node moves to the neighbouring community that gains most, staying included, until a
+ * pass moves nothing or {@code maxIterations} passes ran), followed by a refinement that splits each community into its
+ * connected components, which is the guarantee that sets Leiden apart from Louvain (a community that is not connected cannot
+ * be well connected). The resolution parameter γ controls community granularity: a lower value favours fewer, larger
+ * communities and a large one leaves every vertex alone. A low value does not promise one community per connected
+ * component: a node moves one at a time and never leaves a community it has more edges into, so two dense groups joined by
+ * an edge can stay apart even at 0.
  * </p>
  * <p>
  * Example:
@@ -51,6 +57,9 @@ import java.util.stream.Stream;
  */
 public class AlgoLeiden extends AbstractAlgoProcedure {
   public static final String NAME = "algo.leiden";
+
+  /** The modularity gain below which a pass is no longer worth another: rounding noise, not a better partition. */
+  private static final double NOISE = 1e-12;
 
   @Override
   public String getName() {
@@ -90,147 +99,62 @@ public class AlgoLeiden extends AbstractAlgoProcedure {
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
 
-
     final int n = graph.nodeCount;
     if (n == 0)
       return Stream.empty();
-    final int[][] adj = graph.adjacency(Vertex.DIRECTION.BOTH, relTypes);
+    final GraphData.WeightedAdjacency adjacency = graph.weightedAdjacency(guard, Vertex.DIRECTION.BOTH, null, relTypes);
+    final int[][] neighbors = adjacency.neighbors();
 
-    // Compute total edges (m) and node degrees
-    final int[] degree = new int[n];
-    long totalEdges = 0;
-    for (int i = 0; i < n; i++) {
-      degree[i] = adj[i].length;
-      totalEdges += degree[i];
-    }
-    // Each undirected edge counted twice
-    final double m = totalEdges / 2.0;
-    if (m == 0.0) {
-      // Isolated nodes: each in its own community
-      return buildResults(graph, initCommunities(n));
-    }
+    // doubles: weighted degree, community total degree, candidate weights and the two modularity accumulators; ints: the
+    // community, the candidate list, the refined label and the stack of the component walk; the touched flags
+    graph.memory().reserve(saturatingProduct(n, 5 * DOUBLE_BYTES + 4 * INT_BYTES + BOOLEAN_BYTES), "the community working set",
+        n + " nodes");
 
-    // Phase 1: Initialize each node in its own community
-    final int[] community = initCommunities(n);
-    final double[] communityWeight = new double[n]; // sum of internal edge weights
-    final long[] communityDegree = new long[n];     // sum of degrees of nodes in community
-    for (int i = 0; i < n; i++)
-      communityDegree[i] = degree[i];
-
-    for (int iter2 = 0; iter2 < maxIterations; iter2++) {
-      // maxIterations is a caller-supplied knob and the "nothing moved" break only fires if the graph settles, so
-      // the outer loop carries the checkpoint. One iteration is two passes over every edge.
-      guard.check();
-      boolean changed = false;
-
-      // Phase 1: Local moves (greedy modularity optimization)
-      for (int i = 0; i < n; i++) {
-        // A single pass walks the whole graph, so on a large one the checkpoint belongs inside the pass too.
-        guard.checkPeriodically(i);
-        final int currentComm = community[i];
-        final long ki = degree[i];
-
-        // Count weights to each neighboring community
-        final IntIntHashMap commWeights = new IntIntHashMap();
-        for (final int j : adj[i])
-          commWeights.increment(community[j]);
-
-        int bestComm = currentComm;
-        final double[] bestGain = { 0.0 };
-        final int[] bestCommHolder = { currentComm };
-
-        commWeights.forEach((candidateComm, weight) -> {
-          if (candidateComm == currentComm)
-            return;
-
-          final double eIc = weight;
-          final double dc = communityDegree[candidateComm];
-          // Modularity gain = [e_ic / m] - γ * [k_i * d_c / (2m²)]
-          final double gain = eIc / m - resolution * ki * dc / (2.0 * m * m);
-
-          if (gain > bestGain[0]) {
-            bestGain[0] = gain;
-            bestCommHolder[0] = candidateComm;
-          }
-        });
-        bestComm = bestCommHolder[0];
-
-        if (bestComm != currentComm) {
-          communityDegree[currentComm] -= ki;
-          communityDegree[bestComm] += ki;
-          community[i] = bestComm;
-          changed = true;
-        }
-      }
-
-      // Phase 2: Refinement — within each community, try to split into sub-communities
-      // by re-running local moves restricted to same community
-      if (changed) {
-        boolean refined = false;
-        for (int i = 0; i < n; i++) {
-          guard.checkPeriodically(i);
-          final int currentComm = community[i];
-          final long ki = degree[i];
-
-          final IntIntHashMap sameCommWeights = new IntIntHashMap();
-          for (final int j : adj[i]) {
-            if (community[j] == currentComm)
-              sameCommWeights.increment(community[j]);
-          }
-
-          // Try removing from current community
-          final int internalEdges = sameCommWeights.get(currentComm, 0);
-          final double removeGain = -(internalEdges / m - resolution * ki * communityDegree[currentComm] / (2.0 * m * m));
-
-          if (removeGain > 0.0) {
-            // Move to its own community (use index as community ID)
-            final int newComm = i;
-            if (newComm != currentComm) {
-              communityDegree[currentComm] -= ki;
-              communityDegree[newComm] = ki;
-              community[i] = newComm;
-              refined = true;
-            }
-          }
-        }
-
-        if (!refined)
-          break;
-      } else {
-        break;
-      }
-    }
-
-    // Remap communities to sequential IDs
-    final IntIntHashMap remap = new IntIntHashMap();
-    int nextId = 0;
-    for (int i = 0; i < n; i++) {
-      if (!remap.containsKey(community[i]))
-        remap.put(community[i], nextId++);
-    }
+    final int[] community = AlgoLouvain.detect(neighbors, adjacency.weights(), maxIterations, NOISE, resolution, guard).community();
+    final int[] refined = splitIntoConnectedComponents(neighbors, community, guard);
 
     return IntStream.range(0, n).mapToObj(i -> {
+      // a node id a view keeps for a deleted vertex is no vertex: it is isolated, and it has no row (as in algo.louvain)
+      final RID rid = graph.getRID(i);
+      if (rid == null)
+        return null;
       final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", graph.getRID(i));
-      r.setProperty("community", remap.get(community[i], -1));
+      r.setProperty("nodeId", rid);
+      r.setProperty("community", refined[i]);
       return (Result) r;
-    });
+    }).filter(Objects::nonNull);
   }
 
-  private int[] initCommunities(final int n) {
-    final int[] c = new int[n];
-    for (int i = 0; i < n; i++)
-      c[i] = i;
-    return c;
-  }
-
-  private Stream<Result> buildResults(final GraphData graph, final int[] community) {
-    final int n = graph.nodeCount;
-    return IntStream.range(0, n).mapToObj(i -> {
-      final ResultInternal r = new ResultInternal();
-      r.setProperty("nodeId", graph.getRID(i));
-      r.setProperty("community", community[i]);
-      return (Result) r;
-    });
+  /**
+   * The refinement: every community becomes one community per connected component of the edges inside it. The labels are
+   * numbered from 0 in order of first appearance.
+   */
+  private static int[] splitIntoConnectedComponents(final int[][] neighbors, final int[] community, final WorkGuard guard) {
+    final int n = community.length;
+    final int[] label = new int[n];
+    Arrays.fill(label, -1);
+    final int[] stack = new int[n];
+    int next = 0;
+    int work = 0; // adjacency entries walked: a vertex of high degree is many of them, so the checkpoint counts these
+    for (int start = 0; start < n; start++) {
+      guard.checkPeriodically(start);
+      if (label[start] >= 0)
+        continue;
+      label[start] = next;
+      int top = 0;
+      stack[top++] = start;
+      while (top > 0) {
+        final int node = stack[--top];
+        for (final int other : neighbors[node]) {
+          guard.checkPeriodically(++work);
+          if (label[other] < 0 && community[other] == community[node]) {
+            label[other] = next;
+            stack[top++] = other;
+          }
+        }
+      }
+      next++;
+    }
+    return label;
   }
 }

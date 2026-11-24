@@ -90,7 +90,8 @@ class GraphAnalyticalViewCSRPersistence {
   // 3: a listed vertex type brings its sub-types (issue #10208), so a file written for the type alone is not reused
   // 4: the header carries the scan's coverage of the edge types (issue #10214)
   // 5: the payload is a sequence of frames, each encrypted on its own, so neither side holds it whole (issue #11011)
-  private static final int    FORMAT_VERSION   = 5;
+  // 6: the header carries the buckets each scanned edge type owned, which tell a slice from a type that took its name (issue #12507)
+  private static final int    FORMAT_VERSION   = 6;
   private static final int    FRAME_SIZE       = 1 << 20;
   private static final int    ARRAY_CHUNK_SIZE = 1 << 16;
   private static final int    IO_BUFFER_SIZE   = 1 << 16;
@@ -135,10 +136,14 @@ class GraphAnalyticalViewCSRPersistence {
    * @param uncoveredEdgeBuckets the buckets of the edges of a type the view does not materialize that the scan met (issue
    *                             #10214); null when not known. An edge written after the scan needs no record here: its commit
    *                             moves the transaction id past the certificate, and the file is not restored
+   * @param edgeTypeBuckets      the buckets each scanned edge type owned when the scan started, by the type's name (issue #12507);
+   *                             null when not known. Kept in the file rather than read back from the schema on restore: the restore
+   *                             can come after a DDL statement of this session, and a type that took the name of a slice by then
+   *                             would be taken for the type the slice was scanned from
    */
   static void save(final Database database, final String viewName, final String[] vertexTypes, final String[] edgeTypes,
       final String[] propertyFilter, final String[] edgePropertyFilter, final GraphAnalyticalView.Snapshot snapshot,
-      final String[] scannedEdgeTypes, final int[] uncoveredEdgeBuckets) throws IOException {
+      final String[] scannedEdgeTypes, final int[] uncoveredEdgeBuckets, final Map<String, int[]> edgeTypeBuckets) throws IOException {
     final DataEncryption encryption = dataEncryptionOf(database);
 
     final File target = fileFor(database, viewName);
@@ -160,6 +165,7 @@ class GraphAnalyticalViewCSRPersistence {
       writeStringArray(out, edgePropertyFilter);
       writeStringArray(out, scannedEdgeTypes);
       writeOptionalInts(out, uncoveredEdgeBuckets);
+      writeOptionalIntArrayMap(out, edgeTypeBuckets);
       out.writeLong(snapshot.asOfTransactionId);
       out.writeBoolean(encryption != null);
 
@@ -393,6 +399,7 @@ class GraphAnalyticalViewCSRPersistence {
         return null;
       final String[] scannedEdgeTypes = readStringArray(in);
       final int[] uncoveredEdgeBuckets = readOptionalInts(in);
+      final Map<String, int[]> edgeTypeBuckets = readOptionalIntArrayMap(in);
       final long asOfTransactionId = in.readLong();
       if (asOfTransactionId != currentLastTransactionId)
         return null;
@@ -434,7 +441,8 @@ class GraphAnalyticalViewCSRPersistence {
       return new GraphAnalyticalView.Snapshot(csrPerType, mapping, bucketColumns, edgeColumnStores, bwdToFwd,
           null, System.currentTimeMillis(), 0L, asOfTransactionId, true,
           vertexTypes, edgeTypes, propertyFilter, edgePropertyFilter, -1L,
-          scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered);
+          scannedEdgeTypes != null ? Set.copyOf(Arrays.asList(scannedEdgeTypes)) : null, uncovered != null ? uncoveredWritesMark : -1L, uncovered,
+          edgeTypeBuckets);
     } catch (final IOException | OutOfMemoryError | RuntimeException e) {
       // Truncation, corruption, a payload that does not decrypt, and the "encrypted but no DataEncryption configured" case
       // thrown above all take the same log+delete+return-null path, rather than propagating past this method to be caught

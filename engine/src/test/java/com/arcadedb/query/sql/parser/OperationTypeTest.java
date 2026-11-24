@@ -159,4 +159,19 @@ class OperationTypeTest {
     final Statement stmt = parse("MOVE VERTEX (SELECT FROM V LIMIT 1) TO TYPE:Person");
     assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
+
+  /** An import creates types, properties, indexes and the schema members of the file it reads, besides the records. */
+  @Test
+  void importDatabaseChangesTheSchemaAndWritesRecords() {
+    final Statement stmt = parse("IMPORT DATABASE file:///tmp/source.jsonl");
+    assertThat(stmt.getOperationTypes()).containsExactlyInAnyOrder(OperationType.SCHEMA, OperationType.CREATE, OperationType.UPDATE,
+        OperationType.DELETE);
+    assertThat(stmt.isIdempotent()).isFalse();
+  }
+
+  @Test
+  void importDatabaseNestedInABlockKeepsItsSchemaOperation() {
+    final Statement stmt = parse("IF (1 = 1) { IMPORT DATABASE file:///tmp/source.jsonl; }");
+    assertThat(stmt.getOperationTypes()).contains(OperationType.SCHEMA);
+  }
 }

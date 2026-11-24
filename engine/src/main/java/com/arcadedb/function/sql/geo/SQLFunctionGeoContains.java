@@ -23,10 +23,10 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function geo.contains: returns true if geometry g fully contains shape.
+ * SQL function geo.contains: returns true if geometry g fully contains shape, a shape containing itself (see
+ * {@link GeoUtils#contains}).
  *
  * <p>Usage: {@code geo.contains(g, shape)}</p>
  * <p>Returns: Boolean</p>
@@ -52,7 +52,7 @@ public class SQLFunctionGeoContains extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    return geom1.relate(geom2) == SpatialRelation.CONTAINS;
+    return GeoUtils.contains(geom1, geom2);
   }
 
   @Override

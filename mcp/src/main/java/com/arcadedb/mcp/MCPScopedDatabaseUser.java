@@ -27,7 +27,9 @@ import com.arcadedb.security.SecurityDatabaseUser;
  * it, and analyzes as a CREATE. Binding this principal makes the engine refuse such a schema change at the one point every
  * route to it passes, {@code checkPermissionsOnDatabase(UPDATE_SCHEMA)}, which the engine demands only when the schema is about
  * to change (a type that exists as requested changes nothing): a configuration with {@code allowSchemaChange=false} then means
- * that no tool can leave the schema different from how it found it.
+ * that no tool can leave the schema different from how it found it. The settings the schema carries
+ * ({@code UPDATE_DATABASE_SETTINGS}) are refused the same way, and so are the members a restored file brings (triggers, function
+ * libraries, extensions), which the engine asks {@code UPDATE_SCHEMA} for before it installs any of them.
  * <p>
  * It can only narrow: every other decision is the caller's own principal's, so the per-type and per-database permissions of
  * the user still apply on top.
@@ -52,7 +54,9 @@ public final class MCPScopedDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
-    if (access == DATABASE_ACCESS.UPDATE_SCHEMA && !allowSchemaChange)
+    // The settings of the schema (date formats, time zone, encoding) are part of it: they are saved with it and a change to them
+    // is a change to how it reads
+    if ((access == DATABASE_ACCESS.UPDATE_SCHEMA || access == DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS) && !allowSchemaChange)
       return false;
     return delegate.requestAccessOnDatabase(access);
   }

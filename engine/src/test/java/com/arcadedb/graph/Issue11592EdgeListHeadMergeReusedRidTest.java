@@ -205,7 +205,9 @@ class Issue11592EdgeListHeadMergeReusedRidTest extends TestHelper {
     });
 
     assertThat(replacement.get()).as("the new vertex reuses the RID of the deleted one").isEqualTo(b);
-    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    // #12123: a real delete keeps its own wording, the replicated page write has another
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class)
+        .hasMessage("Record " + b + " was deleted by a concurrent transaction. Please retry the operation");
     database.transaction(() -> {
       assertThat(edgeCount()).isZero();
       assertThat(neighbours(a, Vertex.DIRECTION.OUT)).isEmpty();
