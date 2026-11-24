@@ -24,6 +24,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.ResultRowCapScope;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
@@ -60,6 +61,8 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Map<String, Object> parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database);
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
@@ -69,11 +72,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet query(final String query, ContextConfiguration configuration, final Object... parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database);
     for (final Statement statement : statements)
       if (!statement.isIdempotent())
@@ -83,11 +88,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
     Statement.checkParametersBound(statements, parameters);
 
@@ -95,11 +102,13 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Object... parameters) {
+    // The first thing: whatever the script runs after this finds no cap, only its last statement is the caller's answer (issue #12016)
+    final int rowCap = ResultRowCapScope.take();
     final List<Statement> statements = parseScript(query, database.getWrappedDatabaseInstance());
     Statement.checkPositionalParameterCount(statements, parameters == null ? 0 : parameters.length);
 
@@ -107,7 +116,7 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     context.setConfiguration(configuration);
     context.setDatabase(database.getWrappedDatabaseInstance());
     context.setInputParameters(parameters);
-    return executeInternal(statements, context);
+    return executeInternal(statements, context, rowCap);
   }
 
   @Override
@@ -190,7 +199,10 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
           if (blockDepth > 0)
             blockDepth--;
           retryBlock |= commit.getRetry() != null;
-        } else if (blockDepth == 0 && !statement.isIdempotent())
+        } else if (statement instanceof RollbackStatement && blockDepth > 0)
+          // ISSUE #12797: A ROLLBACK closes its BEGIN block as executeInternal plans it, so what follows is outside that block
+          blockDepth--;
+        else if (blockDepth == 0 && !statement.isIdempotent())
           return false;
       }
       return retryBlock;
@@ -214,7 +226,23 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
     return true;
   }
 
-  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
+  /**
+   * Plans the statements of a closed {@code BEGIN ...} block one after the other and answers the empty list the next block collects
+   * into. Issue #8633: the block is planned, so it must not be planned again by the next one.
+   */
+  private static List<Statement> planBlock(final ScriptExecutionPlan plan, final List<Statement> block,
+      final CommandContext scriptContext) {
+    for (final Statement statement : block)
+      plan.chain(statement.createExecutionPlan(scriptContext));
+    return new ArrayList<>();
+  }
+
+  /**
+   * @param rowCap the rows the caller reads at most (see {@link ResultRowCapScope}), {@code 0} for none. The caller reads what the last
+   *               statement of the script answers, so that statement is the only one it bounds: a statement before it feeds the
+   *               script and is not an answer to the caller
+   */
+  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext, final int rowCap) {
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
     plan.setStatements(statements);
@@ -224,13 +252,17 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
 
     for (final Statement stm : statements) {
       stm.setOriginalStatement(stm);
-      stm.setLimit(new Limit().setValue((int) database.getResultSetLimit()));
+      // THE USER'S QUOTA WHERE IT IS TIGHTER THAN THE STATEMENT'S OWN LIMIT, AS FOR THE SAME STATEMENT RUN ON ITS OWN: IT USED TO
+      // REPLACE A LIMIT BELOW IT (ISSUE #12888). THE STATEMENTS ARE PARSED FOR THIS EXECUTION, SO NO OTHER USER SEES THE CHANGE
+      stm.applyTighterProfiledLimit(database, scriptContext.getInputParameters());
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;
 
       if (nestedTxLevel <= 0) {
         final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
+        if (rowCap > 0 && stm == statements.getLast() && (stm instanceof SelectStatement || stm instanceof MatchStatement))
+          sub.applyRowCap(rowCap);
         plan.chain(sub);
       } else
         lastRetryBlock.add(stm);
@@ -254,22 +286,26 @@ public class SQLScriptQueryEngine extends SQLQueryEngine {
               plan.chain(retryPlan);
               lastRetryBlock = new ArrayList<>();
             } else {
-              for (final Statement statement : lastRetryBlock) {
-                final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-                plan.chain(sub);
-              }
-              // ISSUE #8633: THE BLOCK IS PLANNED, SO IT MUST NOT BE PLANNED AGAIN BY THE NEXT ONE
-              lastRetryBlock = new ArrayList<>();
+              lastRetryBlock = planBlock(plan, lastRetryBlock, scriptContext);
             }
           }
         } else
           throw new CommandSQLParsingException("Found COMMIT statement without a BEGIN");
+      } else if (stm instanceof RollbackStatement && nestedTxLevel > 0) {
+        // ISSUE #12797: A ROLLBACK ends the transaction its BEGIN started as a COMMIT does, so the block is planned as it stands.
+        // Left open, the count never returned to 0 and every statement from the BEGIN on was dropped without a word
+        nestedTxLevel--;
+        if (nestedTxLevel == 0)
+          lastRetryBlock = planBlock(plan, lastRetryBlock, scriptContext);
       }
 
       if (stm instanceof LetStatement letStatement) {
         scriptContext.declareScriptVariable(letStatement.getVariableName().getStringValue());
       }
     }
+
+    if (nestedTxLevel > 0)
+      throw new CommandSQLParsingException("Found BEGIN statement without a COMMIT or ROLLBACK");
 
     return new LocalResultSet(plan);
   }

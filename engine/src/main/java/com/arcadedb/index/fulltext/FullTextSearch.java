@@ -203,6 +203,15 @@ public class FullTextSearch {
    */
   public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit,
       final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter) {
+    return search(typeIndex, queryText, limit, guard, restrictedFields, ridFilter, null);
+  }
+
+  /**
+   * {@link #search(TypeIndex, String, int, WorkGuard, List, RIDFilter)} taking the postings of a disjunction of terms from
+   * {@code reuse} when an earlier search of the same statement read them, and leaving them there when it reads them.
+   */
+  public static Map<RID, Float> search(final TypeIndex typeIndex, final String queryText, final int limit,
+      final WorkGuard guard, final List<String> restrictedFields, final RIDFilter ridFilter, final FullTextPostingsReuse reuse) {
     final int effectiveLimit = limit < 1 ? -1 : limit;
     final List<LSMTreeFullTextIndex> bucketIndexes = getBucketIndexes(typeIndex);
     if (bucketIndexes.isEmpty() || (ridFilter != null && ridFilter.acceptsNothing()))
@@ -211,7 +220,7 @@ public class FullTextSearch {
     // A disjunction of terms is answered from the postings alone, read once, with one top-k threshold shared by the buckets
     // (issue #12458); every other query shape matches first and scores after
     final Map<RID, Float> disjunction = FullTextTopKSearch.search(bucketIndexes, queryText, effectiveLimit, guard, restrictedFields,
-        ridFilter);
+        ridFilter, reuse);
     if (disjunction != null)
       return disjunction;
 

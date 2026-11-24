@@ -448,7 +448,7 @@ class PropertyDefinitionTest {
       });
 
       assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY T.n STRING"))
-          .isInstanceOf(CommandExecutionException.class)
+          .isInstanceOf(ValidationException.class)
           .hasMessageContaining("Cannot create property 'T.n'")
           .hasMessageContaining("STRING")
           .hasMessageContaining("Integer");
@@ -474,7 +474,7 @@ class PropertyDefinitionTest {
 
         assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY " + typeName + ".n STRING"))
             .as(value.getClass().getSimpleName())
-            .isInstanceOf(CommandExecutionException.class)
+            .isInstanceOf(ValidationException.class)
             .hasMessageContaining("STRING");
         assertThat(database.getSchema().getType(typeName).existsProperty("n")).isFalse();
       }
@@ -502,7 +502,7 @@ class PropertyDefinitionTest {
         database.newDocument("C").set("n", 42).save();
       });
 
-      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY P.n STRING")).isInstanceOf(CommandExecutionException.class);
+      assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY P.n STRING")).isInstanceOf(ValidationException.class);
     }
 
     private long count(final String sql) {

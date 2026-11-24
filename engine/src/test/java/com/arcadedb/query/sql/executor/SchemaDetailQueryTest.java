@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -229,6 +230,103 @@ class SchemaDetailQueryTest extends TestHelper {
 
       assertThat(rs.hasNext()).isFalse();
     }
+  }
+
+  /**
+   * The settings of the {@code METADATA} clause in force on an index are readable through SQL, on the detail and on the listing.
+   * A reader with no schema object to ask (a remote client, the native library) had only the schema file to find out whether a
+   * vector index was built with {@code addHierarchy}. A setting the statement did not name is reported with its default, since
+   * that is the value in force and a default can change between releases.
+   */
+  @Test
+  void indexMetadataInForceIsReadable() {
+    createVectorIndex("FlatVectors", "{\"dimensions\": 4, \"addHierarchy\": false, \"similarity\": \"EUCLIDEAN\"}");
+    createVectorIndex("HierarchicalVectors", "{\"dimensions\": 4, \"addHierarchy\": true, \"efSearch\": 100}");
+    // LSM_VECTOR is refused without its dimensions, so this is the least a statement can name
+    createVectorIndex("DefaultVectors", "{\"dimensions\": 4}");
+    final LSMVectorIndexMetadata defaults = new LSMVectorIndexMetadata("DefaultVectors", null, -1);
+
+    // read twice: from the definitions the statements built, then from the ones a reopen reads back from the schema file
+    for (int pass = 0; pass < 2; pass++) {
+      for (final Map<String, Object> metadata : indexMetadata("FlatVectors")) {
+        assertThat(metadata).containsEntry("addHierarchy", false).containsEntry("dimensions", 4);
+        // an enum is reported as its name, the value the METADATA clause takes
+        assertThat(metadata).containsEntry("similarity", "EUCLIDEAN")
+            .containsEntry("quantization", defaults.quantizationType.name());
+        // not asked for, so not in force: a search on this index takes the adaptive beam (issue #6494)
+        assertThat(metadata).doesNotContainKey("efSearch");
+        assertThat(metadata.values()).allSatisfy(
+            value -> assertThat(value).isInstanceOfAny(Boolean.class, Number.class, String.class));
+      }
+
+      for (final Map<String, Object> metadata : indexMetadata("HierarchicalVectors"))
+        assertThat(metadata).containsEntry("addHierarchy", true).containsEntry("efSearch", 100);
+
+      for (final Map<String, Object> metadata : indexMetadata("DefaultVectors"))
+        assertThat(metadata).containsEntry("addHierarchy", defaults.addHierarchy).containsEntry("dimensions", 4);
+
+      if (pass == 0)
+        reopenDatabase();
+    }
+  }
+
+  /**
+   * The shape of {@code metadata} on the other index types: an index type with settings of its own reports them, defaults
+   * included and unset ones left out, and an index type with none (a plain LSM_TREE index) has no {@code metadata} at all, as
+   * with every other key that has nothing to report (issue #6005).
+   */
+  @Test
+  void indexMetadataFollowsTheIndexType() {
+    database.command("sql", "CREATE DOCUMENT TYPE Article BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY Article.title STRING");
+    database.command("sql", "CREATE INDEX ON Article (title) FULL_TEXT METADATA {\"allowLeadingWildcard\": true}");
+    database.command("sql", "CREATE DOCUMENT TYPE PlainIndexed BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY PlainIndexed.name STRING");
+    database.command("sql", "CREATE INDEX ON PlainIndexed (name) UNIQUE");
+
+    for (int pass = 0; pass < 2; pass++) {
+      for (final Map<String, Object> metadata : indexMetadata("Article")) {
+        assertThat(metadata).containsEntry("allowLeadingWildcard", true)
+            .containsKeys("analyzer", "defaultOperator", "similarity");
+        assertThat(metadata).doesNotContainKeys("index_analyzer", "query_analyzer", "efSearch", "addHierarchy");
+      }
+
+      assertThat(indexMetadata("PlainIndexed")).containsOnlyNulls();
+
+      if (pass == 0)
+        reopenDatabase();
+    }
+  }
+
+  private void createVectorIndex(final String typeName, final String metadata) {
+    database.command("sql", "CREATE DOCUMENT TYPE " + typeName + " BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY " + typeName + ".embedding ARRAY_OF_FLOATS");
+    database.command("sql", "CREATE INDEX ON " + typeName + " (embedding) LSM_VECTOR METADATA " + metadata);
+  }
+
+  /**
+   * The {@code metadata} of every row the two statements answer for the index of a type: the detail of its type index, then the
+   * rows of the listing. Null for a row that has no {@code metadata}.
+   */
+  private List<Map<String, Object>> indexMetadata(final String typeName) {
+    final String indexName = database.getSchema().getType(typeName).getAllIndexes(true).iterator().next().getName();
+    final List<Map<String, Object>> found = new ArrayList<>();
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:index:`" + indexName + "`")) {
+      final Result r = rs.next();
+      found.add(r.hasProperty("metadata") ? r.getProperty("metadata") : null);
+    }
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:indexes WHERE typeName = '" + typeName + "'")) {
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        found.add(r.hasProperty("metadata") ? r.getProperty("metadata") : null);
+      }
+    }
+
+    // the listing answered too: the detail alone is one row
+    assertThat(found).hasSizeGreaterThan(1);
+    return found;
   }
 
   @Test

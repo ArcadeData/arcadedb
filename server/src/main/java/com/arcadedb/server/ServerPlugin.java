@@ -75,6 +75,16 @@ public interface ServerPlugin {
   }
 
   /**
+   * Describes a thread this plugin accepts client connections on that has terminated while the plugin is still meant to
+   * be listening, or {@code null} while every such thread is alive, and while the plugin is not started or stopped (issue
+   * #12552). An {@code OutOfMemoryError} can end a listener thread and leave the rest of the server up, answering on its
+   * other protocols, with nothing on its own port: the readiness probe reads this so such a node leaves the Service.
+   */
+  default String getListenerFailure() {
+    return null;
+  }
+
+  /**
    * Invoked right after a database entered the server registry: created at runtime, restored, imported, opened on
    * demand or re-registered by the HA snapshot installer. A plugin that keeps per-database state (a schedule, a
    * cache, a listener) uses this to pick up a database that did not exist when the plugin started.

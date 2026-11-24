@@ -256,8 +256,7 @@ public class SQLLiteralParameterizer extends LiteralParameterizer<Statement> {
         if (!withMinus)
           throw e;
         // -9223372036854775808: only the folded literal fits a long (SQLASTBuilder.tryFoldLongMinValueLiteral)
-        final String digits = token.endsWith("L") || token.endsWith("l") ? token.substring(0, token.length() - 1) : token;
-        return Long.parseLong("-" + digits);
+        return SQLASTBuilder.parseNegatedLongLiteral(token);
       }
     }
     if (!withMinus)

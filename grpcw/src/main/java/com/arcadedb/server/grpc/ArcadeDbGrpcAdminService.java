@@ -85,7 +85,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * A table rather than a ladder of {@code instanceof} tests, because a ladder is what produced #10158: #10089 taught ONE
    * arm to look along the chain the engine wraps a failure in, and the other eleven still read the head frame, so one
    * wrapper turned "that name is taken" or "the quorum is momentarily unreachable" into {@code INTERNAL}. An arm added
-   * here is walked the same way as every other, and {@code Issue10158GrpcWrappedRefusalStatusTest} fails until it has a
+   * here is walked the same way as every other, and {@code GrpcRefusalStatusMappingTest} fails until it has a
    * case of its own.
    */
   static final RefusalArm[] REFUSAL_ARMS = {

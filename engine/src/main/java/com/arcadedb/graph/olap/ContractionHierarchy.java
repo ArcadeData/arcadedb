@@ -100,8 +100,8 @@ public final class ContractionHierarchy {
 
   private volatile Prepared      prepared;
   private volatile TopologyRoot  root;
-  private volatile Status        status = Status.PREPARING;
-  private volatile String        statusReason;
+  // the status and its reason, published together: a reader that sees UNSUITABLE or UNAVAILABLE also sees why (#11996)
+  private volatile State         state          = State.PREPARING;
   private final    AtomicInteger requestedModes = new AtomicInteger(MODE_DIRECTED);
   private volatile boolean       closed;
   private final    AtomicBoolean running        = new AtomicBoolean();
@@ -129,6 +129,12 @@ public final class ContractionHierarchy {
 
   /** The routed arcs of one snapshot, in its dense id space. */
   record Input(int nodeCount, int[] tails, int[] heads, double[] weights, int count) {
+  }
+
+  /** A status and the reason that goes with it: null unless the status is UNSUITABLE or UNAVAILABLE. */
+  private record State(Status status, String reason) {
+    static final State PREPARING = new State(Status.PREPARING, null);
+    static final State READY     = new State(Status.READY, null);
   }
 
   /**
@@ -182,7 +188,10 @@ public final class ContractionHierarchy {
   }
 
   public Status getStatus() {
-    final Status s = status;
+    return effectiveStatus(state.status());
+  }
+
+  private Status effectiveStatus(final Status s) {
     if (s == Status.READY) {
       final Prepared p = prepared;
       if (p == null || p.snapshot != view.currentSnapshot())
@@ -193,7 +202,7 @@ public final class ContractionHierarchy {
 
   /** Why the hierarchy is {@link Status#UNSUITABLE} or {@link Status#UNAVAILABLE}; null otherwise. */
   public String getStatusReason() {
-    return statusReason;
+    return state.reason();
   }
 
   /**
@@ -323,7 +332,7 @@ public final class ContractionHierarchy {
 
   /** Called by the view whenever it publishes a new snapshot. */
   void onSnapshotPublished() {
-    if (!closed && status != Status.UNSUITABLE)
+    if (!closed && state.status() != Status.UNSUITABLE)
       schedule();
     // a waiter in awaitReady() re-reads the snapshot it is waiting for right away instead of at its next slice
     synchronized (readyMonitor) {
@@ -333,14 +342,12 @@ public final class ContractionHierarchy {
 
   /** Called by the view when it is built from scratch on request: an unsuitable graph may have become suitable. */
   void onRebuildRequested() {
-    if (status == Status.UNSUITABLE) {
-      status = Status.PREPARING;
-      statusReason = null;
-    }
+    if (state.status() == Status.UNSUITABLE)
+      state = State.PREPARING;
   }
 
   private void schedule() {
-    if (closed || status == Status.UNSUITABLE)
+    if (closed || state.status() == Status.UNSUITABLE)
       return;
     if (!running.compareAndSet(false, true)) {
       rerunRequested = true;
@@ -362,7 +369,7 @@ public final class ContractionHierarchy {
         if (current != null && current.snapshot == snap && hasRequestedModes(current))
           continue;
         prepare(snap);
-      } while (rerunRequested && !closed && status != Status.UNSUITABLE);
+      } while (rerunRequested && !closed && state.status() != Status.UNSUITABLE);
     } catch (final OutOfMemoryError e) {
       // Caught on purpose, like the CSR and order persistence do: the arc budget bounds the supergraph, but a large one
       // can still exhaust a tight heap, and the view itself must stay usable. The topology goes too, at the price of
@@ -377,7 +384,7 @@ public final class ContractionHierarchy {
         readyMonitor.notifyAll();
       }
       // a request that landed between the last check of the loop and the release above would otherwise be lost
-      if (rerunRequested && !closed && status != Status.UNSUITABLE)
+      if (rerunRequested && !closed && state.status() != Status.UNSUITABLE)
         schedule();
     }
   }
@@ -390,9 +397,9 @@ public final class ContractionHierarchy {
   private void failed(final Throwable e) {
     prepared = null;
     final String reason = e.toString();
-    final boolean repeated = reason.equals(statusReason) && status == Status.UNAVAILABLE;
-    statusReason = reason;
-    status = Status.UNAVAILABLE;
+    final State current = state;
+    final boolean repeated = reason.equals(current.reason()) && current.status() == Status.UNAVAILABLE;
+    state = new State(Status.UNAVAILABLE, reason);
     LogManager.instance().log(this, repeated ? Level.FINE : Level.WARNING,
         "Contraction hierarchy on '%s' of view '%s' could not be prepared", e, weightProperty, view.getName());
   }
@@ -418,8 +425,7 @@ public final class ContractionHierarchy {
       // CSR until this hierarchy can be prepared again, which may be never. The topology and the metrics stay, so the
       // next preparation - typically right after the rebuild the view is running - is a partial customization again
       prepared = previous == null ? null : previous.detached();
-      status = Status.UNAVAILABLE;
-      statusReason = "the view cannot serve '" + weightProperty + "' exactly for its current snapshot";
+      state = new State(Status.UNAVAILABLE, "the view cannot serve '" + weightProperty + "' exactly for its current snapshot");
       return;
     }
 
@@ -470,12 +476,12 @@ public final class ContractionHierarchy {
       if (closed)
         return;
       if (topology == null) {
-        status = Status.UNSUITABLE;
-        statusReason = "the graph needs more than " + budget + " supergraph arcs (" + input.count() + " routed edges): it "
+        final String reason = "the graph needs more than " + budget + " supergraph arcs (" + input.count() + " routed edges): it "
             + "has no small separators. Shortest paths are answered by bidirectional Dijkstra";
+        state = new State(Status.UNSUITABLE, reason);
         prepared = null;
         LogManager.instance().log(this, Level.WARNING, "Contraction hierarchy on '%s' of view '%s' not built: %s",
-            weightProperty, view.getName(), statusReason);
+            weightProperty, view.getName(), reason);
         return;
       }
       lastTopologyBuildMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - begin);
@@ -506,8 +512,7 @@ public final class ContractionHierarchy {
         nodeToDense[denseToNode[d]] = d;
 
     prepared = new Prepared(snap, topologyRoot, denseToNode, nodeToDense, directed, undirected);
-    statusReason = null;
-    status = Status.READY;
+    state = State.READY;
   }
 
   /**
@@ -648,8 +653,7 @@ public final class ContractionHierarchy {
     prepared = new Prepared(snap, previous.root, previous.denseToNode, previous.nodeToDense, previous.directed,
         previous.undirected);
     lastCatchUpMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - begin);
-    statusReason = null;
-    status = Status.READY;
+    state = State.READY;
     return true;
   }
 
@@ -813,16 +817,16 @@ public final class ContractionHierarchy {
       request(MODE_UNDIRECTED);
     final long deadline = System.nanoTime() + unit.toNanos(timeout);
     while (true) {
-      if (closed || status == Status.UNSUITABLE)
+      if (closed || state.status() == Status.UNSUITABLE)
         return false;
       final GraphAnalyticalView.Snapshot snap = view.currentSnapshot();
       final Prepared p = prepared;
-      if (snap != null && p != null && p.snapshot == snap && hasRequestedModes(p) && status == Status.READY)
+      if (snap != null && p != null && p.snapshot == snap && hasRequestedModes(p) && state.status() == Status.READY)
         return true;
       if (!running.get()) {
         // the last attempt was for this very snapshot and could not be completed: waiting longer changes nothing,
         // unless the view is about to replace it (its edge columns are being rebuilt after a weight update)
-        if (status == Status.UNAVAILABLE && lastAttempt == snap && !view.isSnapshotBeingReplaced(snap))
+        if (state.status() == Status.UNAVAILABLE && lastAttempt == snap && !view.isSnapshotBeingReplaced(snap))
           return false;
         schedule();
       }
@@ -930,9 +934,10 @@ public final class ContractionHierarchy {
     final Map<String, Object> stats = new LinkedHashMap<>();
     stats.put("weightProperty", weightProperty);
     stats.put("edgeTypes", edgeTypes == null ? null : List.of(edgeTypes));
-    stats.put("status", getStatus().name());
-    if (statusReason != null)
-      stats.put("statusReason", statusReason);
+    final State current = state;
+    stats.put("status", effectiveStatus(current.status()).name());
+    if (current.reason() != null)
+      stats.put("statusReason", current.reason());
     final TopologyRoot r = root;
     if (r != null) {
       stats.put("nodes", r.topology.nodeCount);
