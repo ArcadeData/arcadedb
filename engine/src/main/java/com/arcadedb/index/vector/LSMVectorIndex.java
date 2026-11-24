@@ -135,6 +135,7 @@ import java.util.TimerTask;
 import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
@@ -603,6 +604,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * heap. Not derivable from the buffer size, which counts entries whose payload was declined too.
    */
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
+
+  /**
+   * The records whose vector a commit replay put in this index and whose transaction has not concluded yet (issue #13323), with
+   * how many such replays put one: the vector is in the index, the record pages are published only once the replay concludes. A
+   * RID is added before its vector becomes visible ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are
+   * published, or after a rollback took the vector back ({@link #putsConcluded}). Per record, not per index: a search hands every
+   * other row on without reading it, however many commits are in flight (issue #10973). Empty whenever no commit is in flight, so
+   * a search asks an empty map. A replay tracks at most {@link VectorIndexReplayUndo#MAX_TRACKED_PUTS} records here, see
+   * {@link #bulkPutsInFlight}.
+   */
+  private final ConcurrentHashMap<RID, Integer> putsInFlight = new ConcurrentHashMap<>();
+
+  /**
+   * The replays in flight that put more records than they track one by one (a bulk load): while one is, every record of the index
+   * counts as put by a commit in flight, so the map above stays bounded whatever the size of a transaction (issue #13323).
+   */
+  private final AtomicInteger bulkPutsInFlight = new AtomicInteger();
 
   /**
    * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
@@ -11919,6 +11937,38 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether a commit that has not concluded yet put the vector of {@code rid} in this index (issue #13323): the vector is answered
+   * by a search, the record page is published only once that commit concludes, so the record may not be readable yet. A caller
+   * that hands a search result on without reading its record (issue #10973) reads this one now, and drops it when the read finds
+   * nothing. Ask it before {@link #hasLiveVector}: a "no" here means the commit has concluded, with its pages published or its
+   * vector taken back, so a vector that is still live is of a record that can be read.
+   */
+  public boolean isPutByCommitInFlight(final RID rid) {
+    return bulkPutsInFlight.get() > 0 || putsInFlight.containsKey(rid);
+  }
+
+  /** Marks {@code rid} as put by a commit in flight, before its vector becomes visible. See {@link #isPutByCommitInFlight}. */
+  void putInFlight(final RID rid) {
+    putsInFlight.merge(rid, 1, Integer::sum);
+  }
+
+  /** Marks every record as put by a commit in flight, for a replay that puts more records than it tracks. */
+  void bulkPutInFlight() {
+    bulkPutsInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the in-flight marks of one journal, once: the first {@code count} RIDs of {@code rids}, and the index-wide mark when
+   * {@code bulk}. After the publication or the rollback.
+   */
+  void putsConcluded(final RID[] rids, final int count, final boolean bulk) {
+    for (int i = 0; i < count; i++)
+      putsInFlight.computeIfPresent(rids[i], (rid, replays) -> replays > 1 ? replays - 1 : null);
+    if (bulk)
+      bulkPutsInFlight.decrementAndGet();
+  }
+
+  /**
    * The delta buffer as the calling transaction sees it: the volatile snapshot when there is no overlay, and the
    * snapshot with this transaction's superseded rows dropped and its pending rows appended when there is one.
    * The result is read-only to the caller - see {@code TransactionVectorOverlay.augment}.
@@ -12150,8 +12200,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final int id = allocateVectorId();
           // Recorded as soon as the id is minted, not after the writes below succeed: forgetting an id that never
           // reached the location index is a no-op, while missing one that did is the leak this exists to close.
-          if (undo != null)
+          if (undo != null) {
             undo.recordAllocated(id);
+            // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+            undo.recordPut(rid);
+          }
 
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
@@ -12747,8 +12800,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       final int id = allocateVectorId();
-      if (undo != null)
+      if (undo != null) {
         undo.recordAllocated(id);
+        // Before the vector is visible: a search that finds it finds it marked (issue #13323)
+        undo.recordPut(rid);
+      }
 
       persistVectorWithLocation(id, rid, vector);
 

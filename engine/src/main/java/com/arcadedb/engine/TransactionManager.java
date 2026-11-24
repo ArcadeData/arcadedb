@@ -278,6 +278,11 @@ public class TransactionManager {
    * does not hold the page-manager lock. Null in production.
    */
   static volatile Runnable                   applyChangesHookForTesting;
+  /**
+   * Test-only seam run by {@link #applyChanges} after each page of the entry is applied, the in-memory state of its component
+   * included, and before the next page (issue #13323). Null in production.
+   */
+  static volatile Runnable                   pageAppliedHookForTesting;
 
   /** The relationships committed by a match-or-create since a given sequence (#11482). */
   public MergedEdgeRegistry getMergedEdges() {
@@ -2209,6 +2214,9 @@ public class TransactionManager {
     boolean versionAdvanced = false;
     boolean involveDictionary = false;
     List<SparsePostingLog> appliedPostingLogs = null;
+    // The pages of a dense vector index and the index each updates, in the order of the entry: decoded once the whole entry is
+    // applied, as the postings are, so a search does not answer a vector before the page of its record is there (issue #13323)
+    List<AppliedVectorPage> appliedVectorPages = null;
 
     final int dictionaryId =
         database.getSchema().getDictionary() != null ? database.getSchema().getDictionary().file.getFileId() : -1;
@@ -2219,6 +2227,7 @@ public class TransactionManager {
     // They are written consecutively, so the run is gathered here and applied to a single page image: the version
     // checks below then run once per page and the page reaches the disk once, exactly as with a single segment.
     Runnable midway = applyChangesHookForTesting;
+    final Runnable pageApplied = pageAppliedHookForTesting;
     for (int s = 0; s < tx.pages.length; ) {
       final WALFile.WALPage txPage = tx.pages[s];
 
@@ -2461,7 +2470,9 @@ public class TransactionManager {
                 (LSMVectorIndexMutable) component;
             final LSMVectorIndex mainIndex = vectorMutable.getMainIndex();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
+              if (appliedVectorPages == null)
+                appliedVectorPages = new ArrayList<>(2);
+              appliedVectorPages.add(new AppliedVectorPage(mainIndex, modifiedPage));
             } else {
               LogManager.instance().log(this, Level.WARNING,
                   "LSMVectorIndexMutable has null mainIndex for fileId=%d", null, txPage.fileId);
@@ -2470,10 +2481,15 @@ public class TransactionManager {
             final LSMVectorIndex mainIndex =
                 (LSMVectorIndex) ((LSMVectorIndexCompacted) component).getMainComponent();
             if (mainIndex != null) {
-              mainIndex.applyReplicatedPageUpdate(modifiedPage, !recovery);
+              if (appliedVectorPages == null)
+                appliedVectorPages = new ArrayList<>(2);
+              appliedVectorPages.add(new AppliedVectorPage(mainIndex, modifiedPage));
             }
           }
         }
+
+        if (pageApplied != null)
+          pageApplied.run();
 
         if (file.getFileId() == dictionaryId)
           involveDictionary = true;
@@ -2522,6 +2538,10 @@ public class TransactionManager {
       for (final SparsePostingLog postingLog : appliedPostingLogs)
         postingLog.onPagesApplied();
 
+    if (appliedVectorPages != null)
+      for (final AppliedVectorPage applied : appliedVectorPages)
+        applied.index().applyReplicatedPageUpdate(applied.page(), !recovery);
+
     if (involveDictionary) {
       try {
         database.getSchema().getDictionary().reload();
@@ -2534,6 +2554,10 @@ public class TransactionManager {
     if (changed && database instanceof LocalDatabase localDatabase)
       localDatabase.markModified();
     return (changed ? APPLIED_PAGES : 0) | (versionAdvanced ? APPLIED_NEW_CONTENT : 0);
+  }
+
+  /** A page of a dense vector index an entry applied, decoded into the index once the whole entry is applied (issue #13323). */
+  private record AppliedVectorPage(LSMVectorIndex index, MutablePage page) {
   }
 
   public void kill() {
