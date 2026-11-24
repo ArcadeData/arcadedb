@@ -211,6 +211,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       initiated = true;
     }
     Object fromValues = context.getVariable(fromAlias.getStringValue());
+    if (fromValues == null)
+      throw nullEndpoint("FROM");
     if (fromValues instanceof Iterable iterable && !(fromValues instanceof Identifiable))
       fromValues = iterable.iterator();
     else if (!(fromValues instanceof Iterator))
@@ -220,6 +222,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       fromValues = set.copy();
 
     Object toValues = context.getVariable(toAlias.getStringValue());
+    if (toValues == null)
+      throw nullEndpoint("TO");
     if (toValues instanceof Iterable iterable && !(toValues instanceof Identifiable))
       toValues = iterable.iterator();
     else if (!(toValues instanceof Iterator))
@@ -361,6 +365,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
     throw new TypeMismatchException(
         "Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
+  }
+
+  /**
+   * A FROM or TO that evaluates to null (a variable that is not set, a LET that holds null) is the caller's mistake. It is
+   * refused like a null element of a list, with a message and a client error, and not with the bare NullPointerException of
+   * {@code Set.of(null)} (#13401).
+   */
+  private static TypeMismatchException nullEndpoint(final String side) {
+    return new TypeMismatchException(
+        "Invalid vertex for edge creation: the " + side + " expression evaluated to null (a variable that is not set, for example)");
   }
 
   private static String notAVertexMessage(final Document document) {

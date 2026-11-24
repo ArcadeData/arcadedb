@@ -123,7 +123,8 @@ public class ContainsCondition extends BooleanExpression {
 
     if (leftIterator != null) {
       if (!(right instanceof Iterable))
-        right = Set.of(right);
+        // singleton, not Set.of: the operand can be null, and the loop below compares two nulls as equal (#13401)
+        right = Collections.singleton(right);
 
       right = ((Iterable<?>) right).iterator();
 
