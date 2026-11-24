@@ -31,9 +31,6 @@ import java.util.Map;
  * Only the {@code parse} rule yields it (issue #13380). A script ({@code parseScript}) already accepts any number of statements, none included.
  */
 public class EmptyStatement extends SimpleExecStatement {
-  public EmptyStatement() {
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext context) {
     return new InternalResultSet();

@@ -101,7 +101,7 @@ class EmptyStatementTest extends TestHelper {
       database.command("sql", "-- INSERT INTO Person SET name = 'a'").close();
       database.command("sql", "/* INSERT INTO Person SET name = 'b' */;").close();
     });
-    try (final ResultSet resultSet = database.query("sql", "SELECT count(*) AS n FROM Person")) {
+    try (final ResultSet resultSet = database.query("sql", "SELECT count(@rid) AS n FROM Person")) {
       assertThat(resultSet.next().<Long>getProperty("n")).isEqualTo(0L);
     }
   }
@@ -114,7 +114,7 @@ class EmptyStatementTest extends TestHelper {
     database.command("sql", "-- ping").close();
     assertThat(database.isTransactionActive()).isTrue();
     database.commit();
-    try (final ResultSet resultSet = database.query("sql", "SELECT count(*) AS n FROM Person")) {
+    try (final ResultSet resultSet = database.query("sql", "SELECT count(@rid) AS n FROM Person")) {
       assertThat(resultSet.next().<Long>getProperty("n")).isEqualTo(1L);
     }
   }
