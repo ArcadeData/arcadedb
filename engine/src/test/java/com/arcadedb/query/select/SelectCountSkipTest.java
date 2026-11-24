@@ -24,6 +24,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -76,7 +78,7 @@ class SelectCountSkipTest extends TestHelper {
   @Test
   void countOfAnInListOverOneIndexAgreesWithTheRowsUnderSkip() {
     for (int skip = 0; skip <= 3; skip++) {
-      final SelectCompiled select = database.select().fromType("T").where().property("a").in().value(java.util.List.of(1, 2)).skip(skip)
+      final SelectCompiled select = database.select().fromType("T").where().property("a").in().value(List.of(1, 2)).skip(skip)
           .compile();
       assertThat(select.count()).as("count with skip " + skip).isEqualTo(select.documents().toList().size());
     }
