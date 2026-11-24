@@ -28,12 +28,16 @@ import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.TransactionConfig;
+import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.exceptions.Neo4jException;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 /**
  * The {@code YIELD}/{@code WHERE} tail of a {@code SHOW} command served over Bolt is the clause the {@code SHOW} grammar defines,
@@ -122,4 +126,44 @@ public class ShowCommandTailBoundsIT extends BaseBoltServerTest {
       assertThat(session.run("CALL dbms.components() YIELD name UNWIND range(1, 10) AS x RETURN x").list()).hasSize(10);
     }
   }
+
+  /** A tail is a query of the engine: the time its statement may take bounds it, as it bounds the statements of the normal path. */
+  @Test
+  void aTailPastTheTimeoutOfItsStatementIsStopped() {
+    try (final Driver driver = getDriver(); final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final ClientException stopped = catchThrowableOfType(ClientException.class,
+          () -> session.run(LONG_TAIL, TransactionConfig.builder().withTimeout(Duration.ofMillis(50)).build()).consume());
+
+      assertThat(stopped).isNotNull();
+      assertThat(stopped.code()).isEqualTo(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR);
+
+      // The connection answers the next statement, and a tail with no timeout of its own runs to its end
+      assertThat(session.run("CALL dbms.components() YIELD name UNWIND range(1, 1000) AS x WITH x WHERE x % 2 = 0 RETURN count(x) AS c")
+          .single().get("c").asLong()).isEqualTo(500L);
+    }
+  }
+
+  /** The earlier of the timeout of the statement and the one of the database bounds it. */
+  @Test
+  void theTimeoutOfTheDatabaseDoesNotLoosenTheOneOfTheStatement() {
+    getServerDatabase(0, getDatabaseName()).getConfiguration().setValue(GlobalConfiguration.COMMAND_TIMEOUT, 600_000L);
+
+    try (final Driver driver = getDriver(); final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      final ClientException stopped = catchThrowableOfType(ClientException.class,
+          () -> session.run(LONG_TAIL, TransactionConfig.builder().withTimeout(Duration.ofMillis(50)).build()).consume());
+
+      assertThat(stopped).isNotNull();
+      assertThat(stopped.code()).isEqualTo(BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR);
+
+      assertThat(session.run("CALL dbms.components() YIELD name UNWIND range(1, 100) AS x WITH x WHERE x % 2 = 0 RETURN count(x) AS c")
+          .single().get("c").asLong()).isEqualTo(50L);
+    }
+  }
+
+  /**
+   * Each of the two ranges is well under arcadedb.queryMaxRangeSize, which refuses a single range of that size before it runs; the
+   * rows they make are filtered before they reach the end, so what stops the tail is its time and not the rows it holds.
+   */
+  private static final String LONG_TAIL = "CALL dbms.components() YIELD name UNWIND range(1, 5000) AS a UNWIND range(1, 5000) AS b "
+      + "WITH a, b WHERE (a + b) % 7 = 0 RETURN count(*) AS c";
 }

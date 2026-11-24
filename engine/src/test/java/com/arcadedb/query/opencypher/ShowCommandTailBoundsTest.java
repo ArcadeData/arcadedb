@@ -20,8 +20,12 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
 import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.QueryHeapBudget;
 import com.arcadedb.query.sql.executor.QueryHeapBudgetTestSupport;
@@ -31,8 +35,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,6 +74,7 @@ class ShowCommandTailBoundsTest extends TestHelper {
   @AfterEach
   void resetSettings() {
     GlobalConfiguration.QUERY_MAX_HEAP_RAM.reset();
+    GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.reset();
   }
 
   @ParameterizedTest
@@ -149,6 +157,83 @@ class ShowCommandTailBoundsTest extends TestHelper {
     // What fits is answered, and the table handed over holds no reservation
     assertThat(call("CALL dbms.components() YIELD name UNWIND range(1, 100) AS x RETURN x").rows()).hasSize(100);
     assertThat(QueryHeapBudget.getReservedBytes()).as("the table handed over holds no reservation").isZero();
+  }
+
+  @Test
+  void aCommandWithNothingToApplyAnswersItsTableUnchanged() {
+    assertThat(ShowCommandTail.hasTail(null)).isFalse();
+    assertThat(ShowCommandTail.hasTail("SHOW DATABASES")).isFalse();
+    assertThat(ShowCommandTail.hasTail("SHOW DATABASES WHERE name = 'beta'")).isTrue();
+
+    final ShowCommandTail.Table noDatabase = ShowCommandTail.apply(null, "SHOW DATABASES WHERE name = 'beta'", DATABASE_FIELDS,
+        DATABASE_ROWS, Map.of());
+    assertThat(noDatabase.fields()).isSameAs(DATABASE_FIELDS);
+    assertThat(noDatabase.rows()).isSameAs(DATABASE_ROWS);
+
+    final ShowCommandTail.Table noQuery = ShowCommandTail.apply(database, null, DATABASE_FIELDS, DATABASE_ROWS, Map.of());
+    assertThat(noQuery.fields()).isSameAs(DATABASE_FIELDS);
+    assertThat(noQuery.rows()).isSameAs(DATABASE_ROWS);
+
+    final ShowCommandTail.Table noTail = apply("SHOW DATABASES");
+    assertThat(noTail.fields()).isSameAs(DATABASE_FIELDS);
+    assertThat(noTail.rows()).isSameAs(DATABASE_ROWS);
+  }
+
+  /** A handle that is not the engine's own database, as a client of the engine may hold, answers its tail all the same. */
+  @Test
+  void aTailIsAnsweredForADatabaseHandleThatIsNotTheEnginesOwn() {
+    final BasicDatabase handle = handleOf(database);
+    assertThat(handle).isNotInstanceOf(DatabaseInternal.class).isNotInstanceOf(Database.class);
+
+    assertThat(ShowCommandTail.apply(handle, "SHOW DATABASES YIELD name, type WHERE type = 'standard' RETURN name", DATABASE_FIELDS,
+        DATABASE_ROWS, Map.of()).rows()).hasSize(2);
+
+    // The element cap applies to it too, read from the settings of the server as the handle gives no database to read them from
+    GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(100L);
+
+    assertThat(ShowCommandTail.apply(handle, "CALL dbms.components() YIELD name UNWIND range(1, 50) AS x RETURN x", COMPONENT_FIELDS,
+        COMPONENT_ROWS, Map.of()).rows()).hasSize(50);
+
+    assertThatThrownBy(() -> ShowCommandTail.apply(handle, "CALL dbms.components() YIELD name UNWIND range(1, 1000) AS x RETURN x",
+        COMPONENT_FIELDS, COMPONENT_ROWS, Map.of()))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getKey());
+  }
+
+  /** A clause nested past what the stack of the thread can hold is a parse error of the client, never a raw stack overflow. */
+  @Test
+  void aTailNestedPastTheStackIsRefusedAsAParseError() throws InterruptedException {
+    // Past what the guard of the nesting depth would stop first, so it is the stack that gives out
+    database.getConfiguration().setValue(GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH, 1_000_000);
+
+    final String tail = "WHERE " + "(".repeat(20_000) + "true" + ")".repeat(20_000);
+    final Cypher25AntlrParser parser = new Cypher25AntlrParser(database);
+    final AtomicReference<Throwable> outcome = new AtomicReference<>();
+
+    final Thread thread = new Thread(null, () -> {
+      try {
+        parser.checkShowCommandYield(tail);
+      } catch (final Throwable e) {
+        outcome.set(e);
+      }
+    }, "show-tail-small-stack", 256 * 1024);
+    thread.start();
+    thread.join();
+
+    // The message and the cause tell the stack that gave out from the guard of the nesting depth, which also says "too deeply"
+    assertThat(outcome.get()).isInstanceOf(CommandParsingException.class).hasMessageContaining("stack exhausted")
+        .hasCauseInstanceOf(StackOverflowError.class);
+  }
+
+  private static BasicDatabase handleOf(final Database target) {
+    return (BasicDatabase) Proxy.newProxyInstance(BasicDatabase.class.getClassLoader(), new Class<?>[] { BasicDatabase.class },
+        (proxy, method, args) -> {
+          try {
+            return method.invoke(target, args);
+          } catch (final InvocationTargetException e) {
+            throw e.getCause();
+          }
+        });
   }
 
   private ShowCommandTail.Table apply(final String query) {

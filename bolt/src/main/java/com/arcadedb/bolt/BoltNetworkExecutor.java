@@ -1653,24 +1653,16 @@ public class BoltNetworkExecutor extends Thread {
       return;
 
     final ShowCommandTail.Table table;
-    final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
-    RunningQuery runningQuery = null;
-    RunningQuery.Binding binding = null;
-    try {
-      runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null, "bolt", null, null,
-          RunningQuery.Client.of(connectionId, socket.getRemoteSocketAddress()));
+    try (final QueryAdmissionGate.Ticket admission = QueryAdmissionGate.getInstance().admit();
+        final RunningQuery runningQuery = server.getRunningQueries().open(database.getName(), user != null ? user.getName() : null,
+            "bolt", null, null, RunningQuery.Client.of(connectionId, socket.getRemoteSocketAddress()))) {
       runningQuery.setStatement("opencypher", query);
-      binding = runningQuery.bind();
-      publishStatementTimeout(statementTimeoutMs);
-
-      table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults, params);
-    } finally {
-      CommandTimeoutOverride.clear();
-      if (binding != null)
-        binding.close();
-      admission.close();
-      if (runningQuery != null)
-        runningQuery.close();
+      try (final RunningQuery.Binding binding = runningQuery.bind()) {
+        publishStatementTimeout(statementTimeoutMs);
+        table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults, params);
+      } finally {
+        CommandTimeoutOverride.clear();
+      }
     }
 
     stream.fields = table.fields();
