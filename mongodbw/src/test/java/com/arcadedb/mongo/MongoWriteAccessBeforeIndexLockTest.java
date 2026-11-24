@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -129,6 +130,15 @@ class MongoWriteAccessBeforeIndexLockTest {
         () -> wrapper.handleCommand(null, "update", update(PLAIN, true), null, null));
     assertRefusedWhileTheLockIsHeld(user(ACCESS.READ_RECORD, ACCESS.UPDATE_RECORD),
         () -> wrapper.handleCommand(null, "update", update(INDEXED, true), null, null));
+  }
+
+  @Test
+  void anUpsertOnAMissingCollectionOfAUserWhoMayNotChangeTheSchemaCreatesNothing() {
+    bind(user(ACCESS.READ_RECORD, ACCESS.UPDATE_RECORD, ACCESS.CREATE_RECORD));
+    assertThat(refusedCode(() -> wrapper.handleCommand(null, "update", update("Missing", true), null, null))).isEqualTo(UNAUTHORIZED);
+    bind(null);
+
+    assertThat(database.getSchema().existsType("Missing")).isFalse();
   }
 
   @Test
@@ -277,7 +287,7 @@ class MongoWriteAccessBeforeIndexLockTest {
     while (!answer.isDone() && !queued(locks)) {
       if (System.nanoTime() - deadline > 0L)
         fail("the command neither answered nor queued for the lock");
-      Thread.onSpinWait();
+      LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1L));
     }
     if (!answer.isDone())
       return;
