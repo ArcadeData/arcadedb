@@ -192,8 +192,10 @@ public class BoltOversizedMessageIT extends BaseBoltServerTest {
    */
   private static void assertTheConnectionEnds(final SignatureReader reader) throws IOException {
     try {
-      while (true)
-        assertThat(reader.next()).as("the server went on serving the connection after the size limit").isEqualTo(BoltMessage.FAILURE);
+      assertThat(reader.next()).as("the server went on serving the connection after the size limit").isEqualTo(BoltMessage.FAILURE);
+      // Nothing may follow that one answer: the next read has to find the connection closed
+      final byte second = reader.next();
+      fail("the server sent a second message after the size limit (signature 0x%02X)", second);
     } catch (final SocketTimeoutException e) {
       fail("the server kept the connection open after the size limit");
     } catch (final EOFException | SocketException e) {
