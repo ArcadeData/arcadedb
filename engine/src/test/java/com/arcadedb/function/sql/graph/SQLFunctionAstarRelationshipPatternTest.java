@@ -84,6 +84,9 @@ class SQLFunctionAstarRelationshipPatternTest extends TestHelper {
 
   @Test
   void mixedPatternDoesNotTakeTheGraphAnalyticalView() {
+    // the view's edge property: a view refuses one the schema does not declare (issue #12177)
+    database.getSchema().getType("KNOWS").createProperty("w", Type.DOUBLE);
+    database.getSchema().getType("LIKES").createProperty("w", Type.DOUBLE);
     final GraphAnalyticalView view = GraphAnalyticalView.builder(database)
         .withName("astar-pattern-view")
         .withVertexTypes("P")

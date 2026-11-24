@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #12699: {@code percentileDisc()} and {@code percentileCont()} sorted their values as doubles, which holds no integer past 2^53,
  * so LONG values that differ in their low digits stayed in input order and {@code percentileDisc()} answered the wrong element.
- * The SQL {@code percentile()} had the same sort.
+ * The SQL {@code percentile()} had the same sort (issue #12569) and is pinned here alongside them.
  */
 class CypherPercentileLongPrecisionIssue12699Test extends TestHelper {
   private static final String DESCENDING = "[1500000000000000003, 1500000000000000002, 1500000000000000001]";
@@ -63,7 +63,7 @@ class CypherPercentileLongPrecisionIssue12699Test extends TestHelper {
 
   /**
    * The SQL {@code percentile()} (and {@code median()}, which extends it) sorted the same way: its lowest and highest quantiles
-   * answer one of the values, so they answered the first and the last of the input order.
+   * answer one of the values, so they answered the first and the last of the input order (issue #12569).
    */
   @Test
   void sqlPercentileOfLongsPastTheDoublePrecision() {

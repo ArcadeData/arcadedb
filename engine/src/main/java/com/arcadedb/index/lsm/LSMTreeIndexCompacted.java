@@ -433,7 +433,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   public List<LSMTreeIndexUnderlyingCompactedSeriesCursor> newIterators(final boolean ascendingOrder, final Object[] fromKeys,
       final Object[] toKeys)
       throws IOException {
-    final BasePage mainPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = getHeaderPage();
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -652,7 +652,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   protected void searchInCompactedIndex(final Object[] convertedKeys, final KeyLookupSink sink) throws IOException {
     // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
-    final BasePage mainPage = database.getTransaction().getPageForAbsoluteReads(new PageId(database, file.getFileId(), 0), pageSize);
+    final BasePage mainPage = getHeaderPage();
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 
     final int totalPages = getTotalPages();
@@ -818,6 +818,19 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       --pageNumber;
     }
+  }
+
+  /**
+   * The header page of the file, which says how many pages hold published series. It is the only page of the file that changes
+   * once written: an incremental compaction round appends its series after the published ones and then rewrites the header to
+   * name them, together with the swap that puts in the new, empty mutable file. A {@code REPEATABLE_READ} transaction must not
+   * pin it (issue #13050): the header it read first names the series of an earlier round only, and the mutable file it reads
+   * afterwards no longer holds the entries that round moved into the new series, so a key committed before the transaction began
+   * would answer no entry, and a duplicate of it would pass the uniqueness check. The series themselves never change, so they
+   * stay pinned like any other page.
+   */
+  private BasePage getHeaderPage() throws IOException {
+    return database.getTransaction().getPageForAbsoluteReadsNeverPinned(new PageId(database, file.getFileId(), 0), pageSize);
   }
 
   private int getCompactedPageNumberOfSeries(final BasePage currentPage) {

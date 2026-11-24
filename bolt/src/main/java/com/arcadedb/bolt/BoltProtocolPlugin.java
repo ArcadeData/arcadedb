@@ -60,6 +60,19 @@ public class BoltProtocolPlugin implements ServerPlugin {
   }
 
   /**
+   * The listener thread when it has terminated while it was still meant to accept connections, or {@code null} (issue
+   * #12552). Its accept loop survives an exception but not an error: an {@code OutOfMemoryError} ends the thread and
+   * closes the Bolt port while the rest of the server stays up.
+   */
+  @Override
+  public String getListenerFailure() {
+    final BoltNetworkListener l = listener;
+    if (l == null || !l.isListening() || l.isAlive())
+      return null;
+    return "Bolt listener thread '" + l.getName() + "' has terminated: this node no longer accepts Bolt connections";
+  }
+
+  /**
    * The port the listener ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the operating
    * system for a free port (issue #8209). Returns -1 when the service is not listening.
    */

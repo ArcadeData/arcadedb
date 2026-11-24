@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fallback that {@code lookupByRID()}, which must return a concrete {@link Record}, does not have.
  *
  * <p>The fix sends {@code @cat} on the wire, matching HTTP, so the client never needs the schema fallback at all.
- * This is the end-to-end reproduction through the high-level client; {@code Issue6404LookupByRidMissingCatIT} in
+ * This is the end-to-end reproduction through the high-level client; {@code GrpcQueryExecutionIT.LookupByRidCategory} in
  * {@code grpcw} pins the same fix directly against the wire response.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)

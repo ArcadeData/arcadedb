@@ -276,6 +276,18 @@ class PromQLParserTest {
         .isInstanceOf(IllegalArgumentException.class);
   }
 
+  /**
+   * A label matcher cut off right after its operator read the value's opening quote past the end of the input, so the
+   * StringIndexOutOfBoundsException reached the HTTP query endpoints as a 500 instead of the 400 every other malformed query gets.
+   */
+  @Test
+  void aMatcherEndingAtItsOperatorIsAParseError() {
+    for (final String query : new String[] { "m1{region=", "m1{region!=", "m1{region=~", "m1{region!~", "m1{a=\"x\",b=", "m1{region= " })
+      assertThatThrownBy(() -> new PromQLParser(query).parse()).as(query)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Expected string at position");
+  }
+
   @Test
   void emptyExpression() {
     assertThatThrownBy(() -> new PromQLParser("").parse())

@@ -276,6 +276,101 @@ class PostBatchHandlerIntegrityTest extends BaseGraphServerTest {
     assertThat(database.countType("Issue11633V", false)).isEqualTo(2);
   }
 
+  /*
+   * Issue #12895: an edge endpoint written as a RID was taken on trust by GraphBatch. One that does not exist (404), or is not a
+   * vertex (500, ClassCastException), failed at the close of the batch with the edge records written and no vertex leading to
+   * them, valid edges before the bad one included. It is refused on its line now, like a malformed RID, and what came before
+   * is flushed and reachable as for any other refusal at accept time.
+   */
+  // Regression: #12895 an edge endpoint RID that does not exist or is not a vertex
+  @Test
+  void anEdgeEndpointRidThatDoesNotExistIsRefusedAndTheRestIsReachable() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE VERTEX TYPE Issue12895V");
+    database.command("sql", "CREATE EDGE TYPE Issue12895E");
+
+    final String payload = """
+        {"@type":"vertex","@class":"Issue12895V","@id":"a","n":1}
+        {"@type":"vertex","@class":"Issue12895V","@id":"b","n":2}
+        {"@type":"edge","@class":"Issue12895E","@from":"a","@to":"b"}
+        {"@type":"edge","@class":"Issue12895E","@from":"a","@to":"#99:0"}
+        """;
+    assertEndpointRefusedAndFirstEdgeReachable(database, payload, "Issue12895V", "Issue12895E", "'#99:0' at line 4",
+        "does not exist");
+  }
+
+  // Regression: #12895 an edge endpoint RID that does not exist or is not a vertex
+  @Test
+  void anEdgeEndpointRidOfADocumentIsRefusedAndTheRestIsReachable() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE VERTEX TYPE Issue12895W");
+    database.command("sql", "CREATE EDGE TYPE Issue12895F");
+    database.command("sql", "CREATE DOCUMENT TYPE Issue12895D");
+    final String documentRid;
+    try (final ResultSet rs = database.command("sql", "INSERT INTO Issue12895D SET x = 1")) {
+      documentRid = rs.next().getIdentity().get().toString();
+    }
+
+    final String payload = """
+        {"@type":"vertex","@class":"Issue12895W","@id":"a","n":1}
+        {"@type":"vertex","@class":"Issue12895W","@id":"b","n":2}
+        {"@type":"edge","@class":"Issue12895F","@from":"a","@to":"b"}
+        {"@type":"edge","@class":"Issue12895F","@from":"%s","@to":"a"}
+        """.formatted(documentRid);
+    assertEndpointRefusedAndFirstEdgeReachable(database, payload, "Issue12895W", "Issue12895F", "'" + documentRid + "' at line 4",
+        "is not a vertex");
+  }
+
+  // Regression: #12895 an edge endpoint RID that does not exist or is not a vertex
+  @Test
+  void anEdgeEndpointRidOfAnExistingVertexStillLoads() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    database.command("sql", "CREATE VERTEX TYPE Issue12895X");
+    database.command("sql", "CREATE EDGE TYPE Issue12895G");
+    final String existing;
+    try (final ResultSet rs = database.command("sql", "CREATE VERTEX Issue12895X SET n = 0")) {
+      existing = rs.next().getIdentity().get().toString();
+    }
+
+    final String payload = """
+        {"@type":"vertex","@class":"Issue12895X","@id":"a","n":1}
+        {"@type":"edge","@class":"Issue12895G","@from":"a","@to":"%s"}
+        {"@type":"edge","@class":"Issue12895G","@from":"%s","@to":"a"}
+        """.formatted(existing, existing);
+    final HttpURLConnection connection = postBatch(payload, "application/x-ndjson");
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      assertThat(new JSONObject(readBody(connection.getInputStream())).getLong("edgesCreated")).isEqualTo(2);
+    } finally {
+      connection.disconnect();
+    }
+    try (final ResultSet rs = database.query("sql", "SELECT out('Issue12895G').size() AS o, in('Issue12895G').size() AS i FROM Issue12895X WHERE n = 1")) {
+      final Result vertex = rs.next();
+      assertThat(vertex.<Integer>getProperty("o")).isEqualTo(1);
+      assertThat(vertex.<Integer>getProperty("i")).isEqualTo(1);
+    }
+  }
+
+  private void assertEndpointRefusedAndFirstEdgeReachable(final Database database, final String payload, final String vertexType,
+      final String edgeType, final String endpointAtLine, final String reason) throws Exception {
+    final HttpURLConnection connection = postBatch(payload, "application/x-ndjson");
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      final JSONObject error = new JSONObject(readBody(connection.getErrorStream()));
+      assertThat(error.getString("error")).contains(endpointAtLine).contains(reason);
+      assertThat(error.getLong("verticesCreated")).isEqualTo(2);
+      assertThat(error.getLong("edgesCreated")).isEqualTo(1);
+      assertThat(error.getBoolean("partialCommit")).isTrue();
+    } finally {
+      connection.disconnect();
+    }
+    // the edge before the refused line is a whole edge: its record exists and the vertex leads to it
+    assertThat(database.countType(edgeType, false)).isEqualTo(1);
+    try (final ResultSet rs = database.query("sql", "SELECT out('" + edgeType + "').size() AS o FROM " + vertexType + " WHERE n = 1")) {
+      assertThat(rs.next().<Integer>getProperty("o")).isEqualTo(1);
+    }
+  }
+
   private HttpURLConnection postBatchWithQuery(final String body, final String query) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         getServerHttpUrl(0, "/api/v1/batch/" + getDatabaseName() + "?" + query)).toURL().openConnection();
