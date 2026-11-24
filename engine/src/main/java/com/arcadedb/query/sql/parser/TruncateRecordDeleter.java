@@ -105,13 +105,15 @@ final class TruncateRecordDeleter {
     final long[] readIn = { beginSequence(db) };
     scan.run(record -> {
       try {
-        // The scan read this record from its bucket in the transaction the delete runs in, and says so: scanType and scanBucket
-        // leave the read marker unset, so a record a concurrent transaction deleted and committed after the scan found it
-        // failed the statement with a RecordNotFoundException naming a record the statement never named, which nothing
-        // retries (issue #11731). Marked, its delete raises the retryable ConcurrentModificationException a DELETE FROM
-        // gets in the same position (#8984, #10263 for an edge). It is not skipped instead: by the time the slot is found
-        // empty the before-delete listeners ran and the index removals of the record are in the transaction, and a skip
-        // would commit them for a record this transaction did not delete
+        // The scan read this record from its bucket in the transaction the delete runs in, and says so. Unmarked, a record a
+        // concurrent transaction deleted and committed after the scan found it failed the statement with a
+        // RecordNotFoundException naming a record the statement never named, which nothing retries (issue #11731). Marked, its
+        // delete raises the retryable ConcurrentModificationException a DELETE FROM gets in the same position (#8984, #10263
+        // for an edge). It is not skipped instead: by the time the slot is found empty the before-delete listeners ran and the
+        // index removals of the record are in the transaction, and a skip would commit them for a record this transaction did
+        // not delete.
+        // scanType and scanBucket mark their records too (#12575), but with the transaction that read the PAGE: after a batch
+        // commit below, the rest of that page still carries the committed one, and this re-marks it with the new transaction
         if (record instanceof ImmutableDocument document)
           document.setReadInTransaction(readIn[0]);
         record.delete();

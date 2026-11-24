@@ -111,6 +111,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   public TimeSeriesEngine(final DatabaseInternal database, final String typeName,
       final List<ColumnDefinition> columns, final int shardCount,
       final long compactionBucketIntervalMs, final int mutableFormatVersion, final long sealedOwner) throws IOException {
+    // every file of the engine is named after the type
+    LocalTimeSeriesType.checkValidName(typeName);
     // LOADS THE SIMD OPS (AND STARTS THEIR WARM-UP) WHEN THE TYPE IS OPENED, NOT AT THE FIRST AGGREGATE (#9171)
     TimeSeriesVectorOpsProvider.getInstance();
     this.database = database;
@@ -1485,8 +1487,9 @@ public class TimeSeriesEngine implements AutoCloseable {
    * Applies downsampling tiers to sealed data. For each tier (sorted by afterMs ascending),
    * blocks older than (nowMs - tier.afterMs) are reduced to tier.granularityMs resolution
    * by averaging numeric fields per time bucket. Tag columns are preserved as group keys.
-   * The density check provides idempotency: blocks already at or coarser than the target
-   * resolution are left untouched.
+   * A block is rewritten only when that reduces it, that is when two of its samples share a (tag values, bucket), which
+   * is what makes a pass idempotent: a block already at or coarser than the target resolution, or one that never had two
+   * samples in a bucket, is left untouched (issue #11984).
    */
   public void applyDownsampling(final List<DownsamplingTier> tiers, final long nowMs) throws IOException {
     if (tiers == null || tiers.isEmpty())
@@ -1514,10 +1517,19 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     for (final DownsamplingTier tier : orderedTiers) {
       final long cutoffTs = nowMs - tier.afterMs();
-      runSealedMaintenanceReplicated(
-          shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(),
-              TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs()), tsColIdx, tagColIndices,
-              numericColIndices));
+      final long gridOffsetMs = TimeBucketGrid.normalizeOffset(tier.offsetMs(), tier.granularityMs());
+
+      // After a restart no block has been proved irreducible, and proving one reads it. That read is the history of the shard, so it
+      // is done here, before the pass takes the rewrite mutex of the shard, which keeps a compaction waiting. The proof takes the
+      // directory read lock of the store a block at a time, as a walk does, and the pass below then reads only what landed since and
+      // what it is going to fold (issue #11984).
+      for (final TimeSeriesShard shard : shards)
+        shard.getSealedStore().proveBlocksIrreducible(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices);
+
+      // Not through runSealedMaintenanceReplicated: the shard folds the history and writes the temp file holding neither the
+      // compaction write lock nor a replication session, and takes both only to install the file and ship it (issue #12610)
+      for (final TimeSeriesShard shard : shards)
+        shard.downsample(cutoffTs, tier.granularityMs(), gridOffsetMs, tsColIdx, tagColIndices, numericColIndices);
     }
   }
 
@@ -1549,10 +1561,9 @@ public class TimeSeriesEngine implements AutoCloseable {
             final long samplesBefore = sealed.getTotalSampleCount();
             work.apply(shard);
             // Only ship when the file actually changed, so a steady-state no-op cycle (nothing old
-            // enough to trim/downsample) does not re-ship the whole sealed file every maintenance tick.
+            // enough to trim) does not re-ship the whole sealed file every maintenance tick.
             if (sealed.getBlockCount() != blocksBefore || sealed.getTotalSampleCount() != samplesBefore)
-              db.recordTimeSeriesSealedChange(typeName, shard.getShardIndex(), sealed.getSealedFileName(),
-                  sealed.readWholeSealedFile());
+              TimeSeriesShard.recordSealedChange(db, typeName, shard.getShardIndex(), sealed);
           });
         }
         return true;
@@ -1763,6 +1774,7 @@ public class TimeSeriesEngine implements AutoCloseable {
    * once the rename is published.
    */
   public void renameFiles(final String fromTypeName, final String toTypeName) throws IOException {
+    LocalTimeSeriesType.checkValidName(toTypeName);
     int movedShards = 0;
     try {
       for (final TimeSeriesShard shard : shards) {

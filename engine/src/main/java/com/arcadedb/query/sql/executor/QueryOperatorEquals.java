@@ -22,6 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.parser.ConstantOperandConversion;
+import com.arcadedb.schema.SourceText;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -35,7 +37,17 @@ import java.util.Map;
 import java.util.Set;
 
 public class QueryOperatorEquals {
-  public static boolean equals(Object left, Object right) {
+  public static boolean equals(final Object left, final Object right) {
+    return equals(left, right, null);
+  }
+
+  /**
+   * {@link #equals(Object, Object)}, converting a string on the right through {@code rightConversion}, the memo of an execution
+   * whose right operand is the same string on every record (issue #12713).
+   *
+   * @param rightConversion the memo of the right operand, or null to convert it as it is
+   */
+  public static boolean equals(Object left, Object right, final ConstantOperandConversion rightConversion) {
     if (left == null || right == null)
       return false;
 
@@ -117,11 +129,18 @@ public class QueryOperatorEquals {
 
     // ALL OTHER CASES
     try {
+      // A value read from text of unspecified type is that text against a string, on whichever side it stands: the conversion
+      // below turns the right operand into the class of the left one, and a string has no conversion into such a value (#12711)
+      if (left instanceof SourceText && right instanceof String) {
+        final Object text = right;
+        right = left;
+        left = text;
+      }
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
       // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206)
       left = DateUtils.dateAsMidnightAgainst(left, right);
-      right = Type.convertOrNull(null, right, left.getClass());
+      right = ConstantOperandConversion.convertOrNull(rightConversion, null, right, left.getClass());
       if (right == null)
         return false;
       if (left instanceof byte[] bytes && right instanceof byte[] bytes1) {

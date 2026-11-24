@@ -48,15 +48,19 @@ class CompressedIndexChainTest extends TestHelper {
     assertThat(index.get(new RID(3, 1))).isNull();
   }
 
+  /**
+   * CompressedRID2RIDIndex doubles its slots as entries arrive (#12048), so a small slot count alone no longer keeps a chain
+   * long: the keys here share one hash value, which puts them in one chain at any table size.
+   */
   @Test
   void rid2ridChainWalkFindsAllCollidingKeys() throws Exception {
     final CompressedRID2RIDIndex index = new CompressedRID2RIDIndex(database, FORCE_COLLISIONS, 64);
 
     for (int i = 0; i < 50; i++)
-      index.put(new RID(3, i), new RID(4, i));
+      index.put(Issue12048CompressedRID2RIDIndexGrowthTest.collidingKey(i), new RID(4, i));
 
     for (int i = 0; i < 50; i++)
-      assertThat(index.get(new RID(3, i))).isEqualTo(new RID(4, i));
+      assertThat(index.get(Issue12048CompressedRID2RIDIndexGrowthTest.collidingKey(i))).isEqualTo(new RID(4, i));
 
     assertThat(index.get(new RID(3, 9999))).isNull();
   }

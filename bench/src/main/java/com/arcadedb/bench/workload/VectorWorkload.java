@@ -200,7 +200,7 @@ public class VectorWorkload implements Workload {
     metrics.add(Metrics.of("recall_at_10", "ratio", Metric.Better.HIGHER, recall));
     if (recall < MIN_RECALL)
       throw new CaseFailedWithMetrics("recall@10 " + recall + " is below the minimum " + MIN_RECALL, metrics);
-    return new Measurement(metrics);
+    return Measurement.of(metrics, latencies);
   }
 
   private String index() {

@@ -599,7 +599,10 @@ public interface GraphTraversalProvider {
   }
 
   /**
-   * Bulk degree computation: fills {@code degrees[nodeId]} with the edge count for each node.
+   * Bulk degree computation: fills {@code degrees[nodeId]} with the number of edges of {@code edgeTypes} (sub-types included,
+   * every edge type when none is given) each node has in {@code direction}. An edge is counted once, whichever of the types asked
+   * it matches, as {@link #countEdges} counts it: asked for a type and its sub-type, the sub-type's edges are not counted twice
+   * (issue #12075).
    * <p>
    * Default implementation calls {@link #countEdges} per node. CSR-backed providers override
    * this to compute degrees directly from offset arrays in a single pass, avoiding per-node
@@ -608,8 +611,8 @@ public interface GraphTraversalProvider {
    * For star-join queries (Q4/Q7), this reduces 5M × 150ns/call = 750ms to a single
    * array scan at ~5M × 2ns = 10ms per edge type.
    */
-  default void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String edgeType) {
+  default void getDegrees(final int[] degrees, final Vertex.DIRECTION direction, final String... edgeTypes) {
     for (int v = 0; v < degrees.length; v++)
-      degrees[v] = (int) countEdges(v, direction, edgeType);
+      degrees[v] = (int) countEdges(v, direction, edgeTypes);
   }
 }
