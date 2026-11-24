@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.function.CypherFunctionRegistry;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.InlineProperties;
 import com.arcadedb.query.opencypher.parser.CypherExpressionWalker;
@@ -480,8 +481,11 @@ public class InExpression implements BooleanExpression {
     CypherExpressionWalker.walk(rightSide, new CypherExpressionWalker.Visitor() {
       @Override
       public void visit(final Expression node) {
+        // A function an application bound to an allowed name is not the built-in, and is not known to answer from its
+        // arguments alone. Asked once, as the call site resolves its function once for the life of the AST
         if (!PURE_EXPRESSIONS.contains(node.getClass())
-            || node instanceof FunctionCallExpression call && (call.isDistinct() || !PURE_FUNCTIONS.contains(call.getFunctionName())))
+            || node instanceof FunctionCallExpression call && (call.isDistinct() || !PURE_FUNCTIONS.contains(call.getFunctionName())
+            || !CypherFunctionRegistry.isBuiltInOrUnregistered(call.getFunctionName())))
           pure[0] = false;
       }
 

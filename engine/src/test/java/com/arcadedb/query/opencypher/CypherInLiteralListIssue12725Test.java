@@ -19,6 +19,11 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.CypherFunctionRegistry;
+import com.arcadedb.function.Function;
+import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -29,6 +34,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -271,6 +277,41 @@ class CypherInLiteralListIssue12725Test extends TestHelper {
     indexed.put("m", Map.of("names", List.of("k1", "k2")));
     assertThat(count("UNWIND $rows AS r RETURN count(CASE WHEN r IN [$m['names'][0], 'k3'] THEN 1 END) AS c", indexed)).isEqualTo(2L);
     assertThat(indexed.reads("m")).as("reads of the parameter indexed by the right side").isGreaterThanOrEqualTo(rows);
+  }
+
+  /**
+   * An application can bind a function of its own to the name of an allowed one: that function is no longer known to answer from
+   * its arguments alone, so the right side calling it is evaluated on every row.
+   */
+  @Test
+  void aReplacedAllowedFunctionIsEvaluatedOnEveryRow() {
+    final StatelessFunction originalCypher = CypherFunctionRegistry.get("reverse");
+    final Function originalUnified = FunctionRegistry.get("reverse");
+    final AtomicInteger calls = new AtomicInteger();
+    CypherFunctionRegistry.registerOrReplace(new StatelessFunction() {
+      @Override
+      public String getName() {
+        return "reverse";
+      }
+
+      @Override
+      public Object execute(final Object[] args, final CommandContext context) {
+        return List.of((long) calls.incrementAndGet());
+      }
+    });
+    try {
+      assertThat(answers("UNWIND [10, 20, 30] AS i RETURN 2 IN reverse([12725]) AS r", Map.of())).containsExactly(false, true, false);
+      assertThat(calls.get()).isEqualTo(3);
+    } finally {
+      if (originalCypher != null)
+        CypherFunctionRegistry.registerOrReplace(originalCypher);
+      else
+        CypherFunctionRegistry.unregister("reverse");
+      if (originalUnified != null)
+        FunctionRegistry.registerOrReplace(originalUnified);
+      else
+        FunctionRegistry.unregister("reverse");
+    }
   }
 
   @Test
