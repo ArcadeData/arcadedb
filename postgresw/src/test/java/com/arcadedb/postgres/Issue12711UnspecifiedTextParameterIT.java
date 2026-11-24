@@ -131,6 +131,7 @@ class Issue12711UnspecifiedTextParameterIT extends PostgresWireProtocolTestBase 
     final List<Integer> keys = new ArrayList<>();
     try (final PreparedStatement statement = connection.prepareStatement(query)) {
       statement.setString(1, parameter);
+      // fully qualified: ResultSet is the engine's in this class
       try (final java.sql.ResultSet rs = statement.executeQuery()) {
         while (rs.next())
           keys.add(rs.getInt(1));

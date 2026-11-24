@@ -24,6 +24,11 @@ package com.arcadedb.schema;
  * Python list exactly so (issue #2559), and a Python {@code str} exactly so too (issue #12711). Where a list is wanted it is that
  * list; converted to a STRING - stored into a STRING property, compared with a string - it is the text the client sent, never the
  * rendering of the value it was read as.
+ * <p>
+ * One STRING conversion is not a string target: the key of an index on a property nothing declares, which is STRING-keyed and
+ * holds each value by its own text (issue #11578). Such a property stores the value as the list, so the index keys it as the
+ * list, on the write and on the lookup ({@code LSMTreeIndexAbstract.convertKeysToDeclaredTypes}). The text is fixed when the
+ * value is read: an implementation is a parameter value, not modified afterwards.
  */
 public interface SourceText {
   /** The text the value was read from, exactly as the client sent it. */

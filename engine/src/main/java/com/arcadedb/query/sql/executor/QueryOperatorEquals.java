@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.schema.SourceText;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
@@ -117,6 +118,13 @@ public class QueryOperatorEquals {
 
     // ALL OTHER CASES
     try {
+      // A value read from text of unspecified type is that text against a string, on whichever side it stands: the conversion
+      // below turns the right operand into the class of the left one, and a string has no conversion into such a value (#12711)
+      if (left instanceof SourceText && right instanceof String) {
+        final Object text = right;
+        right = left;
+        left = text;
+      }
       // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
       // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
       // A DATE against a datetime is that day at midnight, not the datetime narrowed to its day (issue #10206)

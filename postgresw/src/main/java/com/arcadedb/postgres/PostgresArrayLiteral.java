@@ -96,7 +96,11 @@ final class PostgresArrayLiteral {
     }
   }
 
-  /** The list an untyped array literal reads as, which is the literal itself wherever the engine converts it to a STRING. */
+  /**
+   * The list an untyped array literal reads as, which is the literal itself wherever the engine converts it to a STRING. The text is
+   * the one the list was parsed from and does not follow a later change of the list: it is a parameter value, read anew for every
+   * execution and never modified in place.
+   */
   static final class UntypedList extends ArrayList<Object> implements SourceText {
     private final String sourceText;
 
