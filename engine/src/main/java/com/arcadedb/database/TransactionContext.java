@@ -521,6 +521,11 @@ public class TransactionContext implements Transaction {
   // Holds one small entry (indexed values only) per distinct CHANGED-index RID; entries are dropped on
   // delete and the map is released on reset(), so memory scales with updatedRecords, never beyond it.
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
+  // #12612: the values a save gave to READONLY properties while their check was deferred (DocumentValidator.deferReadonlyChecks, the
+  // second write of a record a restore creates), per record. That write is part of creating the record, so for the rest of the
+  // transaction the property may hold the value it set as well as the stored one: the commit validates a record assigned after its
+  // save, and refused the record a restore completed and put back to that value. Only a restore fills it
+  private       Map<RID, Map<String, Object>>        readonlyValuesOfDeferredWrites = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   // INVARIANT (#4941/#4959): this field is written by exactly two paths. (1) setRequester(), the explicit
@@ -1594,6 +1599,7 @@ public class TransactionContext implements Transaction {
     newPages = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
 
     // #11498: what the commit locks protect is gone from here on - the pages and the index replay were dropped above - so they
     // are released BEFORE the records are reloaded below. A transaction that lost a conflict used to keep every other writer of
@@ -2217,6 +2223,26 @@ public class TransactionContext implements Transaction {
    */
   public Document getLastIndexedSnapshot(final RID rid) {
     return updatedRecordsIndexSnapshot == null ? null : updatedRecordsIndexSnapshot.get(rid);
+  }
+
+  /**
+   * Remembers the value a write of {@code rid} gave to the READONLY property {@code name} while its check was deferred (issue #12612).
+   */
+  void setReadonlyValueOfDeferredWrite(final RID rid, final String name, final Object value) {
+    if (readonlyValuesOfDeferredWrites == null)
+      readonlyValuesOfDeferredWrites = new HashMap<>();
+    readonlyValuesOfDeferredWrites.computeIfAbsent(rid, k -> new HashMap<>()).put(name, value);
+  }
+
+  /**
+   * Whether {@code value} is the one a write of {@code rid} gave to the READONLY property {@code name} in this transaction while its
+   * check was deferred (issue #12612): that write completed the creation of the record, so holding its value alters nothing.
+   */
+  boolean isReadonlyValueOfDeferredWrite(final RID rid, final String name, final Object value) {
+    if (readonlyValuesOfDeferredWrites == null)
+      return false;
+    final Map<String, Object> values = readonlyValuesOfDeferredWrites.get(rid);
+    return values != null && values.containsKey(name) && DocumentValidator.sameReadonlyValue(value, values.get(name));
   }
 
   public void setLastIndexedSnapshot(final RID rid, final Document snapshot) {
@@ -4346,6 +4372,7 @@ public class TransactionContext implements Transaction {
     offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
     newPageCounters.clear();
     immutablePages.clear();
     snapshotChunkChains = null;
@@ -4569,7 +4596,8 @@ public class TransactionContext implements Transaction {
     reconcileIndexesRegisteredSinceBegin();
 
     // Issue #11751: the same state, for what was assigned to a record after the save() that queued it, since the flush below writes the
-    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records
+    // record as it is now and does not index. After the reconciliation, which brings the new indexes to the pending values of the records.
+    // Issue #12612: such a record is validated first, since the save that validated it saw other values
     indexPropertiesAssignedAfterTheirSave();
 
     // Issue #12483: the values of the relationships this transaction created are final now, the SET that followed a CREATE included
@@ -5652,6 +5680,7 @@ public class TransactionContext implements Transaction {
     offPageFingerprints = null;
     updatedRecords = null;
     updatedRecordsIndexSnapshot = null;
+    readonlyValuesOfDeferredWrites = null;
     newPageCounters.clear();
     modifiedRecordsCache = clearOrReplace(modifiedRecordsCache, RECORDS_CACHE_CAPACITY);
     immutableRecordsCache = clearOrReplace(immutableRecordsCache, RECORDS_CACHE_CAPACITY);
@@ -6845,6 +6874,14 @@ public class TransactionContext implements Transaction {
    * Costs a flag read per updated record: only a record a property was assigned to since its save is diffed (see {@link
    * MutableDocument#isAssignedAfterSave}), so the common update, set and save, pays nothing. A container changed in place and not
    * assigned is not seen, as everywhere else: it has to be saved.
+   * <p>
+   * The same records are validated against their schema first (issue #12612): the save validated the values the record held then, and
+   * the commit writes the ones it holds now, so a value over a MAX, a mandatory property removed or a READONLY one changed after the save
+   * was stored with no check at all. The save's contract is applied again, a record whose content could not be fully decoded included
+   * ({@link MutableDocument#checkContentIsComplete}), and a refusal rolls the whole transaction back with the exception the save would have
+   * thrown. Only a record that is dirty is validated: one that is not, after a {@code reload()}, is written from the buffer it was read
+   * with, so the commit stores nothing the page does not already hold. The before-update listeners are not fired again: they ran at the
+   * save, when the caller could still handle their refusal.
    */
   private void indexPropertiesAssignedAfterTheirSave() {
     if (updatedRecords == null)
@@ -6854,6 +6891,12 @@ public class TransactionContext implements Transaction {
       DocumentIndexer indexer = null;
       for (final Record rec : updatedRecords.values())
         if (rec instanceof MutableDocument document && document.isAssignedAfterSave()) {
+          if (document.isDirty()) {
+            // validate() loads the properties of a record whose content is not decoded yet, which tells whether it is complete
+            document.validate();
+            document.checkContentIsComplete();
+          }
+
           if (indexer == null) {
             // The entries are queued on the transaction on top of the calling thread's stack, through the indexer: from underneath another
             // transaction they would land in the wrong one
