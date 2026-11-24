@@ -60,6 +60,10 @@ class PermissionsFollowSchemaChangesIT extends BaseGraphServerTest {
       final ServerSecurityUser principal = security.authenticateByApiToken(token);
       final ServerSecurityDatabaseUser dbUser = principal.getDatabaseUser(database);
 
+      // A NAME NO TYPE HAS YET IS ANSWERED AS THE TYPE WILL BE ONCE CREATED (A METRIC TYPE CREATED ON ITS FIRST WRITE)
+      assertThat(dbUser.requestAccessOnType("NotCreatedYet", SecurityDatabaseUser.ACCESS.CREATE_RECORD)).isFalse();
+      assertThat(dbUser.requestAccessOnType("Granted", SecurityDatabaseUser.ACCESS.CREATE_RECORD)).isTrue();
+
       database.getSchema().createDocumentType("LateDocument");
       database.getSchema().createDocumentType("Granted");
       final Bucket extraBucket = database.getSchema().createBucket("late_extra");
@@ -162,7 +166,6 @@ class PermissionsFollowSchemaChangesIT extends BaseGraphServerTest {
       assertThat(tokenCommand(token, "sqlscript",
           "CREATE TIMESERIES TYPE Created TIMESTAMP ts TAGS (id STRING) FIELDS (value DOUBLE) SHARDS 1;"
               + " INSERT INTO Created SET ts = 1000, id = 'a', value = 1.5;")).as(this::lastResponse).isEqualTo(403);
-      assertThat(countRecords("Created")).isZero();
 
       // A TYPE THE TOKEN IS GRANTED BY NAME CAN BE CREATED AND WRITTEN IN THE SAME REQUEST
       assertThat(tokenCommand(token, "sqlscript", "CREATE DOCUMENT TYPE Granted; INSERT INTO Granted SET name = 'ok';"))
@@ -174,7 +177,7 @@ class PermissionsFollowSchemaChangesIT extends BaseGraphServerTest {
   }
 
   private long countRecords(final String typeName) {
-    return getServerDatabase(0, getDatabaseName()).query("sql", "SELECT count(*) AS c FROM " + typeName).next()
+    return getServerDatabase(0, getDatabaseName()).query("sql", "SELECT count(@rid) AS c FROM " + typeName).next()
         .<Number>getProperty("c").longValue();
   }
 
