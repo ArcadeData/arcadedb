@@ -441,9 +441,10 @@ public final class HeapEstimator {
         break;
       weight = saturatedMultiply(weight, size);
       node = first;
-      if (node == checkpoint)
+      if (node == checkpoint) // NOPMD: by identity, a value that holds itself is met again as the same object
         break;
-      if (++sinceCheckpoint == window) {
+      sinceCheckpoint++;
+      if (sinceCheckpoint == window) {
         checkpoint = node;
         window <<= 1;
         sinceCheckpoint = 0;
