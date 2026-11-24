@@ -206,9 +206,9 @@ public class MatchExecutionPlanner {
         result.chain(new UnwindStep(unwind, context));
       }
 
-      if (this.skip != null && skip.getValue(context) >= 0) {
+      // a negative SKIP is refused by the step, as on the projection branch below (issue #12683)
+      if (this.skip != null)
         result.chain(new SkipExecutionStep(skip, context));
-      }
       if (this.limit != null && limit.getValue(context) >= 0) {
         result.chain(new LimitExecutionStep(limit, context));
       }

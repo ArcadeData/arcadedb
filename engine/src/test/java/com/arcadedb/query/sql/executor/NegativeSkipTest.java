@@ -75,6 +75,60 @@ class NegativeSkipTest extends TestHelper {
         .hasMessageContaining("negative SKIP");
   }
 
+  /**
+   * A SKIP read from a script variable is only known when the statement runs: this is the case the planner's catch block is for,
+   * and why the refusal is in the SKIP step and not in the planner.
+   */
+  @Test
+  void negativeSkipFromALetVariableIsRefused() {
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.command("sqlscript", "LET $s = -1; SELECT id FROM NegSkip SKIP $s;")) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).isInstanceOf(CommandExecutionException.class).hasMessageContaining("negative SKIP");
+  }
+
+  @Test
+  void positiveSkipFromALetVariableStillWorks() {
+    try (final ResultSet rs = database.command("sqlscript", "LET $s = 2; SELECT id FROM NegSkip ORDER BY id SKIP $s;")) {
+      assertThat(rs.stream().map(r -> r.<Integer>getProperty("id")).toList()).containsExactly(3);
+    }
+  }
+
+  @Test
+  void negativeSkipFromAnExpressionIsRefused() {
+    assertThatThrownBy(() -> drain("SELECT id FROM NegSkip SKIP (1 - 2)", Map.of())).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("negative SKIP");
+  }
+
+  /**
+   * SQL MATCH has two plans for its RETURN: the projection one went through the SELECT planner's SKIP step, the one for
+   * $elements/$paths/$patterns dropped a negative SKIP silently. Both refuse it.
+   */
+  @Test
+  void negativeSkipOnMatchIsRefusedWhateverTheReturn() {
+    database.getSchema().createVertexType("NegSkipV");
+    database.transaction(() -> {
+      for (int i = 1; i <= 3; i++)
+        database.newVertex("NegSkipV").set("id", i).save();
+    });
+
+    assertThatThrownBy(() -> drain("MATCH {type: NegSkipV, as: a} RETURN a.id SKIP -1", Map.of())).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+    assertThatThrownBy(() -> drain("MATCH {type: NegSkipV, as: a} RETURN $elements SKIP -1", Map.of())).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+    assertThatThrownBy(() -> drain("MATCH {type: NegSkipV, as: a} RETURN $paths SKIP :n", Map.of("n", -2))).isInstanceOf(
+        CommandExecutionException.class).hasMessageContaining("negative SKIP");
+
+    try (final ResultSet rs = database.query("sql", "MATCH {type: NegSkipV, as: a} RETURN $elements SKIP 1")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+    try (final ResultSet rs = database.query("sql", "MATCH {type: NegSkipV, as: a} RETURN a.id SKIP 1")) {
+      assertThat(rs.stream().count()).isEqualTo(2);
+    }
+  }
+
   @Test
   void zeroAndPositiveSkipStillWork() {
     try (final ResultSet rs = database.query("sql", "SELECT id FROM NegSkip ORDER BY id SKIP 0")) {
