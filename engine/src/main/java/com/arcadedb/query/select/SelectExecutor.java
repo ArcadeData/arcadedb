@@ -73,6 +73,12 @@ public class SelectExecutor {
   private List<TypeIndex>       indexesRead;
   private List<IndexInternal[]> indexesReadSnapshots;
 
+  // #12701: THE BUCKETS OF THE SELECT'S TYPE SCOPE (fromType, AND ITS SUBTYPES WHEN polymorphic), BUILT ON FIRST USE. null UNTIL THEN
+  private IntHashSet scopeBucketIds;
+  // #12701: SET BY lookForIndexes() WHEN AN INDEX THE CURSORS READ SPANS BUCKETS OUTSIDE THE SCOPE: buildIterator() THEN DELIVERS ONLY
+  // THE RECORDS OF THE SCOPE. null WHEN EVERY ENTRY OF THE INDEXES BELONGS TO IT, THE COMMON CASE, WHICH PAYS NOTHING
+  private IntHashSet bucketScopeFilter;
+
   // #6815: THE ABSOLUTE DEADLINE FOR THIS EXECUTION, OWNED BY THE CONSUMER INSTEAD OF BY THE SOURCE ITERATOR.
   // buildIterator() CAN RETURN FOUR DIFFERENT SOURCES AND ONLY ONE OF THEM (MultiIterator) CARRIES A TIMEOUT OF ITS
   // OWN, SO INSTALLING select.timeoutInMs THERE - THE ONLY THING THAT USED TO HAPPEN - SILENTLY DROPPED IT FOR EVERY
@@ -183,19 +189,36 @@ public class SelectExecutor {
    * would keep a retired compacted file undroppable until the next restart.
    */
   long executeCount() {
+    return countMatches(Long.MAX_VALUE);
+  }
+
+  /**
+   * #5662: same as {@link #executeCount()}, and more acutely so - this method stops on the FIRST match, so the
+   * cursor is abandoned partway on every positive answer. It is the count loop capped at one: whether a row is left
+   * after the SKIP and the duplicates of a multi-cursor plan are skipped is the same question for both (#12685).
+   */
+  boolean executeExists() {
+    return countMatches(1L) > 0;
+  }
+
+  /**
+   * The records the select returns, counted with the SKIP and LIMIT of {@link SelectIterator} and at most {@code cap}.
+   */
+  private long countMatches(final long cap) {
     startTimeout();
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     try {
       final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
       final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
           ? ConcurrentHashMap.newKeySet() : null;
+      final long limit = select.limit > -1 ? Math.min(select.limit, cap) : cap;
 
       long count = 0;
       int skipped = 0;
       while (iterator.hasNext()) {
         // #6815: count() NEVER BUILDS A SelectIterator, IT DRAINS THE SOURCE IN THIS LOOP, SO THE DEADLINE HAS TO BE
         // CHECKED HERE TOO. A NON-THROWING TIMEOUT RETURNS THE PARTIAL TALLY, MATCHING THE TRUNCATED RESULT SET THE
-        // STREAMING PATH RETURNS
+        // STREAMING PATH RETURNS (exists() ANSWERS false: NO MATCH WAS FOUND WITHIN THE BUDGET)
         if (checkForTimeout())
           break;
 
@@ -203,6 +226,10 @@ public class SelectExecutor {
         if (filterOutRecords != null && filterOutRecords.contains(record.getIdentity()))
           continue;
         if (select.rootTreeElement == null || evaluateWhere(record)) {
+          // #12685: BEFORE THE SKIP TEST, AS SelectIterator.fetchNext() DOES. A SKIPPED RECORD THAT ANOTHER CURSOR DELIVERS
+          // AGAIN WAS COUNTED, AS IF IT WERE A NEW ROW
+          if (filterOutRecords != null)
+            filterOutRecords.add(record.getIdentity());
           if (skipped < select.skip) {
             skipped++;
             continue;
@@ -215,46 +242,17 @@ public class SelectExecutor {
           // ONCE THE LIMIT IS REACHED THE LOOP CAN ONLY BREAK ON THE *NEXT* MATCHING RECORD - VIA THE break BEING
           // NESTED INSIDE THIS evaluateWhere() BRANCH - SO A SELECTIVE WHERE WITH NO (limit+1)TH MATCH DEGRADES A
           // BOUNDED count() INTO A FULL SCAN OF THE REST OF THE TYPE)
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
-          if (filterOutRecords != null)
-            filterOutRecords.add(record.getIdentity());
           count++;
-          if (select.limit > -1 && count >= select.limit)
+          if (count >= limit)
             break;
         }
       }
       return count;
     } finally {
-      // only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
+      // #5662: only the index cursor is released: the alternatives buildIterator() can return (a type or bucket scan, a
       // MultiIterator over several buckets) hold no per-series file registration and are not closeable at all
-      if (iteratorFromIndexes != null)
-        iteratorFromIndexes.close();
-    }
-  }
-
-  /**
-   * #5662: same as {@link #executeCount()}, and more acutely so - this method returns on the FIRST match, so the
-   * cursor is abandoned partway on every positive answer.
-   */
-  boolean executeExists() {
-    startTimeout();
-    final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
-    try {
-      final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-
-      while (iterator.hasNext()) {
-        // #6815: SAME AS executeCount(). A NON-THROWING TIMEOUT ANSWERS false - THE SCAN NEVER FOUND A MATCH WITHIN
-        // THE BUDGET IT WAS GIVEN, WHICH IS THE PARTIAL ANSWER THE CALLER ASKED TO BE GIVEN RATHER THAN AN EXCEPTION
-        if (checkForTimeout())
-          return false;
-
-        final Document record = iterator.next().asDocument();
-        if (select.rootTreeElement == null || evaluateWhere(record))
-          return true;
-      }
-      return false;
-    } finally {
       if (iteratorFromIndexes != null)
         iteratorFromIndexes.close();
     }
@@ -427,7 +425,7 @@ public class SelectExecutor {
     final Iterator<? extends Identifiable> iterator;
 
     if (iteratorFromIndexes != null)
-      iterator = iteratorFromIndexes;
+      iterator = bucketScopeFilter != null ? new BucketScopedCursor(iteratorFromIndexes, bucketScopeFilter, this) : iteratorFromIndexes;
     else if (select.fromType != null)
       iterator = select.database.iterateType(select.fromType.getName(), select.polymorphic);
     else if (select.fromBuckets.size() == 1)
@@ -457,6 +455,7 @@ public class SelectExecutor {
       indexBeingRead = null;
       indexesRead = null;
       indexesReadSnapshots = null;
+      bucketScopeFilter = null;
       try {
         // #6592: A COMPOSITE (MULTI-PROPERTY) INDEX IS REGISTERED UNDER ITS FULL PROPERTY LIST (SEE
         // LocalDocumentType.indexesByProperties), NOT UNDER ANY SUBSET OF IT - SO A PLAIN AND-CONJUNCTION OF EQUALITY
@@ -477,7 +476,10 @@ public class SelectExecutor {
           // filterWithIndexesFinalNode() PRUNES AN 'and' SIBLING'S - HARMLESS TODAY ONLY BECAUSE 'and' IS ALREADY
           // UNCONDITIONALLY DISQUALIFIED
           final SelectTreeNode exactLeaf = soleExactLeaf(select.rootTreeElement);
-          indexCandidateLimit = exactLeaf != null && answersExactly(exactLeaf.index) && isOrderBySafeForCap(exactLeaf) ?
+          // #12701: NOT WHEN THE INDEX SPANS BUCKETS OUTSIDE THE SCOPE: THE CAP WOULD COUNT THE CANDIDATES BUILT FROM THEIR RECORDS, WHICH
+          // THE SCOPE FILTER DISCARDS AFTER THE CURSOR, SO THE SELECT WOULD COME BACK SHORT
+          indexCandidateLimit = exactLeaf != null && answersExactly(exactLeaf.index) && isOrderBySafeForCap(exactLeaf)
+              && !spansBucketsOutsideTheScope(exactLeaf.index) ?
               computeExactCandidateLimit() :
               -1;
 
@@ -495,6 +497,11 @@ public class SelectExecutor {
             fallBackToScan(cursors, null);
             return null;
           }
+          if (usedIndexesSpanBucketsOutsideTheScope())
+            // #12701: AN INDEX DECLARED ON A SUPERTYPE READS THE SUB-INDEXES OF THE WHOLE HIERARCHY, SO ITS CURSORS CARRY THE RECORDS OF
+            // THE SIBLING TYPES (fromType(subtype)) AND OF THE SUBTYPES (polymorphic(false)) THAT THE SELECT DID NOT ASK FOR. THE INDEX
+            // STAYS, AND buildIterator() DROPS THOSE RECORDS BY THE BUCKET OF THEIR RID, BEFORE THEY ARE LOADED
+            bucketScopeFilter = bucketScope();
           return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
         }
 
@@ -533,6 +540,46 @@ public class SelectExecutor {
     }
     indexesRead.add(index);
     indexesReadSnapshots.add(index.getIndexesOnBuckets());
+  }
+
+  /**
+   * #12701: the buckets of the select's type scope: those of {@code fromType}, and of its subtypes only when the select is
+   * polymorphic. Built once per execution.
+   */
+  private IntHashSet bucketScope() {
+    if (scopeBucketIds == null) {
+      final IntHashSet ids = new IntHashSet();
+      for (final Bucket bucket : select.fromType.getBuckets(select.polymorphic))
+        ids.add(bucket.getFileId());
+      scopeBucketIds = ids;
+    }
+    return scopeBucketIds;
+  }
+
+  /**
+   * #12701: whether {@code index} holds a sub-index on a bucket the select's type scope excludes. An index declared on a supertype
+   * spans the whole hierarchy, so its cursors would deliver the records of the sibling types and, for a non-polymorphic select,
+   * of the subtypes. The index of the select's own type read by a polymorphic select never does: no scope set is built for it.
+   */
+  private boolean spansBucketsOutsideTheScope(final Index index) {
+    if (select.fromType == null || !(index instanceof final TypeIndex typeIndex))
+      return false;
+    if (select.polymorphic && typeIndex.getTypeName().equals(select.fromType.getName()))
+      return false;
+
+    final IntHashSet scope = bucketScope();
+    for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
+      if (!scope.contains(subIndex.getAssociatedBucketId()))
+        return true;
+    return false;
+  }
+
+  private boolean usedIndexesSpanBucketsOutsideTheScope() {
+    if (usedIndexes != null)
+      for (final IndexInfo info : usedIndexes)
+        if (spansBucketsOutsideTheScope(info.index))
+          return true;
+    return false;
   }
 
   /**
@@ -702,7 +749,8 @@ public class SelectExecutor {
     // THE WHOLE WHERE-TREE'S RESULT SET (EVERY LEAF WAS CONSUMED BY THE MATCHED PREFIX, NOTHING LEFT FOR
     // evaluateWhere() TO DISCARD) AND THE ORDER BY, IF ANY, IS ALREADY SATISFIED BY THE CURSOR ITSELF - OTHERWISE
     // fetchResultInCaseOfOrderBy()'S FULL-DRAIN SORT NEEDS EVERY MATCH, NOT JUST skip + limit OF THEM.
-    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement) && answersExactly(bestIndex);
+    final boolean exactMatch = bestPrefixLength == countAndLeaves(select.rootTreeElement) && answersExactly(bestIndex)
+        && !spansBucketsOutsideTheScope(bestIndex);
     indexCandidateLimit = exactMatch && (select.orderBy == null || orderByElided) ? computeExactCandidateLimit() : -1;
 
     return true;
@@ -1078,8 +1126,10 @@ public class SelectExecutor {
         // DROPPING IS NULL (#9331)
         TypeIndex propertyIndex = found != null && found.getPropertyNamesIfExactKeyLookup() != null ? found : null;
         // A COLLATE ci index holds lower-cased keys: a range over it is not the case sensitive range the leaf asks for and
-        // loses rows no residual filter can bring back, so the scan answers it (#9302)
-        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator) && SelectExecutionPlanner.holdsFoldedKeys(propertyIndex))
+        // loses rows no residual filter can bring back, so the scan answers it (#9302). A HASH index answers by key only and
+        // refuses a range, which is a scan as well (#12677)
+        if (propertyIndex != null && RANGE_OPERATORS.contains(node.operator)
+            && (!propertyIndex.supportsOrderedIterations() || SelectExecutionPlanner.holdsFoldedKeys(propertyIndex)))
           propertyIndex = null;
 
         if (propertyIndex != null)
