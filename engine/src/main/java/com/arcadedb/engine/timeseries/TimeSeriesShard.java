@@ -249,6 +249,8 @@ public class TimeSeriesShard implements AutoCloseable {
                          final List<ColumnDefinition> columns, final long compactionBucketIntervalMs,
                          final TimeSeriesTagDictionary tagDictionary, final int mutableFormatVersion, final long typeOwner)
       throws IOException {
+    // the name of every file of the shard starts with the name of the type
+    LocalTimeSeriesType.checkValidName(baseName);
     this.shardIndex = shardIndex;
     this.typeName = baseName;
     this.database = database;
@@ -2209,6 +2211,7 @@ public class TimeSeriesShard implements AutoCloseable {
    * one until {@link #setTypeName} is called with the rename published.
    */
   void renameFiles(final String newTypeName) throws IOException {
+    LocalTimeSeriesType.checkValidName(newTypeName);
     compactionMutex.lock();
     try {
       mutableBucket.rename(newTypeName + "_shard_" + shardIndex);

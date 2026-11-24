@@ -30,6 +30,7 @@ import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOps;
 import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
@@ -5806,6 +5807,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * constructor builds; the suffix is this class's own.
    */
   public static String sealedFileNameFor(final String typeName, final int shardIndex) {
+    LocalTimeSeriesType.checkValidName(typeName);
     return typeName + "_shard_" + shardIndex + ".ts.sealed";
   }
 

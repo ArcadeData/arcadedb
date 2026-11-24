@@ -4868,7 +4868,9 @@ public class LocalSchema implements Schema {
   private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
     try {
       tsType.initEngine();
-    } catch (final IOException e) {
+    } catch (final IOException | SchemaException e) {
+      // A SchemaException is the name of a stored type that the files of its engine cannot be built on (LocalTimeSeriesType.checkValidName),
+      // handled like the failure below.
       // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
       // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
       // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
