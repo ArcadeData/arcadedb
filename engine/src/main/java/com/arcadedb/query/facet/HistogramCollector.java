@@ -102,7 +102,7 @@ public final class HistogramCollector implements FacetCollector {
    * @param database  converts the date literals of BOUNDS on a date column
    * @param extractor the declaring type's extractor: converts BOUNDS as stored values are converted
    *
-   * @throws CommandExecutionException when the column cannot be bucketed by the interval
+   * @throws CommandSQLParsingException when the column cannot be bucketed by the interval
    */
   HistogramCollector(final HistogramFacetSpec spec, final ColumnDefinition column, final long budgetWaitMs, final DatabaseInternal database,
       final ColumnConversion extractor) {
@@ -266,7 +266,8 @@ public final class HistogramCollector implements FacetCollector {
   /**
    * The bucket layout over BOUNDS and the matched values, null when there is neither.
    *
-   * @throws CommandSQLParsingException above 100,000 buckets even over the matched values alone
+   * @throws CommandSQLParsingException above 100,000 buckets, or buckets beyond the representable range, even over the matched values
+   *                                    alone
    */
   private Layout layout(final Grid grid) {
     final Span span = new Span();
@@ -280,7 +281,8 @@ public final class HistogramCollector implements FacetCollector {
       return null;
     try {
       return layout(grid, span);
-    } catch (final CommandExecutionException | CommandSQLParsingException e) {
+    } catch (final CommandSQLParsingException e) {
+      // the bucket cap or the representable range: both depend on the span, which the matched values alone may narrow
       if (!fromViews)
         throw e;
       // the views' bounds also cover rows the query did not match, and dead ones: the matched values may need fewer buckets

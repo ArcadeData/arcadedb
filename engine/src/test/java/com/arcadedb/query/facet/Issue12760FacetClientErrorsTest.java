@@ -85,4 +85,32 @@ class Issue12760FacetClientErrorsTest extends TestHelper {
     assertThatThrownBy(() -> facets("i HISTOGRAM FIXED 1 BOUNDS [0, 10]")).isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("FACETS i: the histogram would have more than 100000 buckets").hasMessageNotContaining("BOUNDS");
   }
+
+  @Test
+  void bucketCapFromBoundsAndFromTheDataSayTheSame() {
+    // the same refusal whether the compiler sees it in BOUNDS or the collector in the values
+    assertThatThrownBy(() -> facets("i HISTOGRAM FIXED 1 BOUNDS [0, 1000000]")).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessage("FACETS i: the histogram would have more than 100000 buckets");
+    assertThatThrownBy(() -> facets("i HISTOGRAM FIXED 1")).isInstanceOf(CommandSQLParsingException.class)
+        .hasMessage("FACETS i: the histogram would have more than 100000 buckets");
+  }
+
+  @Test
+  void bucketsBeyondTheRepresentableRangeAreRefusedAsBadQuery() {
+    database.command("sql", "CREATE DOCUMENT TYPE U");
+    database.command("sql", "CREATE PROPERTY U.v LONG");
+    database.command("sql", "CREATE INDEX ON U (v) COLUMNAR");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO U SET v = " + (Long.MAX_VALUE - 5));
+      database.command("sql", "INSERT INTO U SET v = " + Long.MAX_VALUE);
+    });
+    FacetOracle.awaitCaughtUp(database);
+
+    // the end of the last bucket does not fit a long: BOUNDS cannot help, they only widen the span
+    assertThatThrownBy(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM U FACETS v HISTOGRAM FIXED 10")) {
+        rs.getFacets();
+      }
+    }).isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("FACETS v:").hasMessageNotContaining("BOUNDS");
+  }
 }

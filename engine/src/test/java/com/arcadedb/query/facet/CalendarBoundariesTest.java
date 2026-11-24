@@ -219,9 +219,9 @@ class CalendarBoundariesTest {
   @Test
   void fixedAtTheLongLimitsIsRefusedNeverInverted() {
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, Long.MAX_VALUE - 10, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.fixed("h", ZoneOffset.UTC, 3_600_000L, 0L, Long.MIN_VALUE, Long.MIN_VALUE + 10, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     // a single bucket as wide as the whole range is fine while its end is representable
     final CalendarBoundaries b = CalendarBoundaries.fixed("h", ZoneOffset.UTC, 1L << 61, 0L, -5L, 5L, MAX);
     assertThat(b.size()).isEqualTo(2);
@@ -231,11 +231,11 @@ class CalendarBoundariesTest {
   @Test
   void calendarAtTheLongLimitsIsRefused() {
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.YEARS, ZoneOffset.UTC, null, Long.MAX_VALUE - 5, Long.MAX_VALUE, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.YEARS, ZoneOffset.UTC, null, Long.MIN_VALUE, Long.MIN_VALUE + 5, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
     assertThatThrownBy(() -> CalendarBoundaries.calendar("h", ChronoUnit.DAYS, ZoneOffset.UTC, Duration.ofSeconds(Long.MAX_VALUE), 0L, 0L, MAX))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("representable");
+        .isInstanceOf(CommandSQLParsingException.class).hasMessageContaining("representable").hasMessageNotContaining("BOUNDS");
   }
 
   @Test
