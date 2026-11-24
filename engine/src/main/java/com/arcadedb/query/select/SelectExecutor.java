@@ -985,11 +985,12 @@ public class SelectExecutor {
         cursor = node.index.range(ascendingOrder, new Object[] { from },
             node.operator == SelectOperator.ge || isInexactIntegralBound(node.index, rightValue), null, false);
     } else if (node.operator == SelectOperator.lt || node.operator == SelectOperator.le) {
-      // ... and the greatest key below it
+      // ... and the greatest key below it. The range starts past the null keys, which sort first: a candidate cap (a limit) was
+      // spent on them, and the condition then dropped every one
       final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, rightValue));
       cursor = to == NO_KEY ?
           new TempIndexCursor(Collections.emptyList()) :
-          node.index.range(ascendingOrder, null, false, to == ANY_KEY ? null : new Object[] { to },
+          node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, to == ANY_KEY ? null : new Object[] { to },
               node.operator == SelectOperator.le || isInexactIntegralBound(node.index, rightValue));
     } else
       return;
