@@ -182,7 +182,7 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
   }
 
   @Test
-  void aNameBoundAnewLosesTheEntityKindAPatternGaveIt() {
+  void aReadThroughANameAnUnwindRebindsKeepsTheBarrier() {
     final Vertex[] entity = new Vertex[1];
     database.transaction(() -> entity[0] = database.newVertex("Entity").set("uuid", "u").save());
     // r is a relationship for the MATCH, and a node of the list after the UNWIND: the SET of n can change what r.uuid reads for
@@ -192,6 +192,68 @@ class CypherMergeSetPairedKeyIssue12640Test extends TestHelper {
     try (final ResultSet rs = database.command("opencypher", query, Map.of("nodes", List.of(entity[0])))) {
       assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("EAGER");
     }
+  }
+
+  @Test
+  void theBarrierIsDecidedForTheParametersOfEachExecution() {
+    // the plan cache keeps the physical plan of the text only: the steps, and the barrier, are built again for every execution
+    final Vertex[] entity = new Vertex[1];
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Entity {uuid: 'a'}), (:Entity {uuid: 'b'})").close();
+      entity[0] = database.newVertex("Entity").set("uuid", "u", "source", "a", "target", "b").save();
+    });
+    final String query = "PROFILE " + EDGE_UPSERT;
+    for (int i = 0; i < 2; i++) {
+      final Map<String, Object> plainRows = Map.of("rows", List.of(Map.of("uuid", "p" + i, "source", "a", "target", "b")));
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", query, plainRows)) {
+          count(rs);
+          assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).doesNotContain("EAGER");
+        }
+      });
+      database.transaction(() -> {
+        try (final ResultSet rs = database.command("opencypher", query, Map.of("rows", List.of(entity[0])))) {
+          count(rs);
+          assertThat(rs.getExecutionPlan().get().prettyPrint(0, 2)).contains("EAGER");
+        }
+      });
+    }
+  }
+
+  @Test
+  void aPathOfTwoRelationshipsMergesAsTheSetStepDoes() {
+    // only the relationship the SET rewrites is paired: its key keeps its value, the other relationship is not written
+    final String direct = "UNWIND $rows AS row MATCH (a:Entity {uuid: row.source}) MATCH (b:Entity {uuid: row.mid}) "
+        + "MATCH (c:Entity {uuid: row.target}) "
+        + "MERGE (a)-[r1:RELATES_TO {uuid: row.uuid}]->(b)-[r2:RELATES_TO {uuid: row.uuid}]->(c) SET r1 = row";
+    assertThat(explain(direct)).doesNotContain("EAGER");
+    final String stepped = direct.replace(" SET r1 = row", " WITH r1, row SET r1 = row");
+    assertThat(explain(stepped)).contains("EAGER");
+    database.transaction(() -> database.command("opencypher", "CREATE (:Entity {uuid: 'a'}), (:Entity {uuid: 'b'}), (:Entity {uuid: 'c'})")
+        .close());
+
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (int i = 0; i < 150; i++)
+      rows.add(Map.of("uuid", "k" + (i % 3), "source", "a", "target", "c", "mid", "b", "fact", "f" + i));
+    database.transaction(() -> database.command("opencypher", direct, Map.of("rows", rows)).close());
+    final long directEdges = database.countType("RELATES_TO", false);
+    final String directFacts = facts();
+
+    database.transaction(() -> database.command("sql", "DELETE FROM RELATES_TO"));
+    database.transaction(() -> database.command("opencypher", stepped, Map.of("rows", rows)).close());
+    assertThat(directEdges).isEqualTo(database.countType("RELATES_TO", false)).isEqualTo(6);
+    assertThat(directFacts).isEqualTo(facts());
+  }
+
+  private String facts() {
+    final List<String> facts = new ArrayList<>();
+    try (final ResultSet rs = database.query("sql", "SELECT uuid, fact FROM RELATES_TO ORDER BY uuid, fact")) {
+      while (rs.hasNext()) {
+        final var r = rs.next();
+        facts.add(r.getProperty("uuid") + "=" + r.getProperty("fact"));
+      }
+    }
+    return String.join(",", facts);
   }
 
   @Test

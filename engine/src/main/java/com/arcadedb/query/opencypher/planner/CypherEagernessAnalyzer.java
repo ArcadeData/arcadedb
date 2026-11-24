@@ -143,10 +143,6 @@ public final class CypherEagernessAnalyzer {
   // The variables known never to hold a record (a LOAD CSV row, an UNWIND of a literal list): no record
   // write can change what a read of one of them answers
   private final Set<String> nonRecordVariables;
-  // The variables a pattern bound to a node, and to one relationship: a write through one kind cannot change what a read through
-  // the other answers, they are different records (issue #12640)
-  private final Set<String> nodeVariables;
-  private final Set<String> relationshipVariables;
   // The variables a WITH bound to a property of a variable that cannot hold a record ({@code WITH row, row.id AS id}), to the
   // variable and the key: a lookup by one of them reads the same value as that property (issue #11230)
   private final Map<String, String[]> projectedProperties;
@@ -174,8 +170,6 @@ public final class CypherEagernessAnalyzer {
       pendingMatchReads = new HashSet<>();
       rowUniqueVariables = new HashSet<>();
       nonRecordVariables = new HashSet<>();
-      nodeVariables = new HashSet<>();
-      relationshipVariables = new HashSet<>();
       projectedProperties = new HashMap<>();
       mergeKeyPairs = new HashSet<>();
     } else {
@@ -183,8 +177,6 @@ public final class CypherEagernessAnalyzer {
       pendingMatchReads = Collections.emptySet();
       rowUniqueVariables = Collections.emptySet();
       nonRecordVariables = Collections.emptySet();
-      nodeVariables = Collections.emptySet();
-      relationshipVariables = Collections.emptySet();
       projectedProperties = Collections.emptyMap();
       mergeKeyPairs = Collections.emptySet();
     }
@@ -918,13 +910,11 @@ public final class CypherEagernessAnalyzer {
       rowUniqueVariables.clear();
       if (variable != null && (boundVariables == null || !boundVariables.contains(variable)))
         rowUniqueVariables.add(variable);
-      observeEntityKinds(((MatchClause) entry.getClause()).getPathPatterns());
     }
     case WITH -> observeProjection(entry.getTypedClause());
     case UNWIND -> {
       final UnwindClause unwind = entry.getTypedClause();
       rowUniqueVariables.clear();
-      forgetEntityKind(unwind.getVariable());
       if (cannotHoldRecord(unwind.getListExpression()) || parameterHoldsNoRecord(unwind.getListExpression()))
         nonRecordVariables.add(unwind.getVariable());
       else
@@ -932,7 +922,6 @@ public final class CypherEagernessAnalyzer {
     }
     case LOAD_CSV -> {
       rowUniqueVariables.clear();
-      forgetEntityKind(((LoadCSVClause) entry.getClause()).getVariable());
       nonRecordVariables.add(((LoadCSVClause) entry.getClause()).getVariable());
     }
     case CREATE -> {
@@ -943,66 +932,19 @@ public final class CypherEagernessAnalyzer {
         for (final RelationshipPattern relationship : pathPattern.getRelationships())
           observeCreated(relationship.getVariable(), boundVariables);
       }
-      observeEntityKinds(((CreateClause) entry.getClause()).getPathPatterns());
     }
-    case MERGE -> {
-      rowUniqueVariables.clear(); // a MERGE can match several rows per row
-      final PathPattern merged = ((MergeClause) entry.getClause()).getPathPattern();
-      if (merged != null)
-        observeEntityKinds(List.of(merged));
-    }
-    case CALL -> {
-      rowUniqueVariables.clear(); // a procedure can yield several rows per row
-      // what it yields may shadow a name an earlier pattern bound to a node or a relationship
-      nodeVariables.clear();
-      relationshipVariables.clear();
-    }
+    case MERGE, CALL -> rowUniqueVariables.clear(); // a MERGE can match, and a procedure yield, several rows per row
     case SUBQUERY -> {
       // a unit subquery hands on each row once, one that returns can hand it on several times
       // (a UNION answers the RETURN of its first branch only, so it counts as returning)
       final CypherStatement body = ((SubqueryClause) entry.getClause()).getInnerStatement();
-      if (body instanceof UnionStatement || body.getReturnClause() != null) {
+      if (body instanceof UnionStatement || body.getReturnClause() != null)
         rowUniqueVariables.clear();
-        // what it returns may shadow a name an earlier pattern bound to a node or a relationship
-        nodeVariables.clear();
-        relationshipVariables.clear();
-      }
     }
     default -> {
       // SET, REMOVE, DELETE and FOREACH hand on the rows they receive
     }
     }
-  }
-
-  /** A clause binds {@code variable} anew: the kind an earlier pattern gave the name no longer applies. */
-  private void forgetEntityKind(final String variable) {
-    if (variable != null) {
-      nodeVariables.remove(variable);
-      relationshipVariables.remove(variable);
-    }
-  }
-
-  /** Records which variables of {@code patterns} name a node and which name a single relationship. */
-  private void observeEntityKinds(final List<PathPattern> patterns) {
-    if (patterns == null)
-      return;
-    for (final PathPattern pathPattern : patterns) {
-      for (final NodePattern node : pathPattern.getNodes())
-        if (node.getVariable() != null)
-          nodeVariables.add(node.getVariable());
-      for (final RelationshipPattern relationship : pathPattern.getRelationships())
-        // a variable-length relationship binds a list, and a quantified group binds lists of what it repeats
-        if (relationship.getVariable() != null && !(relationship instanceof QuantifiedPathPattern) && !relationship.isVariableLength())
-          relationshipVariables.add(relationship.getVariable());
-    }
-  }
-
-  /** Whether a write through {@code written} and a read through {@code read} are on records of different kinds. */
-  private boolean differentKinds(final String written, final String read, final Set<String> shadowed) {
-    if (written == null || read == null || shadowed.contains(written) || shadowed.contains(read))
-      return false;
-    return (nodeVariables.contains(written) && relationshipVariables.contains(read))
-        || (relationshipVariables.contains(written) && nodeVariables.contains(read));
   }
 
   /**
@@ -1149,8 +1091,6 @@ public final class CypherEagernessAnalyzer {
         continue;
       if (ownRowOnly && variable.equals(read.variable()))
         continue;
-      if (differentKinds(variable, read.variable(), shadowed))
-        continue;
       if (key == null && pairedMap && read.key() != null && keepsMergeKey(variable, read.key(), mapVariable))
         continue;
       return true;
@@ -1159,8 +1099,6 @@ public final class CypherEagernessAnalyzer {
       if (key != null && read.key() != null && !key.equals(read.key()))
         continue;
       if (ownRowOnly && variable.equals(read.variable()))
-        continue;
-      if (differentKinds(variable, read.variable(), shadowed))
         continue;
       if (key == null && pairedMap && read.key() != null
           && (isPairedLookup(read, variable, mapVariable) || keepsMergeKey(variable, read.key(), mapVariable)))
@@ -1315,14 +1253,6 @@ public final class CypherEagernessAnalyzer {
     rowUniqueVariables.addAll(unique);
     nonRecordVariables.clear();
     nonRecordVariables.addAll(nonRecord);
-    // a name the WITH forwards as it was keeps its kind, any other name is bound anew
-    if (star) {
-      nodeVariables.removeAll(rebound);
-      relationshipVariables.removeAll(rebound);
-    } else {
-      nodeVariables.retainAll(forwarded);
-      relationshipVariables.retainAll(forwarded);
-    }
 
     forgetRenamedVariables(pendingPropertyReads, star, forwarded, rebound);
     forgetRenamedVariables(pendingMatchReads, star, forwarded, rebound);
