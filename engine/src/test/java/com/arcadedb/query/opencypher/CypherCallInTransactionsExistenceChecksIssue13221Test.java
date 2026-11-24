@@ -104,9 +104,9 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
     assertThatThrownBy(() -> drain("CREATE (p:Person {id: 1}) WITH p CALL (p) { CREATE (:T {id: 1, m: 'y'}) } IN TRANSACTIONS RETURN p"))
         .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
     // no batch ran
-    assertThat(count("MATCH (n:T) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("T")).isEmpty();
     assertThat(database.isTransactionActive()).isFalse();
   }
 
@@ -118,8 +118,8 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
       drain("CREATE (p:Person {id: 1}) WITH p CALL (p) { CREATE (:T {id: 1, m: 'y'}) } IN TRANSACTIONS RETURN p");
     })).satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
-    assertThat(count("MATCH (n:T) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
+    assertThat(nodes("T")).isEmpty();
   }
 
   /** ON ERROR governs the batches, not the statement's own writes before the CALL. */
@@ -129,8 +129,8 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
         + "CALL (i) { CREATE (:T {id: i, m: 'y'}) } IN TRANSACTIONS OF 1 ROW ON ERROR CONTINUE"))
         .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
-    assertThat(count("MATCH (n:T) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
+    assertThat(nodes("T")).isEmpty();
   }
 
   /** What the deferral exists for still works on both sides of the CALL: the record completed before its commit point. */
@@ -150,7 +150,7 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
         + "WITH count(*) AS c CREATE (:Person {id: c})"))
         .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
     assertThat(ids()).containsExactly(1, 2);
   }
 
@@ -163,7 +163,7 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
     assertThatThrownBy(() -> drain("UNWIND [1] AS i CALL (i) { CREATE (x:T {id: i}) RETURN x } IN TRANSACTIONS SET x.m = 'y'"))
         .satisfies(e -> assertValidationFailure(e, "'T.m' is mandatory"));
 
-    assertThat(count("MATCH (n:T) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("T")).isEmpty();
   }
 
   /**
@@ -178,7 +178,7 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
         + "CALL (i) { CREATE (:T {id: i, m: 'y'}) } IN TRANSACTIONS } IN TRANSACTIONS"))
         .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
     assertThat(database.isTransactionActive()).isFalse();
   }
 
@@ -189,7 +189,7 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
         + "CALL (i) { CREATE (:T {id: i}) } IN TRANSACTIONS ON ERROR CONTINUE } IN TRANSACTIONS"))
         .satisfies(e -> assertValidationFailure(e, "'Person.name' is mandatory"));
 
-    assertThat(count("MATCH (n:Person) RETURN count(n) AS c")).isZero();
+    assertThat(nodes("Person")).isEmpty();
     assertThat(incompleteTs()).isEmpty();
     assertThat(database.isTransactionActive()).isFalse();
   }
@@ -248,6 +248,19 @@ class CypherCallInTransactionsExistenceChecksIssue13221Test extends TestHelper {
         ids.add(resultSet.next().<Number>getProperty("id").intValue());
     }
     return ids;
+  }
+
+  /**
+   * Every node of the label, read by a scan: an unfiltered {@code count(n)} can be answered from the buckets' cached record counters
+   * rather than from the records, which is not the ground truth a removal assertion needs.
+   */
+  private List<Object> nodes(final String label) {
+    final List<Object> nodes = new ArrayList<>();
+    try (final ResultSet resultSet = database.query("opencypher", "MATCH (n:" + label + ") RETURN n")) {
+      while (resultSet.hasNext())
+        nodes.add(resultSet.next().getProperty("n"));
+    }
+    return nodes;
   }
 
   private long count(final String cypher) {

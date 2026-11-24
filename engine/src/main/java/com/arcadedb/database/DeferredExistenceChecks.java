@@ -131,7 +131,13 @@ public class DeferredExistenceChecks {
    */
   private final List<MutableDocument> unresolved = new ArrayList<>();
 
-  /** The transaction level ({@link #depth}) each entry of {@link #unresolved} was registered at, by position. */
+  /**
+   * The transaction level ({@link #depth}) each entry of {@link #unresolved} was registered at, by position. Invariant: the two are
+   * kept in lockstep, position {@code i} of this array belongs to entry {@code i} of {@link #unresolved} for every
+   * {@code i < unresolved.size()} (what lies beyond is garbage). Every write of {@link #unresolved} - {@link #register} appending,
+   * {@link #resolve} and {@link #rolledBack} compacting in place - moves the level with its entry, and {@link #close()} clearing the
+   * list leaves nothing to match.
+   */
   private int[] unresolvedLevels = new int[4];
 
   /**
@@ -636,6 +642,11 @@ public class DeferredExistenceChecks {
    * A no-op when no scope is open on this thread (the statement runs no deferral) or nothing is pending.
    */
   public static void checkBeforeCommit(final DatabaseInternal database) {
+    // A scope holding anything is armed (register arms it), and a disarmed one holds no journal or tally either: the usual batch,
+    // which left no record provisional, pays one volatile read
+    if (!anyScopeArmed())
+      return;
+
     final DatabaseContext.DatabaseContextTL context = contextOf(database);
     final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
     if (scope == null || !scope.active)
@@ -658,6 +669,10 @@ public class DeferredExistenceChecks {
    * transactions still open below are kept, for their own commit point or the end of the statement.
    */
   public static void rolledBack(final DatabaseInternal database) {
+    // Nothing to forget in a scope that holds nothing: see checkBeforeCommit
+    if (!anyScopeArmed())
+      return;
+
     final DatabaseContext.DatabaseContextTL context = contextOf(database);
     final DeferredExistenceChecks scope = context != null ? context.getDeferredExistenceChecks() : null;
     if (scope == null || !scope.active)
