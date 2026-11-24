@@ -46,6 +46,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -10142,7 +10143,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @param failure what a failure of the search is reported as
    */
   private <T> T underSearchLocks(final String failure, final Callable<T> search) {
-    return getDatabase().executeInReadLock(() -> {
+    failIfFileRetired();
+    final T answered = getDatabase().executeInReadLock(() -> {
       lock.readLock().lock();
       try {
         return search.call();
@@ -10156,6 +10158,25 @@ public class LSMVectorIndex implements Index, IndexInternal {
         lock.readLock().unlock();
       }
     });
+    // Also afterwards: a file retired while the search ran leaves it with whatever its lazy reads found, which is nothing
+    failIfFileRetired();
+    return answered;
+  }
+
+  /**
+   * Refuses a search of an index whose own data file has been retired by a schema change (issue #13296). A Raft follower applies a
+   * replicated {@code COMPACT INDEX} by deleting the superseded files and only then reloading the schema, which publishes the new
+   * index objects, so a search that resolved the previous generation in between reads a file that is gone. Its location load logs
+   * the failure and carries on with no entries, and the search answered normally without that sub-index's rows. An exhaustive search
+   * lacked whole buckets for the 1 to 2 seconds the apply takes. The caller retries, as for any other conflict with a schema change.
+   * <p>
+   * The leader's own compaction is not affected: it swaps {@code mutable}, and so {@link #getFileId()}, before it drops the old file.
+   */
+  private void failIfFileRetired() {
+    final int fileId = getFileId();
+    if (!getDatabase().getFileManager().existsFile(fileId))
+      throw new ConcurrentModificationException(
+          "Vector index '" + indexName + "' was retired by a schema change (its file " + fileId + " is gone): retry the search");
   }
 
   private List<Pair<RID, Float>> searchNeighbors(final float[] queryVector, final int requestedK, final int efSearch,
@@ -10165,6 +10186,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     metrics.incrementSearchOperations();
 
     try {
+      failIfFileRetired();
       if (queryVector == null)
         throw new IllegalArgumentException("Query vector cannot be null");
       if (requestedK < 0)
