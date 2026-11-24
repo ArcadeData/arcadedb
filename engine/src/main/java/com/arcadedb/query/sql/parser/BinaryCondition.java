@@ -43,6 +43,11 @@ public class BinaryCondition extends BooleanExpression {
 
   /** The key of the memo an execution converts the right operand with, assigned at its first use; see {@link #rightConversion}. */
   private volatile String rightConversionKey;
+  /**
+   * Whether the right operand is a literal or a parameter, decided at its first use ({@link ConstantOperandConversion#literalState}),
+   * so a record does not walk the expression again. A benign race: two threads compute the same answer.
+   */
+  private          byte   rightLiteralState = ConstantOperandConversion.UNKNOWN;
 
   public BinaryCondition() {
   }
@@ -73,7 +78,7 @@ public class BinaryCondition extends BooleanExpression {
       return null;
     try {
       return operator.execute(context != null ? context.getDatabase() : null, leftVal, rightVal,
-          ConstantOperandConversion.isConstantStringToConvert(leftVal, rightVal, right) ? rightConversion(context) : null);
+          ConstantOperandConversion.isStringToConvert(leftVal, rightVal) && isRightConstant() ? rightConversion(context) : null);
     } catch (final ClassCastException e) {
       if (!operator.isRangeOperator())
         throw e;
@@ -94,6 +99,15 @@ public class BinaryCondition extends BooleanExpression {
       rightConversionKey = key;
     }
     return ConstantOperandConversion.of(context, key);
+  }
+
+  private boolean isRightConstant() {
+    byte state = rightLiteralState;
+    if (state == ConstantOperandConversion.UNKNOWN) {
+      state = ConstantOperandConversion.literalState(right);
+      rightLiteralState = state;
+    }
+    return state == ConstantOperandConversion.CONSTANT;
   }
 
   /**

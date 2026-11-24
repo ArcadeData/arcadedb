@@ -248,16 +248,39 @@ class ConstantOperandConversionIssue12713Test extends TestHelper {
     assertThat(condition.rightConversion(context).conversions()).isEqualTo(1);
   }
 
-  /** A DATE and a DATETIME met in turn by one operand: each row converts it to its own class, and answers for it. */
+  /**
+   * A DATE and a DATETIME met in turn by one operand (a schemaless property): each row answers for its own class, and the operand
+   * is converted once per class, not once per row that alternates.
+   */
   @Test
-  void anOperandMetWithTwoClassesInTurnIsConvertedForEach() {
+  void anOperandMetWithTwoClassesInTurnIsConvertedOncePerClass() {
     final BinaryCondition condition = (BinaryCondition) condition("v >= '" + LITERAL + "'");
     final BasicCommandContext context = context();
-    assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDate.of(2024, 6, 1))), context)).isTrue();
-    assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDateTime.of(2024, 5, 31, 23, 0))), context)).isFalse();
-    assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDate.of(2024, 5, 31))), context)).isFalse();
+    for (int i = 0; i < ROWS; i++) {
+      assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDate.of(2024, 6, 1))), context)).isTrue();
+      assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDateTime.of(2024, 5, 31, 23, 0))), context)).isFalse();
+      assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDate.of(2024, 5, 31))), context)).isFalse();
+      assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDateTime.of(2024, 6, 1, 0, 0))), context)).isTrue();
+    }
+    assertThat(condition.rightConversion(context).conversions()).isEqualTo(2);
+
+    // a third class pushes out the oldest entry and is answered for itself, and the two most recent stay remembered
+    assertThat(condition.evaluate(new ResultInternal(Map.of("v", "2024-06-01 00:00:01")), context)).isTrue();
+    assertThat(condition.evaluate(new ResultInternal(Map.of("v", 5L)), context)).isFalse();
     assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDateTime.of(2024, 6, 1, 0, 0))), context)).isTrue();
-    assertThat(condition.rightConversion(context).conversions()).isEqualTo(4);
+    assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDate.of(2024, 6, 1))), context)).isTrue();
+    assertThat(condition.evaluate(new ResultInternal(Map.of("v", LocalDateTime.of(2024, 6, 2, 0, 0))), context)).isTrue();
+  }
+
+  /** An operand that is not a literal or a parameter is converted as it was, with no memo: its string may change per record. */
+  @Test
+  void aPropertyOperandHasNoMemo() {
+    final BinaryCondition condition = (BinaryCondition) condition("ts > s");
+    final BasicCommandContext context = context();
+    assertThat(condition.evaluate(new ResultInternal(Map.of("ts", LocalDateTime.of(2024, 6, 2, 0, 0), "s", LITERAL)), context)).isTrue();
+    assertThat(condition.evaluate(new ResultInternal(Map.of("ts", LocalDateTime.of(2024, 6, 2, 0, 0), "s", "2024-07-01 00:00:00")),
+        context)).isFalse();
+    assertThat(condition.rightConversion(context).conversions()).isZero();
   }
 
   @Test

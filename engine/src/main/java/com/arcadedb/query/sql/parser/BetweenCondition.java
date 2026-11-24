@@ -40,6 +40,12 @@ public class BetweenCondition extends BooleanExpression {
   /** The keys of the memos an execution converts each bound with, assigned at their first use; see {@link #boundConversion}. */
   private volatile String lowerConversionKey;
   private volatile String upperConversionKey;
+  /**
+   * Whether each bound is a literal or a parameter, decided at its first use ({@link ConstantOperandConversion#literalState}), so a
+   * record does not walk the expression again. A benign race: two threads compute the same answer.
+   */
+  private          byte   lowerLiteralState = ConstantOperandConversion.UNKNOWN;
+  private          byte   upperLiteralState = ConstantOperandConversion.UNKNOWN;
 
   public BetweenCondition() {
   }
@@ -81,7 +87,7 @@ public class BetweenCondition extends BooleanExpression {
     if (secondValue != null && lowerOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && secondValue instanceof Number)) {
       lowerValue = DateUtils.dateAsMidnightAgainst(firstValue, secondValue);
       secondValue = ConstantOperandConversion.convertOrNull(
-          ConstantOperandConversion.isConstantStringToConvert(firstValue, secondValue, second) ? boundConversion(context, true) : null,
+          ConstantOperandConversion.isStringToConvert(firstValue, secondValue) && isBoundConstant(true) ? boundConversion(context, true) : null,
           context.getDatabase(), secondValue, lowerValue.getClass());
       if (secondValue == null)
         return false;
@@ -90,7 +96,7 @@ public class BetweenCondition extends BooleanExpression {
     if (thirdValue != null && upperOrder == DateUtils.NOT_NUMBER_AND_TEMPORAL && !(integralValue && thirdValue instanceof Number)) {
       upperValue = DateUtils.dateAsMidnightAgainst(firstValue, thirdValue);
       thirdValue = ConstantOperandConversion.convertOrNull(
-          ConstantOperandConversion.isConstantStringToConvert(firstValue, thirdValue, third) ? boundConversion(context, false) : null,
+          ConstantOperandConversion.isStringToConvert(firstValue, thirdValue) && isBoundConstant(false) ? boundConversion(context, false) : null,
           context.getDatabase(), thirdValue, upperValue.getClass());
       if (thirdValue == null)
         return false;
@@ -122,6 +128,19 @@ public class BetweenCondition extends BooleanExpression {
         upperConversionKey = key;
     }
     return ConstantOperandConversion.of(context, key);
+  }
+
+  /** @param lower true for the lower bound, false for the upper one */
+  private boolean isBoundConstant(final boolean lower) {
+    byte state = lower ? lowerLiteralState : upperLiteralState;
+    if (state == ConstantOperandConversion.UNKNOWN) {
+      state = ConstantOperandConversion.literalState(lower ? second : third);
+      if (lower)
+        lowerLiteralState = state;
+      else
+        upperLiteralState = state;
+    }
+    return state == ConstantOperandConversion.CONSTANT;
   }
 
   /**
