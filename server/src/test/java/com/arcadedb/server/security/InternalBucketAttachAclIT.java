@@ -26,7 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
@@ -153,8 +153,8 @@ class InternalBucketAttachAclIT extends BaseGraphServerTest {
   }
 
   private int sql(final String auth, final String endpoint, final String sql) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:" + getServerHttpPort(0) + "/api/v1/" + endpoint + "/" + getDatabaseName()).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) URI.create(
+        "http://127.0.0.1:" + getServerHttpPort(0) + "/api/v1/" + endpoint + "/" + getDatabaseName()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", auth);
     connection.setDoOutput(true);
