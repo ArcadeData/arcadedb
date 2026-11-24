@@ -120,23 +120,27 @@ class CypherMultiPatternSharedLabelIssue6322Test extends TestHelper {
   }
 
   /**
-   * The merged-label gate declines a plan in which any pattern node has no label, and that branch must stay
-   * unreachable rather than becoming a new restriction: an unlabelled expansion target is refused one gate
-   * earlier, by {@code CypherExecutionPlanner.shouldUseOptimizer}, and has been since long before this fix.
-   * Verified against the pre-fix tree, where these four queries pick exactly the same two paths.
-   * <p>
-   * The test is here so that a future change admitting unlabelled nodes at the planner gate trips over the
-   * optimizer's own check instead of silently routing those queries to the ordinary pipeline, which would
-   * cost only speed and so would never show up as a failing assertion anywhere else.
+   * The merged-label gate declines a plan in which a pattern node no relationship reaches has no label, and so does the planner
+   * gate one step earlier. An unlabelled node a relationship reaches is admitted by both (issue #11904), and the optimizer
+   * plans it when a labelled node offers the pattern an index to start from, reaching the unlabelled one by an expansion that
+   * accepts any vertex. Started from a scan of a whole label, a pattern with no labelled node, or one with a lone unlabelled
+   * node, it keeps the ordinary pipeline.
    */
   @Test
-  void anUnlabelledNodeIsRefusedByThePlannerGateRatherThanByTheMergedLabelCheck() {
+  void anUnlabelledNodeIsPlannedByTheOptimizerOnlyFromAnIndex() {
     assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k")).contains("Traditional Execution");
     assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->() RETURN a.k")).contains("Traditional Execution");
     assertThat(explainOf("MATCH (a)-[:KNOWS]->(b:Person) RETURN b.k")).contains("Traditional Execution");
-
-    // And the fully-labelled shape the optimizer does claim is still claimed by it.
+    assertThat(explainOf("MATCH (a)-[:KNOWS]->(b) RETURN b.k")).contains("Traditional Execution");
     assertThat(explainOf("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN b.k")).contains("Cost-Based Query Optimizer");
+
+    database.command("sql", "CREATE PROPERTY Person.k STRING");
+    database.command("sql", "CREATE INDEX ON Person (k) UNIQUE");
+    assertThat(explainOf("MATCH (a:Person {k: 'p1'})-[:KNOWS]->(b) RETURN b.k")).contains("Cost-Based Query Optimizer");
+    assertThat(explainOf("MATCH (a)-[:KNOWS]->(b:Person) WHERE b.k < 'p3' RETURN a.k")).contains("Cost-Based Query Optimizer")
+        .contains("NodeIndexRangeScan(b:Person)");
+    assertThat(rowCountOf("MATCH (a)-[:KNOWS]->(b:Person) WHERE b.k < 'p3' RETURN a.k")).isEqualTo(2);
+    assertThat(explainOf("MATCH (a:Person {k: 'p1'})-[:KNOWS]->(b), (c) RETURN b.k")).contains("Traditional Execution");
   }
 
   /** The merged label is the one the anchor scan uses, rather than the "no labels" composite name. */

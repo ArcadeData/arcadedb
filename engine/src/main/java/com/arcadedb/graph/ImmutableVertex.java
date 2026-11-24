@@ -107,7 +107,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     loadForModify(readHere);
     final Binary content = requireBuffer("modify");
     content.rewind();
-    final MutableVertex copy = new MutableVertex(database, (VertexType) type, rid, content.copyOfContent());
+    final MutableVertex copy = new MutableVertex(database, (VertexType) type, rid, copyOfContentForModify(content));
     // #12642: the copy carries the heads of the transaction's own image this content was read from, so a traversal of the copy is
     // recorded on the transaction too, whether or not the copy is ever saved
     if (readFromOwnImage)

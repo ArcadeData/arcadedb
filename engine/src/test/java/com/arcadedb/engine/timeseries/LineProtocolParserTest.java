@@ -144,6 +144,28 @@ class LineProtocolParserTest {
   }
 
   /**
+   * Issue #11875: a precision that is none of ns, us (u), ms and s was read as nanoseconds after a WARNING, which stored a
+   * timestamp in seconds as one in 1970. It is refused; an absent or empty one is still nanoseconds, as InfluxDB reads it.
+   */
+  @Test
+  void precisionFromStringRefusesAnUnknownSpelling() {
+    assertThat(Precision.fromString(null)).isEqualTo(Precision.NANOSECONDS);
+    assertThat(Precision.fromString("")).isEqualTo(Precision.NANOSECONDS);
+    assertThat(Precision.fromString("ns")).isEqualTo(Precision.NANOSECONDS);
+    assertThat(Precision.fromString("NS")).isEqualTo(Precision.NANOSECONDS);
+    assertThat(Precision.fromString("us")).isEqualTo(Precision.MICROSECONDS);
+    assertThat(Precision.fromString("u")).isEqualTo(Precision.MICROSECONDS);
+    assertThat(Precision.fromString("ms")).isEqualTo(Precision.MILLISECONDS);
+    assertThat(Precision.fromString("Ms")).isEqualTo(Precision.MILLISECONDS);
+    assertThat(Precision.fromString("s")).isEqualTo(Precision.SECONDS);
+    assertThat(Precision.fromString("S")).isEqualTo(Precision.SECONDS);
+
+    for (final String unknown : new String[] { "sec", "seconds", "m", "h", "nanoseconds", " ", "ms " })
+      assertThatThrownBy(() -> Precision.fromString(unknown)).as(unknown).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("'" + unknown + "'").hasMessageContaining("ns, us (or u), ms or s");
+  }
+
+  /**
    * A seconds-precision timestamp larger than {@code Long.MAX_VALUE / 1000} would overflow when
    * converted to milliseconds. It must throw instead of silently wrapping to a negative epoch.
    */

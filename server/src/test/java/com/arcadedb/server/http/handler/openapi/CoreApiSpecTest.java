@@ -309,6 +309,26 @@ class CoreApiSpecTest {
     }
   }
 
+  /**
+   * Issue #11887: the two operations that commit a write answer 504 when the write was handed on and its outcome could not be
+   * learned, and the spec says the write may have been applied, so a generated client does not read it as a failure to retry.
+   */
+  @Test
+  void theOperationsThatCommitAWriteDocumentTheOutcomeUnknown504() {
+    for (final String path : List.of("/api/v1/command/{database}", "/api/v1/commit/{database}")) {
+      final Operation post = openAPI.getPaths().get(path).getPost();
+
+      assertThat(post.getResponses()).as("%s declares the outcome-unknown 504", path).containsKey("504");
+      assertThat(post.getResponses().get("504").getDescription()).as(path)
+          .contains("TransactionOutcomeUnknownException")
+          .contains("may or may not have been applied")
+          .contains("before sending it again");
+      final Map<String, Header> headers = post.getResponses().get("504").getHeaders();
+      assertThat(headers == null || !headers.containsKey("Retry-After")).as("%s: no Retry-After, a retry is not safe", path)
+          .isTrue();
+    }
+  }
+
   @Test
   void beginDeclaresA409ForAnAlreadyOpenSession() {
     final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();

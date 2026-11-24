@@ -76,13 +76,14 @@ public final class WrittenCopy {
   /**
    * Points every record the rows hold - their values, at any depth of a list, a map or a path, and the element a single node
    * or relationship is answered as - at the copy the transaction wrote. Called where a step hands out rows it read to the end
-   * first (an aggregation, a sort, the eager barrier): every row before it has made its writes by then, so a record a row held
-   * from before a later row wrote it is read as that write left it, as Neo4j reads it after the same pipeline breaker (issue
-   * #12565).
+   * first (an aggregation, a sort, the eager barrier, and a SET, a REMOVE or a MERGE with ON CREATE / ON MATCH SET, which run
+   * for their whole input before handing out a row): every row before it has made its writes by then, so a record a row held
+   * from before a later row wrote it is read as that write left it, as Neo4j reads it after the same pipeline breaker (issues
+   * #12565, #12656).
    * <p>
-   * Only there, not at every property read: the write steps run their rows in batches, so a read made at read time downstream
-   * of one would see the writes of the rows after it in the batch, which a streaming plan has not made yet (issue #6362). A
-   * row between two breakers reads what it holds.
+   * Only there, not at every property read: a read is answered with the copy the transaction wrote only once every row before
+   * the step has written, never while the step is still running its input, where it would see the writes of some later rows
+   * and not of others. A row between two breakers reads what it holds.
    * <p>
    * Free for a command that holds only current records, and when the transaction has written nothing. A list, a map or a
    * path many rows share (every row of {@code WITH collect(n) AS ns UNWIND ns AS m ... ORDER BY} holds the same {@code ns})

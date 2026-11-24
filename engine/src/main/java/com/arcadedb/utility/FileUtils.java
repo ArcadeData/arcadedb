@@ -758,8 +758,9 @@ public class FileUtils {
    *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off. Returned
-   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off
+   * ({@link #directoryForceSkipped()} tells the two apart). {@code FileManager} keeps a file's directory obligation owed
+   * after a failed force
    */
   public static boolean forceDirectory(final Path dir) {
     if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
@@ -777,6 +778,14 @@ public class FileUtils {
       reportNoDirectorySync(dir);
       return false;
     }
+  }
+
+  /**
+   * Whether {@link #forceDirectory} skips every directory without trying: on a platform with no directory fsync, or while
+   * {@link GlobalConfiguration#FILE_SYNC} is off. Its {@code false} then is not a failure, and nothing is left to retry.
+   */
+  public static boolean directoryForceSkipped() {
+    return NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean();
   }
 
   /**

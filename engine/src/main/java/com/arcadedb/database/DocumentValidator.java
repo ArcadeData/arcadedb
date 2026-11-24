@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.InvalidArgumentException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -41,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
@@ -127,6 +129,99 @@ public class DocumentValidator {
       return false;
     final int[] depth = LINK_TARGET_DEFERRAL_DEPTH.get();
     return depth != null && depth[0] > 0;
+  }
+
+  // Threads with a readonly deferral open (issue #12722), so the write path pays one volatile read for it, and only for a READONLY property
+  private static final AtomicInteger              READONLY_DEFERRING_THREADS = new AtomicInteger();
+  // The innermost scope the thread has open, each one naming the scope that encloses it. No initial value: a thread that never opens a
+  // scope allocates nothing
+  private static final ThreadLocal<ReadonlyScope> READONLY_DEFERRALS         = new ThreadLocal<>();
+
+  /**
+   * The scope returned by {@link #deferReadonlyChecks(MutableDocument, Set)}. Closing it ends the scope once, on the thread that opened
+   * it, exactly as {@link LinkTargetTypeDeferral} does: a second close is ignored, a close from another thread throws
+   * {@link IllegalStateException} and leaves the scope open.
+   */
+  public interface ReadonlyDeferral extends AutoCloseable {
+    @Override
+    void close();
+  }
+
+  private static final class ReadonlyScope implements ReadonlyDeferral {
+    private final Thread          owner = Thread.currentThread();
+    private final MutableDocument document;
+    private final Set<String>     properties;
+    // Plain, as closed is: only the owner thread reads and writes them, close() refuses any other thread before touching them
+    private       ReadonlyScope   enclosing;
+    private       boolean         closed;
+
+    private ReadonlyScope(final MutableDocument document, final Set<String> properties, final ReadonlyScope enclosing) {
+      this.document = document;
+      this.properties = properties;
+      this.enclosing = enclosing;
+    }
+
+    @Override
+    public void close() {
+      if (closed)
+        return;
+      if (Thread.currentThread() != owner)
+        throw new IllegalStateException("A readonly deferral has to be closed on the thread that opened it ('" + owner.getName()
+            + "'), not on '" + Thread.currentThread().getName() + "'");
+      closed = true;
+
+      final ReadonlyScope innermost = READONLY_DEFERRALS.get();
+      if (innermost == this) {
+        if (enclosing != null)
+          READONLY_DEFERRALS.set(enclosing);
+        else {
+          READONLY_DEFERRALS.remove();
+          READONLY_DEFERRING_THREADS.decrementAndGet();
+        }
+        return;
+      }
+      // Closed before a scope opened inside it: taken out of the chain, the inner ones stay open
+      for (ReadonlyScope scope = innermost; scope != null; scope = scope.enclosing)
+        if (scope.enclosing == this) {
+          scope.enclosing = enclosing;
+          return;
+        }
+    }
+  }
+
+  /**
+   * Suspends, on the calling thread until the returned scope is closed, the refusal to alter the named {@code READONLY} properties of
+   * one record that already exists. For a restore that creates a record in two writes: it holds a link to a record the file reaches
+   * later, which only the second write can name, and that write is part of creating the record, not an alteration of it (issue #12722).
+   * <p>
+   * Nothing else is relaxed. The record's other READONLY properties are refused as always, and so is every other record the thread
+   * writes while the scope is open, one written by a listener or a trigger of that write included: the scope is for this very
+   * {@code document} instance, not for a copy of the record loaded again. MANDATORY, NOTNULL, MIN, MAX, REGEXP and the rest are
+   * checked as always. Scopes nest.
+   * <p>
+   * The scope belongs to the thread that opened it: close it on that thread, in the same try-with-resources.
+   *
+   * @param document   the instance whose write is the second half of its creation
+   * @param properties the names of the READONLY properties that write completes. Not copied: do not change it while the scope is open
+   */
+  public static ReadonlyDeferral deferReadonlyChecks(final MutableDocument document, final Set<String> properties) {
+    Objects.requireNonNull(document, "document");
+    Objects.requireNonNull(properties, "properties");
+    final ReadonlyScope enclosing = READONLY_DEFERRALS.get();
+    final ReadonlyScope scope = new ReadonlyScope(document, properties, enclosing);
+    READONLY_DEFERRALS.set(scope);
+    if (enclosing == null)
+      READONLY_DEFERRING_THREADS.incrementAndGet();
+    return scope;
+  }
+
+  private static boolean readonlyCheckDeferred(final MutableDocument document, final Property p) {
+    if (READONLY_DEFERRING_THREADS.get() == 0)
+      return false;
+    for (ReadonlyScope scope = READONLY_DEFERRALS.get(); scope != null; scope = scope.enclosing)
+      if (scope.document == document && scope.properties.contains(p.getName()))
+        return true;
+    return false;
   }
 
   public static void validate(final MutableDocument document) throws ValidationException {
@@ -242,7 +337,7 @@ public class DocumentValidator {
       try {
         pattern = regexp != null ? Pattern.compile(regexp) : null;
       } catch (final PatternSyntaxException e) {
-        throw new CommandExecutionException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
+        throw new InvalidArgumentException("Invalid regular expression '" + regexp + "': " + e.getMessage(), e);
       }
       // read once per scan, not per record
       return new StoredValueConstraints(checkType, min, max, regexp, pattern,
@@ -374,7 +469,7 @@ public class DocumentValidator {
   public static void requireReadableBound(final Database database, final DocumentType owner, final Property p, final String bound, final String side) {
     final String reason = unreadableBound(database, p.getType(), bound);
     if (reason != null)
-      throw new CommandExecutionException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The " + side + " '" + bound + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
@@ -393,7 +488,7 @@ public class DocumentValidator {
       final String regexp) {
     final String reason = unusableRegexp(database, p.getType(), regexp);
     if (reason != null)
-      throw new CommandExecutionException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
+      throw new InvalidArgumentException("The REGEXP '" + regexp + "' of property '" + owner.getName() + "." + p.getName()
           + "' " + reason);
   }
 
@@ -918,7 +1013,7 @@ public class DocumentValidator {
       }
     }
 
-    if (p.isReadonly()) {
+    if (p.isReadonly() && !readonlyCheckDeferred(document, p)) {
       if (document.isDirty() && document.getIdentity() != null) {
         // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
         // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before

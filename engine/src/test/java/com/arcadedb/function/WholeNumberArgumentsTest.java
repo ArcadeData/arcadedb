@@ -253,11 +253,11 @@ class WholeNumberArgumentsTest {
       database.transaction(() -> database.command("opencypher", "CREATE (:N10850 {k: 0})-[:R]->(:N10850 {k: 1})-[:R]->(:N10850 {k: 2})"));
       final String match = "MATCH p = (a:N10850 {k: 0})-[:R*2]->(b:N10850) ";
 
-      // to 4294967297 used to wrap to 1 and answer one relationship
+      // a length of 4294967297 used to wrap to 1 and answer one relationship
       assertThat(cypher(match + "RETURN length(path.slice(p, 0, " + WRAPS_TO_ONE + ")) AS v")).isEqualTo(2L);
       assertThat(cypher(match + "RETURN length(path.slice(p, 1.0)) AS v")).isEqualTo(1L);
 
-      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <index>");
+      assertThatThrownBy(() -> cypher(match + "RETURN path.slice(p, 0.5) AS v")).hasStackTraceContaining("path.slice() requires a whole number <offset>");
     }
 
     // ---------------------------------------------------------------- text.* helpers
@@ -283,7 +283,7 @@ class WholeNumberArgumentsTest {
 
     @Test
     void textHexValueRefusesAFraction() {
-      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("ff");
+      assertThat(new TextHexValue().execute(new Object[] { 255.0 }, null)).isEqualTo("00FF");
       assertThatThrownBy(() -> new TextHexValue().execute(new Object[] { 255.9 }, null))
           .isInstanceOf(CommandSemanticException.class).hasMessageContaining("<value>");
     }
@@ -563,6 +563,12 @@ class WholeNumberArgumentsTest {
         // a list index computed from the size of the collected values and clamped to it; and a value known to be Long/Integer
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: d2i", 1),
         Map.entry("function/agg/PercentileDiscFunction#getAggregatedResult: java/lang/Number.longValue", 1),
+        // the APOC aggregates (#12102): longValue() of a value tested to be a Long/Integer/Short/Byte first, and a nearest-rank
+        // index computed from the number of collected values and clamped to it
+        Map.entry("function/agg/ApocAggregates#accumulate: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#add: java/lang/Number.longValue", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: d2l", 1),
+        Map.entry("function/agg/ApocAggregates#percentile: l2i", 1),
         // an index or a bound read strictly as a long, tested against or clamped to the size of the list before the cast
         Map.entry("function/agg/AggNth#execute: l2i", 1),
         Map.entry("function/agg/AggSlice#execute: l2i", 2),
@@ -571,6 +577,11 @@ class WholeNumberArgumentsTest {
         Map.entry("function/path/PathSlice#execute: l2i", 2),
         // the cardinality, refused above Integer.MAX_VALUE before the cast
         Map.entry("function/coll/RangeFunction#execute: l2i", 1),
+        // a code point read strictly as a long and tested to be in [0, 0x10FFFF] before the cast (issue #12104)
+        Map.entry("function/text/TextCode#execute: l2i", 1),
+        // a whole number tested to fit 16 or 32 bits before it is written as its 4 or 8 hex digits (issue #12104)
+        Map.entry("function/text/TextHexValue#execute: i2s", 1),
+        Map.entry("function/text/TextHexValue#execute: l2i", 2),
         // a length or a start read strictly as a long, clamped to the int range a string fits in (past it is past the end)
         Map.entry("function/text/LeftFunction#execute: l2i", 1),
         Map.entry("function/text/RightFunction#execute: l2i", 1),
@@ -596,7 +607,7 @@ class WholeNumberArgumentsTest {
         Map.entry("function/vector/VectorCreateFunction#toShorts: l2i", 1),
         Map.entry("function/vector/VectorCreateFunction#wholeCoordinate: d2l", 1),
         // the srid, tested to be a whole number in [0, Integer.MAX_VALUE] before the cast
-        Map.entry("function/geo/CypherPointFunction#execute: d2i", 1),
+        Map.entry("function/geo/CypherPointFunction#fromXY: d2i", 1),
         // hashCode() of a double pair
         Map.entry("function/sql/geo/LightweightPoint#hashCode: l2i", 2),
         // the bucket id unpacked from the high bits of an encoded id, not a read of a number

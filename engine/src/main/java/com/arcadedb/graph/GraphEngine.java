@@ -280,6 +280,22 @@ public class GraphEngine {
 
   public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
                                          final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, true);
+  }
+
+  /**
+   * Creates the lightweight edge as {@link #newLightEdge(VertexInternal, String, Identifiable)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the destination vertex (issue #12602). Engine-internal: public only because the async tasks, which write each vertex from
+   * the one worker its bucket belongs to, live in another package. Every other way to create an edge wires both sides.
+   */
+  public ImmutableLightEdge newOutgoingOnlyLightEdge(final VertexInternal fromVertex, final String edgeTypeName,
+                                                     final Identifiable toVertex) {
+    return newLightEdge(fromVertex, edgeTypeName, toVertex, false);
+  }
+
+  private ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                          final boolean wireIncoming) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -303,7 +319,7 @@ public class GraphEngine {
         fromVertexRID, toVertex.getIdentity());
 
     connectOutgoingEdge(fromVertex, toVertex, edge);
-    if (edgeType.isBidirectional())
+    if (wireIncoming && edgeType.isBidirectional())
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -345,7 +361,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex,
                              final Object... edgeProperties) {
-    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, null, edgeProperties);
+    final MutableEdge edge = createEdge(fromVertex, edgeTypeName, toVertex, true, null, edgeProperties);
     if (edge == null)
       throw RecordVetoedException.ofCreateEdge(edgeTypeName, fromVertex, toVertex);
     return edge;
@@ -363,7 +379,22 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                           final Object... edgeProperties) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, null, edgeProperties);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, null, edgeProperties);
+  }
+
+  /**
+   * Creates the edge as {@link #newEdgeReportingVeto(Vertex, String, Identifiable, Object...)} does, but wires only its OUTGOING side:
+   * the caller connects the incoming side of a bidirectional type itself, with {@link #connectIncomingEdge}, in the context that
+   * owns the vertex the edge ends at (issue #12602). That is the vertex the edge record names ({@link #newEdgeEndpoint}), which an
+   * {@code @in} among the properties can make another one than {@code toVertex}: read it back with {@link Edge#getIn()}.
+   * Engine-internal: public only because the async tasks, which write each vertex from the one worker its bucket belongs to, live in
+   * another package. Every other way to create an edge wires both sides.
+   *
+   * @return the created edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
+  public MutableEdge newOutgoingOnlyEdgeReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
+                                                      final Object... edgeProperties) {
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, false, null, edgeProperties);
   }
 
   /**
@@ -382,7 +413,7 @@ public class GraphEngine {
    */
   public MutableEdge newEdgeInitializedReportingVeto(final Vertex fromVertex, final String edgeTypeName, final Identifiable toVertex,
                                                      final Consumer<MutableEdge> initializer) {
-    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, initializer, NO_PROPERTIES);
+    return createEdge(getMostUpdatedVertex(asVertexInternal(fromVertex)), edgeTypeName, toVertex, true, initializer, NO_PROPERTIES);
   }
 
   /**
@@ -436,9 +467,15 @@ public class GraphEngine {
         "Cannot create an edge whose " + side + " vertex " + vertexRID + " was deleted in this transaction", vertexRID, null);
   }
 
-  /** @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired */
+  /**
+   * @param wireIncoming {@code false} leaves the incoming side of a bidirectional type to the caller (issue #12602, see
+   *                     {@link #newOutgoingOnlyEdgeReportingVeto}); every public way to create an edge passes {@code true}
+   *
+   * @return the edge, or {@code null} when a before-create listener vetoed it, in which case nothing was stored or wired
+   */
   private MutableEdge createEdge(final VertexInternal fromVertex, String edgeTypeName, final Identifiable toVertex,
-                                 final Consumer<MutableEdge> initializer, final Object... edgeProperties) {
+                                 final boolean wireIncoming, final Consumer<MutableEdge> initializer,
+                                 final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -448,6 +485,11 @@ public class GraphEngine {
 
     if (toVertex instanceof MutableDocument && toVertex.getIdentity() == null)
       throw new IllegalArgumentException("Target vertex is not persistent. Call save() on vertex first");
+
+    // A virtual node (create.vNode, meta.graph) is never stored: an edge to it would name a record that does not exist (issue
+    // #12109)
+    if (toVertex instanceof VirtualElement virtual)
+      throw virtual.unsupported("connected by a stored relationship");
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
     checkEndpointsNotDeletedInTransaction(database, fromVertexRID, toVertex.getIdentity());
@@ -485,7 +527,7 @@ public class GraphEngine {
       if (initializer != null)
         initializer.accept(lightEdge);
       connectOutgoingEdge(fromVertex, toVertex, lightEdge);
-      if (type.isBidirectional())
+      if (wireIncoming && type.isBidirectional())
         connectIncomingEdge(toVertex, fromVertexRID, lightEdge.getIdentity());
 
       return lightEdge;
@@ -507,7 +549,7 @@ public class GraphEngine {
       return null;
 
     connectOutgoingEdge(source, destination, edge);
-    if (type.isBidirectional())
+    if (wireIncoming && type.isBidirectional())
       connectIncomingEdge(destination, source.getIdentity(), edge.getIdentity());
 
     return edge;
@@ -648,7 +690,7 @@ public class GraphEngine {
         // AN EARLIER LIGHT EDGE OF THIS BATCH MAY HAVE CREATED THE OUT LIST ON THE TRANSACTION'S COPY OF THE VERTEX: THE UNIQUENESS
         // CHECK HAS TO READ THAT COPY, OR A UNIQUE TYPE ACCEPTS THE SAME PAIR TWICE IN ONE BATCH
         final MutableEdge lightEdge = createEdge(getMostUpdatedVertex(sourceVertex), connection.edgeTypeName, destinationVertex,
-            null, connection.edgeProperties);
+            true, null, connection.edgeProperties);
         if (lightEdge != null)
           edges.add(lightEdge);
         continue;
@@ -1152,6 +1194,15 @@ public class GraphEngine {
         if (tx != null && tx.getWrittenRecord(headRID) instanceof EdgeSegment written)
           return new EdgeLinkedList(vertex, direction, written);
 
+        // #12644: BEFORE the read below, which records a read of the transaction's own image that the commit-time merges would hold
+        // against it. A head the committed page has and the transaction's image of its page cannot hold is not a publication
+        // in flight: no wait makes it visible, so the list is extended without reading the head
+        if (tx != null) {
+          final LocalBucket hiddenHeadBucket = (LocalBucket) database.getSchema().getBucketById(headRID.getBucketId());
+          if (hiddenHeadBucket.isRecordHiddenByOwnPageImage(headRID))
+            return extendListInFrontOfHiddenHead(vertex, direction, headRID, hiddenHeadBucket);
+        }
+
         final Record head = database.lookupByRID(headRID, true);
         if (head instanceof StripeDirectory directory)
           // DO NOT anchor the directory page here: an anchored-but-unmodified page still contributes its FILE
@@ -1205,6 +1256,53 @@ public class GraphEngine {
 
     final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(0));
     database.createRecord(chunk, getEdgesBucketName(mutable.getIdentity().getBucketId(), direction));
+
+    writeEdgeListHead(database, mutable, direction, chunk.getIdentity());
+
+    return new EdgeLinkedList(mutable, direction, chunk);
+  }
+
+  /**
+   * The list of {@code vertex} in {@code direction} whose head chunk {@code hiddenHeadRID} the committed page holds and the
+   * transaction's own image of its page does not (#12644): a commit created the chunk on a page the transaction had already
+   * pinned. The chunk cannot be appended to, the write would go through that image, which has no slot for it. A new chunk is put in
+   * front of it instead, linked to it by its RID and made the head of the vertex, the shape {@link EdgeLinkedList#add} gives a full
+   * head, and the entry goes there. The hidden chunk is never read through the image nor written.
+   * <p>
+   * A directory of a super node is the one head that is not a chunk: the stripes it lists are in buckets of their own, and the
+   * transaction reads it from the committed page. A write of the directory itself, which takes one append in a thousand, finds the
+   * slot missing in the image and is refused as a conflict at that point.
+   */
+  private EdgeLinkedList extendListInFrontOfHiddenHead(final VertexInternal vertex, final Vertex.DIRECTION direction,
+      final RID hiddenHeadRID, final LocalBucket headBucket) {
+    final Binary committedHead = headBucket.getRecordFromCommittedPage(hiddenHeadRID);
+    if (committedHead == null || committedHead.size() == 0)
+      // gone since the check: the same refusal the read of a head that is not there gets
+      throw new ConcurrentModificationException(
+          "Edge list " + direction + " head chunk " + hiddenHeadRID + " of vertex " + vertex.getIdentity()
+              + " not visible yet (concurrent commit in flight)");
+
+    if (committedHead.getByte(0) == StripeDirectory.RECORD_TYPE)
+      return new StripedEdgeList(vertex, direction, new StripeDirectory(database, hiddenHeadRID, committedHead.copyOfContent()));
+
+    final MutableVertex mutable;
+    try {
+      mutable = vertex.modify();
+    } catch (final RecordNotFoundException e) {
+      if (vertex.getIdentity() != null && vertex.getIdentity().equals(e.getRID()))
+        throw missingVertexOnEdgeListWrite(vertex.getIdentity(), direction, e);
+      throw e;
+    }
+    final RID reloadedHead = direction == Vertex.DIRECTION.OUT ? mutable.peekOutEdgesHeadChunk() : mutable.peekInEdgesHeadChunk();
+    if (!hiddenHeadRID.equals(reloadedHead))
+      // a concurrent commit moved the head since it was read: look again from the one the vertex has now. Each pass starts from a
+      // head newer than the last, which only a commit can make, and the vertex was just reloaded (it is in the transaction now), so
+      // it ends as soon as the head stops moving, as the same recursion of the first-edge branch does
+      return getOrCreateEdgeList(mutable, direction);
+
+    final MutableEdgeSegment chunk = new MutableEdgeSegment(database, LocalDatabase.getNewEdgeListSize(committedHead.size()));
+    chunk.setPrevious(hiddenHeadRID);
+    database.createRecord(chunk, headBucket.getName());
 
     writeEdgeListHead(database, mutable, direction, chunk.getIdentity());
 

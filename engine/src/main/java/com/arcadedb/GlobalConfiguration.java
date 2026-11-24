@@ -232,7 +232,9 @@ public enum GlobalConfiguration {
       A replicated commit of an HA cluster is made durable by the replication log, which a majority of the nodes flushes \
       before the commit completes: its WAL record is written on the node that originated it without a flush, whatever this \
       setting says, and the other nodes write none""",
-      Integer.class, 0),
+      // Allow-listed so every writer refuses another integer before storing it: one in a database's configuration made every
+      // write of that database fail, and the open and drop that read it as well (issue #12817)
+      Integer.class, 0, integerRangeAsStrings(0, 2)),
 
   FILE_SYNC("arcadedb.fileSync", SCOPE.JVM, """
       FOR TESTING ONLY. Set it to false to skip every fsync ArcadeDB issues: data and WAL files, the directory \
@@ -290,7 +292,7 @@ public enum GlobalConfiguration {
       Integer.class, 262_144),
 
   MATERIALIZED_VIEW_PER_RECORD_MAX_DELTA("arcadedb.materializedViewPerRecordMaxDelta", SCOPE.DATABASE,
-      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Default 10000",
+      "Maximum number of changed source records a REFRESH INCREMENTAL per-record materialized view re-evaluates in one pass; past it the pass rewrites the whole view instead. Also the cap on the source records one transaction changes, and on the groups one pass updates, for a grouped view maintained by delta; past it the view is rebuilt from its source. Default 10000",
       Integer.class, 10_000),
 
   EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE("arcadedb.externalPropertyBucketDefaultPageSize", SCOPE.DATABASE,
@@ -1080,9 +1082,16 @@ public enum GlobalConfiguration {
       matchers, and schema-level REGEXP property validation. java.util.regex backtracking does not poll interrupts or \
       deadlines, so a pathological pattern (catastrophic backtracking) keeps its worker thread busy regardless of \
       arcadedb.command.timeout; this dedicated bound protects against that even when arcadedb.command.timeout is disabled \
-      (0), which is the default. Every entry point reached through a command context - MATCHES, =~, PromQL's matchers \
-      and the text.regexReplace()/.normalize() functions - shares ONE deadline for the whole command: not one per row, \
-      not one per function, and not one per worker of a parallel type scan. Full-text search and REGEXP property \
+      (0), which is the default. The deadline is only looked at when the pattern reads a character, so a pattern that can \
+      backtrack WITHOUT reading any (anchors, empty alternatives or optional anchors in sequence, like \
+      \\A(?:\\A|\\A)(?:\\A|\\A)...\\z, or a counted loop of an empty group nested a few levels deep) is refused up front, \
+      before it runs, with the same timeout exception: when it can succeed in more than 1,024 different ways without a \
+      read, when one attempt makes more than about 65,000 steps without one (a repeated empty group, a look-behind with a \
+      long range), or, for an operation that scans its input (a search or a replace-all), when the steps one start \
+      position makes without a read times the length of the input exceed about 130 million. Every entry point reached \
+      through a command context - MATCHES, =~, PromQL's matchers and the text.regexReplace()/.normalize() functions - \
+      shares ONE deadline for the whole command: not one per row, not one per function, and not one per worker of a \
+      parallel type scan. Full-text search and REGEXP property \
       validation run outside a command context and share one deadline across an entire scan (not per item). The MongoDB \
       wire protocol plugin applies a regex filter the same way: one budget per command, counting only the time spent \
       inside the regular expressions. SQL LIKE/ILIKE match their pattern without a regular expression, so they never \
@@ -1490,6 +1499,20 @@ public enum GlobalConfiguration {
       DISABLING. 0 stops new filters being written immediately and stops existing ones being consulted from the next \
       database open. Lookups then behave exactly as they did before the feature existed.""",
       Float.class, 0.01f),
+
+  VECTOR_INDEX_MAX_DIMENSIONS("arcadedb.vectorIndex.maxDimensions", SCOPE.DATABASE,
+      """
+      Largest 'dimensions' an LSM_VECTOR index may be created with (issue #12822). The index keeps several buffers \
+      of 'dimensions' floats each (4 bytes per component, per buffer), so a value with no upper bound let one \
+      CREATE INDEX allocate gigabytes and run the whole server out of heap. The default, 16384 (64 KB per vector), \
+      sits well above the widest dense embeddings in common use (a few thousand components) and next to the \
+      16,000-component cap other vector stores apply. Checked only when the dimensions of a new index are declared, \
+      through SQL CREATE INDEX, Cypher CREATE VECTOR INDEX, the Java builders or an import, and when an index created \
+      with 'sizeOnFirstVector' is offered its first vector: an index persisted with a larger value keeps opening and \
+      working, and REBUILD INDEX, TRUNCATE TYPE and a bucket added to its type re-create it as it is. \
+      A larger value is refused as a client error naming this setting; raise it before creating the index if your \
+      vectors really are wider.""",
+      Integer.class, 16384),
 
   VECTOR_INDEX_LOCATION_CACHE_SIZE("arcadedb.vectorIndex.locationCacheSize", SCOPE.DATABASE,
       """

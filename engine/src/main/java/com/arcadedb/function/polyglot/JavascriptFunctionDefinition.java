@@ -39,6 +39,22 @@ import java.util.stream.Collectors;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition {
+  /**
+   * Words that cannot name a function or a parameter in any script. The words that are reserved in strict mode or in
+   * modules only ({@code let}, {@code static}, {@code yield}, {@code await}...) are names in a plain script, so a
+   * definition that used one keeps working.
+   */
+  private static final Set<String> RESERVED_WORDS = Set.of("break", "case", "catch", "class", "const", "continue", "debugger",
+      "default", "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if", "import", "in",
+      "instanceof", "new", "null", "return", "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while",
+      "with");
+
+  /**
+   * Reads the language's own {@code Function} constructor from a function literal, never from the global scope: a user
+   * function named {@code Function} replaces that global, and the next declaration must not be built by it.
+   */
+  private static final String FUNCTION_CONSTRUCTOR_SOURCE = "(function() {}).constructor";
+
   private final String                            functionName;
   private final String                            implementation;
   private final String[]                          parameters;
@@ -47,32 +63,91 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   /**
    * Creates the function with its name, implementation in form of text and optional parameters.
    *
-   * @param functionName   Name of the function
-   * @param implementation Implementation code as string
-   * @param parameters     optional positional parameter names
+   * @param functionName   Name of the function, a plain identifier
+   * @param implementation Implementation code as string, the body of the function
+   * @param parameters     optional positional parameter names, plain identifiers
+   *
+   * @throws IllegalArgumentException if the name or a parameter is not a plain identifier
    */
   public JavascriptFunctionDefinition(final String functionName, final String implementation, final String... parameters) {
+    if (!isPlainIdentifier(functionName))
+      throw new IllegalArgumentException(
+          "The name of a function must be a plain identifier: letters, digits, '$' and '_', not starting with a digit");
+
+    // A COPY, SO WHAT WAS CHECKED HERE IS WHAT IS DECLARED
+    this.parameters = parameters != null ? parameters.clone() : new String[0];
+    for (int i = 0; i < this.parameters.length; i++)
+      if (!isPlainIdentifier(this.parameters[i]))
+        throw new IllegalArgumentException("The parameter " + (i + 1) + " of function '" + functionName
+            + "' must be a plain identifier: letters, digits, '$' and '_', not starting with a digit");
+
     this.functionName = functionName;
-    this.implementation = implementation;
-    this.parameters = parameters;
+    this.implementation = implementation != null ? implementation : "";
   }
 
+  /**
+   * Tells if {@code name} can be used as it is for the name of a function or of a parameter: a non empty sequence of
+   * the characters the language allows in an identifier (letters, {@code $} and {@code _} to start with, then also
+   * combining marks, digits and connector punctuation) that is not a reserved word. No other character is accepted, so
+   * a name never holds an operator, a quote, a bracket, a space or a line break.
+   */
+  private static boolean isPlainIdentifier(final String name) {
+    if (name == null || name.isEmpty() || RESERVED_WORDS.contains(name))
+      return false;
+
+    final int length = name.length();
+    for (int i = 0; i < length; ) {
+      final int codePoint = name.codePointAt(i);
+      if (!(isIdentifierStart(codePoint) || (i > 0 && isIdentifierContinuation(codePoint))))
+        return false;
+      i += Character.charCount(codePoint);
+    }
+    return true;
+  }
+
+  private static boolean isIdentifierStart(final int codePoint) {
+    if (codePoint == '$' || codePoint == '_')
+      return true;
+
+    return switch (Character.getType(codePoint)) {
+      case Character.UPPERCASE_LETTER, Character.LOWERCASE_LETTER, Character.TITLECASE_LETTER, Character.MODIFIER_LETTER,
+           Character.OTHER_LETTER, Character.LETTER_NUMBER -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean isIdentifierContinuation(final int codePoint) {
+    // ZERO WIDTH NON-JOINER AND ZERO WIDTH JOINER
+    if (codePoint == 0x200C || codePoint == 0x200D)
+      return true;
+
+    return switch (Character.getType(codePoint)) {
+      case Character.NON_SPACING_MARK, Character.COMBINING_SPACING_MARK, Character.DECIMAL_DIGIT_NUMBER,
+           Character.CONNECTOR_PUNCTUATION -> true;
+      default -> false;
+    };
+  }
+
+  /**
+   * Declares the function in the engine of the library. The body is compiled on its own, as the body of a new function
+   * made by the language's {@code Function} constructor, and bound under the name of the function: no text is built from
+   * the definition, so declaring a function only declares it and nothing of the definition runs until it is called.
+   */
   @Override
   public void init(final PolyglotFunctionLibraryDefinition library) {
     this.library = library;
     library.execute(polyglotEngine -> {
       try {
+        final Value functionConstructor = polyglotEngine.eval(FUNCTION_CONSTRUCTOR_SOURCE);
+
+        // THE PARAMETER NAMES, THEN THE BODY
+        final Object[] constructorArguments = new Object[parameters.length + 1];
+        System.arraycopy(parameters, 0, constructorArguments, 0, parameters.length);
+        constructorArguments[parameters.length] = implementation;
+
         // DECLARE THE FUNCTION
-        StringBuilder declaration = new StringBuilder("function " + functionName + "( ");
-        for (int i = 0; i < parameters.length; i++) {
-          if (i > 0)
-            declaration.append(", ");
-          declaration.append(parameters[i]);
-        }
-        declaration.append(" ) { ");
-        declaration.append(implementation);
-        declaration.append(" }");
-        return polyglotEngine.eval(declaration.toString());
+        polyglotEngine.context.getBindings("js").putMember(functionName, functionConstructor.newInstance(constructorArguments));
+        return null;
       } catch (final Exception e) {
         final String detail = e.getMessage() != null ? e.getMessage() : e.toString();
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "': " + detail, e);
@@ -92,7 +167,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
   @Override
   public String[] getParameters() {
-    return parameters;
+    // A COPY, SO THE NAMES THAT WERE CHECKED CANNOT BE CHANGED THROUGH THE ARRAY OF A CALLER
+    return parameters.clone();
   }
 
   @Override
