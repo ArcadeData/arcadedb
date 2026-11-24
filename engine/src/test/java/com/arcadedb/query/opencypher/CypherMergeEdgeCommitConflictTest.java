@@ -314,15 +314,7 @@ class CypherMergeEdgeCommitConflictTest extends TestHelper {
         }
       });
       thread.start();
-      boolean interrupted = false;
-      while (thread.isAlive())
-        try {
-          thread.join();
-        } catch (final InterruptedException e) {
-          interrupted = true;
-        }
-      if (interrupted)
-        Thread.currentThread().interrupt();
+      awaitWorker(thread);
     });
     try {
       database.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
@@ -341,6 +333,25 @@ class CypherMergeEdgeCommitConflictTest extends TestHelper {
         database.rollback();
       assertThat(Race.PENDING.get()).as("the concurrent commit must have been interleaved").isNull();
       assertThat(concurrentFailure.get()).isNull();
+    }
+  }
+
+  /**
+   * Waits a bounded time for the concurrent writer. An interrupt of the waiting thread, or a writer still alive at the deadline,
+   * interrupts the writer, keeps the interrupt status of this thread and fails the test, so a hung writer cannot hold the test
+   * (or the teardown that drops the database) forever.
+   */
+  private static void awaitWorker(final Thread worker) {
+    try {
+      worker.join(30_000);
+    } catch (final InterruptedException e) {
+      worker.interrupt();
+      Thread.currentThread().interrupt();
+      throw new AssertionError("interrupted while waiting for the concurrent writer", e);
+    }
+    if (worker.isAlive()) {
+      worker.interrupt();
+      throw new AssertionError("the concurrent writer did not end within 30 seconds");
     }
   }
 }
