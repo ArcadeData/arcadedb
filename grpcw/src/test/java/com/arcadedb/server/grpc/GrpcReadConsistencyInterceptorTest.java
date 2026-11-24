@@ -226,6 +226,61 @@ class GrpcReadConsistencyInterceptorTest {
   }
 
   @Test
+  void theBookmarkCoversAWriteTheCallsOwnThreadMadeAheadOfItsApply() {
+    // A write acknowledged at 25 while this node has applied up to 17 (the wait for its apply ran out): the answer is 25, as HTTP's
+    final FakeReplicatedDatabase db = new FakeReplicatedDatabase(17);
+    final RecordingCall call = new RecordingCall();
+
+    final ServerCall.Listener<String> listener = start(call, new Metadata(), c -> {
+      GrpcReadConsistencyInterceptor.current().applyTo(db, null);
+      db.writeCommittedAt(25);
+      c.sendHeaders(new Metadata());
+      c.close(Status.OK, new Metadata());
+    });
+    listener.onHalfClose();
+
+    assertThat(call.sentHeaders.get(GrpcReadConsistencyInterceptor.COMMIT_INDEX_HEADER)).isEqualTo("25");
+  }
+
+  @Test
+  void theBookmarkCoversAWriteMadeOnAnotherThreadOfTheCall() throws Exception {
+    // A commit runs on the transaction's own thread, and the response is written by the call's: the write must travel with the call
+    final FakeReplicatedDatabase db = new FakeReplicatedDatabase(17);
+    final RecordingCall call = new RecordingCall();
+    final AtomicReference<Context> callContext = new AtomicReference<>();
+    final AtomicReference<ServerCall<String, String>> serverCall = new AtomicReference<>();
+    final ServerCall.Listener<String> listener = start(call, new Metadata(), c -> {
+      GrpcReadConsistencyInterceptor.current().bind(db);
+      callContext.set(Context.current());
+      serverCall.set(c);
+    });
+    listener.onHalfClose();
+
+    final Thread transactionThread = new Thread(callContext.get().wrap(GrpcReadConsistencyInterceptor.clearingAfter(() -> db.writeCommittedAt(25))));
+    transactionThread.start();
+    transactionThread.join();
+    assertThat(db.writeCommittedOnThisThread()).as("guard: the call's thread made no write itself").isEqualTo(-1L);
+
+    serverCall.get().sendHeaders(new Metadata());
+    assertThat(call.sentHeaders.get(GrpcReadConsistencyInterceptor.COMMIT_INDEX_HEADER)).isEqualTo("25");
+  }
+
+  @Test
+  void aWriteBelowTheAppliedIndexLeavesTheAppliedIndexTheBookmark() {
+    final FakeReplicatedDatabase db = new FakeReplicatedDatabase(30);
+    final RecordingCall call = new RecordingCall();
+
+    final ServerCall.Listener<String> listener = start(call, new Metadata(), c -> {
+      GrpcReadConsistencyInterceptor.current().applyTo(db, null);
+      db.writeCommittedAt(25);
+      c.sendHeaders(new Metadata());
+    });
+    listener.onHalfClose();
+
+    assertThat(call.sentHeaders.get(GrpcReadConsistencyInterceptor.COMMIT_INDEX_HEADER)).isEqualTo("30");
+  }
+
+  @Test
   void outsideACallThereIsNoState() {
     assertThat(GrpcReadConsistencyInterceptor.current()).isNull();
   }
@@ -288,12 +343,22 @@ class GrpcReadConsistencyInterceptorTest {
   }
 
   private static final class FakeReplicatedDatabase implements HAReplicatedDatabase {
-    private final long         appliedIndex;
-    private final List<String> set = new ArrayList<>();
-    private       int          cleared;
+    private final long                appliedIndex;
+    private final List<String>        set      = new ArrayList<>();
+    // The index a write made on a thread is committed at, per thread, as RaftReplicatedDatabase keeps it
+    private final ThreadLocal<long[]> written  = ThreadLocal.withInitial(() -> new long[] { -1 });
+    private       int                 cleared;
 
     FakeReplicatedDatabase(final long appliedIndex) {
       this.appliedIndex = appliedIndex;
+    }
+
+    void writeCommittedAt(final long index) {
+      written.get()[0] = index;
+    }
+
+    long writeCommittedOnThisThread() {
+      return written.get()[0];
     }
 
     @Override
@@ -304,11 +369,17 @@ class GrpcReadConsistencyInterceptorTest {
     @Override
     public void clearReadConsistencyContext() {
       cleared++;
+      written.get()[0] = -1;
     }
 
     @Override
     public long getLastAppliedIndex() {
       return appliedIndex;
+    }
+
+    @Override
+    public long getCommitIndexBookmark() {
+      return Math.max(appliedIndex, written.get()[0]);
     }
 
     @Override

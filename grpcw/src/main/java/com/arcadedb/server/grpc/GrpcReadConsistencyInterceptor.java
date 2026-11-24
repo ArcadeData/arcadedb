@@ -33,12 +33,14 @@ import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Read-your-writes on a Raft cluster for gRPC clients, the contract HTTP has had since issue #5845 (issue #11948).
  * <ul>
  *   <li>Every response of a call that reached a replicated database carries {@code x-arcadedb-commit-index}: the last
- *   Raft index the answering server had applied when it answered. After a commit that is a bookmark covering it.</li>
+ *   Raft index the answering server had applied when it answered, or the index a write of the call is committed at when
+ *   that is higher (a commit whose local apply is behind, issue #11742). After a commit that is a bookmark covering it.</li>
  *   <li>A call that sends that value back as {@code x-arcadedb-read-after} makes a follower apply at least that much
  *   before it reads, and {@code x-arcadedb-read-consistency} ({@code eventual}, {@code read_your_writes},
  *   {@code linearizable}) picks the level. Without the header the server's {@code arcadedb.ha.readConsistency}
@@ -60,11 +62,17 @@ class GrpcReadConsistencyInterceptor implements ServerInterceptor {
 
   private static final Context.Key<ReadConsistency> CALL = Context.key("arcadedb-read-consistency");
 
-  /** What one call asked for, and the replicated database it reached, whose applied index its response carries. */
+  /**
+   * What one call asked for, and the replicated database it reached, whose applied index its response carries, raised to the
+   * index the writes of the call are committed at.
+   */
   static final class ReadConsistency {
     private final    Database.READ_CONSISTENCY requested;
     private final    long                      readAfter;
     private volatile HAReplicatedDatabase      database;
+    // The highest index a write this call made is known to be committed at, kept here because the thread that committed
+    // (a transaction's own thread, a stream's executor) is not the one that writes the response
+    private final    AtomicLong                writtenAt = new AtomicLong(-1);
 
     ReadConsistency(final Database.READ_CONSISTENCY requested, final long readAfter) {
       this.requested = requested;
@@ -105,19 +113,27 @@ class GrpcReadConsistencyInterceptor implements ServerInterceptor {
     }
 
     /**
-     * Clears the current thread's consistency. The context is ONE thread-local shared by every replicated database
-     * ({@code RaftReplicatedDatabase}), so clearing through the database bound last also clears what an earlier
-     * database of the same call set on this thread.
+     * Clears the current thread's consistency, after keeping what its writes are committed at for the response. The context is
+     * ONE thread-local shared by every replicated database ({@code RaftReplicatedDatabase}), so clearing through the database
+     * bound last also clears what an earlier database of the same call set on this thread.
      */
     void clear() {
       final HAReplicatedDatabase haDb = database;
-      if (haDb != null)
+      if (haDb != null) {
+        writtenAt.accumulateAndGet(haDb.getCommitIndexBookmark(), Math::max);
         haDb.clearReadConsistencyContext();
+      }
     }
 
+    /**
+     * The bookmark of the response: the applied index of the database, or the index a write of the call is committed at when
+     * that is higher, as HTTP answers (issue #11742): a commit acknowledged at an index this node's apply has not reached
+     * (the wait for it ran out, or the apply failed) is still covered. The write is read from the thread that made it, which
+     * is this one for a call whose statements run on its own thread, and recorded by {@link #clear()} for the others.
+     */
     long appliedIndex() {
       final HAReplicatedDatabase haDb = database;
-      return haDb != null ? haDb.getLastAppliedIndex() : -1;
+      return haDb != null ? Math.max(haDb.getCommitIndexBookmark(), writtenAt.get()) : -1;
     }
   }
 
