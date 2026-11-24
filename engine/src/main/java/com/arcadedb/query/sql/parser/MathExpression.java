@@ -368,10 +368,15 @@ public class MathExpression extends SimpleNode {
             return result;
         }
 
-        if (left instanceof Collection<?> leftColl) {
-          final Collection<Object> coll = copyOf(leftColl);
+        // A list stored as ARRAY_OF_LONGS / ARRAY_OF_DOUBLES (a numeric list nested in an HTTP parameter) is a primitive array: it
+        // is the list it holds, on either side, not a value to concatenate as text or add as one element (issue #12896)
+        if (left instanceof Collection<?> || MultiValue.isSequenceArray(left)) {
+          final Collection<Object> coll = left instanceof Collection<?> leftColl ? copyOf(leftColl) :
+              new ArrayList<>(MultiValue.getMultiValueAsList(left));
           if (right instanceof Collection<?> coll2)
             coll.addAll(coll2);
+          else if (MultiValue.isSequenceArray(right))
+            coll.addAll(MultiValue.getMultiValueAsList(right));
           else
             coll.add(right);
           return coll;
@@ -448,10 +453,11 @@ public class MathExpression extends SimpleNode {
           result = DurationArithmetic.minus(left, right);
           if (result == DurationArithmetic.NOT_APPLICABLE)
             result = null;
-        } else if (left instanceof Collection<?> leftColl) {
+        } else if (left instanceof Collection<?> || MultiValue.isSequenceArray(left)) {
           // the first item equal under the membership key of remove() and set(): [1L, 2L] - 1 takes the 1 an openCypher list holds
-          // (issue #11774)
-          final Collection<Object> coll = copyOf(leftColl);
+          // (issue #11774). An ARRAY_OF_LONGS / ARRAY_OF_DOUBLES value is the list it holds (issue #12896)
+          final Collection<Object> coll = left instanceof Collection<?> leftColl ? copyOf(leftColl) :
+              new ArrayList<>(MultiValue.getMultiValueAsList(left));
           for (final Iterator<Object> it = coll.iterator(); it.hasNext(); )
             if (MultiValue.sameItem(right, it.next())) {
               it.remove();
@@ -1404,6 +1410,15 @@ public class MathExpression extends SimpleNode {
 
     childExpressions.getFirst().applyRemove(result, context);
   }
+
+  /**
+   * Stores {@code value} where this expression reads from. Answers false, and stores nothing, when it is not the plain read of a
+   * place that can be written (issue #12896, see {@link BaseExpression#writeBack}).
+   */
+  public boolean writeBack(final ResultInternal result, final Object value, final CommandContext context) {
+    return childExpressions.size() == 1 && operators.isEmpty() && childExpressions.getFirst().writeBack(result, value, context);
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

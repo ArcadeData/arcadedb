@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SqlAstInspector;
 
 import com.arcadedb.query.OperationType;
+import com.arcadedb.query.ProfiledLimitScope;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.NumberUtils;
@@ -66,8 +67,7 @@ public class Statement extends SimpleNode {
   // Memo of what the statements nested in this one do (issue #9628): a reflective walk of the (immutable once parsed)
   // tree, so computed once per parsed instance. Transient so the AST walkers never mistake it for part of the tree.
   // Valid because nothing adds a statement to a parsed tree after it is classified: rewrites happen on the text before
-  // parsing (the HTTP automatic LIMIT is appended to the command string) and planners work on copy(), which starts with
-  // no memo.
+  // parsing and planners work on copy(), which starts with no memo.
   private transient volatile NestedClassification nestedClassification;
   // Memo of positionalParameterBounds(): the same reflective walk of the immutable tree, once per parsed instance
   private transient volatile ParameterBounds positionalParameterBounds;
@@ -292,12 +292,18 @@ public class Statement extends SimpleNode {
    * concurrent DDL recreated it, and a DDL that keeps dropping and recreating it can take that one away too, attempt after
    * attempt (issue #9615). The last attempt therefore plans without the key indexes of the types it reads, which no DDL can take
    * away under it: a scan answers what such an index would have, slower.
+   *
+   * @param rowCap the rows the caller of the statement reads at most, handed to the plan of every attempt before the first row is
+   *               pulled (see {@link com.arcadedb.query.ResultRowCapScope}, issue #12016); {@code 0} for none
    */
-  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner) {
+  protected ResultSet openResultSetPlanningAgainOnStaleIndex(final IntFunction<InternalExecutionPlan> planner, final int rowCap) {
     for (int attempt = 1; ; attempt++) {
       InternalExecutionPlan plan = null;
       try {
         plan = planner.apply(attempt);
+        // Before the first row: the result set below pulls it (issue #12016)
+        if (rowCap > 0)
+          plan.applyRowCap(rowCap);
         return new LocalResultSet(plan);
       } catch (final IndexException e) {
         if (attempt >= STALE_INDEX_PLAN_MAX_ATTEMPTS)
@@ -373,6 +379,37 @@ public class Statement extends SimpleNode {
    * A transaction the caller opened itself still contains it.
    */
   public boolean managesItsOwnTransactions() {
+    return false;
+  }
+
+  /**
+   * Whether this statement is a transaction control, {@code BEGIN}, {@code COMMIT} or {@code ROLLBACK}. Sent as a request of its
+   * own outside any transaction or session of the caller, it acts on the transaction the server opens around that one request
+   * and ends with it, so a server refuses it there (issue #12202).
+   */
+  public boolean isTransactionControl() {
+    return false;
+  }
+
+  /**
+   * Whether running this statement can execute a {@code RETURN} that ends the script holding it (issue #11892): a RETURN itself,
+   * or a block (IF with either of its branches, FOREACH, WHILE) holding a statement that can, at any depth. The script executor
+   * asks it of every line that is not the last one, to tell the lines it has to run for their answer from the lines it only
+   * drains, so a block that is not recognised here has its RETURN drained and the script goes on as if it had not run.
+   * <p>
+   * Structural, not a reflective walk: only the blocks a RETURN can be written in are descended into, so it stays cheap enough
+   * to be asked again on every iteration of a loop.
+   */
+  public boolean containsReturn() {
+    return false;
+  }
+
+  /** Whether any of the statements {@linkplain #containsReturn() can execute a RETURN}. A null list holds none. */
+  public static boolean anyContainsReturn(final List<? extends Statement> statements) {
+    if (statements != null)
+      for (final Statement statement : statements)
+        if (statement.containsReturn())
+          return true;
     return false;
   }
 
@@ -669,6 +706,10 @@ public class Statement extends SimpleNode {
    * @param params the parameters bound to this execution, keyed as {@link InputParameter#getValue(Map)} reads them; may be null
    */
   protected long tighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    // A STATEMENT RUN AS A PART OF ONE ALREADY CAPPED - THE BODY OF A FUNCTION AN openCypher STATEMENT CALLS - READS EVERY ROW
+    // IT MATCHES: THE OUTER STATEMENT CAPS WHAT IT ANSWERS (ISSUE #12888)
+    if (ProfiledLimitScope.isActive())
+      return -1L;
     final long profiled = database.getResultSetLimit();
     if (profiled < 0)
       return -1L;
@@ -735,6 +776,19 @@ public class Statement extends SimpleNode {
     final Statement statement = copy();
     statement.setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
     return statement;
+  }
+
+  /**
+   * Writes the {@code resultSetLimit} of the current user's groups into this statement's LIMIT where it is tighter than its own,
+   * as {@link #copyWithTighterProfiledLimit} does into a copy. Only for a statement no other user or execution shares: one a
+   * script parsed for this execution and plans without the query engine, for the reason {@link #tighterProfiledLimit} gives.
+   *
+   * @param params the parameters bound to this execution, which a {@code LIMIT :n} or {@code LIMIT ?} reads; may be null
+   */
+  public final void applyTighterProfiledLimit(final DatabaseInternal database, final Map<String, Object> params) {
+    final long profiledLimit = tighterProfiledLimit(database, params);
+    if (profiledLimit > -1)
+      setLimit(new Limit().setValue(NumberUtils.saturateToInt(profiledLimit)));
   }
 
   /**

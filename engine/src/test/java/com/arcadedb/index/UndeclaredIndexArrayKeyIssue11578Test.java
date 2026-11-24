@@ -124,7 +124,10 @@ class UndeclaredIndexArrayKeyIssue11578Test extends TestHelper {
     assertThat(database.getSchema().getIndexByName("Num[v]").countEntries()).isZero();
   }
 
-  /** Type.convert to STRING without a property: the text of the content; with a declared property an array is refused. */
+  /**
+   * Type.convert to STRING without a property: the text of the content; with a declared property the arrays a request leaves in a
+   * value (long[], double[]) are the text of their items and any other array is refused.
+   */
   @Test
   void convertToStringWritesTheContent() {
     assertThat(Type.convert(database, new int[0], String.class)).isEqualTo("[]");
@@ -138,7 +141,13 @@ class UndeclaredIndexArrayKeyIssue11578Test extends TestHelper {
 
     final DocumentType type = database.getSchema().createDocumentType("Conv");
     final Property property = type.createProperty("s", Type.STRING);
-    assertThatThrownBy(() -> Type.convert(database, new long[] { 1 }, String.class, property))
+    // a declared STRING property holds the same text for the array an HTTP map parameter leaves as it does for the same list
+    // (issue #12896); any other array, a byte[] included, is still refused (issues #9041, #9110)
+    assertThat(Type.convert(database, new long[] { 1 }, String.class, property)).isEqualTo("[1]");
+    assertThat(Type.convert(database, new double[] { 1.5 }, String.class, property)).isEqualTo("[1.5]");
+    assertThatThrownBy(() -> Type.convert(database, new int[] { 1 }, String.class, property))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, new byte[] { 1 }, String.class, property))
         .isInstanceOf(IllegalArgumentException.class);
   }
 

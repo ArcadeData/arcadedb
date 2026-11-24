@@ -443,6 +443,36 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     });
   }
 
+  /**
+   * Issue #12680: a regex written in backticks reaches the matcher as written, and an escape in a quoted string is read as Go reads
+   * it, so the matcher selects the series the PromQL text names (the backtick form used to lose its backslashes: {@code a\d}
+   * selected the series {@code ad}).
+   */
+  @Test
+  void aMatcherStringIsReadAsPromQLReadsIt() {
+    final String typeName = "promql_string_escapes";
+    database.command("sql", "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      int ts = 1000;
+      for (final String host : new String[] { "a1", "ad", "a.b", "aXb", "A" })
+        database.command("sql", "INSERT INTO " + typeName + " SET ts = " + ts++ + ", host = '" + host + "', value = 1.0");
+    });
+
+    assertThat(hostsOf(typeName + "{host=~`a\\d`}")).containsExactly("a1");
+    assertThat(hostsOf(typeName + "{host=~\"a\\\\d\"}")).containsExactly("a1");
+    assertThat(hostsOf(typeName + "{host=~`a\\.b`}")).containsExactly("a.b");
+    assertThat(hostsOf(typeName + "{host=~\"a\\\\.b\"}")).containsExactly("a.b");
+    assertThat(hostsOf(typeName + "{host=\"\\x41\"}")).containsExactly("A");
+    assertThat(hostsOf(typeName + "{host=\"\\u0041\"}")).containsExactly("A");
+    assertThat(hostsOf(typeName + "{host!~`a\\d|A`}")).containsExactlyInAnyOrder("ad", "a.b", "aXb");
+  }
+
+  private List<String> hostsOf(final String query) {
+    final PromQLResult result = new PromQLEvaluator(getDatabaseInternal()).evaluateInstant(new PromQLParser(query).parse(), 6000L);
+    assertThat(result).isInstanceOf(PromQLResult.InstantVector.class);
+    return ((PromQLResult.InstantVector) result).samples().stream().map(s -> s.labels().get("host")).toList();
+  }
+
   private void createTypeWithTags(final String typeName) {
     database.command("sql",
         "CREATE TIMESERIES TYPE " + typeName + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE)");
@@ -482,7 +512,10 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       assertThat(samples.getFirst().labels()).doesNotContainKey("__name__").containsEntry("host", "api");
 
       assertThat(vectorOf("m8926_errors + m8926_total").getFirst().value()).isEqualTo(15.0);
-      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).hasSize(1);
+      // a range function drops the name, so the two sides match on their labels. Not rate(): each series holds ONE sample, and
+      // rate() answers no sample for it, as Prometheus does (issue #11980)
+      assertThat(vectorOf("sum_over_time(m8926_errors[5m]) / sum_over_time(m8926_total[5m])")).hasSize(1);
+      assertThat(vectorOf("rate(m8926_errors[5m]) / rate(m8926_total[5m])")).isEmpty();
     }
 
     // #8926
@@ -2226,7 +2259,9 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
       final InstantVector iv = (InstantVector) result;
       assertThat(iv.samples()).hasSize(1);
       final VectorSample sample = iv.samples().getFirst();
-      assertThat(sample.timestampMs()).as("the true latest timestamp").isEqualTo(4_000L);
+      // the element of an instant vector is stamped with the evaluation time, as Prometheus does (issue #11990); the value is what
+      // tells the true latest sample from the last one scanned
+      assertThat(sample.timestampMs()).as("the evaluation time").isEqualTo(5_000L);
       assertThat(sample.value()).as("the value paired with the true latest sample, not the last one scanned")
           .isEqualTo(104.0);
     }

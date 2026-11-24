@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.TypeMismatchException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.CodeUtils;
@@ -93,11 +93,11 @@ public class Rid extends SimpleNode {
 
     if (result instanceof String string) {
       if (!(string.startsWith("#") && (string.contains(":"))))
-        throw new CommandExecutionException("Cannot convert to RID: " + result);
+        throw new TypeMismatchException("Cannot convert to RID: " + result);
 
       final List<String> parts = CodeUtils.split(string.substring(1), ':', 3);
       if (parts.size() != 2)
-        throw new CommandExecutionException("Cannot convert to RID: " + result);
+        throw new TypeMismatchException("Cannot convert to RID: " + result);
 
       final int bucketId;
       final long position;
@@ -105,7 +105,7 @@ public class Rid extends SimpleNode {
         bucketId = Integer.parseInt(parts.getFirst());
         position = Long.parseLong(parts.get(1));
       } catch (final NumberFormatException e) {
-        throw new CommandExecutionException("Cannot convert to RID: " + result, e);
+        throw new TypeMismatchException("Cannot convert to RID: " + result, e);
       }
       return RID.create(context.getDatabase(), bucketId, position);
     }

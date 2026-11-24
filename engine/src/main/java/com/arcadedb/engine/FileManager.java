@@ -27,6 +27,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -100,6 +101,12 @@ public class FileManager {
    * can be snapshotting anyway.
    */
   private volatile DroppedFileHandler droppedFileHandler = null;
+  /**
+   * Runs in {@link #syncFile(int)} between reading the directory generation a file owes and forcing its directory (issue
+   * #11932), so a test can put a rename of the file and its force into that window. {@code null} outside tests.
+   */
+  // @VisibleForTesting
+  volatile Runnable beforeDirectoryForceForTesting = null;
 
   @FunctionalInterface
   public interface DroppedFileHandler {
@@ -342,8 +349,7 @@ public class FileManager {
    * state: nothing can be forced through it any more.
    * <p>
    * The directory fsync is best effort, as in {@link FileUtils#forceDirectory} (a no-op on Windows), and never fails the
-   * sync: the file content is already on disk. A directory force that fails leaves its files owing it, so the next sync
-   * retries it.
+   * sync: the file content is already on disk.
    *
    * @return {@code true} when every file that needed it was fsynced; {@code false} when any fsync failed (#4934). After a
    *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
@@ -365,10 +371,11 @@ public class FileManager {
    * when the file was created or renamed (issue #11805). For a writer that owes the durability of its own file only: the
    * other files keep what they owe for the next {@link #syncFiles()}.
    * <p>
-   * Not serialized with {@link #syncFiles()}: holding that lock made the caller wait out a WAL rotation fsyncing every file
-   * (about 1.1 s per call during an application ingest). The file's own force lock is enough for what that lock guarantees
-   * here: a {@code syncFiles()} reaching this file while this force is in flight waits for it, so it never takes the file
-   * for clean before it is forced, nor before its directory entry is.
+   * NOT serialized with {@link #syncFiles()} (issue #11932): a pass forces every file the database wrote, several
+   * hundred after a schema change, and a writer of one file waiting for all of it took seconds. The race that
+   * serialization prevents is per file, and {@link PaginatedComponentFile#forceIfModified()} serializes the claim and the
+   * fsync of each file: this call waits only when a pass is forcing this very file, and sees its outcome. The pass forces
+   * the directories after every file, so a file it already forced may still owe its directory entry: forced here then.
    *
    * @return {@code true} when the file is durable (or is not a paginated file of this database any more); {@code false}
    *     when its fsync failed
@@ -377,31 +384,36 @@ public class FileManager {
     if (!(fileIdMap.get(fileId) instanceof PaginatedComponentFile pcf))
       return true;
 
-    final ReentrantLock forceLock = pcf.getForceLock();
-    forceLock.lock();
     try {
       final int synced = pcf.forceIfModified();
       if (synced != PaginatedComponentFile.SYNC_CLEAN)
         syncedFiles.incrementAndGet();
-      // This force, or a syncFiles() still on its way to forcing the directories, left the directory entry owed
-      final long directoryOwed = pcf.directoryForceOwed();
-      if (directoryOwed > 0) {
+      // Whether this call forced the metadata or a pass did and has not reached the directories yet: read before the
+      // directory force, so a rename forced meanwhile stays owed. Acknowledged only when the directory force succeeded:
+      // a failed one stays owed for the next caller, and the sync itself still does not fail on it
+      final long owed = pcf.directorySyncOwed();
+      if (owed != 0L) {
+        final Runnable beforeDirectoryForce = beforeDirectoryForceForTesting;
+        if (beforeDirectoryForce != null)
+          beforeDirectoryForce.run();
         final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
-        if (parent == null || forceDirectory(parent.toPath()))
-          pcf.directorySynced(directoryOwed);
+        // A platform without directory fsync, or fsync off, owes nothing to retry
+        if (parent != null && (FileUtils.forceDirectory(parent.toPath()) || FileUtils.directoryForceSkipped()))
+          pcf.directorySynced(owed);
       }
       return true;
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, pcf.getFileName());
       return false;
-    } finally {
-      forceLock.unlock();
     }
   }
 
   private boolean syncFilesSerialized() {
     boolean allSynced = true;
-    Map<Path, Map<PaginatedComponentFile, Long>> filesOwingTheirDirectory = null;
+    Set<Path> directoriesToSync = null;
+    List<PaginatedComponentFile> owingTheirDirectory = null;
+    long[] owedGenerations = null;
+    Path[] owedDirectories = null;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
@@ -412,15 +424,26 @@ public class FileManager {
           if (synced != PaginatedComponentFile.SYNC_CLEAN)
             syncedFiles.incrementAndGet();
           // A CREATED OR RENAMED FILE IS REACHABLE AFTER A POWER LOSS ONLY IF ITS DIRECTORY ENTRY IS DURABLE TOO, WHICH AN
-          // FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES. ALSO THE ONES A
-          // CONCURRENT syncFile() FORCED AND HAS NOT FORCED THE DIRECTORY OF YET (#11805)
-          final long directoryOwed = pcf.directoryForceOwed();
-          if (directoryOwed > 0) {
+          // FSYNC OF THE FILE ITSELF DOES NOT PROMISE. ONE FSYNC PER DIRECTORY, HOWEVER MANY FILES. #11932: ALSO A FILE A
+          // syncFile() FORCED AND WHOSE DIRECTORY IT HAS NOT FORCED YET: THIS PASS CANNOT REPORT IT DURABLE WITHOUT IT
+          final long owed = pcf.directorySyncOwed();
+          if (owed != 0L) {
             final File parent = pcf.getOSFile().getAbsoluteFile().getParentFile();
             if (parent != null) {
-              if (filesOwingTheirDirectory == null)
-                filesOwingTheirDirectory = new LinkedHashMap<>();
-              filesOwingTheirDirectory.computeIfAbsent(parent.toPath(), dir -> new LinkedHashMap<>()).put(pcf, directoryOwed);
+              if (directoriesToSync == null) {
+                directoriesToSync = new HashSet<>();
+                owingTheirDirectory = new ArrayList<>();
+                owedGenerations = new long[16];
+                owedDirectories = new Path[16];
+              } else if (owingTheirDirectory.size() == owedGenerations.length) {
+                owedGenerations = Arrays.copyOf(owedGenerations, owedGenerations.length * 2);
+                owedDirectories = Arrays.copyOf(owedDirectories, owedDirectories.length * 2);
+              }
+              final Path directory = parent.toPath();
+              directoriesToSync.add(directory);
+              owedGenerations[owingTheirDirectory.size()] = owed;
+              owedDirectories[owingTheirDirectory.size()] = directory;
+              owingTheirDirectory.add(pcf);
             }
           }
         } catch (final IOException e) {
@@ -430,21 +453,22 @@ public class FileManager {
       }
     }
 
-    if (filesOwingTheirDirectory != null)
-      for (final Map.Entry<Path, Map<PaginatedComponentFile, Long>> directory : filesOwingTheirDirectory.entrySet())
-        if (forceDirectory(directory.getKey()))
-          for (final Map.Entry<PaginatedComponentFile, Long> owed : directory.getValue().entrySet())
-            owed.getKey().directorySynced(owed.getValue());
+    if (directoriesToSync != null) {
+      Set<Path> notForced = null;
+      for (final Path dir : directoriesToSync)
+        if (!FileUtils.forceDirectory(dir) && !FileUtils.directoryForceSkipped()) {
+          if (notForced == null)
+            notForced = new HashSet<>();
+          notForced.add(dir);
+        }
+      // #11932: EACH FILE ACKNOWLEDGES THE GENERATION READ BEFORE THE DIRECTORY FORCE, NOT WHATEVER IT OWES BY NOW, AND
+      // ONLY WHEN ITS DIRECTORY WAS FORCED: A FAILED ONE STAYS OWED FOR THE NEXT PASS (STILL BEST EFFORT: NEVER A FAILURE)
+      for (int i = 0; i < owingTheirDirectory.size(); i++)
+        if (notForced == null || !notForced.contains(owedDirectories[i]))
+          owingTheirDirectory.get(i).directorySynced(owedGenerations[i]);
+    }
 
     return allSynced;
-  }
-
-  /**
-   * Forces a directory, and tells whether the files in it owe it nothing more: it was forced, or nothing ever forces it here
-   * ({@link FileUtils#skipsDirectoryForce}). A force that failed is still owed, and the next sync retries it.
-   */
-  private static boolean forceDirectory(final Path dir) {
-    return FileUtils.forceDirectory(dir) || FileUtils.skipsDirectoryForce();
   }
 
   /**

@@ -33,11 +33,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Issue #6362: inserting an identity {@code CALL (*) { RETURN 0 AS barrier }} after a
- * {@code MERGE ... ON MATCH SET} changed the rows the query returned - {@code [{i:1, k4:10}, {i:2, k4:99}]}
- * became {@code [{i:1, k4:99}, {i:2, k4:99}]}, so a write performed for the second input row showed through the
- * binding the first row was carrying.
+ * {@code MERGE ... ON MATCH SET} changed the rows the query returned. Whatever the answer, an identity subquery
+ * must not change it.
  * <p>
- * The cause is {@code SubqueryStep.refreshDocumentBindings}, added for issue #4182 so that a {@code SET} inside
+ * The answer itself is Neo4j's, {@code [{i:1, k4:99}, {i:2, k4:99}]} (issue #12656, following #12627): when several
+ * rows bind the same node, the clauses after the MERGE read the ON MATCH SET the second row made, on the first row
+ * too. The #6362 report took the streaming answer {@code [{i:1, k4:10}, {i:2, k4:99}]} as the expected one.
+ * <p>
+ * The subquery changed it through {@code SubqueryStep.refreshDocumentBindings}, added for issue #4182 so that a {@code SET} inside
  * the subquery is visible to the clauses after it. It re-reads every {@code Document} binding on the outer row
  * through {@code lookupByRID}, which answers from the transaction cache - so the snapshot the row was carrying
  * is replaced by the live, shared record instance, and every later mutation of that record is then visible
@@ -106,7 +109,7 @@ class CypherSubqueryRowBindingIssue6362Test {
         WITH i, n0, n2 \
         RETURN i, n0.k4 AS k4""");
 
-    assertThat(withoutSubquery).containsExactly("1|10", "2|99");
+    assertThat(withoutSubquery).containsExactly("1|99", "2|99");
     assertThat(withSubquery)
         .as("an identity CALL (*) subquery must not change what the query returns")
         .isEqualTo(withoutSubquery);
@@ -118,16 +121,15 @@ class CypherSubqueryRowBindingIssue6362Test {
         WITH i, n0, n2 \
         CALL { RETURN 0 AS barrier } \
         WITH i, n0, n2 \
-        RETURN i, n0.k4 AS k4""")).containsExactly("1|10", "2|99");
+        RETURN i, n0.k4 AS k4""")).containsExactly("1|99", "2|99");
   }
 
   @Test
   void thePlainControlsAreUnchanged() {
-    // A plain WITH, and an UNWIND barrier, both already preserved the streaming answer; they are the reference
-    // the subquery spelling has to match.
-    assertThat(onFreshFixture(HEAD + "WITH i, n0, n2 RETURN i, n0.k4 AS k4")).containsExactly("1|10", "2|99");
+    // A plain WITH, and an UNWIND barrier: the reference the subquery spelling has to match.
+    assertThat(onFreshFixture(HEAD + "WITH i, n0, n2 RETURN i, n0.k4 AS k4")).containsExactly("1|99", "2|99");
     assertThat(onFreshFixture(HEAD + "WITH i, n0, n2 UNWIND [0] AS b WITH i, n0, n2 RETURN i, n0.k4 AS k4"))
-        .containsExactly("1|10", "2|99");
+        .containsExactly("1|99", "2|99");
   }
 
   @Test

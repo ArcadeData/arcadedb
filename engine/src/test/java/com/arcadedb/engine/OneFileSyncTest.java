@@ -22,72 +22,18 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Field;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link FileManager#syncFile} and {@link PageManager#flushAndSyncWithoutWAL}, the one-file sync a vector graph build runs
- * while it holds the build lock the searches of its index wait on (issue #11805): it does not queue behind a full sync, it
- * still forces the directory a full sync owes, and its wait for the file's pages does not spin.
+ * {@link PageManagerFlushThread#waitPagesOfFileAreFlushed}, the wait of the one-file sync a vector graph build runs while it
+ * holds the build lock the searches of its index wait on (issue #11805): it does not spin on a page the disk refused.
  */
 class OneFileSyncTest extends TestHelper {
-
-  /**
-   * A full sync in progress (a WAL rotation fsyncing every written file holds the database-wide sync lock throughout) does
-   * not hold up a sync of one file: during an application ingest the graph build waited about 1.1 s per call for it, with
-   * the searches of its index queued behind the build.
-   */
-  @Test
-  void aOneFileSyncDoesNotWaitForAFullSyncInProgress() throws Exception {
-    database.getSchema().createDocumentType("Asked", 1);
-    database.transaction(() -> database.newDocument("Asked").set("i", 1).save());
-    final DatabaseInternal db = (DatabaseInternal) database;
-    assertThat(db.getPageManager().waitPagesPendingNowOfDatabaseAreFlushed(db, 30_000)).isTrue();
-    final int askedFileId = db.getSchema().getType("Asked").getBuckets(false).getFirst().getFileId();
-    final PaginatedComponentFile asked = (PaginatedComponentFile) db.getFileManager().getFile(askedFileId);
-    assertThat(asked.isModifiedSinceLastSync()).isTrue();
-
-    final Field syncLockField = FileManager.class.getDeclaredField("syncLock");
-    syncLockField.setAccessible(true);
-    final ReentrantLock syncLock = (ReentrantLock) syncLockField.get(db.getFileManager());
-    final CountDownLatch held = new CountDownLatch(1);
-    final CountDownLatch release = new CountDownLatch(1);
-    final Thread fullSync = new Thread(() -> {
-      syncLock.lock();
-      try {
-        held.countDown();
-        release.await(30, TimeUnit.SECONDS);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-      } finally {
-        syncLock.unlock();
-      }
-    });
-    fullSync.start();
-    final ExecutorService caller = Executors.newSingleThreadExecutor();
-    try {
-      assertThat(held.await(10, TimeUnit.SECONDS)).isTrue();
-      final Future<Boolean> synced = caller.submit(() -> db.getFileManager().syncFile(askedFileId));
-
-      assertThat(synced.get(10, TimeUnit.SECONDS)).as("the one-file sync completes while the full sync holds its lock").isTrue();
-      assertThat(asked.isModifiedSinceLastSync()).isFalse();
-    } finally {
-      release.countDown();
-      fullSync.join(10_000);
-      caller.shutdownNow();
-    }
-  }
 
   /**
    * A copy of a page the disk refused stays in the pipeline but is not counted as pending, so the drain wait returns at

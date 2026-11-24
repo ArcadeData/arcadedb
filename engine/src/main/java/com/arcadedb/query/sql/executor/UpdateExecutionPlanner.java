@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Bucket;
@@ -103,12 +104,15 @@ public class UpdateExecutionPlanner {
 
   /**
    * add a step that transforms a normal OResult in a specific object that under setProperty() updates the actual PIdentifiable
+   * <p>
+   * The step evaluates the WHERE again on a record a concurrent commit changed after the source read it (issue #11818). It gets its
+   * own copy: the source plan is built from this one.
    *
    * @param plan    the execution plan
    * @param context the execution context
    */
   private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context) {
-    plan.chain(new ConvertToUpdatableResultStep(context));
+    plan.chain(new ConvertToUpdatableResultStep(context, whereClause != null ? whereClause.copy() : null, upsert));
   }
 
   private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context,
@@ -142,10 +146,12 @@ public class UpdateExecutionPlanner {
 
   private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext context) {
     if (bucket != null) {
-      final String bucketName =
-          bucket.getBucketName() != null ?
-              bucket.getBucketName() :
-              context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      // a name, an id or an input parameter (bucket::name, bucket:?) is resolved as the read side of the statement resolves it (#12480)
+      String bucketName = bucket.resolveName(context.getInputParameters());
+      if (bucketName == null && bucket.getBucketNumber() != null)
+        bucketName = context.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      if (bucketName == null)
+        throw new SchemaException("Bucket '" + bucket + "' does not exist");
       result.chain(new SaveElementStep(context, new Identifier(bucketName), false));
     } else
       result.chain(new SaveElementStep(context, null, false));

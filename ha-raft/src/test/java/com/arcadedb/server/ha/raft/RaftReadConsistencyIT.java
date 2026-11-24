@@ -122,4 +122,34 @@ class RaftReadConsistencyIT extends BaseRaftHATest {
         .as("follower fetchReadIndex() must return the leader's non-zero commit index")
         .isGreaterThanOrEqualTo(commitIndex);
   }
+
+  /**
+   * Issue #11739: the variant with a deadline, which a forwarded {@code create database} waits through, reads the same leader
+   * commit index as {@link #fetchReadIndexReturnsLeaderCommitIndexNotZero} from the leader and from a follower.
+   */
+  @Test
+  void fetchReadIndexWithADeadlineReturnsLeaderCommitIndexNotZero() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer leaderRaft = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType("ReadIndexDeadlineProbe"))
+        leaderDb.getSchema().createVertexType("ReadIndexDeadlineProbe");
+      for (int i = 0; i < 10; i++)
+        leaderDb.newVertex("ReadIndexDeadlineProbe").set("i", i).save();
+    });
+    assertClusterConsistency();
+
+    final long commitIndex = leaderRaft.getCommitIndex();
+    assertThat(commitIndex).as("commit index after writes must be positive").isPositive();
+
+    assertThat(leaderRaft.fetchReadIndex(true, 10_000L)).as("the leader's read index, asked with a deadline")
+        .isGreaterThanOrEqualTo(commitIndex);
+
+    final int followerIndex = leaderIndex == 0 ? 1 : 0;
+    assertThat(getRaftPlugin(followerIndex).getRaftHAServer().fetchReadIndex(false, 10_000L))
+        .as("a follower gets the leader's non-zero commit index, asked with a deadline").isGreaterThanOrEqualTo(commitIndex);
+  }
 }

@@ -216,7 +216,9 @@ public class PromQLEvaluator {
           // timestamp is wherever the lookback window happened to resolve. A series sparser than the step
           // resolved to the same sample on several consecutive steps and repeated its timestamp, so any
           // consumer indexing the matrix by timestamp (Grafana included) saw duplicate keys and jitter
-          // instead of a regular grid. The raw timestamp still drives staleness/lookback inside evaluate().
+          // instead of a regular grid. Since issue #11990 the selector already stamps its elements with the
+          // evaluation time, so this is the same value; lookback is decided by the scan window and staleness
+          // by the sample value, neither by this timestamp.
           seriesMap.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { t, sample.value() });
           labelsMap.putIfAbsent(key, sample.labels());
         }
@@ -322,7 +324,15 @@ public class PromQLEvaluator {
       return new InstantVector(List.of());
     }
 
-    return new InstantVector(new ArrayList<>(latestByLabels.values()));
+    // A series whose newest sample in the lookback is a staleness marker has ENDED: Prometheus answers nothing for it, where the
+    // marker read as a NaN measurement kept it in the vector for the whole lookback and made sum() NaN (issue #11991).
+    // The stored timestamp only chose the newest sample above; an instant vector is AT the evaluation time, which is what
+    // Prometheus stamps every element of it with and what every aggregation and operator over it inherits (issue #11990)
+    final List<VectorSample> samples = new ArrayList<>(latestByLabels.size());
+    for (final VectorSample sample : latestByLabels.values())
+      if (!isStaleMarker(sample.value()))
+        samples.add(new VectorSample(sample.labels(), sample.value(), evalTimeMs));
+    return new InstantVector(samples);
   }
 
   /**
@@ -375,10 +385,13 @@ public class PromQLEvaluator {
       engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
         if (!matchesRow(row, rowMatchers))
           return true;
+        final double value = extractValue(row, columns);
+        // A staleness marker ends a series, it is not a sample of it: Prometheus leaves it out of every range (issue #11991)
+        if (isStaleMarker(value))
+          return true;
         final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
         final String key = labelKey(labels);
-        seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>())
-            .add(new double[] { (long) row[0], extractValue(row, columns) });
+        seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { (long) row[0], value });
         labelsMap.putIfAbsent(key, labels);
         return true;
       });
@@ -511,6 +524,10 @@ public class PromQLEvaluator {
 
       final List<VectorSample> samples = new ArrayList<>();
       for (final RangeSeries series : rv.series()) {
+        // A series rate()/irate()/increase() cannot compute a rate for is left out, as Prometheus leaves it out: a 0 in its place
+        // is a measurement nobody made, and it moves every avg/min/max/count over the result (issue #11980)
+        if (!PromQLFunctions.answers(name, series))
+          continue;
         final double value = switch (name) {
           case "rate" -> PromQLFunctions.rate(series);
           case "irate" -> PromQLFunctions.irate(series);
@@ -1042,9 +1059,25 @@ public class PromQLEvaluator {
       final int rowPos = 1 + nonTsIdx;
       nonTsIdx++;
       if (col.getRole() == ColumnDefinition.ColumnRole.FIELD)
-        return rowPos < row.length && row[rowPos] instanceof Number ? ((Number) row[rowPos]).doubleValue() : Double.NaN;
+        // a FLOAT widens with the staleness marker kept one (issue #12580)
+        return rowPos < row.length && row[rowPos] instanceof Number number ? TimeSeriesNaN.doubleOf(number) : Double.NaN;
     }
     return Double.NaN;
+  }
+
+  /**
+   * Whether {@code value} is Prometheus' staleness marker (issue #11991): the NaN with bit pattern
+   * {@link TimeSeriesNaN#STALE_MARKER_BITS}, which a Prometheus remote write sends when a series disappears. An ordinary NaN is a
+   * value, and Prometheus answers it as one.
+   * <p>
+   * The marker is told from an ordinary NaN by its bits, and every layer hands them back (issue #12580): the mutable layer and a
+   * field sealed with {@code GORILLA_XOR} keep a double's raw bits, a FLOAT column keeps the marker as
+   * {@link TimeSeriesNaN#STALE_MARKER_FLOAT_BITS} ({@link #extractValue} widens it back), a field sealed with the {@code DICTIONARY}
+   * codec as the text {@link TimeSeriesNaN#STALE_MARKER_TEXT}, and downsampling folds a bucket in which a series ended into the
+   * mean of its real samples followed by a marker row at the time of the marker.
+   */
+  static boolean isStaleMarker(final double value) {
+    return TimeSeriesNaN.isStaleMarker(value);
   }
 
   /**

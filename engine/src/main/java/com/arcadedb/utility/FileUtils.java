@@ -758,11 +758,12 @@ public class FileUtils {
    *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off ({@link
-   * #skipsDirectoryForce} tells the two apart)
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be or fsync is off
+   * ({@link #directoryForceSkipped()} tells the two apart). {@code FileManager} keeps a file's directory obligation owed
+   * after a failed force
    */
   public static boolean forceDirectory(final Path dir) {
-    if (dir == null || skipsDirectoryForce())
+    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean())
       return false;
 
     // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
@@ -780,11 +781,10 @@ public class FileUtils {
   }
 
   /**
-   * Whether {@link #forceDirectory} skips every directory without trying: fsync is off ({@link GlobalConfiguration#FILE_SYNC}),
-   * or the platform has no directory fsync. A caller tracking which directories still owe a force counts a skipped one as
-   * settled, since no later attempt would force it either.
+   * Whether {@link #forceDirectory} skips every directory without trying: on a platform with no directory fsync, or while
+   * {@link GlobalConfiguration#FILE_SYNC} is off. Its {@code false} then is not a failure, and nothing is left to retry.
    */
-  public static boolean skipsDirectoryForce() {
+  public static boolean directoryForceSkipped() {
     return NO_DIRECTORY_SYNC_ON_THIS_PLATFORM || !GlobalConfiguration.FILE_SYNC.getValueAsBoolean();
   }
 

@@ -18,12 +18,14 @@
  */
 package com.arcadedb.remote.grpc.utils;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.server.grpc.GrpcArrayCodec;
 import com.arcadedb.server.grpc.GrpcDecimal;
 import com.arcadedb.server.grpc.GrpcEmbedded;
 import com.arcadedb.server.grpc.GrpcLink;
@@ -50,6 +52,7 @@ import java.util.logging.Level;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public class ProtoUtils {
@@ -347,7 +350,20 @@ public class ProtoUtils {
     return dbgEnc("toGrpcValue", value, GrpcValue.newBuilder().setStringValue(String.valueOf(value)).build());
   }
 
-  public static Object fromGrpcValue(GrpcValue v) {
+  /** {@link #fromGrpcValue(GrpcValue, BasicDatabase)} with no database: a link decodes as a plain {@link RID}. */
+  public static Object fromGrpcValue(final GrpcValue v) {
+    return fromGrpcValue(v, null);
+  }
+
+  /**
+   * Decodes a value, binding every link it holds (a single one, and the items of a list, a map or an embedded value) to
+   * {@code database}, so that {@code rid.asDocument()} resolves against it on any thread, as it does for a link the embedded API
+   * answers (issue #12603). A plain RID, with no database to bind, looks for one active on the calling thread, which an application
+   * that only uses a remote client never has.
+   *
+   * @param database the database the links are bound to, or null for plain {@link RID}s
+   */
+  public static Object fromGrpcValue(final GrpcValue v, final BasicDatabase database) {
 
     if (v == null)
       return dbgDec("fromGrpcValue", v, null);
@@ -399,25 +415,36 @@ public class ProtoUtils {
       return dbgDec("fromGrpcValue", v, tsToMillis(ts));
     }
     case LIST_VALUE: {
-      var out = new ArrayList<>();
-      for (GrpcValue e : v.getListValue().getValuesList())
-        out.add(fromGrpcValue(e));
+      final List<GrpcValue> values = v.getListValue().getValuesList();
+      // Issue #12189: a primitive numeric array the server tagged is the array again, as the embedded API returns it. Decoded
+      // straight from the wire values: no list of boxed numbers is built first
+      final Object array = GrpcArrayCodec.toArray(values, v.getLogicalType());
+      if (array != null)
+        return dbgDec("fromGrpcValue", v, array);
+
+      var out = new ArrayList<>(values.size());
+      for (GrpcValue e : values)
+        out.add(fromGrpcValue(e, database));
       return dbgDec("fromGrpcValue", v, out);
     }
     case MAP_VALUE: {
       var out = new LinkedHashMap<String, Object>();
-      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      v.getMapValue().getEntriesMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv, database)));
       return dbgDec("fromGrpcValue", v, out);
     }
     case EMBEDDED_VALUE: {
       var out = new LinkedHashMap<String, Object>();
-      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv)));
+      v.getEmbeddedValue().getFieldsMap().forEach((k, vv) -> out.put(k, fromGrpcValue(vv, database)));
       // v.getEmbeddedValue().getType() is available if you want to instantiate a
       // typed DTO
       return dbgDec("fromGrpcValue", v, out);
     }
     case LINK_VALUE:
-      return dbgDec("fromGrpcValue", v, v.getLinkValue().getRid()); // or a Link object
+      // A RID, as the embedded engine answers a link and the HTTP driver answers a LINK column: the rid TEXT read a link back
+      // as a String, so (Identifiable) doc.get(name) failed and a re-save wrote it back as a string (issue #12195).
+      // Bound to the driver's database when the caller has one (issue #12603), as the HTTP driver binds its links. The rid text
+      // is always RID.toString() of the server, so a malformed one is a server bug and fails here instead of reading back as text.
+      return dbgDec("fromGrpcValue", v, RID.create(database, v.getLinkValue().getRid()));
     case DECIMAL_VALUE: {
       var d = v.getDecimalValue();
       return dbgDec("fromGrpcValue", v, toBigDecimal(d));

@@ -28,7 +28,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * SQL function geo.y: returns the Y (latitude) coordinate of a point geometry.
  *
  * <p>Usage: {@code geo.y(<point>)}</p>
- * <p>Returns: Double Y coordinate, or null if input is not a point</p>
+ * <p>Returns: Double Y coordinate, or null if input is not a point or is an EMPTY point (issue #12277: was NaN)</p>
  */
 public class SQLFunctionGeoY extends SQLFunctionAbstract {
   public static final String NAME = "geo.y";
@@ -46,13 +46,13 @@ public class SQLFunctionGeoY extends SQLFunctionAbstract {
     final Object input = iParams[0];
 
     if (input instanceof Point p)
-      return p.getY();
+      return p.isEmpty() ? null : p.getY();
 
     // Try parsing as geometry
     try {
       final Shape shape = GeoUtils.parseGeometry(input);
       if (shape instanceof Point p)
-        return p.getY();
+        return p.isEmpty() ? null : p.getY();
     } catch (Exception ignored) {
       // Not a valid geometry or not a point
     }

@@ -36,6 +36,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -152,21 +153,25 @@ public final class Exporter {
   /** The public charts show scheduled measurements only; manual runs stay in the store. */
   private static final Set<String> PUBLISHED_TRIGGERS = Set.of("nightly", "release");
 
-  /** What a point needs to know about its run: the release tag, the trigger and the bench commit that produced it. */
-  private record RunMeta(String tag, String trigger, String benchCommit) {
+  /**
+   * What a point needs to know about its run: the release tag, the trigger, the bench commit that produced it and the date of the
+   * measured commit ({@code null} for a run recorded without one).
+   */
+  private record RunMeta(String tag, String trigger, String benchCommit, String commitDate) {
   }
 
   private static Map<String, RunMeta> loadRuns(final RemoteDatabase db) {
     final Map<String, RunMeta> runs = new HashMap<>();
     try (final ResultSet rs = db.query("sql",
-        "SELECT runId, arcadedb.tag AS tag, `trigger` AS trig, config.benchCommit AS benchCommit FROM Run")) {
+        "SELECT runId, arcadedb.tag AS tag, arcadedb.commitDate AS commitDate, `trigger` AS trig, config.benchCommit AS benchCommit"
+            + " FROM Run")) {
       while (rs.hasNext()) {
         final Result r = rs.next();
         final String tag = r.getProperty("tag");
         final String runId = r.getProperty("runId");
         if (runId != null)
           runs.put(runId, new RunMeta(tag != null && !tag.isEmpty() ? tag : null, r.getProperty("trig"),
-              r.getProperty("benchCommit")));
+              r.getProperty("benchCommit"), r.getProperty("commitDate")));
       }
     }
     return runs;
@@ -194,7 +199,9 @@ public final class Exporter {
   /**
    * One series. The rows of the metric are its points; the {@code _status} rows of the same case (written for a run that
    * produced no metric at all, for example a timeout) join it as points without a median that carry their status, unless the
-   * run has a real point of that metric already. Only runs with a published trigger count.
+   * run has a real point of that metric already. Only runs with a published trigger count. A point sits at the date of its commit
+   * ({@code t}; the run's start for a run recorded without one) and keeps the run's start as {@code runAt}: a release measured
+   * today is drawn where its code is, not after the nightlies of newer code. Each line is ordered by {@code t}, then {@code runAt}.
    */
   private static Series loadSeries(final RemoteDatabase db, final String workload, final String caseName, final String scale,
       final String metric, final Map<String, RunMeta> runs) {
@@ -225,7 +232,9 @@ public final class Exporter {
       final String status = r.getProperty("status");
       final Number median = r.getProperty("median");
       final boolean ok = "ok".equals(status);
-      final JSONObject point = new JSONObject().put("t", toIso(r.getProperty("startedAt")))
+      final String runAt = toIso(r.getProperty("startedAt"));
+      final String t = meta.commitDate != null && !meta.commitDate.isEmpty() ? meta.commitDate : runAt;
+      final JSONObject point = new JSONObject().put("t", t).put("runAt", runAt)
           .put("commit", (Object) r.getProperty("commitId")).put("tag", (Object) meta.tag)
           .put("benchCommit", (Object) meta.benchCommit)
           .put("median", ok && median != null ? (Object) median.doubleValue() : null).put("status", (Object) status)
@@ -240,7 +249,19 @@ public final class Exporter {
         continue;
       s.lines.computeIfAbsent(machineId + "\0" + variant, k -> new Line(machineId, variant)).points.add(point);
     }
+    for (final Line l : s.lines.values())
+      l.points.sort(Comparator.<JSONObject, Instant>comparing(p -> instantOf(p.getString("t", "")))
+          .thenComparing(p -> instantOf(p.getString("runAt", ""))));
     return s;
+  }
+
+  /** An ISO instant; anything unparsable sorts first rather than failing the export. */
+  private static Instant instantOf(final String iso) {
+    try {
+      return Instant.parse(iso);
+    } catch (final DateTimeParseException e) {
+      return Instant.MIN;
+    }
   }
 
   private static String toIso(final Object value) {

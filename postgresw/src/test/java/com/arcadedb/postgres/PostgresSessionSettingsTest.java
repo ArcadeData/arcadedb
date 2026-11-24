@@ -19,8 +19,12 @@
 package com.arcadedb.postgres;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -308,5 +312,191 @@ class PostgresSessionSettingsTest {
     assertThat(settings.show("intervalstyle")).isEqualTo("iso_8601");
     assertThatThrownBy(() -> settings.set("IntervalStyle", "nonsense"))
         .satisfies(e -> assertThat(((PostgresSessionSettings.SettingException) e).sqlState).isEqualTo("22023"));
+  }
+
+  /*
+   * Issue #8573: a configuration parameter PostgreSQL does not know was invented rather than refused: {@code SET} stored
+   * it, {@code SHOW} answered it (an empty string when never set) and {@code RESET} accepted it. PostgreSQL answers
+   * {@code 42704} to all three, and so does this server now, while a dotted custom placeholder and a name the startup
+   * packet named stay usable, as in PostgreSQL.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #8573
+  @Test
+  void unknownNameIsRefusedBySetShowAndReset() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    assertUndefined(() -> settings.set("bogus_param", "1"), "bogus_param");
+    assertUndefined(() -> settings.show("bogus_param"), "bogus_param");
+    assertUndefined(() -> settings.show("nosuchparam"), "nosuchparam");
+    assertUndefined(() -> settings.apply(new PostgresSessionSettings.Assignment("nosuchparam", null, false)), "nosuchparam");
+    assertUndefined(() -> settings.set("bogus_param", "1", true), "bogus_param");
+  }
+
+  // Regression: #8573
+  @Test
+  void aRefusedSetChangesNothing() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    assertThatThrownBy(() -> settings.set("bogus_param", "1")).isInstanceOf(PostgresSessionSettings.SettingException.class);
+    assertThat(settings.showAll()).extracting(row -> row[0]).doesNotContain("bogus_param");
+  }
+
+  // Regression: #8573
+  @ParameterizedTest
+  @ValueSource(strings = { "extra_float_digits", "lock_timeout", "work_mem", "bytea_output",
+      "idle_in_transaction_session_timeout", "jit" })
+  void everyParameterPostgresqlLetsASessionSetIsAccepted(final String name) {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set(name, "7");
+    assertThat(settings.show(name)).isEqualTo("7");
+    settings.set(name, null);
+    assertThat(settings.show(name)).isEmpty();
+  }
+
+  // Regression: #8573
+  @Test
+  void customPlaceholderIsAcceptedAndShownOnceSet() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    // As in PostgreSQL: SHOW of a placeholder nobody defined is an error, RESET of one is not
+    assertUndefined(() -> settings.show("myapp.tenant"), "myapp.tenant");
+    settings.apply(new PostgresSessionSettings.Assignment("myapp.other", null, false));
+
+    settings.set("myapp.tenant", "acme");
+    assertThat(settings.show("myapp.tenant")).isEqualTo("acme");
+    assertThat(settings.show("MyApp.Tenant")).isEqualTo("acme");
+    // Once defined it stays defined: RESET answers the empty reset value, as PostgreSQL does
+    settings.set("myapp.tenant", null);
+    assertThat(settings.show("myapp.tenant")).isEmpty();
+
+    // A dot at either end does not qualify a name
+    assertUndefined(() -> settings.set(".tenant", "x"), ".tenant");
+    assertUndefined(() -> settings.set("tenant.", "x"), "tenant.");
+  }
+
+  // Regression: #8573
+  @Test
+  void startupPacketNameStaysUsableOnTheConnection() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.setFromStartup("my_driver_option", "on");
+    assertThat(settings.show("my_driver_option")).isEqualTo("on");
+    settings.set("my_driver_option", "off");
+    assertThat(settings.show("my_driver_option")).isEqualTo("off");
+    settings.apply(new PostgresSessionSettings.Assignment("my_driver_option", null, false));
+    assertThat(settings.show("my_driver_option")).isEqualTo("on");
+  }
+
+  // Regression: #8573
+  @Test
+  void parameterOnlyTheServerConfigurationChangesIsRefusedAsPostgresqlRefusesIt() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    assertCantChange(() -> settings.set("shared_buffers", "1"), "parameter \"shared_buffers\" cannot be changed without restarting the server");
+    assertCantChange(() -> settings.set("archive_command", "x"), "parameter \"archive_command\" cannot be changed now");
+    assertCantChange(() -> settings.set("block_size", "1"), "parameter \"block_size\" cannot be changed");
+    assertCantChange(() -> settings.set("log_connections", "on"), "parameter \"log_connections\" cannot be set after connection start");
+    // ...but a backend parameter is still accepted in the startup packet, as in PostgreSQL
+    settings.setFromStartup("log_connections", "on");
+    assertThat(settings.show("log_connections")).isEqualTo("on");
+  }
+
+  // Regression: #8573
+  @Test
+  void showAnswersUnderPostgresqlsSpellingOfTheName() {
+    assertThat(PostgresSessionSettings.canonicalName("datestyle")).isEqualTo("DateStyle");
+    assertThat(PostgresSessionSettings.canonicalName("TIMEZONE")).isEqualTo("TimeZone");
+    assertThat(PostgresSessionSettings.canonicalName("transaction_isolation")).isEqualTo("transaction_isolation");
+    assertThat(PostgresSessionSettings.canonicalName("myapp.tenant")).isEqualTo("myapp.tenant");
+  }
+
+  // Regression: #8573
+  @Test
+  void showAllListsWhatTheServerAnswersAndWhatWasSet() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("work_mem", "x");
+    settings.set("myapp.tenant", "acme");
+    final List<String[]> all = settings.showAll();
+    assertThat(all).extracting(row -> row[0]).contains("DateStyle", "TimeZone", "transaction_isolation", "myapp.tenant");
+    assertThat(all).filteredOn(row -> row[0].equals("work_mem")).extracting(row -> row[1]).containsExactly("x");
+  }
+
+  private static void assertUndefined(final Runnable action, final String name) {
+    assertThatThrownBy(action::run).isInstanceOfSatisfying(PostgresSessionSettings.SettingException.class, e -> {
+      assertThat(e.sqlState).isEqualTo("42704");
+      assertThat(e.getMessage()).isEqualTo("unrecognized configuration parameter \"" + name + "\"");
+    });
+  }
+
+  private static void assertCantChange(final Runnable action, final String message) {
+    assertThatThrownBy(action::run).isInstanceOfSatisfying(PostgresSessionSettings.SettingException.class, e -> {
+      assertThat(e.sqlState).isEqualTo("55P02");
+      assertThat(e.getMessage()).isEqualTo(message);
+    });
+  }
+
+  /*
+   * Regression tests for issue #9329 at the settings level: {@code search_path} is accepted and never stored, so {@code SHOW}
+   * answers the schema the server resolves names in; {@code statement_timeout} is parsed as PostgreSQL parses it.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  // Regression: #9329
+  @Test
+  void searchPathAlwaysAnswersTheConnectedSchema() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.setCurrentSchema("pgtest");
+    assertThat(settings.show("search_path")).isEqualTo("pgtest");
+
+    settings.set("search_path", "other");
+    assertThat(settings.show("search_path")).isEqualTo("pgtest");
+    settings.set("search_path", "nosuchschema", true);
+    assertThat(settings.show("SEARCH_PATH")).isEqualTo("pgtest");
+    settings.set("search_path", null);
+    assertThat(settings.show("search_path")).isEqualTo("pgtest");
+    assertThat(settings.showAll()).filteredOn(row -> row[0].equals("search_path")).extracting(row -> row[1]).containsExactly("pgtest");
+  }
+
+  // Regression: #9329
+  @ParameterizedTest
+  @CsvSource({ "0,0", "5000,5000", "'  250 ',250", "30s,30000", "2min,120000", "1h,3600000", "1d,86400000", "1.5s,1500", "500us,1",
+      "0s,0", "7MS,7" })
+  void statementTimeoutIsReadInMillisecondsByDefault(final String value, final long expected) {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("statement_timeout", value);
+    assertThat(settings.statementTimeoutMillis()).isEqualTo(expected);
+  }
+
+  // Regression: #9329
+  @Test
+  void statementTimeoutDefaultsToNoneAndResets() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    assertThat(settings.statementTimeoutMillis()).isZero();
+    assertThat(settings.show("statement_timeout")).isEqualTo("0");
+
+    settings.set("statement_timeout", "45s");
+    assertThat(settings.show("statement_timeout")).isEqualTo("45s");
+    assertThat(settings.statementTimeoutMillis()).isEqualTo(45_000L);
+
+    settings.set("statement_timeout", null);
+    assertThat(settings.statementTimeoutMillis()).isZero();
+    assertThat(settings.show("statement_timeout")).isEqualTo("0");
+  }
+
+  // Regression: #9329
+  @Test
+  void localStatementTimeoutEndsWithTheTransaction() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("statement_timeout", "1s", true);
+    assertThat(settings.statementTimeoutMillis()).isEqualTo(1000L);
+    settings.commit();
+    assertThat(settings.statementTimeoutMillis()).isZero();
+  }
+
+  // Regression: #9329
+  @ParameterizedTest
+  @CsvSource({ "forever", "-5", "10 parsecs", "''" })
+  void invalidStatementTimeoutIsRefused(final String value) {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    assertThatThrownBy(() -> settings.set("statement_timeout", value)).isInstanceOfSatisfying(
+        PostgresSessionSettings.SettingException.class, e -> assertThat(e.sqlState).isEqualTo("22023"));
+    assertThat(settings.statementTimeoutMillis()).isZero();
   }
 }

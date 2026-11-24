@@ -62,7 +62,13 @@ class CypherStringFunctionSecondaryArgumentIssue6608Test extends TestHelper {
 
   @Test
   void splitOfNonStringDelimiterIsAClientTypeError() {
-    assertThatThrownBy(() -> consume("RETURN split('a', []) AS r"))
+    // a LIST of delimiters is a valid second argument since issue #12396 (Neo4j 5: split('a', ['b'])), so the
+    // refused shape is a list with an element that is not a string
+    assertThatThrownBy(() -> consume("RETURN split('a', [1]) AS r"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("split()")
+        .hasMessageContaining("STRING");
+    assertThatThrownBy(() -> consume("RETURN split('a', true) AS r"))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("split()")
         .hasMessageContaining("STRING");

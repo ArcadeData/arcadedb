@@ -37,6 +37,7 @@ import com.arcadedb.query.facet.FacetStats;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -190,9 +191,10 @@ public class JsonSerializer {
   }
 
   private JSONObject serializeDocumentContent(final Document document) {
+    // null for a detached copy: its type still says each property's precision, and the configured patterns stand in for the schema's
     final Database database = document.getDatabase();
-    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final String schemaDateFormat = database.getSchema().getDateFormat();
+    final String schemaDateTimeFormat = dateTimeFormatOf(database);
+    final String schemaDateFormat = dateFormatOf(database);
     // THE DATE SLOT CARRIES THE DATE PATTERN, as it does in serializeResult below. It used to carry the DATE-TIME
     // one, so the same column rendered differently through GET /document/{db}/{rid} than through a query - a
     // genuine DATE reaching this dispatch picked up a spurious 00:00:00 (issue #7638). What makes the change safe
@@ -239,8 +241,8 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeResult(final Database database, final Result result) {
-    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final String schemaDateFormat = database.getSchema().getDateFormat();
+    final String schemaDateTimeFormat = dateTimeFormatOf(database);
+    final String schemaDateFormat = dateFormatOf(database);
     final JSONObject object = new JSONObject().setDateFormat(schemaDateFormat)
         .setDateTimeFormat(schemaDateTimeFormat);
 
@@ -265,8 +267,11 @@ public class JsonSerializer {
           // Undeclared properties go through it too (null type = the value's own precision), as in serializeDocument (#9005).
           final Type propertyType = declaredType(type, entry.getKey());
           // Issue #11016: same rule as an element row below - a property the schema does not declare and whose value is
-          // non-finite needs a hint, or the client reads the marker string back as a String
-          if (projectionTypes != null && propertyType == null && carriesNonFinite(entry.getValue())) {
+          // non-finite needs a hint, or the client reads the marker string back as a String. Issue #12195: so does a link, or a
+          // list or map of links, which the client reads back as its "#12:0" text. Issue #12598: and so does a LIST or MAP
+          // declared with no element type
+          if (projectionTypes != null && schemaSaysNothingOfTheItems(type, entry.getKey(), propertyType)
+              && (carriesNonFinite(entry.getValue()) || carriesLinks(entry.getValue()))) {
             // a Set or any other Collection goes out as a JSON array, and getTypeByClass answers null for it
             final Type hintType = entry.getValue() instanceof Collection<?> ? Type.LIST : Type.getTypeByClass(entry.getValue().getClass());
             if (hintType != null)
@@ -283,8 +288,10 @@ public class JsonSerializer {
 
     final StringBuilder propertyTypes = includeTypeHints ? new StringBuilder() : null;
 
-    for (final String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
+    // ONE PASS OVER THE RECORD BEHIND THE ROW, NOT ONE PER PROPERTY (issue #11738)
+    for (final Map.Entry<String, Object> property : ResultInternal.propertiesOf(result).entrySet()) {
+      final String propertyName = property.getKey();
+      Object value = property.getValue();
 
       // Property type from the document's schema only - issue #4149: getTypeByClass(LocalDateTime)
       // collapses every datetime variant onto DATETIME (millis), so the schema lookup is the
@@ -317,8 +324,12 @@ public class JsonSerializer {
         // client with no hint for the column would hand back as that String instead of the number.
         // Issue #10905: an ELEMENT row takes its types from the schema on the client, so it carries a hint only for a
         // property the schema does not declare AND whose value (or collection elements) is non-finite: nothing else
-        // tells the client the marker string stands for a number. Every other element row keeps its shape.
-        final boolean hintElementRow = type != null && schemaPropertyType == null && carriesNonFinite(value);
+        // tells the client the marker string stands for a number. Issue #12195: the same holds for a LINK, or a list or
+        // map of links, which goes out as its "#12:0" text and was read back by the remote client as a String. Issue #12598:
+        // a LIST or MAP the schema declares with no element type says no more about its items than no declaration does.
+        // Every other element row keeps its shape.
+        final boolean hintElementRow = type != null && schemaSaysNothingOfTheItems(type, propertyName, schemaPropertyType)
+            && (carriesNonFinite(value) || carriesLinks(value));
         final boolean hint = propertyType != null && (type == null ?
             (!JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType) || isNonFiniteDouble(value)) :
             hintElementRow);
@@ -372,6 +383,8 @@ public class JsonSerializer {
       Type elementType = detectHomogeneousTemporalElementType(elements);
       if (elementType == null)
         elementType = detectNonFiniteFloatingElementType(elements);
+      if (elementType == null)
+        elementType = detectHomogeneousLinkElementType(elements);
       if (elementType != null)
         propertyTypes.append('(').append(elementType.getId()).append(')');
     }
@@ -485,15 +498,25 @@ public class JsonSerializer {
 
     private String dateTimeFormat() {
       if (dateTimeFormat == null)
-        dateTimeFormat = database.getSchema().getDateTimeFormat();
+        dateTimeFormat = dateTimeFormatOf(database);
       return dateTimeFormat;
     }
 
     private String dateFormat() {
       if (dateFormat == null)
-        dateFormat = database.getSchema().getDateFormat();
+        dateFormat = dateFormatOf(database);
       return dateFormat;
     }
+  }
+
+  /** The schema's date-time pattern, or the configured default for a value no database owns (a map literal of a query). */
+  private static String dateTimeFormatOf(final Database database) {
+    return database != null ? database.getSchema().getDateTimeFormat() : GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+  }
+
+  /** The schema's date pattern, or the configured default for a value no database owns. */
+  private static String dateFormatOf(final Database database) {
+    return database != null ? database.getSchema().getDateFormat() : GlobalConfiguration.DATE_FORMAT.getValueAsString();
   }
 
   /**
@@ -563,8 +586,7 @@ public class JsonSerializer {
     if (useCollectionSize) {
       result = value.size();
     } else {
-      final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
-          .setDateTimeFormat(database.getSchema().getDateTimeFormat());
+      final JSONObject map = new JSONObject().setDateFormat(dateFormatOf(database)).setDateTimeFormat(dateTimeFormatOf(database));
       final TemporalFormats formats = new TemporalFormats(database);
       for (final Map.Entry<Object, Object> entry : value.entrySet())
         map.put(String.valueOf(entry.getKey()), formatNestedTemporal(serializeObject(database, entry.getValue()), formats));
@@ -665,17 +687,27 @@ public class JsonSerializer {
   }
 
   /**
+   * One value as {@link #serializeResult} writes a column whose type is unknown: the JSON-ready form, with every temporal, nested
+   * ones included, formatted as the HTTP API sends it. A protocol that carries a record or a map as JSON text (the Postgres wire's
+   * json columns, issue #11958) renders it through here, so its dates do not become epoch numbers. {@code database} may be null for
+   * a value no database owns; the configured default patterns are used then.
+   */
+  public Object serializeValue(final Database database, final Object value) {
+    return serializeValue(database, value, null);
+  }
+
+  /**
    * One value as {@link #serializeResult} writes a column of {@code propertyType} (null when unknown): the JSON-ready form, a temporal
    * already formatted.
    */
   private Object serializeValue(final Database database, final Object value, final Type propertyType) {
     final Object serialized = formatTemporalForPrecision(serializeObject(database, value), propertyType,
-        database.getSchema().getDateTimeFormat(), database.getSchema().getDateFormat());
+        dateTimeFormatOf(database), dateFormatOf(database));
     if (!(serialized instanceof Date || serialized instanceof Calendar || serialized instanceof Temporal))
       return serialized;
     // left for the date formats of the row's JSONObject: formatted by the same one here
-    final JSONObject row = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
-        .setDateTimeFormat(database.getSchema().getDateTimeFormat()).put("v", serialized);
+    final JSONObject row = new JSONObject().setDateFormat(dateFormatOf(database)).setDateTimeFormat(dateTimeFormatOf(database))
+        .put("v", serialized);
     return row.get("v");
   }
 
@@ -718,6 +750,21 @@ public class JsonSerializer {
       case null, default -> object.put(CAT_PROPERTY, "d");
     }
 
+  }
+
+  /**
+   * True when the schema tells a client reading an element row nothing about the items of a property: the property is not
+   * declared, or it is a LIST or MAP declared with no element type (issue #12598). The remote client takes the types of an
+   * element row from the schema, so only then can a link or a non-finite number among the items need an {@code @props} hint.
+   * The declared property is looked up only for a LIST or MAP, so a row of declared scalars pays nothing.
+   */
+  private static boolean schemaSaysNothingOfTheItems(final DocumentType type, final String propertyName, final Type schemaPropertyType) {
+    if (schemaPropertyType == null)
+      return true;
+    if (type == null || (schemaPropertyType != Type.LIST && schemaPropertyType != Type.MAP))
+      return false;
+    final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+    return property == null || property.getOfType() == null;
   }
 
   /**
@@ -1061,6 +1108,41 @@ public class JsonSerializer {
         return null;
     }
     return elementType;
+  }
+
+  /**
+   * Whether an undeclared property's value is a link, or a list or map of links only (issue #12195): JSON carries a link as
+   * its "#12:0" text, so without a hint the remote client cannot tell it from a string.
+   * <p>
+   * A link is a {@link RID} and nothing wider. A {@link Document} (an embedded document, a vertex, an edge) is an
+   * {@code Identifiable} too, but {@link #serializeObject} writes it as a nested JSON object: a LINK hint on it would make the
+   * client convert that object to a RID, which empties it.
+   */
+  private static boolean carriesLinks(final Object value) {
+    if (value instanceof RID)
+      return true;
+    if (value instanceof Collection<?> collection)
+      return detectHomogeneousLinkElementType(collection) != null;
+    if (value instanceof Map<?, ?> map)
+      return detectHomogeneousLinkElementType(map.values()) != null;
+    return false;
+  }
+
+  /**
+   * {@link Type#LINK} when every non-null element is a {@link RID} (and there is at least one), null otherwise: the element
+   * type a LIST/MAP hint carries in parentheses ("friends:9(11)") so the client rebuilds each item as a RID (issue #12195).
+   * Stops at the first element that is not one, so a collection of anything else costs a single test.
+   */
+  private static Type detectHomogeneousLinkElementType(final Collection<?> collection) {
+    boolean found = false;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (!(element instanceof RID))
+        return null;
+      found = true;
+    }
+    return found ? Type.LINK : null;
   }
 
   /**

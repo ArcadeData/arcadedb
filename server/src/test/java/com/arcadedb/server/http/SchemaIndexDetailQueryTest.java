@@ -92,6 +92,36 @@ class SchemaIndexDetailQueryTest extends BaseGraphServerTest {
     database.getSchema().dropType("HttpCompoundIndexType");
   }
 
+  /**
+   * The settings of the {@code METADATA} clause in force on an index come back over HTTP as plain JSON values, on the detail and
+   * on the listing: what a client with no schema object to ask reads to know how a vector index was built.
+   */
+  @Test
+  void indexMetadataIsReadableOverHttp() throws Exception {
+    final Database database = getServer(0).getDatabaseForOperator(getDatabaseName());
+    database.command("sql", "CREATE DOCUMENT TYPE HttpFlatVectors BUCKETS 1");
+    database.command("sql", "CREATE PROPERTY HttpFlatVectors.embedding ARRAY_OF_FLOATS");
+    database.command("sql", "CREATE INDEX ON HttpFlatVectors (embedding) LSM_VECTOR METADATA "
+        + "{\"dimensions\": 4, \"addHierarchy\": false, \"similarity\": \"EUCLIDEAN\"}");
+
+    final String indexName = "HttpFlatVectors[embedding]";
+
+    for (final String command : new String[] { "SELECT FROM schema:index:`" + indexName + "`",
+        "SELECT FROM schema:indexes WHERE name = '" + indexName + "'" }) {
+      final Response response = query(command);
+
+      assertThat(response.status()).as(command + " -> " + response.body()).isEqualTo(200);
+      final JSONArray result = new JSONObject(response.body()).getJSONArray("result");
+      assertThat(result.length()).isEqualTo(1);
+      final JSONObject metadata = result.getJSONObject(0).getJSONObject("metadata");
+      assertThat(metadata.getBoolean("addHierarchy")).isFalse();
+      assertThat(metadata.getInt("dimensions")).isEqualTo(4);
+      assertThat(metadata.getString("similarity")).isEqualTo("EUCLIDEAN");
+    }
+
+    database.getSchema().dropType("HttpFlatVectors");
+  }
+
   private Response query(final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder(
             new URI("http://127.0.0.1:" + getServer(0).getHttpServer().getPort() + "/api/v1/query/" + getDatabaseName()))

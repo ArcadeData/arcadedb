@@ -36,6 +36,7 @@ import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
@@ -57,15 +58,6 @@ public class PaginatedComponentFile extends ComponentFile {
   private final ReentrantReadWriteLock channelLock = new ReentrantReadWriteLock();
   // #8139: SAME THROTTLE AS WALFile - THE RESTORED INTERRUPT FLAG CLOSES THE REOPENED CHANNEL AGAIN ON THE NEXT READ
   private final ChannelReopenLog       reopenLog   = new ChannelReopenLog();
-  // Held from the claim of the sync state to the end of the force (and, for FileManager.syncFile, the directory force):
-  // a sync that finds the file clean while another thread's force of it is in flight waits for that force here, so a
-  // clean state always means forced (issue #11805). Before, only the database-wide FileManager lock gave that guarantee,
-  // and a single-file sync queued behind a WAL rotation fsyncing every file.
-  private final ReentrantLock          forceLock   = new ReentrantLock();
-  // Forces with metadata so far, and how many of them a directory force came after (see directoryForceOwed): counters,
-  // not a flag, so a directory force that started before a newer metadata force cannot settle it
-  private volatile long                metadataForces;
-  private volatile long                directoryForcedUpTo;
 
   /**
    * How many whole pages this file holds, maintained in memory instead of asked of the filesystem (#6132, item 1).
@@ -92,12 +84,6 @@ public class PaginatedComponentFile extends ComponentFile {
    * the retry). Shared by every read, write, force and size call of this class (#8944, #9306).
    */
   private static final int REOPEN_ATTEMPTS = 5;
-
-  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
-  @FunctionalInterface
-  private interface ChannelOperation {
-    void run() throws IOException;
-  }
 
   /**
    * Updates {@link #totalPages} atomically WITHOUT an {@code AtomicInteger}: {@link #open} runs from the superclass
@@ -145,6 +131,37 @@ public class PaginatedComponentFile extends ComponentFile {
 
   private static final AtomicIntegerFieldUpdater<PaginatedComponentFile> SYNC_STATE_UPDATER =
       AtomicIntegerFieldUpdater.newUpdater(PaginatedComponentFile.class, "syncState");
+
+  /**
+   * Held across the claim of {@link #syncState} and the fsync that follows it (issue #11932). A sync claims the pending
+   * state before it forces, so a concurrent caller would otherwise find the file clean and report it durable while the
+   * first fsync is still in flight and may still fail; with this lock it waits for that outcome instead, and after a
+   * failed fsync finds the state given back and forces the file itself. Per file, so a caller that owes the durability
+   * of ONE file ({@link FileManager#syncFile(int)}) waits only for a sync of that file, never for a
+   * {@link FileManager#syncFiles()} pass over every other file the database wrote. A ReentrantLock and not a monitor
+   * because it is held across an fsync: a virtual thread blocked on a monitor pins its carrier thread.
+   */
+  private final ReentrantLock forceLock = new ReentrantLock();
+
+  /**
+   * Metadata forces of this file against the directory forces that covered them, as generations (issue #11932).
+   * {@link FileManager#syncFiles()} forces the directories once, after every file, so a file a pass has forced with its
+   * metadata may still owe its directory entry when another caller finds the file clean: whoever forces the directory
+   * reads the generation first ({@link #directorySyncOwed()}) and acknowledges exactly that one
+   * ({@link #directorySynced(long)}), so a later metadata force - a rename meanwhile - stays owed. Bumped under
+   * {@link #forceLock}, so a caller that acquired it after the force sees the bump.
+   */
+  private volatile long metadataForces;
+  private volatile long directoryForces;
+
+  private static final AtomicLongFieldUpdater<PaginatedComponentFile> DIRECTORY_FORCES_UPDATER =
+      AtomicLongFieldUpdater.newUpdater(PaginatedComponentFile.class, "directoryForces");
+
+  /** One channel operation {@link #reopenAndRetry} can repeat from its start. */
+  @FunctionalInterface
+  private interface ChannelOperation {
+    void run() throws IOException;
+  }
 
   /**
    * Stands in for the channel's interruptor: an interrupt landing on a thread doing I/O is absorbed and the channel stays
@@ -298,9 +315,10 @@ public class PaginatedComponentFile extends ComponentFile {
    * directory entry is made durable by {@link FileManager#syncFiles()}, which forces the directories as well.
    * <p>
    * It claims the pending state like {@link #forceIfModified()}, but outside the lock {@code syncFiles()} serializes its
-   * callers with, so it must not run concurrently with a {@code syncFiles()} whose result is relied on, or the sync may
-   * find the file clean while this force is still in flight. Package-private for that reason: only tests call it, and a
-   * production caller must go through {@link FileManager#syncFiles()}.
+   * callers with and outside {@link #forceLock} (issue #11932) that serializes the callers of one file, so it must not
+   * run concurrently with a {@code syncFiles()} or a {@link FileManager#syncFile(int)} whose result is relied on, or the
+   * sync may find the file clean while this force is still in flight. Package-private for that reason: only tests call
+   * it, and a production caller must go through {@link FileManager#syncFiles()} or {@link FileManager#syncFile(int)}.
    */
   void force(final boolean metaData) throws IOException {
     force(SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN), metaData);
@@ -310,7 +328,11 @@ public class PaginatedComponentFile extends ComponentFile {
    * Forces the file to disk only when it was written, created or renamed since its last successful fsync (issue
    * #8626). Page writes alone need only the data forced ({@code fdatasync}): the file length they may have extended is
    * part of the metadata required to read the data back, which a data-only sync persists too, while the timestamps it
-   * skips are not needed by anything. A created or renamed file is forced with its metadata.
+   * skips are not needed by anything. A created or renamed file is forced with its metadata, and then owes the force of
+   * its directory entry ({@link #directorySyncOwed()}) until its caller has done it.
+   * <p>
+   * Callers of the same file are serialized across the claim and the fsync ({@link #forceLock}): a call that arrives
+   * while another one's fsync is in flight returns only after it, and forces the file again when it failed.
    *
    * @return what was forced: {@link #SYNC_CLEAN} when no fsync ran - the file owed nothing, or its channel is closed and
    * it keeps what it owed - otherwise {@link #SYNC_DATA} or {@link #SYNC_METADATA}
@@ -321,44 +343,30 @@ public class PaginatedComponentFile extends ComponentFile {
     forceLock.lock();
     try {
       final int claimed = SYNC_STATE_UPDATER.getAndSet(this, SYNC_CLEAN);
-      if (claimed == SYNC_CLEAN)
+      if (claimed == SYNC_CLEAN || !force(claimed, false))
         return SYNC_CLEAN;
-      final boolean forced = force(claimed, false);
-      if (forced && claimed == SYNC_METADATA)
-        // Forced, but its directory entry is durable only once the caller forces the directory too. Written under
-        // forceLock, so the increment is not lost
+      if (claimed == SYNC_METADATA)
+        // Only ever written under forceLock, so a plain increment of the volatile is enough
         metadataForces = metadataForces + 1;
-      return forced ? claimed : SYNC_CLEAN;
+      return claimed;
     } finally {
       forceLock.unlock();
     }
-  }
-
-  /** The lock {@link #forceIfModified()} holds from its claim to the end of its force; reentrant. */
-  ReentrantLock getForceLock() {
-    return forceLock;
   }
 
   /**
-   * The metadata forces of this file whose directory entry no directory force has followed yet, or 0: {@link
-   * FileManager#syncFiles()} forces the directories after its loop over the files, so a single-file sync that finds the
-   * file clean in between still owes the directory force (issue #11805). Pass the value read here to
-   * {@link #directorySynced(long)} once the directory is forced.
+   * The metadata-force generation a directory force has to cover, or {@code 0} when the directory entry of the file is
+   * already durable (issue #11932). Read after {@link #forceIfModified()} returned, it covers the forces that call waited
+   * for. Read it BEFORE forcing the directory, and pass it to {@link #directorySynced(long)} afterwards.
    */
-  long directoryForceOwed() {
-    final long forces = metadataForces;
-    return forces > directoryForcedUpTo ? forces : 0L;
+  long directorySyncOwed() {
+    final long forced = metadataForces;
+    return forced > directoryForces ? forced : 0L;
   }
 
-  /** Records that the directory holding this file was forced after its first {@code metadataForcesBefore} metadata forces. */
-  void directorySynced(final long metadataForcesBefore) {
-    forceLock.lock();
-    try {
-      if (metadataForcesBefore > directoryForcedUpTo)
-        directoryForcedUpTo = metadataForcesBefore;
-    } finally {
-      forceLock.unlock();
-    }
+  /** Records a directory force that covered the metadata forces up to {@code generation}, from {@link #directorySyncOwed()}. */
+  void directorySynced(final long generation) {
+    DIRECTORY_FORCES_UPDATER.accumulateAndGet(this, generation, Math::max);
   }
 
   /** Whether the file was written, created or renamed since its last successful fsync (issue #8626). */
