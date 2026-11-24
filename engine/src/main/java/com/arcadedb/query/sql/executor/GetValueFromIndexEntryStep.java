@@ -114,8 +114,10 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
   // The entries a SKIP asks the index step for at once, see skipUnloaded()
   private static final int    SKIP_BATCH               = 1_000;
 
-  private final List<Integer> filterBucketIds;
-  private final ScanFallback  scanFallback;
+  private final List<Integer>     filterBucketIds;
+  private final ScanFallback      scanFallback;
+  // The record ids other indexes name for the same AND block, which an entry must be among to have its record loaded (#13289)
+  private final IndexIntersection intersection;
 
   // runtime: plain fields, unlike the per-thread state of Cypher's NodeIndexRangeScan, because a cached SQL plan is
   // copied for every execution (ExecutionPlanCache.get()) while a cached Cypher operator is shared by all of them
@@ -188,9 +190,25 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    */
   public GetValueFromIndexEntryStep(final CommandContext context, final List<Integer> filterBucketIds,
       final ScanFallback scanFallback) {
+    this(context, filterBucketIds, scanFallback, null);
+  }
+
+  /**
+   * @param intersection when not null, an entry is dropped before its record is loaded when the other indexes of the intersection do
+   *                     not all name its record (issue #13289, see {@link IndexIntersection}). Requires the previous step to be a
+   *                     {@link FetchFromIndexStep}
+   */
+  public GetValueFromIndexEntryStep(final CommandContext context, final List<Integer> filterBucketIds,
+      final ScanFallback scanFallback, final IndexIntersection intersection) {
     super(context);
     this.filterBucketIds = filterBucketIds;
     this.scanFallback = scanFallback;
+    this.intersection = intersection;
+  }
+
+  /** The intersection that filters the entries, or null. Surfaced for tests. */
+  IndexIntersection getIntersection() {
+    return intersection;
   }
 
   /**
@@ -460,7 +478,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
             }
 
             final Object finalVal = val.getProperty("rid");
-            if (!passesBucketFilter(finalVal))
+            if (!passesFilters(finalVal))
               continue;
 
             if (prevStep instanceof FetchFromIndexStep indexStep && finalVal instanceof RID rid) {
@@ -537,7 +555,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
           break;
         }
         final Object value = entry.getProperty("rid");
-        if (!passesBucketFilter(value))
+        if (!passesFilters(value))
           continue;
         IndexEntrySkip.Verdict verdict = value instanceof RID rid ? judge.verdict(rid) : IndexEntrySkip.Verdict.LOAD;
         // Once a commit published since the scan began, an entry may name a record that commit moved out of the range (issue
@@ -702,7 +720,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     if (fresh != null) {
       rereadEntries += fresh.size();
       for (final RID rid : fresh)
-        if (!servedOfKey.contains(rid) && passesBucketFilter(rid))
+        if (!servedOfKey.contains(rid) && passesFilters(rid))
           rereadCandidates.add(rid);
     }
     return true;
@@ -840,6 +858,18 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
    * the scan threshold. See the class comment.
    */
   private void chooseStrategy(final CommandContext context, final ExecutionStepInternal prevStep) {
+    // The other indexes of an intersection are read before any entry of the search is, so that every path below drops the entries
+    // they do not name: the physical-order load and the share of the type it counts included
+    if (intersection != null && prevStep instanceof FetchFromIndexStep indexStep) {
+      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+      try {
+        intersection.resolve(context, indexStep);
+      } finally {
+        if (context.isProfiling())
+          cost += System.nanoTime() - begin;
+      }
+    }
+
     // The threshold is a share of the records the target buckets hold, so it needs them named: the planner always does
     // when it builds a fallback, and a step without buckets keeps the index order
     if (scanFallback == null || !(prevStep instanceof FetchFromIndexStep indexStep) || filterBucketIds == null) {
@@ -932,7 +962,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     public Object next() {
       Identifiable value;
       while ((value = step.nextIdentifiable(context)) != null)
-        if (passesBucketFilter(value))
+        if (passesFilters(value))
           return value;
       return null;
     }
@@ -941,6 +971,14 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     public void close() {
       step.releaseCursors();
     }
+  }
+
+  /**
+   * Whether the record of an entry is to be loaded: it lies in the target buckets, and the other indexes of the intersection name
+   * it (issue #13289). Every path that turns an entry into a loaded record asks it.
+   */
+  private boolean passesFilters(final Object value) {
+    return passesBucketFilter(value) && (intersection == null || !intersection.excludes(value, context.getDatabase()));
   }
 
   private boolean passesBucketFilter(final Object value) {
@@ -1048,7 +1086,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final ArrayDeque<Result> rows = new ArrayDeque<>(entries.size());
     for (final Result entry : entries) {
       final Object value = entry.getProperty("rid");
-      if (!passesBucketFilter(value))
+      if (!passesFilters(value))
         continue;
       if (value instanceof RID rid)
         readBucketIds.add(rid.getBucketId());
@@ -1130,7 +1168,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     final List<Result> found = new ArrayList<>(1);
     final List<RID> fresh = indexStep.isIndexUnique() ? indexStep.lookupKeyAgain(key, guard) : null;
     for (final RID rid : fresh != null ? fresh : List.of(missing)) {
-      if (!passesBucketFilter(rid))
+      if (!passesFilters(rid))
         continue;
       final Result row = toResult(rid, context, false);
       if (row != null)
@@ -1195,12 +1233,16 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
     skipRanOut = false;
     parallelRounds = 0;
     loadSeekCheck = null;
+    if (intersection != null)
+      intersection.reset();
     releaseRuntimeSteps();
   }
 
   @Override
   public void close() {
     releaseRuntimeSteps();
+    if (intersection != null)
+      intersection.close();
     super.close();
   }
 
@@ -1242,6 +1284,9 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
         result.append(", ").append(unsettledEntries).append(" lost entries not looked for again");
     }
 
+    if (intersection != null)
+      intersection.prettyPrint(result, spaces, context.isProfiling());
+
     if (scanFallback != null) {
       result.append("\n").append(spaces).append("  in physical order, or by a full scan of ").append(scanFallback.typeName())
           .append(" when the range holds a large share of it");
@@ -1271,6 +1316,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep implements
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new GetValueFromIndexEntryStep(context, this.filterBucketIds, scanFallback == null ? null : scanFallback.copy());
+    return new GetValueFromIndexEntryStep(context, this.filterBucketIds, scanFallback == null ? null : scanFallback.copy(),
+        intersection == null ? null : intersection.copy(context));
   }
 }

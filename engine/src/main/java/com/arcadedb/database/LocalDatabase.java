@@ -1111,9 +1111,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
             @Override
             public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+              return onRecord(rid, view, fromOwnImage, -1);
+            }
+
+            @Override
+            public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
               final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, recordType, rid,
                   view, null);
-              markReadFromOwnImage(record, fromOwnImage);
+              markScanned(record, fromOwnImage, readInTransaction);
               continueScan.set(callback.onRecord(record));
               return continueScan.get();
             }
@@ -1161,8 +1166,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         @Override
         public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage) {
+          return onRecord(rid, view, fromOwnImage, -1);
+        }
+
+        @Override
+        public boolean onRecord(final RID rid, final Binary view, final boolean fromOwnImage, final long readInTransaction) {
           final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
-          markReadFromOwnImage(record, fromOwnImage);
+          markScanned(record, fromOwnImage, readInTransaction);
           return callback.onRecord(record);
         }
       }, errorRecordCallback);
@@ -1330,10 +1340,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     });
   }
 
-  /** #12320: a vertex built from the transaction's own image of its page carries the heads of that image. */
-  private static void markReadFromOwnImage(final Record record, final boolean fromOwnImage) {
-    if (fromOwnImage && record instanceof ImmutableVertex vertex)
-      vertex.markReadFromOwnImage();
+  /**
+   * Marks a record {@code scanType} or {@code scanBucket} built as {@code BucketIterator} and {@code lookupByRID} mark theirs:
+   * as read in the transaction that read its page (#12575), so a delete or a property write that meets a concurrent commit in
+   * between raises the retryable conflict of #8984 and #8610 and not a {@code RecordNotFoundException} or a lost update; and,
+   * for a vertex built from the transaction's own image of its page, as carrying the heads of that image (#12320).
+   *
+   * @param readInTransaction begin sequence of the transaction that read the page, -1 when unknown (the marker stays unset)
+   */
+  private static void markScanned(final Record record, final boolean fromOwnImage, final long readInTransaction) {
+    if (record instanceof ImmutableDocument document) {
+      if (readInTransaction > -1)
+        document.setReadInTransaction(readInTransaction);
+      if (fromOwnImage && document instanceof ImmutableVertex vertex)
+        vertex.markReadFromOwnImage();
+    }
   }
 
   @Override

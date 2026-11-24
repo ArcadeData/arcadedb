@@ -2962,10 +2962,11 @@ public class LocalSchema implements Schema {
     // merely UPDATE_SCHEMA - mirroring the DEFINE FUNCTION ... LANGUAGE js gate (GHSA-vwjc-v7x7-cm6g) and closing
     // the UPDATE_SCHEMA -> server-admin escalation (GHSA-38pf-6hp2-pxww). A declarative SQL trigger is not host
     // code and keeps the standard schema-level protection.
+    // The trigger is a schema object too, so the schema permission is asked of the one that creates host code as well: the security
+    // permission is asked on top of it, never instead of it.
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (definition.getActionType() == Trigger.ActionType.JAVASCRIPT || definition.getActionType() == Trigger.ActionType.JAVA)
       database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
-    else
-      database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     recordFileChanges(() -> {
       // Validate trigger does not already exist
@@ -4868,7 +4869,9 @@ public class LocalSchema implements Schema {
   private void openTimeSeriesEngine(final LocalTimeSeriesType tsType) {
     try {
       tsType.initEngine();
-    } catch (final IOException e) {
+    } catch (final IOException | SchemaException e) {
+      // A SchemaException is the name of a stored type that the files of its engine cannot be built on (LocalTimeSeriesType.checkValidName),
+      // handled like the failure below.
       // Register the type anyway rather than letting it vanish from the schema (issue #6356): the
       // exception this catches means one derived file (a .ts.sealed most commonly, rebuildable under HA
       // by recompacting the replicated mutable pages) failed to open, not that the type or its mutable
@@ -5629,6 +5632,12 @@ public class LocalSchema implements Schema {
       // cluster's) state, so there is nothing to publish. Its one caller is the schema-file loader, which already
       // holds this schema's monitor
       return restoreSchemaMembersFromJSONLocked(root, source);
+
+    // Every member of a file handed to the engine is a schema object, exactly as when it is created by hand, so the schema
+    // permission is asked before any of them is installed: a principal narrowed to leave the schema as it found it (or one that
+    // never had the permission) gets the members of a file refused as it gets each of them refused one by one. The members of host
+    // code are asked UPDATE_SECURITY on top of this, one by one, below
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     // Issue #9764: an imported file is a schema change, so it runs inside a schema recording session, which saves the
     // schema and, under Raft HA, ships it as a SCHEMA_ENTRY. A bare saveConfiguration() reached this node's schema.json

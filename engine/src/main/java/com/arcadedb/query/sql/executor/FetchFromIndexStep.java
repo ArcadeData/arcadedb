@@ -1658,6 +1658,13 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
+  /** The index and the condition this step searches it for, on one line: how an {@link IndexIntersection} names its searches. */
+  String describeSearch() {
+    if (condition == null)
+      return indexName;
+    return indexName + " " + condition + (additionalRangeCondition == null ? "" : " and " + additionalRangeCondition);
+  }
+
   /**
    * Restarts the step: {@code inited} goes back to false and {@code init()} rebuilds the whole cursor set from scratch
    * (that is what {@code UpdateExecutionPlan.reset()} relies on - it re-runs the plan straight after). So the cursors of
@@ -1705,7 +1712,15 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext context) {
-    return new FetchFromIndexStep(index, this.condition == null ? null : this.condition.copy(),
+    // `index` is null between a reset() and the next init(): an IndexIntersection copies the search of a plan run again (#13289)
+    RangeIndex current = index;
+    if (current == null)
+      try {
+        current = (RangeIndex) context.getDatabase().getSchema().getIndexByName(indexName);
+      } catch (final SchemaException e) {
+        throw new StaleIndexException("Index '" + indexName + "' was dropped while it was being read", e);
+      }
+    return new FetchFromIndexStep(current, this.condition == null ? null : this.condition.copy(),
         this.additionalRangeCondition == null ? null : this.additionalRangeCondition.copy(), this.orderAsc, context);
   }
 }

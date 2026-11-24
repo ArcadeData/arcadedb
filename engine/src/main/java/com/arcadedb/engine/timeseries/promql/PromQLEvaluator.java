@@ -1059,23 +1059,25 @@ public class PromQLEvaluator {
       final int rowPos = 1 + nonTsIdx;
       nonTsIdx++;
       if (col.getRole() == ColumnDefinition.ColumnRole.FIELD)
-        return rowPos < row.length && row[rowPos] instanceof Number ? ((Number) row[rowPos]).doubleValue() : Double.NaN;
+        // a FLOAT widens with the staleness marker kept one (issue #12580)
+        return rowPos < row.length && row[rowPos] instanceof Number number ? TimeSeriesNaN.doubleOf(number) : Double.NaN;
     }
     return Double.NaN;
   }
 
   /**
-   * Whether {@code value} is Prometheus' staleness marker (issue #11991): the NaN with bit pattern {@link #STALE_NAN_BITS}, which a
-   * Prometheus remote write sends when a series disappears. An ordinary NaN is a value, and Prometheus answers it as one.
+   * Whether {@code value} is Prometheus' staleness marker (issue #11991): the NaN with bit pattern
+   * {@link TimeSeriesNaN#STALE_MARKER_BITS}, which a Prometheus remote write sends when a series disappears. An ordinary NaN is a
+   * value, and Prometheus answers it as one.
    * <p>
-   * The marker is told from an ordinary NaN by its bits, so it is there only where the store keeps a double's raw bits: the mutable
-   * layer, and a DOUBLE field sealed with {@code GORILLA_XOR} (the codec of the {@code value} column a remote write creates). It
-   * reads back as an ordinary NaN in a FLOAT column (the double is narrowed), in a DOUBLE field declared with the {@code DICTIONARY}
-   * codec (the sealed layer keeps it as the text {@code NaN}), and once downsampling has folded the block that holds it (the
-   * aggregate skips a NaN). A series ended in one of those is read as before the fix: a NaN sample until the lookback runs out.
+   * The marker is told from an ordinary NaN by its bits, and every layer hands them back (issue #12580): the mutable layer and a
+   * field sealed with {@code GORILLA_XOR} keep a double's raw bits, a FLOAT column keeps the marker as
+   * {@link TimeSeriesNaN#STALE_MARKER_FLOAT_BITS} ({@link #extractValue} widens it back), a field sealed with the {@code DICTIONARY}
+   * codec as the text {@link TimeSeriesNaN#STALE_MARKER_TEXT}, and downsampling folds a bucket in which a series ended into the
+   * mean of its real samples followed by a marker row at the time of the marker.
    */
   static boolean isStaleMarker(final double value) {
-    return Double.doubleToRawLongBits(value) == STALE_NAN_BITS;
+    return TimeSeriesNaN.isStaleMarker(value);
   }
 
   /**
@@ -1337,8 +1339,6 @@ public class PromQLEvaluator {
   private static final String METRIC_NAME_LABEL = "__name__";
   private static final int    MAX_TYPE_NAME_LENGTH   = 256;
   private static final Pattern VALID_TYPE_NAME_PATTERN = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
-  /** Prometheus' {@code value.StaleNaN}: the bits of the staleness marker a remote write carries (issue #11991). */
-  static final long            STALE_NAN_BITS          = 0x7ff0000000000002L;
 
   /** Prometheus' own wording, so a client matching on it sees the same error from either server. */
   private static final String SCALAR_COMPARISON_WITHOUT_BOOL = "comparisons between scalars must use BOOL modifier";
