@@ -162,6 +162,8 @@ public final class BmwScorer {
     if (k <= 0)
       return List.of();
 
+    // Before a cursor is started: starting one decodes its first block
+    guard.check();
     final DimEntry[] terms = openTerms(queryWeights, cursors, startInclusive);
     if (terms.length == 0)
       return List.of();
@@ -351,6 +353,8 @@ public final class BmwScorer {
   private static void scan(final int[] queryDims, final float[] queryWeights, final CursorSource source,
       final Collector collector, final WorkGuard guard) throws IOException {
     validate(queryDims, queryWeights);
+    // Before the cursors are opened and started: starting one decodes its first block
+    guard.check();
     final DimCursor[] cursors = source.open();
     try {
       if (cursors.length != queryDims.length)

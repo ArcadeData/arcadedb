@@ -42,6 +42,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
@@ -139,9 +141,53 @@ class SparseScanCommandBoundTest extends TestHelper {
     try {
       assertThatThrownBy(() -> BmwScorer.topK(queryDims(), queryWeights(), cursors, K, null, null,
           WorkGuard.forDeadline("the scan", System.currentTimeMillis() - 1))).isInstanceOf(TimeoutException.class);
-      assertThat(moves.get()).isZero();
+      assertThat(moves.get()).as("cursors started or moved").isZero();
     } finally {
       closeAll(cursors);
+    }
+  }
+
+  @Test
+  void aReachedDeadlineOpensNoCursorOfAGroupedScan() {
+    final Memtable memtable = ascendingCorpus();
+    final AtomicInteger opened = new AtomicInteger();
+    final AtomicInteger moves = new AtomicInteger();
+    final BmwScorer.CursorSource source = () -> {
+      opened.incrementAndGet();
+      return cursorsOver(memtable, null, moves, Integer.MAX_VALUE);
+    };
+
+    assertThatThrownBy(() -> BmwScorer.topKGrouped(queryDims(), queryWeights(), source, 3, 2, rid -> rid.getPosition() % 5, null,
+        null, WorkGuard.forDeadline("the scan", System.currentTimeMillis() - 1))).isInstanceOf(TimeoutException.class);
+    assertThat(opened.get()).as("cursor sets opened").isZero();
+    assertThat(moves.get()).as("cursors started or moved").isZero();
+  }
+
+  @Test
+  void aWaitForTasksQueuedOnThePoolEndsWithTheTerminationOfTheStatement() throws Exception {
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicInteger finished = new AtomicInteger();
+    try (final RunningQuery statement = openStatement()) {
+      final List<Callable<Integer>> tasks = new ArrayList<>();
+      for (int i = 0; i < 3; i++) {
+        final int id = i;
+        tasks.add(() -> {
+          // The statement is terminated once the first task runs; the tasks themselves go on until released
+          if (id == 0)
+            statement.terminate("root");
+          release.await(60, TimeUnit.SECONDS);
+          finished.incrementAndGet();
+          return id;
+        });
+      }
+
+      try {
+        assertThatThrownBy(() -> SparseVectorScoringPool.runAll(tasks, false, WorkGuard.forCommandDeadline(null)))
+            .isInstanceOf(QueryTerminatedException.class);
+        assertThat(finished.get()).as("the wait ended while the tasks were still held").isZero();
+      } finally {
+        release.countDown();
+      }
     }
   }
 
@@ -290,6 +336,8 @@ class SparseScanCommandBoundTest extends TestHelper {
 
     @Override
     public void start() throws IOException {
+      // Counted but never the point where the statement is terminated: starting a cursor reads its first block
+      moves.incrementAndGet();
       delegate.start();
     }
 

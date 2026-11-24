@@ -1149,7 +1149,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         underlyingIndex.getMutableIndex().getDatabase().getDatabasePath());
 
     final long[] documentFrequency = new long[queryIndices.length];
-    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial))
+    for (final long[] partial : SparseVectorScoringPool.runAll(counts, serial, guard))
       for (int i = 0; i < documentFrequency.length; i++)
         documentFrequency[i] += partial[i];
 

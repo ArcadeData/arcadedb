@@ -303,7 +303,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         searches.add(() -> idx.topKGroupedWeighted(queryIndices, weights, groupBudget, fetchGroupSize, allowedRIDs,
             groupKeyResolver, overlay, searchGuard));
     }
-    final List<List<RidScore>> perIndex = SparseVectorScoringPool.runAll(searches, serial);
+    final List<List<RidScore>> perIndex = SparseVectorScoringPool.runAll(searches, serial, guard);
     for (final List<RidScore> partial : perIndex) {
       merged.addAll(partial);
       // Any sub-index at its budget may hold more, so the answer as a whole can grow. Over several sub-indexes this can
@@ -343,7 +343,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
           topUpSearches.add(() -> idx.topKForGroupsWeighted(queryIndices, weights, topUp.groupKeys(), fetchGroupSize,
               topUp.floor(), allowedRIDs, groupKeyResolver, overlay, searchGuard));
         }
-        for (final List<RidScore> partial : SparseVectorScoringPool.runAll(topUpSearches, serial))
+        for (final List<RidScore> partial : SparseVectorScoringPool.runAll(topUpSearches, serial, guard))
           merged.addAll(partial);
       }
     }

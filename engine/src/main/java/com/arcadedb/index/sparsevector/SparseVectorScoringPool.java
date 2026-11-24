@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.DedicatedThreadPool;
 
 import java.util.ArrayList;
@@ -111,6 +112,9 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
    * is the number to revisit, and it is named so it can be found.
    */
   private static final int CALLER_LOAD_GATE_FACTOR = 2;
+
+  /** How long a wait for a task of the pool lasts before the bound of the command is read again, see {@link #awaitGuarded}. */
+  private static final long GUARDED_WAIT_SLICE_MS = 50;
 
   /**
    * How far the ranges of concurrently forced splits may oversubscribe the pool before the setting is
@@ -441,6 +445,16 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
    * completes - worst case it runs inline on the submitter thread, which is exactly the serial fallback.
    */
   public static <T> List<T> runAll(final List<Callable<T>> tasks, final boolean serial) {
+    return runAll(tasks, serial, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #runAll(List, boolean)} whose wait for the tasks also ends with the abort of {@code guard}: the wait is cut in
+   * slices of {@link #GUARDED_WAIT_SLICE_MS} and the guard is read between two of them, so a command whose deadline has passed
+   * or whose statement was terminated stops waiting for tasks queued behind other work of the pool. The tasks that have not
+   * started are dropped and the ones running stop at their own next check of the same bound.
+   */
+  public static <T> List<T> runAll(final List<Callable<T>> tasks, final boolean serial, final WorkGuard guard) {
     final List<T> out = new ArrayList<>(tasks.size());
     if (serial || tasks.size() <= 1 || isPoolThread()) {
       for (final Callable<T> task : tasks) {
@@ -477,19 +491,15 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
     final List<Throwable> errors = new ArrayList<>();
     for (final Future<T> f : futures) {
       try {
-        final T partial;
-        if (timeoutSeconds <= 0) {
-          partial = f.get();
-        } else {
-          // Compute the remaining budget for this future from the shared deadline; if zero or
-          // negative the deadline has already passed and we treat this as a timeout without
-          // even attempting to await.
-          final long remainingNs = deadlineNs - System.nanoTime();
-          if (remainingNs <= 0L)
-            throw new TimeoutException("deadline elapsed before draining future");
-          partial = f.get(remainingNs, TimeUnit.NANOSECONDS);
-        }
-        out.add(partial);
+        // The shared deadline bounds the wait, as the guard does; a future that is done is collected whatever either says
+        out.add(awaitGuarded(f, deadlineNs, timeoutSeconds > 0, guard));
+      } catch (final RuntimeException e) {
+        if (WorkGuard.isAbort(e))
+          // Not interrupted: a running task is stopped by the same bound at its next check, and an interrupt reaching a
+          // thread in the middle of a file read is not a way to stop it
+          for (final Future<?> other : futures)
+            other.cancel(false);
+        throw e;
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
         for (final Future<?> other : futures)
@@ -517,6 +527,37 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
       throw toThrow;
     }
     return out;
+  }
+
+  /**
+   * Waits for {@code future} until it is done, the shared fan-out deadline passes or {@code guard} aborts, whichever comes
+   * first. The wait is cut in slices of {@link #GUARDED_WAIT_SLICE_MS}, so a task that sits in the queue behind other work of
+   * the pool does not keep its caller past the bound of the command. A future that is already done is collected whatever the
+   * deadline says: nothing is outstanding, so a timeout would be reported for nothing.
+   *
+   * @param bounded whether {@code deadlineNs} (a {@link System#nanoTime()} value) applies
+   *
+   * @throws TimeoutException the shared deadline passed before the future was done
+   */
+  static <T> T awaitGuarded(final Future<T> future, final long deadlineNs, final boolean bounded, final WorkGuard guard)
+      throws InterruptedException, ExecutionException, TimeoutException {
+    final long sliceNs = TimeUnit.MILLISECONDS.toNanos(GUARDED_WAIT_SLICE_MS);
+    while (!future.isDone()) {
+      guard.check();
+      long waitNs = sliceNs;
+      if (bounded) {
+        final long remainingNs = deadlineNs - System.nanoTime();
+        if (remainingNs <= 0L)
+          throw new TimeoutException("deadline elapsed before draining future");
+        waitNs = Math.min(waitNs, remainingNs);
+      }
+      try {
+        return future.get(waitNs, TimeUnit.NANOSECONDS);
+      } catch (final TimeoutException slice) {
+        // not done yet: the next pass reads the guard and the shared deadline again
+      }
+    }
+    return future.get();
   }
 
 }

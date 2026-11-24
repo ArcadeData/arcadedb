@@ -574,6 +574,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private List<RidScore> rangeTopK(final int[] queryDims, final float[] queryWeights, final int k, final MemSnapshot mtSnapshot,
       final PaginatedSegmentReader[] segSnapshot, final RID startInclusive, final RID endExclusive, final WorkGuard guard)
       throws IOException {
+    // A range that starts on a bound already reached opens no cursor at all
+    guard.check();
     final DimCursor[] cursors = new DimCursor[queryDims.length];
     try {
       for (int i = 0; i < queryDims.length; i++)
@@ -811,25 +813,30 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         // its own range before getting here, so it can legitimately consume the whole budget on work
         // that succeeded; failing the query then, while every worker range sits complete and waiting
         // to be read, would be a timeout reported for nothing that is actually outstanding. The
-        // deadline governs waiting, not collecting.
-        if (timeoutSeconds <= 0 || f.isDone()) {
-          ranges.add(f.get());
-        } else {
-          final long remainingNs = deadlineNs - System.nanoTime();
-          if (remainingNs <= 0L)
-            throw new TimeoutException("deadline elapsed before draining range");
-          ranges.add(f.get(remainingNs, TimeUnit.NANOSECONDS));
-        }
+        // deadline governs waiting, not collecting. The wait also ends with the abort of the command's guard, so a
+        // range queued behind other work of the pool does not keep the caller past it.
+        ranges.add(SparseVectorScoringPool.awaitGuarded(f, deadlineNs, timeoutSeconds > 0, guard));
       } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
+        final IndexException interrupted = new IndexException("Interrupted during sparse-vector top-K range fan-out", ie);
+        throw abortOr(abort, interrupted);
       } catch (final TimeoutException te) {
         for (final Future<?> other : futures)
           other.cancel(true);
-        throw new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds + "s (configurable via "
-            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+        throw abortOr(abort, new IndexException("Sparse-vector top-K range fan-out timed out after " + timeoutSeconds
+            + "s (configurable via " + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te));
+      } catch (final RuntimeException e) {
+        if (!WorkGuard.isAbort(e))
+          throw e;
+        // The bound is reached while ranges are still outstanding: they stop at their own next check, and the ones
+        // that never started are dropped. Not interrupted - an interrupt reaching a thread in a file read is no way to stop it
+        for (final Future<?> other : futures)
+          other.cancel(false);
+        if (abort == null)
+          abort = e;
+        break;
       } catch (final ExecutionException ee) {
         final Throwable cause = ee.getCause();
         if (WorkGuard.isAbort(cause)) {
@@ -850,6 +857,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       throw failure;
 
     return BmwScorer.mergeRanges(ranges, k);
+  }
+
+  /**
+   * What a failing drain throws: the abort of the command's guard when a range already met it, with {@code failure} kept as
+   * its suppressed exception, so the caller sees the abort and not the scoring failure that came after it; {@code failure}
+   * itself otherwise.
+   */
+  private static RuntimeException abortOr(final RuntimeException abort, final RuntimeException failure) {
+    if (abort == null)
+      return failure;
+    abort.addSuppressed(failure);
+    return abort;
   }
 
   /**
