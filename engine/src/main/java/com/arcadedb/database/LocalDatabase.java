@@ -2097,8 +2097,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         }
         // #11751: the indexes now hold what the record holds. The commit writes the record as it is THEN, so an assignment made after
         // this save is the commit's to index, and this is the point it is counted from
-        if (record instanceof MutableDocument mutable)
+        if (record instanceof MutableDocument mutable) {
           mutable.clearAssignedAfterSave();
+          // #12612: a READONLY value this write completed the record with under a deferral stays allowed, the commit validating again
+          DocumentValidator.rememberReadonlyValuesOfDeferredWrite(tx, mutable);
+        }
         countCompletedUpdate(tx, record, structural);
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in " +

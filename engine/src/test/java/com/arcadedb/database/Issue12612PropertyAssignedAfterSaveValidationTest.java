@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -164,14 +166,24 @@ class Issue12612PropertyAssignedAfterSaveValidationTest extends TestHelper {
 
   @Test
   void aRecordCreatedInTheTransactionAndSavedAgainIsValidatedByTheCommit() {
-    final long before = database.countType("Person", false);
+    final long before = countPersons();
     assertThatThrownBy(() -> database.transaction(() -> {
       final MutableVertex v = database.newVertex("Person").set("age", 1, "name", "New").save();
       v.set("age", 2).save();
       v.set("age", 121);
     })).isInstanceOf(ValidationException.class).hasMessageContaining("age");
 
-    assertThat(database.countType("Person", false)).isEqualTo(before);
+    assertThat(countPersons()).isEqualTo(before);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM Person WHERE name = 'New'")) {
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /** A scan, not the cached counter of {@code count(*)}: ground truth for a rollback. */
+  private long countPersons() {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM Person")) {
+      return rs.next().<Number>getProperty("c").longValue();
+    }
   }
 
   @Test
@@ -265,6 +277,37 @@ class Issue12612PropertyAssignedAfterSaveValidationTest extends TestHelper {
     })).isInstanceOf(ValidationException.class).hasMessageContaining("ssn");
 
     assertPersonUnchanged();
+  }
+
+  @Test
+  void aDeferredWriteThatIsRefusedLeavesNoReadonlyValueAllowed() {
+    // the deferred save fails on another constraint: it completed nothing, so its READONLY value is an alteration like any other
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument d = load(person).set("ssn", "777").set("age", 500);
+      try (final DocumentValidator.ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks(d, Set.of("ssn"))) {
+        assertThatThrownBy(d::save).isInstanceOf(ValidationException.class).hasMessageContaining("age");
+      }
+      d.set("age", 30).save();
+    })).isInstanceOf(ValidationException.class).hasMessageContaining("ssn");
+
+    assertPersonUnchanged();
+  }
+
+  @Test
+  void aReadonlyContainerChangedInPlaceAfterADeferredWriteIsRefused() {
+    // what is allowed is a snapshot of what the deferred write stored, not the list the record still holds
+    database.command("sql", "CREATE PROPERTY Person.tags LIST (READONLY true)");
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument d = load(other).set("tags", new ArrayList<>(List.of("a")));
+      try (final DocumentValidator.ReadonlyDeferral ignored = DocumentValidator.deferReadonlyChecks(d, Set.of("tags"))) {
+        d.save();
+      }
+      d.<String>getList("tags").add("b");
+      d.set("age", 41).save();
+    })).isInstanceOf(ValidationException.class).hasMessageContaining("tags");
+
+    assertThat(database.lookupByRID(other, true).asDocument().has("tags")).isFalse();
   }
 
   @Test
