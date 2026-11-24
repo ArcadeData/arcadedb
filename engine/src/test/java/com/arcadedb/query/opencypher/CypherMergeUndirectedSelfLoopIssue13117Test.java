@@ -21,9 +21,12 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,7 +40,10 @@ class CypherMergeUndirectedSelfLoopIssue13117Test {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/cypher-merge-undirected-selfloop-13117").create();
+    final String path = "./target/databases/cypher-merge-undirected-selfloop-13117";
+    // A run aborted before its tearDown leaves the directory behind
+    FileUtils.deleteRecursively(new File(path));
+    database = new DatabaseFactory(path).create();
     database.getSchema().createVertexType("E");
     database.getSchema().createEdgeType("R");
     database.transaction(() -> database.command("opencypher", "CREATE (a:E {k:'x'})-[:R]->(a)"));
@@ -80,12 +86,14 @@ class CypherMergeUndirectedSelfLoopIssue13117Test {
     assertThat(relationships()).isEqualTo(1);
   }
 
+  // The bound end is on the right, so MERGE walks leftwards from it (walkLeft)
   @Test
   void rightEndBoundAnswersTheLoopOnce() {
     assertThat(rows("MATCH (b:E {k:'x'}) MERGE (a:E {k:'x'})-[r:R]-(b) RETURN r")).isEqualTo(1);
     assertThat(relationships()).isEqualTo(1);
   }
 
+  // The bound end is on the left, so MERGE walks rightwards from it (walkRight)
   @Test
   void leftEndBoundAnswersTheLoopOnce() {
     assertThat(rows("MATCH (a:E {k:'x'}) MERGE (a)-[r:R]-(b:E {k:'x'}) RETURN r")).isEqualTo(1);
