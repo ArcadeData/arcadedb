@@ -36,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.file.FileSystems;
@@ -333,6 +334,8 @@ class DropDatabaseApplyTest {
     private Path                    databaseDirectory;
     private ExecutorService         applyThread;
     private DeferredDatabaseDeleter deleter;
+    /** Run by the deleter of {@link #refuseTheRename} once the rename is refused, before it deletes inline. */
+    private Runnable                beforeTheInlineDelete;
 
     private ArcadeStateMachine start() {
       databasesDir = serverDir.resolve("databases");
@@ -434,21 +437,16 @@ class DropDatabaseApplyTest {
       assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
 
       final ArcadeStateMachine sm = start();
-      deleter.close();
-      deleter = new DeferredDatabaseDeleter() {
-        @Override
-        Path rename(final Path directory) {
-          return null;
-        }
-      };
-      sm.setDeferredDatabaseDeleter(deleter);
+      refuseTheRename(sm);
       new ServerControlPlane(server).closeDatabase(DB_NAME);
 
       final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
       // its files cannot be unlinked, so the directory cannot be removed either
       Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
       try {
-        applyDrop(sm, DB_NAME);
+        // Issue #12611: and the apply fails, it does not report a drop that left the files
+        assertThatThrownBy(() -> applyDrop(sm, DB_NAME)).isInstanceOf(EntryLeftForReplayException.class)
+            .hasMessageContaining(DB_NAME);
       } finally {
         Files.setPosixFilePermissions(databaseDirectory, original);
       }
@@ -456,6 +454,76 @@ class DropDatabaseApplyTest {
       assertThat(Files.isDirectory(databaseDirectory)).as("precondition: the inline delete left the directory").isTrue();
       assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark stays while the files do").isTrue();
       assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
+    }
+
+    /** A deleter on a filesystem that cannot rename the directory aside, so the drop falls back to deleting it inline. */
+    private void refuseTheRename(final ArcadeStateMachine sm) {
+      deleter.close();
+      deleter = new DeferredDatabaseDeleter() {
+        @Override
+        Path rename(final Path directory) {
+          final Runnable hook = beforeTheInlineDelete;
+          if (hook != null)
+            hook.run();
+          return null;
+        }
+      };
+      sm.setDeferredDatabaseDeleter(deleter);
+    }
+
+    /**
+     * Issue #12611: a drop whose files the filesystem would not remove was applied as done. Nothing failed, so nothing held
+     * the checkpoint below the entry, and a database that was OPEN until the drop closed it had no close mark either: the
+     * next request that named it reopened, on this node only, the copy the cluster had dropped. The apply now fails, as an
+     * entry held for the replay rather than a quarantine (the leader has no copy to resync from), the database stays
+     * closed, and a later drop of the name that completes releases the hold.
+     */
+    // Regression for #12611: DropAppliesToClosedDatabase
+    @Test
+    void aDropWhoseFilesCannotBeRemovedFailsTheApplyAndKeepsTheDatabaseClosed() throws Exception {
+      assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+      assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+      final long dropIndex = 42L;
+      final ArcadeStateMachine sm = start();
+      refuseTheRename(sm);
+      final RaftLogEntryCodec.DecodedEntry drop = RaftLogEntryCodec.decode(RaftLogEntryCodec.encodeDropDatabaseEntry(DB_NAME));
+
+      assertThat(server.existsDatabase(DB_NAME)).as("precondition: open and registered, with no close mark").isTrue();
+      assertThat(server.isDatabaseHeld(DB_NAME)).isFalse();
+      final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
+      // The directory refuses unlinks from the moment the deleter is reached, which is after the drop closed the database
+      beforeTheInlineDelete = () -> {
+        try {
+          Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+        } catch (final IOException e) {
+          throw new UncheckedIOException(e);
+        }
+      };
+      try {
+        // Through the retry wrapper the apply thread uses: the failure must reach it as an entry held for the replay
+        assertThatThrownBy(() -> sm.applyWithRetry(dropIndex, DB_NAME, () -> sm.applyDropDatabaseEntry(drop, dropIndex)))
+            .isInstanceOf(EntryLeftForReplayException.class).hasMessageContaining(DB_NAME);
+      } finally {
+        beforeTheInlineDelete = null;
+        Files.setPosixFilePermissions(databaseDirectory, original);
+      }
+
+      assertThat(Files.isDirectory(databaseDirectory)).as("precondition: the inline delete left the directory").isTrue();
+      assertThat(sm.lowestHeldEntry()).as("the entry is held, so no checkpoint covers it").isEqualTo(dropIndex);
+      assertThat(sm.isDatabaseDiverged(DB_NAME)).as("not quarantined: the leader has no copy to resync it from").isFalse();
+      assertThat(server.existsDatabase(DB_NAME)).isFalse();
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("closed, so no request reopens the copy the cluster dropped").isTrue();
+      assertThatThrownBy(() -> server.getDatabaseForRequest(DB_NAME)).as("a request does not reopen it").isNotNull();
+      assertThat(server.existsDatabase(DB_NAME)).isFalse();
+      assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
+
+      // The replay of the entry, on a filesystem that takes the deletion again
+      sm.applyDropDatabaseEntry(drop, dropIndex);
+
+      assertThat(Files.exists(databaseDirectory)).as("the dropped database's directory must be gone").isFalse();
+      assertThat(sm.lowestHeldEntry()).as("a drop of the name completed: nothing left to replay").isEqualTo(Long.MAX_VALUE);
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark goes with the database").isFalse();
     }
 
     /**
