@@ -91,7 +91,7 @@ class LeaderForwardRefusalTest {
    * HTTP client, driver and load balancer that the SERVER broke - inviting a blind retry against another node,
    * where the request is refused identically - about a condition in which nothing was submitted, nothing changed,
    * and the remedy is to finish the rolling upgrade. It pairs with the {@code FAILED_PRECONDITION} the same refusal
-   * gets on gRPC, which {@code Issue7511GrpcClusterNotReadyStatusTest} pins in the {@code grpcw} module.
+   * gets on gRPC, which {@code GrpcRefusalStatusMappingTest} pins in the {@code grpcw} module.
    * <p>
    * The exception is raised inside the {@code ha-raft} module, which the server module cannot depend on, so - as
    * {@code HttpErrorStatusMappingTest.CommittedRemotely} does for the same reason - the real

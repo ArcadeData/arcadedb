@@ -62,6 +62,30 @@ public final class TimeSeriesNaN {
    */
   public static final double ABSENT = Double.NaN;
 
+  /**
+   * The bits of Prometheus' staleness marker ({@code value.StaleNaN}, issue #11991): the NaN a remote write sends when a series
+   * disappears. It is a NaN, so every aggregate of this policy skips it like any other, and only PromQL tells it apart, by its
+   * bits: a series whose newest sample is the marker has ENDED. Every layer that stores a floating-point value therefore has to
+   * hand these bits back as they came (issue #12580): the mutable row and {@code GORILLA_XOR} keep a double's raw bits, and
+   * {@link #STALE_MARKER_FLOAT_BITS} and {@link #STALE_MARKER_TEXT} are its forms where a double is not kept as such.
+   */
+  public static final long   STALE_MARKER_BITS       = 0x7ff0000000000002L;
+  /** The staleness marker as a double. Only its bits tell it from {@link #ABSENT}: test it with {@link #isStaleMarker(double)}. */
+  public static final double STALE_MARKER            = Double.longBitsToDouble(STALE_MARKER_BITS);
+  /**
+   * The staleness marker in a FLOAT column (issue #12580). Narrowing the double drops the payload that makes it the marker, so
+   * {@link #toFloat(double)} maps it to this quiet NaN, which every platform moves without touching, and {@link #toDouble(float)}
+   * maps it back.
+   */
+  public static final int    STALE_MARKER_FLOAT_BITS = 0x7fc00002;
+  public static final float  STALE_MARKER_FLOAT      = Float.intBitsToFloat(STALE_MARKER_FLOAT_BITS);
+  /**
+   * The staleness marker in a column sealed as text, the {@code DICTIONARY} codec (issue #12580), where the double's own text
+   * would be {@code NaN} and read back as an ordinary NaN. The name of the marker in Prometheus; a reader that does not know it
+   * hands the text back as it is rather than failing, as it does for any unparseable entry.
+   */
+  public static final String STALE_MARKER_TEXT       = "StaleNaN";
+
   private TimeSeriesNaN() {
   }
 
@@ -70,6 +94,56 @@ public final class TimeSeriesNaN {
    */
   public static boolean isAbsent(final double value) {
     return Double.isNaN(value);
+  }
+
+  /** Whether {@code value} is the staleness marker, by its bits: an ordinary NaN is not. */
+  public static boolean isStaleMarker(final double value) {
+    return Double.doubleToRawLongBits(value) == STALE_MARKER_BITS;
+  }
+
+  /** Whether {@code value} is the staleness marker as a FLOAT column holds it ({@link #STALE_MARKER_FLOAT_BITS}). */
+  public static boolean isStaleMarker(final float value) {
+    return Float.floatToRawIntBits(value) == STALE_MARKER_FLOAT_BITS;
+  }
+
+  /** Whether a boxed value is the staleness marker, as a DOUBLE or as a FLOAT holds it. */
+  public static boolean isStaleMarker(final Object value) {
+    if (value instanceof Double d)
+      return isStaleMarker(d.doubleValue());
+    return value instanceof Float f && isStaleMarker(f.floatValue());
+  }
+
+  /** Narrows a double for a FLOAT column, keeping the staleness marker one (issue #12580). */
+  public static float toFloat(final double value) {
+    return isStaleMarker(value) ? STALE_MARKER_FLOAT : (float) value;
+  }
+
+  /** Widens the value of a FLOAT column, giving the staleness marker its double bits back (issue #12580). */
+  public static double toDouble(final float value) {
+    return isStaleMarker(value) ? STALE_MARKER : value;
+  }
+
+  /** {@link #toFloat(double)} for a boxed number: a {@link Float} is already one. */
+  public static float floatOf(final Number value) {
+    return value instanceof Float f ? f : toFloat(value.doubleValue());
+  }
+
+  /** {@link #toDouble(float)} for a boxed number: any other number widens as it always did. */
+  public static double doubleOf(final Number value) {
+    return value instanceof Float f ? toDouble(f) : value.doubleValue();
+  }
+
+  /**
+   * The text a value is sealed as in a {@code DICTIONARY} column: the empty text for a sample with no value, the staleness marker
+   * as {@link #STALE_MARKER_TEXT} (issue #12580), anything else as its own text. Every writer of such a column and of the distinct
+   * values a block declares for it goes through here, so the declaration stays the dictionary.
+   */
+  public static String dictionaryText(final Object value) {
+    if (value == null)
+      return "";
+    if (isStaleMarker(value))
+      return STALE_MARKER_TEXT;
+    return value.toString();
   }
 
   /**

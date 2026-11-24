@@ -355,4 +355,44 @@ class ServerSettingsTest {
       return new ServerControlPlane(server);
     }
   }
+
+  // Regression: #12817 set database setting refuses a txWalFlush outside 0..2
+  /**
+   * Issue #12817: {@code set database setting <db> arcadedb.txWalFlush 7} stored the value unchecked, and with it in the database's
+   * configuration every write failed, as did the open and the drop. The setting's allow-list refuses it in
+   * {@link GlobalConfiguration#coerceFromAdminCommand(Object)}, which this writer shares with ALTER DATABASE; the
+   * {@link IllegalArgumentException} is the HTTP 400 and the gRPC {@code INVALID_ARGUMENT}.
+   */
+  @Nested
+  class DatabaseSettingAllowList {
+    @RegisterExtension
+    final ServedDatabases served = new ServedDatabases();
+
+    private static final String DB_NAME = "set12817db";
+
+    @Test
+    void aWalFlushOutsideTheThreeFlushModesIsRefusedAndNothingIsStored() throws Exception {
+      final ServerDatabase database = served.open(DB_NAME);
+      final FakeArcadeDBServer server = FakeArcadeDBServer.create();
+      server.on("getDatabaseForOperator", args -> Objects.equals(args[0], DB_NAME) ? database : null);
+      final ServerControlPlane controlPlane = new ServerControlPlane(server);
+      final String key = GlobalConfiguration.TX_WAL_FLUSH.getKey();
+
+      for (final String value : new String[] { "-1", "3", "7" })
+        assertThatThrownBy(() -> controlPlane.setDatabaseSetting(DB_NAME, key, value))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining(key)
+            .hasMessageContaining("Allowed values are");
+
+      assertThat(database.getConfiguration().hasValue(key)).isFalse();
+      final File configurationFile = new File(database.getDatabasePath(), "configuration.json");
+      assertThat(!configurationFile.exists() || !FileUtils.readFileAsString(configurationFile).contains("txWalFlush"))
+          .as("a refused value must not reach configuration.json").isTrue();
+      database.command("sql", "CREATE DOCUMENT TYPE W").close();
+      database.transaction(() -> database.newDocument("W").set("x", 1).save());
+
+      controlPlane.setDatabaseSetting(DB_NAME, key, "2");
+      assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FLUSH)).isEqualTo(2);
+    }
+  }
 }

@@ -174,6 +174,11 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   @Override
+  public boolean continuesPastLimit() {
+    return true;
+  }
+
+  @Override
   public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
       final CommandContext context, final Expression[] oExpressions) {
     if (oExpressions == null || oExpressions.length < 2)

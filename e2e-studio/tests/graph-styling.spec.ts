@@ -47,14 +47,15 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
         const nodes = globalCy.nodes();
         if (nodes.length === 0) return { error: 'no nodes found' };
 
-        // Get first node's computed style
+        // Get first node's computed style. The raw values are returned (no `|| 'default'` fallback), so an
+        // empty style cannot pass the non-empty assertions below
         const firstNode = nodes[0];
         return {
-          backgroundColor: firstNode.style('background-color') || 'default',
-          borderColor: firstNode.style('border-color') || 'default',
-          borderWidth: firstNode.style('border-width') || 'default',
-          shape: firstNode.style('shape') || 'default',
-          label: firstNode.style('label') || 'default',
+          backgroundColor: firstNode.style('background-color'),
+          borderColor: firstNode.style('border-color'),
+          borderWidth: firstNode.style('border-width'),
+          shape: firstNode.style('shape'),
+          label: firstNode.style('label'),
           nodeCount: nodes.length
         };
       } catch (error) {
@@ -62,8 +63,17 @@ test.describe('ArcadeDB Studio Graph Styling and HTML Labels', () => {
       }
     });
 
-    expect(vertexStyles).toBeTruthy();
     console.log('Vertex styles:', vertexStyles);
+
+    // A failure inside the page (missing graph, no nodes, a throwing style() call) comes back as a truthy
+    // `{ error }`, so the error is asserted absent rather than letting toBeTruthy() accept it
+    expect(vertexStyles).toBeTruthy();
+    expect(vertexStyles.error).toBeUndefined();
+    expect(vertexStyles.nodeCount).toBeGreaterThan(0);
+    expect(vertexStyles.backgroundColor).toBeTruthy();
+    expect(vertexStyles.borderColor).toBeTruthy();
+    expect(vertexStyles.borderWidth).toBeTruthy();
+    expect(vertexStyles.shape).toBeTruthy();
   });
 
   test('should display HTML labels correctly', async ({ styledGraphReady }) => {

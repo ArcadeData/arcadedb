@@ -1599,4 +1599,123 @@ class TypeRenameTest {
       assertThat(edgeBuckets).containsExactlyInAnyOrder("Human_0_out_edges", "Human_0_in_edges");
     }
   }
+
+  /**
+   * Regression for #12715: {@code ALTER TYPE ... NAME} moved the type's bucket files under the new name without asking whether a bucket of
+   * that name existed. A free bucket (made with {@code CREATE BUCKET}, or given up by a type) then shared its name with the renamed one:
+   * the statement answered OK and the next open of the database failed with {@code Component 'T_0' was built on file id N but the file
+   * registered under that name has id M}. A rename onto a taken bucket name is refused before any file moves, as one onto a taken
+   * super-node stripe name already was, and the schema, the files and the database stay as they were.
+   */
+  @Nested
+  class RenameOntoTakenBucketName extends TestHelper {
+
+    @Test
+    void aDocumentTypeIsNotRenamedOntoAFreeBucket() {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc12715");
+      database.command("sql", "CREATE BUCKET Taken12715_0");
+      database.transaction(() -> database.newDocument("Doc12715").set("n", 1).save());
+
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Doc12715 NAME Taken12715")).isInstanceOf(AlreadyExistsException.class)
+          .hasMessageContaining("Taken12715_0");
+
+      assertRenameLeftEverythingAsItWas("Doc12715", "Taken12715", "Doc12715_0", 1L);
+    }
+
+    @Test
+    void aVertexTypeIsNotRenamedOntoAFreeBucket() {
+      database.command("sql", "CREATE VERTEX TYPE Vtx12715");
+      database.command("sql", "CREATE BUCKET Taken12715_0");
+      database.transaction(() -> database.newVertex("Vtx12715").set("n", 1).save());
+
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Vtx12715 NAME Taken12715")).isInstanceOf(AlreadyExistsException.class)
+          .hasMessageContaining("Taken12715_0");
+
+      assertRenameLeftEverythingAsItWas("Vtx12715", "Taken12715", "Vtx12715_0", 1L);
+    }
+
+    @Test
+    void aVertexTypeIsNotRenamedOntoAFreeEdgeListBucket() {
+      database.command("sql", "CREATE VERTEX TYPE Edges12715");
+      database.command("sql", "CREATE BUCKET Taken12715_0_out_edges");
+      database.transaction(() -> database.newVertex("Edges12715").set("n", 1).save());
+
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Edges12715 NAME Taken12715")).isInstanceOf(AlreadyExistsException.class)
+          .hasMessageContaining("Taken12715_0_out_edges");
+
+      assertRenameLeftEverythingAsItWas("Edges12715", "Taken12715", "Edges12715_0", 1L);
+    }
+
+    @Test
+    void aTypeIsNotRenamedOntoABucketItsDroppedNamesakeLeftBehind() {
+      database.command("sql", "CREATE DOCUMENT TYPE Gone12715");
+      database.command("sql", "ALTER TYPE Gone12715 BUCKET -Gone12715_0");
+      database.command("sql", "DROP TYPE Gone12715");
+      database.command("sql", "CREATE VERTEX TYPE Heir12715");
+
+      assertThatThrownBy(() -> database.command("sql", "ALTER TYPE Heir12715 NAME Gone12715")).isInstanceOf(AlreadyExistsException.class)
+          .hasMessageContaining("Gone12715_0");
+
+      assertRenameLeftEverythingAsItWas("Heir12715", "Gone12715", "Heir12715_0", 0L);
+    }
+
+    @Test
+    void aRenameOntoAFreeNameStillWorks() {
+      database.command("sql", "CREATE VERTEX TYPE Plain12715");
+      database.command("sql", "CREATE BUCKET Other12715_0");
+      database.transaction(() -> database.newVertex("Plain12715").set("n", 1).save());
+
+      database.command("sql", "ALTER TYPE Plain12715 NAME Renamed12715");
+
+      reopenDatabase();
+      assertThat(database.getSchema().existsType("Renamed12715")).isTrue();
+      assertThat(database.countType("Renamed12715", true)).isEqualTo(1L);
+      assertThat(database.getSchema().existsBucket("Renamed12715_0")).isTrue();
+      assertThat(database.getSchema().existsBucket("Other12715_0")).isTrue();
+    }
+
+    /**
+     * The check above runs before anything moves and outside every lock, so a {@code CREATE BUCKET} of the target name can land
+     * after it. The move of each bucket therefore claims its new name itself, under the lock the bucket creation registers under:
+     * called with the name taken, as it is when such a creation won the race, it refuses and moves nothing.
+     */
+    @Test
+    void theMoveOfABucketRefusesANameTakenAfterTheCheck() throws IOException {
+      database.command("sql", "CREATE DOCUMENT TYPE Race12715");
+      database.transaction(() -> database.newDocument("Race12715").set("n", 1).save());
+      database.command("sql", "CREATE BUCKET Race12715Late_0");
+
+      final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("Race12715");
+      final Bucket own = type.getBuckets(false).getFirst();
+      final Bucket late = database.getSchema().getBucketByName("Race12715Late_0");
+
+      assertThatThrownBy(() -> type.moveBucketTo(own, "Race12715Late_0")).isInstanceOf(AlreadyExistsException.class)
+          .hasMessageContaining("Race12715Late_0");
+
+      assertThat(own.getName()).isEqualTo("Race12715_0");
+      assertThat(database.getSchema().getBucketByName("Race12715_0")).isSameAs(own);
+      assertThat(database.getSchema().getBucketByName("Race12715Late_0")).isSameAs(late);
+
+      reopenDatabase();
+
+      assertThat(database.getSchema().getType("Race12715").getBuckets(false)).extracting(Bucket::getName)
+          .containsExactly("Race12715_0");
+      assertThat(database.countType("Race12715", true)).isEqualTo(1L);
+      assertThat(database.getSchema().existsBucket("Race12715Late_0")).isTrue();
+    }
+
+    /** Reads back what a refused rename must leave alone, in this session and after a reopen, which is where the bug surfaced. */
+    private void assertRenameLeftEverythingAsItWas(final String type, final String refusedName, final String ownBucket,
+        final long records) {
+      assertThat(database.getSchema().existsType(type)).isTrue();
+      assertThat(database.getSchema().existsType(refusedName)).isFalse();
+      assertThat(database.getSchema().getType(type).getBuckets(false)).extracting(Bucket::getName).containsExactly(ownBucket);
+
+      reopenDatabase();
+
+      assertThat(database.getSchema().existsType(type)).isTrue();
+      assertThat(database.getSchema().getType(type).getBuckets(false)).extracting(Bucket::getName).containsExactly(ownBucket);
+      assertThat(database.countType(type, true)).isEqualTo(records);
+    }
+  }
 }

@@ -19,10 +19,10 @@
 package com.arcadedb.function.sql.geo;
 
 import org.locationtech.spatial4j.shape.Shape;
-import org.locationtech.spatial4j.shape.SpatialRelation;
 
 /**
- * SQL function geo.within: returns true if geometry g is fully within shape.
+ * SQL function geo.within: returns true if geometry g is fully within shape, a shape being within itself (see
+ * {@link GeoUtils#within}).
  *
  * <p>Usage: {@code geo.within(g, shape)}</p>
  * <p>Returns: Boolean</p>
@@ -36,7 +36,7 @@ public class SQLFunctionGeoWithin extends SQLFunctionGeoPredicate {
 
   @Override
   protected Boolean evaluate(final Shape geom1, final Shape geom2, final Object[] params) {
-    return geom1.relate(geom2) == SpatialRelation.WITHIN;
+    return GeoUtils.within(geom1, geom2);
   }
 
   @Override

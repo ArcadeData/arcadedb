@@ -44,8 +44,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.engine.timeseries.LineProtocolWriter;
 import com.arcadedb.remote.timeseries.TimeSeriesBucket;
@@ -217,6 +220,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
+    // Issue #12190: as the embedded API, a vertex or edge type is refused here. Not checked, save() ran INSERT INTO <type>,
+    // which on a vertex type created a vertex. The kind is the one of the cached schema: the server stays the authority for a
+    // type another client recreated as a different kind since
+    final DocumentType type = getSchema().getType(typeName);
+    if (type instanceof VertexType || type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
+
     return new RemoteMutableDocument(this, typeName);
   }
 
@@ -232,6 +242,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
+
+    // Issue #12190: the embedded API's refusal, instead of the ClassCastException of RemoteMutableVertex's cast
+    if (!(getSchema().getType(typeName) instanceof VertexType))
+      throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
     return new RemoteMutableVertex(this, typeName);
   }
@@ -857,7 +871,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     checkDatabaseIsOpen();
     stats.iterateType.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", query, polymorphic ? null : Map.of("typeName", typeName));
+    final ResultSet resultSet = queryAllRows(query, polymorphic ? null : Map.of("typeName", typeName));
     return countedRecordIterator(resultSet);
   }
 
@@ -898,7 +912,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public Iterator<Record> iterateBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.iterateBucket.incrementAndGet();
-    final ResultSet resultSet = queryUncounted("sql", "select from " + bucketTarget(bucketName), null);
+    final ResultSet resultSet = queryAllRows("select from " + bucketTarget(bucketName), null);
     return countedRecordIterator(resultSet);
   }
 
@@ -1021,6 +1035,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
    * a try-with-resources. It is also single-pass: {@code reset()} is not supported, and the rows are gone once
    * read. A caller that needs the whole result in memory, or the {@code explain} / {@code stats} envelope
    * properties, wants {@link #query(String, String, Map)} instead - which is unchanged.
+   * <p>
+   * Unlike the buffered {@link #query(String, String, Map)}, a stream is not capped by the server's default row limit
+   * ({@code arcadedb.server.httpQueryDefaultLimit}): it asks for every row unless {@link #setMaxResultRows(Integer)} set a
+   * cap of the application's own (issue #12185). The server's hard ceiling still applies and ends the stream with an
+   * error rather than a short result.
    *
    * @param params named parameters, or an empty map
    *
@@ -1177,9 +1196,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     // projection/aggregate column from the @props hint, so it has to ask for it.
     jsonRequest.put("typeHints", true);
     jsonRequest.put("retries", txRetries);
+    // Every row unless the application set its own cap: the default row limit of the server exists to bound a BUFFERED
+    // response, and a stream is the API for results too large to buffer (issue #12185)
     final Integer maxRows = getMaxResultRows();
-    if (maxRows != null)
-      jsonRequest.put("limit", maxRows);
+    jsonRequest.put("limit", maxRows != null ? maxRows : UNLIMITED_ROWS);
     if (params != null && !params.isEmpty())
       jsonRequest.put("params", new JSONObject(encodeParameters(params)));
 
@@ -1301,6 +1321,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true,
         callback);
+  }
+
+  /**
+   * Reads every row of a SQL query, whatever the server's default row limit and {@link #getMaxResultRows()}: for the
+   * driver's own iterations whose contract is the whole type or bucket ({@link #iterateType}, {@link #iterateBucket}),
+   * which the embedded engine answers in full. Stopping at the server default (20,000 rows) handed the caller a partial
+   * iteration that {@code countType()} contradicted (issue #12185). A result above the server's hard ceiling is refused
+   * (HTTP 413) rather than cut. Not counted in any statistic, as {@link #queryUncounted} is not.
+   */
+  private ResultSet queryAllRows(final String query, final Map<String, Object> params) {
+    checkDatabaseIsOpen();
+    return (ResultSet) httpQueryWithRowLimit(databaseName, "sql", query, params,
+        (connection, response) -> createResultSet(response), UNLIMITED_ROWS);
   }
 
   /**

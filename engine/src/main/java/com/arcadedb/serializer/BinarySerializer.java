@@ -63,6 +63,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.Interruptions;
 
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.io.ShapeWriter;
@@ -384,16 +385,22 @@ public class BinarySerializer {
       final int headerEndOffset = buffer.getInt(); // HEADER-SIZE
       final int properties = checkPropertyCount(buffer, headerEndOffset, initialPosition);
 
+      if (properties == 0)
+        // EMPTY: NO NAME, AND NO NEED TO REACH THE DICTIONARY
+        return result;
+
+      final Dictionary dictionary = dictionaryOf(database);
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
         buffer.getUnsignedNumber(); //contentPosition
-        final String name = database.getSchema().getDictionary().getNameById(nameId);
+        final String name = dictionary.getNameById(nameId);
         result.add(name);
       }
     } catch (final DatabaseIsClosedException e) {
       // A CLOSED DATABASE IS NOT A DAMAGED RECORD: LET THE CALLER SEE IT, AS db.query() DOES (SAME AT EVERY CATCH BELOW)
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.WARNING, "Possible corrupted record %s, returning %d names read so far", e, rid,
           result.size());
     }
@@ -447,7 +454,7 @@ public class BinarySerializer {
 
       final int[] fieldIds = new int[fieldNames.length];
 
-      final Dictionary dictionary = database.getSchema().getDictionary();
+      final Dictionary dictionary = dictionaryOf(database);
       for (int i = 0; i < fieldNames.length; ++i)
         fieldIds[i] = dictionary.getIdByName(fieldNames[i], false);
       // A wide filter (every property of a wide record but the few a projection excludes, issue #12558) is searched, not
@@ -517,6 +524,7 @@ public class BinarySerializer {
         } catch (final DatabaseIsClosedException e) {
           throw e;
         } catch (Exception e) {
+          Interruptions.rethrowIfInterruption(e);
           if (strict)
             throw new SerializationException("Property '" + propertyName + "' of record " + rid + " cannot be decoded: "
                 + e.getMessage(), e);
@@ -535,6 +543,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       if (strict)
         throw e instanceof SerializationException serializationException ?
             serializationException :
@@ -556,7 +565,7 @@ public class BinarySerializer {
         // EMPTY: NOT FOUND
         return false;
 
-      final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+      final int fieldId = dictionaryOf(database).getIdByName(fieldName, false);
       if (fieldId < 0)
         // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
         return false;
@@ -569,6 +578,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
     }
 
@@ -613,7 +623,7 @@ public class BinarySerializer {
         // EMPTY: NOT FOUND
         return absentValue;
 
-      final Dictionary dictionary = database.getSchema().getDictionary();
+      final Dictionary dictionary = dictionaryOf(database);
       final int fieldId = dictionary.getIdByName(fieldName, false);
       if (fieldId < 0)
         // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
@@ -633,6 +643,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return found ? null : absentValue;
     }
@@ -676,6 +687,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       // NOT LOGGED HERE: THE CALLER READS EVERY PROPERTY ON ITS OWN, WHICH LOGS THE DAMAGED RECORD AS A SINGLE READ ALWAYS DID
       return false;
     }
@@ -693,6 +705,7 @@ public class BinarySerializer {
     } catch (final DatabaseIsClosedException e) {
       throw e;
     } catch (final Exception e) {
+      Interruptions.rethrowIfInterruption(e);
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
       return null;
     }
@@ -1230,7 +1243,7 @@ public class BinarySerializer {
       value = content.getString();
       break;
     case BinaryTypes.TYPE_COMPRESSED_STRING:
-      value = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
+      value = dictionaryOf(database).getNameById((int) content.getUnsignedNumber());
       break;
     case BinaryTypes.TYPE_BINARY:
       value = content.getBytes();
@@ -1332,7 +1345,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_EMBEDDED: {
-      final String typeName = database.getSchema().getDictionary().getNameById((int) content.getUnsignedNumber());
+      final String typeName = dictionaryOf(database).getNameById((int) content.getUnsignedNumber());
 
       final int embeddedObjectSize = (int) content.getUnsignedNumber();
 
@@ -1409,6 +1422,14 @@ public class BinarySerializer {
       throw new SerializationException("Invalid element count " + count + " in buffer of size " + buffer.size()
           + " (corrupted record or misaligned read)");
     return (int) count;
+  }
+
+  /**
+   * The dictionary a read resolves property names through, by {@link DatabaseInternal#getDictionary()}: asked once or more
+   * per property read, so it must not cost the transaction-context lookup {@code getSchema()} makes (#12356).
+   */
+  private static Dictionary dictionaryOf(final Database database) {
+    return database instanceof DatabaseInternal internal ? internal.getDictionary() : database.getSchema().getDictionary();
   }
 
   /**
