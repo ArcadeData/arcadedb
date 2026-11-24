@@ -62,7 +62,8 @@ import java.util.logging.Level;
  * <p>
  * A tagged value is a map to the engine, so SQL compares maps: the plugin's own filters and sorts compare the BSON value it is
  * read back as ({@link MongoQueryMatcher}, {@link MongoSortOrder}), a statement written in SQL does not. A DECIMAL beyond
- * Decimal128 (more than 34 digits, or an exponent out of its range) is read back as a double rather than failing the read.
+ * Decimal128 (more than 34 digits, an exponent out of its range, or an unscaled value of more than 12321 digits) is read back as a
+ * double rather than failing the read.
  * <p>
  * The field name {@code $bson} is reserved for the tag: a map with a string {@code $bson} key written through SQL or another
  * protocol is read back by the MongoDB plugin as the BSON value it names (a malformed or unknown tag stays a plain map).
@@ -74,8 +75,10 @@ final class MongoBsonValues {
 
   private static final AtomicBoolean WIDE_DECIMAL_WARNED = new AtomicBoolean();
 
-  // the widest unscaled value a Decimal128 can take, in bits: 34 digits of coefficient and an exponent from -6176 to 6111 make 12321
-  // digits at most, which is under 2^40930. A wider value is returned as a double without converting its digits
+  // the widest unscaled value, in bits, that is handed to the Decimal128 conversion: for a scale inside the exponent range of a
+  // Decimal128, 34 digits of coefficient and an exponent from -6176 to 6111 make 12321 digits at most, which is under 2^40930. A wider
+  // unscaled value is returned as a double without converting its digits: it can only be a Decimal128 when it is padded with thousands
+  // of zeros beyond its scale, and finding that out takes a conversion of every digit
   private static final int MAX_DECIMAL128_BITS = 40_930;
 
   // an ObjectId outside _id is kept as a prefixed string, not a map, so that it stays comparable and usable as an index key
@@ -281,9 +284,9 @@ final class MongoBsonValues {
   }
 
   /**
-   * A DECIMAL as a Decimal128, or as a double when no Decimal128 can hold it (more than 34 significant digits, or an exponent out of
-   * range), so that the response stays readable. The size of the value is checked first, which costs nothing, so that a value wider
-   * than any Decimal128 is not converted digit by digit by the library to find that out.
+   * A DECIMAL as a Decimal128, or as a double when it has no Decimal128 form (more than 34 significant digits, an exponent out of
+   * range, or an unscaled value wider than {@code MAX_DECIMAL128_BITS}), so that the response stays readable. The size of the value
+   * is checked first, which costs nothing, so that a value that wide is not converted digit by digit by the library to find out.
    */
   private static Object decimalToBson(final BigDecimal decimal) {
     if (decimal.unscaledValue().bitLength() <= MAX_DECIMAL128_BITS)

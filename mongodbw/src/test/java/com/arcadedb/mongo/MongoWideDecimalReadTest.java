@@ -59,6 +59,8 @@ class MongoWideDecimalReadTest {
         new BigDecimal(BigInteger.TEN.pow(40), 6177),
         // a value with a lot of digits that is a plain 1
         new BigDecimal(BigInteger.TEN.pow(50_000), 50_000),
+        // 1E-6176, padded with more zeros than the 12321 digits any Decimal128 needs: returned as the double it is, not converted
+        new BigDecimal(BigInteger.TEN.pow(13_000), 19_176),
         // a lot of digits, none of them zero at the end
         new BigDecimal(BigInteger.TEN.pow(100_000).add(BigInteger.valueOf(7)), 100_000));
 
