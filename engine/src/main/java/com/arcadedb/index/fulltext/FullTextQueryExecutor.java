@@ -53,6 +53,8 @@ import org.apache.lucene.search.WildcardQuery;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -985,8 +987,7 @@ public class FullTextQueryExecutor {
     if (prefix.isEmpty())
       return;
 
-    final String searchPrefix = buildSearchKey(field, prefix);
-    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap, boostFor(field));
+    matchTokens(field, prefix, token -> true, scoreMap);
   }
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -995,38 +996,14 @@ public class FullTextQueryExecutor {
     if (pattern.isEmpty())
       return;
 
-    // Compute the literal prefix (everything up to the first wildcard char)
-    final String literalPrefix = extractLiteralPrefix(pattern);
-    final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = fieldPrefix(field);
     final Pattern regex = wildcardToRegex(pattern);
     // A sequence of several *'s (translated to .* by wildcardToRegex, same shape as %  in SQL LIKE) reproduces
     // catastrophic backtracking without needing grouping/alternation/nested quantifiers - issue #5886 follow-up.
     // One shared deadline for the whole scan, same rationale as collectRegexpMatches.
     final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
-    if (literalPrefix.isEmpty()) {
-      // Leading wildcard: full scan, then regex match against the unprefixed token portion
-      iterateAndMatch(null, key -> {
-        if (!key.startsWith(fieldPrefix))
-          return false;
-        final String token = key.substring(fieldPrefix.length());
-        // Skip cross-field tokens for unqualified queries on multi-property indexes
-        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
-          return false;
-        return TimeBoundRegex.matchesUntil(regex, token, deadline);
-      }, scoreMap, boostFor(field));
-    } else {
-      // Range scan starting at the literal prefix and stop when keys no longer share it
-      iterateAndMatch(searchPrefix, key -> {
-        if (!key.startsWith(searchPrefix))
-          return false;
-        final String token = key.substring(fieldPrefix.length());
-        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
-          return false;
-        return TimeBoundRegex.matchesUntil(regex, token, deadline);
-      }, scoreMap, boostFor(field));
-    }
+    // The literal prefix (everything up to the first wildcard char) bounds the walk; a leading wildcard walks every key
+    matchTokens(field, extractLiteralPrefix(pattern), token -> TimeBoundRegex.matchesUntil(regex, token, deadline), scoreMap);
   }
 
   /**
@@ -1042,10 +1019,19 @@ public class FullTextQueryExecutor {
       return;
 
     // The walk spans the chosen keys only, and decides each posting with one lookup rather than one edit distance. The span is
-    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order
-    final TreeSet<String> sorted = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
-    sorted.addAll(expansions);
-    iterateAndMatch(sorted.first(), sorted.last(), expansions::contains, scoreMap, boostFor(query.getTerm().field()));
+    // bounded in the index's own key order (unsigned UTF-8 bytes, i.e. code points), not in String's UTF-16 order. An escaped key
+    // (see FullTextKeys, issue #12162) sorts before every letter: one span over both kinds of key would also read every key between
+    // an escaped one and the last plain one, so each kind is walked over its own span
+    final TreeSet<String> escaped = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    final TreeSet<String> plain = new TreeSet<>(FullTextQueryExecutor::compareCodePoints);
+    for (final String key : expansions)
+      (!key.isEmpty() && key.charAt(0) == FullTextKeys.ESCAPE ? escaped : plain).add(key);
+
+    final float boost = boostFor(query.getTerm().field());
+    if (!escaped.isEmpty())
+      iterateAndMatch(escaped.first(), escaped.last(), expansions::contains, scoreMap, boost);
+    if (!plain.isEmpty())
+      iterateAndMatch(plain.first(), plain.last(), expansions::contains, scoreMap, boost);
   }
 
   /** The most terms a fuzzy clause expands to (issue #12462): Lucene's FuzzyQuery default unless the index sets its own. */
@@ -1106,22 +1092,49 @@ public class FullTextQueryExecutor {
    * The best {@code max} terms of this bucket a fuzzy clause expands to, best first (see {@link #BEST_EXPANSION_FIRST}). A term
    * counts once it has a live posting here: a deletion marker alone does not make it an expansion. Each distinct key is measured
    * once, however many postings it has.
+   * <p>
+   * A qualified clause reads the {@code field:} keys. An unqualified one reads the unprefixed tokens and nothing else, an escaped
+   * one as the token it stands for, so the walk covers the escaped range too (see {@link FullTextKeys}, issue #12162).
    */
   List<FuzzyExpansion> fuzzyExpansions(final FuzzyQuery query, final int max) {
     final String term = normalizeText(query.getTerm().field(), query.getTerm().text());
     if (term.isEmpty())
       return List.of();
 
-    final int maxEdits = query.getMaxEdits();
-    final boolean transpositions = query.getTranspositions();
-    final int termLength = term.codePointCount(0, term.length());
-    final int prefixLen = Math.min(query.getPrefixLength(), term.length());
+    final String requiredPrefix = term.substring(0, Math.min(query.getPrefixLength(), term.length()));
     final String fieldPrefix = fieldPrefix(query.getTerm().field());
-    final String searchPrefix = fieldPrefix + term.substring(0, prefixLen);
-    final boolean rangeScan = !searchPrefix.isEmpty();
 
     // The worst of the best kept so far at the head, so a better term replaces it
     final PriorityQueue<FuzzyExpansion> best = new PriorityQueue<>(Math.min(max, 1024) + 1, BEST_EXPANSION_FIRST.reversed());
+    if (!fieldPrefix.isEmpty())
+      walkFuzzyExpansions(query, term, fieldPrefix + requiredPrefix, key -> key.substring(fieldPrefix.length()), max, best);
+    else {
+      final UnaryOperator<String> unqualified = key -> {
+        final String token = FullTextKeys.unqualifiedToken(propertyNames, key);
+        return token != null && token.startsWith(requiredPrefix) ? token : null;
+      };
+      walkFuzzyExpansions(query, term, requiredPrefix, unqualified, max, best);
+      if (!requiredPrefix.isEmpty() && FullTextKeys.qualifies(propertyNames) && !FullTextKeys.onlyEscapes(requiredPrefix))
+        walkFuzzyExpansions(query, term, FullTextKeys.ESCAPE + requiredPrefix, unqualified, max, best);
+    }
+
+    final List<FuzzyExpansion> result = new ArrayList<>(best);
+    result.sort(BEST_EXPANSION_FIRST);
+    return result;
+  }
+
+  /**
+   * Walks the keys that start with {@code searchPrefix} (every key when it is empty) and keeps in {@code best} the {@code max} best
+   * terms within the clause's edit distance. {@code tokenOf} answers the token a key holds for this clause, or null for a key the
+   * clause does not read.
+   */
+  private void walkFuzzyExpansions(final FuzzyQuery query, final String term, final String searchPrefix,
+      final UnaryOperator<String> tokenOf, final int max, final PriorityQueue<FuzzyExpansion> best) {
+    final int maxEdits = query.getMaxEdits();
+    final boolean transpositions = query.getTranspositions();
+    final int termLength = term.codePointCount(0, term.length());
+    final boolean rangeScan = !searchPrefix.isEmpty();
+
     final IndexCursor cursor = index.iterateUnderlying(true, rangeScan ? new String[] { searchPrefix } : null, true);
     String lastKey = null;
     try {
@@ -1140,8 +1153,8 @@ public class FullTextQueryExecutor {
             break;
           continue;
         }
-        final String token = key.substring(fieldPrefix.length());
-        if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
+        final String token = tokenOf.apply(key);
+        if (token == null)
           continue;
         final int distance = fuzzyDistance(token, term, transpositions, maxEdits);
         if (distance > maxEdits)
@@ -1157,10 +1170,6 @@ public class FullTextQueryExecutor {
     } finally {
       cursor.close();
     }
-
-    final List<FuzzyExpansion> result = new ArrayList<>(best);
-    result.sort(BEST_EXPANSION_FIRST);
-    return result;
   }
 
   /**
@@ -1255,20 +1264,39 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = fieldPrefix(field);
     // A user-supplied regexp query (/pattern/ syntax) is matched against every token in what is, absent a literal
     // prefix, a full index scan (issue #5886) - one shared deadline for the whole scan, not a fresh one per token,
     // otherwise a crafted index could still tie the thread up for token count * regexTimeout.
     final long deadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(index.getDatabase()));
 
-    iterateAndMatch(null, key -> {
-      if (!key.startsWith(fieldPrefix))
-        return false;
-      final String token = key.substring(fieldPrefix.length());
-      if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
-        return false;
-      return TimeBoundRegex.matchesUntil(regex, token, deadline);
-    }, scoreMap, boostFor(field));
+    matchTokens(field, "", token -> TimeBoundRegex.matchesUntil(regex, token, deadline), scoreMap);
+  }
+
+  /**
+   * Collects the postings of every token of the clause's field that starts with {@code prefix} and passes {@code matcher}: the one
+   * walk of the prefix, wildcard, fuzzy and regexp clauses. A qualified clause reads the {@code field:} keys. An unqualified one reads
+   * the unprefixed tokens and nothing else: on a multi-property index the {@code field:} keys share the key space with them, and an
+   * unprefixed token that would read as one is stored escaped (see {@link FullTextKeys}), so the walk covers the escaped range too and
+   * matches the token itself (issue #12162).
+   */
+  private void matchTokens(final String field, final String prefix, final Predicate<String> matcher,
+      final Map<RID, AtomicInteger> scoreMap) {
+    final float boost = boostFor(field);
+    final String fieldPrefix = fieldPrefix(field);
+    if (!fieldPrefix.isEmpty()) {
+      final String searchPrefix = fieldPrefix + prefix;
+      iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix) && matcher.test(key.substring(fieldPrefix.length())),
+          scoreMap, boost);
+      return;
+    }
+
+    final KeyMatcher unqualified = key -> {
+      final String token = FullTextKeys.unqualifiedToken(propertyNames, key);
+      return token != null && token.startsWith(prefix) && matcher.test(token);
+    };
+    iterateAndMatch(prefix.isEmpty() ? null : prefix, unqualified, scoreMap, boost);
+    if (!prefix.isEmpty() && FullTextKeys.qualifies(propertyNames) && !FullTextKeys.onlyEscapes(prefix))
+      iterateAndMatch(FullTextKeys.ESCAPE + prefix, unqualified, scoreMap, boost);
   }
 
   /**
@@ -1334,13 +1362,14 @@ public class FullTextQueryExecutor {
 
   /**
    * Builds the index search key by prefixing the field name when needed. Multi-property indexes store entries as
-   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens. The
+   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens, under the key
+   * {@link FullTextKeys#unqualifiedKey} stores them with (issue #12162). The
    * prefix is the field name in the spelling the postings use (see {@link #fieldPrefix(String)}), which is the ONLY way
    * a key may be built on the query side: every collector goes through here or through {@code fieldPrefix}, so the
    * read path cannot derive a key the write path never stored (issue #7000).
    */
   private String buildSearchKey(final String field, final String text) {
-    return fieldPrefix(field) + text;
+    return isUnqualified(field) ? FullTextKeys.unqualifiedKey(propertyNames, text) : fieldPrefix(field) + text;
   }
 
   /**

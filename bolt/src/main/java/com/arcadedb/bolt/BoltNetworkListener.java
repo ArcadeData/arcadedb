@@ -142,6 +142,11 @@ public class BoltNetworkListener extends Thread {
     activeConnections.remove(connection);
   }
 
+  /** Whether this listener is meant to accept connections: started and not closed (issue #12552). */
+  boolean isListening() {
+    return active;
+  }
+
   public void close() {
     this.active = false;
 

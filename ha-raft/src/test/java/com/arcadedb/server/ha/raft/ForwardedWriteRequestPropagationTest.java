@@ -35,6 +35,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -50,6 +52,7 @@ import org.junit.jupiter.api.Test;
 
 import static com.arcadedb.utility.SubclassMocks.mock;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -156,10 +159,14 @@ class ForwardedWriteRequestPropagationTest {
   }
 
   static void forward(final RaftReplicatedDatabase db, final String command) throws Exception {
+    forward(db, command, true);
+  }
+
+  static void forward(final RaftReplicatedDatabase db, final String command, final boolean mayWrite) throws Exception {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class);
+        String.class, String.class, Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
-    m.invoke(db, "sql", command, null, new Object[0]);
+    m.invoke(db, "sql", command, null, new Object[0], mayWrite);
   }
 
   static ContextConfiguration config() {
@@ -178,7 +185,7 @@ class ForwardedWriteRequestPropagationTest {
 
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
       final String clusterToken) {
-    return database(leader, localIsLeader, clusterToken, mock(LocalDatabase.class));
+    return database(leader, localIsLeader, clusterToken, localDatabase());
   }
 
   static RaftReplicatedDatabase database(final RecordingLeader leader, final boolean localIsLeader,
@@ -205,6 +212,8 @@ class ForwardedWriteRequestPropagationTest {
     private final List<String> clientKeys = new CopyOnWriteArrayList<>();
     private final List<String> bodies     = new CopyOnWriteArrayList<>();
     private final String       answer;
+    private final int[]        statuses;
+    private final AtomicInteger requests = new AtomicInteger();
 
     RecordingLeader() throws IOException {
       this(new JSONObject().put("result", new JSONArray()).toString());
@@ -212,7 +221,16 @@ class ForwardedWriteRequestPropagationTest {
 
     /** A leader that answers every command with the given body (issue #8359). */
     RecordingLeader(final String answer) throws IOException {
+      this(answer, 200);
+    }
+
+    /**
+     * A leader that answers the n-th command with the n-th status (the last one repeats), with the given body (issue #12889). A status
+     * other than 200 answers an empty body: what a node refusing the request before it ran does.
+     */
+    RecordingLeader(final String answer, final int... statuses) throws IOException {
       this.answer = answer;
+      this.statuses = statuses;
       server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 16);
       server.createContext("/", exchange -> {
         requestIds.add(exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID));
@@ -221,9 +239,10 @@ class ForwardedWriteRequestPropagationTest {
         try (final InputStream in = exchange.getRequestBody()) {
           bodies.add(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         }
-        final byte[] bytes = this.answer.getBytes(StandardCharsets.UTF_8);
+        final int status = this.statuses[Math.min(requests.getAndIncrement(), this.statuses.length - 1)];
+        final byte[] bytes = status == 200 ? this.answer.getBytes(StandardCharsets.UTF_8) : new byte[0];
         exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
         try (final OutputStream out = exchange.getResponseBody()) {
           out.write(bytes);
         }
@@ -352,7 +371,7 @@ class ForwardedWriteRequestPropagationTest {
   @Test
   void aWriteIssuedByACommandExecutedLocallyRelaysNoKey() throws Exception {
     try (final RecordingLeader leader = new RecordingLeader()) {
-      final LocalDatabase proxied = mock(LocalDatabase.class);
+      final LocalDatabase proxied = localDatabase();
       final QueryEngineManager engines = mock(QueryEngineManager.class);
       final QueryEngine engine = mock(QueryEngine.class);
       when(proxied.getQueryEngineManager()).thenReturn(engines);
@@ -499,6 +518,85 @@ class ForwardedWriteRequestPropagationTest {
     assertThat(json.has("serializer")).as("a rebuilt body carries none of the client's rendering fields").isFalse();
     assertThat(json.has("limit")).isFalse();
   }
+
+  // ---- #12889 ----
+  // The leader's answer to a write the follower forwarded is durable there: the HTTP handler gives it to the client when something
+  // on this node fails afterwards, so it must stand for the request. The forward publishes it, and says when a forward of the
+  // request did not get one.
+
+  private static final String ANSWER = new JSONObject().put("result", new JSONArray().put(new JSONObject().put("k", 7))).toString();
+
+  /** The answer the leader gave to the write the follower forwarded is kept for the handler, as the leader rendered it. */
+  @Test
+  void theLeadersAnswerToAForwardedWriteIsKeptForTheHandler() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader(ANSWER)) {
+      final RaftReplicatedDatabase db = database(leader);
+      ForwardedRequestIdContext.armCommittedWriteAnswer();
+
+      forward(db, "INSERT INTO V SET k = 7");
+
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo(ANSWER);
+    }
+  }
+
+  /** The forward of a command that cannot write has nothing durable to answer for: its answer is not kept. */
+  @Test
+  void theAnswerToAForwardThatCannotWriteIsNotKept() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader(ANSWER)) {
+      final RaftReplicatedDatabase db = database(leader);
+      ForwardedRequestIdContext.armCommittedWriteAnswer();
+
+      forward(db, "SELECT FROM V", false);
+
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+    }
+  }
+
+  /**
+   * A write the leader answered, and then a second one it refused: the request wrote once and failed to write again, so the first
+   * answer must not be given to the client as the answer to the request.
+   */
+  @Test
+  void aForwardTheLeaderRefusedAfterAnAnsweredOneLeavesNoAnswer() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader(ANSWER, 200, 503)) {
+      final RaftReplicatedDatabase db = database(leader);
+      ForwardedRequestIdContext.armCommittedWriteAnswer();
+
+      forward(db, "INSERT INTO V SET k = 7");
+      assertThatThrownBy(() -> forward(db, "INSERT INTO V SET k = 8")).isInstanceOf(InvocationTargetException.class);
+
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+    }
+  }
+
+  /** A forward the leader refused, retried by the request's loop and answered: the request wrote once, and the answer is its own. */
+  @Test
+  void aForwardTheLeaderRefusedBeforeTheAnsweredOneKeepsTheAnswer() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader(ANSWER, 503, 200)) {
+      final RaftReplicatedDatabase db = database(leader);
+      ForwardedRequestIdContext.armCommittedWriteAnswer();
+
+      assertThatThrownBy(() -> forward(db, "INSERT INTO V SET k = 7")).isInstanceOf(InvocationTargetException.class);
+      ForwardedRequestIdContext.restartOrdinals();
+      forward(db, "INSERT INTO V SET k = 7");
+
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isEqualTo(ANSWER);
+    }
+  }
+
+  /** A write that went to the leader from a command this node executed locally is a part of the request, not the request. */
+  @Test
+  void aWriteIssuedByACommandExecutedLocallyIsNotTheAnswerToTheRequest() throws Exception {
+    try (final RecordingLeader leader = new RecordingLeader(ANSWER)) {
+      final RaftReplicatedDatabase db = database(leader);
+      ForwardedRequestIdContext.armCommittedWriteAnswer();
+      ForwardedRequestIdContext.markExecutedLocally();
+
+      forward(db, "INSERT INTO V SET k = 7");
+
+      assertThat(ForwardedRequestIdContext.takeCommittedWriteAnswer()).isNull();
+    }
+  }
   /**
    * Issue #8313: a follower sized the deadline of a forwarded write from the {@code arcadedb.command.timeout} in the
    * configuration its caller passed - which the convenience {@code command(...)} overloads and the HTTP handler fill with
@@ -574,9 +672,9 @@ class ForwardedWriteRequestPropagationTest {
 
     private static void forward(final RaftReplicatedDatabase db) throws Exception {
       final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-          String.class, String.class, Map.class, Object[].class);
+          String.class, String.class, Map.class, Object[].class, boolean.class);
       m.setAccessible(true);
-      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0]);
+      m.invoke(db, "sql", "INSERT INTO V SET id = 1", null, new Object[0], true);
     }
 
     private static ContextConfiguration serverConfig() {
@@ -591,7 +689,7 @@ class ForwardedWriteRequestPropagationTest {
       final FakeRaftHAServer raft = FakeRaftHAServer.detached();
       raft.leaderHttpAddress(leader.address());
       raft.clusterToken(clusterToken);
-      final LocalDatabase local = mock(LocalDatabase.class);
+      final LocalDatabase local = localDatabase();
       when(local.getConfiguration()).thenReturn(databaseConfig);
       return new RaftReplicatedDatabase(server, local, raft);
     }
@@ -630,5 +728,15 @@ class ForwardedWriteRequestPropagationTest {
       }
     }
 
+  }
+
+  /**
+   * A mocked database with a path: a forward the leader answered marks the transactions stacked on the thread, looked up by the
+   * database path, and a null key fails that lookup once the thread has any database context left by an earlier test.
+   */
+  static LocalDatabase localDatabase() {
+    final LocalDatabase local = mock(LocalDatabase.class);
+    when(local.getDatabasePath()).thenReturn("ForwardedWriteRequestPropagationTest");
+    return local;
   }
 }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.EdgeType;
 
@@ -41,6 +42,16 @@ public class RemoteEdgeType extends RemoteDocumentType implements EdgeType {
     this.bidirectional = bidirectional;
     this.lightweight = lightweight;
     this.unique = unique;
+  }
+
+  /**
+   * Refused as {@link EdgeType#newRecord()} does (issue #12190): an edge is created from its two vertices, and the inherited
+   * document record saved an edge without them.
+   */
+  @Override
+  public MutableDocument newRecord() {
+    throw new UnsupportedOperationException(
+        "newRecord() is not supported on an edge type. Create the edge from its source vertex with newEdge()");
   }
 
   @Override

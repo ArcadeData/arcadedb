@@ -161,13 +161,26 @@ class PackagingManifestsTest {
     final String raftPort = String.valueOf(GlobalConfiguration.HA_RAFT_PORT.getDefValue());
     // The native images ship the same port surface, so they drift the same way.
     allDockerfiles().forEach((name, dockerfile) -> {
-      final List<String> exposed = new ArrayList<>();
-      for (final String ports : matches(Pattern.compile("^EXPOSE (.+)$", Pattern.MULTILINE), dockerfile))
-        exposed.addAll(List.of(ports.strip().split("\\s+")));
+      final List<String> exposed = exposedPorts(dockerfile);
 
       assertThat(exposed).as("%s does not expose the Raft port", name).contains(raftPort);
       assertThat(exposed).as("2424 is the removed binary protocol port; nothing listens on it").doesNotContain("2424");
     });
+  }
+
+  @Test
+  void dockerImagesThatShipTheBoltModuleExposeItsPort() {
+    // Issue #11651: the JVM image is built from the full assembly, which bundles arcadedb-bolt next to the Postgres, Redis,
+    // MongoDB and gRPC wire protocols, and it exposed the port of every one of them but Bolt, while both native images
+    // exposed it. EXPOSE does not gate connectivity, but `docker run -P` and image inspection read it. The
+    // builder-generated Dockerfile is left out on purpose: it ships whatever modules the caller picks and declares only
+    // the HTTP and Raft ports, for every selection.
+    assertThat(read(FULL_ASSEMBLY)).as("%s no longer bundles the Bolt module the image is expected to expose", FULL_ASSEMBLY)
+        .contains("<include>com.arcadedb:arcadedb-bolt</include>");
+
+    final String boltPort = String.valueOf(GlobalConfiguration.BOLT_PORT.getDefValue());
+    for (final String name : List.of(DOCKERFILE, NATIVE_SCRATCH, NATIVE_DISTROLESS))
+      assertThat(exposedPorts(read(name))).as("%s does not expose the Bolt port", name).contains(boltPort);
   }
 
   @Test
@@ -485,6 +498,16 @@ class PackagingManifestsTest {
     found.put(NATIVE_SCRATCH, read(NATIVE_SCRATCH));
     found.put(NATIVE_DISTROLESS, read(NATIVE_DISTROLESS));
     return found;
+  }
+
+  /**
+   * The ports a Dockerfile declares through {@code EXPOSE}, across every such line.
+   */
+  private static List<String> exposedPorts(final String dockerfile) {
+    final List<String> exposed = new ArrayList<>();
+    for (final String ports : matches(Pattern.compile("^EXPOSE (.+)$", Pattern.MULTILINE), dockerfile))
+      exposed.addAll(List.of(ports.strip().split("\\s+")));
+    return exposed;
   }
 
   private static String generatedDockerfile() {

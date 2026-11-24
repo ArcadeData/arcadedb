@@ -139,7 +139,12 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionSum that = (SQLFunctionSum) other;
-    sum(that.sum.get());
+    if (!that.sum.isEmpty()) {
+      if (durationSum != null)
+        throw mixedInput();
+      // THE PARTIAL'S EXACT FLOATING-POINT SUM, NOT ITS ROUNDED TOTAL: THE MERGE ORDER CANNOT CHANGE THE RESULT (#12696)
+      sum.merge(that.sum);
+    }
     if (that.durationSum != null)
       sum(that.durationSum);
   }
