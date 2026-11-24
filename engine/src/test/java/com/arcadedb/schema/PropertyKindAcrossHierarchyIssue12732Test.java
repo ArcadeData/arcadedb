@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -343,6 +344,45 @@ class PropertyKindAcrossHierarchyIssue12732Test extends TestHelper {
     assertThatThrownBy(() -> database.getSchema().getType("P").dropProperty("k")).isInstanceOf(SchemaException.class)
         .hasMessageContaining("C[k]");
     assertThat(database.getSchema().getType("P").existsProperty("k")).isTrue();
+  }
+
+  @Test
+  void aDropIsStillRefusedWhenTheOwnerOfTheDeclarationLetsAnotherKindThroughFromAbove() throws Exception {
+    // a database written before #12732: P EXTENDS Q with P.k INTEGER over Q.k STRING, C EXTENDS P, X with X.k INTEGER. Without P.k, C
+    // resolves k through P to Q's STRING: the types above the owner of the declaration that goes still count
+    database.command("sql", "CREATE DOCUMENT TYPE Q");
+    database.command("sql", "CREATE PROPERTY Q.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k INTEGER");
+    database.command("sql", "ALTER TYPE P SUPERTYPE +Q");
+    database.command("sql", "CREATE DOCUMENT TYPE X");
+    database.command("sql", "CREATE PROPERTY X.k INTEGER");
+    database.command("sql", "CREATE DOCUMENT TYPE C EXTENDS P, X");
+    database.command("sql", "CREATE INDEX ON C (k) UNIQUE");
+    database.close();
+    editSchema(root -> root.getJSONObject("types").getJSONObject("Q").getJSONObject("properties").getJSONObject("k").put("type",
+        "STRING"));
+    database = factory.open();
+
+    assertThatThrownBy(() -> database.getSchema().getType("P").dropProperty("k")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("C[k]");
+    assertThat(database.getSchema().getType("P").existsProperty("k")).isTrue();
+  }
+
+  @Test
+  void anAliasOfTheOfTypeIsTheSameKind() {
+    database.command("sql", "CREATE DOCUMENT TYPE Customer");
+    database.getSchema().getType("Customer").setAliases(Set.of("Client"));
+    database.command("sql", "CREATE DOCUMENT TYPE A");
+    database.command("sql", "CREATE DOCUMENT TYPE B EXTENDS A");
+    database.command("sql", "CREATE PROPERTY B.owner LINK OF Customer");
+
+    database.command("sql", "CREATE PROPERTY A.owner LINK OF Client");
+    assertThat(database.getSchema().getType("A").existsProperty("owner")).isTrue();
+
+    database.command("sql", "CREATE DOCUMENT TYPE Other");
+    database.command("sql", "CREATE PROPERTY B.ref LINK OF Customer");
+    assertThatThrownBy(() -> database.command("sql", "CREATE PROPERTY A.ref LINK OF Other")).isInstanceOf(AlreadyExistsException.class);
   }
 
   @Test

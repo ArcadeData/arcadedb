@@ -1748,8 +1748,15 @@ public class LocalDocumentType implements DocumentType {
       // hierarchy BEFORE the drop (issue #12732): refused after it, the call left the type without the property it had
       checkForSchemaMutation();
       return recordFileChanges(() -> {
+        // read again under the lock: a concurrent call may have replaced it since
+        final Property current = getPolymorphicPropertyIfExists(propertyName);
+        if (current == null)
+          return createProperty(propertyName, propertyType, ofType);
+        if (current.getType().equals(propertyType) && Objects.equals(current.getOfType(), ofType))
+          return current;
+
         final String resolvedOfType = ofType != null ? LocalProperty.resolveOfType(schema, name, propertyName, propertyType, ofType) : null;
-        final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, p);
+        final Property otherKind = findDeclarationOfAnotherKind(propertyName, propertyType, resolvedOfType, current);
         if (otherKind != null)
           throw new AlreadyExistsException(AlreadyExistsException.Kind.PROPERTY,
               "Cannot replace the property '" + propertyName + "' in type '" + name + "' with one of type " + describeKind(propertyType,
@@ -1845,13 +1852,11 @@ public class LocalDocumentType implements DocumentType {
       return 0;
     int kinds = 0;
     for (final LocalDocumentType superType : superTypes) {
-      if (superType == excluded)
-        continue;
-      final Property declared = superType.properties.get(propertyName);
+      // the declaration that goes is passed over, not the types above its owner: what they declare is what the name resolves to
+      // through that path once it is gone
+      final Property declared = superType == excluded ? null : superType.properties.get(propertyName);
       if (declared != null)
-        kinds |= declared.getType() == declaration.getType() && Objects.equals(declared.getOfType(), declaration.getOfType()) ?
-            KEPT_SAME_KIND :
-            KEPT_OTHER_KIND;
+        kinds |= isOfKind(declared, declaration.getType(), declaration.getOfType()) ? KEPT_SAME_KIND : KEPT_OTHER_KIND;
       else
         kinds |= superType.keptDeclarationKinds(propertyName, excluded, declaration, visited);
     }
@@ -1896,7 +1901,7 @@ public class LocalDocumentType implements DocumentType {
       return null;
 
     final Property declared = properties.get(propertyName);
-    if (declared != null && declared != self && (declared.getType() != type || !Objects.equals(declared.getOfType(), ofType)))
+    if (declared != null && declared != self && !isOfKind(declared, type, ofType))
       return declared;
 
     for (final LocalDocumentType superType : superTypes) {
@@ -1905,6 +1910,23 @@ public class LocalDocumentType implements DocumentType {
         return found;
     }
     return null;
+  }
+
+  /**
+   * Whether {@code declared} has the type {@code type} and the OF type {@code ofType}. Two OF names that are both names of a type of the
+   * schema are compared by the type they resolve to, so an alias and the type's own name are one kind; a scalar OF ({@code LIST OF
+   * STRING}) by its name.
+   */
+  private boolean isOfKind(final Property declared, final Type type, final String ofType) {
+    if (declared.getType() != type)
+      return false;
+    final String declaredOfType = declared.getOfType();
+    if (Objects.equals(declaredOfType, ofType))
+      return true;
+    if (declaredOfType == null || ofType == null || Type.getTypeByName(declaredOfType) != null || Type.getTypeByName(ofType) != null)
+      return false;
+    final LocalDocumentType declaredOf = schema.getTypeOrNull(declaredOfType);
+    return declaredOf != null && declaredOf == schema.getTypeOrNull(ofType);
   }
 
   private static String describeKind(final Type type, final String ofType) {
