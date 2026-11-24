@@ -25,6 +25,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
+import com.arcadedb.query.sql.executor.ResultSet;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -837,5 +838,111 @@ public class GrpcGraphBatchLoadIT extends BaseGrpcServerTest {
       }
     }
 
+  }
+
+  // Regression: #13163
+  /**
+   * Issue #13163: a load refused after a flush was dropped with {@code GraphBatch.abandon()}, which neither connected the deferred
+   * incoming side of the edges the flush had committed nor wrote the head pointers of their vertices' edge lists. Those edges were
+   * committed and counted on the trailer as created, and no vertex reached them in either direction. They are whole now, and the
+   * edge still buffered when the load was refused is not written.
+   *
+   * @author lvca (l.garulli@arcadedata.com)
+   */
+  @Nested
+  class AbandonedLoadKeepsTheFlushedEdgesWhole {
+    private static final String NODE = "Issue13163Node";
+
+    @BeforeEach
+    void createNodeType() {
+      execute("CREATE VERTEX TYPE " + NODE + " IF NOT EXISTS");
+    }
+
+    /** The issue's reproduction: an unknown temporary id after a buffer of two edges was flushed. */
+    @Test
+    void anUnknownTemporaryIdAfterAFlushLeavesTheFlushedEdgesReachable() throws Exception {
+      assertFlushedEdgesWholeAfterRefusal("Issue13163TempIdLink", "zz", "Unknown temporary ID 'zz'");
+    }
+
+    /** The same for an endpoint RID refused since #12895. */
+    @Test
+    void anEndpointRidRefusedAfterAFlushLeavesTheFlushedEdgesReachable() throws Exception {
+      assertFlushedEdgesWholeAfterRefusal("Issue13163RidLink", "#99:0", "does not exist");
+    }
+
+    private void assertFlushedEdgesWholeAfterRefusal(final String linkType, final String badRef, final String reason) throws Exception {
+      execute("CREATE EDGE TYPE " + linkType + " IF NOT EXISTS");
+
+      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+      final CountDownLatch done = new CountDownLatch(1);
+      final StreamObserver<GraphBatchChunk> observer = asyncAuthenticatedStub.graphBatchLoad(new StreamObserver<>() {
+        @Override
+        public void onNext(final GraphBatchResult result) {
+        }
+
+        @Override
+        public void onError(final Throwable t) {
+          errorRef.set(t);
+          done.countDown();
+        }
+
+        @Override
+        public void onCompleted() {
+          done.countDown();
+        }
+      });
+
+      final String prefix = linkType + "-";
+      final GraphBatchChunk.Builder chunk = GraphBatchChunk.newBuilder().setDatabase(getDatabaseName())
+          .setOptions(GraphBatchOptions.newBuilder().setBatchSize(2).build());
+      for (int i = 0; i < 4; i++)
+        chunk.addRecords(GraphBatchRecord.newBuilder().setKind(GraphBatchRecord.Kind.VERTEX).setTypeName(NODE).setTempId("e" + i)
+            .putProperties("name", stringValue(prefix + "e" + i)));
+      chunk.addRecords(edge(linkType, "e0", "e1"));
+      // The buffer of two is full here: both edges are written and connected outgoing, their incoming side is deferred
+      chunk.addRecords(edge(linkType, "e1", "e2"));
+      // Buffered when the next record is refused
+      chunk.addRecords(edge(linkType, "e2", "e3"));
+      chunk.addRecords(edge(linkType, "e0", badRef));
+      observer.onNext(chunk.build());
+      observer.onCompleted();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(errorRef.get()).isInstanceOf(StatusRuntimeException.class);
+      final StatusRuntimeException failure = (StatusRuntimeException) errorRef.get();
+      assertThat(failure.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+      assertThat(failure.getStatus().getDescription()).contains(reason);
+
+      final GraphBatchResult partial = failure.getTrailers().get(GraphBatchProtocol.RESULT_TRAILER);
+      assertThat(partial).as("a failed load must carry its counters").isNotNull();
+      assertThat(partial.getPartialCommit()).isTrue();
+      assertThat(partial.getEdgesCreated()).as("the two flushed edges are committed, the buffered one is not").isEqualTo(2);
+
+      final Database db = getServerDatabase(0, getDatabaseName());
+      assertThat(db.countType(linkType, true)).as("edge records").isEqualTo(2);
+      db.transaction(() -> {
+        assertThat(degree(db, prefix + "e0", Vertex.DIRECTION.OUT, linkType)).as("e0 -> e1 reachable from e0").isEqualTo(1);
+        assertThat(degree(db, prefix + "e1", Vertex.DIRECTION.IN, linkType)).as("e0 -> e1 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, prefix + "e1", Vertex.DIRECTION.OUT, linkType)).as("e1 -> e2 reachable from e1").isEqualTo(1);
+        assertThat(degree(db, prefix + "e2", Vertex.DIRECTION.IN, linkType)).as("e1 -> e2 reachable from e2").isEqualTo(1);
+        assertThat(degree(db, prefix + "e2", Vertex.DIRECTION.OUT, linkType)).as("the buffered e2 -> e3 was dropped").isZero();
+        assertThat(degree(db, prefix + "e3", Vertex.DIRECTION.IN, linkType)).as("the buffered e2 -> e3 was dropped").isZero();
+      });
+    }
+
+    private long degree(final Database db, final String name, final Vertex.DIRECTION direction, final String linkType) {
+      try (final ResultSet rs = db.query("sql", "SELECT FROM " + NODE + " WHERE name = ?", name)) {
+        return rs.next().getVertex().orElseThrow().countEdges(direction, linkType);
+      }
+    }
+
+    private GraphBatchRecord edge(final String linkType, final String from, final String to) {
+      return GraphBatchRecord.newBuilder().setKind(GraphBatchRecord.Kind.EDGE).setTypeName(linkType).setFromRef(from).setToRef(to)
+          .build();
+    }
+
+    private void execute(final String command) {
+      authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder().setDatabase(getDatabaseName()).setCommand(command).build());
+    }
   }
 }

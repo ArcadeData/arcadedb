@@ -1760,25 +1760,107 @@ public class GraphBatch implements AutoCloseable {
   }
 
   /**
-   * Gives up the single-batch slot of the database without flushing anything. For callers that abandon a
-   * failed batch on a thread that cannot afford the cost of a full {@link #close()}: whatever is still
-   * buffered is dropped. Calling {@link #close()} afterwards remains safe and releases nothing twice.
+   * Ends a failed batch without writing what is still buffered, and gives up the single-batch slot of the database.
+   * The buffered edges are dropped: they were never written, and {@link #getTotalEdgesCreated()} never counted them.
+   * Calling {@link #close()} afterwards remains safe and releases nothing twice.
+   * <p>
+   * What an earlier {@link #flush()} committed is finished first (issue #13163): its edges are linked to their source
+   * vertices, but their incoming side and the head pointers of the vertices' edge lists are deferred to the end of the
+   * batch, and dropping them would leave those committed edges reachable from no vertex in either direction. That is
+   * the connect pass {@link #close()} runs on a failed batch too, minus the final flush of the buffer, so it costs what
+   * the deferred work costs: the incoming edges still buffered and one write per vertex whose head moved. A failure
+   * of that pass is logged and does not propagate - the caller is already handling the failure the batch ended on - and
+   * the slot is given back whatever happens.
+   * <p>
+   * It may run on a thread other than the one that opened the batch. Its own transactions apply the batch's WAL policy
+   * to themselves and the calling thread's WAL flush setting is put back afterwards. On a thread that holds a
+   * transaction of its own on the database the pass cannot run (its writes would be committed with the caller's), so it
+   * is skipped with a warning: a {@link #close()} outside that transaction still finishes it, and a
+   * {@code CHECK DATABASE FIX} relinks the edges otherwise.
    * <p>
    * The read-your-writes policy is database wide and was relaxed for the load, so it is put back here: a
    * batch that ends this way is never closed and would otherwise leave every later reader on that database
-   * unable to see its own writes. The per-thread transaction WAL policy is not, because it lives on the
-   * {@code TransactionContext} of the thread that opened the batch and this method is expected to run on
-   * another one. The async executor's WAL policy (issue #5665) IS restored here: unlike the per-thread
-   * one, it is database-wide and, when {@code parallelFlush} is true, was already relaxed at construction
-   * regardless of whether any flush ever ran - leaving it behind would permanently downgrade durability
-   * for every other async caller on this database.
+   * unable to see its own writes. The per-thread transaction WAL policy of the thread that opened the batch is not,
+   * because it lives on the {@code TransactionContext} of that thread. The async executor's WAL policy (issue #5665) IS
+   * restored here: unlike the per-thread one, it is database-wide and, when {@code parallelFlush} is true, was already
+   * relaxed at construction regardless of whether any flush ever ran - leaving it behind would permanently downgrade
+   * durability for every other async caller on this database.
    */
   public void abandon() {
-    database.setReadYourWrites(savedReadYourWrites);
-    restoreAsyncSettings();
-    maintenanceSuspension.close();
-    reportEdgesWritten();
-    releaseBatchGuard();
+    // The guard release sits in the outermost finally, as in close(): a guard left behind locks the database out of
+    // batching until the process restarts (issue #5666)
+    try {
+      try {
+        // Before the settings are put back: the parallel connect pass runs on the async executor, under the relaxed
+        // policy the batch set for it
+        dropBufferedAndFinishFlushedEdges();
+      } finally {
+        database.setReadYourWrites(savedReadYourWrites);
+        restoreAsyncSettings();
+        maintenanceSuspension.close();
+        reportEdgesWritten();
+      }
+    } finally {
+      releaseBatchGuard();
+    }
+  }
+
+  /**
+   * The part of {@link #abandon()} that writes (issue #13163): drops the buffered edges, then connects the deferred
+   * incoming side of the flushed ones and writes the head pointers their vertices' edge lists moved to. The two steps
+   * are tried independently, so a failure of the first still writes the head pointers of the outgoing side. Never
+   * throws.
+   */
+  private void dropBufferedAndFinishFlushedEdges() {
+    // Never written and never counted: dropped, so neither this pass nor a close() afterwards writes them
+    Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
+    edgeCount = 0;
+
+    final boolean incomingPending = bidirectional && inEdgeCount > 0;
+    if (!incomingPending && deferredHeads.isEmpty())
+      return;
+
+    if (database.isTransactionActive()) {
+      LogManager.instance().log(this, Level.WARNING,
+          "GraphBatch.abandon() was called inside a transaction the caller opened: %d deferred incoming edge(s) and the head pointers of %d vertices of the edges already committed are not written. Call close() outside that transaction to write them, or run CHECK DATABASE FIX to relink the edges",
+          null, inEdgeCount, deferredHeads.size());
+      return;
+    }
+
+    final WALFile.FlushType walFlushBefore = threadWalFlush();
+    try {
+      if (incomingPending)
+        try {
+          connectDeferredIncomingEdges();
+        } catch (final RuntimeException e) {
+          rollbackAfterFailedFinish();
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphBatch.abandon(): connecting the incoming side of the edges already committed failed, %d deferred incoming edge(s) are not connected (CHECK DATABASE FIX relinks them)",
+              e, inEdgeCount);
+        }
+
+      if (!deferredHeads.isEmpty())
+        try {
+          batchUpdateVertexHeadChunks();
+        } catch (final RuntimeException e) {
+          rollbackAfterFailedFinish();
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphBatch.abandon(): writing the head pointers of %d vertices of the edges already committed failed (CHECK DATABASE FIX relinks the edges)",
+              e, deferredHeads.size());
+        }
+    } finally {
+      restoreThreadWalFlush(walFlushBefore);
+    }
+  }
+
+  /** The transaction a failed step of {@link #dropBufferedAndFinishFlushedEdges()} began is its own: never left open. */
+  private void rollbackAfterFailedFinish() {
+    try {
+      if (database.isTransactionActive())
+        database.rollback();
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "GraphBatch.abandon(): rolling back the failed step failed", e);
+    }
   }
 
   /**
