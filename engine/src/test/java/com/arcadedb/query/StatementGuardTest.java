@@ -463,6 +463,12 @@ class StatementGuardTest {
         super("throwCME");
       }
 
+      /** It reads its first argument: the registry is shared by the whole JVM, so the arity census of other tests probes this function too and must not be told it takes none. */
+      @Override
+      public int getMinArgs() {
+        return 1;
+      }
+
       @Override
       public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
           final CommandContext context) {

@@ -54,7 +54,8 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
     final ResultSet rs = database.query("sql", "SELECT text.jaroWinklerDistance('hello', 'hello') AS score");
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
-    assertThat(((Number) result.getProperty("score")).doubleValue()).isCloseTo(1.0, within(0.001));
+    // a distance, as apoc.text.jaroWinklerDistance answers (issue #12104): 0 for equal strings
+    assertThat(((Number) result.getProperty("score")).doubleValue()).isCloseTo(0.0, within(0.001));
   }
 
   @Test
@@ -63,27 +64,27 @@ class SQLStatelessFunctionBridgeTest extends TestHelper {
     assertThat(rs.hasNext()).isTrue();
     final Result result = rs.next();
     final double score = ((Number) result.getProperty("score")).doubleValue();
-    assertThat(score).isGreaterThan(0.8);
-    assertThat(score).isLessThan(1.0);
+    assertThat(score).isGreaterThan(0.0);
+    assertThat(score).isLessThan(0.2);
   }
 
   @Test
   void jaroWinklerWithProperty() {
     final ResultSet rs = database.query("sql",
-        "SELECT name, text.jaroWinklerDistance(name, 'John') AS score FROM Person ORDER BY score DESC");
+        "SELECT name, text.jaroWinklerDistance(name, 'John') AS score FROM Person ORDER BY score ASC");
     final List<Result> results = rs.stream().toList();
     assertThat(results).hasSize(4);
-    // "John" should have score 1.0
-    assertThat(((Number) results.get(0).getProperty("score")).doubleValue()).isCloseTo(1.0, within(0.001));
+    // "John" should have distance 0.0
+    assertThat(((Number) results.get(0).getProperty("score")).doubleValue()).isCloseTo(0.0, within(0.001));
     assertThat((String) results.get(0).getProperty("name")).isEqualTo("John");
   }
 
   @Test
   void jaroWinklerInWhereClause() {
     final ResultSet rs = database.query("sql",
-        "SELECT name FROM Person WHERE text.jaroWinklerDistance(name, 'John') > 0.85");
+        "SELECT name FROM Person WHERE text.jaroWinklerDistance(name, 'John') < 0.15");
     final List<Result> results = rs.stream().toList();
-    // "John" (1.0) and "Jon" (>0.85) should match, but not "Jane" or "Alice"
+    // "John" (0.0) and "Jon" (< 0.15) should match, but not "Jane" or "Alice"
     assertThat(results.size()).isGreaterThanOrEqualTo(1);
     for (final Result r : results) {
       final String name = r.getProperty("name");

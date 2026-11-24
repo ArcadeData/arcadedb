@@ -24,6 +24,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BackupRefusedException;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -106,27 +108,32 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else
       checkRootUser(user);
 
-    // Write commands that must run on the leader: forward if this node is a replica
-    if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
-        command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
-        command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
-        command_lc.startsWith(IMPORT_DATABASE)) {
+    // The database a `create database` or `drop database` names, resolved once. Null for every other command
+    final boolean createsDatabase = command_lc.startsWith(CREATE_DATABASE);
+    final String targetDatabase = createsDatabase ? extractTarget(command, CREATE_DATABASE)
+        : command_lc.startsWith(DROP_DATABASE) ? extractTarget(command, DROP_DATABASE) : null;
+
+    // Commands that must run on the leader: forward if this node is a replica
+    if (isForwardedToLeader(command_lc)) {
       final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user,
           isLongRunningForwardedCommand(command_lc));
       // The leader's progress stream was relayed straight to the client (issue #7603): the response is already on
       // the wire, and null is how a handler says so to AbstractServerHttpHandler.
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
-      if (forwarded != null)
+      if (forwarded != null) {
+        if (forwarded.getCode() == 200 && targetDatabase != null)
+          awaitForwardedCommandApplied(targetDatabase, createsDatabase);
         return forwarded;
+      }
     }
 
     if (command_lc.startsWith(SHUTDOWN))
       shutdownServer(extractTarget(command, SHUTDOWN));
-    else if (command_lc.startsWith(CREATE_DATABASE))
-      createDatabase(extractTarget(command, CREATE_DATABASE));
-    else if (command_lc.startsWith(DROP_DATABASE))
-      dropDatabase(extractTarget(command, DROP_DATABASE));
+    else if (createsDatabase)
+      createDatabase(targetDatabase);
+    else if (targetDatabase != null)
+      dropDatabase(targetDatabase);
     else if (command_lc.startsWith(CLOSE_DATABASE))
       closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
@@ -422,7 +429,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse deleteBackup(final String args) {
     final int space = args.indexOf(' ');
     if (space <= 0)
-      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+      throw new BackupRefusedException("Usage: delete backup <database> <fileName>");
 
     final String databaseName = args.substring(0, space).trim();
     final String fileName = args.substring(space + 1).trim();
@@ -492,6 +499,31 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Holds the leader's answer to a forwarded {@code create database} or {@code drop database} until this node has applied
+   * what the leader had committed, bounded by the quorum timeout (issue #11739). The leader answers once the entry is
+   * committed, but this node installs or drops the database only when it applies it, which can be after the answer: relaying it
+   * at once let the client's next request to this node be refused with {@code DatabaseNotFoundException} after a creation, and
+   * {@code GET /api/v1/exists} still answer {@code true} after a drop.
+   * <p>
+   * The wait is on the Raft log, not on the state of the database here. A database of that name can already be on this node
+   * when the creation is applied (the leader dropped it and it was created again while this node lagged), and one that was
+   * closed here with {@code close database} reads as gone although its files stay until the drop is applied. It asks the
+   * leader for its commit index instead of reading one from the forwarded answer, so it also holds for an answer the leader
+   * replayed for a retried {@code X-Request-Id} and for a leader that changed while the command ran.
+   * <p>
+   * The change is made on the leader either way, so a wait that could not finish still answers success. These commands are
+   * root-only and rare, which is what bounds the HTTP worker threads that can sit in the wait.
+   */
+  private void awaitForwardedCommandApplied(final String databaseName, final boolean created) {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.awaitLeaderCommitApplied())
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s' was %s by the leader, but this server could not confirm that it has applied the change: a request for "
+              + "it here may see the previous state until this server catches up",
+          databaseName, created ? "created" : "dropped");
+  }
+
+  /**
    * Restores a database from a backup URL. Format: {@code restore database <name> <url>}.
    * Streams progress as SSE when the client sends {@code Accept: text/event-stream}.
    * <p>
@@ -502,13 +534,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse restoreDatabase(final String args, final HttpServerExchange exchange) {
     final int space = args.indexOf(' ');
     if (space <= 0)
-      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+      throw new BackupRefusedException("Usage: restore database <name> <url>");
 
     final String databaseName = args.substring(0, space).trim();
     final String url = args.substring(space + 1).trim();
 
     if (databaseName.isEmpty() || url.isEmpty())
-      throw new IllegalArgumentException("Usage: restore database <name> <url>");
+      throw new BackupRefusedException("Usage: restore database <name> <url>");
 
     // The leader gate now precedes the URL guard, which the shared implementation applies (it used to
     // run here, first). Deliberate: a node that is going to refuse the command should not first
@@ -533,18 +565,18 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private ExecutionResponse restoreBackup(final String args, final JSONObject payload, final HttpServerExchange exchange) {
     final int asIdx = args.toLowerCase(Locale.ENGLISH).lastIndexOf(" as ");
     if (asIdx <= 0)
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final String head = args.substring(0, asIdx).trim();
     final String targetDatabase = args.substring(asIdx + 4).trim();
     final int space = head.indexOf(' ');
     if (space <= 0 || targetDatabase.isEmpty())
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final String databaseName = head.substring(0, space).trim();
     final String fileName = head.substring(space + 1).trim();
     if (databaseName.isEmpty() || fileName.isEmpty())
-      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+      throw new BackupRefusedException("Usage: restore backup <database> <fileName> as <targetDatabase>");
 
     final boolean overwrite = payload.getBoolean("overwrite", false);
 
@@ -814,20 +846,43 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Which commands a replica hands to the leader instead of running them itself.
+   * <p>
+   * The first group writes cluster state, which only the leader may do. The backup commands are here for another
+   * reason (issue #12417): a backup directory is local to its node, and {@code restore backup} reads the leader's.
+   * While {@code trigger backup}, {@code list backups} and {@code delete backup} ran where the request landed, a
+   * follower wrote an archive of its own copy of the database into its own directory, answered OK, and no restore
+   * could reach the file; its listing named archives the restore refused as not found. Forwarded, the four commands
+   * act on one directory, and the archive is taken from the leader's copy, like the scheduled one is by default
+   * ({@code runOnServer: $leader}).
+   *
+   * @param command_lc the command, already lower-cased and trimmed the way {@link #execute} does it
+   */
+  static boolean isForwardedToLeader(final String command_lc) {
+    return command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
+        command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
+        command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
+        command_lc.startsWith(IMPORT_DATABASE) ||
+        command_lc.startsWith(TRIGGER_BACKUP) || command_lc.startsWith(LIST_BACKUPS) ||
+        command_lc.startsWith(DELETE_BACKUP);
+  }
+
+  /**
    * Which of the forwarded commands gets the long response deadline rather than the ordinary one (issue #7507).
    * <p>
    * Every forward is bounded, because it is an Undertow worker thread that waits for the leader's answer. These
-   * three legitimately run for minutes though, so bounding them with {@code HA_PROXY_READ_TIMEOUT} would abort
+   * legitimately run for minutes though, so bounding them with {@code HA_PROXY_READ_TIMEOUT} would abort
    * exactly the operations that most need to reach the leader; they get
-   * {@code HA_PROXY_LONG_COMMAND_TIMEOUT} instead. The set is a subset of the commands that forward at all -
-   * see the guard in {@link #execute} - so a command added to one list and not the other simply keeps the
-   * ordinary deadline.
+   * {@code HA_PROXY_LONG_COMMAND_TIMEOUT} instead. {@code trigger backup} is one of them since issue #12417: the
+   * leader answers when the archive is written, however large the database. The set is a subset of the commands
+   * that forward at all - see {@link #isForwardedToLeader} - so a command added to one list and not the other
+   * simply keeps the ordinary deadline.
    *
    * @param command_lc the command, already lower-cased and trimmed the way {@link #execute} does it
    */
   static boolean isLongRunningForwardedCommand(final String command_lc) {
     return command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
-        command_lc.startsWith(IMPORT_DATABASE);
+        command_lc.startsWith(IMPORT_DATABASE) || command_lc.startsWith(TRIGGER_BACKUP);
   }
 
   private void checkServerIsLeaderIfInHA() {

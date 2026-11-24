@@ -63,12 +63,22 @@ class VectorWorkloadIT {
     assertThat(ITSupport.metric(knn, "latency_p95_ms")).isNotNull();
   }
 
+  // embedding-like vectors keep a recall above the gate even with the narrowest beam (the engine widens it to k), so the
+  // case is driven to a low recall with uniform vectors, the worst case for approximate search
   @Test
   void lowRecallFailsCase() {
-    final List<CaseResult> results = ITSupport.run(new VectorWorkload(), server, new JSONObject().put("efSearch", 1));
+    final List<CaseResult> results = ITSupport.run(new VectorWorkload(), server,
+        new JSONObject().put("efSearch", 1).put("vectors", "uniform"));
     final CaseResult knn = results.stream().filter(r -> r.caseName().equals("knn-k10")).findFirst().orElseThrow();
     assertThat(knn.status()).isEqualTo(CaseResult.Status.FAILED);
     assertThat(knn.error()).contains("recall");
     assertThat(ITSupport.metric(knn, "recall_at_10")).isNotNull();
+  }
+
+  @Test
+  void unknownVectorsParamIsRefused() {
+    final List<CaseResult> results = ITSupport.run(new VectorWorkload(), server, new JSONObject().put("vectors", "gaussian"));
+    assertThat(results).extracting(CaseResult::status).containsOnly(CaseResult.Status.FAILED);
+    assertThat(results.get(0).error()).contains("vectors").contains("gaussian");
   }
 }

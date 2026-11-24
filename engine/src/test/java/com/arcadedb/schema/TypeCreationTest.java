@@ -933,7 +933,7 @@ class TypeCreationTest {
       createExternalSuperType();
       squat("W_0_ext");
       database.getSchema().createBucket("W_0");
-      database.transaction(() -> ((DatabaseInternal) database).createRecord(database.newDocument("Indexed").set("p", "kept"), "W_0"));
+      writeIntoBucketOfNoType("Indexed", "W_0", "kept");
       final int indexFilesBefore = subIndexCountOf("Indexed");
 
       assertThatThrownBy(() -> database.getSchema().buildDocumentType().withName("W").withSuperType("Indexed").withSuperType("Holder")
@@ -967,10 +967,8 @@ class TypeCreationTest {
       database.getSchema().createDocumentType("Plain");
       database.getSchema().createBucket("Free");
       database.getSchema().createBucket("C_0");
-      database.transaction(() -> {
-        ((DatabaseInternal) database).createRecord(database.newDocument("Plain").set("p", "free"), "Free");
-        ((DatabaseInternal) database).createRecord(database.newDocument("Plain").set("p", "found"), "C_0");
-      });
+      writeIntoBucketOfNoType("Plain", "Free", "free");
+      writeIntoBucketOfNoType("Plain", "C_0", "found");
 
       assertThatThrownBy(() -> database.command("sql", "CREATE DOCUMENT TYPE B EXTENDS Holder BUCKET Free"))
           .isInstanceOf(SchemaException.class).hasMessageContaining("Free_ext");
@@ -1096,6 +1094,18 @@ class TypeCreationTest {
     private void squat(final String bucketName) {
       database.command("sql", "CREATE BUCKET " + bucketName);
       database.command("sql", "CREATE DOCUMENT TYPE Squatter_" + bucketName + " BUCKET " + bucketName);
+    }
+
+    /**
+     * Leaves a record in {@code bucketName}, a bucket of no type, the one way such a record comes to be: written while the bucket
+     * belonged to {@code typeName}, then the bucket detached. Creating it there directly is refused (#12959).
+     */
+    private void writeIntoBucketOfNoType(final String typeName, final String bucketName, final String value) {
+      final DocumentType type = database.getSchema().getType(typeName);
+      final Bucket bucket = database.getSchema().getBucketByName(bucketName);
+      type.addBucket(bucket);
+      database.transaction(() -> database.newDocument(typeName).set("p", value).save(bucketName));
+      type.removeBucket(bucket);
     }
 
     private void assertSquatterIntact(final String bucketName) {

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -36,17 +37,118 @@ public class MaterializedViewRefresher {
   public static void fullRefresh(final Database database, final MaterializedViewImpl view) {
     // A per-record view passes the request through its pending delta (issue #11475): the pass that drains it, this caller's or
     // the running owner's next one, then rewrites the whole view instead of only the records changed meanwhile
-    if (view.isPerRecord())
+    if (view.tracksPendingDelta())
       view.requestFullPass(false);
     refresh(database, view, false);
   }
 
   /**
-   * Asks a per-record view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
-   * database open, a leadership acquisition) never waits on it (issue #11550). The pending delta and the recovery mark live in
-   * memory only, so after a crash or a failover nothing says which commits the view is missing: the full pass rewrites only the
-   * rows whose source changed, matched through the {@code _sourceRID} index, so a view that misses nothing costs reads, not
-   * writes. The view says STALE until that pass ends VALID.
+   * Brings every REFRESH INCREMENTAL view that reads {@code superType}, or a type above it, in line with its query after
+   * {@code subType} was linked below {@code superType} or unlinked from it (issue #12031). The view's listeners follow the change by
+   * themselves, because a write reaches them through the lineage of the written record's type at the time of the write (issue
+   * #10205), but the records already stored in the attached or detached subtree were never written through them: the view lacked
+   * the attached ones and kept the detached ones, while reporting VALID.
+   * <p>
+   * What moved into or out of the views' reach is the records of {@code subType} and the types below it, and nothing else:
+   * <ul>
+   * <li>a subtree that holds no record (every {@code CREATE TYPE ... EXTENDS}) changes the rows of no view, so nothing is done;</li>
+   * <li>a per-record view re-evaluates just those records, through its pending delta like the commit of a change to them would, so
+   * the cost is the size of the subtree and not of the view. A subtree beyond the cap of a delta pass, or one that cannot be read,
+   * makes it a full pass instead;</li>
+   * <li>a whole-view view rewrites itself, as it does after every commit.</li>
+   * </ul>
+   * The plan caches are flushed first: the schema frame that called flushes them only when it ends, after this pass, and a plan of
+   * a view's query cached by an earlier refresh carries the buckets of the former hierarchy.
+   * <p>
+   * Nothing to do while the schema is read from file or a {@code dropType} cascade re-parents sub types: both re-establish a
+   * linkage that already held. A failed pass does not fail the schema change, which has already happened: the view is left STALE,
+   * as a failed incremental refresh leaves it, and the next refresh repairs it.
+   */
+  static void refreshViewsOverHierarchyChange(final LocalSchema schema, final DocumentType subType, final DocumentType superType) {
+    if (schema.isReadingFromFile() || schema.isTypeBeingDropped())
+      return;
+
+    final List<MaterializedViewImpl> affected = new ArrayList<>();
+    synchronized (schema) {
+      for (final MaterializedViewImpl view : schema.materializedViews.values())
+        if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL && readsTypeOrAbove(view, superType))
+          affected.add(view);
+    }
+    if (affected.isEmpty())
+      return;
+
+    final DatabaseInternal database = (DatabaseInternal) schema.getDatabase();
+
+    // A whole-view view only needs to know whether there is anything: one record is enough
+    int cap = 1;
+    for (final MaterializedViewImpl view : affected)
+      if (view.isPerRecord()) {
+        cap = view.maxPerRecordDelta();
+        break;
+      }
+
+    final RecordIdentities moved = recordsOfSubtree(database, subType, cap);
+    if (moved != null && moved.size() == 0)
+      return;
+
+    database.getExecutionPlanCache().invalidate();
+
+    for (final MaterializedViewImpl view : affected) {
+      try {
+        if (view.isPerRecord()) {
+          if (moved == null)
+            view.requestFullPass(false);
+          else
+            view.appendPendingDelta(moved);
+        }
+        refresh(database, view, false);
+      } catch (final RuntimeException e) {
+        view.setStatus(MaterializedViewStatus.STALE);
+        persistStatus(database, view.getName(), view.getStatus());
+        LogManager.instance().log(MaterializedViewRefresher.class, Level.WARNING,
+            "Error refreshing materialized view '%s' after the subtypes of '%s' changed, marking as STALE: %s", e, view.getName(),
+            superType.getName(), e.getMessage());
+      }
+    }
+  }
+
+  /**
+   * The records of {@code type} and the types below it, up to {@code cap}; {@code null} when there are more, or when they cannot be
+   * read (the caller then owes a full pass, which makes no assumption about what moved).
+   */
+  private static RecordIdentities recordsOfSubtree(final Database database, final DocumentType type, final int cap) {
+    final RecordIdentities records = new RecordIdentities(Math.min(cap, 16));
+    try {
+      // The scan needs a transaction: the caller's when it has one, a read-only one of its own otherwise
+      database.transaction(() -> database.scanType(type.getName(), true, record -> {
+        records.add(record.getIdentity());
+        return records.size() <= cap;
+      }));
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(MaterializedViewRefresher.class, Level.FINE,
+          "Cannot read the records of type '%s' to find what its super types moved: the views get a full pass: %s", e, type.getName(),
+          e.getMessage());
+      return null;
+    }
+    return records.size() > cap ? null : records;
+  }
+
+  /** Whether {@code SELECT FROM} one of the view's source types reaches the records of {@code type}'s subtypes. */
+  private static boolean readsTypeOrAbove(final MaterializedViewImpl view, final DocumentType type) {
+    for (final String sourceType : view.getSourceTypeNames())
+      if (type.instanceOf(sourceType))
+        return true;
+    return false;
+  }
+
+  /**
+   * Asks an INCREMENTAL view for the recovery full pass and hands that pass to the schema's scheduler thread, so the caller (a
+   * database open, a leadership acquisition) never waits on it. A per-record view's pending delta and recovery mark live in memory
+   * only (issue #11550), and a view refreshed as a whole owes the pass its after-commit callback was making when the process died
+   * (issue #12220): after a crash or a failover nothing says which commits the view is missing. For a per-record view the full
+   * pass rewrites only the rows whose source changed, matched through the {@code _sourceRID} index, so a view that misses nothing
+   * costs reads, not writes; a view refreshed as a whole is rewritten in place, as every pass of it is. The view says STALE until
+   * that pass ends VALID.
    * <p>
    * When another thread owns the refresh, the request goes to it: its next pass drains the recovery mark set here. Returns
    * {@code false} when the scheduler cannot take the pass (closed, or not a local schema): the view then keeps the recovery mark,
@@ -114,8 +216,11 @@ public class MaterializedViewRefresher {
           replaced = true;
           break;
         }
-        MaterializedViewImpl.PendingDelta delta = view.isPerRecord() ? view.drainPendingDelta() : null;
-        if (delta != null && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
+        // Drained for every view, so a recovery mark (issues #11550, #12220) is taken by the pass that covers it: a view refreshed as
+        // a whole rewrites everything at every pass, so for it the mark only says the pass is owed
+        MaterializedViewImpl.PendingDelta delta = view.drainPendingDelta();
+        final boolean tracksDelta = view.tracksPendingDelta();
+        if (tracksDelta && delta.recovery() && mayHandOffFurtherPasses && !onScheduler) {
           // The full pass a failed pass owes (issue #11475) rewrites the whole view, and the commit that found it pending owes
           // its client nothing of that cost: the request goes back and the scheduler makes it. Until it succeeds the view says
           // STALE, persisted, because the records the failed pass drained are not in it.
@@ -130,19 +235,23 @@ public class MaterializedViewRefresher {
 
         // #11019: a pass that starts from a non-VALID status has to write the VALID it ends in, or a reopen brings the old one back
         final boolean persistedStatusIsStale = !MaterializedViewStatus.VALID.name().equals(view.getStatus());
-        view.setStatus(MaterializedViewStatus.BUILDING);
+        // #12252: reported, never saved: a schema save while the pass runs keeps the status it started from
+        view.markPassRunning();
         final long startNs = System.nanoTime();
 
-        if (delta != null)
+        if (!tracksDelta)
+          refreshOnce(database, view);
+        else if (view.isPerRecord())
           perRecordPass(database, view, delta);
         else
-          refreshOnce(database, view);
+          MaterializedViewGroupedRefresher.pass(database, view, delta);
 
         view.recordRefreshSuccess((System.nanoTime() - startNs) / 1_000_000);
         view.updateLastRefreshTime();
-        // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475): this pass
-        // did not cover those records, so it does not end VALID; the further pass it was asked for makes the recovery
-        if (view.isPerRecord() && view.owesRecoveryPass())
+        // A replaced instance whose pass failed while this one ran asked it for the recovery full pass (issue #11475), or a recovery
+        // was asked while this pass ran (issue #12220): this pass may not cover those commits, so it does not end VALID; the further
+        // pass it was asked for makes the recovery
+        if (view.owesRecoveryPass())
           view.setStatus(MaterializedViewStatus.STALE);
         else {
           view.setStatus(MaterializedViewStatus.VALID);
@@ -154,7 +263,7 @@ public class MaterializedViewRefresher {
         // rows without the source link the upgraded view matches by (issue #11475). The ALTER registered its replacement before
         // its own pass started, so either this pass committed first and that pass deleted its rows, or it is seen here and the
         // full pass passed on deletes them
-        if (delta == null && view.current() != view) {
+        if (!tracksDelta && view.current() != view) {
           replaced = true;
           break;
         }
@@ -171,16 +280,22 @@ public class MaterializedViewRefresher {
       // A per-record pass that failed took its records out of the pending delta and wrote none of them: only a full pass
       // repairs that, so it is asked for here, before the ownership is released, and the next pass of any trigger makes it.
       // Without it the next commit's delta pass ended VALID over a view still missing the failed pass's records (#11475).
-      if (view.isPerRecord())
+      if (view.tracksPendingDelta()) {
         view.requestFullPass(true);
+        // what the failed pass drained of a grouped view's delta is gone with it: its state is rebuilt from the source
+        view.setGroupedRuntime(null);
+      }
       view.setStatus(MaterializedViewStatus.ERROR);
-      // An ALTER that replaced this instance while the pass ran copied only what was still pending, not what the pass had drained:
-      // the full pass is owed by the registered view too, or its next delta pass ends VALID over the records this one failed to
-      // write. Only its flags are touched, never its ownership; a pass of it running now is asked to make one more, which drains
-      // the request. Set before the save below, so the status stored is the registered view's
+      // An ALTER that replaced this instance while the pass ran copied the status the pass started from, and only what was still
+      // pending, not what the pass had drained. The registered view holds the rows from before this pass whatever its kind, so it
+      // is STALE (a VALID copied before the failure stayed VALID, issue #12252 review); a per-record one also owes the full pass,
+      // or its next delta pass ends VALID over the records this one failed to write. Only its flags are touched, never its
+      // ownership; a pass of it running now is asked to make one more, which drains the request and settles the status. Set
+      // before the save below, so the status stored is the registered view's
       final MaterializedViewImpl current = view.current();
-      if (current != view && current.isPerRecord()) {
-        current.requestFullPass(true);
+      if (current != view) {
+        if (current.tracksPendingDelta())
+          current.requestFullPass(true);
         current.setStatus(MaterializedViewStatus.STALE);
         current.markRefreshPendingIfRunning();
       }
@@ -217,7 +332,7 @@ public class MaterializedViewRefresher {
       final boolean mayHandOffFurtherPasses) {
     replaced.endRefresh();
     final MaterializedViewImpl current = replaced.current();
-    if (current.isPerRecord())
+    if (current.tracksPendingDelta())
       current.requestFullPass(false);
     refresh(database, current, mayHandOffFurtherPasses);
   }
@@ -329,7 +444,7 @@ public class MaterializedViewRefresher {
    * ceiling - the repopulate was already a single unbounded transaction, so a view too large to refresh in one
    * transaction was already too large to refresh.
    */
-  private static void refreshOnce(final Database database, final MaterializedViewImpl view) {
+  static void refreshOnce(final Database database, final MaterializedViewImpl view) {
     final String backingTypeName = view.getBackingTypeName();
 
     // Use joinCurrentTx=false to always create a dedicated transaction for the refresh.
@@ -399,7 +514,7 @@ public class MaterializedViewRefresher {
    * resize and nothing else - which spares the common case, a view whose row count barely moves between refreshes,
    * from growing them at all.
    */
-  private static RecordIdentities collectIdentities(final Database database, final String backingTypeName) {
+  static RecordIdentities collectIdentities(final Database database, final String backingTypeName) {
     final long count = database.countType(backingTypeName, false);
     final RecordIdentities identities = new RecordIdentities(
         count > 0 && count < Integer.MAX_VALUE ? (int) count : 16);

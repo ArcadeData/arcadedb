@@ -627,7 +627,7 @@ final class TimeSeriesHandlerUtils {
      * that many rows (code review on PR #7720).
      * <p>
      * The off-by-one is what separates a complete response from a truncated one, so it is pinned rather than
-     * merely argued: {@code Issue7663GrafanaPrometheusRowCeilingIT}'s
+     * merely argued: {@code GrafanaPrometheusRowCeilingIT}'s
      * {@code theGrafanaRawBranchServesExactlyTheCeilingAndRefusesOneMore} and
      * {@code thePrometheusReadServesExactlyTheCeilingAndRefusesOneMore} fail if this arithmetic moves in either
      * direction, and {@code RowBudgetTest} covers the edges directly.

@@ -90,7 +90,7 @@ import java.util.Set;
  * {@code /api/v1/ts/{database}} route answers, and on a fan-in endpoint it is the answer that reaches the operator. A
  * shipper pointed at the wrong database name sends empty scrapes too, and a 204 for those told it the batch was
  * delivered, so the misconfiguration surfaced only with the first real sample - or never, for a quiet target. What must
- * never happen is a 500. {@code Issue7831TimeSeriesRoutesNonexistentDatabaseIT} pins 404 on every route of the family,
+ * never happen is a 500. {@code TimeSeriesHttpContractIT.NonexistentDatabaseRoutes} pins 404 on every route of the family,
  * and that the 400 still answers an empty body against a database that exists; do not move a body check ahead of the
  * database resolution without changing both.
  *
@@ -192,12 +192,15 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     // TimeSeriesShard.appendSamples commits its own shard transaction, so a denial discovered mid-loop would
     // return 403 with the earlier series already durable. Checked by NAME so a denied metric is refused without
     // its type being auto-created first; an unknown name has no entry in the permission map and stays allowed,
-    // which is what keeps auto-create working for a brand-new metric.
+    // which is what keeps auto-create working for a brand-new metric. The name checked is the one an existing type is
+    // registered under: the metric can be named by an alias of it.
     for (final TimeSeries ts : writeRequest.getTimeSeries()) {
       final String metricName = ts.getMetricName();
       if (metricName == null || metricName.isEmpty())
         continue;
-      database.checkPermissionsOnType(sanitizeTypeName(metricName), SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+      final String typeName = sanitizeTypeName(metricName);
+      final DocumentType existing = database.getSchema().getTypeOrNull(typeName);
+      database.checkPermissionsOnType(existing != null ? existing.getName() : typeName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
     }
 
     // NOTE: this transaction does NOT make the request atomic. TimeSeriesShard.appendSamples runs its own

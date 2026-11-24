@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bench.server;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
@@ -32,6 +33,7 @@ import org.testcontainers.DockerClientFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.BindMode;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -39,6 +41,11 @@ import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,6 +58,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -70,6 +85,16 @@ public final class ServerUnderTest implements AutoCloseable {
   private static final int  GRPC_PORT         = 50051;
   private static final long GIB               = 1024L * 1024 * 1024;
   private static final long FRESH_SAMPLE_WAIT = 1_500L;
+  /** How long one probe of the liveness check waits for {@code /api/v1/ready}. */
+  private static final Duration READY_TIMEOUT  = Duration.ofSeconds(5);
+  /** How many probes the liveness check makes before it calls a running server dead, and the pause between two of them. */
+  private static final int      READY_PROBES   = 3;
+  private static final Duration READY_PAUSE    = Duration.ofSeconds(2);
+  /** How long a {@code jcmd} inside the container may take: a wedged JVM must not hang the run. */
+  private static final Duration JCMD_DEADLINE  = Duration.ofSeconds(30);
+
+  /** The death reason of a server whose container runs but which does not answer. */
+  public static final String NOT_ANSWERING = "not answering /api/v1/ready";
 
   private final GenericContainer<?> container;
   private final String              image;
@@ -113,6 +138,24 @@ public final class ServerUnderTest implements AutoCloseable {
     return colon > name.lastIndexOf('/') && name.substring(colon + 1).contains("native");
   }
 
+  /** Read timeout of the server under test: the default case timeout, so no statement of a case outlives its connection. */
+  static final int SOCKET_TIMEOUT_MS = 30 * 60 * 1000;
+
+  /**
+   * The settings of the server under test, the given ones winning. The socket timeout is raised from its 30 s default because
+   * the remote client talks HTTP/2 and the server closes an HTTP/2 connection one socket timeout into a statement (issue
+   * #12606): an index build longer than that fails with "EOF reached while reading" although the server completes it.
+   */
+  static Map<String, String> settings(final Map<String, String> settings) {
+    final Map<String, String> all = new LinkedHashMap<>();
+    all.put("arcadedb.server.rootPassword", PASSWORD);
+    all.put("arcadedb.backup.enabled", "false");
+    all.put("arcadedb.server.plugins", "PrometheusMetricsPlugin");
+    all.put("arcadedb.network.socketTimeout", String.valueOf(SOCKET_TIMEOUT_MS));
+    all.putAll(settings);
+    return all;
+  }
+
   /**
    * Starts the server and waits for {@code /api/v1/ready}. Settings are environment variables named after the setting, as
    * {@code ContainersTestTemplate.configureServer} does: the heap goes to {@code ARCADEDB_OPTS_MEMORY} for the JVM image and to
@@ -120,11 +163,7 @@ public final class ServerUnderTest implements AutoCloseable {
    */
   public static ServerUnderTest start(final String image, final String cpuset, final int memLimitGb, final String heap,
       final Map<String, String> settings) {
-    final Map<String, String> all = new LinkedHashMap<>();
-    all.put("arcadedb.server.rootPassword", PASSWORD);
-    all.put("arcadedb.backup.enabled", "false");
-    all.put("arcadedb.server.plugins", "PrometheusMetricsPlugin");
-    all.putAll(settings);
+    final Map<String, String> all = settings(settings);
 
     final String memoryOpts = "-Xms" + heap + " -Xmx" + heap;
     final long memory = memLimitGb * GIB;
@@ -205,6 +244,199 @@ public final class ServerUnderTest implements AutoCloseable {
         .put("imageDigest", digest)
         .put("revision", revision)
         .put("variant", nativeImage ? "native" : "jvm");
+  }
+
+  /**
+   * Null while {@code /api/v1/ready} answers, else why the server does not: {@code "OOMKilled"} or {@code "exit code <n>"} when
+   * Docker says the container stopped, {@link #NOT_ANSWERING} when it still runs (or cannot be inspected) but misses
+   * {@value #READY_PROBES} probes of 5 s each, 2 s apart. One slow answer (a long GC pause) is not a death.
+   */
+  public String deathReason() {
+    return deathReason(this::answersReady, this::stoppedReason, READY_PROBES, READY_PAUSE);
+  }
+
+  /**
+   * The liveness check over its two sources: after each missed probe Docker is asked, and a container it reports stopped ends
+   * the check at once; a running one gets another probe after {@code pause}, up to {@code probes} in all. An interrupt during a
+   * pause ends the check as {@link #NOT_ANSWERING} with the interrupt kept, for the caller to see.
+   */
+  static String deathReason(final BooleanSupplier ready, final Supplier<String> stopped, final int probes, final Duration pause) {
+    for (int i = 1; i <= probes; i++) {
+      if (ready.getAsBoolean())
+        return null;
+      final String reason = stopped.get();
+      if (reason != null)
+        return reason;
+      if (i < probes && !pause.isZero())
+        try {
+          Thread.sleep(pause.toMillis());
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return NOT_ANSWERING;
+        }
+    }
+    return NOT_ANSWERING;
+  }
+
+  /** {@code "OOMKilled"} or {@code "exit code <n>"} when Docker says the container stopped; null when it runs or cannot tell. */
+  private String stoppedReason() {
+    try {
+      final InspectContainerResponse.ContainerState state = docker.inspectContainerCmd(container.getContainerId()).exec().getState();
+      if (state != null) {
+        if (Boolean.TRUE.equals(state.getOOMKilled()))
+          return "OOMKilled";
+        if (Boolean.FALSE.equals(state.getRunning()))
+          return "exit code " + state.getExitCodeLong();
+      }
+    } catch (final RuntimeException e) {
+      LOGGER.warn("Cannot inspect the container of the server under test: {}", e.toString());
+    }
+    return null;
+  }
+
+  private boolean answersReady() {
+    try (final HttpClient client = HttpClient.newBuilder().connectTimeout(READY_TIMEOUT).build()) {
+      final HttpRequest request = HttpRequest.newBuilder(URI.create(httpUrl() + "/api/v1/ready")).timeout(READY_TIMEOUT).GET()
+          .build();
+      final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+      return status >= 200 && status < 300;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    } catch (final IOException | RuntimeException e) {
+      return false;
+    }
+  }
+
+  /** The class rows of the histogram kept in {@link #diagnostics()}: the biggest classes by bytes, as jcmd orders them. */
+  static final int HISTOGRAM_ROWS = 30;
+
+  /**
+   * Writes a thread dump of the server ({@code jcmd 1 Thread.print}, run inside the container) to {@code file}. The native image
+   * has no jcmd and no attach mechanism, and a SIGQUIT could end it: it gets no dump and no signal, and this returns false.
+   * False also when jcmd fails.
+   */
+  public boolean threadDump(final Path file) {
+    if (nativeImage)
+      return false;
+    final String text = jcmd("Thread.print");
+    if (text == null)
+      return false;
+    try {
+      Files.writeString(file, text, StandardCharsets.UTF_8);
+      return true;
+    } catch (final IOException e) {
+      LOGGER.warn("Cannot write the thread dump {}: {}", file, e.toString());
+      return false;
+    }
+  }
+
+  /** As {@link #diagnostics(boolean)} with the class histogram. */
+  public JSONObject diagnostics() {
+    return diagnostics(true);
+  }
+
+  /**
+   * What the run file keeps about the server at the end of a workload: {@code threads}, its thread count read from
+   * {@code /proc/<pid>/status} on the host (absent where the host has no such file, as under Docker Desktop), and, for the JVM
+   * image only and when {@code classHistogram} is asked for, {@code classHistogram}, the first {@value #HISTOGRAM_ROWS} class rows
+   * of {@code jcmd 1 GC.class_histogram}. Nothing here sends the native image a signal.
+   */
+  public JSONObject diagnostics(final boolean classHistogram) {
+    final JSONObject json = new JSONObject();
+    final int threads = threadCount();
+    if (threads >= 0)
+      json.put("threads", threads);
+    if (classHistogram && !nativeImage) {
+      final String histogram = jcmd("GC.class_histogram");
+      if (histogram != null)
+        json.put("classHistogram", topClasses(histogram, HISTOGRAM_ROWS));
+    }
+    return json;
+  }
+
+  /** A class row of {@code GC.class_histogram}: {@code "   1:   12345   678901  java.lang.String"}; the header lines are not. */
+  private static final Pattern HISTOGRAM_ROW = Pattern.compile("^\\s*\\d+:\\s+\\d+");
+
+  /** The first {@code n} class rows of a class histogram, header and total lines left out: the top {@code n} classes. */
+  static JSONArray topClasses(final String histogram, final int n) {
+    final JSONArray rows = new JSONArray();
+    for (final String line : histogram.split("\\R")) {
+      if (rows.length() >= n)
+        break;
+      if (HISTOGRAM_ROW.matcher(line).find())
+        rows.put(line);
+    }
+    return rows;
+  }
+
+  /** The {@code Threads:} value of a {@code /proc/<pid>/status} text; -1 when it has none. */
+  static int threadsOf(final String status) {
+    for (final String line : status.split("\\R"))
+      if (line.startsWith("Threads:"))
+        try {
+          return Integer.parseInt(line.substring("Threads:".length()).trim());
+        } catch (final NumberFormatException e) {
+          return -1;
+        }
+    return -1;
+  }
+
+  /** The thread count of the server process as the host sees it; -1 when it cannot be read. */
+  private int threadCount() {
+    try {
+      final InspectContainerResponse.ContainerState state = docker.inspectContainerCmd(container.getContainerId()).exec().getState();
+      final Long pid = state != null ? state.getPidLong() : null;
+      if (pid == null || pid <= 0)
+        return -1;
+      final Path status = Path.of("/proc", String.valueOf(pid), "status");
+      if (!Files.isReadable(status))
+        return -1;
+      return threadsOf(Files.readString(status, StandardCharsets.UTF_8));
+    } catch (final IOException | RuntimeException e) {
+      return -1;
+    }
+  }
+
+  /**
+   * The output of {@code jcmd 1 <command>} inside the container (the JVM is PID 1, server.sh execs it); null on failure, and null
+   * when it has not answered within {@link #JCMD_DEADLINE}.
+   */
+  private String jcmd(final String command) {
+    final Container.ExecResult result = withDeadline(() -> container.execInContainer("jcmd", "1", command), JCMD_DEADLINE,
+        "jcmd " + command);
+    if (result == null)
+      return null;
+    if (result.getExitCode() != 0) {
+      LOGGER.warn("jcmd {} exited with {}: {}", command, result.getExitCode(), result.getStderr());
+      return null;
+    }
+    return result.getStdout();
+  }
+
+  /**
+   * The value of {@code call}, run on a daemon thread of its own and given up on after {@code deadline}: null then, and null when
+   * it fails. A call given up on is interrupted and left to end on its own; being a daemon it never holds the JVM open.
+   */
+  static <T> T withDeadline(final Callable<T> call, final Duration deadline, final String what) {
+    final FutureTask<T> task = new FutureTask<>(call);
+    final Thread thread = new Thread(task, "bench-" + what.replace(' ', '-'));
+    thread.setDaemon(true);
+    thread.start();
+    try {
+      return task.get(deadline.toNanos(), TimeUnit.NANOSECONDS);
+    } catch (final TimeoutException e) {
+      task.cancel(true);
+      LOGGER.warn("{} gave no answer within {} s, given up", what, deadline.toSeconds());
+      return null;
+    } catch (final InterruptedException e) {
+      task.cancel(true);
+      Thread.currentThread().interrupt();
+      return null;
+    } catch (final ExecutionException e) {
+      LOGGER.warn("{} failed: {}", what, e.getCause() != null ? e.getCause().toString() : e.toString());
+      return null;
+    }
   }
 
   public JSONObject config() {

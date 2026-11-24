@@ -73,12 +73,8 @@ public class FilterByTypeStep extends AbstractExecutionStep {
           nextItem = prevResult.next();
           final long begin = context.isProfiling() ? System.nanoTime() : 0;
           try {
-            if (nextItem.isElement()) {
-              final DocumentType typez = nextItem.getElement().get().getType();
-              if (typez != null && typez.isSubTypeOf(identifier.getStringValue())) {
-                break;
-              }
-            }
+            if (isInstanceOf(nextItem, identifier.getStringValue()))
+              break;
             nextItem = null;
           } finally {
             if (context.isProfiling()) {
@@ -126,6 +122,14 @@ public class FilterByTypeStep extends AbstractExecutionStep {
   /** The type every row must be an instance of: a parallel aggregation checks it in its workers (issue #8333). */
   String getTypeName() {
     return identifier.getStringValue();
+  }
+
+  /** Whether the row is a record of the type or of a subtype of it, which is what this step keeps. */
+  static boolean isInstanceOf(final Result row, final String typeName) {
+    if (!row.isElement())
+      return false;
+    final DocumentType type = row.getElement().get().getType();
+    return type != null && type.isSubTypeOf(typeName);
   }
 
   @Override

@@ -81,7 +81,7 @@ class PostBatchHandlerBodyFailureTest {
    * The whole point, end to end over the very reader the batch parser uses: on a body that fails on the probe, a
    * {@link BufferedReader} must reach the end of the payload and then fail - never return the replayed lines. Without
    * the guard this reads the request line and the two records again, which on a unique index is the 409 duplicate key
-   * {@code Issue5470BatchStreamStallIT} sees instead of a 408 (issues #6180 and #6176).
+   * {@code PostBatchStreamStallIT} sees instead of a 408 (issues #6180 and #6176).
    */
   @Test
   void aReaderOverAFailedBodyNeverSeesTheReplayedLines() throws Exception {

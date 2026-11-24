@@ -78,7 +78,7 @@ class ForwardedWriteDeadlineTest {
 
   private static Method forwardMethod() throws NoSuchMethodException {
     final Method m = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-        String.class, String.class, Map.class, Object[].class);
+        String.class, String.class, Map.class, Object[].class, boolean.class);
     m.setAccessible(true);
     return m;
   }
@@ -87,7 +87,7 @@ class ForwardedWriteDeadlineTest {
     // The command budget is the DATABASE's arcadedb.command.timeout (issue #8313): the database here reads the same
     // configuration the server does, as one opened with no settings of its own would.
     final ContextConfiguration databaseConfiguration = server.getConfiguration();
-    final LocalDatabase local = mock(LocalDatabase.class);
+    final LocalDatabase local = localDatabase();
     when(local.getConfiguration()).thenReturn(databaseConfiguration);
     return new RaftReplicatedDatabase(server, local, raft);
   }
@@ -107,7 +107,7 @@ class ForwardedWriteDeadlineTest {
   private static <T extends ArcadeDBException> T invokeAndUnwrap(final RaftReplicatedDatabase db,
       final ContextConfiguration cfg, final Class<T> expectedType) throws Exception {
     try {
-      forwardMethod().invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+      forwardMethod().invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
       throw new AssertionError("expected the forward to throw");
     } catch (final InvocationTargetException e) {
       assertThat(e.getCause()).isInstanceOf(expectedType);
@@ -307,7 +307,7 @@ class ForwardedWriteDeadlineTest {
   }
 
   private static Object invoke(final RaftReplicatedDatabase db, final ContextConfiguration cfg) throws Exception {
-    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0]);
+    return forwardMethod().invoke(db, "sql", "update V set a = 1", null, new Object[0], true);
   }
 
   private static Object invokeExpectingFailure(final RaftReplicatedDatabase db, final ContextConfiguration cfg)
@@ -393,18 +393,18 @@ class ForwardedWriteDeadlineTest {
       final FakeRaftHAServer raft = FakeRaftHAServer.detached();
       raft.leaderHttpAddress(leader.address());
       raft.clusterToken("test-token");
-      final LocalDatabase local = mock(LocalDatabase.class);
+      final LocalDatabase local = localDatabase();
       when(local.getConfiguration()).thenReturn(cfg);
       final RaftReplicatedDatabase db = new RaftReplicatedDatabase(server, local, raft);
 
       final Method forward = RaftReplicatedDatabase.class.getDeclaredMethod("forwardCommandToLeaderViaRaft",
-          String.class, String.class, Map.class, Object[].class);
+          String.class, String.class, Map.class, Object[].class, boolean.class);
       forward.setAccessible(true);
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
       final Throwable thrown = leader.callWithin(() -> {
         try {
-          forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0]);
+          forward.invoke(db, "sql", "insert into V set a = 1", null, new Object[0], true);
           return null;
         } catch (final InvocationTargetException e) {
           return e.getCause();
@@ -465,5 +465,15 @@ class ForwardedWriteDeadlineTest {
 
       assertThat(leader.connectionClosedByCaller.await(GAVE_UP_BOUND_MS8325, TimeUnit.MILLISECONDS)).isTrue();
     }
+  }
+
+  /**
+   * A mocked database with a path: a forward the leader answered marks the transactions stacked on the thread, looked up by the
+   * database path, and a null key fails that lookup once the thread has any database context left by an earlier test.
+   */
+  static LocalDatabase localDatabase() {
+    final LocalDatabase local = mock(LocalDatabase.class);
+    when(local.getDatabasePath()).thenReturn("ForwardedWriteDeadlineTest");
+    return local;
   }
 }
