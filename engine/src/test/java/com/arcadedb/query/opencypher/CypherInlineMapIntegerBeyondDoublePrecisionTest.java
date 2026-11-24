@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,6 +86,23 @@ class CypherInlineMapIntegerBeyondDoublePrecisionTest extends TestHelper {
     // a small integer meets its float as before
     database.transaction(() -> database.command("opencypher", "MERGE (n:E {n: 7.0})"));
     assertThat(count("MATCH (n:E) RETURN count(*) AS c", Map.of())).isEqualTo(5L);
+  }
+
+  @Test
+  void anIntegerBeyondTheLongRangeIsNotEqualToItsLowSixtyFourBits() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:E {k: 1, n: 1})-[:R {w: 1}]->(:E {k: 2})"));
+    // 2^64 + 1: its low 64 bits are 1
+    final Map<String, Object> p = Map.of("b", new BigInteger("18446744073709551617"));
+
+    assertThat(count("MATCH (n:E {n: $b}) RETURN count(*) AS c", p)).as("node inline map").isZero();
+    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(*) AS c", p)).as("relationship inline map").isZero();
+    assertThat(count("MATCH (a:E {k: 1}) WHERE (a)-[:R {w: $b}]->(:E) RETURN count(*) AS c", p)).as("pattern predicate").isZero();
+    database.transaction(() -> database.command("opencypher", "MERGE (n:E {n: $b})", p));
+    assertThat(count("MATCH (n:E) WHERE n.n IS NOT NULL RETURN count(*) AS c", Map.of())).as("MERGE created a node").isEqualTo(2L);
+
+    // a BigInteger that holds a small number still is that number
+    final Map<String, Object> one = Map.of("b", BigInteger.ONE);
+    assertThat(count("MATCH ()-[r:R {w: $b}]->() RETURN count(*) AS c", one)).isEqualTo(1L);
   }
 
   private long count(final String query, final Map<String, Object> params) {
