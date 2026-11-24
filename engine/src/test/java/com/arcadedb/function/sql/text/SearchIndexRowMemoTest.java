@@ -308,7 +308,9 @@ class SearchIndexRowMemoTest extends TestHelper {
       function.execute(null, record, null, arguments, context);
     final long perCall = (threads.getThreadAllocatedBytes(threadId) - before) / calls;
 
-    // the three keys, the members key and the search object cost about 500 bytes; boxing the score is all a row may allocate
+    // The three keys, the members key and the search object cost 408 bytes per evaluation without the memo (JDK 21, HotSpot, the
+    // extended ThreadMXBean counts exactly per thread). The bound is under a third of that: what is left per row is the lookup and
+    // the boxed score, and the figure does not depend on timing or load.
     assertThat(perCall).as("bytes allocated per evaluation").isLessThan(120L);
   }
 }
