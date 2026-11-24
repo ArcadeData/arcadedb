@@ -51,6 +51,7 @@ class WebSocketChangeStreamTypeGrantsTest extends BaseGraphServerTest {
   private static final String UNREADABLE   = "StreamUnreadableDoc";
   private static final String LATER        = "StreamLaterDoc";
   private static final String VERTEX       = "StreamReadableVertex";
+  private static final String UNREADABLE_V = "StreamUnreadableVertex";
   private static final String UNREADABLE_E = "StreamUnreadableLink";
   private static final int    QUEUE        = 200;
   private static final int    WAIT_MS      = 5_000;
@@ -64,10 +65,11 @@ class WebSocketChangeStreamTypeGrantsTest extends BaseGraphServerTest {
     database.getSchema().createDocumentType(UNREADABLE);
     database.getSchema().createDocumentType(LATER);
     database.getSchema().createVertexType(VERTEX);
+    database.getSchema().createVertexType(UNREADABLE_V);
     database.getSchema().createEdgeType(UNREADABLE_E);
 
     final ServerSecurity security = getServer(0).getSecurity();
-    new ServerControlPlane(getServer(0)).saveGroup(getDatabaseName(), GROUP, group(UNREADABLE, UNREADABLE_E));
+    new ServerControlPlane(getServer(0)).saveGroup(getDatabaseName(), GROUP, group(UNREADABLE, UNREADABLE_V, UNREADABLE_E));
 
     if (security.existsUser(USER))
       security.dropUser(USER);
@@ -82,7 +84,7 @@ class WebSocketChangeStreamTypeGrantsTest extends BaseGraphServerTest {
       security.dropUser(USER);
     new ServerControlPlane(getServer(0)).deleteGroup(getDatabaseName(), GROUP);
 
-    for (final String type : new String[] { READABLE, UNREADABLE, LATER, VERTEX, UNREADABLE_E })
+    for (final String type : new String[] { READABLE, UNREADABLE, LATER, VERTEX, UNREADABLE_V, UNREADABLE_E })
       database.command("sql", "DROP TYPE " + type + " IF EXISTS UNSAFE");
   }
 
@@ -120,6 +122,25 @@ class WebSocketChangeStreamTypeGrantsTest extends BaseGraphServerTest {
   }
 
   @Test
+  void aSubscriberIsSentNoVertexOfATypeItMayNotRead() throws Exception {
+    try (final WebSocketClientHelper restricted = client(USER, PASSWORD);
+        final WebSocketClientHelper full = client("root", DEFAULT_PASSWORD_FOR_TESTS)) {
+      assertOk(restricted.send(subscribe(null)));
+      assertOk(full.send(subscribe(null)));
+
+      database.transaction(() -> database.newVertex(UNREADABLE_V).set("name", "hidden").save());
+      database.transaction(() -> database.newVertex(VERTEX).set("name", "shown").save());
+      database.transaction(() -> database.newDocument(READABLE).set("name", "after").save());
+
+      final Set<String> seenByRestricted = typesSeenUntilCreated(restricted, READABLE);
+      assertThat(seenByRestricted).contains(VERTEX, READABLE).doesNotContain(UNREADABLE_V);
+
+      final Set<String> seenByFull = typesSeenUntilCreated(full, READABLE);
+      assertThat(seenByFull).contains(UNREADABLE_V, VERTEX, READABLE);
+    }
+  }
+
+  @Test
   void aSubscriberIsSentNoRelationshipOfATypeItMayNotRead() throws Exception {
     try (final WebSocketClientHelper restricted = client(USER, PASSWORD);
         final WebSocketClientHelper full = client("root", DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -151,7 +172,7 @@ class WebSocketChangeStreamTypeGrantsTest extends BaseGraphServerTest {
       assertThat(typesSeenUntilCreated(restricted, LATER)).contains(LATER);
 
       // The group loses the read grant on the type while the subscription is open
-      new ServerControlPlane(getServer(0)).saveGroup(getDatabaseName(), GROUP, group(UNREADABLE, UNREADABLE_E, LATER));
+      new ServerControlPlane(getServer(0)).saveGroup(getDatabaseName(), GROUP, group(UNREADABLE, UNREADABLE_V, UNREADABLE_E, LATER));
 
       database.transaction(() -> database.newDocument(LATER).set("name", "after").save());
       database.transaction(() -> database.newDocument(READABLE).set("name", "barrier").save());

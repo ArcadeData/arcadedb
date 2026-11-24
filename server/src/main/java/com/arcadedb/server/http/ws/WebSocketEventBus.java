@@ -366,6 +366,7 @@ public class WebSocketEventBus {
       return Delivery.DROP;
     }
 
+    // A negative bucket id is a record with no identity, so no bucket to look a grant up for: it is passed over, not sent
     try {
       return bucketId >= 0 && current.getDatabaseUser(database).requestAccessOnFile(bucketId, SecurityDatabaseUser.ACCESS.READ_RECORD) ?
           Delivery.SEND :
