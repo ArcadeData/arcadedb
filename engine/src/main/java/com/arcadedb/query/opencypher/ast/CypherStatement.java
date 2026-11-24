@@ -140,11 +140,14 @@ public interface CypherStatement {
    * <p>
    * What cannot be narrowed to one kind of write (a write procedure, a call of a function that may run a body of its own) is
    * added as every data write: a gate must never read a statement as allowed to do less than it can.
-   * Defaults to nothing for non-query (control/admin/DDL/session) statements.
+   * Defaults to nothing for non-query (control/admin/DDL/session) statements. A statement type that can run a write
+   * overrides it: for one that does not, the operation types fall back to every data write only when the statement is not
+   * read-only and declares nothing at all.
    *
    * @param operations the set the write operation types are added to
    */
   default void collectWriteOperations(final Set<OperationType> operations) {
+    // Nothing to add: a statement that does not run queries has no clause that writes
   }
 
   /**
