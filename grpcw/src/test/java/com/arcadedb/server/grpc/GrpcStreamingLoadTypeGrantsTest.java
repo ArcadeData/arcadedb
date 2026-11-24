@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -339,8 +340,11 @@ class GrpcStreamingLoadTypeGrantsTest extends BaseGraphServerTest {
   private void runOnThreadHoldingRoot(final Runnable callback) throws InterruptedException {
     runOnNewThread(() -> {
       final DatabaseInternal database = (DatabaseInternal) getServer(0).getDatabaseForClient(NAME);
-      DatabaseContext.INSTANCE.init(database).setCurrentUser(getServer(0).getSecurity().getUser(ROOT).getDatabaseUser(database));
+      final ServerSecurityDatabaseUser root = getServer(0).getSecurity().getUser(ROOT).getDatabaseUser(database);
+      DatabaseContext.INSTANCE.init(database).setCurrentUser(root);
       callback.run();
+      // the callback leaves the thread as it found it: nothing of the stream user stays behind for the next request
+      assertThat(DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath()).getCurrentUser()).isSameAs(root);
     });
   }
 
