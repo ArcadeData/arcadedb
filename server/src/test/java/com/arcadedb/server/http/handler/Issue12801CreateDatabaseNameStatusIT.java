@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * refuses it after the server's own check let it through) or was longer than a file name can be (the directory cannot be created).
  * Every other refused name answers 400, and so must these.
  *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @author lvca (l.garulli@arcadedata.com)
  */
 class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
   private final HttpClient client = HttpClient.newHttpClient();
@@ -62,19 +62,38 @@ class Issue12801CreateDatabaseNameStatusIT extends BaseGraphServerTest {
     assertThat(response.body()).as("the reply does not echo the whole path").doesNotContain(name);
   }
 
+  /**
+   * 100 characters, 300 bytes in UTF-8: past what a file name holds where the limit is in bytes (ext4, XFS) and within it
+   * where it is in characters (APFS, NTFS). So the file system decides, and the server only never calls its refusal a server fault.
+   */
   @Test
-  void aNameOfMultiByteCharactersPastTheLimitInBytesIsRefusedAsABadRequest() throws Exception {
-    // 100 characters, 300 bytes in UTF-8
+  void aNameOfMultiByteCharactersIsCreatedOrRefusedAsABadRequestAsTheFileSystemDecides() throws Exception {
     final String name = "\u65e5".repeat(100);
 
     final HttpResponse<String> response = executeServerCommand("create database " + name);
+    try {
+      assertThat(response.statusCode()).as("body=%s", response.body()).isIn(200, 400);
+      if (response.statusCode() == 400)
+        assertThat(response.body()).as("the reply does not echo the whole path").doesNotContain(name);
+    } finally {
+      if (response.statusCode() == 200)
+        executeServerCommand("drop database " + name);
+    }
+  }
 
-    assertThat(response.statusCode()).as("body=%s", response.body()).isEqualTo(400);
+  /**
+   * The name check is also the gate of every open, backup and drop, so it must not carry a length limit of its own: a database
+   * whose name its file system accepted (APFS and NTFS take these 300 bytes) would no longer be opened, backed up or dropped.
+   */
+  @Test
+  void theNameCheckSharedWithOpenAndDropHasNoLengthLimitOfItsOwn() {
+    getServer(0).checkDatabaseNameIsValid("\u65e5".repeat(100));
+    getServer(0).checkDatabaseNameIsValid("y".repeat(300));
   }
 
   @Test
-  void aNameOfTheLongestAllowedLengthStillWorks() throws Exception {
-    final String name = "y".repeat(255);
+  void aLongNameWithinEveryFileSystemLimitStillWorks() throws Exception {
+    final String name = "y".repeat(100);
     try {
       assertThat(executeServerCommand("create database " + name).statusCode()).isEqualTo(200);
     } finally {

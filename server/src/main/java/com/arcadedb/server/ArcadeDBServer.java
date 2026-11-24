@@ -38,6 +38,7 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DatabaseNotAvailableException.Reason;
 import com.arcadedb.exception.DatabaseNotFoundException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinary;
@@ -133,7 +134,10 @@ public class ArcadeDBServer {
    */
   public static final String                                RESERVED_DATABASE_PREFIX             = ".";
   public static final String                                FILESYSTEM_RECOVERY_DIRECTORY        = "lost+found";
-  /** The most bytes a file name holds on the usual file systems, and so a database name, which is a directory name. */
+  /**
+   * The most bytes a file name holds on the usual file systems. Not a limit a name is refused by on its own: only what tells a
+   * name too long apart from another failure once the file system refused the directory, see {@link #createDatabase}.
+   */
   static final int                                          MAX_DATABASE_NAME_BYTES              = 255;
 
   /**
@@ -1818,7 +1822,13 @@ public class ArcadeDBServer {
       if (factory.exists())
         throw new DatabaseAlreadyExistsException("Database '" + databaseName + "' already exists");
 
-      DatabaseInternal embeddedDatabase = (DatabaseInternal) factory.create();
+      DatabaseInternal embeddedDatabase;
+      try {
+        embeddedDatabase = (DatabaseInternal) factory.create();
+      } catch (final DatabaseOperationException e) {
+        refuseNameTooLongForTheFileSystem(databaseName, new File(databasePath));
+        throw e;
+      }
 
       if (mode == READ_ONLY) {
         embeddedDatabase.close();
@@ -1836,6 +1846,22 @@ public class ArcadeDBServer {
 
     notifyRegistered(databaseName, serverDatabase);
     return serverDatabase;
+  }
+
+  /**
+   * Called when the engine could not create a database: when its directory is not there and the name is past the bytes a file
+   * name holds on the usual file systems, the name is what the file system refused, and that is the caller's mistake (400) and
+   * not a server fault (issue #12801). Decided from the failure and not ahead of it, because the limit is the file system's own:
+   * a name of 100 three-byte characters is refused by ext4 and accepted by APFS and NTFS. The message names neither the name
+   * nor the path, which the engine's own failure echoes whole.
+   */
+  private static void refuseNameTooLongForTheFileSystem(final String databaseName, final File databaseDirectory) {
+    if (databaseDirectory.exists())
+      return;
+    final int bytes = databaseName.getBytes(StandardCharsets.UTF_8).length;
+    if (bytes > MAX_DATABASE_NAME_BYTES)
+      throw new IllegalArgumentException(
+          "Database name is too long to be a directory name on this file system: " + bytes + " bytes");
   }
 
   /** The names of the databases open on this server now. {@link #getAvailableDatabaseNames()} adds the ones not open. */
@@ -2058,10 +2084,12 @@ public class ArcadeDBServer {
    * filesystem path separators, parent-directory references or null bytes, and the resolved path must remain
    * inside the configured base directory.
    * <p>
-   * Also refuses what the directory cannot be created with, so that a caller's mistake is a 400 and not a 500 from a later
-   * stage: a {@code *} (the engine refuses it, issue #12801) and a name past the 255 bytes a file name can hold.
+   * Also refuses a {@code *}, which the engine refuses for every database it creates or opens, so that a caller's mistake is a
+   * 400 and not a 500 from a later stage (issue #12801). The length of the name is NOT checked here: this is also the gate of
+   * every open, backup and drop, the limit is the file system's own (255 bytes on some, 255 characters on others, less on a
+   * few), and a database that exists has a name its file system accepted. {@link #createDatabase} answers for a name too long.
    *
-   * @throws IllegalArgumentException if the name is empty, would escape the database directory or cannot be a directory name
+   * @throws IllegalArgumentException if the name is empty, would escape the database directory or holds a refused character
    */
   public void checkDatabaseNameIsValid(final String databaseName) {
     if (databaseName == null || databaseName.trim().isEmpty())
@@ -2070,11 +2098,6 @@ public class ArcadeDBServer {
     if (databaseName.indexOf('/') > -1 || databaseName.indexOf('\\') > -1 || databaseName.indexOf('\0') > -1
         || databaseName.indexOf('*') > -1 || databaseName.equals(".") || databaseName.equals("..") || databaseName.contains(".."))
       throw new IllegalArgumentException("Database name '" + databaseName + "' contains invalid characters");
-
-    // a character takes at most 3 bytes of UTF-8 in the BMP, so only a name that can pass the limit is encoded to be measured
-    if (databaseName.length() > MAX_DATABASE_NAME_BYTES / 3
-        && databaseName.getBytes(StandardCharsets.UTF_8).length > MAX_DATABASE_NAME_BYTES)
-      throw new IllegalArgumentException("Database name is longer than " + MAX_DATABASE_NAME_BYTES + " bytes");
 
     // Defence in depth: resolve the final path and verify it does not escape the configured base directory.
     final Path base = Paths.get(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY))
