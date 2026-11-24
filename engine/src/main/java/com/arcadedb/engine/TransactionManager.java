@@ -2131,39 +2131,45 @@ public class TransactionManager {
     // The pages written below become visible before the delta reaches the BM25 counters: a scan overlapping that window must not
     // call its result exact (see FullTextIndexMetadata#commitApplyStarted)
     final List<FullTextIndexMetadata> applying = FullTextCorpusDeltas.replicatedApplyStarted(database.getSchema(), corpusDeltas);
-    // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
-    // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
-    // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
-    final ColumnarIndexManager columnar = columnarMarkTarget();
-    final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
-    // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
-    // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
-    final PageManager pageManager = database.getPageManager();
-    // The pages of the entry reach the read cache one by one and a vector index learns of its page as that page is applied, so a
-    // search can find a vector whose record page the entry has not written yet, or whose record page it wrote before the page that
-    // removes the vector: marked from before the first page is written to after the last one is published (issue #13369)
-    final LSMVectorIndex[] vectorIndexes = markVectorIndexesApplying(tx);
-    pageManager.beginPublication();
+    // The marks taken above and below are ended by the outer finally whatever throws in between (the vector pass, the wait of
+    // beginPublication): one left open would count an apply in flight for the life of the process
+    LSMVectorIndex[] vectorIndexes = null;
     try {
-      // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
-      // below, after the mark), so an apply pass that read a page by record does not stamp it with a version whose writes no mark
-      // names yet
-      if (columnar != null)
-        columnar.unmarkedApplyStarted();
-      return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
+      // Spec 6.2: the pages the apply reached are marked for the columnar projections once it is done, whether it returns or throws
+      // (a version gap, a failed write): by then they are written, synchronously and outside the flush pipeline, so a pass draining
+      // the marks reads them. One volatile read when the database has no COLUMNAR index and no watched file
+      final ColumnarIndexManager columnar = columnarMarkTarget();
+      final ReachedPages reached = columnar != null ? new ReachedPages(tx.pages.length) : null;
+      // The pages of the entry reach the read cache one by one, outside the page-manager lock: the publication sequence is odd
+      // meanwhile, as for a local commit, so a reader pairing two pages sees the overlap (#10941)
+      final PageManager pageManager = database.getPageManager();
+      // The pages of the entry reach the read cache one by one and a vector index learns of its page as that page is applied, so a
+      // search can find a vector whose record page the entry has not written yet, or whose record page it wrote before the page that
+      // removes the vector: marked from before the first page is written to after the last one is published (issue #13369)
+      vectorIndexes = markVectorIndexesApplying(tx);
+      pageManager.beginPublication();
+      try {
+        // Task 15b of #10662: counted from before the first page is written until the mark landed (the decrement is in the finally
+        // below, after the mark), so an apply pass that read a page by record does not stamp it with a version whose writes no mark
+        // names yet
+        if (columnar != null)
+          columnar.unmarkedApplyStarted();
+        return applyChangesPages(tx, bucketRecordDelta, corpusDeltas, ignoreErrors, reached);
+      } finally {
+        pageManager.endPublication();
+        try {
+          if (reached != null)
+            reached.mark(columnar);
+        } finally {
+          if (columnar != null)
+            columnar.unmarkedApplyEnded();
+        }
+      }
     } finally {
-      pageManager.endPublication();
       if (vectorIndexes != null)
         for (final LSMVectorIndex index : vectorIndexes)
           index.replicatedApplyConcluded();
-      try {
-        if (reached != null)
-          reached.mark(columnar);
-      } finally {
-        if (columnar != null)
-          columnar.unmarkedApplyEnded();
-        FullTextCorpusDeltas.replicatedApplyFinished(applying);
-      }
+      FullTextCorpusDeltas.replicatedApplyFinished(applying);
     }
   }
 
@@ -2195,12 +2201,17 @@ public class TransactionManager {
       boolean known = false;
       for (int i = 0; i < count && !known; i++)
         known = marked[i] == index;
-      if (!known) {
-        index.replicatedApplyStarted();
+      if (!known)
         marked[count++] = index;
-      }
     }
-    return marked == null || count == marked.length ? marked : Arrays.copyOf(marked, count);
+    if (marked == null)
+      return null;
+    if (count < marked.length)
+      marked = Arrays.copyOf(marked, count);
+    // Marked only once every index is collected: a lookup that throws part-way leaves no mark the caller cannot see to end
+    for (final LSMVectorIndex index : marked)
+      index.replicatedApplyStarted();
+    return marked;
   }
 
   /** The columnar manager of the database when a mark can reach a projection or a watched file, null otherwise. */

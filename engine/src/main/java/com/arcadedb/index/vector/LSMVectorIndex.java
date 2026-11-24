@@ -11935,12 +11935,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return replicatedAppliesInFlight.get() > 0;
   }
 
-  /** Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. */
+  /**
+   * Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. Every
+   * call must be paired with one {@link #replicatedApplyConcluded()} in a finally: a mark left open keeps
+   * {@link #hasReplicatedApplyInFlight()} true for the life of the process.
+   */
   public void replicatedApplyStarted() {
     replicatedAppliesInFlight.incrementAndGet();
   }
 
-  /** Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. */
+  /**
+   * Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. Called from
+   * the finally that pairs it with the start.
+   */
   public void replicatedApplyConcluded() {
     replicatedAppliesInFlight.decrementAndGet();
   }

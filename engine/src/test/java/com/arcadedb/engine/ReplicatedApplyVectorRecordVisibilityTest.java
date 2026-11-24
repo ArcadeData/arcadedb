@@ -63,6 +63,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ReplicatedApplyVectorRecordVisibilityTest {
   private static final String LEADER_PATH   = "target/test-databases/ReplicatedApplyVectorRecordVisibilityTest-leader";
   private static final String FOLLOWER_PATH = "target/test-databases/ReplicatedApplyVectorRecordVisibilityTest-follower";
+  private static final String WAL_COPIES_PATH = "target/test-databases/ReplicatedApplyVectorRecordVisibilityTest-wal";
   private static final int    DIMENSIONS    = 8;
   // Past the 1000 vectors under which a search rebuilds a graph that a write made stale, inside the search
   private static final int    BASE          = 1100;
@@ -212,7 +213,10 @@ class ReplicatedApplyVectorRecordVisibilityTest {
 
   /** The one WAL transaction the leader wrote since the last call: the bytes a follower is sent. */
   private WALFile.WALTransaction capture() throws IOException {
-    final File copies = Files.createTempDirectory("replicated-apply-vector").toFile();
+    // the leader's WAL files are open for writing: a copy is read, so the reader never shares the leader's channel
+    final File copies = new File(WAL_COPIES_PATH);
+    FileUtils.deleteRecursively(copies);
+    copies.mkdirs();
     try {
       final List<WALFile.WALTransaction> written = new ArrayList<>();
       for (final File wal : new File(LEADER_PATH).listFiles((dir, name) -> name.endsWith(".wal"))) {
