@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -37,6 +38,7 @@ import java.io.IOException;
 import java.util.AbstractSet;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -73,6 +75,16 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
     return Stream.of(Arguments.of("INT8", true), Arguments.of("INT8", false), Arguments.of("NONE", false));
   }
 
+  /** The layouts above and the two that keep their vectors in the index in another form (BINARY codes, PRODUCT codes). */
+  static Stream<Arguments> allLayouts() {
+    return Stream.concat(layouts(), Stream.of(Arguments.of("BINARY", false), Arguments.of("PRODUCT", false)));
+  }
+
+  /** The ways to ask one sub-index (or the type, "sql") for every row it has. */
+  static Stream<String> searches() {
+    return Stream.of("exact", "approximate", "grouped", "sql");
+  }
+
   /** Every layout with a top-10 search and with an exhaustive one (k far above the live count). */
   static Stream<Arguments> layoutsAndRequestedRows() {
     return layouts().flatMap(layout -> Stream.of(10, 100_000).map(k -> Arguments.of(layout.get()[0], layout.get()[1], k)));
@@ -104,7 +116,7 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
   }
 
   @ParameterizedTest
-  @MethodSource("layouts")
+  @MethodSource("allLayouts")
   void aSubIndexWithResidentLocationsButNoGraphIsRefusedWhenItsFilesAreRetired(final String quantization,
       final boolean storeVectorsInGraph) {
     final float[] query = createIndexAndRecords(quantization, storeVectorsInGraph);
@@ -132,6 +144,36 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
 
     assertThat(exhaustiveRows(query, k)).as("its locations and graph are resident: the retired files are not what it answers from")
         .isEqualTo(Math.min(k, RECORDS));
+  }
+
+  @ParameterizedTest
+  @MethodSource("searches")
+  void aWarmBinarySubIndexWhoseIndexFilesWereRetiredAnswersAsItDidBefore(final String search) {
+    final float[] query = createIndexAndRecords("BINARY", false);
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+    final LSMVectorIndex subIndex = subIndex();
+    // A BINARY search ranks on the stored vectors it reads back (from the pages, and from the records when a page is gone), and its
+    // grouped search answers a few rows short of the bucket even on a healthy index: what is asserted is that retiring the files
+    // of the index changes nothing
+    final int before = rowsOf(subIndex, search, query);
+    assertThat(before).as("a healthy BINARY index answers (nearly) every row").isGreaterThan(RECORDS / BUCKETS * 9 / 10);
+
+    retire(subIndex);
+
+    assertThat(rowsOf(subIndex, search, query)).as("a warm BINARY search does not need the retired files").isEqualTo(before);
+  }
+
+  @ParameterizedTest
+  @MethodSource("searches")
+  void aWarmProductSubIndexWhoseFilesWereRetiredStillAnswersEveryRecord(final String search) {
+    final float[] query = createIndexAndRecords("PRODUCT", false);
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+    final LSMVectorIndex subIndex = subIndex();
+
+    retire(subIndex);
+
+    assertThat(rowsOf(subIndex, search, query)).as("a PRODUCT search scores in memory and reads the records, not the retired files")
+        .isEqualTo("sql".equals(search) ? RECORDS : RECORDS / BUCKETS);
   }
 
   @ParameterizedTest
@@ -233,7 +275,7 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
       database.getSchema().buildVertexType().withName("Doc").withTotalBuckets(BUCKETS).create().createProperty("v", Type.ARRAY_OF_FLOATS);
       database.command("sql", "CREATE INDEX ON Doc (v) LSM_VECTOR METADATA {\"dimensions\": " + DIMENSIONS
           + ", \"similarity\": \"COSINE\", \"quantization\": \"" + quantization + "\", \"storeVectorsInGraph\": " + storeVectorsInGraph
-          + "}");
+          + ("PRODUCT".equals(quantization) ? ", \"pqClusters\": 16" : "") + "}");
     });
     database.transaction(() -> {
       for (int i = 0; i < RECORDS; i++)
@@ -276,6 +318,23 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
     }
     assertThat(members).as("the records of the bucket of the sub-index").hasSize(RECORDS / BUCKETS);
     return members;
+  }
+
+  /** The rows {@code search} answers for every row of the sub-index ("sql": of the type), as distinct RIDs. */
+  private int rowsOf(final LSMVectorIndex subIndex, final String search, final float[] query) {
+    final List<Pair<RID, Float>> rows = switch (search) {
+      case "exact" -> subIndex.findNeighborsFromVector(query, 100_000);
+      case "approximate" -> subIndex.findNeighborsFromVectorApproximate(query, 100_000, null);
+      case "grouped" -> subIndex.findNeighborsFromVectorGrouped(query, 100_000, 100_000, -1, null, rid -> rid.getPosition() % 5);
+      case "sql" -> null;
+      default -> throw new IllegalArgumentException(search);
+    };
+    if (rows == null)
+      return exhaustiveRows(query, 100_000);
+    final Set<RID> rids = new HashSet<>();
+    for (final Pair<RID, Float> row : rows)
+      rids.add(row.getFirst());
+    return rids.size();
   }
 
   private int exhaustiveRows(final float[] query, final int k) {
