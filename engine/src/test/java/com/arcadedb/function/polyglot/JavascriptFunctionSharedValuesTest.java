@@ -21,6 +21,8 @@ package com.arcadedb.function.polyglot;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.HeapLimitExceededException;
+import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.graalvm.polyglot.proxy.ProxyArray;
 import org.graalvm.polyglot.proxy.ProxyObject;
@@ -111,6 +113,38 @@ class JavascriptFunctionSharedValuesTest extends TestHelper {
     final Map<String, Object> map = new LinkedHashMap<>();
     map.put("self", map);
     assertThat(database.getSchema().getFunction("listfn", "keys").execute(map)).isEqualTo(1);
+  }
+
+  @Test
+  @Timeout(60)
+  void collectionThatContainsItselfIsRefusedWhenTheFunctionAnswersIt() {
+    defineFunctions();
+
+    final List<Object> list = new ArrayList<>();
+    list.add(list);
+    final FunctionDefinition same = database.getSchema().getFunction("listfn", "same");
+    assertThatThrownBy(() -> same.execute(list)).isInstanceOf(FunctionExecutionException.class)
+        .hasMessageContaining("'same'");
+
+    // THE FUNCTIONS OF THE LIBRARY KEEP ANSWERING
+    assertThat(database.getSchema().getFunction("listfn", "size").execute(List.of(1, 2, 3))).isEqualTo(3);
+  }
+
+  @Test
+  @Timeout(60)
+  void deeplyNestedListIsRefused() {
+    defineFunctions();
+
+    List<Object> nested = new ArrayList<>();
+    for (int i = 0; i < 200_000; i++)
+      nested = new ArrayList<>(List.of(nested));
+
+    final List<Object> deepest = nested;
+    final FunctionDefinition size = database.getSchema().getFunction("listfn", "size");
+    assertThatThrownBy(() -> size.execute(deepest)).isInstanceOf(FunctionExecutionException.class);
+
+    // THE FUNCTIONS OF THE LIBRARY KEEP ANSWERING
+    assertThat(size.execute(List.of(1, 2, 3))).isEqualTo(3);
   }
 
   @Test

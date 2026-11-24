@@ -187,6 +187,9 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         return jsValueToJava(fn.execute(args), new ResultCopy(library, functionName));
       } catch (final FunctionExecutionException | HeapLimitExceededException e) {
         throw e;
+      } catch (final StackOverflowError e) {
+        // A VALUE NESTED TOO DEEPLY, OR THAT HOLDS ITSELF, IS COPIED BY RECURSION: THE STACK IS UNWOUND TO THIS FRAME
+        throw new FunctionExecutionException("Error on execution of function '" + functionName + "': a value is nested too deeply", e);
       } catch (final Exception e) {
         throw new FunctionExecutionException("Error on execution of function '" + functionName + "'", e);
       }
