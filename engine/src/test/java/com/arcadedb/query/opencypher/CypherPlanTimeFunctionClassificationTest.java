@@ -86,6 +86,8 @@ class CypherPlanTimeFunctionClassificationTest extends TestHelper {
   @Test
   void explainOfAUnionWithAFunctionCallInABranchIsNotIdempotent() {
     assertThat(isIdempotent("EXPLAIN MATCH (n) RETURN n AS x UNION MATCH (m) RETURN m AS x LIMIT " + FUNCTION_CALL)).isFalse();
+    assertThat(isIdempotent("EXPLAIN MATCH (n) RETURN n AS x LIMIT " + FUNCTION_CALL + " UNION MATCH (m) RETURN m AS x")).isFalse();
+    assertThat(isIdempotent("EXPLAIN MATCH (n) RETURN n AS x LIMIT 1 UNION MATCH (m) RETURN m AS x LIMIT 1")).isTrue();
   }
 
   @Test
