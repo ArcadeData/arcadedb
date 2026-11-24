@@ -220,6 +220,11 @@ public class CypherExecutionPlan {
   private Set<String> countRowsPushDownDeclinedFor;
   /** The branch plans of a UNION body, built on its first seeded run and run again for every later one (issue #12136). */
   private List<CypherExecutionPlan> seededBranchPlans;
+  /**
+   * For the body of a {@code CALL { }}: the predicates of the enclosing statement in force where the body starts, which selected
+   * the records a write of the body targets (issue #12593). Null for a statement of its own.
+   */
+  private SelectionPredicates enclosingSelection;
 
   // UNION support
   private final List<CypherExecutionPlan> unionSubqueryPlans;
@@ -673,6 +678,18 @@ public class CypherExecutionPlan {
   }
 
   /**
+   * Makes this plan, the body of a {@code CALL { }}, check its writes against {@code enclosing} too: the predicates of the
+   * enclosing statement the body sees, in force where it starts (issue #12593). Set before the body is first run.
+   */
+  public void setEnclosingSelection(final SelectionPredicates enclosing) {
+    this.enclosingSelection = enclosing;
+  }
+
+  SelectionPredicates getEnclosingSelection() {
+    return enclosingSelection;
+  }
+
+  /**
    * {@link #executeWithSeedRow(Result, CommandContext)}, reading {@code batchSize} rows at a time: a {@code CALL { }} whose
    * rows stream asks for no more than its own consumer did, so the {@code LIMIT 3} after it reads three rows of the body
    * and not a batch of a hundred (issue #11082).
@@ -683,8 +700,12 @@ public class CypherExecutionPlan {
       List<CypherExecutionPlan> branchPlans = seededBranchPlans;
       if (branchPlans == null) {
         branchPlans = new ArrayList<>();
-        for (final CypherStatement branch : unionStmt.getQueries())
-          branchPlans.add(new CypherExecutionPlan(database, branch, parameters, configuration, null, expressionEvaluator));
+        for (final CypherStatement branch : unionStmt.getQueries()) {
+          final CypherExecutionPlan branchPlan = new CypherExecutionPlan(database, branch, parameters, configuration, null,
+              expressionEvaluator);
+          branchPlan.setEnclosingSelection(enclosingSelection);
+          branchPlans.add(branchPlan);
+        }
         seededBranchPlans = branchPlans;
       }
 

@@ -41,6 +41,7 @@ import com.arcadedb.query.opencypher.ast.WithClause;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.parser.ReturnScope;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
@@ -90,6 +91,8 @@ public class SubqueryStep extends AbstractExecutionStep {
   private final Set<String> importedVariables;
   private final boolean importAllVariables;
   private final boolean innerMayWrite;
+  // The predicates in force at the CALL (issue #12593)
+  private final SelectionPredicates enclosing;
   // SET BY THE PLANNER FOR A STATEMENT THAT CANNOT WRITE: THE BODY'S ROWS ARE THEN HANDED ON AS THEY ARE READ
   private boolean streamBody;
   // THE BODY RESULT SET BEING STREAMED, CLOSED WHEN IT ENDS OR WHEN THE CONSUMER STOPS EARLY
@@ -99,10 +102,15 @@ public class SubqueryStep extends AbstractExecutionStep {
   // THE COLUMNS THE BODY RETURNS, BOUND TO NULL ON A ROW THE BODY ANSWERED NOTHING FOR: COMPUTED ON FIRST USE
   private String[] returnedColumns;
 
+  /**
+   * @param enclosing the predicates in force at the CALL, which selected the records a write of the body may target: the body checks
+   *                  its writes against those of them it can see, as the same write outside a CALL does (issue #12593)
+   */
   public SubqueryStep(final SubqueryClause subqueryClause, final CommandContext context,
                        final DatabaseInternal database, final Map<String, Object> parameters,
-                       final ExpressionEvaluator expressionEvaluator) {
+                       final ExpressionEvaluator expressionEvaluator, final SelectionPredicates enclosing) {
     super(context);
+    this.enclosing = enclosing;
     this.subqueryClause = subqueryClause;
     this.database = database;
     this.parameters = parameters;
@@ -750,9 +758,13 @@ public class SubqueryStep extends AbstractExecutionStep {
   private ResultSet executeBody(final Result outerRow, final CommandContext context, final int batchSize) {
     if (innerMayWrite)
       refreshWrittenBindings(outerRow);
-    if (innerPlan == null)
+    if (innerPlan == null) {
       innerPlan = new CypherExecutionPlan(database, subqueryClause.getInnerStatement(), parameters, database.getConfiguration(),
           null, expressionEvaluator);
+      // A write of the body is checked against the outer predicates the body can see: those reading the variables it imports
+      if (innerMayWrite)
+        innerPlan.setEnclosingSelection(enclosing.inBody(importAllVariables ? null : importedVariables, null));
+    }
     return innerPlan.executeWithSeedRow(filterSeedRow(outerRow), context, batchSize);
   }
 

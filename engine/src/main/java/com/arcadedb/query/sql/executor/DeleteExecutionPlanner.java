@@ -89,10 +89,12 @@ public class DeleteExecutionPlanner {
 
       handleReturn(result, context, this.returnBefore);
     } else {
+      // Taken from the statement as written, before the source plan is built from it (issue #12593)
+      final SubquerySourceSelection sourceSelection = SubquerySourceSelection.of(fromClause, whereClause, context);
       handleTarget(result, context, this.fromClause, this.whereClause);
       handleUnsafe(result, context, this.unsafe);
       handleLimit(result, context, this.limit);
-      handleDelete(result, context);
+      handleDelete(result, context, sourceSelection);
       handleBatch(result, context, this.batch);
       handleReturn(result, context, this.returnBefore);
     }
@@ -223,8 +225,9 @@ public class DeleteExecutionPlanner {
     return false;
   }
 
-  private void handleDelete(final DeleteExecutionPlan result, final CommandContext context) {
-    result.chain(new DeleteStep(context, returnProjection, returnBefore, deleteVertex, sourceMayRepeatARecord()));
+  private void handleDelete(final DeleteExecutionPlan result, final CommandContext context,
+      final SubquerySourceSelection sourceSelection) {
+    result.chain(new DeleteStep(context, returnProjection, returnBefore, deleteVertex, sourceMayRepeatARecord(), sourceSelection));
   }
 
   /**

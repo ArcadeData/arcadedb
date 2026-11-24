@@ -84,12 +84,14 @@ public class UpdateExecutionPlanner {
       UpsertStep.refuseEdgeType(target, context);
     final int limitValue = limit != null ? limit.getValue(context) : 0;
     final UpdateExecutionPlan result = new UpdateExecutionPlan(context, limitValue);
+    // Taken from the statement as written, before the source plan is built from it (issue #12593)
+    final SubquerySourceSelection sourceSelection = SubquerySourceSelection.of(target, whereClause, context);
 
     handleTarget(result, context, this.target, this.whereClause, this.timeout, limitValue);
 
     handleUpsert(result, context, this.target, this.whereClause, this.upsert);
     handleTimeout(result, context, this.timeout);
-    convertToModifiableResult(result, context);
+    convertToModifiableResult(result, context, sourceSelection);
     handleLimit(result, context, this.limit);
     handleReturnBefore(result, context, this.returnBefore);
     handleOperations(result, context, this.operations);
@@ -108,11 +110,14 @@ public class UpdateExecutionPlanner {
    * The step evaluates the WHERE again on a record a concurrent commit changed after the source read it (issue #11818). It gets its
    * own copy: the source plan is built from this one.
    *
-   * @param plan    the execution plan
-   * @param context the execution context
+   * @param plan            the execution plan
+   * @param context         the execution context
+   * @param sourceSelection the predicates of a SELECT source, evaluated again on the record a row of it names (issue #12593), or
+   *                        null
    */
-  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context) {
-    plan.chain(new ConvertToUpdatableResultStep(context, whereClause != null ? whereClause.copy() : null, upsert));
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext context,
+      final SubquerySourceSelection sourceSelection) {
+    plan.chain(new ConvertToUpdatableResultStep(context, whereClause != null ? whereClause.copy() : null, upsert, sourceSelection));
   }
 
   private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext context,

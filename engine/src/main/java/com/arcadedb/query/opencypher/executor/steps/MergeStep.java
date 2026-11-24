@@ -51,6 +51,7 @@ import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.LabelReplacements;
+import com.arcadedb.query.opencypher.executor.SelectionPredicates;
 import com.arcadedb.query.opencypher.executor.WrittenCopy;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
@@ -111,6 +112,7 @@ public class MergeStep extends AbstractExecutionStep {
   private final MergeClause        mergeClause;
   private final ExpressionEvaluator evaluator;
   private final SetClauseApplier    setApplier;
+  private final SelectionPredicates selection;
   // The SET clause that follows this MERGE and that this step applies itself (issue #8735), and what that takes
   private       SetClause           absorbedSet;
   private       SetClauseApplier    absorbedSetApplier;
@@ -138,10 +140,20 @@ public class MergeStep extends AbstractExecutionStep {
 
   public MergeStep(final MergeClause mergeClause, final CommandContext context,
                    final CypherFunctionFactory functionFactory) {
+    this(mergeClause, context, functionFactory, SelectionPredicates.NONE);
+  }
+
+  /**
+   * @param selection the predicates that selected the records the actions of the MERGE (and a SET it absorbs) write: those of the
+   *                  clauses before it and of its own pattern, evaluated again on a target reloaded with changed content (#12593)
+   */
+  public MergeStep(final MergeClause mergeClause, final CommandContext context,
+                   final CypherFunctionFactory functionFactory, final SelectionPredicates selection) {
     super(context);
     this.mergeClause = mergeClause;
     this.evaluator = new ExpressionEvaluator(functionFactory);
-    this.setApplier = SetClauseApplier.forMergeAction(context, this.evaluator);
+    this.selection = selection;
+    this.setApplier = SetClauseApplier.forMergeAction(context, this.evaluator, selection);
   }
 
   @Override
@@ -1747,7 +1759,8 @@ public class MergeStep extends AbstractExecutionStep {
     if (mergeClause.hasOnCreateSet() && !isOnCreateSetFoldable(variable))
       return false;
     absorbedSet = setClause;
-    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator);
+    // The SET follows the MERGE directly, so the predicates in force at it are the MERGE's own
+    absorbedSetApplier = SetClauseApplier.forSetClause(context, evaluator, selection);
     return true;
   }
 
