@@ -21,16 +21,19 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.utility.Pair;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -184,6 +187,30 @@ class Issue12615RemoteBeginFailoverTest {
 
     assertThat(leader.requestsTo(BEGIN_ROUTE)).isEqualTo(1);
     assertThat(leader.requestsTo("/api/v1/rollback/" + DATABASE)).as("the transaction stays on the node that began it").isEqualTo(1);
+  }
+
+  /**
+   * A server that answered the reload but that this call already could not reach goes behind the servers not tried yet: picking it
+   * again would spend the budget on it while a known replica was never tried.
+   */
+  @Test
+  void aReloadResponderAlreadyTriedGoesBehindTheServersNotTriedYet() throws Exception {
+    final Node connected = node();
+    final Pair<String, Integer> leader = new Pair<>("127.0.0.1", 1);
+    final Pair<String, Integer> b = new Pair<>("127.0.0.1", 2);
+    final Pair<String, Integer> c = new Pair<>("127.0.0.1", 3);
+    final Pair<String, Integer> d = new Pair<>("127.0.0.1", 4);
+
+    connected.answer(cluster("127.0.0.1:1", "127.0.0.1:2", "127.0.0.1:3", "127.0.0.1:4"));
+    database = connect(connected, RemoteHttpComponent.CONNECTION_STRATEGY.ROUND_ROBIN);
+
+    final Field source = RemoteHttpComponent.class.getDeclaredField("lastConfigurationSource");
+    source.setAccessible(true);
+    source.set(database, b);
+
+    assertThat(database.nextFailoverServer(c, false, new HashSet<>(List.of(leader, b, c)))).isEqualTo(d);
+    assertThat(database.nextFailoverServer(c, false, new HashSet<>(List.of(leader, c)))).as("a responder not tried yet comes first")
+        .isEqualTo(b);
   }
 
   /** FIXED means the same server, as it does for every other request: a stopped one is reported, not routed around. */

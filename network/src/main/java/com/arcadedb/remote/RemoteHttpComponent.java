@@ -411,9 +411,10 @@ public class RemoteHttpComponent extends RWLockContext {
     if (leaderIsPreferable && snapshotLeader != null && !failed.equals(snapshotLeader))
       return snapshotLeader;
 
-    // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304)
+    // The server's list names every configured peer, dead ones included, so its first entry proves nothing (issue #11304). A responder
+    // this call already could not reach goes behind the servers not tried yet
     final Pair<String, Integer> answeringServer = lastConfigurationSource;
-    if (answeringServer != null && !answeringServer.equals(failed))
+    if (answeringServer != null && !answeringServer.equals(failed) && !attempted.contains(answeringServer))
       return answeringServer;
 
     for (int i = 0, known = replicaServerList.size(); i < known; i++) {
