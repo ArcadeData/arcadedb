@@ -605,6 +605,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
 
   /**
+   * The transactions whose commit replayed into this index and have not concluded: their vectors are in the index, and their record
+   * pages are published only once the replay concludes (issue #13323). Counted from the first operation of a replay
+   * ({@link #openReplayUndo()}) to the conclusion of its transaction, a rollback or the publication after the pages are written
+   * ({@link #commitReplayConcluded()}).
+   */
+  private final AtomicInteger commitReplaysInFlight = new AtomicInteger();
+
+  /**
    * The ids a replicated page mentions, collected by {@link #applyReplicatedPageUpdate(MutablePage, boolean)} to judge
    * each one by its state before the page (issue #9857). Only touched under {@link #lock}'s write lock, so one instance
    * serves every page instead of an allocation per page on the replication path.
@@ -11919,6 +11927,21 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether a commit has replayed into this index and not concluded yet (issue #13323): a vector the index answers can be of a record
+   * whose page is not published, which only reading the record can tell from one that is there. A caller that hands a search result
+   * on without reading its record (issue #10973) reads it while this holds. A replay that concluded published its pages first, or
+   * took its vectors back.
+   */
+  public boolean hasCommitReplayInFlight() {
+    return commitReplaysInFlight.get() > 0;
+  }
+
+  /** Ends the in-flight mark of one replay, called once by the journal of its transaction: after the pages are published, or on a rollback. */
+  void commitReplayConcluded() {
+    commitReplaysInFlight.decrementAndGet();
+  }
+
+  /**
    * The delta buffer as the calling transaction sees it: the volatile snapshot when there is no overlay, and the
    * snapshot with this transaction's superseded rows dropped and its pending rows appended when there is one.
    * The result is read-only to the caller - see {@code TransactionVectorOverlay.augment}.
@@ -12432,6 +12455,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (undo == null) {
       undo = new VectorIndexReplayUndo(this, locations);
       tx.addIndexReplayConclusion(this, undo);
+      commitReplaysInFlight.incrementAndGet();
     } else if (undo.locationsAtReplay != locations)
       // A rebuild or a compaction republished the locations since an EARLIER operation of this same replay: put
       // and remove hold the write lock per call, not for the whole replay, so the window is between two of this

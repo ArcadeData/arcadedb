@@ -34,7 +34,8 @@ import java.util.List;
  * replay entry points ({@code put}, {@code putBatch} and {@code remove}) as they go.
  * <p>
  * <b>Why this index publishes eagerly.</b> It is the EAGER half of {@link IndexReplayConclusion} - it writes during
- * the replay and takes it back on abort, so it leaves {@code publishIndexReplay()} at its default no-op. Deferring
+ * the replay and takes it back on abort, so {@code publishIndexReplay()} has no work to publish, it only ends the in-flight
+ * mark of the replay (issue #13323). Deferring
  * the way {@code LSMSparseVectorIndex} does (issue #7933) is not open to it: the replay allocates vector ids and
  * writes them ONTO the transaction's own index pages, so the allocation has to be decided while those pages are
  * being written, not after. The eager shape is workable here because everything it publishes stays reachable: the
@@ -185,6 +186,19 @@ class VectorIndexReplayUndo implements IndexReplayConclusion {
           "the replay compensation for index '" + index.getName() + "' was already applied; applying it twice "
               + "would refund its counters twice");
     undone = true;
-    index.undoReplay(this);
+    try {
+      index.undoReplay(this);
+    } finally {
+      index.commitReplayConcluded();
+    }
+  }
+
+  /**
+   * The transaction's changes stand and its pages are published (the conclusion runs from {@code reset()}, after the 2nd phase): the
+   * replay is no longer in flight, a search answers the records it replayed from their pages (issue #13323).
+   */
+  @Override
+  public void publishIndexReplay() {
+    index.commitReplayConcluded();
   }
 }
