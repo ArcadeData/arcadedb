@@ -70,7 +70,8 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
   void statementsThatBeginOrEndATransactionAreRefused() throws Exception {
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       for (final String statement : List.of("START TRANSACTION", "start transaction", "COMMIT", "ROLLBACK",
-          "/* note */ START TRANSACTION", "// note\nCOMMIT", "PROFILE START TRANSACTION")) {
+          "/* note */ START TRANSACTION", "// note\nCOMMIT", "PROFILE START TRANSACTION", "\u00A0COMMIT", "\u0085ROLLBACK",
+          "\u2007START TRANSACTION", "USE " + getDatabaseName() + " START TRANSACTION", "use " + getDatabaseName() + " rollback")) {
         bolt.run(statement);
         final BoltWireConnection.Summary refused = bolt.readSummary();
         assertThat(refused.signature()).as(statement).isEqualTo(BoltMessage.FAILURE);
@@ -92,7 +93,8 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
       bolt.begin(getDatabaseName());
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'inside'})").signature()).isEqualTo(BoltMessage.SUCCESS);
 
-      for (final String statement : List.of("COMMIT", "ROLLBACK", "START TRANSACTION")) {
+      for (final String statement : List.of("COMMIT", "ROLLBACK", "START TRANSACTION", "\u00A0COMMIT", "\u0085ROLLBACK",
+          "USE " + getDatabaseName() + " COMMIT", "USE GRAPH " + getDatabaseName() + " ROLLBACK")) {
         bolt.run(statement);
         final BoltWireConnection.Summary refused = bolt.readSummary();
         assertThat(refused.signature()).as(statement).isEqualTo(BoltMessage.FAILURE);
@@ -185,8 +187,10 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
     try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       openTransactionFromANestedStatement(bolt);
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'first'})").signature()).isEqualTo(BoltMessage.SUCCESS);
+      assertThat(committedProbes("first")).as("probe written before the LOGON, not committed").isZero();
 
       bolt.logon(SECOND_USER, SECOND_PASSWORD);
+      assertThat(committedProbes("first")).as("probe written before the LOGON, discarded by it").isZero();
 
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'second'})").signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(committedProbes("second")).as("probes written after the LOGON, committed").isEqualTo(1);
@@ -200,8 +204,11 @@ public class BoltConnectionTransactionScopeIT extends BaseBoltServerTest {
       openTransactionFromANestedStatement(bolt);
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'first'})").signature()).isEqualTo(BoltMessage.SUCCESS);
 
+      assertThat(committedProbes("first")).as("probe written before the RESET, not committed").isZero();
+
       bolt.sendNoFields(BoltMessage.RESET);
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
+      assertThat(committedProbes("first")).as("probe written before the RESET, discarded by it").isZero();
 
       assertThat(runAndPull(bolt, "CREATE (:" + PROBE_TYPE + " {owner: 'second'})").signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(committedProbes("second")).as("probes written after the RESET, committed").isEqualTo(1);

@@ -79,19 +79,28 @@ public final class StandaloneTransactionControl {
   /**
    * A prefix test, so every other command pays no parse: the text starts with BEGIN, START, COMMIT or ROLLBACK, also behind an
    * EXPLAIN or PROFILE prefix. SQL PROFILE and both openCypher prefixes run the transaction control they wrap; the engine's own
-   * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused.
+   * {@code isTransactionControl()} then decides, so a SQL EXPLAIN, which only plans, is not refused. A text that starts with USE
+   * (the openCypher clause that names a graph, which the grammar accepts in front of a transaction control) is worth the parse too.
    * <p>
    * The probe must let through every text the engines read as a transaction control, or the statement runs as before: it skips
-   * the comments of both languages (an openCypher {@code //} line comment too) and any number of prefixes, since SQL accepts
-   * {@code PROFILE PROFILE BEGIN}. It scans the text in place and allocates nothing.
+   * the comments of both languages (an openCypher {@code //} line comment too), the whitespace of both and any number of
+   * prefixes, since SQL accepts {@code PROFILE PROFILE BEGIN}. It scans the text in place and allocates nothing.
    */
   private static boolean startsWithTransactionControl(final String command) {
     final int length = command.length();
     int start = skipLeadingSpaceAndComments(command, 0);
     while ((command.regionMatches(true, start, "explain", 0, 7) || command.regionMatches(true, start, "profile", 0, 7))
-        && length > start + 7 && Character.isWhitespace(command.charAt(start + 7)))
+        && length > start + 7 && isSpace(command.charAt(start + 7)))
       start = skipLeadingSpaceAndComments(command, start + 7);
     return startsWithTransactionControlWord(command, start);
+  }
+
+  /**
+   * The whitespace of the openCypher lexer, which is wider than {@link Character#isWhitespace}: the no-break spaces, the next
+   * line character and the other Unicode separators count too. A superset of what SQL skips, which costs a parse at most.
+   */
+  private static boolean isSpace(final char c) {
+    return Character.isWhitespace(c) || Character.isSpaceChar(c) || c == '\u0085';
   }
 
   /**
@@ -103,7 +112,7 @@ public final class StandaloneTransactionControl {
     final int length = command.length();
     int pos = from;
     while (pos < length) {
-      if (Character.isWhitespace(command.charAt(pos)))
+      if (isSpace(command.charAt(pos)))
         ++pos;
       else if (command.startsWith("/*", pos)) {
         final int end = command.indexOf("*/", pos + 2);
@@ -119,11 +128,13 @@ public final class StandaloneTransactionControl {
   }
 
   /**
-   * Matches the four words as bare prefixes, so a text like "beginning" or "started" passes the probe too. That is deliberate: the
-   * probe only decides whether the text is worth a parse, and the engine's own {@code isTransactionControl()} decides afterwards.
+   * Matches the four words, and USE, as bare prefixes, so a text like "beginning" or "started" passes the probe too. That is
+   * deliberate: the probe only decides whether the text is worth a parse, and the engine's own {@code isTransactionControl()}
+   * decides afterwards.
    */
   private static boolean startsWithTransactionControlWord(final String command, final int start) {
     return command.regionMatches(true, start, "begin", 0, 5) || command.regionMatches(true, start, "start", 0, 5)
-        || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8);
+        || command.regionMatches(true, start, "commit", 0, 6) || command.regionMatches(true, start, "rollback", 0, 8)
+        || command.regionMatches(true, start, "use", 0, 3);
   }
 }
