@@ -79,6 +79,14 @@ class CypherCountEdgesReturnGroupKeyIssue12705Test extends TestHelper {
   }
 
   @Test
+  void missingKeyIsOneNullGroup() {
+    final List<Result> rows = run("MATCH (n:Grp)-[r]-(m:Tgt) RETURN n.missing AS g, count(*) AS c");
+    assertThat(rows).hasSize(1);
+    assertThat((Object) rows.getFirst().getProperty("g")).isNull();
+    assertThat(((Number) rows.getFirst().getProperty("c")).longValue()).isEqualTo(5L);
+  }
+
+  @Test
   void twoKeysAreOneGroup() {
     final List<Result> rows = run("MATCH (n:Grp)-[r]-(m:Tgt) RETURN n.l AS g, n.k AS g2, count(*) AS c");
     assertThat(rows).hasSize(1);
