@@ -68,8 +68,20 @@ public class InCondition extends BooleanExpression {
   /** A list of sub-query rows shorter than this is scanned: a probe costs more to build than the scan it saves. */
   private static final int ROWS_PROBE_MIN_SIZE = 32;
 
+  /**
+   * The state of an execution that was handed a different list on a later row: the right-hand side depends on the row (a
+   * correlated sub-query), so no probe is tried again and the rows are scanned without allocating anything per row.
+   */
+  private static final RowsProbe ROWS_CHANGE_PER_ROW = new RowsProbe(null, null, true);
+
   /** Lazily assigned key of the per-execution {@link RowsProbe} of a sub-query result. */
   private volatile String rowsKey;
+
+  /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
+  private volatile String memoKey;
+
+  /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
+  private volatile String searchedKey;
 
   /**
    * What an execution knows about the sub-query rows it was handed: the list instance seen on the first row and, once the same
@@ -93,18 +105,6 @@ public class InCondition extends BooleanExpression {
       this.built = built;
     }
   }
-
-  /**
-   * The state of an execution that was handed a different list on a later row: the right-hand side depends on the row (a
-   * correlated sub-query), so no probe is tried again and the rows are scanned without allocating anything per row.
-   */
-  private static final RowsProbe ROWS_CHANGE_PER_ROW = new RowsProbe(null, null, true);
-
-  /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
-  private volatile String memoKey;
-
-  /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
-  private volatile String searchedKey;
 
   public InCondition() {
   }
@@ -195,7 +195,7 @@ public class InCondition extends BooleanExpression {
       RowsProbe state = (RowsProbe) context.getCachedValue(key);
       if (state == null)
         context.setCachedValue(key, new RowsProbe(rightVal, null, false));
-      else if (state.source == rightVal) {
+      else if (state.source == rightVal) { // NOPMD: by identity, the same list instance stands for the same rows (see RowsProbe)
         if (!state.built) {
           state = new RowsProbe(rightVal, InListMembership.buildFromRows(rows, operandIsSearched(context)), true);
           context.setCachedValue(key, state);
