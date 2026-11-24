@@ -98,6 +98,7 @@ public class ArcadeGraph implements Graph, Closeable {
   private              GremlinGroovyScriptEngine   gremlinGroovyEngine;
   private              ServiceRegistry             serviceRegistry;
   private volatile     GraphTraversalSource        traversal;
+  private volatile     GraphTraversalSource        statementTraversal;
   private volatile     Cluster                     cluster;
   private volatile     boolean                     closed;
   private              ImportGremlinPlugin.Builder importPlugin;
@@ -226,6 +227,27 @@ public class ArcadeGraph implements Graph, Closeable {
         result = traversal;
         if (result == null)
           traversal = result = buildTraversal();
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The traversal source a statement of the query engine is evaluated with: {@link #traversal()} of a local database, with the
+   * strategy that keeps an {@code io().read()} from committing the transaction the statement runs in (issue #13162, see
+   * {@link ArcadeIoRegistrationStrategy#forStatement()}). Cached as {@link #traversal()} is: building it sorts the strategies.
+   */
+  GraphTraversalSource statementTraversal() {
+    GraphTraversalSource result = statementTraversal;
+    if (result == null) {
+      synchronized (this) {
+        if (closed)
+          throw new IllegalStateException("Graph is closed");
+
+        result = statementTraversal;
+        if (result == null)
+          statementTraversal = result = new GraphTraversalSource(this,
+              traversal().getStrategies().clone().addStrategies(ArcadeIoRegistrationStrategy.forStatement()));
       }
     }
     return result;
@@ -596,6 +618,8 @@ public class ArcadeGraph implements Graph, Closeable {
       }
       traversal = null;
     }
+    // BOUND TO NO CONNECTION: NOTHING TO CLOSE
+    statementTraversal = null;
 
     closeCluster();
   }

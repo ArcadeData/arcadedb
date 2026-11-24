@@ -96,10 +96,13 @@ public class GremlinQueryEngine implements QueryEngine {
    * of {@code Database.transaction()}.</li>
    * <li>The rows of a write are held in memory until the commit, as the records it writes are.</li>
    * <li>What a script commits itself ({@code g.tx().commit()}) is committed: the statement owns the transaction it opened, not what a
-   * script ends on purpose. The bulk readers of {@code io().read()} do the same, a commit every {@code batchSize} records (10000)
-   * through the graph the traversal is bound to, so for a file larger than a batch "a failure takes everything back" holds from the
-   * last batch only. A conflict raised after a batch was published is not run again ({@code TransactionContext.isPartiallyCommitted}),
+   * script ends on purpose. A conflict raised after such a commit is not run again ({@code TransactionContext.isPartiallyCommitted}),
    * so no record is applied twice.</li>
+   * <li>{@code io().read()} is not such a script: TinkerPop's bulk readers commit every {@code batchSize} records (10000) and at the
+   * end of the file when the graph they write into declares transactions supported, and inside a statement they are handed one that
+   * does not (issue #13162, see {@code ArcadeIoRegistrationStrategy#forStatement()}). The import is part of the transaction of the
+   * statement, or of the caller: a record that fails takes the whole file back, and the records of the file are held in memory until
+   * that transaction is committed, however large the file.</li>
    * </ul>
    */
   @Override
@@ -237,7 +240,8 @@ public class GremlinQueryEngine implements QueryEngine {
 
   private ResultSet execute(final String query, final Map<String, Object> parameters) {
     try {
-      final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query);
+      // AS A STATEMENT: IT RUNS IN THE TRANSACTION OF THE CALLER OR IN THE ONE command() OPENED, AND NEVER COMMITS ON ITS OWN (#13162)
+      final ArcadeGremlin arcadeGremlin = arcadeGraph.gremlin(query).runAsStatement();
       arcadeGremlin.setParameters(parameters);
       return arcadeGremlin.execute();
     } catch (final CommandParsingException | CommandExecutionException e) {
