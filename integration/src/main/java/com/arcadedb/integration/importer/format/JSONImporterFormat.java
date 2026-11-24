@@ -339,7 +339,9 @@ public class JSONImporterFormat implements FormatImporter {
           context.errors.incrementAndGet();
         }
 
-        if (ownsTransaction && !txOpen[0])
+        // By liveness, not by the flag alone: a listener or trigger of a record that resolved the import's transaction
+        // leaves the flag set, and the next record of the batch would then be saved with no transaction begun
+        if (ownsTransaction && !ImporterTransactions.isOwnTransactionLive(database, txOpen[0], ownTx[0]))
           ImporterTransactions.beginOwnTransaction(database, txOpen, ownTx);
 
         // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it

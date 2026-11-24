@@ -188,6 +188,26 @@ class Issue12739JsonArrayCommitEveryTest {
     assertThat(importer.getContext().errors.get()).isEqualTo(1);
   }
 
+  /**
+   * A listener that commits the import's transaction in the middle of a batch: the next record gets a transaction of its own
+   * again, as it did when every record began one, instead of being refused with "Transaction not begun".
+   */
+  @Test
+  void aListenerThatCommitsTheImportsTransactionDoesNotLeaveTheNextRecordWithoutOne() throws IOException {
+    final AtomicInteger saved = new AtomicInteger();
+    database.getSchema().getType("Widget").getEvents().registerListener((AfterRecordCreateListener) record -> {
+      if (saved.incrementAndGet() == 50)
+        database.commit();
+    });
+    final Importer importer = importer(writeJson(120, -1), 100, false);
+
+    importer.load();
+
+    assertThat(database.isTransactionActive()).isFalse();
+    assertThat(database.countType("Widget", true)).isEqualTo(120);
+    assertThat(importer.getContext().createdDocuments.get()).isEqualTo(120);
+  }
+
   /** A transaction that predates the import is the caller's: it is never committed on a boundary. */
   @Test
   void aCallerOwnedTransactionIsNotCommittedOnABoundary() throws IOException {
