@@ -259,7 +259,10 @@ public class TransactionContext implements Transaction {
   // The existence probe of a MERGE (beginMergeProbe): its depth, the depth a listener callback suspended, and the reads it held back,
   // in two parallel arrays (the target, and the kind of read with its argument) that are kept for the next probe
   private       int                                  probeDepth;
-  private       int                                  suspendedProbeDepth;
+  private       int                                  probeReadsBase;
+  // the probes a listener callback suspended, innermost last: the depth and the first held-back read of each (two ints per probe)
+  private       int[]                                suspendedProbes;
+  private       int                                  suspendedProbeCount;
   private       Object[]                             probeReadTargets;
   private       int[]                                probeReadKinds;
   private       int                                  probeReads;
@@ -3733,8 +3736,11 @@ public class TransactionContext implements Transaction {
    * application's reads or drops them. See the soundness argument on {@code MergeStep.findAllMatchingPathsDroppingReads}.
    */
   public void beginMergeProbe() {
-    if (probeDepth++ == 0)
+    if (probeDepth++ == 0) {
+      // a probe a listener callback opens while another is suspended decides its own reads only: the suspended one's stay below this
+      probeReadsBase = probeReads;
       OPEN_MERGE_PROBES.incrementAndGet();
+    }
   }
 
   /** Closes the window {@link #beginMergeProbe()} opened: the reads it held back are recorded when {@code keepReads}, else dropped. */
@@ -3744,20 +3750,21 @@ public class TransactionContext implements Transaction {
     if (--probeDepth > 0)
       return;
     OPEN_MERGE_PROBES.decrementAndGet();
-    final int reads = probeReads;
-    probeReads = 0;
-    if (reads == 0)
+    final int from = probeReadsBase;
+    final int to = probeReads;
+    probeReads = from;
+    if (to == from)
       return;
     final Object[] targets = probeReadTargets;
     final int[] kinds = probeReadKinds;
     if (keepReads)
-      for (int i = 0; i < reads; ++i)
+      for (int i = from; i < to; ++i)
         replayProbeRead(targets[i], kinds[i]);
-    if (reads > PROBE_READS_KEPT) {
+    if (to > PROBE_READS_KEPT && from == 0) {
       probeReadTargets = null;
       probeReadKinds = null;
     } else
-      Arrays.fill(targets, 0, reads, null);
+      Arrays.fill(targets, from, to, null);
   }
 
   /**
@@ -3926,7 +3933,12 @@ public class TransactionContext implements Transaction {
       return depth << 1;
     // a listener's reads are the application's, also inside a MERGE probe: recorded now, never held back to be dropped. The probe
     // stays counted in OPEN_MERGE_PROBES while it is suspended, so a reset in between still balances it
-    suspendedProbeDepth = probeDepth;
+    if (suspendedProbes == null)
+      suspendedProbes = new int[8];
+    else if (suspendedProbeCount * 2 == suspendedProbes.length)
+      suspendedProbes = Arrays.copyOf(suspendedProbes, suspendedProbes.length << 1);
+    suspendedProbes[suspendedProbeCount * 2] = probeDepth;
+    suspendedProbes[suspendedProbeCount++ * 2 + 1] = probeReadsBase;
     probeDepth = 0;
     return depth << 1 | 1;
   }
@@ -3934,9 +3946,10 @@ public class TransactionContext implements Transaction {
   /** Gives back the windows {@link #suspendEdgeAppend()} suspended, from the token it returned (#11590). */
   public void resumeEdgeAppend(final int token) {
     edgeAppendDepth = token >>> 1;
-    if ((token & 1) != 0) {
-      probeDepth = suspendedProbeDepth;
-      suspendedProbeDepth = 0;
+    if ((token & 1) != 0 && suspendedProbeCount > 0) {
+      --suspendedProbeCount;
+      probeDepth = suspendedProbes[suspendedProbeCount * 2];
+      probeReadsBase = suspendedProbes[suspendedProbeCount * 2 + 1];
     }
   }
 
@@ -3973,10 +3986,11 @@ public class TransactionContext implements Transaction {
     // the probe that was open, and the one a listener callback suspended, are each counted in OPEN_MERGE_PROBES
     if (probeDepth > 0)
       OPEN_MERGE_PROBES.decrementAndGet();
-    if (suspendedProbeDepth > 0)
+    for (int i = 0; i < suspendedProbeCount; ++i)
       OPEN_MERGE_PROBES.decrementAndGet();
     probeDepth = 0;
-    suspendedProbeDepth = 0;
+    suspendedProbeCount = 0;
+    probeReadsBase = 0;
     probeReads = 0;
     probeReadTargets = null;
     probeReadKinds = null;

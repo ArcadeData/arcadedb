@@ -23,12 +23,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -183,6 +185,91 @@ class MergeProbeWindowTest {
       assertThat(tx.isReadsExcused()).isFalse();
       assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
       database.rollback();
+    } finally {
+      database.getSchema().getType("R").getEvents().unregisterListener(listener);
+    }
+  }
+
+  /** A probe a listener opens while the outer one is suspended decides its own held-back reads, not the outer probe's. */
+  @Test
+  void anInnerProbeInASuspendedListenerWindowDoesNotDecideTheOuterProbesReads() {
+    database.begin();
+    final TransactionContext tx = tx();
+    final MutableVertex outerRead = database.newVertex("Leaf").set("id", "outer").save();
+    final MutableVertex innerRead = database.newVertex("Leaf").set("id", "inner").save();
+    tx.beginMergeProbe();
+    assertThat(tx.deferProbeHeadFlagRead(outerRead, true)).isTrue();
+    final int token = tx.suspendEdgeAppend();
+    tx.beginMergeProbe();
+    assertThat(tx.deferProbeHeadFlagRead(innerRead, true)).isTrue();
+    tx.endMergeProbe(false);
+    assertThat(innerRead.isEdgeListHeadRead(true)).as("the inner probe dropped its own read").isFalse();
+    assertThat(outerRead.isEdgeListHeadRead(true)).as("the outer probe's read is not decided yet").isFalse();
+    tx.resumeEdgeAppend(token);
+    assertThat(tx.isReadsExcused()).isTrue();
+    tx.endMergeProbe(true);
+    assertThat(outerRead.isEdgeListHeadRead(true)).as("the outer probe kept its read").isTrue();
+    assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+    database.rollback();
+  }
+
+  /** A listener inside a suspended window suspends again: each resume gives back what its own suspend took, and the count ends at zero. */
+  @Test
+  void aDoubleSuspendWithAProbeOpenedBetweenGivesBackEveryDepthAndLeavesNoOpenProbe() {
+    database.begin();
+    final TransactionContext tx = tx();
+    tx.beginMergeProbe();
+    tx.beginMergeProbe();
+    final int first = tx.suspendEdgeAppend();
+    tx.beginMergeProbe();
+    final int second = tx.suspendEdgeAppend();
+    assertThat(tx.isReadsExcused()).isFalse();
+    tx.resumeEdgeAppend(second);
+    assertThat(tx.isReadsExcused()).isTrue();
+    tx.endMergeProbe(false);
+    assertThat(tx.isReadsExcused()).isFalse();
+    tx.resumeEdgeAppend(first);
+    assertThat(tx.isReadsExcused()).isTrue();
+    tx.endMergeProbe(false);
+    assertThat(tx.isReadsExcused()).as("the outer probe had depth 2").isTrue();
+    assertThat(TransactionContext.isAnyMergeProbeOpen()).isTrue();
+    tx.endMergeProbe(false);
+    assertThat(tx.isReadsExcused()).isFalse();
+    assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+    database.rollback();
+  }
+
+  /** A read listener that runs a MERGE of its own inside the probe (re-entrant): the count is back to zero after the statement, a commit and a rollback. */
+  @Test
+  void aReadListenerThatRunsAMergeInsideTheProbeLeavesNoOpenProbeAfterCommitOrRollback() {
+    final AtomicBoolean inside = new AtomicBoolean();
+    final AtomicBoolean fired = new AtomicBoolean();
+    final AfterRecordReadListener listener = record -> {
+      if (inside.compareAndSet(false, true))
+        try {
+          fired.set(true);
+          database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l7'}) MERGE (h)-[:R {k: 7}]->(l)");
+        } finally {
+          inside.set(false);
+        }
+      return record;
+    };
+    database.getSchema().getType("R").getEvents().registerListener(listener);
+    try {
+      for (final boolean commit : new boolean[] { false, true }) {
+        fired.set(false);
+        database.begin();
+        database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l9'}) CREATE (h)-[:R {k: 5000}]->(l)");
+        database.command("opencypher", "MATCH (h:Hub {id: 'h'}), (l:Leaf {id: 'l3'}) MERGE (h)-[:R {k: 3}]->(l)");
+        assertThat(fired.get()).as("the listener ran a MERGE inside the probe").isTrue();
+        assertThat(tx().isReadsExcused()).isFalse();
+        assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+        if (commit)
+          database.commit();
+        else
+          database.rollback();
+        assertThat(TransactionContext.isAnyMergeProbeOpen()).isFalse();
+      }
     } finally {
       database.getSchema().getType("R").getEvents().unregisterListener(listener);
     }
