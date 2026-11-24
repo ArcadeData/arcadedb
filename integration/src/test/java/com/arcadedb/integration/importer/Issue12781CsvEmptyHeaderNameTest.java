@@ -65,6 +65,57 @@ class Issue12781CsvEmptyHeaderNameTest {
     return new Importer(args).load();
   }
 
+  private Map<String, Object> importVertices(final String content, final String... extraArgs) throws Exception {
+    Files.writeString(FILE.toPath(), content, StandardCharsets.UTF_8);
+    final String[] base = { "-vertices", "file://" + FILE.getAbsolutePath(), "-database", DATABASE, "-forceDatabaseCreate", "true",
+        "-vertexType", "Node", "-delimiter", "," };
+    final String[] args = new String[base.length + extraArgs.length];
+    System.arraycopy(base, 0, args, 0, base.length);
+    System.arraycopy(extraArgs, 0, args, base.length, extraArgs.length);
+    return new Importer(args).load();
+  }
+
+  /** Every message along the cause chain, so the assertions read the refusal itself wherever the importer wrapped it. */
+  private static String messagesOf(final Throwable thrown) {
+    final StringBuilder messages = new StringBuilder();
+    for (Throwable t = thrown; t != null; t = t.getCause())
+      messages.append(t.getMessage()).append('\n');
+    return messages.toString();
+  }
+
+  @Test
+  void aHeaderReadFromTheFileNamesOnlyTheSettingItsRouteReads() {
+    assertThatThrownBy(() -> importDocuments("a,,b\n1,2,3\n")).satisfies(
+        e -> assertThat(messagesOf(e)).contains("first line of the file").contains("-documentsHeader setting")
+            .doesNotContain("-verticesHeader").doesNotContain("-edgesHeader"));
+
+    assertThatThrownBy(() -> importVertices("a,,b\n1,2,3\n")).satisfies(
+        e -> assertThat(messagesOf(e)).contains("no name for column 2 of 3").contains("-verticesHeader setting")
+            .doesNotContain("-documentsHeader").doesNotContain("-edgesHeader"));
+  }
+
+  @Test
+  void aSuppliedHeaderIsNotToldToSupplyAHeader() {
+    assertThatThrownBy(() -> importDocuments("1,2,3\n4,5,6\n", "-documentsHeader", "a,,b")).satisfies(
+        e -> assertThat(messagesOf(e)).contains("supplied with the -documentsHeader setting").contains("no name for column 2 of 3")
+            .doesNotContain("first line of the file").doesNotContain("name it in the file").doesNotContain("supply the column names"));
+  }
+
+  @Test
+  void aTrailingSeparatorOnASuppliedHeaderIsRefusedLikeTheSameLineInTheFile() {
+    // split() without a limit drops trailing empty strings, so this used to pass as two columns
+    assertThatThrownBy(() -> importDocuments("1,2,3\n4,5,6\n", "-documentsHeader", "a,b,")).hasStackTraceContaining(
+        "no name for column 3 of 3");
+    assertThatThrownBy(() -> importVertices("1,2,3\n4,5,6\n", "-verticesHeader", "a,,")).hasStackTraceContaining(
+        "supplied with the -verticesHeader setting has no name for column 2 of 3");
+  }
+
+  @Test
+  void aBlankSuppliedHeaderIsRefused() {
+    assertThatThrownBy(() -> importDocuments("1\n2\n", "-documentsHeader", " ")).hasStackTraceContaining(
+        "no name for column 1 of 1");
+  }
+
   @Test
   void anEmptyHeaderNameIsRefusedNamingTheColumn() {
     assertThatThrownBy(() -> importDocuments("a,,b\n1,2,3\n4,5,6\n")).isInstanceOf(ImportException.class)
