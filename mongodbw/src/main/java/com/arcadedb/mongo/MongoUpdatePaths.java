@@ -25,8 +25,8 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * The dotted paths of an update: how many fields one may name, and which of the paths of a statement conflict. Both take time and
- * memory proportional to the paths themselves: no prefix of a path is ever copied.
+ * The dotted paths of an update: how many fields one may name, and which of the paths of a statement conflict. Neither copies a
+ * prefix of a path: the memory they use is that of the paths themselves, and the time they take is that of comparing the paths.
  *
  * @author lvca (l.garulli@arcadedata.com)
  */
