@@ -129,6 +129,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     final DatabaseInternal database;
     HttpSession activeSession = null;
     boolean atomicTransaction = false;
+    final int retries;
 
     DatabaseContext.DatabaseContextTL current;
 
@@ -150,73 +151,81 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         cleanTL(database, current);
       }
 
-      activeSession = setTransactionInThreadLocal(exchange, database, user);
-      if (activeSession == null)
-        // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
-        refuseOutsideSession(database, payload);
+      // EVERYTHING BETWEEN BINDING THE REQUEST TO THIS POOLED WORKER THREAD AND THE TRY BLOCK BELOW THAT ALWAYS UNBINDS IT RUNS HERE:
+      // A REQUEST REFUSED ON ANY VALUE OF ITS BODY LEAVES NOTHING OF ITSELF ON THE THREAD FOR THE NEXT ONE TO FIND
+      try {
+        activeSession = setTransactionInThreadLocal(exchange, database, user);
+        if (activeSession == null)
+          // A transaction control of its own acts on this request's transaction alone: refused before anything runs (issue #12202)
+          refuseOutsideSession(database, payload);
 
-      // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
-      // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
-      // same context object for the next transaction and the counter is never reset. Sampled here, before a
-      // single byte of the body runs, and compared when the response is committed. A response-commit listener
-      // rather than the finally block below, so the answer is read at the last possible moment and the header
-      // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
-      // exactly as the read-your-writes bookmark does.
-      //
-      // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
-      // registration sits behind the activeSession null check rather than inside the listener: a request with
-      // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
-      // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
-      // survives a handler writing its own response, which the finally block cannot give: the alternative is a
-      // signal that is simply missing whenever the response was streamed. A session-bound request has already
-      // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
-      // (code review on PR #8138).
-      if (activeSession != null && reportsSessionPartialCommit()) {
-        final TransactionContext sessionTxAtStart = activeSession.transaction;
-        final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;
-        exchange.addResponseCommitListener(ex -> {
-          if (TransactionContext.isPartiallyCommitted(sessionTxAtStart, sessionCommitCountAtStart))
-            ex.getResponseHeaders().put(SESSION_PARTIAL_COMMIT_HEADER, "true");
-        });
-      }
-
-      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-      if (current == null)
-        // INITIALIZE THE DATABASE CONTEXT
-        current = DatabaseContext.INSTANCE.init(database);
-
-      final SecurityDatabaseUser currentUser = current.getCurrentUser();
-      if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
-        current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
-
-      // A session request attaches its QuerySession in setTransactionInThreadLocal above. A non-session
-      // request must never inherit a stale session from a thread-context reused on this pooled thread,
-      // which would leak another user's SESSION SET parameters into this request.
-      if (activeSession == null)
-        current.setQuerySession(null);
-
-      // Warn if autoCommit parameter conflicts with session
-      if (activeSession != null && payload != null && payload.has("autoCommit")) {
-        final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
-        if (explicitAutoCommit) {
-          LogManager.instance().log(this, Level.WARNING,
-            "autoCommit parameter 'true' ignored: session transaction is already active (session ID: %s)",
-            activeSession.id);
+        // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
+        // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
+        // same context object for the next transaction and the counter is never reset. Sampled here, before a
+        // single byte of the body runs, and compared when the response is committed. A response-commit listener
+        // rather than the finally block below, so the answer is read at the last possible moment and the header
+        // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
+        // exactly as the read-your-writes bookmark does.
+        //
+        // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
+        // registration sits behind the activeSession null check rather than inside the listener: a request with
+        // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
+        // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
+        // survives a handler writing its own response, which the finally block cannot give: the alternative is a
+        // signal that is simply missing whenever the response was streamed. A session-bound request has already
+        // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
+        // (code review on PR #8138).
+        if (activeSession != null && reportsSessionPartialCommit()) {
+          final TransactionContext sessionTxAtStart = activeSession.transaction;
+          final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;
+          exchange.addResponseCommitListener(ex -> {
+            if (TransactionContext.isPartiallyCommitted(sessionTxAtStart, sessionCommitCountAtStart))
+              ex.getResponseHeaders().put(SESSION_PARTIAL_COMMIT_HEADER, "true");
+          });
         }
+
+        current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+        if (current == null)
+          // INITIALIZE THE DATABASE CONTEXT
+          current = DatabaseContext.INSTANCE.init(database);
+
+        final SecurityDatabaseUser currentUser = current.getCurrentUser();
+        if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
+          current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+
+        // A session request attaches its QuerySession in setTransactionInThreadLocal above. A non-session
+        // request must never inherit a stale session from a thread-context reused on this pooled thread,
+        // which would leak another user's SESSION SET parameters into this request.
+        if (activeSession == null)
+          current.setQuerySession(null);
+
+        // Warn if autoCommit parameter conflicts with session
+        if (activeSession != null && payload != null && payload.has("autoCommit")) {
+          final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
+          if (explicitAutoCommit) {
+            LogManager.instance().log(this, Level.WARNING,
+                "autoCommit parameter 'true' ignored: session transaction is already active (session ID: %s)",
+                activeSession.id);
+          }
+        }
+
+        final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
+        atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
+        // THE WRAPPER IS OPENED ON THE CALLER'S BEHALF, SO A COMMAND THAT COMMITS ITS OWN BATCHES GOES WITHOUT IT UNLESS THE CALLER
+        // ASKED FOR IT: INSIDE IT A WHOLE IMPORT WAS ONE TRANSACTION HELD IN MEMORY TO THE END (ISSUE #11728)
+        if (atomicTransaction && explicitAutoCommit == null && managesItsOwnTransactions(database, payload))
+          atomicTransaction = false;
+
+        retries = resolveRetries(payload, database.getConfiguration());
+      } catch (final Throwable failure) {
+        releaseThreadContext(database, activeSession);
+        throw failure;
       }
 
-      final Boolean explicitAutoCommit = extractAutoCommitParameter(payload);
-      atomicTransaction = determineAtomicTransaction(explicitAutoCommit, activeSession);
-      // THE WRAPPER IS OPENED ON THE CALLER'S BEHALF, SO A COMMAND THAT COMMITS ITS OWN BATCHES GOES WITHOUT IT UNLESS THE CALLER
-      // ASKED FOR IT: INSIDE IT A WHOLE IMPORT WAS ONE TRANSACTION HELD IN MEMORY TO THE END (ISSUE #11728)
-      if (atomicTransaction && explicitAutoCommit == null && managesItsOwnTransactions(database, payload))
-        atomicTransaction = false;
-
-    } else
+    } else {
       database = null;
-
-    final int retries = resolveRetries(payload,
-        database != null ? database.getConfiguration() : httpServer.getServer().getConfiguration());
+      retries = resolveRetries(payload, httpServer.getServer().getConfiguration());
+    }
 
     // Resolve HA database for read consistency (may be wrapped inside ServerDatabase).
     final HAReplicatedDatabase haDbForRead = resolveHAReplicatedDatabase(database);
@@ -533,20 +542,20 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
   }
 
-  private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {
-    if (current == null)
-      current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-
-    if (current != null) {
-      TransactionContext tx;
-      while ((tx = current.popIfNotLastTransaction()) != null) {
-        if (tx.isActive())
-          tx.rollback();
-        else
-          break;
-      }
-
-      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+  /**
+   * Unbinds from this pooled worker thread what a request bound to it before it reached the try block of {@link #execute} that
+   * always does so. The transaction of a session belongs to the session, so it is only detached from the thread, exactly as when the
+   * request ends normally; a request outside a session leaves no transaction behind. Never throws: the failure of the request is
+   * the one the caller raises.
+   */
+  private void releaseThreadContext(final DatabaseInternal database, final HttpSession activeSession) {
+    try {
+      if (activeSession != null)
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      else
+        cleanTL(database, null);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on releasing the context of the thread after a refused request", e);
     }
   }
 
@@ -846,13 +855,16 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         return null;
       }
 
+      // Before the binding below, so that once the session's transaction is on the thread nothing is left to fail before the caller
+      // holds the session it has to release it with
+      exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
+
       // FORCE THE RESET OF TL
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database,
           session.transaction);
       // Attach the session to the thread context so the engine can reach it for GQL SESSION statements and
       // session-parameter merging.
       ctx.setQuerySession(session);
-      exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
 
       return session;
     }

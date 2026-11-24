@@ -232,6 +232,30 @@ public class LocalVertexType extends LocalDocumentType implements VertexType {
     return LocalSchema.rebaseComponentName(renamedBucketName, newName, oldName, schema.getEncoding());
   }
 
+  /**
+   * The edge-list buckets of a vertex bucket are found by name, and one that exists is taken as it is: refused when another type
+   * owns it, as the paired bucket of EXTERNAL values and the stripe pool are, because it would then hold the edge lists of this
+   * type under the other type's name.
+   */
+  @Override
+  protected void checkBucketCompanionsAreFree(final Bucket bucket) {
+    // A load restores what was saved
+    if (schema.isLoadingOnCurrentThread())
+      return;
+    checkEdgeListBucketIsNotOwned(bucket, InternalBucketNaming.outEdgesBucketName(bucket.getName()));
+    checkEdgeListBucketIsNotOwned(bucket, InternalBucketNaming.inEdgesBucketName(bucket.getName()));
+  }
+
+  private void checkEdgeListBucketIsNotOwned(final Bucket bucket, final String edgeListBucketName) {
+    final Bucket edgeList = schema.getBucketByNameIfExists(edgeListBucketName);
+    if (edgeList == null)
+      return;
+    final LocalDocumentType owner = schema.getBucketOwner(edgeList.getFileId());
+    if (owner != null)
+      throw new SchemaException("Cannot add the bucket '" + bucket.getName() + "' to the type '" + name + "', because its edge-list bucket '"
+          + edgeListBucketName + "' is already associated to the type '" + owner.getName() + "'");
+  }
+
   @Override
   protected void addBucketInternal(final Bucket bucket) {
     super.addBucketInternal(bucket);

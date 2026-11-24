@@ -112,8 +112,9 @@ final class MongoBsonValues {
   }
 
   /**
-   * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: as a filter value it
-   * is a pattern to match, not a value to compare. A Decimal128 NaN or Infinity is refused, as it is on insert.
+   * Converts a value used in a filter into the form it is stored in. A regular expression is left alone: only the matcher evaluates
+   * one, as a pattern or, under {@code $eq}, as a value compared with a stored regular expression, and it never narrows the SQL
+   * candidates. A Decimal128 NaN or Infinity is refused, as it is on insert.
    */
   static Object toBound(final Object value) {
     if (value instanceof Stored stored)

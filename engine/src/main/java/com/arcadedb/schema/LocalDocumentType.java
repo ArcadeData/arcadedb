@@ -3028,10 +3028,18 @@ public class LocalDocumentType implements DocumentType {
     }
   }
 
+  /**
+   * Refuses, before the bucket is attached, a bucket this type would take together with others it finds by name when another
+   * type owns one of them. Nothing for a plain document type: its paired bucket is checked when it is adopted.
+   */
+  protected void checkBucketCompanionsAreFree(final Bucket bucket) {
+  }
+
   protected void addBucketInternal(final Bucket bucket) {
     // One lookup in the bucket-owner map rather than a walk of every type, which made each bucket attached cost O(N) and
     // the open of a schema of N types O(N^2) (issue #10247)
     schema.checkBucketIsFree(name, bucket);
+    checkBucketCompanionsAreFree(bucket);
     // The paired bucket is created after the attach below: a page size it cannot have is refused before anything changes, or the
     // type would keep a primary bucket with no pair (issue #10876)
     if (hasExternalProperties() && !externalBucketIdByPrimaryBucketId.containsKey(bucket.getFileId()))

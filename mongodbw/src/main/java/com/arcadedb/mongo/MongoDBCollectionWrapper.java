@@ -36,6 +36,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityHelper;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -235,6 +237,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    * document a {@code BeforeRecordCreateListener} vetoed is not stored and is not counted (issue #9974).
    */
   int insertDocumentsCountingStored(final List<Document> list) {
+    // before the lock of the unique indexes is taken
+    checkAccess(database, collectionName, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
     // Inserts share the read lock; only the creation of the _id index (the first insert) takes the write lock, so no transaction
     // ever runs against an index that is being built
     final ReadWriteLock lock = idIndexLock(database, collectionName);
@@ -359,6 +364,15 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
    */
   static ReadWriteLock idIndexLock(final Database database, final String collectionName) {
     return ID_INDEX_LOCKS.computeIfAbsent(idIndexKey(database, collectionName), k -> new ReentrantReadWriteLock());
+  }
+
+  /**
+   * Refuses a user who may not {@code access} the records of a collection. A write command asks it first: before it takes the lock
+   * of the unique indexes and before it reads a record, where the engine asks it when a record is saved. A collection that does not
+   * exist is not refused here (creating it is a schema change, checked where it is made), nor is a call with no user bound.
+   */
+  static void checkAccess(final Database database, final String collectionName, final SecurityDatabaseUser.ACCESS access) {
+    SecurityHelper.checkAccessOnType((DatabaseInternal) database, database.getSchema().getTypeOrNull(collectionName), access);
   }
 
   /**

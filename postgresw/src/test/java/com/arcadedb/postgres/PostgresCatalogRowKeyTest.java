@@ -141,9 +141,12 @@ class PostgresCatalogRowKeyTest {
     final List<List<Object>> sameTexts = new ArrayList<>(texts);
 
     final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
-    final List<List<Object>> union = PostgresCatalogRowSets.combine(List.of("UNION"), List.of(false), List.of(texts, sameTexts));
-    final List<List<Object>> intersection = PostgresCatalogRowSets.combine(List.of("INTERSECT"), List.of(false), List.of(texts, sameTexts));
-    final List<List<Object>> difference = PostgresCatalogRowSets.combine(List.of("EXCEPT"), List.of(false), List.of(texts, sameTexts));
+    final PostgresCatalogJoin.Budget unlimited = units -> {
+    };
+    final List<List<Object>> union = PostgresCatalogRowSets.combine(List.of("UNION"), List.of(false), List.of(texts, sameTexts), unlimited);
+    final List<List<Object>> intersection = PostgresCatalogRowSets.combine(List.of("INTERSECT"), List.of(false), List.of(texts, sameTexts),
+        unlimited);
+    final List<List<Object>> difference = PostgresCatalogRowSets.combine(List.of("EXCEPT"), List.of(false), List.of(texts, sameTexts), unlimited);
     stopwatch.assertGaveUpWithin(10_000, "a pass that does a bounded amount of work per row from one that compares each row with all the others");
 
     assertThat(union).hasSize(texts.size());
