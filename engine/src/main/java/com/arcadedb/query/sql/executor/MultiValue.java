@@ -586,7 +586,8 @@ public class MultiValue {
         if (iToRemove instanceof Collection<?>) {
           // COLLECTION - COLLECTION. The same collection on both sides (REMOVE tags = tags) is iterated as a snapshot: removing
           // from the collection being iterated skipped elements or failed with a ConcurrentModificationException (issue #12794)
-          final Collection<Object> toRemove = iToRemove == iObject ? new ArrayList<>(coll) : (Collection<Object>) iToRemove;
+          final boolean aliased = iToRemove == iObject; // NOPMD: by identity, only the same instance is mutated while iterated
+          final Collection<Object> toRemove = aliased ? new ArrayList<>(coll) : (Collection<Object>) iToRemove;
           for (final Object o : toRemove) {
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
