@@ -36,7 +36,7 @@
     <properties>
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.15.0</gson.version>
-        <lz4-java.version>1.14.0</lz4-java.version>
+        <lz4-java.version>1.14.1</lz4-java.version>
         <lucene.version>10.6.0</lucene.version>
         <!--
             ONE GraalVM version, everywhere. This property, native/pom.xml's
@@ -98,7 +98,7 @@
              converge. -->
         <antlr4.version>4.13.2</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>8.0.4</cucumber.version>
+        <cucumber.version>8.1.0</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 

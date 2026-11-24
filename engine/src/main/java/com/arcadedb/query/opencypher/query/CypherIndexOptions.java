@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.query;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.fulltext.StandardEnglishStopWordsAnalyzer;
@@ -102,9 +103,10 @@ final class CypherIndexOptions {
    * Every other LSM_VECTOR setting is given under its own name, as in the {@code METADATA} of SQL {@code CREATE INDEX}
    * ({@code efSearch}, {@code quantization: 'PRODUCT'}, ...), and is read and checked by the same reader. Those names have no
    * dot, so they cannot be taken for a Neo4j setting; a setting named both ways is refused rather than one silently winning.
+   * The dimensions are refused above {@code arcadedb.vectorIndex.maxDimensions} of {@code configuration} (issue #12822).
    */
   static JSONObject vectorMetadata(final Object options, final String typeName, final String[] propertyNames,
-      final IntSupplier existingDimensions) {
+      final IntSupplier existingDimensions, final ContextConfiguration configuration) {
     final Map<String, Object> config = indexConfig(options, "CREATE VECTOR INDEX");
     final JSONObject metadata = new JSONObject();
     // the Neo4j setting each metadata key was translated from, to refuse the same metadata key named natively too
@@ -184,7 +186,15 @@ final class CypherIndexOptions {
     }
     if (!metadata.has("similarity"))
       metadata.put("similarity", "COSINE");
-    return checked(metadata, new LSMVectorIndexMetadata(typeName, propertyNames, -1), Schema.INDEX_TYPE.LSM_VECTOR);
+    final LSMVectorIndexMetadata definition = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
+    checked(metadata, definition, Schema.INDEX_TYPE.LSM_VECTOR);
+    // Here as well as where the index is created, so the statement is refused before it creates a type or a property for it
+    try {
+      LSMVectorIndexMetadata.checkDimensionsBound(definition.dimensions, configuration);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandParsingException("Invalid vector index OPTIONS: " + e.getMessage(), e);
+    }
+    return metadata;
   }
 
   /**

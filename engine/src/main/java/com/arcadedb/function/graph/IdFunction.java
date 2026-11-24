@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.LightEdgeRID;
+import com.arcadedb.graph.VirtualElement;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
@@ -56,6 +57,9 @@ public class IdFunction implements StatelessFunction {
     checkArity(args);
     if (args[0] == null)
       return null;
+    // A virtual node or relationship (create.vNode, meta.graph) is not stored: its id is its own negative number, as APOC's
+    if (args[0] instanceof VirtualElement virtual)
+      return virtual.getVirtualId();
     if (args[0] instanceof Identifiable identifiable) {
       final RID identity = identifiable.getIdentity();
       // A lightweight edge has no record, hence no position to pack: its RID is the type marker #bucket:-1 that every

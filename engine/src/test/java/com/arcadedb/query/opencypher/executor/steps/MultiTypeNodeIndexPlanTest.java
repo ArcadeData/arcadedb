@@ -25,6 +25,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
@@ -37,7 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The plan of a node pattern that names no single type (issue #12522): which index answers which vertex bucket, and which buckets
  * are walked. The invariant of the plan is that every vertex bucket is answered by exactly one part, whatever the hierarchy above
- * it looks like, since a bucket answered twice is a vertex returned twice and a bucket answered by none is a vertex lost.
+ * it looks like, since a bucket answered twice is a vertex returned twice and a bucket answered by none is a vertex lost. The plan of
+ * a list of values ({@code n.uuid IN $keys}, issue #12546) keeps that invariant, and answers only what every key can be keyed by.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -81,8 +83,16 @@ class MultiTypeNodeIndexPlanTest extends TestHelper {
               .isEqualTo(1);
   }
 
-  @Test
-  void everyVertexBucketIsAnsweredByExactlyOnePart() {
+  /** The keys of a list, as the seek of a list reads them: one one-element array per distinct key. */
+  private static List<Object[]> keysOf(final Object... values) {
+    final List<Object[]> keys = new ArrayList<>(values.length);
+    for (final Object value : values)
+      keys.add(new Object[] { value });
+    return keys;
+  }
+
+  /** Every shape of hierarchy the plan has to answer once: a diamond, a hierarchy under one index, two indexes on a type, and no index. */
+  private void createHierarchy() {
     database.transaction(() -> {
       // two branches with an index each and a type under both
       final VertexType left = database.getSchema().createVertexType("Left");
@@ -113,6 +123,11 @@ class MultiTypeNodeIndexPlanTest extends TestHelper {
       // no index at all
       database.getSchema().createVertexType("Plain").createProperty("uuid", String.class);
     });
+  }
+
+  @Test
+  void everyVertexBucketIsAnsweredByExactlyOnePart() {
+    createHierarchy();
 
     final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.of(database.getSchema(), List.of(), false, pinned("uuid", "x"));
 
@@ -122,6 +137,118 @@ class MultiTypeNodeIndexPlanTest extends TestHelper {
         .isGreaterThanOrEqualTo(3);
     assertThat(plan.parts().stream().filter(part -> !part.isSeek()).map(MultiTypeNodeIndexPlan.Part::typeName).toList())
         .as("only the type that no index covers is walked").containsExactly("Plain");
+  }
+
+  @Test
+  void everyVertexBucketIsAnsweredByExactlyOnePartForAListToo() {
+    createHierarchy();
+
+    final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "uuid", keysOf("x", "y"));
+
+    assertThat(plan).isNotNull();
+    assertThat(plan).isNotSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
+    assertEveryVertexBucketIsAnsweredOnce(plan);
+    assertThat(plan.parts().stream().filter(MultiTypeNodeIndexPlan.Part::isSeek).count()).as("one seek per index that answers a bucket")
+        .isGreaterThanOrEqualTo(3);
+    assertThat(plan.parts().stream().filter(part -> !part.isSeek()).map(MultiTypeNodeIndexPlan.Part::typeName).toList())
+        .as("only the type that no index covers is walked").containsExactly("Plain");
+    for (final MultiTypeNodeIndexPlan.Part part : plan.parts())
+      if (part.isSeek())
+        assertThat(part.propertyNames()).as("a list is answered by an index on its one property: %s", part.index().getName())
+            .containsExactly("uuid");
+  }
+
+  @Test
+  void theBucketsOfAListThatSelectsSomeTypesAreAnsweredOnceToo() {
+    database.transaction(() -> {
+      final VertexType a = database.getSchema().createVertexType("A");
+      a.createProperty("uuid", String.class);
+      a.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+      final VertexType b = database.getSchema().createVertexType("B");
+      b.createProperty("uuid", String.class);
+      b.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+      database.getSchema().createVertexType("A~B").addSuperType(a).addSuperType(b);
+    });
+
+    // (n:A:B) selects the composite type only: it holds no index of its own, the indexes of the two types above it answer
+    final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of("A", "B"), false, "uuid", keysOf("x"));
+
+    assertThat(plan).isNotNull();
+    assertThat(plan.parts()).hasSize(1);
+    final MultiTypeNodeIndexPlan.Part part = plan.parts().getFirst();
+    assertThat(part.isSeek()).isTrue();
+    assertThat(part.wholeIndex()).as("the index also covers the buckets of A or of B, which the labels do not select").isFalse();
+    final BitSet expected = new BitSet();
+    for (final Bucket bucket : database.getSchema().getType("A~B").getBuckets(false))
+      expected.set(bucket.getFileId());
+    assertThat(part.buckets()).isEqualTo(expected);
+  }
+
+  @Test
+  void noIndexOnThePropertyOfAListMeansNoPlan() {
+    database.transaction(() -> {
+      final VertexType plain = database.getSchema().createVertexType("Plain");
+      plain.createProperty("uuid", String.class);
+      plain.createProperty("name", String.class);
+      plain.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+    });
+
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "uuid", keysOf("x"))).isNull();
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "name", keysOf("x"))).isNotNull();
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of("Missing"), false, "name", keysOf("x")))
+        .as("a label no type has selects no type").isNull();
+  }
+
+  @Test
+  void aKeyTheIndexCannotKeyMeansNoPlanForTheWholeList() {
+    database.transaction(() -> {
+      final VertexType numeric = database.getSchema().createVertexType("Numeric");
+      numeric.createProperty("id", Long.class);
+      numeric.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "id");
+    });
+
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "id", keysOf(1L, 2, 3L))).isNotNull()
+        .isNotSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
+    // an index answers the property, but not with these keys: told apart from no index at all, which no row can change
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "id", keysOf(1L, "2"))).as("the text of a number")
+        .isSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "id", keysOf(1L, 1.0d)))
+        .as("a floating value for an integer key, however many keys the index can key").isSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "other", keysOf("x"))).as("a property no index is on")
+        .isNull();
+  }
+
+  @Test
+  void aListIsNoEqualityOnTheWholeKeyOfAnIndexOnMoreColumns() {
+    database.transaction(() -> {
+      final VertexType pair = database.getSchema().createVertexType("Pair");
+      pair.createProperty("a", String.class);
+      pair.createProperty("b", String.class);
+      pair.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a", "b");
+    });
+
+    assertThat(MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "a", keysOf("x")))
+        .as("the index of (a, b) is not asked for the keys of a alone").isNull();
+
+    database.transaction(() -> database.getSchema().getType("Pair").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a"));
+    final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "a", keysOf("x"));
+    assertThat(plan).isNotNull();
+    assertThat(plan.parts()).as("the bucket of the type is answered once").hasSize(1);
+    assertThat(plan.parts().getFirst().propertyNames()).containsExactly("a");
+  }
+
+  @Test
+  void anEmptyListIsAPlanWhoseSeeksAreNeverOpened() {
+    database.transaction(() -> {
+      final VertexType entity = database.getSchema().createVertexType("Entity");
+      entity.createProperty("uuid", String.class);
+      entity.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "uuid");
+    });
+
+    final MultiTypeNodeIndexPlan plan = MultiTypeNodeIndexPlan.ofInList(database.getSchema(), List.of(), false, "uuid", keysOf());
+
+    assertThat(plan).as("the types an empty list is refused for are the ones an index answers for").isNotNull()
+        .isNotSameAs(MultiTypeNodeIndexPlan.UNKEYABLE);
   }
 
   @Test

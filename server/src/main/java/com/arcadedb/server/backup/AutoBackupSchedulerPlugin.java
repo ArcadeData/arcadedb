@@ -278,7 +278,8 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    * resolved a directory, and when they do not it is that directory the new archive is in.
    * <p>
    * A no-op when auto-backup is disabled, which is the documented behaviour of an on-demand archive with no
-   * scheduler: it stays until {@code delete backup} removes it.
+   * scheduler: it stays until {@code delete backup} removes it. The stale partial archives a crashed backup left are not
+   * this plugin's to sweep: the control plane does it after every on-demand backup, enabled or not (issue #12530).
    *
    * @return number of archives deleted
    */
