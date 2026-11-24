@@ -3323,7 +3323,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public MathExpression visitCastSuffix(final SQLParser.CastSuffixContext ctx) {
     final Expression operand = new Expression();
     operand.mathExpression = (MathExpression) visit(ctx.mathExpression());
-    return new CastExpression(operand, ctx.identifier().getText());
+    // one word, or two as in DOUBLE PRECISION
+    final StringBuilder typeName = new StringBuilder();
+    for (final SQLParser.IdentifierContext word : ctx.identifier()) {
+      if (typeName.length() > 0)
+        typeName.append(' ');
+      typeName.append(word.getText());
+    }
+    return new CastExpression(operand, typeName.toString());
   }
 
   /**

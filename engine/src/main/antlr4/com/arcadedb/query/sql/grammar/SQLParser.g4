@@ -1528,7 +1528,8 @@ expression
  * whose value is the parameter :x): no existing rule can be followed by two colons.
  */
 mathExpression
-    : mathExpression COLON COLON {_input.LT(-2).getStopIndex() + 1 == _input.LT(-1).getStartIndex()}? identifier # castSuffix
+    : mathExpression COLON COLON {_input.LT(-2).getStopIndex() + 1 == _input.LT(-1).getStartIndex()}? identifier
+      ({_input.LT(-1).getText().equalsIgnoreCase("DOUBLE") && _input.LT(1).getText().equalsIgnoreCase("PRECISION")}? identifier)? # castSuffix
     | (PLUS | MINUS) mathExpression                                    # unary
     | mathExpression (STAR | SLASH | REM) mathExpression               # multiplicative
     | mathExpression (PLUS | MINUS) mathExpression                     # additive

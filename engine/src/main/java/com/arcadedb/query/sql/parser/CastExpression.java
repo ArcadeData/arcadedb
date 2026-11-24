@@ -25,9 +25,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -100,8 +102,8 @@ public class CastExpression extends MathExpression {
         case SHORT -> (short) wholeNumber(value, Short.MIN_VALUE, Short.MAX_VALUE);
         case INTEGER -> (int) wholeNumber(value, Integer.MIN_VALUE, Integer.MAX_VALUE);
         case LONG -> wholeNumber(value, Long.MIN_VALUE, Long.MAX_VALUE);
-        case FLOAT -> (float) (value instanceof Number number && !(value instanceof BigDecimal) ? number.floatValue() : decimalOf(value).floatValue());
-        case DOUBLE -> value instanceof Number number && !(value instanceof BigDecimal) ? number.doubleValue() : decimalOf(value).doubleValue();
+        case FLOAT -> floatOf(value);
+        case DOUBLE -> doubleOf(value);
         case DECIMAL -> decimalOf(value);
         case STRING -> value.toString();
         case BOOLEAN -> booleanOf(value);
@@ -119,11 +121,39 @@ public class CastExpression extends MathExpression {
     return value instanceof CharSequence ? "'" + value + "'" : String.valueOf(value);
   }
 
+  private static float floatOf(final Object value) {
+    final float result = value instanceof Number number && !(value instanceof BigDecimal) ? number.floatValue()
+        : decimalOf(value).floatValue();
+    // a finite value too big for the type becomes an infinity in Java, where PostgreSQL raises; an infinity as such is a value
+    if (Float.isInfinite(result) && !isInfinity(value))
+      throw new CommandExecutionException("Cannot cast " + describe(value) + " to FLOAT: the value is out of range");
+    return result;
+  }
+
+  private static double doubleOf(final Object value) {
+    final double result = value instanceof Number number && !(value instanceof BigDecimal) ? number.doubleValue()
+        : decimalOf(value).doubleValue();
+    if (Double.isInfinite(result) && !isInfinity(value))
+      throw new CommandExecutionException("Cannot cast " + describe(value) + " to DOUBLE: the value is out of range");
+    return result;
+  }
+
+  private static boolean isInfinity(final Object value) {
+    return value instanceof Double d && d.isInfinite() || value instanceof Float f && f.isInfinite();
+  }
+
   /** A number or a text that holds a number, rounded half away from zero as PostgreSQL does, and checked against the range of the target. */
   private static long wholeNumber(final Object value, final long min, final long max) {
     if (value instanceof Boolean bool)
       return bool ? 1 : 0;
-    final BigDecimal number = decimalOf(value).setScale(0, RoundingMode.HALF_UP);
+    final BigDecimal decimal = decimalOf(value);
+    // The digits left of the decimal point, from the precision and the scale alone. A text such as 1e1000000000 is a short input
+    // whose rescaling to a whole number would build a billion-digit integer, so it is refused here, before setScale (Long.MAX_VALUE
+    // has 19 digits). A value below 0.1 rounds to 0 and is not rescaled for the same reason (1e-1000000000).
+    final long digits = (long) decimal.precision() - decimal.scale();
+    if (digits > 20)
+      throw new CommandExecutionException("Cannot cast " + describe(value) + ": the value is out of range");
+    final BigDecimal number = digits < 0 ? BigDecimal.ZERO : decimal.setScale(0, RoundingMode.HALF_UP);
     if (number.compareTo(BigDecimal.valueOf(min)) < 0 || number.compareTo(BigDecimal.valueOf(max)) > 0)
       throw new CommandExecutionException("Cannot cast " + describe(value) + ": the value is out of range");
     return number.longValueExact();
@@ -162,6 +192,10 @@ public class CastExpression extends MathExpression {
     final Object converted = Type.convert(context == null ? null : context.getDatabase(), value, target.getDefaultJavaType());
     if (converted == null)
       throw new CommandExecutionException("Cannot cast " + describe(value) + " to " + target.name());
+    // both types are a java.util.Date and Type.convert hands one back unchanged, so a DATE drops its time of day here: the days
+    // since the epoch, as a DATE property stores them
+    if (target == Type.DATE && converted instanceof Date date)
+      return new Date(Math.floorDiv(date.getTime(), DateUtils.MS_IN_A_DAY) * DateUtils.MS_IN_A_DAY);
     return converted;
   }
 

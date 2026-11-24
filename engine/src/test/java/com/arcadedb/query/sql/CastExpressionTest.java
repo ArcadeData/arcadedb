@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -131,6 +132,59 @@ class CastExpressionTest extends TestHelper {
       assertThatThrownBy(() -> value(expression)).as(expression).isInstanceOf(CommandExecutionException.class);
     // a bound text that is not a number: the same error, not a silent null or zero
     assertThatThrownBy(() -> value("$1::INTEGER", "abc")).isInstanceOf(CommandExecutionException.class);
+  }
+
+  @Test
+  void doublePrecisionIsOneTypeAfterTheColons() {
+    assertThat(value("'1.5'::DOUBLE PRECISION")).isEqualTo(1.5d);
+    assertThat(value("'1.5'::double precision")).isEqualTo(1.5d);
+    assertThat(value("CAST('1.5' AS DOUBLE PRECISION)")).isEqualTo(1.5d);
+    // an alias after the type is still an alias, also a word that is not PRECISION
+    assertThat(value("'1.5'::DOUBLE")).isEqualTo(1.5d);
+    try (final ResultSet resultSet = database.query("sql", "SELECT '1.5'::DOUBLE PRECISION v, '2'::INTEGER w")) {
+      final var row = resultSet.next();
+      assertThat(row.<Double>getProperty("v")).isEqualTo(1.5d);
+      assertThat(row.<Integer>getProperty("w")).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void aFiniteValueTooBigForAFloatingTypeRaises() {
+    for (final String expression : List.of("'1e309'::DOUBLE", "'1e39'::REAL", "CAST('1e400' AS FLOAT8)", "1e39::REAL"))
+      assertThatThrownBy(() -> value(expression)).as(expression).isInstanceOf(CommandExecutionException.class);
+    assertThat(value("'1.5'::REAL")).isEqualTo(1.5f);
+    assertThat(value("'3.4e38'::REAL")).isEqualTo(3.4e38f);
+    assertThat(value("'1e308'::DOUBLE")).isEqualTo(1e308d);
+  }
+
+  @Test
+  void aHugeExponentIsRefusedWithoutBuildingTheNumber() {
+    // a short text whose rescaling to a whole number would need a billion digits: refused at once, not after the work
+    for (final String expression : List.of("'1e1000000000'::INTEGER", "'-1e1000000000'::BIGINT", "'1e30'::BIGINT"))
+      assertThatThrownBy(() -> value(expression)).as(expression).isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("out of range");
+    // a tiny one rounds to zero, and the boundary values that round into range still work
+    assertThat(value("'1e-1000000000'::INTEGER")).isEqualTo(0);
+    assertThat(value("'0.4'::INTEGER")).isEqualTo(0);
+    assertThat(value("'0.5'::INTEGER")).isEqualTo(1);
+    assertThat(value("'-0.5'::INTEGER")).isEqualTo(-1);
+    assertThat(value("'32767.4'::SMALLINT")).isEqualTo((short) 32767);
+    assertThat(value("'9223372036854775807'::BIGINT")).isEqualTo(Long.MAX_VALUE);
+    assertThatThrownBy(() -> value("'32767.5'::SMALLINT")).isInstanceOf(CommandExecutionException.class);
+  }
+
+  @Test
+  void aDateHasNoTimeOfDayAndATimestampKeepsIt() {
+    final Object timestamp = value("CAST('2020-01-02 12:34:56' AS TIMESTAMP)");
+    final Object date = value("CAST(CAST('2020-01-02 12:34:56' AS TIMESTAMP) AS DATE)");
+    assertThat(timestamp).isInstanceOf(Date.class);
+    assertThat(date).isInstanceOf(Date.class);
+    assertThat(((Date) date).getTime() % 86_400_000L).isZero();
+    assertThat(((Date) timestamp).getTime() % 86_400_000L).isNotZero();
+    assertThat(((Date) timestamp).getTime() - ((Date) date).getTime()).isLessThan(86_400_000L).isPositive();
+    // the same through the postfix spelling, and from a text
+    assertThat(((Date) value("'2020-01-02 12:34:56'::TIMESTAMP::DATE")).getTime()).isEqualTo(((Date) date).getTime());
+    assertThat(((Date) value("'2020-01-02'::DATE")).getTime() % 86_400_000L).isZero();
   }
 
   @Test
