@@ -33,7 +33,6 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * CREATE in the shapes of a batched graph loader (nodes with labels, lists and vectors from UNWIND rows, null properties skipped, edges with properties between matched nodes, a path, a SET folded into the CREATE). Every expected row and statistic is what Neo4j 5.26 returns for the same data and statement. A row is rendered
