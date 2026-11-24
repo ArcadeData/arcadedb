@@ -859,6 +859,69 @@ class IndexBoundTest {
             .isEqualTo(ids("S", field + " IN ?", List.of(Double.POSITIVE_INFINITY, Double.NaN, 2.0d)));
     }
 
+    @Test
+    void fluentSelectAgreesWithTheScan() {
+      // the fluent API seeks the index with its own bound handling: an infinite bound on a DECIMAL key answered no row there too
+      final Object[] bounds = { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, Float.POSITIVE_INFINITY,
+          Float.NEGATIVE_INFINITY, Float.NaN, 0.5d };
+      final SelectOperator[] operators = { SelectOperator.eq, SelectOperator.lt, SelectOperator.le, SelectOperator.gt, SelectOperator.ge };
+      for (final String field : new String[] { "d", "u", "n", "h" })
+        for (final SelectOperator operator : operators)
+          for (final Object bound : bounds)
+            for (final int limit : new int[] { -1, 1, 3 }) {
+              if (field.equals("h") && operator != SelectOperator.eq)
+                // a HASH index answers no range, which the fluent API does not check for yet (issue #13372)
+                continue;
+              final String what = field + " " + operator + " " + describe(bound) + " limit " + limit;
+              assertThat(fluent("I", field, operator, limit, bound)).as(what).isEqualTo(fluent("S", field, operator, limit, bound));
+            }
+      final double[] ends = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.5d };
+      for (final String field : new String[] { "d", "u", "n" })
+        for (final double from : ends)
+          for (final double to : ends)
+            for (final int limit : new int[] { -1, 1 })
+              assertThat(fluent("I", field, SelectOperator.between, limit, from, to))
+                  .as(field + " between " + from + " and " + to + " limit " + limit)
+                  .isEqualTo(fluent("S", field, SelectOperator.between, limit, from, to));
+
+      assertThat(fluent("I", "d", SelectOperator.lt, -1, Double.POSITIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "d", SelectOperator.gt, -1, Double.NEGATIVE_INFINITY)).containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "n", SelectOperator.ge, 2, Float.NEGATIVE_INFINITY)).hasSize(2);
+      assertThat(fluent("I", "d", SelectOperator.between, -1, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY))
+          .containsExactly(0, 1, 2, 3, 4, 6);
+      assertThat(fluent("I", "d", SelectOperator.gt, -1, Double.POSITIVE_INFINITY)).isEmpty();
+      assertThat(fluent("I", "d", SelectOperator.lt, -1, Double.NEGATIVE_INFINITY)).isEmpty();
+    }
+
+    /**
+     * The ids the fluent API answers, sorted. With a limit only the count is compared: which rows come first is not specified,
+     * but the cap on the candidates an index cursor yields must not cut the answer short.
+     */
+    private List<Integer> fluent(final String type, final String property, final SelectOperator operator, final int limit,
+        final Object... value) {
+      final SelectWhereOperatorBlock where = database.select().fromType(type).where().property(property);
+      final SelectWhereAfterBlock after = switch (operator) {
+        case lt -> where.lt().value(value[0]);
+        case le -> where.le().value(value[0]);
+        case gt -> where.gt().value(value[0]);
+        case ge -> where.ge().value(value[0]);
+        case eq -> where.eq().value(value[0]);
+        default -> where.between().values(value[0], value[1]);
+      };
+      if (limit > 0)
+        after.limit(limit);
+      final List<Integer> rows = new ArrayList<>();
+      after.documents().forEachRemaining(d -> rows.add(d.getInteger("id")));
+      if (limit > 0) {
+        final List<Integer> sized = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++)
+          sized.add(-1);
+        return sized;
+      }
+      rows.sort(null);
+      return rows;
+    }
+
     private static String describe(final Object bound) {
       return bound.getClass().getSimpleName() + " " + bound;
     }

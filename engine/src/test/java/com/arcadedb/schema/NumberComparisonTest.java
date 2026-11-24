@@ -562,8 +562,27 @@ class NumberComparisonTest {
       assertThat(count("dec < (-1.0 / 0)")).isZero();
     }
 
-    private long count(final String where) {
-      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM NonFinite WHERE " + where)) {
+    @Test
+    void betweenAnswersAsTheTwoComparisonsForANonFiniteValueAndADecimalBound() {
+      // the bound used to be converted to the value's class: 1E+400 read as Infinity, so Infinity was between 0 and 1E+400
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE NonFinite");
+        database.command("sql", "CREATE PROPERTY NonFinite.dbl DOUBLE");
+        for (final double value : new double[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NaN, 1.5d })
+          database.newDocument("NonFinite").set("dbl", value).save();
+      });
+
+      final BigDecimal[] bounds = { new BigDecimal("-1E+400"), BigDecimal.ZERO, new BigDecimal("1E+400") };
+      for (final BigDecimal from : bounds)
+        for (final BigDecimal to : bounds)
+          assertThat(count("dbl BETWEEN ? AND ?", from, to)).as("between %s and %s", from, to)
+              .isEqualTo(count("dbl >= ? AND dbl <= ?", from, to));
+      assertThat(count("dbl BETWEEN ? AND ?", BigDecimal.ZERO, new BigDecimal("1E+400"))).isEqualTo(1);
+      assertThat(count("dbl BETWEEN ? AND ?", new BigDecimal("-1E+400"), BigDecimal.ZERO)).isZero();
+    }
+
+    private long count(final String where, final Object... args) {
+      try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM NonFinite WHERE " + where, args)) {
         return rs.next().<Long>getProperty("c");
       }
     }

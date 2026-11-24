@@ -99,9 +99,14 @@ public class BetweenCondition extends BooleanExpression {
     return lower == null || upper == null ? null : Boolean.TRUE;
   }
 
-  /** Whether a bound is read as the number it is, without being converted to the class of the value it bounds. */
+  /**
+   * Whether a bound is read as the number it is, without being converted to the class of the value it bounds. Either side being
+   * an infinity or NaN qualifies: converted, a decimal past the double range reads as the infinity it overflows to, so an
+   * infinite value was between 0 and 1E+400, which {@code >=} and {@code <=} deny (issue #12694).
+   */
   private static boolean comparedAsNumbers(final Object value, final boolean integralValue, final Object bound) {
-    return bound instanceof Number number && (integralValue || (value instanceof Number && !Type.isFinite(number)));
+    return bound instanceof Number number && (integralValue || (value instanceof Number valueNumber && (!Type.isFinite(number)
+        || !Type.isFinite(valueNumber))));
   }
 
   /**
