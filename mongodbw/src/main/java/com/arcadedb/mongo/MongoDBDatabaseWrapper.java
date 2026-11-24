@@ -1837,9 +1837,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The fields an upsert that matches nothing copies from its filter, by path, as mongod infers them (issue #12071): the equality of
    * each path, dotted or not, at the top level, under {@code $and} and under an {@code $or} of a single branch. An equality is a plain
-   * value (an embedded document and a list included, a regular expression not), {@code $eq}, or an {@code $in} of a single value, or
-   * a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one below it, is refused with mongod's
-   * error 54, as is an {@code $all} of several values.
+   * value (an embedded document and a list included, a regular expression not), {@code $eq} (a regular expression included), or an
+   * {@code $in} of a single value, or a value of an {@code $all} (see {@link #equalityOf}). A path matched twice, or a path and one
+   * below it, is refused with mongod's error 54, as is an {@code $all} of several values.
    * <p>
    * mongod infers these fields only for a statement that inserts, so the refusal is the insert's: it is raised here and reaches the
    * client from {@link #executeUpsert} as an entry of {@code writeErrors}, while a filter that matches a document updates it.
@@ -1872,8 +1872,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   /**
    * The value the conditions of one path infer, {@link #NO_EQUALITY} when none of them is an equality. {@code $eq}, an {@code $in} of
    * one value and each value of an {@code $all} are equalities of their own, and mongod refuses two of them on a path. A regular
-   * expression is a pattern to match, never a value (this plugin's matcher does not match a stored one back, so the next run of the
-   * upsert would insert again), and an {@code $elemMatch} document of an {@code $all} says nothing about a value either.
+   * expression is a pattern to match as the value of the path, in an {@code $in} or in an {@code $all}, and infers nothing there; the
+   * operand of {@code $eq} is a value even when it is a regular expression, which the matcher compares with the stored one (issue
+   * #12594), so it is seeded as mongod seeds it. An {@code $elemMatch} document of an {@code $all} says nothing about a value either.
    */
   private static Object equalityOf(final String path, final Object value) {
     if (value instanceof BsonRegularExpression)
@@ -1885,15 +1886,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     for (final Map.Entry<String, Object> operator : operators.entrySet()) {
       final Object operand = operator.getValue();
       switch (operator.getKey()) {
-      case "$eq" -> equality = addEquality(path, equality, operand);
+      case "$eq" -> equality = addEquality(path, equality, operand, true);
       case "$in" -> {
         if (operand instanceof List<?> in && in.size() == 1)
-          equality = addEquality(path, equality, in.getFirst());
+          equality = addEquality(path, equality, in.getFirst(), false);
       }
       case "$all" -> {
         if (operand instanceof List<?> all)
           for (final Object item : all)
-            equality = addEquality(path, equality, item);
+            equality = addEquality(path, equality, item, false);
       }
       default -> {
         // any other operator is no equality
@@ -1903,9 +1904,14 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     return equality;
   }
 
-  /** {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern. */
-  private static Object addEquality(final String path, final Object found, final Object candidate) {
-    if (candidate instanceof BsonRegularExpression || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
+  /**
+   * {@code found} with the equality {@code candidate} added: it is refused when the path has one already, ignored when it is a pattern.
+   *
+   * @param regexIsValue true for the operand of {@code $eq}, where a regular expression is a value to compare and not a pattern
+   */
+  private static Object addEquality(final String path, final Object found, final Object candidate, final boolean regexIsValue) {
+    if (candidate instanceof BsonRegularExpression && !regexIsValue
+        || candidate instanceof Document operators && MongoFilter.isOperatorDocument(operators))
       return found;
     if (found != NO_EQUALITY)
       throw notSingleValue("path '" + path + "' is matched twice");
