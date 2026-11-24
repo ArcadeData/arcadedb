@@ -13,6 +13,11 @@ name: Classify Pull Requests
 #   apply     no model.               Validates the model's JSON and does every write
 #                                     (.github/scripts/pr-classify-apply.js).
 #
+# The model's JSON travels from classify to apply as an artifact, not as a job output. The runner
+# drops a job output whose value contains any string it has masked ("Skip output ... since it may
+# contain secret"), which is decided by the text of the review and left apply with nothing, so the
+# PR got `verdict=none` on every dispatch (#12492). Step outputs and files are not filtered.
+#
 # Nothing from the PR head is ever checked out or executed: every checkout takes the base branch,
 # which is the default under pull_request_target, and the PR reaches the model only as files of
 # text written by a no-model step. The workflow file and the scripts come from the base branch too,
@@ -142,7 +147,9 @@ jobs:
       pull-requests: read
       issues: read
     outputs:
-      structured_output: ${{ steps.classify.outputs.structured_output }}
+      # "true" or "false", never the decision itself: whether the artifact below holds a decision,
+      # so apply can tell a classifier that returned nothing from a decision that did not arrive.
+      decision_saved: ${{ steps.save.outputs.saved }}
     steps:
       # The base branch (the default under pull_request_target): trusted code and CLAUDE.md for
       # context. Never the PR head.
@@ -261,7 +268,7 @@ jobs:
 
       - name: Classify and review the PR
         id: classify
-        uses: anthropics/claude-code-action@4fa93a88de49bbef68b10eb15aabedf28ca0e1ed # v1.0.271
+        uses: anthropics/claude-code-action@f431adaf77e0fecf918431e75a2b5b45b85af002 # v1.0.283
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -353,6 +360,43 @@ jobs:
             --disallowed-tools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
             --json-schema '{"type":"object","additionalProperties":false,"required":["areas","severity","verdict","review"],"properties":{"areas":{"type":"array","items":{"type":"string"},"maxItems":5},"severity":{"enum":["severity:critical","severity:major","severity:minor"]},"verdict":{"enum":["lgtm","needs-changes","unsafe"]},"review":{"type":"string"},"security_reason":{"type":"string"}}}'
 
+      # Hands the model's JSON to apply. This is a no-model step that runs after the model, which
+      # cannot reach it: the file is under RUNNER_TEMP, outside the workspace its tools are pinned to.
+      # Only the model's decision is written: no environment, no token. The runner filters job
+      # outputs through its secret masker and does not filter a step output, which is why the value
+      # is read here and not passed to the next job. The file stays as untrusted as the model's
+      # answer: apply validates it and redacts the review before anything is posted.
+      - name: Save the decision for the apply job
+        id: save
+        if: always()
+        shell: bash
+        env:
+          DECISION: ${{ steps.classify.outputs.structured_output }}
+        run: |
+          saved=false
+          if [ -n "$DECISION" ]; then
+            mkdir -p "$RUNNER_TEMP/classify-decision"
+            printf '%s' "$DECISION" > "$RUNNER_TEMP/classify-decision/decision.json"
+            saved=true
+          fi
+          echo "saved=$saved" >> "$GITHUB_OUTPUT"
+
+      # Short retention: the file is read by apply seconds from now, and a re-run of apply is the
+      # only reason it may be read again. The name carries the head the decision is for, so apply
+      # can never pick up the decision of another head that an earlier attempt of this run left
+      # behind (a per-attempt name would not do: a re-run of apply alone has a new attempt number
+      # and classify, which is not re-run, uploaded under the old one). A re-run of this job for the
+      # same head replaces the artifact of the first attempt instead of failing on the name.
+      - name: Upload the decision
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
+          path: ${{ runner.temp }}/classify-decision/decision.json
+          if-no-files-found: ignore
+          retention-days: 1
+          overwrite: true
+
   # Every write. Runs when classify failed too, so a failed review still posts `verdict=none` and the
   # engines stop waiting at once; never on a cancelled run, whose head a newer run now owns.
   apply:
@@ -374,12 +418,27 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
+      # The model's decision, written by the classify job. It is skipped when classify saved
+      # nothing (it failed, or the model returned no output), where the artifact does not exist
+      # and the download would only add an error annotation; apply then says why in the comment.
+      # A download that fails anyway must not stop apply: it posts `verdict=none` with the reason.
+      - name: Download the decision
+        if: needs.classify.outputs.decision_saved == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: classify-pr-decision-${{ needs.gate.outputs.head_sha }}
+          path: ${{ runner.temp }}/classify-decision
+
       - name: Apply the labels and post the review
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ needs.gate.outputs.number }}
           HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
-          STRUCTURED_OUTPUT: ${{ needs.classify.outputs.structured_output }}
+          # The file above, and what apply needs to say why there is none.
+          DECISION_FILE: ${{ runner.temp }}/classify-decision/decision.json
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          DECISION_SAVED: ${{ needs.classify.outputs.decision_saved }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false }}
         with:
           # Label names, colours and the marker prefix live in .github/scripts/issue-workflow-config.js;

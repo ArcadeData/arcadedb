@@ -25,7 +25,8 @@ import java.util.Arrays;
 /**
  * text.jaroWinklerDistance(str1, str2) - The Jaro-Winkler distance, 1 minus the Jaro-Winkler similarity, as
  * {@code apoc.text.jaroWinklerDistance} answers (Apache Commons Text {@code JaroWinklerDistance}): 0.0 for equal strings, 1.0 for
- * strings with nothing in common (issue #12104).
+ * strings with nothing in common (issue #12104). The matching costs O(n*m), so an argument is limited to
+ * {@link TextLevenshteinDistance#MAX_STRING_LENGTH} characters, as in {@code text.levenshteinDistance}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -61,6 +62,9 @@ public class TextJaroWinklerDistance extends AbstractTextFunction {
 
     if (str1 == null || str2 == null)
       return null;
+
+    // the matching is O(n*m): the lengths are bounded like those of the Levenshtein functions, before the strings are copied
+    TextLevenshteinDistance.requireWithinMaxLength("Jaro-Winkler distance", str1, str2);
 
     // characters, not UTF-16 units: a character outside the BMP is one position of the window, one match, one prefix character
     return 1 - similarity(codePointsOf(str1), codePointsOf(str2));

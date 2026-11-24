@@ -110,14 +110,10 @@ public class PostgresE2ETests
         insert.Parameters.AddWithValue("Charlie");
         insert.Parameters.AddWithValue("300");
 
-        try
-        {
-            await insert.ExecuteNonQueryAsync();
-        }
-        catch (NpgsqlException ex) when (string.IsNullOrEmpty(ex.SqlState))
-        {
-            // ArcadeDB sends a RowDescription after INSERT which Npgsql rejects (protocol deviation); SqlState is null for protocol errors so SQL errors propagate normally.
-        }
+        // A write with no RETURN answers Describe with NoData, sends no rows and is tagged "INSERT 0 1" (#11017), so the
+        // parameterized INSERT must succeed on its own and report the row it wrote (#11650).
+        var affected = await insert.ExecuteNonQueryAsync();
+        Assert.Equal(1, affected);
 
         await using var select = conn.CreateCommand();
         select.CommandText = "SELECT FROM NpgsqlTest WHERE id = $1";

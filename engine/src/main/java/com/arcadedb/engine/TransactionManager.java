@@ -310,22 +310,44 @@ public class TransactionManager {
   }
 
   /**
+   * Why {@link #vertexChangeSince} cannot rule out that the vertex a transaction read alive was replaced under its RID (#11592). A
+   * commit refused for it is retried the same way whatever the cause; the cause only words the refusal, so whoever reads it is pointed
+   * at what happened (#12123).
+   */
+  public enum VertexChange {
+    /** Nothing since the sequence was taken: the vertex is the one the transaction read. */
+    NONE,
+    /** A commit deleted a vertex with this RID, or one sharing its stripe. */
+    DELETED,
+    /** The bucket of the RID is gone, and the vertex with it. */
+    BUCKET_DROPPED,
+    /**
+     * A replicated apply wrote the page of the RID (or one sharing its stripe), or is writing it now. The entry carries page images,
+     * not the records it deleted, so the vertex may be the same one or a new one under its RID: nothing tells the two apart.
+     */
+    PAGE_REPLICATED
+  }
+
+  /**
    * Whether a vertex with this RID (or one sharing its stripe) was deleted by a commit after {@code sequence} was taken, or a
    * replicated apply wrote the page of the RID (or one sharing its stripe) after it or is writing it now. The RID can be holding a
-   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592).
+   * vertex created after the delete, which no image of the record tells apart from the one deleted (#11592). A delete is reported
+   * before a replicated write, so a vertex both deleted and on a replicated page reads as deleted.
+   *
+   * @return {@link VertexChange#NONE} when neither happened, otherwise which one did
    */
-  public boolean wasVertexDeletedSince(final RID rid, final long sequence) {
+  public VertexChange vertexChangeSince(final RID rid, final long sequence) {
     final AtomicLongArray deletedAt = vertexDeletedAt;
     if (deletedAt != null && deletedAt.get(vertexDeleteStripe(rid.getBucketId(), rid.getPosition())) > sequence)
-      return true;
+      return VertexChange.DELETED;
     final ReplicatedVertexPages replicated = replicatedVertexPages;
     if (replicated == null)
-      return false;
+      return VertexChange.NONE;
     // a bucket that is gone took the vertex with it
     if (!(database.getSchema().getFileByIdIfExists(rid.getBucketId()) instanceof LocalBucket bucket))
-      return true;
+      return VertexChange.BUCKET_DROPPED;
     return replicated.writtenSince(vertexDeleteStripe(rid.getBucketId(), rid.getPosition() / bucket.getMaxRecordsInPage()),
-        sequence);
+        sequence) ? VertexChange.PAGE_REPLICATED : VertexChange.NONE;
   }
 
   /**

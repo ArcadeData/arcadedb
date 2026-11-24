@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.DistinctNumericKey;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.IncomingEdgeLookup;
@@ -111,8 +112,9 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(context, edgeTypes);
 
     if (groupingExpressions.length == 1) {
-      // Single-key fast path: use raw Object as map key
-      final Map<Object, Long> groups = new LinkedHashMap<>();
+      // Single-key fast path: keyed by the canonical value (a list stored as a primitive array and as a List, or 1 and
+      // 1.0, are one group, as in GroupByAggregationStep); the group reports its first-seen raw key (#12705)
+      final Map<Object, SingleKeyGroup> groups = new LinkedHashMap<>();
       heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
 
       while (prevResult.hasNext()) {
@@ -136,10 +138,13 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               ? evaluator.evaluate(groupingExpressions[0], inputRow, context)
               : inputRow.getProperty(groupingAliases[0]);
 
-          final int groupsBefore = groups.size();
-          groups.merge(key, count, Long::sum);
-          if (groups.size() > groupsBefore)
+          final Object canonical = DistinctNumericKey.canonicalize(key);
+          final SingleKeyGroup group = groups.get(canonical);
+          if (group == null) {
+            groups.put(canonical, new SingleKeyGroup(key, count));
             heapLimit.add(groups.size(), key, CountEdgesStep.groupOverheadBytes(2));
+          } else
+            group.count += count;
         } finally {
           if (context.isProfiling())
             cost += System.nanoTime() - begin;
@@ -148,17 +153,17 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
 
       // Build output
       final List<Result> results = new ArrayList<>(groups.size());
-      for (final Map.Entry<Object, Long> entry : groups.entrySet()) {
+      for (final SingleKeyGroup group : groups.values()) {
         final ResultInternal result = new ResultInternal();
-        result.setProperty(groupingAliases[0], entry.getKey());
-        result.setProperty(countAlias, entry.getValue());
+        result.setProperty(groupingAliases[0], group.key);
+        result.setProperty(countAlias, group.count);
         results.add(result);
       }
       return new IteratorResultSet(results.iterator());
     }
 
     // Multi-key path
-    final Map<GroupKey, Long> groups = new LinkedHashMap<>();
+    final Map<GroupKeyValues, Long> groups = new LinkedHashMap<>();
     heapLimit = OperationHeapLimit.of(context, "groups", "GROUP BY");
     while (prevResult.hasNext()) {
       final Result inputRow = prevResult.next();
@@ -184,7 +189,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
               : inputRow.getProperty(groupingAliases[i]);
 
         final int groupsBefore = groups.size();
-        groups.merge(new GroupKey(keys), count, Long::sum);
+        groups.merge(new GroupKeyValues(keys), count, Long::sum);
         if (groups.size() > groupsBefore)
           heapLimit.add(groups.size(), keys, CountEdgesStep.groupOverheadBytes(groupingAliases.length + 1));
       } finally {
@@ -194,7 +199,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     }
 
     final List<Result> results = new ArrayList<>(groups.size());
-    for (final Map.Entry<GroupKey, Long> entry : groups.entrySet()) {
+    for (final Map.Entry<GroupKeyValues, Long> entry : groups.entrySet()) {
       final ResultInternal result = new ResultInternal();
       final Object[] keys = entry.getKey().values;
       for (int i = 0; i < groupingAliases.length; i++)
@@ -291,35 +296,13 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
     return false;
   }
 
-  private static final class GroupKey {
-    final Object[] values;
-    private final int hash;
+  private static final class SingleKeyGroup {
+    final Object key;
+    long         count;
 
-    GroupKey(final Object[] values) {
-      this.values = values;
-      int h = 1;
-      for (final Object v : values)
-        h = 31 * h + (v == null ? 0 : v.hashCode());
-      this.hash = h;
-    }
-
-    @Override
-    public int hashCode() {
-      return hash;
-    }
-
-    @Override
-    public boolean equals(final Object obj) {
-      if (this == obj) return true;
-      if (!(obj instanceof GroupKey other)) return false;
-      if (values.length != other.values.length) return false;
-      for (int i = 0; i < values.length; i++) {
-        if (values[i] == null) {
-          if (other.values[i] != null) return false;
-        } else if (!values[i].equals(other.values[i]))
-          return false;
-      }
-      return true;
+    SingleKeyGroup(final Object key, final long count) {
+      this.key = key;
+      this.count = count;
     }
   }
 

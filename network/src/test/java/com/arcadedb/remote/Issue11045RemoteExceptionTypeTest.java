@@ -33,6 +33,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.TypeAlreadyExistsException;
 import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.query.opencypher.parser.FeatureNotImplementedException;
 import com.arcadedb.schema.trigger.TriggerExecutionException;
@@ -170,9 +171,9 @@ class Issue11045RemoteExceptionTypeTest {
         outside.add(name);
 
     assertThat(outside).containsExactlyInAnyOrder(FunctionExecutionException.class.getName(), IndexException.class.getName(),
-        QuorumNotReachedException.class.getName(), FeatureNotImplementedException.class.getName(),
-        TriggerExecutionException.class.getName(), LockException.class.getName(), IllegalArgumentException.class.getName(),
-        NoSuchElementException.class.getName(), SecurityException.class.getName());
+        StaleIndexException.class.getName(), QuorumNotReachedException.class.getName(),
+        FeatureNotImplementedException.class.getName(), TriggerExecutionException.class.getName(), LockException.class.getName(),
+        IllegalArgumentException.class.getName(), NoSuchElementException.class.getName(), SecurityException.class.getName());
   }
 
   /** A 503 keeps the retry contract: a rebuilt type has to be retryable, or a NeedRetryException comes back instead. */

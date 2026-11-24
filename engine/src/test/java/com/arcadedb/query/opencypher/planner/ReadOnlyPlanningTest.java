@@ -49,7 +49,7 @@ class ReadOnlyPlanningTest {
     final CypherStatement readOnly = PARSER.parse(READS);
     assertThat(readOnly.isReadOnly()).isTrue();
 
-    final CypherEagernessAnalyzer analyzer = CypherEagernessAnalyzer.forStatement(readOnly);
+    final CypherEagernessAnalyzer analyzer = CypherEagernessAnalyzer.forStatement(readOnly, null);
     observeEveryClause(analyzer, readOnly);
 
     assertThat(analyzer.hasPendingRead()).isFalse();
@@ -67,7 +67,7 @@ class ReadOnlyPlanningTest {
     final CypherStatement writing = PARSER.parse(READS.replace(" RETURN old", " SET n.k = old + 1"));
     assertThat(writing.isReadOnly()).isFalse();
 
-    final CypherEagernessAnalyzer analyzer = CypherEagernessAnalyzer.forStatement(writing);
+    final CypherEagernessAnalyzer analyzer = CypherEagernessAnalyzer.forStatement(writing, null);
     observeEveryClause(analyzer, writing);
 
     assertThat(analyzer.needsBarrierForPropertyWrites(setOf("MATCH (n) SET n.k = 2"))).isTrue();

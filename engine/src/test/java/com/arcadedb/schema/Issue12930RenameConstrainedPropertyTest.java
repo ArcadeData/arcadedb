@@ -19,7 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -40,7 +40,7 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY R.old INTEGER (mandatory true)");
     database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1"));
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot rename property 'R.old' to 'new': record #").hasMessageContaining("violates it")
         .hasMessageContaining("property 'R.new' is mandatory");
 
@@ -58,7 +58,7 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1"));
 
     assertThatThrownBy(() -> database.getSchema().getType("R").getProperty("old").rename("new"))
-        .isInstanceOf(CommandExecutionException.class).hasMessageContaining("Cannot rename property 'R.old' to 'new'");
+        .isInstanceOf(ValidationException.class).hasMessageContaining("Cannot rename property 'R.old' to 'new'");
     assertSchemaUnchanged("old", "new");
   }
 
@@ -68,7 +68,7 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY R.old INTEGER (notnull true)");
     database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1, new = null"));
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot rename property 'R.old' to 'new': record #").hasMessageContaining("cannot be null");
     assertSchemaUnchanged("old", "new");
   }
@@ -93,7 +93,7 @@ class Issue12930RenameConstrainedPropertyTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY R.old INTEGER (max 10)");
     database.transaction(() -> database.command("sql", "INSERT INTO R SET old = 1, new = 20"));
 
-    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(CommandExecutionException.class)
+    assertThatThrownBy(() -> database.command("sql", "ALTER PROPERTY R.old NAME new")).isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot rename property 'R.old' to 'new': record #").hasMessageContaining("'R.new'");
     assertSchemaUnchanged("old", "new");
 

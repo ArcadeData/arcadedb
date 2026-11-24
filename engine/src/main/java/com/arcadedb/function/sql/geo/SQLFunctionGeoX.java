@@ -28,7 +28,7 @@ import org.locationtech.spatial4j.shape.Shape;
  * SQL function geo.x: returns the X (longitude) coordinate of a point geometry.
  *
  * <p>Usage: {@code geo.x(<point>)}</p>
- * <p>Returns: Double X coordinate, or null if input is not a point</p>
+ * <p>Returns: Double X coordinate, or null if input is not a point or is an EMPTY point (issue #12277: was NaN)</p>
  */
 public class SQLFunctionGeoX extends SQLFunctionAbstract {
   public static final String NAME = "geo.x";
@@ -46,13 +46,13 @@ public class SQLFunctionGeoX extends SQLFunctionAbstract {
     final Object input = iParams[0];
 
     if (input instanceof Point p)
-      return p.getX();
+      return p.isEmpty() ? null : p.getX();
 
     // Try parsing as geometry
     try {
       final Shape shape = GeoUtils.parseGeometry(input);
       if (shape instanceof Point p)
-        return p.getX();
+        return p.isEmpty() ? null : p.getX();
     } catch (Exception ignored) {
       // Not a valid geometry or not a point
     }
