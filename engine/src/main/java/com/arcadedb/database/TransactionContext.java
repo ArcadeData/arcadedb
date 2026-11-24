@@ -1641,9 +1641,18 @@ public class TransactionContext implements Transaction {
     reset();
 
     if (completion != null) {
-      if (completionOwner == Thread.currentThread())
-        fireOrDefer(null, false, completion);
-      else
+      if (completionOwner == Thread.currentThread()) {
+        // With the interrupt flag cleared, and handed back afterwards, as a 2nd phase is concluded (#10521): the work owed commits
+        // a transaction of its own, and a channel written by a thread with the flag set is closed under the write, for every
+        // thread of the database. A session request that failed because it was interrupted rolls back with the flag up (#12805)
+        final boolean interrupted = Thread.interrupted();
+        try {
+          fireOrDefer(null, false, completion);
+        } finally {
+          if (interrupted)
+            Thread.currentThread().interrupt();
+        }
+      } else
         LogManager.instance().log(this, Level.INFO,
             "Dropping %d after-completion callback(s) of a transaction rolled back by another thread than the one that carries it: "
                 + "the continuous aggregates they would have refreshed catch up at their next refresh",

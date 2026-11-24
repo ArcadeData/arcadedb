@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +51,36 @@ class Issue12805AfterCompletionCarrierTest extends TestHelper {
 
     assertThat(tx.isActive()).isFalse();
     assertThat(ranOn).as("the thread carrying the transaction runs what its end owes").containsExactly("issue12805-rollback");
+  }
+
+  /**
+   * A request that failed because its thread was interrupted rolls back with the flag set. The callbacks commit work of their own,
+   * and a file channel used by a thread with the flag set is closed under it for every thread: they run with the flag cleared,
+   * and the thread gets it back.
+   */
+  @Test
+  void aRollbackByAnInterruptedCarrierRunsTheCallbacksWithTheFlagClearedAndHandsItBack() throws Exception {
+    final List<Boolean> interruptedInCallback = new CopyOnWriteArrayList<>();
+    final AtomicBoolean interruptedAfterRollback = new AtomicBoolean();
+    final TransactionContext tx = beginOnWorker();
+    onWorker("issue12805-register", () -> bound(tx,
+        () -> assertThat(tx.addAfterCompletionCallbackIfAbsent(KEY,
+            () -> interruptedInCallback.add(Thread.currentThread().isInterrupted()))).isTrue()));
+
+    onWorker("issue12805-rollback", () -> bound(tx, () -> {
+      tx.transferToCurrentThread();
+      Thread.currentThread().interrupt();
+      try {
+        tx.rollback();
+      } finally {
+        // read and cleared: the thread ends here, and the cleanup of bound() must not run with it set
+        interruptedAfterRollback.set(Thread.interrupted());
+      }
+    }));
+
+    assertThat(tx.isActive()).isFalse();
+    assertThat(interruptedInCallback).as("the callback runs with the flag cleared").containsExactly(false);
+    assertThat(interruptedAfterRollback).as("the flag is handed back to the thread").isTrue();
   }
 
   /** What makes the difference: the rollback of a thread the transaction was not handed to still drops them. */
