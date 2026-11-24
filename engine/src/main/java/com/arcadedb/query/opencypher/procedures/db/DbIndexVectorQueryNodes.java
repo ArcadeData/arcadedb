@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.db;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -346,7 +347,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
         throw new CommandSQLParsingException("Index '" + indexSpec + "' has no vector index left");
       final List<LSMVectorIndex> vectorIndexes = new ArrayList<>();
       for (final TypeIndex typeIndex : logical)
-        vectorIndexes.addAll(filterVectorIndexes(typeIndex, null));
+        vectorIndexes.addAll(filterVectorIndexes(typeIndex, null, context.getDatabase()));
       return vectorIndexes;
     }
 
@@ -367,13 +368,13 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       for (final Bucket bucket : type.getBuckets(true))
         allowedBucketIds.add(bucket.getFileId());
 
-      return filterVectorIndexes(typeIndex, allowedBucketIds);
+      return filterVectorIndexes(typeIndex, allowedBucketIds, context.getDatabase());
     }
 
     // Direct index name lookup
     final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
     if (directIndex instanceof TypeIndex typeIndex)
-      return filterVectorIndexes(typeIndex, null);
+      return filterVectorIndexes(typeIndex, null, context.getDatabase());
 
     throw new CommandSQLParsingException(
         "Index '" + indexSpec + "' is not a vector index (found: " +
@@ -385,10 +386,14 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
    * {@link VectorUtils#collectSubIndexesOnce(IndexInternal[], Class, java.util.function.IntPredicate)} for why the same
    * sub-index can be listed twice and why the guard is on identity rather than on the bucket id (issue #7057).
    */
-  private static List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds) {
+  private static List<LSMVectorIndex> filterVectorIndexes(final TypeIndex typeIndex, final Set<Integer> allowedBucketIds,
+      final Database database) {
     final IndexInternal[] bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0)
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
+
+    // A bucket with records and no bucket index would be answered short, silently (issue #13347)
+    VectorUtils.requireBucketIndexes(typeIndex, database, allowedBucketIds == null ? null : allowedBucketIds::contains);
 
     final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
         allowedBucketIds == null ? null : allowedBucketIds::contains);

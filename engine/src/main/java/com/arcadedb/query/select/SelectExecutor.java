@@ -306,6 +306,7 @@ public class SelectExecutor {
     final IntHashSet allowedBucketIds = new IntHashSet();
     for (final Bucket bucket : select.fromType.getBuckets(select.polymorphic))
       allowedBucketIds.add(bucket.getFileId());
+    VectorUtils.requireBucketIndexes(typeIndex, select.database, allowedBucketIds::contains);
     final List<LSMVectorIndex> vectorIndexes = VectorUtils.collectSubIndexesOnce(bucketIndexes, LSMVectorIndex.class,
         allowedBucketIds::contains);
 

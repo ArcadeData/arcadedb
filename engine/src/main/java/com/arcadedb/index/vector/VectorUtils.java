@@ -20,7 +20,11 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.VectorApiSupport;
+import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
@@ -801,6 +805,45 @@ public final class VectorUtils {
       subIndexes.add(indexType.cast(bucketIndex));
     }
     return subIndexes;
+  }
+
+  /**
+   * Refuses a search through a type index that has no usable bucket index for a bucket that holds records (issue #13347). Such an index is not valid
+   * ({@link TypeIndex#isValid()}) and the engine logs it so at startup, but the sub-indexes a vector search collects are the ones the type index has, so
+   * the search answered the records of the other buckets and no error: a server killed during {@code DROP INDEX} of a multi-bucket vector index leaves
+   * exactly this state. A vector search has no scan to fall back on, so it refuses, as {@code lookupByKey} does (#11303).
+   * <p>
+   * Only a bucket the search covers counts, and only one that holds records: {@code ALTER TYPE ... BUCKET +} adds an empty bucket before its bucket
+   * index, and nothing is missing from the answer in between. A bucket index that exists but is awaiting its fill ({@link IndexInternal#isAwaitingFill()}),
+   * the state {@code CHECK DATABASE FIX} leaves while it repairs the index, does not cover its bucket. The common, complete index costs one cached
+   * {@link TypeIndex#isComplete()}.
+   *
+   * @param typeIndex     the index a vector search resolved
+   * @param database      the database the search runs on
+   * @param bucketAllowed tests a bucket id the search covers; {@code null} covers every bucket
+   *
+   * @throws IndexException when a covered bucket with records has no usable bucket index
+   */
+  public static void requireBucketIndexes(final TypeIndex typeIndex, final Database database, final IntPredicate bucketAllowed) {
+    if (typeIndex.isComplete())
+      return;
+    final List<String> missing = new ArrayList<>();
+    for (final Bucket bucket : database.getSchema().getType(typeIndex.getTypeName()).getBuckets(true)) {
+      final int bucketId = bucket.getFileId();
+      if (bucketAllowed != null && !bucketAllowed.test(bucketId))
+        continue;
+      boolean covered = false;
+      for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIndex.getAssociatedBucketId() == bucketId && !bucketIndex.isAwaitingFill()) {
+          covered = true;
+          break;
+        }
+      if (!covered && database.countBucket(bucket.getName()) > 0)
+        missing.add(bucket.getName());
+    }
+    if (!missing.isEmpty())
+      throw new IndexException("Index '" + typeIndex.getName() + "' has no bucket index for the buckets " + missing + ", which hold records: a vector search"
+          + " through it would answer only the records of the other buckets. Drop the index and create it again to repair it");
   }
 
   private static boolean containsSame(final List<? extends IndexInternal> collected, final IndexInternal candidate) {
