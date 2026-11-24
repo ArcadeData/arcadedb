@@ -20,6 +20,7 @@ package com.arcadedb.function.agg;
 
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
+import com.arcadedb.function.sql.math.NumericSum;
 import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -33,12 +34,16 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * <p>
  * The average of durations is a duration: their component-wise sum divided by their count, exactly, as
  * {@code duration / n} divides (issue #10198). Numbers and durations do not mix.
+ * <p>
+ * The numbers are summed as doubles, exactly ({@link NumericSum}), so the mean does not depend on the order the rows
+ * arrive in nor on how a parallel aggregation splits them in partials (issue #12696).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class CypherAvgFunction implements StatelessFunction {
   private static final String         DOMAIN      = "an INTEGER, a FLOAT or a DURATION";
-  private              double         sum         = 0.0;
+  // ONLY EVER FED DOUBLES: THE EXACT SUM OF THE NUMBERS, CORRECTLY ROUNDED WHEN READ
+  private final        NumericSum     sum         = new NumericSum();
   private              long           count       = 0;
   private              CypherDuration durationSum;
 
@@ -64,7 +69,7 @@ public class CypherAvgFunction implements StatelessFunction {
     if (value instanceof Number number) {
       if (durationSum != null)
         throw mixedInput();
-      sum += number.doubleValue();
+      sum.addDouble(number.doubleValue());
       count++;
     } else if (value instanceof CypherDuration duration) {
       if (durationSum == null && count > 0)
@@ -97,7 +102,7 @@ public class CypherAvgFunction implements StatelessFunction {
       return;
     if (count > 0 && (durationSum == null) != (that.durationSum == null))
       throw mixedInput();
-    sum += that.sum;
+    sum.merge(that.sum);
     count += that.count;
     if (that.durationSum != null)
       durationSum = durationSum == null ? that.durationSum : durationSum.add(that.durationSum);
@@ -109,6 +114,7 @@ public class CypherAvgFunction implements StatelessFunction {
       return null;
     if (durationSum != null)
       return durationSum.divide(count);
-    return sum / count;
+    // + 0.0: THE SUM STARTED FROM 0.0 BEFORE #12696, SO A MEAN OF -0.0 VALUES STAYS 0.0
+    return (sum.doubleValue() + 0.0) / count;
   }
 }

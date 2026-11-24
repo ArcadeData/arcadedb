@@ -141,10 +141,10 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   @Override
   public void mergePartial(final SQLAggregatedFunction other) {
     final SQLFunctionAverage partial = (SQLFunctionAverage) other;
-    final Number partialSum = partial.sum.get();
-    if (partialSum == null)
+    if (partial.sum.isEmpty())
       return;
-    sum.add(partialSum);
+    // THE PARTIAL'S EXACT FLOATING-POINT SUM, NOT ITS ROUNDED TOTAL: THE MERGE ORDER CANNOT CHANGE THE RESULT (#12696)
+    sum.merge(partial.sum);
     total += partial.total;
     decimalInput |= partial.decimalInput;
   }

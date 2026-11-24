@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Issue #9496: a GROUP BY cost about 170 ns of CPU per aggregate per row. The aggregation now evaluates the projection
@@ -384,21 +385,47 @@ class GroupByAggregateTest extends TestHelper {
             foldedSecond = foldedSecond == null ? value : Type.increment(foldedSecond, value);
         }
       }
-      assertThat(sum.getResult()).as("sum of %s", values).isEqualTo(folded);
+      assertSameTotal((Number) sum.getResult(), folded, values, "sum");
       if (folded != null)
         assertThat(sum.getResult().getClass()).as("type of the sum of %s", values).isEqualTo(folded.getClass());
 
       // A MERGE OF TWO PARTIAL SUMS IS THEIR Type.increment(), AS IT ALWAYS WAS
       firstHalf.mergePartial(secondHalf);
       final Number merged = foldedFirst == null ? foldedSecond : foldedSecond == null ? foldedFirst : Type.increment(foldedFirst, foldedSecond);
-      assertThat(firstHalf.getResult()).as("merged sum of %s", values).isEqualTo(merged);
+      assertSameTotal((Number) firstHalf.getResult(), merged, values, "merged sum");
+      if (merged != null)
+        assertThat(firstHalf.getResult().getClass()).as("type of the merged sum of %s", values).isEqualTo(merged.getClass());
 
       final long count = values.stream().filter(v -> v != null).count();
       if (count == 0)
         assertThat(avg.getResult()).isNull();
       else if (!(folded instanceof BigDecimal))
-        assertThat(avg.getResult()).as("avg of %s", values).isEqualTo(folded.doubleValue() / count);
+        assertSameTotal((Number) avg.getResult(), folded.doubleValue() / count, values, "avg");
     }
+  }
+
+  /**
+   * The value of a total is the fold's when no input is floating-point. With a floating-point input the total is the exact sum
+   * rounded once (#12696) where the fold rounds at every addition: the two agree within the fold's rounding error, which the sum of
+   * the magnitudes bounds.
+   */
+  private static void assertSameTotal(final Number actual, final Number expected, final List<Number> values, final String what) {
+    boolean floating = false;
+    boolean anyFloat = false;
+    double magnitude = 0;
+    for (final Number v : values)
+      if (v != null) {
+        floating |= v instanceof Double || v instanceof Float;
+        anyFloat |= v instanceof Float;
+        magnitude += Math.abs(v.doubleValue());
+      }
+    if (expected == null || !floating || !Double.isFinite(expected.doubleValue())) {
+      assertThat(actual).as("%s of %s", what, values).isEqualTo(expected);
+      return;
+    }
+    assertThat(actual).as("%s of %s", what, values).isNotNull();
+    assertThat(actual.doubleValue()).as("%s of %s", what, values)
+        .isCloseTo(expected.doubleValue(), within(magnitude * (anyFloat ? 1e-5 : 1e-13)));
   }
 
   /** Integers sum to an Integer, then to a Long past the int range, then to a BigDecimal past the long one. */

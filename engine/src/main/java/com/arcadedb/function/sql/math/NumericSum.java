@@ -23,21 +23,39 @@ import com.arcadedb.schema.Type;
 import java.math.BigDecimal;
 
 /**
- * The running total of {@code sum()} and {@code avg()}: the same value, of the same type, as folding every input into a
- * {@link Number} with {@link Type#increment(Number, Number)}, without allocating a boxed number per row while the inputs
- * are {@link Double}, {@link Float}, {@link Long}, {@link Integer}, {@link Short} or {@link Byte} (issue #9496). The
- * primitive adders ({@link #addInt}, {@link #addLong}, {@link #addDouble}, {@link #addFloat}, {@link #addShort},
- * {@link #addByte}) take the same transitions as {@link #add} of the boxed value, so a caller that reads primitives (the
- * STATS facet over a columnar projection) gets what {@code sum()} gets.
+ * The running total of {@code sum()} and {@code avg()}: the type of the total, and its value for integral and decimal
+ * inputs, are what folding every input into a {@link Number} with {@link Type#increment(Number, Number)} gives, without
+ * allocating a boxed number per row while the inputs are {@link Double}, {@link Float}, {@link Long}, {@link Integer},
+ * {@link Short} or {@link Byte} (issue #9496). The primitive adders ({@link #addInt}, {@link #addLong}, {@link #addDouble},
+ * {@link #addFloat}, {@link #addShort}, {@link #addByte}) take the same transitions as {@link #add} of the boxed value, so a
+ * caller that reads primitives (the STATS facet over a columnar projection) gets what {@code sum()} gets.
  * <p>
  * The state mirrors the boxed total it stands for: {@link #DOUBLE} is a {@code Double} total, {@link #FLOAT} a
- * {@code Float} one (float arithmetic, as {@code Type.increment} adds two floats), {@link #LONG} a {@code Long} one,
- * {@link #INT} an {@code Integer} one, or a {@code Long} one once an integer total left the {@code int} range (as
- * {@code Type.increment} widens it), or the single {@code Short} or {@code Byte} added so far (a one-row sum keeps the
- * row's type). Each transition does what {@code Type.increment} does for that pair of types: an integral total meeting a
- * {@code Double} becomes the {@code double} sum, a {@code long} overflow and every other input type ({@code BigDecimal}...)
- * materialize the boxed total and carry on through {@code Type.increment} itself, so their results are exactly what they
- * were.
+ * {@code Float} one, {@link #LONG} a {@code Long} one, {@link #INT} an {@code Integer} one, or a {@code Long} one once an
+ * integer total left the {@code int} range (as {@code Type.increment} widens it), or the single {@code Short} or
+ * {@code Byte} added so far (a one-row sum keeps the row's type). Each transition does what {@code Type.increment} does for
+ * that pair of types: an integral total meeting a {@code Double} becomes a {@code double} sum, a {@code long} overflow and
+ * every other input type ({@code BigDecimal}...) materialize the boxed total and carry on through {@code Type.increment}
+ * itself, so their results are exactly what they were.
+ * <p>
+ * A floating-point total ({@link #DOUBLE}, {@link #FLOAT}) is not a running {@code double}: it is the EXACT sum of what was
+ * added, read as that sum correctly rounded (to a {@code double}, and from it to a {@code float} for a {@link #FLOAT} total).
+ * Floating-point addition is not associative, so a running total depends on the order the values arrive in, and the parallel
+ * scan merges partial totals in an order that depends on thread timing: the same read query over unchanged data answered a
+ * different value on almost every run, and never the one of the sequential scan (issue #12696). The exact sum does not depend
+ * on the order, so every split of the values in partials, merged in any order ({@link #merge} folds the other side's exact sum
+ * in, not its rounded total), answers the same value as the sequential scan. An integral total meeting a floating-point one is
+ * added exactly too.
+ * <p>
+ * The exact sum is a fixed-point integer in units of 2^-1074 (the smallest double), every finite double being an integer
+ * multiple of it: base 2^32 digits held in {@code long}s, a {@code double} of mantissa {@code m} landing on the three digits
+ * its bits cover. A digit takes the signed 32-bit parts without propagating the carry, which the {@code long} has room for
+ * across {@link #NORMALIZE_EVERY} additions, so an addition is a few integer additions, with no dependency on the previous one
+ * and nothing to allocate (a sum of Shewchuk partials, as {@code math.fsum} keeps it, chains several dependent floating-point
+ * additions per value and was ten times slower). Only the digits the values reach are held (a handful for ordinary data). The
+ * infinities and NaN are summed apart (their sum does not depend on the order) and win over any finite total, and a total of
+ * zeros is -0.0 only when every value was -0.0, as IEEE addition gives. The integer cannot overflow, so a total back in the
+ * {@code double} range after an intermediate one that is not is exact too.
  */
 public final class NumericSum {
   private static final byte EMPTY  = 0;
@@ -48,18 +66,33 @@ public final class NumericSum {
   private static final byte BOXED  = 5;
 
   // INT ONLY: THE TOTAL IS THE ONE Short OR Byte ADDED SO FAR (Type.increment() OF TWO OF THEM IS AN Integer)
-  private static final byte MANY   = 0;
-  private static final byte SHORT  = 1;
-  private static final byte BYTE   = 2;
+  private static final byte MANY  = 0;
+  private static final byte SHORT = 1;
+  private static final byte BYTE  = 2;
+
+  private static final long NEGATIVE_ZERO_BITS = Double.doubleToRawLongBits(-0.0);
+  private static final long DIGIT_MASK         = 0xFFFFFFFFL;
+  // THE POSITION OF 2^0 IN UNITS OF 2^-1074: WHERE A long IS ADDED
+  private static final int  INTEGER_POSITION   = 1074;
+  // ADDITIONS BETWEEN TWO CARRY PROPAGATIONS: A DIGIT THEN HOLDS LESS THAN (NORMALIZE_EVERY + 1) * 2^32 IN MAGNITUDE
+  private static final int  NORMALIZE_EVERY    = 1 << 20;
 
   private byte    state = EMPTY;
-  private double  doubleSum;
-  private float   floatSum;
   private long    longSum;
   // INT ONLY: THE TOTAL LEFT THE int RANGE ONCE, SO THE BOXED TOTAL IS A Long FROM THEN ON, AS Type.increment() WIDENS IT
   private boolean widened;
   private byte    single;
   private Number  boxed;
+
+  // DOUBLE AND FLOAT: THE EXACT SUM OF THE FINITE VALUES IN UNITS OF 2^-1074, digits[i] WEIGHING 2^(32 * (digitBase + i)) (#12696).
+  // ONCE NORMALIZED EVERY DIGIT IS IN [0, 2^32) BUT THE LAST, WHICH IS SIGNED AND IN [-2^31, 2^31)
+  private long[]  digits;
+  private int     digitBase;
+  private int     pendingAdds;
+  // DOUBLE AND FLOAT: THE SUM OF THE INFINITE AND NaN VALUES, NOT 0 (NaN != 0 TOO) ONCE ONE WAS ADDED
+  private double  nonFinite;
+  // DOUBLE AND FLOAT: EVERY VALUE ADDED SO FAR WAS -0.0, SO A ZERO TOTAL IS -0.0
+  private boolean negativeZero;
 
   public NumericSum() {
   }
@@ -80,8 +113,7 @@ public final class NumericSum {
   /** Adds an {@code Integer} value without boxing it. */
   public void addInt(final int value) {
     switch (state) {
-    case DOUBLE -> doubleSum += value;
-    case FLOAT -> floatSum += value;
+    case DOUBLE, FLOAT -> exactAdd(value);
     case LONG -> addChecked(value);
     case INT -> addToInt(value);
     case EMPTY -> {
@@ -106,8 +138,7 @@ public final class NumericSum {
 
   private void addSmall(final int value, final byte kind) {
     switch (state) {
-    case DOUBLE -> doubleSum += value;
-    case FLOAT -> floatSum += value;
+    case DOUBLE, FLOAT -> exactAdd(value);
     case LONG -> addChecked(value);
     case INT -> addToInt(value);
     case EMPTY -> {
@@ -123,8 +154,7 @@ public final class NumericSum {
   /** Adds a {@code Long} value without boxing it. */
   public void addLong(final long value) {
     switch (state) {
-    case DOUBLE -> doubleSum += value;
-    case FLOAT -> floatSum += value;
+    case DOUBLE, FLOAT -> exactAddLong(value);
     case LONG -> addChecked(value);
     case INT -> {
       // Integer + Long AND Long + Long ARE BOTH addExactOrWiden() IN Type.increment(): A Long TOTAL FROM HERE ON
@@ -143,52 +173,89 @@ public final class NumericSum {
   /** Adds a {@code Double} value without boxing it. */
   public void addDouble(final double value) {
     switch (state) {
-    case DOUBLE -> doubleSum += value;
+    case DOUBLE -> exactAdd(value);
     case FLOAT -> {
       // Float + Double IS THE SHORTEST DECIMAL WIDENING OF THE FLOAT PLUS THE DOUBLE IN Type.increment()
-      state = DOUBLE;
-      doubleSum = Type.widenFloat(floatSum) + value;
+      floatToDouble();
+      exactAdd(value);
     }
     case LONG, INT -> {
-      // Double + Long AND Double + Integer ARE THE double SUM IN Type.increment()
-      state = DOUBLE;
-      single = MANY;
-      doubleSum = longSum + value;
+      // Double + Long AND Double + Integer ARE A double SUM IN Type.increment(): THE INTEGRAL TOTAL IS ADDED EXACTLY
+      integralToFloating(DOUBLE);
+      exactAdd(value);
     }
     case EMPTY -> {
       // THE FIRST VALUE IS THE TOTAL AS IT IS (A -0.0 STAYS -0.0)
-      state = DOUBLE;
-      doubleSum = value;
+      startFloating(DOUBLE);
+      exactAdd(value);
     }
     default -> boxed = Type.increment(boxed, value);
     }
   }
 
-  /** Adds a {@code Float} value without boxing it: a float total is summed in float arithmetic, as {@code Type.increment} does. */
+  /** Adds a {@code Float} value without boxing it: a float is exact as a double, so a float total is the exact sum too. */
   public void addFloat(final float value) {
     switch (state) {
-    case FLOAT -> floatSum += value;
+    case FLOAT -> exactAdd(value);
     // Double + Float IS THE DOUBLE PLUS THE SHORTEST DECIMAL WIDENING OF THE FLOAT
-    case DOUBLE -> doubleSum += Type.widenFloat(value);
+    case DOUBLE -> exactAdd(Type.widenFloat(value));
     case LONG, INT -> {
       // AN INTEGRAL TOTAL PLUS A Float IS A float IN Type.increment()
-      state = FLOAT;
-      single = MANY;
-      floatSum = longSum + value;
+      integralToFloating(FLOAT);
+      exactAdd(value);
     }
     case EMPTY -> {
-      state = FLOAT;
-      floatSum = value;
+      startFloating(FLOAT);
+      exactAdd(value);
     }
     default -> boxed = Type.increment(boxed, value);
     }
   }
 
-  /** Folds the total of {@code other} in as one value, as {@code sum()} merges a partial total; an empty one adds nothing. */
+  /**
+   * Folds {@code other} in, as {@code sum()} merges a partial total; an empty one adds nothing. A floating-point total is folded
+   * in by its exact sum, not by its rounded value, so the result does not depend on how the values were split in partials nor on
+   * the order the partials are merged in (issue #12696). Every other total is added as one value, as {@link #add} adds it.
+   */
   public void merge(final NumericSum other) {
-    final Number total = other.get();
-    if (total != null)
-      add(total);
+    switch (other.state) {
+    case EMPTY -> {
+    }
+    case DOUBLE -> {
+      switch (state) {
+      case DOUBLE -> mergeExact(other);
+      case FLOAT -> {
+        floatToDouble();
+        mergeExact(other);
+      }
+      case LONG, INT -> {
+        integralToFloating(DOUBLE);
+        mergeExact(other);
+      }
+      case EMPTY -> {
+        startFloating(DOUBLE);
+        mergeExact(other);
+      }
+      default -> add(other.get());
+      }
+    }
+    case FLOAT -> {
+      switch (state) {
+      case FLOAT -> mergeExact(other);
+      case LONG, INT -> {
+        integralToFloating(FLOAT);
+        mergeExact(other);
+      }
+      case EMPTY -> {
+        startFloating(FLOAT);
+        mergeExact(other);
+      }
+      // A Double TOTAL PLUS A Float ONE IS THE DOUBLE PLUS THE WIDENED FLOAT, AS addFloat() ADDS IT
+      default -> add(other.get());
+      }
+    }
+    default -> add(other.get());
+    }
   }
 
   private void addToInt(final int value) {
@@ -223,12 +290,200 @@ public final class NumericSum {
       longSum = result;
   }
 
-  /** The total as {@code Type.increment()} would have built it, or null when no value was added. */
+  /** Starts an empty floating-point total of the {@code floatingState} kind. */
+  private void startFloating(final byte floatingState) {
+    state = floatingState;
+    digits = null;
+    pendingAdds = 0;
+    nonFinite = 0.0;
+    negativeZero = true;
+  }
+
+  /** An integral total becomes a floating-point one of the {@code floatingState} kind, starting from the integral total, exact. */
+  private void integralToFloating(final byte floatingState) {
+    final long integral = longSum;
+    single = MANY;
+    startFloating(floatingState);
+    exactAddLong(integral);
+  }
+
+  /** A {@code Float} total becomes a {@code Double} one starting from the shortest decimal widening of the float, as Type.increment(). */
+  private void floatToDouble() {
+    final double widened = Type.widenFloat(floatTotal());
+    startFloating(DOUBLE);
+    exactAdd(widened);
+  }
+
+  /** Adds a {@code long} exactly. */
+  private void exactAddLong(final long value) {
+    negativeZero = false;
+    if (value != 0L) {
+      final long sign = value >> 63;
+      // Long.MIN_VALUE NEGATES TO ITSELF, WHICH READ UNSIGNED IS ITS MAGNITUDE, 2^63
+      addScaled((value ^ sign) - sign, INTEGER_POSITION, sign);
+    }
+  }
+
+  /** Adds a {@code double} exactly: its mantissa, at the position of its lowest bit. */
+  private void exactAdd(final double value) {
+    if (!Double.isFinite(value)) {
+      nonFinite += value;
+      return;
+    }
+    final long bits = Double.doubleToRawLongBits(value);
+    if (bits != NEGATIVE_ZERO_BITS)
+      negativeZero = false;
+    final long fraction = bits & 0xFFFFFFFFFFFFFL;
+    // A NORMAL double IS (2^52 + fraction) * 2^(exponent - 52), A SUBNORMAL ONE fraction * 2^-1074
+    final int exponent = Math.getExponent(value);
+    if (exponent >= Double.MIN_EXPONENT)
+      addScaled(fraction | (1L << 52), exponent + 1022, bits >> 63);
+    else if (fraction != 0L)
+      addScaled(fraction, 0, bits >> 63);
+  }
+
+  /**
+   * Adds {@code magnitude} (unsigned) times 2^({@code position} - 1074), negated when {@code sign} is -1: the three base 2^32
+   * digits its bits cover, the carry left for {@link #normalize}.
+   */
+  private void addScaled(final long magnitude, final int position, final long sign) {
+    final int digit = position >>> 5;
+    final int shift = position & 31;
+    // THE ROOM FOR THE THREE DIGITS AND ONE ABOVE THEM, WHICH ONLY EVER TAKES A CARRY
+    if (digits == null) {
+      digits = new long[6];
+      digitBase = digit - 1;
+    } else if (digit < digitBase || digit + 3 >= digitBase + digits.length)
+      growTo(Math.min(digit, digitBase), Math.max(digit + 3, digitBase + digits.length - 1));
+
+    final int i = digit - digitBase;
+    final long low = (magnitude << shift) & DIGIT_MASK;
+    final long middle = (magnitude >>> (32 - shift)) & DIGIT_MASK;
+    // (magnitude >>> 32) >>> (32 - shift), NOT magnitude >>> (64 - shift): A SHIFT OF 64 IS A SHIFT OF 0 IN JAVA
+    final long high = (magnitude >>> 32) >>> (32 - shift);
+    digits[i] += (low ^ sign) - sign;
+    digits[i + 1] += (middle ^ sign) - sign;
+    digits[i + 2] += (high ^ sign) - sign;
+    if (++pendingAdds >= NORMALIZE_EVERY)
+      normalize();
+  }
+
+  /** Widens the digits to the digit indexes {@code first} to {@code last}, both included. */
+  private void growTo(final int first, final int last) {
+    final long[] grown = new long[last - first + 1];
+    System.arraycopy(digits, 0, grown, digitBase - first, digits.length);
+    digits = grown;
+    digitBase = first;
+  }
+
+  /** Propagates the carries: every digit in [0, 2^32) but the last, signed, in [-2^31, 2^31). The value does not change. */
+  private void normalize() {
+    pendingAdds = 0;
+    final int last = digits.length - 1;
+    long carry = 0;
+    for (int i = 0; i < last; i++) {
+      final long v = digits[i] + carry;
+      digits[i] = v & DIGIT_MASK;
+      carry = v >> 32;
+    }
+    final long top = digits[last] + carry;
+    if (top >= Integer.MIN_VALUE && top <= Integer.MAX_VALUE)
+      digits[last] = top;
+    else {
+      growTo(digitBase, digitBase + last + 1);
+      digits[last] = top & DIGIT_MASK;
+      digits[last + 1] = top >> 32;
+    }
+  }
+
+  /** Folds the exact sum of another floating-point total into this one. */
+  private void mergeExact(final NumericSum other) {
+    nonFinite += other.nonFinite;
+    negativeZero &= other.negativeZero;
+    if (other.digits == null)
+      return;
+    // BOTH SIDES NORMALIZED (THEIR VALUE DOES NOT CHANGE): EVERY DIGIT THEN STAYS FAR FROM THE long RANGE
+    other.normalize();
+    final long[] theirs = other.digits;
+    // THEIR DIGITS AND ONE ABOVE THEM, SO THEIR SIGNED LAST DIGIT LANDS BELOW OUR LAST
+    if (digits == null) {
+      digits = new long[theirs.length + 1];
+      digitBase = other.digitBase;
+    } else if (other.digitBase < digitBase || other.digitBase + theirs.length >= digitBase + digits.length)
+      growTo(Math.min(other.digitBase, digitBase), Math.max(other.digitBase + theirs.length, digitBase + digits.length - 1));
+    normalize();
+    final int offset = other.digitBase - digitBase;
+    for (int k = 0; k < theirs.length; k++)
+      digits[offset + k] += theirs[k];
+    normalize();
+  }
+
+  /** The exact sum correctly rounded to a {@code double}, half to even. */
+  private double doubleTotal() {
+    if (nonFinite != 0.0)
+      // AN INFINITY OR NaN WINS OVER ANY FINITE TOTAL; +INFINITY AND -INFINITY GIVE NaN
+      return nonFinite;
+    if (digits == null)
+      return negativeZero ? -0.0 : 0.0;
+    normalize();
+
+    final int last = digits.length - 1;
+    int lowest = 0;
+    while (lowest <= last && digits[lowest] == 0L)
+      lowest++;
+    if (lowest > last)
+      // VALUES THAT CANCEL EXACTLY: +0.0, AS IEEE ADDITION GIVES
+      return 0.0;
+
+    final boolean negative = digits[last] < 0L;
+    int highest = last;
+    while (magnitudeDigit(highest, negative, lowest) == 0L)
+      highest--;
+
+    // THE MAGNITUDE'S THREE HIGHEST DIGITS, a * 2^64 + b * 2^32 + c, HOLD AT LEAST 65 SIGNIFICANT BITS: ENOUGH FOR 53, THE ROUND
+    // BIT, AND THE FIRST STICKY BITS. EVERY NON-ZERO DIGIT BELOW THEM IS STICKY TOO
+    final long a = magnitudeDigit(highest, negative, lowest);
+    final long b = highest >= 1 ? magnitudeDigit(highest - 1, negative, lowest) : 0L;
+    final long c = highest >= 2 ? magnitudeDigit(highest - 2, negative, lowest) : 0L;
+    final int aBits = 64 - Long.numberOfLeadingZeros(a);
+    // THE 64 HIGHEST SIGNIFICANT BITS, BIT 63 SET, AND WHAT THEY LEAVE OUT OF c
+    final long top = (((a << 32) | b) << (32 - aBits)) | (c >>> aBits);
+    final boolean sticky = lowest < highest - 2 || (c & ((1L << aBits) - 1)) != 0L || (top & 0x3FFL) != 0L;
+    long mantissa = top >>> 11;
+    if ((top & 0x400L) != 0L && (sticky || (mantissa & 1L) != 0L))
+      mantissa++;
+    // THE WEIGHT OF THE MANTISSA'S LOWEST BIT: c's IS 2^(32 * (digitBase + highest - 2) - 1074)
+    final double total = Math.scalb((double) mantissa, 32 * (digitBase + highest - 2) + aBits + 11 - 1074);
+    return negative ? -total : total;
+  }
+
+  /**
+   * The digit {@code i} of the magnitude of the normalized sum: the digit itself when the sum is positive, its two's complement
+   * when it is negative ({@code lowest} is the lowest non-zero digit, where the +1 of the complement stops).
+   */
+  private long magnitudeDigit(final int i, final boolean negative, final int lowest) {
+    final long digit = digits[i];
+    if (!negative)
+      return digit;
+    if (i < lowest)
+      return 0L;
+    if (i == digits.length - 1)
+      // THE SIGNED LAST DIGIT: -digit WHEN NO DIGIT BELOW IS NON-ZERO, ~digit = -digit - 1 OTHERWISE
+      return i == lowest ? -digit : ~digit;
+    return i == lowest ? -digit & DIGIT_MASK : ~digit & DIGIT_MASK;
+  }
+
+  /** The exact sum rounded to a {@code float}, through its correctly rounded {@code double}. */
+  private float floatTotal() {
+    return (float) doubleTotal();
+  }
+
+  /** The total as {@code Type.increment()} would have typed it, or null when no value was added. */
   public Number get() {
     return switch (state) {
       case EMPTY -> null;
-      case DOUBLE -> doubleSum;
-      case FLOAT -> floatSum;
+      case DOUBLE -> doubleTotal();
+      case FLOAT -> floatTotal();
       case LONG -> longSum;
       case INT -> widened ? (Number) longSum : single == SHORT ? (Number) (short) longSum : single == BYTE ? (Number) (byte) longSum :
           (Number) (int) longSum;
@@ -239,12 +494,17 @@ public final class NumericSum {
   /** The total as a {@code double}, without boxing it when it is not boxed already. */
   public double doubleValue() {
     return switch (state) {
-      case DOUBLE -> doubleSum;
+      case DOUBLE -> doubleTotal();
       // THE PRIMITIVE WIDENING, AS Float.doubleValue() OF THE BOXED TOTAL
-      case FLOAT -> floatSum;
+      case FLOAT -> floatTotal();
       case LONG, INT -> longSum;
       default -> boxed.doubleValue();
     };
+  }
+
+  /** Whether no value was added. */
+  public boolean isEmpty() {
+    return state == EMPTY;
   }
 
   /** Whether the total is a {@code BigDecimal}. */

@@ -42,7 +42,8 @@ import java.util.function.LongConsumer;
  * values, as {@code count(p)}, {@code min(p)}, {@code max(p)}, {@code sum(p)} and {@code avg(p)} give them, value and Java type: min and
  * max in the type a row of the property holds (an {@code Integer} for INTEGER, a {@code Float} for FLOAT, the temporal a row of a date
  * property reads back as), sum and average as those functions build them ({@link NumericSum}, {@link SQLFunctionAverage#average}): an
- * INTEGER sum widening to {@code Long}, a {@code long} overflow to {@code BigDecimal}, a FLOAT sum in float arithmetic. Over dates the
+ * INTEGER sum widening to {@code Long}, a {@code long} overflow to {@code BigDecimal}, a FLOAT or DOUBLE sum the exact sum rounded once
+ * (#12696). Over dates the
  * sum and average are null (SQL refuses to sum dates), and so they are over no value.
  * <p>
  * A LONG or DOUBLE column visits {@code matches AND live} ({@link PositionBitmap#forEachAnd}); a segment with no matched live row is
