@@ -120,7 +120,8 @@ public class TraverseExecutionPlanner {
       handleInputParamAsTarget(result, target.getInputParam(), context);
     } else if (target.getIndex() != null) {
       handleIndexAsTarget(result, target.getIndex(), context);
-    } else if (target.getRids() != null && !target.getRids().isEmpty()) {
+    } else if (target.getRids() != null) {
+      // #12733: the literal empty list (FROM []) is an empty target, FetchFromRidsStep answers no rows for it
       handleRidsAsTarget(result, target.getRids(), context);
     } else if (target.getResultSet() != null) {
       result.chain(new FetchFromResultsetStep(target.getResultSet(), context));
