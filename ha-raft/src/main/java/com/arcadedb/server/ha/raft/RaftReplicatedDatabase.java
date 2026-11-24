@@ -6379,6 +6379,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   /**
    * Parses the JSON response from the leader's /api/v1/command endpoint into a {@link ResultSet}.
    * Expected format: {@code {"result": [{...}, {...}, ...]}}, plus {@code "facets": {...}} for a {@code SELECT ... FACETS} query.
+   * <p>
+   * Every row is a plain projection of the JSON map, whatever it was on the leader (a record, a projection), and carries
+   * {@link ResultInternal#FORWARDED_ROW_METADATA}: the only way left to tell the record a row stood for (its {@code @type} column)
+   * from a local projection with a column of that name, which the gRPC service needs (issues #4688, #12519).
    */
   static ResultSet parseResultSetFromJson(final String json) {
     final JSONObject responseJson = new JSONObject(json);
@@ -6389,10 +6393,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       if (resultObj instanceof JSONArray resultArray) {
         for (int i = 0; i < resultArray.length(); i++) {
           final Object item = resultArray.get(i);
-          if (item instanceof JSONObject jsonObj)
-            resultSet.add(new ResultInternal(jsonObj.toMap()));
-          else
-            resultSet.add(new ResultInternal(Map.of("value", item)));
+          final ResultInternal row = item instanceof JSONObject jsonObj ?
+              new ResultInternal(jsonObj.toMap()) :
+              new ResultInternal(Map.of("value", item));
+          row.setMetadata(ResultInternal.FORWARDED_ROW_METADATA, Boolean.TRUE);
+          resultSet.add(row);
         }
       }
     }

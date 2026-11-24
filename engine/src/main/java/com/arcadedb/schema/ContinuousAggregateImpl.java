@@ -30,6 +30,16 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDependant, BackingTypeOwner {
+  /**
+   * The keys of the range the definition of the aggregate in the schema holds for the builds that predate #13049: the range of the
+   * deletes, see {@link #getInvalidation}, and the hull of it and of the late appends while one is pending, see {@link #toJSON}.
+   */
+  public static final String INVALIDATED_FROM_KEY      = "invalidatedFromTs";
+  public static final String INVALIDATED_TO_KEY        = "invalidatedToTs";
+  /** The keys of the range of the late appends (issue #13049), see {@link #getLateInvalidation}. */
+  public static final String LATE_INVALIDATED_FROM_KEY = "lateInvalidatedFromTs";
+  public static final String LATE_INVALIDATED_TO_KEY   = "lateInvalidatedToTs";
+
   private final Database database;
   private final String   name;
   // volatile, not final: a rename of the source type rewrites them in place (#10096), see retargetSourceType()
@@ -63,19 +73,35 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    */
   private volatile boolean                needsCleanRebuild;
   /**
-   * The time range samples of the source type were removed from (issue #10428), or appended to behind the watermark (issue #10502),
-   * since the buckets of the aggregate were last computed, or {@code null} when none were. The refresh only recomputes the bucket
-   * open at the watermark and the newer ones, so the buckets behind the watermark keep what they held when they were computed; this
-   * is what tells it which of them no longer match the source. One range, the hull of every change since: recomputing a bucket the
-   * change did not reach gives the rows it already had, so a wider range costs time and never correctness.
+   * The time range samples of the source type were removed from (issue #10428) since the buckets of the aggregate were last
+   * computed, or {@code null} when none were. The refresh only recomputes the bucket open at the watermark and the newer ones, so the
+   * buckets behind the watermark keep what they held when they were computed; this is what tells it which of them no longer match the
+   * source. One range, the hull of every delete since: recomputing a bucket the delete did not reach gives the rows it already had,
+   * so a wider range costs time and never correctness.
+   * <p>
+   * A delete of the whole type is the whole time range, which starts at the beginning of time: the buckets it reaches are the ones the
+   * aggregate holds, since a bucket with no row has nothing to correct. The samples appended behind the watermark are NOT part of
+   * this range, they are in {@link #lateInvalidation} (issue #13049): merged into one, a late sample recorded after a delete of the
+   * whole type had its range read as "the rows the aggregate holds", and the bucket it belongs to holds none.
    * <p>
    * Part of the definition in the schema, unlike {@link #needsCleanRebuild}: a restart must not forget it, and under HA it has to
    * reach the followers in the replication unit of the delete (a follower promoted to leader would otherwise refresh without it).
-   * The record of a late append is shipped by a schema session of its own, right after the append commits (issue #10634). The
-   * refresh that clears the record does not ship the clearing: a follower keeping a cleared record recomputes those buckets once
+   * The refresh that clears the record does not ship the clearing: a follower keeping a cleared record recomputes those buckets once
    * more if promoted, which gives the rows they hold, and every compaction, retention or schema change ships the leader's state.
    */
-  private final    AtomicReference<Invalidation> invalidation = new AtomicReference<>();
+  private final    AtomicReference<Invalidation> invalidation     = new AtomicReference<>();
+  /**
+   * The time range samples were appended to behind the watermark (issue #10502) since the buckets of the aggregate were last
+   * computed, or {@code null} when none were: the hull of the whole buckets those samples reached, before the watermark. The refresh
+   * reads only the samples at or after the watermark, so the samples behind it reach their buckets only through this range, and every
+   * bucket of the grid it reaches is recomputed, whether or not the aggregate holds a row for it yet (issue #13049: that is what tells
+   * it from {@link #invalidation}).
+   * <p>
+   * Persisted like {@link #invalidation}, with keys of its own, and also inside the keys of that one as a hull, for a node on a build
+   * that predates #13049 (see {@link #toJSON}). The record of a late append is shipped by a schema session of its own, right after
+   * the append commits (issue #10634).
+   */
+  private final    AtomicReference<Invalidation> lateInvalidation = new AtomicReference<>();
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   /**
@@ -320,8 +346,8 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
 
   /**
    * Samples with a timestamp in {@code [fromTs, toTs]} were removed from the source type (issue #10428), or appended to it behind the
-   * watermark (issue #10502). The bounds need not be bucket boundaries: the refresh finds the buckets they reach on the grid the
-   * watermark is a start of.
+   * watermark (issue #10502): the two are recorded apart, see {@link #getInvalidation} and {@link #getLateInvalidation}. The bounds
+   * need not be bucket boundaries: the refresh finds the buckets they reach on the grid the watermark is a start of.
    */
   public record Invalidation(long fromTs, long toTs) {
     Invalidation merge(final Invalidation other) {
@@ -337,9 +363,14 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * recorded all the same, as a new instance: a refresh that read the range before this delete must not clear it
    */
   public boolean invalidate(final long fromTs, final long toTs) {
+    return record(invalidation, fromTs, toTs);
+  }
+
+  /** Merges {@code [fromTs, toTs]} into {@code range}, as a new instance, and tells whether it widened what was there. */
+  private static boolean record(final AtomicReference<Invalidation> range, final long fromTs, final long toTs) {
     final Invalidation added = new Invalidation(fromTs, toTs);
     final boolean[] widened = new boolean[1];
-    invalidation.updateAndGet(current -> {
+    range.updateAndGet(current -> {
       // assigned on every try of the update: the last one is the one that took effect
       widened[0] = current == null || fromTs < current.fromTs() || toTs > current.toTs();
       return added.merge(current);
@@ -359,7 +390,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
    * samples at or after it are read by the refresh anyway). A bucket is recomputed whole whatever part of it the range covers, so
    * the widening costs nothing, and it makes the later samples of a bucket already recorded change nothing the schema holds: a
    * stream of late samples saves the schema once per bucket it reaches, not once per batch.
-   *
+   * <p>
+   * The range is kept apart from the one of the deletes (issue #13049), see {@link #getLateInvalidation}: it is recomputed on the grid,
+   * for buckets that hold no row, and the range of a delete of the whole type is not.
    * <p>
    * While a refresh runs, every sample is recorded, whatever the watermark (issue #10633). The refresh may have read the source
    * before this commit, and installs a watermark only when it ends: one past the bucket of a sample it did not read would leave that
@@ -383,10 +416,10 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     if (refreshing) {
       // no watermark yet (the first refresh is the one running): no grid to widen the range on, the refresh that applies it has one
       if (!current.set() || bucketIntervalMs <= 0)
-        return invalidate(minTs, maxTs);
+        return record(lateInvalidation, minTs, maxTs);
       final long anchor = current.timestamp();
       final long lastStart = bucketStart(maxTs, anchor, bucketIntervalMs);
-      return invalidate(bucketStart(minTs, anchor, bucketIntervalMs),
+      return record(lateInvalidation, bucketStart(minTs, anchor, bucketIntervalMs),
           lastStart > Long.MAX_VALUE - (bucketIntervalMs - 1) ? Long.MAX_VALUE : lastStart + (bucketIntervalMs - 1));
     }
     // never refreshed: the first refresh reads every sample
@@ -395,9 +428,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     final long watermarkTs = current.timestamp();
     final long lastLate = Math.min(maxTs, watermarkTs - 1);
     if (bucketIntervalMs <= 0)
-      return invalidate(minTs, lastLate);
+      return record(lateInvalidation, minTs, lastLate);
     // the start of a bucket of the grid at or before the watermark is at most watermarkTs - bucketIntervalMs, so no overflow
-    return invalidate(bucketStart(minTs, watermarkTs, bucketIntervalMs),
+    return record(lateInvalidation, bucketStart(minTs, watermarkTs, bucketIntervalMs),
         Math.min(bucketStart(lastLate, watermarkTs, bucketIntervalMs) + (bucketIntervalMs - 1), watermarkTs - 1));
   }
 
@@ -412,25 +445,52 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     return ts < Long.MIN_VALUE + offset ? Long.MIN_VALUE : ts - offset;
   }
 
-  /** The range recorded by {@link #invalidate}, or {@code null} when the buckets of the aggregate all match the source. */
+  /**
+   * The range of the samples a delete removed, recorded by {@link #invalidate}, or {@code null} when none is pending. The buckets of
+   * this range are the ones the aggregate holds: see {@link #lateInvalidation}.
+   */
   public Invalidation getInvalidation() {
     return invalidation.get();
   }
 
   /**
-   * Forgets {@code recomputed}, the range a refresh has just recomputed. A no-op when another delete was recorded meanwhile, even
-   * one inside the range, which widens nothing: that delete may have landed after the refresh read the source, so the next refresh
-   * recomputes it. This rests on the {@link AtomicReference} comparing REFERENCES, and on {@link #invalidate} storing a new
-   * instance every time - never an equal record already there - so it is the identity of the record that tells a refresh whether
-   * anything was recorded since it read it.
+   * The range of the samples an append added behind the watermark, recorded by {@link #invalidateLateSamples}, or {@code null} when
+   * none is pending. The buckets of this range are the ones of the grid it reaches, whether or not the aggregate holds a row for them.
+   */
+  public Invalidation getLateInvalidation() {
+    return lateInvalidation.get();
+  }
+
+  /** Whether a delete or a late append left buckets that no longer match the source, for the next refresh to recompute. */
+  public boolean hasInvalidation() {
+    return invalidation.get() != null || lateInvalidation.get() != null;
+  }
+
+  /**
+   * Forgets {@code recomputed}, the range of deletes a refresh has just recomputed. A no-op when another delete was recorded
+   * meanwhile, even one inside the range, which widens nothing: that delete may have landed after the refresh read the source, so the
+   * next refresh recomputes it. This rests on the {@link AtomicReference} comparing REFERENCES, and on {@link #invalidate} storing a
+   * new instance every time - never an equal record already there - so it is the identity of the record that tells a refresh whether
+   * anything was recorded since it read it. The range of the late appends is not touched: it has its own, see
+   * {@link #clearLateInvalidation}.
    */
   void clearInvalidation(final Invalidation recomputed) {
     invalidation.compareAndSet(recomputed, null);
   }
 
-  /** Puts back a range whose clearing could not be persisted, with whatever was recorded since. */
+  /** {@link #clearInvalidation} for the range of the late appends, which is as exact about what the refresh read. */
+  void clearLateInvalidation(final Invalidation recomputed) {
+    lateInvalidation.compareAndSet(recomputed, null);
+  }
+
+  /** Puts back a range of deletes whose clearing could not be persisted, with whatever was recorded since. */
   void restoreInvalidation(final Invalidation recomputed) {
     invalidation.updateAndGet(current -> recomputed.merge(current));
+  }
+
+  /** Puts back a range of late appends whose clearing could not be persisted, with whatever was recorded since. */
+  void restoreLateInvalidation(final Invalidation recomputed) {
+    lateInvalidation.updateAndGet(current -> recomputed.merge(current));
   }
 
   /** The width of one bucket, for the refresh to bound the buckets a range reaches. */
@@ -543,9 +603,18 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     json.put("watermarkTs", currentWatermark.timestamp());
     json.put("watermarkSet", currentWatermark.set());
     final Invalidation pending = invalidation.get();
-    if (pending != null) {
-      json.put("invalidatedFromTs", pending.fromTs());
-      json.put("invalidatedToTs", pending.toTs());
+    final Invalidation pendingLate = lateInvalidation.get();
+    // The keys every build reads hold ONE range, as before #13049: the hull of the two while a late append is pending. A follower on a
+    // build that predates the late keys (a rolling upgrade) loads them and loses nothing, it recomputes the hull as it always did;
+    // the late keys are the exact range of the appends, which this build reads back apart from the range of the deletes
+    final Invalidation legacy = pendingLate == null ? pending : pendingLate.merge(pending);
+    if (legacy != null) {
+      json.put(INVALIDATED_FROM_KEY, legacy.fromTs());
+      json.put(INVALIDATED_TO_KEY, legacy.toTs());
+    }
+    if (pendingLate != null) {
+      json.put(LATE_INVALIDATED_FROM_KEY, pendingLate.fromTs());
+      json.put(LATE_INVALIDATED_TO_KEY, pendingLate.toTs());
     }
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", persistedStatus.name());
@@ -577,8 +646,23 @@ public class ContinuousAggregateImpl implements ContinuousAggregate, TypeNameDep
     // the aggregate per refresh that has run. Resuming normally would add one more, so the next refresh rebuilds
     // from empty instead - which repairs the existing duplication rather than merely declining to add to it.
     ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
-    if (json.has("invalidatedFromTs") && json.has("invalidatedToTs"))
-      ca.invalidation.set(new Invalidation(json.getLong("invalidatedFromTs"), json.getLong("invalidatedToTs")));
+    // A schema written before #13049 holds ONE range under these keys, the hull of the deletes and of the late appends. It is read as
+    // the range of the deletes, which recomputes it exactly as it always did: on the grid when it starts at a timestamp, from the rows
+    // of the backing type when it starts at the beginning of time. One written by this build holds the hull of both while a late
+    // append is pending (see toJSON): a hull is a range that is wider, never narrower, and recomputing a bucket the delete did not
+    // reach gives the rows it already had
+    Invalidation deleted = null;
+    if (json.has(INVALIDATED_FROM_KEY) && json.has(INVALIDATED_TO_KEY))
+      deleted = new Invalidation(json.getLong(INVALIDATED_FROM_KEY), json.getLong(INVALIDATED_TO_KEY));
+    Invalidation late = null;
+    if (json.has(LATE_INVALIDATED_FROM_KEY) && json.has(LATE_INVALIDATED_TO_KEY))
+      late = new Invalidation(json.getLong(LATE_INVALIDATED_FROM_KEY), json.getLong(LATE_INVALIDATED_TO_KEY));
+    // the hull of nothing but the late range is the late range: no delete was pending, and the buckets of the range are recomputed
+    // once, on the grid, as the range of the late appends
+    if (late != null && late.equals(deleted))
+      deleted = null;
+    ca.invalidation.set(deleted);
+    ca.lateInvalidation.set(late);
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.setStatus(MaterializedViewStatus.valueOf(json.getString("status", "VALID")));
     return ca;

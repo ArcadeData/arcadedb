@@ -3789,6 +3789,7 @@ public class LocalSchema implements Schema {
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
         checkSubTypesCanBeReattached(type);
+        checkNoSubTypeIndexLosesItsProperty(type);
 
         // issue #10421: everything that can refuse is asked before the first change. The sub types are unlinked, the indexes
         // dropped and the buckets removed one after the other, and a refusal from any of them left the ones before it done
@@ -3836,8 +3837,11 @@ public class LocalSchema implements Schema {
     final List<Integer> filesOfTheDrop = new ArrayList<>();
     final List<Integer> indexFilesOfTheDrop = new ArrayList<>();
     final LocalDocumentType backingType = getTypeOrNull(backingTypeName);
-    if (backingType != null)
+    if (backingType != null) {
+      // #12318: a sub type linked to the backing type before #11204 can hold an index on a property only the backing type declares
+      checkNoSubTypeIndexLosesItsProperty(backingType);
       collectFilesOfTheDrop(backingType, filesOfTheDrop, indexFilesOfTheDrop);
+    }
     return executeDroppingFiles(statement, filesOfTheDrop, indexFilesOfTheDrop, mutation);
   }
 
@@ -3860,6 +3864,60 @@ public class LocalSchema implements Schema {
               + "). Take the link out first with ALTER TYPE `" + sub.getName() + "` SUPERTYPE -`" + type.getName() + "`", e);
         }
       }
+  }
+
+  /**
+   * Refuses the drop of {@code type} while an index of a type below it stands on a property that type would stop inheriting: one
+   * that only {@code type} declares (issue #12318). {@code DROP PROPERTY} refuses the same declaration while such an index stands,
+   * and the drop left the index keyed on a property its type no longer declares, so later writes were judged by the index's stale
+   * key type. A property the sub type still has after the drop does not count: one it declares itself, one it reaches through
+   * another super type, or one declared above {@code type}, which the sub type inherits once it is linked to {@code type}'s super
+   * types. Asked before anything changes.
+   */
+  private static void checkNoSubTypeIndexLosesItsProperty(final LocalDocumentType type) {
+    final Map<LocalDocumentType, Set<String>> memo = new IdentityHashMap<>();
+    final Deque<LocalDocumentType> toVisit = new ArrayDeque<>(type.subTypes);
+    final Set<LocalDocumentType> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    while (!toVisit.isEmpty()) {
+      final LocalDocumentType sub = toVisit.pop();
+      if (!visited.add(sub))
+        continue;
+      toVisit.addAll(sub.subTypes);
+
+      final Set<String> before = sub.getPolymorphicPropertyNames();
+      for (final TypeIndex index : sub.getAllIndexes(false))
+        for (final String indexProperty : index.getPropertyNames()) {
+          final String property = Index.basePropertyName(indexProperty);
+          if (before.contains(property) && !propertyNamesWithout(sub, type, memo).contains(property))
+            throw new SchemaException(
+                "Cannot drop the type '" + type.getName() + "' because the property '" + property + "' that type '" + sub.getName()
+                    + "' would no longer inherit is used by index '" + index.getName() + "'. Drop the index first, or declare the"
+                    + " property on '" + sub.getName() + "'");
+        }
+    }
+  }
+
+  /**
+   * The polymorphic property names {@code sub} will have once {@code dropped} is gone and its sub types are linked to its super
+   * types, computed without changing anything. Memoized in {@code memo} per type: a type reached twice (a diamond) is asked once.
+   */
+  private static Set<String> propertyNamesWithout(final LocalDocumentType sub, final LocalDocumentType dropped,
+      final Map<LocalDocumentType, Set<String>> memo) {
+    final Set<String> known = memo.get(sub);
+    if (known != null)
+      return known;
+    // published before the walk up, so a hierarchy that holds a cycle (a schema written before cycles were refused) ends
+    final Set<String> names = new HashSet<>(sub.getPropertyNames());
+    memo.put(sub, names);
+    for (final LocalDocumentType parent : sub.superTypes)
+      if (parent == dropped)
+        for (final LocalDocumentType grandParent : dropped.superTypes)
+          names.addAll(grandParent.getPolymorphicPropertyNames());
+      else if (parent.isSubTypeOf(dropped.getName()))
+        names.addAll(propertyNamesWithout(parent, dropped, memo));
+      else
+        names.addAll(parent.getPolymorphicPropertyNames());
+    return names;
   }
 
   /** The changes of {@link #dropType} once everything that can refuse has been asked (issue #10421). */
@@ -3894,8 +3952,19 @@ public class LocalSchema implements Schema {
     // DELETE ALL ASSOCIATED BUCKETS
     final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
     for (final Bucket b : buckets) {
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET OF A PRIMARY ONE GOES WITH IT, ITS FILE AND THE RECORDS OF EVERY EXTERNAL VALUE: IT IS NO
+      // BUCKET OF THE TYPE, SO THIS LOOP LEFT IT IN THE SCHEMA AND ON DISK, AND A TYPE CREATED LATER UNDER THE SAME NAME ADOPTED IT WITH
+      // THE RECORDS OF THE ONE DROPPED (issue #12995). Only the pair of a bucket the type OWNS: a bucket detached from the type earlier
+      // stays in the schema, and its records still point into its pair
+      final Integer externalBucketId = type.externalBucketIdByPrimaryBucketId.remove(b.getFileId());
       type.removeBucket(b);
       dropBucket(b.getName());
+
+      if (externalBucketId != null) {
+        final LocalBucket external = getBucketByIdIfExists(externalBucketId);
+        if (external != null)
+          dropBucket(external.getName());
+      }
     }
 
     if (type instanceof LocalTimeSeriesType tsType)
@@ -3975,6 +4044,11 @@ public class LocalSchema implements Schema {
             InternalBucketNaming.inEdgesBucketName(bucket.getName())))
           if (existsBucket(edgeBucketName))
             files.add(getBucketByName(edgeBucketName).getFileId());
+
+      // THE PAIRED EXTERNAL-PROPERTY BUCKET IS NO BUCKET OF THE TYPE, IT BELONGS TO ITS PRIMARY ONE (issue #12995)
+      final Integer externalBucketId = type.getExternalBucketIdFor(bucket.getFileId());
+      if (externalBucketId != null)
+        files.add(externalBucketId);
     }
   }
 

@@ -35,6 +35,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.IndexReplayConclusion;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -1713,7 +1714,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   private void checkIsValid() {
     if (!isValid())
-      throw new IndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + getName() + "' is not valid. Probably has been drop or rebuilt");
   }
 
   @Override

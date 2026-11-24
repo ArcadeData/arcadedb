@@ -60,6 +60,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.StaleIndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -302,6 +303,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
   // the question. Cleared at PUBLISH time, not at decision time: see ensureGraphAvailable()'s finally for why the
   // prefix-reuse branch hands ownership of this flag to reuseStalePrefixGraph() instead of clearing it itself.
   private volatile boolean                       persistedGraphUnresolved = true;
+  // True while a from-scratch build runs with no graph resident (issue #13212). The build promotes graphState past LOADING and
+  // has already cleared persistedGraphUnresolved, so without this a search arriving mid-build would find nothing left for
+  // ensureGraphAvailable() to do and answer from the delta buffer alone: no rows for a persisted corpus. Set and cleared under
+  // graphBuildLock, so a search that queues behind the build finds the graph published when it gets the lock.
+  private volatile boolean                       firstGraphBuildRunning;
   private volatile ImmutableGraphIndex           graphIndex;        // Current graph (OnHeap or OnDisk)
   private volatile int[]                         ordinalToVectorId; // Maps graph ordinals to vector IDs
   // The lookups of the ordinal maps a renumbering compaction translated while the old graph was resident: such a map holds -1 for
@@ -692,8 +698,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
   /** Guards the decision of the dimensions of an index that takes them from its first vector (issue #10915). */
   private final Object                     dimensionsDecision = new Object();
-  /** The id counter at the last look for the dimensions in the records that found no vector, or -1 (issue #10915). */
-  private volatile int                     derivationMissedAtId = -1;
+  /** The last look for the dimensions in the records of the type that found no vector, or null (issues #10915, #13214). */
+  private volatile DerivationMiss          derivationMiss;
   // A schema reload has published another instance in place of this one (issue #8310): it may still serve a query
   // that resolved it before the swap, but it starts no maintenance of its own any more. Separate from `valid`, which
   // an in-flight query must keep reading as true. Volatile for runInactivityRebuild(), the one reader outside the
@@ -1648,13 +1654,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
       this.metadata.buildState = BUILD_STATE.READY.name();
     }
 
-    // Only load vectors if we have valid metadata (dimensions > 0) and pages exist - and even then, only note
+    // Only load vectors if we have valid metadata (dimensions > 0, or still to be derived) and pages exist - and even then, only note
     // that there is something to read. The parse itself is deferred to the first caller that needs a location
     // (issue #6722): it is one page parse plus one map insert per indexed vector, it produces nothing the page
     // cache can amortise across opens, and a session that opens the database to write one document or to read an
     // unrelated type used to pay all of it. The graph is deferred at this very same call site for the same
     // reason, so this makes the cheap half of the pair behave like the expensive half already does.
-    if (metadata.dimensions > 0 && mutable.getTotalPages() > 0) {
+    // An index that takes its dimensions from its first vector and has none yet (issue #10915) needs them too: it derives them
+    // from the vectors its records hold, through the locations, when the schema was saved before the decision (issue #13214)
+    if ((metadata.dimensions > 0 || metadata.sizeOnFirstVector) && mutable.getTotalPages() > 0) {
       this.deferredPQLoad = metadata.quantizationType == VectorQuantizationType.PRODUCT && pqFile != null;
       this.locationsMaterialized = false;
       LogManager.instance()
@@ -2121,9 +2129,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #ensureGraphAvailable()} to do, and this is what keeps a publish path that forgets to clear the latch
    * (the chunked initial build reaches one through {@link #buildGraphFromScratchWithRetry}, but nothing forces a
    * future one to) from making every search reload and re-validate a graph that is already resident.
+   * <p>
+   * The third disjunct, {@link #firstGraphBuildRunning}, covers a from-scratch build that runs with no graph resident
+   * (issue #13212): that build clears the latch and promotes the state past LOADING before it publishes the graph, so
+   * without it a search arriving mid-build would answer from the delta buffer alone. It is read AFTER the latch on
+   * purpose: {@link #buildGraphFromScratchWithRetry} raises the flag before it clears the latch, so a read that finds
+   * the latch cleared is guaranteed to find the flag raised (or the build finished and the flag lowered).
    */
   private boolean graphNotYetMaterialised() {
-    return graphState == GraphState.LOADING || (persistedGraphUnresolved && graphIndex == null);
+    return graphState == GraphState.LOADING || (persistedGraphUnresolved && graphIndex == null) || firstGraphBuildRunning;
   }
 
   /**
@@ -3605,13 +3619,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // could interleave their vectorIndex re-sync and their ordinal-map publication and leave a searcher with an
     // ordinal map pointing at locations another build had just cleared. Builders wait on this mutex; searches
     // and inserts never touch it, so it does not reintroduce the stall.
+    boolean ownsFirstGraphBuildFlag = false;
     graphBuildLock.lock();
     try {
       // Whatever is on disk is about to be superseded by this build, so there is nothing left for
-      // ensureGraphAvailable() to resolve (issue #6772). Set before the build rather than after it so a search
-      // that arrives mid-build and finds graphState already promoted to MUTABLE does not queue behind this mutex
-      // to re-validate a graph file this build is replacing; a build that fails leaves graphState at LOADING,
-      // which graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
+      // ensureGraphAvailable() to resolve (issue #6772): a search that arrives mid-build does not re-validate a graph file this
+      // build is replacing. Set before the build rather than after it; a build that fails leaves graphState at LOADING, which
+      // graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
+      //
+      // With no graph resident, a search arriving mid-build has nothing to answer from but this build, whatever graphState the
+      // build has promoted to by then: it queues behind graphBuildLock like one that arrived before the build (issue #13212).
+      // The flag is raised BEFORE the latch is cleared, and graphNotYetMaterialised() reads the latch before the flag: a
+      // lock-free search that reads the latch already cleared is then guaranteed to read the flag raised, so there is no
+      // instant at which it can read both false while graphIndex is still null (an index written to before its first search
+      // has graphState already MUTABLE, so the LOADING term does not cover that instant).
+      ownsFirstGraphBuildFlag = graphIndex == null && !firstGraphBuildRunning;
+      if (ownsFirstGraphBuildFlag)
+        firstGraphBuildRunning = true;
       persistedGraphUnresolved = false;
 
       // The graph is derived state: it describes the database as the last COMMITTED transaction left it, it is
@@ -3653,6 +3677,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // never late - which is the same tolerance graphWalkVisited is documented to have. Closing it would mean
       // holding a lock across the whole build to bracket a counter that only feeds a heuristic.
       deltaScanWorkSinceRebuild.set(0L);
+      // Before the unlock, so a search queued behind this build finds the flag clear and the graph published (or the build failed)
+      if (ownsFirstGraphBuildFlag)
+        firstGraphBuildRunning = false;
       graphBuildLock.unlock();
     }
   }
@@ -11875,9 +11902,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * the record, so a caller that hands a search result on without reading its record asks this instead, and reads no page for
    * it. It cannot see a record removed from its bucket behind the index's back (a crash, a restore): only reading the record
    * notices that one, and {@code REBUILD INDEX} repairs it.
+   * <p>
+   * A "no" is checked again under the read lock: the replay of an update tombstones the old vector and adds the new one while it
+   * holds the write lock ({@link #replayRemovalsAndBatch}), and the first read is lock-free, so it can land between the two and a record
+   * that is in the index before and after the commit would be dropped from a search result as stale.
    */
   public boolean hasLiveVector(final RID rid) {
-    return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    if (vectorIndex().getVectorIdsForRid(rid).length > 0)
+      return true;
+    lock.readLock().lock();
+    try {
+      return vectorIndex().getVectorIdsForRid(rid).length > 0;
+    } finally {
+      lock.readLock().unlock();
+    }
   }
 
   /**
@@ -11963,6 +12001,51 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@code overlay.supersededRIDs()}, or {@code null} when there is no overlay. */
   private static Set<RID> supersededRIDs(final TransactionVectorOverlay overlay) {
     return overlay == null ? null : overlay.supersededRIDs();
+  }
+
+  /**
+   * Commit replay of one transaction's entries for this index: tombstones the vectors of {@code removedRids}, then adds the
+   * winners of the batch, in ONE section under the write lock, so that the removal of a record's old vector and the add of its new
+   * one are a single step for searches (issue #13229). Replayed apart, each under the lock on its own, a search taking the read
+   * lock between the two saw neither vector, and a record that is in the index before and after the commit was missing from it.
+   * <p>
+   * Only this index's own removals and adds are inside the section: the replay of the transaction's other indexes does not hold
+   * it, and a transaction that only adds, or only removes, takes the lock as it always did. Everything that must not run under the
+   * index lock is done before it, as {@link #putBatch} does: the locations are materialised (issue #6722) and the dimensions of an
+   * index sized on its first vector are derived from its records (issue #11141).
+   *
+   * @param removedRids the RIDs whose vectors this transaction retires, replayed first
+   * @param keysList    the key arrays of the vectors to add, as for {@link #putBatch}
+   * @param ridsList    the RIDs of the vectors to add
+   */
+  public void replayRemovalsAndBatch(final List<RID> removedRids, final List<Object[]> keysList, final List<RID> ridsList) {
+    if (removedRids.isEmpty()) {
+      putBatch(keysList, ridsList);
+      return;
+    }
+    if (keysList.isEmpty()) {
+      for (int i = 0; i < removedRids.size(); i++)
+        remove(null, removedRids.get(i), true);
+      return;
+    }
+
+    final long startTime = System.currentTimeMillis();
+    checkIdAllocatorIsComplete();
+    if (metadata.dimensions < 1)
+      deriveDimensionsFromData();
+
+    lock.writeLock().lock();
+    try {
+      // the write lock is reentrant: each removal takes it again, and finds the locations materialised above
+      for (int i = 0; i < removedRids.size(); i++)
+        remove(null, removedRids.get(i), true);
+      putBatchUnderLock(keysList, ridsList);
+    } finally {
+      lock.writeLock().unlock();
+    }
+
+    scheduleInactivityRebuild();
+    metrics.addInsertLatency(System.currentTimeMillis() - startTime);
   }
 
   @Override
@@ -12186,24 +12269,93 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Takes the dimensions of an index still waiting for them from the first vector its records hold, and returns them, or 0
-   * when it holds none. A node that did not run the put (a follower applying replicated pages, a database reopened after a crash
-   * before the schema was saved) sees entries for vectors that lie in records, and needs the size to search or to build.
+   * Takes the dimensions of an index still waiting for them from the first vector its records hold, or the records of its
+   * siblings on the other buckets of the type, and returns them, or 0 when none of them holds one. A node that did not run the
+   * put (a follower applying replicated pages, a database reopened after a crash before the schema was saved) sees entries for
+   * vectors that lie in records, and needs the size to search or to build.
    */
   private int deriveDimensionsFromData() {
     if (metadata.dimensions > 0 || !metadata.sizeOnFirstVector)
       return metadata.dimensions;
 
+    // The size is one for the whole type, and the vectors that fix it may all lie in the buckets of the siblings: a bucket that
+    // holds none (empty, or only tombstones) must take it from them, or the first vector written into it sizes every sibling,
+    // the ones whose records hold vectors of another length included (issue #13214). This materialises the locations of every
+    // bucket index of the type, which the deferral of issue #6722 otherwise leaves to the first use of each: it is paid only
+    // while the size is undecided, once per bucket index, and it is what knowing whether the type holds a vector costs
+    final TypeIndex typeIndex = getTypeIndex();
+    final IndexInternal[] lookedAt = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { this };
+    for (final IndexInternal index : lookedAt)
+      if (index != this && index instanceof LSMVectorIndex other && other.metadata.dimensions > 0)
+        return takeDimensions(other.metadata.dimensions);
+
     // Nothing was added since the last look that found no vector: the answer is the same, and a search must not read the records
-    // again to be told so
+    // again to be told so. One id counter per index, not their sum: a compaction hands the ids of an index out again from 0
     // Materialised first: the id counter is only meaningful once the deferred load has run
-    final VectorLocationIndex locations = vectorIndex();
-    final int idsAtThisLook = nextId.get();
-    if (derivationMissedAtId == idsAtThisLook)
+    final int[] idsAtThisLook = new int[lookedAt.length];
+    boolean anyId = false;
+    for (int i = 0; i < lookedAt.length; i++)
+      if (lookedAt[i] instanceof LSMVectorIndex index) {
+        idsAtThisLook[i] = index.idsSeenByTheDerivation();
+        anyId |= idsAtThisLook[i] > 0;
+      }
+    final DerivationMiss lastMiss = derivationMiss;
+    if (lastMiss != null && lastMiss.isSameLook(lookedAt, idsAtThisLook))
       return 0;
 
     // Read BEFORE the decision lock is taken, and decided under it alone: the records are read through the location index and
     // the database, which a thread holding the lock of this index may be waiting on while it waits for the decision (putBatch)
+    int length = lengthOfAHeldVector();
+    for (int i = 0; length < 1 && i < lookedAt.length; i++)
+      if (lookedAt[i] != this && lookedAt[i] instanceof LSMVectorIndex other)
+        length = other.lengthOfAHeldVector();
+
+    if (length < 1) {
+      // said once: a search against an index that holds entries but no vector to size it on answers as an empty one
+      if (lastMiss == null && anyId)
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' waits for its dimensions and none of the first %d entries of its buckets leads to a vector: "
+                + "searches return no result until a vector is written", indexName, DIMENSIONS_DERIVATION_LIMIT);
+      derivationMiss = new DerivationMiss(lookedAt, idsAtThisLook);
+      return 0;
+    }
+
+    return takeDimensions(length);
+  }
+
+  /** The bucket indexes a look for the dimensions that found no vector read, and the id counter of each at that look. */
+  private record DerivationMiss(IndexInternal[] indexes, int[] ids) {
+    boolean isSameLook(final IndexInternal[] otherIndexes, final int[] otherIds) {
+      if (indexes.length != otherIndexes.length)
+        return false;
+      for (int i = 0; i < indexes.length; i++)
+        if (indexes[i] != otherIndexes[i] || ids[i] != otherIds[i])
+          return false;
+      return true;
+    }
+  }
+
+  /** Decides {@code length} unless a put decided in the meantime, whose answer wins, and returns the dimensions. */
+  private int takeDimensions(final int length) {
+    synchronized (dimensionsDecisionLock()) {
+      if (metadata.dimensions < 1 && metadata.sizeOnFirstVector)
+        decideDimensions(length);
+      return metadata.dimensions;
+    }
+  }
+
+  /** The vector ids this index handed out so far, once its locations are materialised: what a derivation that found nothing saw. */
+  private int idsSeenByTheDerivation() {
+    vectorIndex();
+    return nextId.get();
+  }
+
+  /**
+   * The length of the first vector a record of this index holds, among its first {@link #DIMENSIONS_DERIVATION_LIMIT} live
+   * entries, or 0. Decides nothing, and takes no lock but the one that materialises the locations.
+   */
+  private int lengthOfAHeldVector() {
+    final VectorLocationIndex locations = vectorIndex();
     final String vectorProperty = vectorPropertyName();
     final PrimitiveIterator.OfInt ids = locations.getAllVectorIds().filter(locations::isLive).iterator();
     int length = 0;
@@ -12221,23 +12373,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             e.getMessage());
       }
     }
-
-    if (length < 1) {
-      // said once: a search against an index that holds entries but no vector to size it on answers as an empty one
-      if (derivationMissedAtId == -1 && idsAtThisLook > 0)
-        LogManager.instance().log(this, Level.WARNING,
-            "Vector index '%s' waits for its dimensions and none of its first %d entries leads to a vector: searches return no "
-                + "result until a vector is written", indexName, DIMENSIONS_DERIVATION_LIMIT);
-      derivationMissedAtId = idsAtThisLook;
-      return 0;
-    }
-
-    synchronized (dimensionsDecisionLock()) {
-      // a put may have decided in the meantime, and its answer wins
-      if (metadata.dimensions < 1 && metadata.sizeOnFirstVector)
-        decideDimensions(length);
-      return metadata.dimensions;
-    }
+    return length;
   }
 
   /**
@@ -12555,71 +12691,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     lock.writeLock().lock();
     try {
-      // See put(): opened before the first page write so the insert cursor is captured (issue #7931).
-      final VectorIndexReplayUndo undo = openReplayUndo();
-
-      for (int i = 0; i < keysList.size(); i++) {
-        final Object[] keys = keysList.get(i);
-        final RID rid = ridsList.get(i);
-
-        if (keys == null || keys.length == 0 || keys[0] == null)
-          continue;
-
-        final float[] vector;
-        if (keys[0] instanceof ComparableVector c)
-          vector = c.vector;
-        else {
-          try {
-            vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
-          } catch (final IllegalArgumentException e) {
-            // Drop the row but log loudly: putBatch runs during commit replay where the originating
-            // call site has long returned, so a swallowed conversion failure is the only thing
-            // separating an operator from silent index drift. The cause is preserved for triage.
-            LogManager.instance().log(this, Level.WARNING,
-                "Vector index '%s' skipping batch entry for %s: unsupported key type %s (%s)",
-                indexName, rid, keys[0].getClass().getSimpleName(), e.getMessage());
-            continue;
-          }
-        }
-
-        // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
-        // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
-        // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
-        // the index on, or the copy of one another node accepted
-        if (metadata.dimensions < 1)
-          sizeOnVector(vector.length, false);
-
-        if (vector.length != metadata.dimensions) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Vector index '%s' skipping batch entry for %s: %s of length %d does not match index dimension %d",
-              indexName, rid, keys[0].getClass().getSimpleName(), vector.length, metadata.dimensions);
-          continue;
-        }
-
-        final int id = allocateVectorId();
-        if (undo != null)
-          undo.recordAllocated(id);
-
-        persistVectorWithLocation(id, rid, vector);
-
-        final VectorFloat<?> vf = vts.createFloatVector(vector);
-
-        // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
-        // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
-        queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
-
-        mutationsSinceSerialize.incrementAndGet();
-        if (undo != null)
-          ++undo.mutationsCharged;
-      }
-
-      if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
-        if (undo != null)
-          undo.recordGraphFlip(graphState);
-        this.graphState = GraphState.MUTABLE;
-      }
-
-      metrics.incrementInsertOperations(keysList.size());
+      putBatchUnderLock(keysList, ridsList);
     } finally {
       lock.writeLock().unlock();
     }
@@ -12629,6 +12701,75 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final long elapsed = System.currentTimeMillis() - startTime;
     metrics.addInsertLatency(elapsed);
+  }
+
+  /** The body of {@link #putBatch}, run by a caller that holds the write lock and did the steps that precede it. */
+  private void putBatchUnderLock(final List<Object[]> keysList, final List<RID> ridsList) {
+    // See put(): opened before the first page write so the insert cursor is captured (issue #7931).
+    final VectorIndexReplayUndo undo = openReplayUndo();
+
+    for (int i = 0; i < keysList.size(); i++) {
+      final Object[] keys = keysList.get(i);
+      final RID rid = ridsList.get(i);
+
+      if (keys == null || keys.length == 0 || keys[0] == null)
+        continue;
+
+      final float[] vector;
+      if (keys[0] instanceof ComparableVector c)
+        vector = c.vector;
+      else {
+        try {
+          vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
+        } catch (final IllegalArgumentException e) {
+          // Drop the row but log loudly: putBatch runs during commit replay where the originating
+          // call site has long returned, so a swallowed conversion failure is the only thing
+          // separating an operator from silent index drift. The cause is preserved for triage.
+          LogManager.instance().log(this, Level.WARNING,
+              "Vector index '%s' skipping batch entry for %s: unsupported key type %s (%s)",
+              indexName, rid, keys[0].getClass().getSimpleName(), e.getMessage());
+          continue;
+        }
+      }
+
+      // The first vector of an index created to take its dimensions from it (issue #10915) - the one an index built over
+      // existing records meets first. Not in the lock-free part of put(): the lock order is the decision's, then the index's
+      // The bound on the dimensions is not asked here: this is the replay of a commit, whose first vector put() already sized
+      // the index on, or the copy of one another node accepted
+      if (metadata.dimensions < 1)
+        sizeOnVector(vector.length, false);
+
+      if (vector.length != metadata.dimensions) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector index '%s' skipping batch entry for %s: %s of length %d does not match index dimension %d",
+            indexName, rid, keys[0].getClass().getSimpleName(), vector.length, metadata.dimensions);
+        continue;
+      }
+
+      final int id = allocateVectorId();
+      if (undo != null)
+        undo.recordAllocated(id);
+
+      persistVectorWithLocation(id, rid, vector);
+
+      final VectorFloat<?> vf = vts.createFloatVector(vector);
+
+      // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
+      // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
+      queueDeltaEntry(new DeltaVectorEntry(id, rid, vf));
+
+      mutationsSinceSerialize.incrementAndGet();
+      if (undo != null)
+        ++undo.mutationsCharged;
+    }
+
+    if (graphState == GraphState.IMMUTABLE || graphState == GraphState.LOADING) {
+      if (undo != null)
+        undo.recordGraphFlip(graphState);
+      this.graphState = GraphState.MUTABLE;
+    }
+
+    metrics.incrementInsertOperations(keysList.size());
   }
 
   /**
@@ -16131,6 +16272,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void checkIsValid() {
     if (!valid)
-      throw new IndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
+      throw new StaleIndexException("Index '" + indexName + "' is not valid. Probably has been drop or rebuilt");
   }
 }

@@ -703,7 +703,8 @@ public class TransactionContext implements Transaction {
 
   /**
    * Records on THIS context a {@code BATCH n} boundary that a nested transaction directly under it just published
-   * and was popped for (issue #8188). Called by {@code BatchStep}, and only by it.
+   * and was popped for (issue #8188). Called by {@code BatchStep}, and by the openCypher {@code SubqueryStep} for each batch of a
+   * {@code CALL { ... } IN TRANSACTIONS} that wrote something (issue #13223), and only by them.
    * <p>
    * The witness a retry loop needs is "part of the block I am about to replay is already durable", and for a
    * nested transaction the counter carrying it dies with the context: {@code commit()} pops it and the
@@ -744,7 +745,9 @@ public class TransactionContext implements Transaction {
    * and the SQL {@code COMMIT RETRY} clause's {@code RetryStep}) roll back and start again. A rollback can only take back
    * what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE} or
    * {@code MOVE VERTEX} with {@code BATCH n} - calls {@code db.commit(); db.begin();} in the MIDDLE of the
-   * caller's transaction, so everything up to the last boundary is already durable. It also leaves a transaction
+   * caller's transaction, so everything up to the last boundary is already durable. An openCypher
+   * {@code CALL { ... } IN TRANSACTIONS} does the same with each batch, and with the statement's writes before the CALL
+   * (issues #13172, #13223). It also leaves a transaction
    * open behind it, so on return the database looks exactly as it did going in and neither loop can tell from
    * {@code isTransactionActive()} that anything happened. Re-running the block then applies that durable half a
    * SECOND time and reports clean success.

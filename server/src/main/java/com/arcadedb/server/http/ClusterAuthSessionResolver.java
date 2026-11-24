@@ -71,19 +71,33 @@ public class ClusterAuthSessionResolver {
    * could not be asked, or this node has no room for a copy
    */
   public HttpAuthSession resolve(final String token) {
-    final String issuer = HttpAuthSessionManager.issuerOf(token);
-    if (issuer == null || issuer.equals(sessions.getIssuerName()))
+    return resolve(token, true);
+  }
+
+  /**
+   * As {@link #resolve(String)}, for a caller that may be on a thread which must not wait on a peer (issue #9864).
+   *
+   * @param mayDial {@code false} when the calling thread must not block on the network - an Undertow IO thread. A
+   *                token the issuer would have to be asked about is then refused without asking and without being
+   *                remembered as refused, exactly as when the lookups are saturated. The HTTP layer hands such a
+   *                request to a worker thread before it gets here (see {@link #wouldDial(String)}), so this only
+   *                decides the request whose answer changed between that check and this call: a refusal that
+   *                expired from the cache, or a session removed in that instant
+   */
+  public HttpAuthSession resolve(final String token, final boolean mayDial) {
+    final String issuer = peerIssuerOf(token);
+    if (issuer == null)
       return null;
     final HAServerPlugin ha = server.getHA();
     if (ha == null)
       return null;
 
-    final long now = System.currentTimeMillis();
-    final Long refusedUntil = refused.get(token);
-    if (refusedUntil != null && refusedUntil > now) {
+    if (isRefusalCached(token)) {
       count("refused_cached");
       return null;
     }
+    if (!mayDial)
+      return null;
 
     if (!inFlight.tryAcquire()) {
       count("saturated");
@@ -130,7 +144,21 @@ public class ClusterAuthSessionResolver {
    * @return {@code true} to serve the request with this session, {@code false} after the copy has been dropped
    */
   public boolean renew(final HttpAuthSession session) {
-    if (!session.isRemote() || session.elapsedFromConfirmation() < sessions.getRemoteRenewalIntervalMs())
+    return renew(session, true);
+  }
+
+  /**
+   * As {@link #renew(HttpAuthSession)}, for a caller that may be on a thread which must not wait on a peer (issue
+   * #9864).
+   *
+   * @param mayDial {@code false} when the calling thread must not block on the network - an Undertow IO thread. A
+   *                lease that is due is then served as it stands, exactly as when the lookups are saturated, and the
+   *                next request renews it. The HTTP layer hands a request whose lease is due to a worker thread
+   *                before it gets here (see {@link #wouldDial(String)}), so this only decides the request whose
+   *                lease fell due between that check and this call
+   */
+  public boolean renew(final HttpAuthSession session, final boolean mayDial) {
+    if (!isRenewalDue(session) || !mayDial)
       return true;
     final HAServerPlugin ha = server.getHA();
     if (ha == null)
@@ -161,6 +189,45 @@ public class ClusterAuthSessionResolver {
     }
     session.confirm();
     return true;
+  }
+
+  /**
+   * Whether authenticating {@code token} right now would call a peer: either this node holds no session for it and
+   * {@link #resolve(String)} would ask the issuer it names, or it holds a copy whose lease is due and
+   * {@link #renew(HttpAuthSession)} would (issue #9864). That call is a synchronous HTTP request bounded only by the
+   * peer connect timeout, so a caller on a thread that must not block - an Undertow IO thread - asks this first and
+   * moves to a worker thread on {@code true}.
+   * <p>
+   * It never dials and never counts: a hash-map read under the session manager's read lock, and nothing at all on
+   * a server that is not clustered. It is built from the very guards {@code resolve} and {@code renew} open with,
+   * so the two cannot drift apart. It errs towards {@code true} in one case it cannot see: with
+   * {@link #MAX_CONCURRENT_LOOKUPS} lookups already in flight the call would be skipped, which only costs the
+   * hand-off.
+   */
+  public boolean wouldDial(final String token) {
+    if (server.getHA() == null)
+      return false;
+    final HttpAuthSession session = sessions.getSessionByToken(token);
+    return session != null ? isRenewalDue(session) : peerIssuerOf(token) != null && !isRefusalCached(token);
+  }
+
+  /**
+   * The issuer {@code token} names when that is another node, {@code null} when it names none (a legacy token) or
+   * this node (which would hold the session if it were still valid).
+   */
+  private String peerIssuerOf(final String token) {
+    final String issuer = HttpAuthSessionManager.issuerOf(token);
+    return issuer == null || issuer.equals(sessions.getIssuerName()) ? null : issuer;
+  }
+
+  private boolean isRefusalCached(final String token) {
+    final Long refusedUntil = refused.get(token);
+    return refusedUntil != null && refusedUntil > System.currentTimeMillis();
+  }
+
+  /** Only a copy of another node's session has a lease, and it is due once the renewal interval has passed. */
+  private boolean isRenewalDue(final HttpAuthSession session) {
+    return session.isRemote() && session.elapsedFromConfirmation() >= sessions.getRemoteRenewalIntervalMs();
   }
 
   /**
