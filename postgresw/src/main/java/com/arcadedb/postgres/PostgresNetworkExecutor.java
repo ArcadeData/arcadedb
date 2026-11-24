@@ -187,8 +187,11 @@ public class PostgresNetworkExecutor extends Thread {
   /** Shared between every path that refuses a statement inside an aborted transaction block (SQLSTATE 25P02). */
   private static final String                                         ABORTED_TRANSACTION_MESSAGE       =
       "current transaction is aborted, commands ignored until end of transaction block";
-  /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
-  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
+  /**
+   * Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. A separator starts at the first blank of
+   * a run, so a long run of blanks that is not followed by {@code TO} is read once and not once per blank it holds.
+   */
+  private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)(?<!\\s)\\s++TO\\s++");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
   private static final Pattern                                        SET_SCOPE_MODIFIER = Pattern.compile("(?i)^(SESSION|LOCAL)\\s+");
   private static final Pattern                                        SET_TIME_ZONE      = Pattern.compile("(?i)^TIME\\s+ZONE\\s+");
@@ -202,7 +205,6 @@ public class PostgresNetworkExecutor extends Thread {
    */
   private static final Pattern                                        SET_KEYWORD_FORM   = Pattern.compile(
       "(?is)^(?:(SESSION|LOCAL)\\s+)?(SESSION\\s+AUTHORIZATION|ROLE|NAMES|SCHEMA|SESSION\\s+CHARACTERISTICS\\s+AS\\s+TRANSACTION|TRANSACTION|CONSTRAINTS)\\s+(?!=|TO\\s)(.+)$");
-  private static final Pattern                                        SET_CONSTRAINTS_MODE = Pattern.compile("(?is)^(.+?)\\s+(DEFERRED|IMMEDIATE)$");
   private static final Pattern                                        TRANSACTION_MODE_SEPARATOR = Pattern.compile("[\\s,]+");
 
   private final ArcadeDBServer              server;
@@ -4195,18 +4197,43 @@ public class PostgresNetworkExecutor extends Thread {
       }
       case "SESSION CHARACTERISTICS AS TRANSACTION" -> transactionModes(query, rest, "default_transaction_isolation");
       case "CONSTRAINTS" -> {
-        final Matcher mode = SET_CONSTRAINTS_MODE.matcher(rest);
-        if (!mode.matches())
+        final String named = constraintsBeforeMode(rest);
+        if (named == null)
           throw syntaxError(query);
-        final String constraints = mode.group(1).trim();
-        if (!"ALL".equalsIgnoreCase(constraints))
+        final String constraints = named.trim();
+        if (!"ALL".equalsIgnoreCase(constraints)) {
           // THIS SERVER HAS NO NAMED CONSTRAINTS FOR A SET CONSTRAINTS TO NAME, SO THE FIRST NAME IS UNDEFINED
+          final int comma = constraints.indexOf(',');
           throw new PostgresSessionSettings.SettingException(
-              "constraint \"" + constraints.split("\\s*,\\s*")[0] + "\" does not exist", "42704"); // undefined_object
+              "constraint \"" + (comma < 0 ? constraints : constraints.substring(0, comma).trim()) + "\" does not exist",
+              "42704"); // undefined_object
+        }
         yield PostgresSessionSettings.Assignment.NO_OP;
       }
       default -> null;
     };
+  }
+
+  /**
+   * What {@code rest} names before the {@code DEFERRED} or {@code IMMEDIATE} that ends it and the blanks in front of that, or null
+   * when it is not {@code <names> <blank> DEFERRED | IMMEDIATE}. Read from its end, so that a long run of blanks inside the names
+   * is passed once and not once per blank it holds.
+   */
+  private static String constraintsBeforeMode(final String rest) {
+    final int length = rest.length();
+    final int mode;
+    if (rest.regionMatches(true, length - 8, "DEFERRED", 0, 8))
+      mode = length - 8;
+    else if (rest.regionMatches(true, length - 9, "IMMEDIATE", 0, 9))
+      mode = length - 9;
+    else
+      return null;
+
+    int end = mode;
+    while (end > 0 && PostgresStatementText.isBlank(rest.charAt(end - 1)))
+      end--;
+    // a blank in front of the keyword, and something in front of the blanks
+    return end == mode || end == 0 ? null : rest.substring(0, end);
   }
 
   /**

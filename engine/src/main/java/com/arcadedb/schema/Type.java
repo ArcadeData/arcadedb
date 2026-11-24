@@ -2357,7 +2357,8 @@ public enum Type {
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
-        left = left.byteValue();
+        // the byte widens: narrowing the short to a byte wraps every value outside -128..127 (issue #12681)
+        right = right.shortValue();
       else if (right instanceof BigInteger bigInteger1) {
         // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
         // operands promote to BigDecimal (issue #7669).

@@ -432,11 +432,12 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
   /**
    * The virtual administrative namespace the library answers its admin commands on: {@code admin} exactly, as the library
-   * compares it, or an authentication source such as {@code $external}. Any other name is resolved (and opened) as a database
-   * by the library, so it requires authorization and principal binding.
+   * compares it, and a request that names no database at all, which the library cannot resolve to one. Any other name, whatever
+   * its first character, is resolved (and opened) as a database by the library, so it requires authorization and principal
+   * binding. An authentication source such as {@code $external} is only the name a login is made on ({@link #handleSaslStart}).
    */
   private static boolean isAdminDatabase(final String databaseName) {
-    return databaseName == null || databaseName.isEmpty() || databaseName.startsWith("$") || ADMIN_DATABASE.equals(databaseName);
+    return databaseName == null || ADMIN_DATABASE.equals(databaseName);
   }
 
   /**
