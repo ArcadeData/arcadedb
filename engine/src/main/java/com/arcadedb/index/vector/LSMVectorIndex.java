@@ -611,6 +611,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final AtomicInteger deltaResidentPayloads = new AtomicInteger();
 
   /**
+   * The replicated entries being applied on this node that carry pages of this index (issue #13369): from before the first page
+   * of the entry is written until the last one is published, see {@link #hasReplicatedApplyInFlight()}.
+   */
+  private final AtomicInteger replicatedAppliesInFlight = new AtomicInteger();
+
+  /**
    * The records whose vector a commit replay put in this index and whose transaction has not concluded yet (issue #13323), with
    * how many such replays put one: the vector is in the index, the record pages are published only once the replay concludes. A
    * RID is added before its vector becomes visible ({@link VectorIndexReplayUndo#recordPut}) and removed after the pages are
@@ -11973,6 +11979,34 @@ public class LSMVectorIndex implements Index, IndexInternal {
     } finally {
       lock.readLock().unlock();
     }
+  }
+
+  /**
+   * Whether a replicated entry that carries pages of this index is being applied on this node (issue #13369): the entry's pages reach
+   * the read cache one by one and the index learns of each vector page as it is applied, so a vector it answers can be of a record
+   * whose page the entry has not written yet (an insert), or already removed (a delete). Only reading the record tells that from a
+   * record that is there, so a caller that hands a search result on without reading its record (issue #10973) reads it while this
+   * holds. An entry that concluded published all its pages first.
+   */
+  public boolean hasReplicatedApplyInFlight() {
+    return replicatedAppliesInFlight.get() > 0;
+  }
+
+  /**
+   * Marks the start of the apply of a replicated entry that carries pages of this index, before its first page is written. Every
+   * call must be paired with one {@link #replicatedApplyConcluded()} in a finally: a mark left open keeps
+   * {@link #hasReplicatedApplyInFlight()} true for the life of the process.
+   */
+  public void replicatedApplyStarted() {
+    replicatedAppliesInFlight.incrementAndGet();
+  }
+
+  /**
+   * Ends the mark of {@link #replicatedApplyStarted()}, once the last page of the entry is published or the apply failed. Called from
+   * the finally that pairs it with the start.
+   */
+  public void replicatedApplyConcluded() {
+    replicatedAppliesInFlight.decrementAndGet();
   }
 
   /**
