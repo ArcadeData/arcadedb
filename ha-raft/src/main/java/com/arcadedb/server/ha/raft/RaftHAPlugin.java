@@ -57,6 +57,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -78,9 +80,16 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // never changes for the life of the process, so the kept value cannot go stale.
   private volatile String               stoppedClusterToken;
 
+  // The threads inside awaitLeaderCommitApplied right now (issue #11739): what a test reads to know a forwarded command is
+  // waiting for this node to apply it, instead of looking for the method on the stacks of every thread of the JVM
+  private final AtomicInteger localWaiters = new AtomicInteger();
+
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
+
+  /** Serializes this node's cluster-wide creates, see {@link #createDatabaseInCluster}. */
+  private final Object createDatabaseLock = new Object();
 
   /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
   static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
@@ -555,6 +564,89 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     final RaftHAServer raft = raftHAServer;
     if (raft != null)
       raft.waitForLocalApply();
+  }
+
+  /**
+   * Submits the install-database entry and waits for THIS node's apply of it, which is what creates the database here, as it
+   * does on every other node (issue #11848). Nothing is created before the entry commits, so an entry the cluster never
+   * commits leaves no database on any node, the submitting one included, and one that commits after the wait gave up
+   * creates the database everywhere through the same apply.
+   * <p>
+   * The name is checked first, as a local create checks it, and the check, the submit and the wait run under
+   * {@link #createDatabaseLock}: the apply skips an install of a database already present, so two creates of one name on this
+   * node would otherwise both pass the check and both report the database as created by them.
+   * <p>
+   * Holding the lock across the submit and the strict apply wait is deliberate: releasing it after the submit would let a second
+   * create of the name pass the check before the first entry applied. The cost is that a create waiting on a slow quorum (up to
+   * about twice {@code HA_QUORUM_TIMEOUT}) delays every other create on this node, which is acceptable for an operation this
+   * rare and this far from any read or write path.
+   * <p>
+   * A strict wait that gives up is reported as a {@link TransactionException}, as {@code createInReplicas} and the drop report
+   * theirs: the entry is already committed and creates the database everywhere when this node applies it, so a caller that sees
+   * the failure checks for the database before it retries.
+   * <p>
+   * No leader-exclusive window ({@code ArcadeStateMachine.beginLeaderExclusive}), unlike the install of an existing database:
+   * that window orders the entry after the transactions of the database the log already accepted, and a database that does not
+   * exist yet has none.
+   */
+  @Override
+  public boolean createDatabaseInCluster(final String databaseName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      throw new NeedRetryException("Database '" + databaseName + "' was not created: the Raft HA server is not available "
+          + "(the server may be restarting)");
+    if (raft.isRemovedFromConfiguration())
+      throw new NeedRetryException("Database '" + databaseName + "' cannot be created on this server: it is not a member of the "
+          + "Raft cluster's configuration any more (it left or was removed), so it receives no entries and could not apply this "
+          + "one. Send the request to a server of the cluster, or add this server back to it");
+
+    final long appliedIndex;
+    synchronized (createDatabaseLock) {
+      server.checkDatabaseCanBeCreated(databaseName);
+      try {
+        appliedIndex = RaftHAServer.requireTransactionBroker(raft).replicateInstallDatabase(databaseName, false);
+        raft.waitForAppliedIndex(databaseName, appliedIndex, true);
+      } catch (final TransactionException | NeedRetryException e) {
+        throw e;
+      } catch (final Exception e) {
+        throw new TransactionException("Error creating database '" + databaseName + "' via Raft", e);
+      }
+    }
+    LogManager.instance().log(this, Level.INFO, "Database '%s' created through the install-database entry at index %d",
+        databaseName, appliedIndex);
+    return true;
+  }
+
+  @Override
+  public boolean awaitLeaderCommitApplied() {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return true;
+    localWaiters.incrementAndGet();
+    try {
+      // One deadline, the quorum timeout, for both phases. The leader's commit index, confirmed by a ReadIndex round: at or past
+      // every entry committed before this call, whichever node leads by now. Then the lenient apply wait on what is left of the
+      // deadline, which gives up at once inside a snapshot resync gap
+      final long budgetMs = raft.getQuorumTimeout();
+      final long startNanos = System.nanoTime();
+      final long leaderCommitIndex = raft.fetchReadIndex(false, budgetMs);
+      final long remainingMs = budgetMs - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+      if (remainingMs > 0)
+        raft.waitForAppliedIndex(leaderCommitIndex, false, remainingMs);
+      return raft.getTrustedAppliedIndex() >= leaderCommitIndex;
+    } catch (final RuntimeException e) {
+      // Best effort: the caller's command is done on the leader whatever happens here
+      HALog.log(this, HALog.DETAILED, "Could not wait for this server to apply the leader's commit index: %s", e.getMessage());
+      return false;
+    } finally {
+      localWaiters.decrementAndGet();
+    }
+  }
+
+  /** How many threads wait in {@link #awaitLeaderCommitApplied} right now. */
+  // @VisibleForTesting
+  int localWaiters() {
+    return localWaiters.get();
   }
 
   @Override

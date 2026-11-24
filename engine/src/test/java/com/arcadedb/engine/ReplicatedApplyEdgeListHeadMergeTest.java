@@ -79,9 +79,12 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
     final Throwable failure = interleave(() -> readB.set(vertex(b)), () -> applyReplicatedRewriteOfPageOf(b),
         () -> vertex(a).newEdge("E", readB.get()));
 
-    assertThat(transactionManager.wasVertexDeletedSince(b, sequenceBefore)).isTrue();
-    assertThat(transactionManager.wasVertexDeletedSince(b, transactionManager.getVertexDeleteSequence())).isFalse();
-    assertThat(failure).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(transactionManager.vertexChangeSince(b, sequenceBefore)).isEqualTo(TransactionManager.VertexChange.PAGE_REPLICATED);
+    assertThat(transactionManager.vertexChangeSince(b, transactionManager.getVertexDeleteSequence()))
+        .isEqualTo(TransactionManager.VertexChange.NONE);
+    // #12123: nothing deleted b, its page was written by the replicated entry, and the refusal says so
+    assertThat(failure).isInstanceOf(ConcurrentModificationException.class).hasMessage("The page of record " + b
+        + " was written by a replicated transaction after this transaction began. Please retry the operation");
     assertNoRelationship(a, b);
   }
 
@@ -192,9 +195,9 @@ class ReplicatedApplyEdgeListHeadMergeTest extends TestHelper {
     final Throwable failure = interleave(() -> readB.set(vertex(b)), () -> applyReplicatedRewriteOfPageOf(far),
         () -> vertex(a).newEdge("E", readB.get()));
 
-    assertThat(transactionManager.wasVertexDeletedSince(far, sequenceBefore)).isTrue();
-    assertThat(transactionManager.wasVertexDeletedSince(a, sequenceBefore)).isFalse();
-    assertThat(transactionManager.wasVertexDeletedSince(b, sequenceBefore)).isFalse();
+    assertThat(transactionManager.vertexChangeSince(far, sequenceBefore)).isEqualTo(TransactionManager.VertexChange.PAGE_REPLICATED);
+    assertThat(transactionManager.vertexChangeSince(a, sequenceBefore)).isEqualTo(TransactionManager.VertexChange.NONE);
+    assertThat(transactionManager.vertexChangeSince(b, sequenceBefore)).isEqualTo(TransactionManager.VertexChange.NONE);
     assertThat(failure).isNull();
     database.transaction(() -> {
       assertThat(neighbours(a, Vertex.DIRECTION.OUT)).containsExactly(b);

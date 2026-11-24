@@ -204,8 +204,9 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
           props.add(new ArcadeVertexProperty<>(this, p, value));
       }
     } else {
-      props = new ArrayList<>(propertyKeys.length);
-      for (final String p : propertyKeys) {
+      final String[] keys = distinctKeys(propertyKeys);
+      props = new ArrayList<>(keys.length);
+      for (final String p : keys) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeVertexProperty<>(this, p, value));

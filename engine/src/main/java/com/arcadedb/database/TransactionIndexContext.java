@@ -518,9 +518,30 @@ public class TransactionIndexContext {
     }
     unorderedEntries.clear();
 
+    // The RIDs whose vectors a dense vector index retires, replayed together with that index's ADDs below, in one exclusive
+    // section (issue #13229): replayed here, apart from them, a search running between the two passes found neither the old vector
+    // of an updated record nor its new one, and dropped a record that is in the index before and after the commit.
+    Map<LSMVectorIndex, List<RID>> vectorRemovals = null;
+
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
+
+      if (index instanceof LSMVectorIndex vectorIndex) {
+        if (vectorRemovals == null)
+          vectorRemovals = new IdentityHashMap<>();
+        final List<RID> removed = vectorRemovals.computeIfAbsent(vectorIndex, i -> new ArrayList<>());
+        for (final Map<IndexKey, IndexKey> keyValueEntries : keys.values())
+          for (final IndexKey key : keyValueEntries.values()) {
+            if (key.operation == IndexKey.IndexKeyOperation.REMOVE) {
+              removed.add(key.rid);
+              if (key.oldRid != null && !key.oldRid.equals(key.rid))
+                removed.add(key.oldRid);
+            } else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
+              removed.add(key.oldRid);
+          }
+        continue;
+      }
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
@@ -537,11 +558,11 @@ public class TransactionIndexContext {
       }
     }
 
-    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE - for a vector index as much as for
-    // any other - was already replayed through index.removeReplay() by the pass above, which is why the vector
-    // batch below can skip a RID whose last entry is a REMOVE without leaving it untombstoned: the tombstone has
-    // happened, and skipping only avoids adding it straight back (PR #8001 review asked for this to be said here
-    // rather than only at the skip itself).
+    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE of a non-vector index was already
+    // replayed through index.removeReplay() by the pass above; those of a dense vector index were collected there and
+    // are replayed by replayRemovalsAndBatch() BEFORE its ADDs, which is why the vector batch below can skip a RID
+    // whose last entry is a REMOVE without leaving it untombstoned: the tombstone happens, and skipping only avoids
+    // adding it straight back (PR #8001 review asked for this to be said here rather than only at the skip itself).
     //
     // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
     // same reason the lane map is: which index a batch belongs to is a question about the object.
@@ -613,22 +634,19 @@ public class TransactionIndexContext {
     // nothing measurable next to the page write and WAL append each row already pays for.
     for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
       final Map<RID, IndexKey> winners = batch.getValue();
-      if (winners.isEmpty())
-        continue;
+      final List<RID> removed = vectorRemovals != null ? vectorRemovals.get(batch.getKey()) : null;
 
       final List<Object[]> batchKeys = new ArrayList<>(winners.size());
       final List<RID> batchRids = new ArrayList<>(winners.size());
       for (final IndexKey key : winners.values()) {
         if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
-          // The transaction's last word on this RID was a removal, and the pass above has already replayed it.
+          // The transaction's last word on this RID was a removal, replayed with the removals of this index.
           // Re-adding it here is what made a record deleted after being added come back (PR #8001 review).
           continue;
         batchKeys.add(key.keyValues);
         batchRids.add(key.rid);
       }
-      if (batchKeys.isEmpty())
-        continue;
-      batch.getKey().putBatch(batchKeys, batchRids);
+      batch.getKey().replayRemovalsAndBatch(removed != null ? removed : List.of(), batchKeys, batchRids);
     }
 
     indexEntries.clear();
@@ -1196,13 +1214,18 @@ public class TransactionIndexContext {
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
-  private void checkUniqueIndexKeys(final Index index, final IndexKey key, final Set<RID> deleted) {
+  private void checkUniqueIndexKeys(final Index index, final TypeIndex typeIndex, final IndexKey key, final Set<RID> deleted) {
     // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS.
     // A MANUAL index has no type (#5765): nothing else indexes its keys, so it IS the whole search space and the
     // polymorphic lookup below has nothing to widen it to. Resolving getTypeName() as a type name threw a
     // NullPointerException here, which is where a unique manual index failed to commit its first entry.
+    // THE TYPE INDEX THE ENTRY BELONGS TO IS THE SEARCH SPACE (#12724): a sub type holds a bucket index for the index it declares and one
+    // for each it inherits, and (type name, properties) resolves to one of them - the sub type's own - for all, so the entries of an
+    // inherited UNIQUE index were checked against an index that does not cover the bucket of the type declaring it
     final Index idx;
-    if (index.getTypeName() == null)
+    if (typeIndex != null)
+      idx = typeIndex;
+    else if (index.getTypeName() == null)
       idx = index;
     else
       idx = database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
@@ -1271,9 +1294,13 @@ public class TransactionIndexContext {
   private List<LSMTreeIndex> indexesWithLegacyKeys(final IndexInternal index) {
     if (!(index instanceof LSMTreeIndex))
       return null;
-    final TypeIndex typeIndex = index.getTypeName() == null ?
-        null :
-        database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
+    // the type index the entry belongs to, not the one (type name, properties) resolves to: see checkUniqueIndexKeys (#12724)
+    final TypeIndex ownTypeIndex = index.getTypeIndex();
+    final TypeIndex typeIndex = ownTypeIndex != null ?
+        ownTypeIndex :
+        index.getTypeName() == null ?
+            null :
+            database.getSchema().getType(index.getTypeName()).getPolymorphicIndexByProperties(index.getPropertyNames());
     final IndexInternal[] indexes = typeIndex != null ? typeIndex.getIndexesOnBuckets() : new IndexInternal[] { index };
     List<LSMTreeIndex> withLegacyKeys = null;
     for (final IndexInternal bucketIndex : indexes)
@@ -1341,7 +1368,7 @@ public class TransactionIndexContext {
                 continue;
               final Map<ComparableKey, Set<RID>> deletedEntries = deletedKeys.get(typeIndex);
               final Set<RID> deleted = deletedEntries != null ? deletedEntries.get(new ComparableKey(entry.keyValues)) : null;
-              checkUniqueIndexKeys(index, entry, deleted);
+              checkUniqueIndexKeys(index, typeIndex, entry, deleted);
               if (withLegacyKeys != null)
                 checkUniqueLegacyKeys((LSMTreeIndex) index, entry, withLegacyKeys);
             }
@@ -1358,7 +1385,11 @@ public class TransactionIndexContext {
    * no other transaction commits to the index until its own pass has run.
    */
   private boolean isUniqueCheckDeferred(final IndexInternal index) {
-    final String typeName = index.getTypeName();
+    // The type DECLARING the index, not the type owning the bucket (#12724): a super type's index has a bucket index in each sub type
+    // bucket, named after the sub type, so asking the bucket's type left the build of a super type's index checking every commit to a
+    // sub type bucket against the index it was filling, and the build of a polymorphic type stayed quadratic
+    final TypeIndex typeIndex = index.getTypeIndex();
+    final String typeName = typeIndex != null ? typeIndex.getTypeName() : index.getTypeName();
     return typeName != null && database.getSchema().getType(typeName) instanceof LocalDocumentType type
         && type.isUniqueCheckDeferred(index.getPropertyNames());
   }

@@ -21,9 +21,19 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.utility.DedicatedThreadPool;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -76,6 +86,9 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SparseVectorScoringPool extends DedicatedThreadPool {
+
+  /** How long a wait for a task of the pool lasts before the bound of the command is read again, see {@link #awaitGuarded}. */
+  private static final long GUARDED_WAIT_SLICE_MS = 50;
 
   // Lazy-init via the initialization-on-demand holder idiom. The pool only allocates its
   // ThreadPoolExecutor when something actually calls {@link #getInstance()} - which today is
@@ -418,6 +431,158 @@ public final class SparseVectorScoringPool extends DedicatedThreadPool {
   /** Workers currently claimed by in-flight range fan-outs. Test and diagnostics hook. */
   public int getReservedWorkers() {
     return reservedWorkers.get();
+  }
+
+  /**
+   * Runs every task and returns their answers in the same order: the per-bucket searches of a multi-bucket fan-out (#4085)
+   * and the per-bucket document-frequency counts an IDF search needs. A single task runs on the calling thread: there is no
+   * parallelism to gain and no pool dispatch to pay for. So does every task when {@code serial} is set, for a caller whose
+   * transaction a worker could not see, and when the caller already is a worker ({@link #isPoolThread()}), which must not
+   * fan out again.
+   * <p>
+   * Per-bucket indexes are independent: different buckets contain disjoint RID ranges, so the tasks share no mutable state
+   * and need no coordination. Each is submitted to this pool; its CallerRuns rejection policy guarantees the call always
+   * completes - worst case it runs inline on the submitter thread, which is exactly the serial fallback.
+   */
+  public static <T> List<T> runAll(final List<Callable<T>> tasks, final boolean serial) {
+    return runAll(tasks, serial, WorkGuard.forCommandDeadline(null));
+  }
+
+  /**
+   * {@link #runAll(List, boolean)} whose wait for the tasks also ends with the abort of {@code guard}: the wait is cut in
+   * slices of {@link #GUARDED_WAIT_SLICE_MS} and the guard is read between two of them, so a command whose deadline has passed
+   * or whose statement was terminated stops waiting for tasks queued behind other work of the pool. The tasks that have not
+   * started are dropped and the ones running stop at their own next check of the same bound.
+   */
+  public static <T> List<T> runAll(final List<Callable<T>> tasks, final boolean serial, final WorkGuard guard) {
+    final List<T> out = new ArrayList<>(tasks.size());
+    if (serial || tasks.size() <= 1 || isPoolThread()) {
+      for (final Callable<T> task : tasks) {
+        try {
+          out.add(task.call());
+        } catch (final RuntimeException e) {
+          throw e;
+        } catch (final Exception e) {
+          throw new IndexException("Sparse-vector fan-out task failed", e);
+        }
+      }
+      return out;
+    }
+
+    final ExecutorService pool = getInstance().getExecutorService();
+    final List<Future<T>> futures = new ArrayList<>(tasks.size());
+    for (final Callable<T> task : tasks)
+      futures.add(pool.submit(task));
+    // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
+    // contending for index I/O after the caller has moved on. Collect the per-future errors,
+    // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
+    // so we do not pay for compute we will never observe.
+    // <p>
+    // Single deadline across the whole fan-out: caps the total wall-clock at
+    // SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS regardless of bucket count. A per-future timeout
+    // would let N wedged buckets accumulate up to N * timeoutSeconds before the caller sees an
+    // error (e.g. 16 buckets * 30s = 8-minute hang for a deadlocked compaction). The deadline
+    // approach keeps the worst case at a single timeoutSeconds. timeoutSeconds <= 0 disables
+    // the deadline entirely (untimed gets); not recommended in production.
+    final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+    final long deadlineNs = timeoutSeconds > 0
+        ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+        : Long.MAX_VALUE;
+    final List<Throwable> errors = new ArrayList<>();
+    // The abort of the command's guard, from whichever task met it first: it is what the caller sees, whatever else failed
+    RuntimeException abort = null;
+    for (final Future<T> f : futures) {
+      try {
+        // The shared deadline bounds the wait, as the guard does; a future that is done is collected whatever either says
+        out.add(awaitGuarded(f, deadlineNs, timeoutSeconds > 0, guard));
+      } catch (final RuntimeException e) {
+        if (WorkGuard.isAbort(e))
+          // Not interrupted: a running task is stopped by the same bound at its next check, and an interrupt reaching a
+          // thread in the middle of a file read is not a way to stop it
+          for (final Future<?> other : futures)
+            other.cancel(false);
+        throw e;
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw abortOr(abort, new IndexException("Interrupted during sparse-vector fan-out", ie));
+      } catch (final TimeoutException te) {
+        // Cancel every still-pending future so the pool stops working on results we will not
+        // observe. The cancelled-from-the-pool task may still throw an InterruptedException
+        // inside its IO; we don't await those (cancel(true) returns immediately).
+        for (final Future<?> other : futures)
+          other.cancel(true);
+        throw abortOr(abort, new IndexException("Sparse-vector fan-out timed out after "
+            + timeoutSeconds + "s (configurable via "
+            + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te));
+      } catch (final ExecutionException ee) {
+        final Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+        // isAbort only accepts runtime exceptions
+        if (abort == null && WorkGuard.isAbort(cause))
+          abort = (RuntimeException) cause;
+        else
+          errors.add(cause);
+      }
+    }
+    if (abort != null) {
+      for (final Throwable error : errors)
+        abort.addSuppressed(error);
+      throw abort;
+    }
+    if (!errors.isEmpty()) {
+      final Throwable first = errors.getFirst();
+      final RuntimeException toThrow = first instanceof RuntimeException re ? re
+          : new IndexException("Sparse-vector fan-out failed", first);
+      for (int i = 1; i < errors.size(); i++)
+        toThrow.addSuppressed(errors.get(i));
+      throw toThrow;
+    }
+    return out;
+  }
+
+  /**
+   * What a failing wait throws: the abort of the command's guard when a task already met it, with {@code failure} kept as its
+   * suppressed exception, so the caller sees the abort and not the scoring failure that came after it; {@code failure}
+   * itself otherwise.
+   */
+  static RuntimeException abortOr(final RuntimeException abort, final RuntimeException failure) {
+    if (abort == null)
+      return failure;
+    abort.addSuppressed(failure);
+    return abort;
+  }
+
+  /**
+   * Waits for {@code future} until it is done, the shared fan-out deadline passes or {@code guard} aborts, whichever comes
+   * first. The wait is cut in slices of {@link #GUARDED_WAIT_SLICE_MS}, so a task that sits in the queue behind other work of
+   * the pool does not keep its caller past the bound of the command. A future that is already done is collected whatever the
+   * deadline says: nothing is outstanding, so a timeout would be reported for nothing.
+   *
+   * @param bounded whether {@code deadlineNs} (a {@link System#nanoTime()} value) applies
+   *
+   * @throws TimeoutException the shared deadline passed before the future was done
+   */
+  static <T> T awaitGuarded(final Future<T> future, final long deadlineNs, final boolean bounded, final WorkGuard guard)
+      throws InterruptedException, ExecutionException, TimeoutException {
+    final long sliceNs = TimeUnit.MILLISECONDS.toNanos(GUARDED_WAIT_SLICE_MS);
+    while (!future.isDone()) {
+      guard.check();
+      // A slice never outlasts the command's own deadline, so the wait ends when it passes, not up to a slice later
+      long waitNs = Math.min(sliceNs, TimeUnit.MILLISECONDS.toNanos(Math.max(1L, guard.millisToDeadline())));
+      if (bounded) {
+        final long remainingNs = deadlineNs - System.nanoTime();
+        if (remainingNs <= 0L)
+          throw new TimeoutException("deadline elapsed before draining future");
+        waitNs = Math.min(waitNs, remainingNs);
+      }
+      try {
+        return future.get(waitNs, TimeUnit.NANOSECONDS);
+      } catch (final TimeoutException slice) {
+        // not done yet: the next pass reads the guard and the shared deadline again
+      }
+    }
+    return future.get();
   }
 
 }

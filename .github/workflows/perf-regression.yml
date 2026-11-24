@@ -1,0 +1,237 @@
+name: Performance regression alerting
+
+# Judges the benchmark runs published in ArcadeData/arcadedb-perf and opens, updates,
+# comments on and closes "performance-regression" issues by applying the plan that
+# `bench gate` produces.
+#
+# Go-live switch: the scheduled run only APPLIES the plan (touches issues) when the
+# repository variable PERF_REGRESSION_LIVE is 'true'. Until then every run is a dry run
+# that lists the issues, runs the gate and prints the plan in the job summary.
+# workflow_dispatch has a dry_run input that defaults to true, so a manual run is a dry
+# run unless dry_run is unticked.
+#
+# Every closed regression issue is passed to the gate, whatever its age: a maintainer close
+# accepts a regression for as long as its baseline is the newest one, which for a release can
+# be months, and a bot close stops the gate from reporting the run it followed again.
+#
+# Each action of the plan is applied on its own: a failure is logged, the issue's later
+# actions are skipped (the plan puts its comments before the update or close that moves its
+# marker, so the next run plans them again) and the job fails at the end. A close carries the
+# issue's new title and body and writes them in the update that closes it.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: print the plan, do not touch issues"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+# One judge at a time: two overlapping runs could both plan the same create.
+concurrency:
+  group: perf-regression
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LIVE: ${{ (github.event_name == 'schedule' && vars.PERF_REGRESSION_LIVE == 'true') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the published benchmark runs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ArcadeData/arcadedb-perf
+          path: perf
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: maven
+
+      - name: Build the bench CLI
+        run: ./mvnw -B -pl bench -am package -DskipTests
+
+      - name: List regression issues
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const listed = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: 'performance-regression', state: 'all', per_page: 100,
+            });
+            const issues = [];
+            for (const item of listed) {
+              if (item.pull_request) continue;
+              // Anyone who can label an issue could plant a marker: only the bot's own issues carry the gate's state.
+              if (item.user?.login !== 'github-actions[bot]') {
+                core.warning(`ignoring #${item.number}: labelled but opened by ${item.user?.login ?? 'unknown'}, not the bot`);
+                continue;
+              }
+              let closedBy = null;
+              if (item.state === 'closed') {
+                // Every closed issue, of any age: who closed it tells an accepted regression from a recovered one.
+                const full = await github.rest.issues.get({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: item.number,
+                });
+                closedBy = full.data.closed_by?.login ?? null;
+              }
+              // state_reason 'reopened' tells the gate a maintainer reopened the issue: its recovery streaks start over.
+              issues.push({number: item.number, state: item.state, stateReason: item.state_reason ?? null, closedBy, body: item.body ?? ''});
+            }
+            fs.writeFileSync('issues.json', JSON.stringify(issues));
+            core.info(`${issues.length} regression issues read`);
+
+      - name: Answer the bench-changed questions
+        run: |
+          set -euo pipefail
+          jars=(bench/target/arcadedb-bench-*-cli.jar)
+          jar="${jars[0]}"
+          java -jar "${jar}" gate-pairs --data perf/data --issues issues.json > pairs.txt
+          : > bench-changes.ndjson
+          sha='^[0-9a-f]{7,40}$'
+          while read -r a b; do
+            # The commits come from the published run files: anything but a hex commit id is skipped.
+            [[ "${a}" =~ ${sha} && "${b}" =~ ${sha} ]] || { echo "skipping pair '${a}' '${b}'"; continue; }
+            git cat-file -e "${a}^{commit}" 2>/dev/null || continue
+            git cat-file -e "${b}^{commit}" 2>/dev/null || continue
+            rc=0
+            git diff --quiet "${a}" "${b}" -- bench/ || rc=$?
+            case "${rc}" in
+              0) jq -n -c --arg k "${a}..${b}" '{($k): false}' >> bench-changes.ndjson ;;
+              1) jq -n -c --arg k "${a}..${b}" '{($k): true}' >> bench-changes.ndjson ;;
+              *) ;;
+            esac
+          done < pairs.txt
+          jq -s 'add // {}' bench-changes.ndjson > bench-changes.json
+          cat bench-changes.json
+
+      - name: Judge the runs
+        run: |
+          set -euo pipefail
+          jars=(bench/target/arcadedb-bench-*-cli.jar)
+          jar="${jars[0]}"
+          java -jar "${jar}" gate --data perf/data --issues issues.json --bench-changes bench-changes.json --out plan.json
+          {
+            echo "### Regression plan (live: ${LIVE})"
+            echo "<details><summary>plan.json</summary>"
+            echo
+            echo '```json'
+            cat plan.json
+            echo
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the plan
+        if: env.LIVE == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const plan = JSON.parse(fs.readFileSync('plan.json', 'utf8'));
+            // GitHub refuses an issue body or comment longer than this.
+            const MAX_TEXT = 65536;
+
+            try {
+              await github.rest.issues.getLabel({owner, repo, name: plan.label});
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              await github.rest.issues.createLabel({
+                owner, repo, name: plan.label, color: 'd93f0b',
+                description: 'Automated: a nightly or release benchmark got worse',
+              });
+            }
+
+            // The planner renders a comment whole for its run; edit the bot's comment that carries the run key.
+            const upsertComment = async (issue, runKey, body) => {
+              const prefix = `<!-- perf-regression-run ${runKey} -->`;
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: issue, per_page: 100,
+              });
+              const hit = comments.find(c => c.user?.login === 'github-actions[bot]' && (c.body ?? '').startsWith(prefix));
+              if (hit) await github.rest.issues.updateComment({owner, repo, comment_id: hit.id, body});
+              else await github.rest.issues.createComment({owner, repo, issue_number: issue, body});
+            };
+
+            const apply = async (action) => {
+              if (action.op === 'create') {
+                const res = await github.rest.issues.create({
+                  owner, repo, title: action.title, body: action.body, labels: [plan.label],
+                });
+                core.info(`created #${res.data.number} for ${action.key}`);
+              } else if (action.op === 'update') {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: action.issue, title: action.title, body: action.body,
+                });
+                core.info(`updated #${action.issue}`);
+              } else if (action.op === 'comment') {
+                await upsertComment(action.issue, action.runKey, action.body);
+                core.info(`commented on #${action.issue}`);
+              } else if (action.op === 'close') {
+                // A close carries no runKey: its body starts with the run marker.
+                const m = /^<!-- perf-regression-run (.+?) -->/.exec(action.body);
+                if (!m) throw new Error(`close of #${action.issue} has no run marker`);
+                await upsertComment(action.issue, m[1], action.body);
+                // The marker that completes the streaks goes in the same update that closes the issue, so a
+                // closed issue never keeps a stale marker. A close without issueBody finds its marker written.
+                const update = {owner, repo, issue_number: action.issue, state: 'closed', state_reason: 'completed'};
+                if (action.issueBody !== undefined) {
+                  update.title = action.title;
+                  update.body = action.issueBody;
+                }
+                await github.rest.issues.update(update);
+                core.info(`closed #${action.issue}`);
+              } else {
+                throw new Error(`unknown action op ${action.op}`);
+              }
+            };
+
+            // One failure must not silence the other alerts. An issue whose comment failed keeps its old
+            // marker (its update or close is skipped), so the next run plans the same effect again.
+            const failedIssues = new Set();
+            let failures = 0;
+            for (const action of plan.actions) {
+              const what = action.op === 'create' ? `create ${action.key}` : `${action.op} #${action.issue}`;
+              if (action.issue !== undefined && failedIssues.has(action.issue)) {
+                core.warning(`skipped ${what}: an earlier action on the issue failed`);
+                continue;
+              }
+              // GitHub refuses a body or comment over its limit with a 422 on every run: refuse it here, by name.
+              const oversized = ['body', 'issueBody']
+                .filter(f => typeof action[f] === 'string' && action[f].length > MAX_TEXT)
+                .map(f => `${f} is ${action[f].length} characters`);
+              if (oversized.length > 0 || action.oversized !== undefined) {
+                failures++;
+                if (action.issue !== undefined) failedIssues.add(action.issue);
+                const sizes = oversized.length > 0 ? oversized.join(', ') : `the gate flagged ${action.oversized} characters`;
+                core.error(`${what} refused: ${sizes}, over GitHub's limit of ${MAX_TEXT}`);
+                continue;
+              }
+              try {
+                await apply(action);
+              } catch (e) {
+                failures++;
+                if (action.issue !== undefined) failedIssues.add(action.issue);
+                core.error(`${what} failed: ${e.message}`);
+              }
+            }
+            if (failures > 0) core.setFailed(`${failures} of ${plan.actions.length} actions failed`);
+            else core.info(`${plan.actions.length} actions applied`);

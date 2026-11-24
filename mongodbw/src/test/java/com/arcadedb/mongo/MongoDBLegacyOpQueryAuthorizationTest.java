@@ -137,6 +137,11 @@ public class MongoDBLegacyOpQueryAuthorizationTest extends BaseMongoServerTest {
     assertThatThrownBy(() -> backend.handleCommand(channel, "local", "find", new Document("find", "Secret")))
         .isInstanceOf(MongoServerError.class).hasMessageContaining("requires authentication");
 
+    // ONLY "admin" IS THE VIRTUAL NAMESPACE: AN EMPTY NAME, AN AUTHENTICATION SOURCE AND ANY OTHER "$" NAME ARE DATABASES LIKE THE REST
+    for (final String name : new String[] { "", "$external", "$" + getDatabaseName() })
+      assertThatThrownBy(() -> backend.handleCommand(channel, name, "endSessions", new Document("endSessions", 1)))
+          .as("a handshake command on '%s'", name).isInstanceOf(MongoServerError.class).hasMessageContaining("requires authentication");
+
     // ADMIN COMMANDS THAT LIST DATABASES OR TOUCH ANOTHER CLIENT'S CURSORS NEED A LOGIN; THE HANDSHAKE DOES NOT
     assertThatThrownBy(() -> backend.handleCommand(channel, "admin", "listDatabases", new Document("listDatabases", 1)))
         .isInstanceOf(MongoServerError.class).hasMessageContaining("requires authentication");
@@ -145,6 +150,7 @@ public class MongoDBLegacyOpQueryAuthorizationTest extends BaseMongoServerTest {
     assertThat(backend.handleCommand(channel, "admin", "isMaster", new Document("isMaster", 1)).get("ismaster")).isEqualTo(
         Boolean.TRUE);
     assertThat(backend.handleCommand(channel, "admin", "ping", new Document("ping", 1)).get("ok")).isNotNull();
+    assertThat(backend.handleCommand(channel, "admin", "endSessions", new Document("endSessions", 1)).get("ok")).isNotNull();
   }
 
   @Test

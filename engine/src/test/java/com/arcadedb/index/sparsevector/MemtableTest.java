@@ -60,6 +60,37 @@ class MemtableTest {
   }
 
   @Test
+  void liveSetVersionCountsEveryChangeOfWhichPostingsAreLive() {
+    final Memtable m = new Memtable();
+    long version = m.liveSetVersion();
+
+    m.put(0, new RID(0, 1), 0.5f);
+    assertThat(m.liveSetVersion()).as("a new entry").isGreaterThan(version);
+    version = m.liveSetVersion();
+
+    m.put(0, new RID(0, 1), 0.9f);
+    assertThat(m.liveSetVersion()).as("a live weight overwritten by another leaves the live set as it was").isEqualTo(version);
+
+    m.remove(0, new RID(0, 1));
+    assertThat(m.liveSetVersion()).as("a live entry turned into a tombstone").isGreaterThan(version);
+    version = m.liveSetVersion();
+
+    m.remove(0, new RID(0, 1));
+    assertThat(m.liveSetVersion()).as("a tombstone over a tombstone").isEqualTo(version);
+
+    m.put(0, new RID(0, 1), 0.5f);
+    assertThat(m.liveSetVersion()).as("a tombstone turned back into a live entry").isGreaterThan(version);
+    version = m.liveSetVersion();
+
+    m.remove(1, new RID(0, 2));
+    assertThat(m.liveSetVersion()).as("a tombstone for a dim and RID the memtable never held").isGreaterThan(version);
+    version = m.liveSetVersion();
+
+    m.clear();
+    assertThat(m.liveSetVersion()).isGreaterThan(version);
+  }
+
+  @Test
   void putOverridesPriorWeight() {
     final Memtable m = new Memtable();
     m.put(7, new RID(0, 100), 0.5f);
