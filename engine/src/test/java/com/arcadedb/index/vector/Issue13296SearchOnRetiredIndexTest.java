@@ -18,12 +18,14 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -120,7 +122,9 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
   void aSubIndexWithResidentLocationsButNoGraphIsRefusedWhenItsFilesAreRetired(final String quantization,
       final boolean storeVectorsInGraph) {
     final float[] query = createIndexAndRecords(quantization, storeVectorsInGraph);
-    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+    // An approximate (PQ) search may miss a row on a healthy index, see aWarmProductSubIndexWhoseFilesWereRetiredStillAnswersEveryRecord
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once")
+        .isGreaterThanOrEqualTo("PRODUCT".equals(quantization) ? RECORDS - 1 : RECORDS);
 
     // Reopened, then its locations are loaded and no search has loaded its graph: the first search has to read the graph from its
     // file or rebuild it from the data file, and with both gone it would build it from nothing
@@ -148,19 +152,75 @@ class Issue13296SearchOnRetiredIndexTest extends TestHelper {
 
   @ParameterizedTest
   @MethodSource("searches")
-  void aWarmBinarySubIndexWhoseIndexFilesWereRetiredAnswersAsItDidBefore(final String search) {
+  void aWarmBinarySubIndexWhoseIndexFilesWereRetiredIsRefused(final String search) {
     final float[] query = createIndexAndRecords("BINARY", false);
     assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
     final LSMVectorIndex subIndex = subIndex();
-    // A BINARY search ranks on the stored vectors it reads back (from the pages, and from the records when a page is gone), and its
-    // grouped search answers a few rows short of the bucket even on a healthy index: what is asserted is that retiring the files
-    // of the index changes nothing
-    final int before = rowsOf(subIndex, search, query);
-    assertThat(before).as("a healthy BINARY index answers (nearly) every row").isGreaterThan(RECORDS / BUCKETS * 9 / 10);
+    assertThat(rowsOf(subIndex, search, query)).as("a healthy BINARY index answers (nearly) every row")
+        .isGreaterThan(RECORDS / BUCKETS * 9 / 10);
 
     retire(subIndex);
 
-    assertThat(rowsOf(subIndex, search, query)).as("a warm BINARY search does not need the retired files").isEqualTo(before);
+    // A BINARY search scores the codes it reads from the pages of the index when they are not in the code cache, with no record
+    // to fall back on: a warm one is not answered from memory, see aWarmBinarySubIndexWithoutACodeCacheIsRefusedNotAnsweredShort
+    assertThatThrownBy(() -> rowsOf(subIndex, search, query)).as("a BINARY search over retired files is refused")
+        .isInstanceOf(NeedRetryException.class).hasMessageContaining("retired by a schema change");
+  }
+
+  @Test
+  void aWarmBinarySubIndexWithoutACodeCacheIsRefusedNotAnsweredShort() {
+    // No code cache (disabled here, refused by the heap budget in production): every code a search scores is read from the pages
+    ((DatabaseInternal) database).getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_SEARCH_CACHE_SIZE, -1);
+    final float[] query = createIndexAndRecords("BINARY", false);
+    final LSMVectorIndex subIndex = subIndex();
+    assertThat(subIndex.getSearchBinaryCodes()).as("the index has no code cache").isNull();
+    assertThat(rowsOf(subIndex, "exact", query)).as("the index is warm and answers every row of its bucket")
+        .isEqualTo(RECORDS / BUCKETS);
+
+    retire(subIndex);
+
+    assertThatThrownBy(() -> rowsOf(subIndex, "exact", query)).as("its locations and graph are resident, but not its codes")
+        .isInstanceOf(NeedRetryException.class).hasMessageContaining("retired by a schema change");
+  }
+
+  @Test
+  void anIndexGetOverARetiredColdSubIndexFailsInsteadOfAnsweringShort() {
+    final float[] query = createIndexAndRecords("INT8", true);
+    reopenDatabase();
+    final LSMVectorIndex subIndex = subIndex();
+    retire(subIndex);
+
+    // Index.get() loads or builds the graph before it searches: checked only inside the search, the graph built from the retired
+    // files would look resident and the answer would be empty
+    assertThatThrownBy(() -> subIndex.get(new Object[] { query }, 100_000)).as("Index.get() refuses a retired cold sub-index too")
+        .isInstanceOf(NeedRetryException.class).isNotInstanceOf(IndexException.class)
+        .hasMessageContaining("retired by a schema change");
+  }
+
+  @Test
+  void anIndexGetOverAWarmSubIndexWhoseFilesWereRetiredStillAnswers() {
+    final float[] query = createIndexAndRecords("INT8", true);
+    assertThat(exhaustiveRows(query, 100_000)).as("the index is warm: it has answered once").isEqualTo(RECORDS);
+    final LSMVectorIndex subIndex = subIndex();
+    retire(subIndex);
+
+    final IndexCursor cursor = subIndex.get(new Object[] { query }, 100_000);
+    final Set<RID> rids = new HashSet<>();
+    while (cursor.hasNext())
+      rids.add(cursor.next().getIdentity());
+    assertThat(rids).as("its locations and graph are resident").hasSize(RECORDS / BUCKETS);
+  }
+
+  @Test
+  void aColdApproximateSearchOverARetiredProductSubIndexIsRefused() {
+    final float[] query = createIndexAndRecords("PRODUCT", false);
+    reopenDatabase();
+    final LSMVectorIndex subIndex = subIndex();
+    retire(subIndex);
+
+    assertThatThrownBy(() -> subIndex.findNeighborsFromVectorApproximate(query, 100_000, null))
+        .as("the PQ-approximate search refuses a retired cold sub-index").isInstanceOf(NeedRetryException.class)
+        .hasMessageContaining("retired by a schema change");
   }
 
   @ParameterizedTest

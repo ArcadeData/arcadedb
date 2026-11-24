@@ -10175,9 +10175,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The graph a search started now can answer from memory: the locations are resident and complete and a graph is resident, so
    * nothing it needs is read from a file; null when it has to load or build one of them.
+   * <p>
+   * Never for a BINARY index: its scorer reads the code of every candidate the code cache does not hold from the pages, with no
+   * record to fall back on, and drops a candidate it cannot read. The cache can be absent (disabled, or refused by the heap
+   * budget) or miss (an id evicted, a lost race on a slot), so a warm BINARY search over a retired file answered short.
    */
   private ImmutableGraphIndex graphAnsweringFromMemory() {
-    return locationsMaterialized && locationLoadIncomplete == null ? graphIndex : null;
+    return locationsMaterialized && locationLoadIncomplete == null && metadata.quantizationType != VectorQuantizationType.BINARY ?
+        graphIndex :
+        null;
   }
 
   /**
@@ -11567,11 +11573,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (rerankOversample < 0)
       throw new IllegalArgumentException("rerankOversample must be >= 0, got " + rerankOversample);
     final boolean rerank = rerankOversample > 0;
+    // What this search can answer from memory, before it loads anything (issue #13296): the PQ check below materialises the
+    // locations, from a retired file too
+    final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
     // Check if PQ is available. Through isPQSearchAvailable(), not the two fields directly: the codebooks are
     // loaded with the locations and both are deferred to first use (issue #6722), so reading the fields here -
     // ahead of the ensureGraphAvailable() below that would have materialised them - would see null on the first
     // approximate search after a reopen and silently downgrade it to an exact one.
     if (!isPQSearchAvailable()) {
+      // The exact search takes its own snapshot after the locations were loaded just above
+      failIfFileRetired(fromMemory);
       // Fall back to exact search
       LogManager.instance().log(this, Level.FINE,
           "PQ not available for index %s, falling back to exact search", indexName);
@@ -11604,9 +11615,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // reach GraphSearcher.search() with topK == 0, which NPEs inside JVector's reranking.
       if (requestedK == 0)
         return Collections.emptyList();
-
-      // What this search can answer from memory, before it loads or builds anything (issue #13296)
-      final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
 
       // A statement already terminated, or already past its deadline, gets no search at all (issue #9896)
       guard.check();
@@ -11872,6 +11880,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // thread bounds it (issue #9896)
     final WorkGuard guard = WorkGuard.forCommandDeadline(null);
 
+    // What this search can answer from memory, taken before the graph is loaded or built below (issue #13296): the search this
+    // delegates to takes its own only after that, when a graph built from retired files would already look resident
+    final ImmutableGraphIndex fromMemory = graphAnsweringFromMemory();
+    failIfFileRetired(fromMemory);
+
     // Ensure graph is available (lazy-load from disk if needed)
     ensureGraphAvailable(guard);
 
@@ -11892,6 +11905,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         for (final Pair<RID, Float> p : scoredResults)
           resultRIDs.add(p.getFirst());
       }
+      // A graph loaded or built from a file retired while this ran holds what could be read of it
+      failIfFileRetired(fromMemory);
 
       return new IndexCursor() {
         private int position = 0;
@@ -11947,6 +11962,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           return this;
         }
       };
+    } catch (final NeedRetryException e) {
+      // A conflict the caller retries (a retired file, issue #13296), not a failure of the index: wrapped, no retry loop retries it
+      throw e;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error performing vector search", e);
       throw new IndexException("Error performing vector search", e);
