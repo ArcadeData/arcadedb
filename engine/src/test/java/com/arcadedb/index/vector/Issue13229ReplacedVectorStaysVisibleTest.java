@@ -84,7 +84,10 @@ class Issue13229ReplacedVectorStaysVisibleTest {
       db.transaction(() -> {
         db.getSchema().buildVertexType().withName("Chunk").withTotalBuckets(1).create().createProperty("embedding", Type.ARRAY_OF_FLOATS);
         db.command("sql", "CREATE INDEX ON Chunk (embedding) LSM_VECTOR METADATA {\"dimensions\": " + DIMENSIONS
-            + ", \"similarity\": \"COSINE\", \"quantization\": \"INT8\", \"maxConnections\": 16, \"beamWidth\": 80}");
+            + ", \"similarity\": \"COSINE\", \"quantization\": \"INT8\", \"maxConnections\": 16, \"beamWidth\": 80"
+            // No background rebuild: the test is about the two steps of a commit's replay, and a rebuild publishing a graph while the
+            // record is replaced is another interleaving, one a loaded CI host met once in 400 searches
+            + ", \"mutationsBeforeRebuild\": 1000000000, \"inactivityRebuildTimeoutMs\": 0}");
       });
       final RID[] target = new RID[1];
       for (int from = 0; from < RECORDS; from += 400) {
