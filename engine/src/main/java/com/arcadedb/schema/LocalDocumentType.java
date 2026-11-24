@@ -1914,8 +1914,8 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Whether {@code declared} has the type {@code type} and the OF type {@code ofType}. Two OF names that are both names of a type of the
-   * schema are compared by the type they resolve to, so an alias and the type's own name are one kind; a scalar OF ({@code LIST OF
-   * STRING}) by its name.
+   * schema are compared by the type they resolve to, so an alias and the type's own name are one kind; the scalar OF of a LIST or a MAP
+   * ({@code LIST OF STRING}) by its name.
    */
   private boolean isOfKind(final Property declared, final Type type, final String ofType) {
     if (declared.getType() != type)
@@ -1923,7 +1923,10 @@ public class LocalDocumentType implements DocumentType {
     final String declaredOfType = declared.getOfType();
     if (Objects.equals(declaredOfType, ofType))
       return true;
-    if (declaredOfType == null || ofType == null || Type.getTypeByName(declaredOfType) != null || Type.getTypeByName(ofType) != null)
+    if (declaredOfType == null || ofType == null)
+      return false;
+    // a LIST or a MAP gives a scalar name precedence over a type of that name, as LocalProperty.resolveOfType does
+    if ((type == Type.LIST || type == Type.MAP) && (Type.getTypeByName(declaredOfType) != null || Type.getTypeByName(ofType) != null))
       return false;
     final LocalDocumentType declaredOf = schema.getTypeOrNull(declaredOfType);
     return declaredOf != null && declaredOf == schema.getTypeOrNull(ofType);
@@ -3936,8 +3939,17 @@ public class LocalDocumentType implements DocumentType {
     final Set<Property> inheritedDeclarations = Collections.newSetFromMap(new IdentityHashMap<>());
     superType.collectDeclarationsAbove(inheritedDeclarations, new HashSet<>());
 
+    // A declaration already seen adds nothing, unless the link brings an index on its name this type does not reach yet: that index
+    // is about to be propagated over the buckets of this type and of the types below it, which have to hold its kind
+    final Set<String> newlyIndexedNames = new HashSet<>();
+    final Collection<TypeIndex> reachedAlready = getAllIndexes(true);
+    for (final TypeIndex index : superType.getAllIndexes(true))
+      if (!reachedAlready.contains(index))
+        for (final String indexedName : index.getPropertyNames())
+          newlyIndexedNames.add(Index.basePropertyName(indexedName));
+
     for (final Property inherited : inheritedDeclarations) {
-      if (seen.contains(inherited))
+      if (seen.contains(inherited) && !newlyIndexedNames.contains(inherited.getName()))
         continue;
       final Property otherKind = findDeclarationOfAnotherKind(inherited.getName(), inherited.getType(), inherited.getOfType(), null);
       if (otherKind != null)

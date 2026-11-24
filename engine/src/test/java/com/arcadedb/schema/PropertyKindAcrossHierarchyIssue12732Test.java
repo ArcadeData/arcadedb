@@ -370,6 +370,33 @@ class PropertyKindAcrossHierarchyIssue12732Test extends TestHelper {
   }
 
   @Test
+  void aDeclarationAlreadyInheritedIsCheckedWhenTheLinkBringsANewIndexOnIt() throws Exception {
+    // a database written before #12732: A and B both inherit P.k LONG, C EXTENDS B declares k STRING. Linking B under A adds no
+    // declaration B does not see already, but it propagates A[k] over C's buckets, whose records hold the other kind
+    database.command("sql", "CREATE DOCUMENT TYPE P");
+    database.command("sql", "CREATE PROPERTY P.k LONG");
+    database.command("sql", "CREATE DOCUMENT TYPE A EXTENDS P");
+    database.command("sql", "CREATE DOCUMENT TYPE B EXTENDS P");
+    database.command("sql", "CREATE DOCUMENT TYPE C");
+    database.command("sql", "CREATE PROPERTY C.k LONG");
+    database.command("sql", "ALTER TYPE C SUPERTYPE +B");
+    database.command("sql", "CREATE DOCUMENT TYPE D EXTENDS P");
+    database.close();
+    editSchema(root -> root.getJSONObject("types").getJSONObject("C").getJSONObject("properties").getJSONObject("k").put("type",
+        "STRING"));
+    database = factory.open();
+
+    // no index comes with D: nothing new reaches C, the link is accepted as before
+    database.command("sql", "ALTER TYPE B SUPERTYPE +D");
+    assertThat(database.getSchema().getType("B").isSubTypeOf("D")).isTrue();
+
+    database.command("sql", "CREATE INDEX ON A (k) NOTUNIQUE");
+    assertThatThrownBy(() -> database.command("sql", "ALTER TYPE B SUPERTYPE +A")).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("'C'");
+    assertThat(database.getSchema().getType("B").isSubTypeOf("A")).isFalse();
+  }
+
+  @Test
   void anAliasOfTheOfTypeIsTheSameKind() {
     database.command("sql", "CREATE DOCUMENT TYPE Customer");
     database.getSchema().getType("Customer").setAliases(Set.of("Client"));
