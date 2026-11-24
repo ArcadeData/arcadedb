@@ -57,6 +57,8 @@ import java.util.Map;
  */
 public class ArcadeGremlinAuthorizer implements Authorizer {
   static final         String         GREMLIN_LANG = "gremlin-lang";
+  /** The traversal source a script reads when its aliases do not rebind it: the global {@code g}, the default database. */
+  private static final String         DEFAULT_TRAVERSAL_SOURCE = Tokens.VAL_TRAVERSAL_SOURCE_ALIAS;
   // DEEPER THAN ANY TRAVERSAL A CLIENT BUILDS ON PURPOSE: BEYOND IT THE REQUEST IS TREATED AS CARRYING A LAMBDA
   private static final int            MAX_LAMBDA_SCAN_DEPTH = 64;
   private              ArcadeDBServer server;
@@ -68,15 +70,14 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
 
   /**
    * Authorizes a bytecode (traversal) request. The {@code aliases} map values are the traversal-source
-   * names targeted by the request, i.e. the database names the traversal will run against.
+   * names targeted by the request, i.e. the database names the traversal will run against. A request that
+   * rebinds no {@code g} runs against the default traversal source, which is checked like any other.
    */
   @Override
   public Bytecode authorize(final AuthenticatedUser user, final Bytecode bytecode, final Map<String, String> aliases)
       throws AuthorizationException {
     final ServerSecurityUser securityUser = publishPrincipal(user);
-    if (aliases != null)
-      for (final String alias : aliases.values())
-        checkDatabaseAccess(securityUser, alias);
+    checkTraversalSources(securityUser, aliases);
 
     if (!ServerSecurityUser.isServerAdministrator(securityUser.getName()) && containsLambda(bytecode, 0))
       throw new AuthorizationException(
@@ -86,9 +87,9 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
 
   /**
    * Authorizes a string (script) request. The target traversal source(s) are carried in the request's
-   * {@code aliases} argument. A bare script may reference a globally-bound graph directly, with no alias;
-   * that case is backstopped by the principal binding performed on the execution thread (the engine's own
-   * per-database ACL then denies unauthorized access), which is why the principal is always published here.
+   * {@code aliases} argument. A script that does not rebind {@code g} reads the global {@code g}, the default
+   * database, so that one is checked too. The principal binding performed on the execution thread (the engine's
+   * own per-database ACL) stays as a second line, which is why the principal is always published here.
    */
   @Override
   public void authorize(final AuthenticatedUser user, final RequestMessage msg) throws AuthorizationException {
@@ -107,10 +108,7 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
           + (language != null ? "'" + language + "'" : "Groovy") + " scripts, which are reserved to the server administrator. Submit the script with language '"
           + GREMLIN_LANG + "' or send a bytecode traversal");
 
-    final Object aliasesArg = msg.getArgs().get(Tokens.ARGS_ALIASES);
-    if (aliasesArg instanceof Map<?, ?> aliases)
-      for (final Object alias : aliases.values())
-        checkDatabaseAccess(securityUser, String.valueOf(alias));
+    checkTraversalSources(securityUser, msg.getArgs().get(Tokens.ARGS_ALIASES));
   }
 
   /**
@@ -184,14 +182,36 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
     return false;
   }
 
+  /**
+   * Checks every traversal source the request can run against: the target of each alias and, when the aliases do not
+   * rebind {@value #DEFAULT_TRAVERSAL_SOURCE}, the default traversal source the global {@code g} stands for. A request with
+   * no aliases at all runs on that one. Fails closed on aliases that are not a map.
+   */
+  private void checkTraversalSources(final ServerSecurityUser securityUser, final Object aliasesArg)
+      throws AuthorizationException {
+    if (aliasesArg == null) {
+      checkDatabaseAccess(securityUser, DEFAULT_TRAVERSAL_SOURCE);
+      return;
+    }
+
+    if (!(aliasesArg instanceof Map<?, ?> aliases))
+      throw new AuthorizationException("The '" + Tokens.ARGS_ALIASES + "' argument must be a map of traversal source names");
+
+    for (final Object target : aliases.values())
+      checkDatabaseAccess(securityUser, target instanceof String name ? name : null);
+
+    if (!aliases.containsKey(DEFAULT_TRAVERSAL_SOURCE))
+      checkDatabaseAccess(securityUser, DEFAULT_TRAVERSAL_SOURCE);
+  }
+
+  /** The refusal names the traversal source as the client sent it, never the database it resolves to. */
   private void checkDatabaseAccess(final ServerSecurityUser securityUser, final String traversalSourceAlias)
       throws AuthorizationException {
     if (traversalSourceAlias == null)
-      return;
+      throw new AuthorizationException("The traversal source name of an alias is missing");
 
-    final String databaseName = ArcadeGraphManager.resolveDatabaseName(traversalSourceAlias);
-    if (!securityUser.canAccessToDatabase(databaseName))
+    if (!securityUser.canAccessToDatabase(ArcadeGraphManager.resolveDatabaseName(traversalSourceAlias)))
       throw new AuthorizationException(
-          "User '" + securityUser.getName() + "' is not authorized to access database '" + databaseName + "'");
+          "User '" + securityUser.getName() + "' is not authorized to access database '" + traversalSourceAlias + "'");
   }
 }
