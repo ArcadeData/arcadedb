@@ -981,15 +981,16 @@ public class SelectExecutor {
       else if (from == ANY_KEY)
         cursor = node.index.range(ascendingOrder, keysPastTheNullKeys(node.index), false, null, false);
       else
-        cursor = node.index.range(ascendingOrder, new Object[] { from }, from != rightValue || node.operator == SelectOperator.ge, null,
-            false);
+        // a mapped bound is a key, read inclusive
+        cursor = node.index.range(ascendingOrder, new Object[] { from },
+            node.operator == SelectOperator.ge || isInexactIntegralBound(node.index, rightValue), null, false);
     } else if (node.operator == SelectOperator.lt || node.operator == SelectOperator.le) {
       // ... and the greatest key below it
       final Object to = decimalUpperBound(node.index, integralUpperBound(node.index, rightValue));
       cursor = to == NO_KEY ?
           new TempIndexCursor(Collections.emptyList()) :
           node.index.range(ascendingOrder, null, false, to == ANY_KEY ? null : new Object[] { to },
-              to != rightValue || node.operator == SelectOperator.le);
+              node.operator == SelectOperator.le || isInexactIntegralBound(node.index, rightValue));
     } else
       return;
 
@@ -1201,6 +1202,11 @@ public class SelectExecutor {
    */
   private static Object[] keysPastTheNullKeys(final TypeIndex index) {
     return index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.INDEX ? new Object[] { null } : null;
+  }
+
+  /** Whether {@link #integralLowerBound}/{@link #integralUpperBound} replace {@code bound} with a key of the index. */
+  private static boolean isInexactIntegralBound(final TypeIndex index, final Object bound) {
+    return IntegralKeyBound.isInexact(leadingIntegralKeyType(index), bound);
   }
 
   private static byte leadingIntegralKeyType(final TypeIndex index) {
