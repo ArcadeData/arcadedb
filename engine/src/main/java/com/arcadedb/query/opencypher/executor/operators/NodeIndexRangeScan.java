@@ -940,13 +940,14 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
     if (bound instanceof Float f)
       return f.isInfinite() || keyType != Type.DECIMAL || new BigDecimal(f).compareTo(new BigDecimal(f.toString())) == 0;
     if (bound instanceof BigDecimal decimal) {
+      // the exact binary expansion of the key is what is compared: its shortest text (BigDecimal.valueOf) would read 0.1 as held
       if (keyType == Type.DOUBLE) {
         final double d = decimal.doubleValue();
-        return !Double.isInfinite(d) && new BigDecimal(d).compareTo(decimal) == 0;
+        return !Double.isInfinite(d) && new BigDecimal(d).compareTo(decimal) == 0; // NOPMD: the exact expansion, on purpose
       }
       if (keyType == Type.FLOAT) {
         final float f = decimal.floatValue();
-        return !Float.isInfinite(f) && new BigDecimal(f).compareTo(decimal) == 0;
+        return !Float.isInfinite(f) && new BigDecimal(f).compareTo(decimal) == 0; // NOPMD: the exact expansion, on purpose
       }
     }
     return true;
