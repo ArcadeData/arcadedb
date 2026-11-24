@@ -26,6 +26,7 @@ import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.CallLog;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.utility.FileUtils;
@@ -396,6 +397,64 @@ class DropDatabaseApplyTest {
       assertThatThrownBy(() -> server.getDatabaseForOperator(DB_NAME)).as("nothing is left for a later request to reopen")
           .isNotNull();
       assertThat(server.existsDatabase(DB_NAME)).isFalse();
+      assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
+    }
+
+    /**
+     * Issue #11739: {@code close database} also marks the database as closed on purpose, which keeps it a database of this
+     * server (it exists, and its name is taken) while it is not registered. The drop ends that close, as a drop of an open
+     * database does through {@code removeDatabase}: the apply that removed the files of a closed one left the mark, so
+     * {@code GET /exists} on this peer answered {@code true} for a database the whole cluster had dropped, and a request for it
+     * was refused as closed.
+     */
+    @Test
+    void aDropOfADatabaseTheCloseVerbClosedEndsTheMarkItLeft() {
+      final ArcadeStateMachine sm = start();
+      new ServerControlPlane(server).closeDatabase(DB_NAME);
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("precondition: held by the close verb").isTrue();
+      assertThat(server.isDatabaseOfServer(DB_NAME)).as("precondition: still a database of this server").isTrue();
+
+      applyDrop(sm, DB_NAME);
+
+      assertThat(Files.exists(databaseDirectory)).as("the dropped database's directory must be gone").isFalse();
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark goes with the database").isFalse();
+      assertThat(server.isDatabaseOfServer(DB_NAME)).as("what GET /exists reads: not a database of this server any more")
+          .isFalse();
+    }
+
+    /**
+     * Issue #11739: the close mark ends only when the directory is gone from under its name. With the rename refused,
+     * {@code stageForDeletion} deletes inline, and a delete the filesystem refuses is logged and returns with the directory
+     * still there. The mark then stays, as it did before the drop ended it: the database is not reopened from the copy the
+     * cluster dropped.
+     */
+    @Test
+    void aDirectoryTheInlineDeleteLeftBehindKeepsTheCloseMark() throws Exception {
+      assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"), "needs POSIX permissions");
+      assumeFalse("root".equals(System.getProperty("user.name")), "root ignores directory permissions");
+
+      final ArcadeStateMachine sm = start();
+      deleter.close();
+      deleter = new DeferredDatabaseDeleter() {
+        @Override
+        Path rename(final Path directory) {
+          return null;
+        }
+      };
+      sm.setDeferredDatabaseDeleter(deleter);
+      new ServerControlPlane(server).closeDatabase(DB_NAME);
+
+      final Set<PosixFilePermission> original = Files.getPosixFilePermissions(databaseDirectory);
+      // its files cannot be unlinked, so the directory cannot be removed either
+      Files.setPosixFilePermissions(databaseDirectory, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_EXECUTE));
+      try {
+        applyDrop(sm, DB_NAME);
+      } finally {
+        Files.setPosixFilePermissions(databaseDirectory, original);
+      }
+
+      assertThat(Files.isDirectory(databaseDirectory)).as("precondition: the inline delete left the directory").isTrue();
+      assertThat(server.isDatabaseHeld(DB_NAME)).as("the close mark stays while the files do").isTrue();
       assertThat(coordinator().isInProgress(DB_NAME)).as("the apply must release the slot it took").isFalse();
     }
 

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
@@ -26,8 +27,8 @@ import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
-import java.util.function.UnaryOperator;
 
 /**
  * A membership test over an {@code IN} right-hand side that is constant for the whole command execution -
@@ -71,6 +72,9 @@ public final class InListMembership {
   private static final int KIND_STRING = 1;
   private static final int KIND_NUMBER = 2;
 
+  /** The item memos of a right-hand value with no string to convert. */
+  private static final ConstantOperandConversion[] NO_CONVERSIONS = new ConstantOperandConversion[0];
+
   /** The right-hand value exactly as evaluated, and the authority whenever the fast path declines. */
   private final Object      rightValue;
   /** Normalized keys of every non-null element, or {@code null} when no fast path applies. */
@@ -86,6 +90,12 @@ public final class InListMembership {
    */
   private final float[]    narrowedDoubles;
   private final float[]    floats;
+  /**
+   * The memo of each item that is a string, at the item's position in the list (or of the right-hand value itself when it is a
+   * string), which converts it once for the execution rather than once per row when a left value of another class is compared
+   * with it: a datetime against a list of date strings (issue #12713). Built for the first such left value.
+   */
+  private volatile ConstantOperandConversion[] itemConversions;
 
   private InListMembership(final Object rightValue, final Set<Object> keys, final int kind, final boolean containsNull,
       final boolean convertOperand) {
@@ -114,44 +124,77 @@ public final class InListMembership {
 
   /** @param convertOperand false when the left side is a record property, which is never converted to the item type */
   public static InListMembership build(final Object rightValue, final boolean convertOperand) {
-    return build(rightValue, convertOperand, UnaryOperator.identity());
-  }
-
-  /**
-   * {@link #build(Object, boolean)} keying each element by the value {@code itemValue} stands it for, while the
-   * fallback still answers from {@code rightValue} as it is: the rows of an {@code IN (SELECT ...)} are keyed by the
-   * value of their only column (issue #12736). A mapped value that is neither a string nor a number declines the
-   * fast path for the whole list, as an unmapped one does.
-   */
-  static InListMembership build(final Object rightValue, final boolean convertOperand, final UnaryOperator<Object> itemValue) {
     if (!(rightValue instanceof Collection) && (rightValue == null || !rightValue.getClass().isArray()))
       // Only the two re-readable shapes a constant list ever takes. A scalar right-hand side degrades to an
       // equality test anyway; a ResultSet or a bare Iterable is a one-shot cursor that indexing here would
       // consume out from under the linear evaluator; a Map's membership semantics are the evaluator's to define.
       return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
-    int kind = KIND_NONE;
-    boolean containsNull = false;
-    Set<Float> narrowedDoubles = null;
-    Set<Float> floats = null;
-    final Set<Object> keys = new HashSet<>();
+    final KeyCollector collector = new KeyCollector(new HashSet<>());
+    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false))
+      if (!collector.add(item))
+        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
 
-    for (final Object element : MultiValue.getMultiValueIterable(rightValue, false)) {
-      final Object item = itemValue.apply(element);
+    if (collector.kind == KIND_NONE)
+      // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
+      return new InListMembership(rightValue, null, KIND_NONE, collector.containsNull, convertOperand);
+
+    return collector.toMembership(rightValue, convertOperand);
+  }
+
+  /**
+   * The probe for the rows of a sub-query hoisted into a LET: every row a single-column result and the column a string or a number
+   * (a null column is a null element). A row's value is read through {@link InCondition#singleRowValue}, the definition the scan
+   * applies to a sub-query row, so the two cannot disagree on which rows stand for one value. The probe answers like
+   * {@link InCondition#evaluateExpressionThreeValued} over the rows wherever it takes the fast path, and hands every other left
+   * value to that evaluator with the rows themselves.
+   *
+   * @return the probe, or {@code null} when the rows hold anything else (records, several columns, lists, mixed kinds), which only the
+   * scan reads exactly
+   */
+  public static InListMembership buildFromRows(final List<?> rows, final boolean convertOperand) {
+    final KeyCollector collector = new KeyCollector(HashSet.newHashSet(rows.size()));
+    for (final Object item : rows) {
+      if (!(item instanceof Result row))
+        return null;
+      final Object value = InCondition.singleRowValue(row);
+      if (value == InCondition.NOT_A_SINGLE_VALUE_ROW || !collector.add(value))
+        return null;
+    }
+
+    if (collector.kind == KIND_NONE)
+      return null;
+    return collector.toMembership(rows, convertOperand);
+  }
+
+  /** The keys of a list's items, gathered one item at a time; {@link #add} declines the first item no key can stand for. */
+  private static final class KeyCollector {
+    private final Set<Object> keys;
+    private int               kind = KIND_NONE;
+    private boolean           containsNull;
+    private Set<Float>        narrowedDoubles;
+    private Set<Float>        floats;
+
+    private KeyCollector(final Set<Object> keys) {
+      this.keys = keys;
+    }
+
+    /** @return false when the item has no key: no fast path applies to the list */
+    private boolean add(final Object item) {
       if (item == null) {
         containsNull = true;
-        continue;
+        return true;
       }
 
       final int itemKind = kindOf(item);
       if (itemKind == KIND_NONE || (kind != KIND_NONE && kind != itemKind))
         // Unsupported element type, or a list mixing strings and numbers: the coercions between the two
         // kinds are the ones a hash set cannot reproduce, so decline rather than get them subtly wrong.
-        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
+        return false;
 
       final Object key = keyOf(item, itemKind);
       if (key == null)
-        return new InListMembership(rightValue, null, KIND_NONE, false, convertOperand);
+        return false;
 
       kind = itemKind;
       keys.add(key);
@@ -164,13 +207,13 @@ public final class InListMembership {
           narrowedDoubles = new HashSet<>();
         narrowedDoubles.add((float) (double) d + 0.0f);
       }
+      return true;
     }
 
-    if (kind == KIND_NONE)
-      // Empty, or nulls only: cheap either way, and the linear evaluator already answers both exactly.
-      return new InListMembership(rightValue, null, KIND_NONE, containsNull, convertOperand);
-
-    return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats), convertOperand);
+    private InListMembership toMembership(final Object rightValue, final boolean convertOperand) {
+      return new InListMembership(rightValue, keys, kind, containsNull, sortedFloats(narrowedDoubles), sortedFloats(floats),
+          convertOperand);
+    }
   }
 
   /**
@@ -191,7 +234,54 @@ public final class InListMembership {
         }
       }
     }
-    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand);
+    return InCondition.evaluateExpressionThreeValued(left, rightValue, convertOperand,
+        left == null || left instanceof String ? null : itemConversions());
+  }
+
+  private ConstantOperandConversion[] itemConversions() {
+    ConstantOperandConversion[] conversions = itemConversions;
+    if (conversions == null) {
+      // A benign race: two threads may build two arrays, and either one serves the rows that follow
+      conversions = conversionsOf(rightValue);
+      itemConversions = conversions;
+    }
+    return conversions;
+  }
+
+  /**
+   * A memo for each item of {@code rightValue} that is a string, by position, or for {@code rightValue} itself when it is one. A set
+   * has none: it is probed by hash, and only a searched value is ever converted to one of its items.
+   */
+  private static ConstantOperandConversion[] conversionsOf(final Object rightValue) {
+    if (rightValue instanceof String)
+      return new ConstantOperandConversion[] { new ConstantOperandConversion() };
+    if (rightValue instanceof Set || !(rightValue instanceof Collection || MultiValue.isSequenceArray(rightValue)))
+      return NO_CONVERSIONS;
+
+    final ConstantOperandConversion[] conversions = new ConstantOperandConversion[MultiValue.getSize(rightValue)];
+    boolean anyString = false;
+    int index = 0;
+    for (final Object item : MultiValue.getMultiValueIterable(rightValue, false)) {
+      if (index == conversions.length)
+        break;
+      if (item instanceof String) {
+        conversions[index] = new ConstantOperandConversion();
+        anyString = true;
+      }
+      ++index;
+    }
+    return anyString ? conversions : NO_CONVERSIONS;
+  }
+
+  /** How many conversions the memos of the items made. Surfaced for tests. */
+  int conversions() {
+    final ConstantOperandConversion[] conversions = itemConversions;
+    int total = 0;
+    if (conversions != null)
+      for (final ConstantOperandConversion conversion : conversions)
+        if (conversion != null)
+          total += conversion.conversions();
+    return total;
   }
 
   private static float[] sortedFloats(final Set<Float> set) {

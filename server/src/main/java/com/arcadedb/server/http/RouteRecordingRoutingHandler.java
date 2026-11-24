@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.handler.NotFoundRouteHandler;
 import io.undertow.predicate.Predicate;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
@@ -80,6 +81,10 @@ public class RouteRecordingRoutingHandler extends RoutingHandler {
 
   public RouteRecordingRoutingHandler() {
     setInvalidMethodHandler(this::answerMethodNotAllowed);
+    // A path that matches no template is answered by the fallback: Undertow's own one is an empty body with no
+    // header, so the answer would carry neither the error field nor the correlation and replay-protection headers
+    // every other answer of the API carries (issue #12410)
+    setFallbackHandler(new NotFoundRouteHandler());
   }
 
   @Override

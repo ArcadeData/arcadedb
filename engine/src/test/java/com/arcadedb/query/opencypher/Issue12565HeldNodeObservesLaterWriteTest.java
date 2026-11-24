@@ -40,9 +40,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A node held by an earlier row (buffered by an aggregation, held by {@code collect()}) must observe a write a later row of
  * the same clause makes to it, as Neo4j and Memgraph do: a node is a reference, not a snapshot.
  * <p>
- * The rows a pipeline breaker (an aggregation, a sort) hands out read the records as every row before it left them. A row that
- * streams from a write to the next clause still reads what it held when it was produced, as a pipelined plan reads it: that is
- * {@link CypherSubqueryRowBindingIssue6362Test}, and {@link #aStreamingRowStillReadsItsOwnTime()} here.
+ * The rows a pipeline breaker (an aggregation, a sort) hands out read the records as every row before it left them. So do the
+ * rows a SET, a REMOVE or a MERGE with ON CREATE / ON MATCH SET hands out, since they run for their whole input first (issue
+ * #12656): {@link CypherSubqueryRowBindingIssue6362Test}, and {@link #aRowAfterAWriteReadsTheWriteOfEveryRow()} here.
  *
  * @author robfrank (ro.franchini@gmail.com)
  */
@@ -110,11 +110,11 @@ class Issue12565HeldNodeObservesLaterWriteTest extends TestHelper {
   }
 
   /**
-   * Without a breaker after the write, the first row is read before the second row's write in a pipelined plan: it still
-   * answers the value it held, although the write steps run the two rows in one batch (issue #6362).
+   * Without a breaker after the write either: the SET runs for every row before the clauses after it read one, so the first
+   * row reads the second row's write, as on Neo4j (issues #12627, #12656). It used to answer the value it held (issue #6362).
    */
   @Test
-  void aStreamingRowStillReadsItsOwnTime() {
+  void aRowAfterAWriteReadsTheWriteOfEveryRow() {
     database.transaction(() -> {
       try (final ResultSet rs = database.command("opencypher", """
           MATCH (n:Node) WITH n ORDER BY n.id
@@ -125,7 +125,7 @@ class Issue12565HeldNodeObservesLaterWriteTest extends TestHelper {
           RETURN m.id AS id, h.v AS v""")) {
         Result row = rs.next();
         assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(1);
-        assertThat(row.<Number>getProperty("v").intValue()).isEqualTo(2);
+        assertThat(row.<Number>getProperty("v").intValue()).isEqualTo(-4);
         row = rs.next();
         assertThat(row.<Number>getProperty("id").intValue()).isEqualTo(2);
         assertThat(row.<Number>getProperty("v").intValue()).isEqualTo(-4);

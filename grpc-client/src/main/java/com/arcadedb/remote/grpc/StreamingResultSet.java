@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.grpc.FacetProtocol;
 import com.arcadedb.server.grpc.GrpcRecord;
 import com.arcadedb.server.grpc.QueryResult;
-import com.arcadedb.remote.grpc.utils.ProtoUtils;
 import io.grpc.stub.BlockingClientCall;
 import com.arcadedb.log.LogManager;
 import java.util.logging.Level;
@@ -90,7 +89,7 @@ class StreamingResultSet implements ResultSet {
         // FACETS queries: the server attaches the facets to the terminal batch only, which may carry no records
         if (queryResult.hasFacets())
           // the values decoded as the rows' are
-          facets = FacetProtocol.fromProto(queryResult.getFacets(), ProtoUtils::fromGrpcValue);
+          facets = FacetProtocol.fromProto(queryResult.getFacets(), db::grpcValueToObject);
 
         if (queryResult.getRecordsCount() == 0) {
           if (queryResult.getIsLastBatch()) {

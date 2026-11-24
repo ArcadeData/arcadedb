@@ -63,7 +63,19 @@ public class InCondition extends BooleanExpression {
   private static final AtomicLong MEMO_KEY_SEQUENCE         = new AtomicLong();
 
   /** Answered by {@link #singleRowValue} for a row that wraps a record or holds zero or several properties. */
-  private static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+  static final Object NOT_A_SINGLE_VALUE_ROW = new Object();
+
+  /** A list of sub-query rows shorter than this is scanned: a probe costs more to build than the scan it saves. */
+  private static final int ROWS_PROBE_MIN_SIZE = 32;
+
+  /**
+   * The state of an execution that was handed a different list on a later row: the right-hand side depends on the row (a
+   * correlated sub-query), so no probe is tried again and the rows are scanned without allocating anything per row.
+   */
+  private static final RowsProbe ROWS_CHANGE_PER_ROW = new RowsProbe(null, null, true);
+
+  /** Lazily assigned key of the per-execution {@link RowsProbe} of a sub-query result. */
+  private volatile String rowsKey;
 
   /** Lazily assigned on the first row that can use the memo; see {@link #constantRightHandSide}. */
   private volatile String memoKey;
@@ -71,11 +83,30 @@ public class InCondition extends BooleanExpression {
   /** Lazily assigned key of {@link #operandIsSearched}'s per-execution memo. */
   private volatile String searchedKey;
 
-  /** Lazily assigned key of {@link #evaluateAgainst}'s per-execution memo of the sub-query rows last seen. */
-  private volatile String subQueryKey;
+  /** The right-hand expression last found not to be a literal, so a non-constant list is not walked again for every row. */
+  private volatile MathExpression notConstantRight;
 
-  /** The sub-query rows last read on the right-hand side, and their membership once they were read a second time. */
-  private record SubQueryRows(Object rows, InListMembership membership) {
+  /**
+   * What an execution knows about the sub-query rows it was handed: the list instance seen on the first row and, once the same
+   * instance has come back for a later row, the probe built from it ({@code null} when the rows cannot be probed). Immutable: a
+   * transition writes a new state into the context, so the state a reader sees is always a complete one.
+   * <p>
+   * The identity of the list stands for its contents. That holds because nothing refills a list of sub-query rows in place:
+   * {@link com.arcadedb.query.sql.executor.OperationHeapLimit#materialize} hands every LET evaluation a new list, the correlated
+   * sub-query cache hands the same instance back only for an equal correlation key, and {@link #source} keeps the list reachable,
+   * so its identity cannot be recycled by another list while the state exists. A change that reuses a list across rows has to
+   * revisit this.
+   */
+  private static final class RowsProbe {
+    final Object           source;
+    final InListMembership probe;
+    final boolean          built;
+
+    RowsProbe(final Object source, final InListMembership probe, final boolean built) {
+      this.source = source;
+      this.probe = probe;
+      this.built = built;
+    }
   }
 
   public InCondition() {
@@ -144,6 +175,43 @@ public class InCondition extends BooleanExpression {
   }
 
   /**
+   * {@code IN} against a right-hand side that is evaluated per row. A sub-query of the statement that does not depend on the row
+   * is hoisted into a LET, so what arrives here is the same list of single-column rows for every outer row, and scanning it costs
+   * outer rows x sub-query rows (1,000 rows over 100,000 outer rows: 4 s). The second time the same list instance is handed in
+   * it is indexed into an {@link InListMembership}, which answers like the scan for the lists it accepts and falls back to the
+   * scan for everything else. A list that changes with the row (a correlated sub-query) is never indexed, and once one has been
+   * seen the execution stops looking.
+   * <p>
+   * The probe is held in the context's cache for the rest of the execution and is not charged to the query's heap budget: the cache
+   * has no release hook (the constant right-hand side memo above is held the same way), and what it holds is bounded by the rows the
+   * LET already charged when it materialised them - one hash entry per row, plus a decimal key for a number, where a string key is
+   * the row's own string.
+   */
+  private Boolean evaluateAgainst(final Object leftVal, final Object rightVal, final CommandContext context) {
+    if (rightVal instanceof List<?> rows && rows.size() >= ROWS_PROBE_MIN_SIZE) {
+      String key = rowsKey;
+      if (key == null) {
+        // A benign race: see memoKey
+        key = "$IN$R" + MEMO_KEY_SEQUENCE.incrementAndGet();
+        rowsKey = key;
+      }
+      RowsProbe state = (RowsProbe) context.getCachedValue(key);
+      if (state == null)
+        context.setCachedValue(key, new RowsProbe(rightVal, null, false));
+      else if (state.source == rightVal) { // NOPMD: by identity, the same list instance stands for the same rows (see RowsProbe)
+        if (!state.built) {
+          state = new RowsProbe(rightVal, InListMembership.buildFromRows(rows, operandIsSearched(context)), true);
+          context.setCachedValue(key, state);
+        }
+        if (state.probe != null)
+          return state.probe.evaluate(leftVal);
+      } else if (state != ROWS_CHANGE_PER_ROW)
+        context.setCachedValue(key, ROWS_CHANGE_PER_ROW);
+    }
+    return evaluateExpressionThreeValued(leftVal, rightVal, operandIsSearched(context));
+  }
+
+  /**
    * The membership probe for a right-hand side that cannot change while this command runs - a literal list, or
    * one built out of literals and bound parameters - evaluated once per execution and then reused for every
    * row, or {@code null} when the right-hand side has to be re-evaluated per row after all.
@@ -158,10 +226,26 @@ public class InCondition extends BooleanExpression {
    * row today - into a single draw (see the contract on {@link Expression#isEarlyCalculated}).
    */
   private InListMembership constantRightHandSide(final CommandContext context) {
-    if (rightParam == null && (rightMathExpression == null || !rightMathExpression.isLiteral(true)))
-      return null;
-
+    // The memo of this execution, when an earlier row built it: only a literal right-hand side ever gets one, and walking the list
+    // again to learn that cost rows x listSize before a comparison was made
     String key = memoKey;
+    if (key != null) {
+      final InListMembership known = (InListMembership) context.getCachedValue(key);
+      if (known != null)
+        return known;
+    }
+
+    if (rightParam == null) {
+      final MathExpression expression = rightMathExpression;
+      // A right-hand side already found not to be a literal is not walked again for every row either
+      if (expression == null || expression == notConstantRight)
+        return null;
+      if (!expression.isLiteral(true)) {
+        notConstantRight = expression;
+        return null;
+      }
+    }
+
     if (key == null) {
       // A benign race: two threads may hand this node two keys, and the loser's memo is simply rebuilt once.
       key = "$IN$" + MEMO_KEY_SEQUENCE.incrementAndGet();
@@ -174,57 +258,6 @@ public class InCondition extends BooleanExpression {
       context.setCachedValue(key, membership);
     }
     return membership;
-  }
-
-  /**
-   * The membership test against a right-hand side evaluated for this row. The rows of a sub-query the planner lifted into a
-   * LET ({@code x IN (SELECT ...)}) are answered from an {@link InListMembership} once the very same rows are read a second
-   * time, and the membership is then reused for every further row of the execution (issue #12736).
-   * <p>
-   * An uncorrelated sub-query is a global LET, computed once: every row reads the same list, and walking it for each of them
-   * cost {@code outerRows * subQueryRows} comparisons. A correlated one (it reads {@code $parent}) is a per-record LET, a new
-   * list for every row: identity tells the two apart without asking the planner, and a list read only once is never indexed.
-   * Nothing modifies the list once the LET has built it, so the same list holds the same rows. Each row is keyed by the value
-   * of its only column, as {@link #subQueryRowScalar} compares it; a row of several columns, a record, a collection or a value
-   * that is neither a string nor a number declines the hash probe, and the membership answers from the rows as they are.
-   */
-  private Boolean evaluateAgainst(final Object leftVal, final Object rightVal, final CommandContext context) {
-    final boolean searched = operandIsSearched(context);
-    if (!rightIsSubQueryAlias())
-      return evaluateExpressionThreeValued(leftVal, rightVal, searched);
-
-    String key = subQueryKey;
-    if (key == null) {
-      // Same benign race as memoKey
-      key = "$IN$Q" + MEMO_KEY_SEQUENCE.incrementAndGet();
-      subQueryKey = key;
-    }
-
-    final SubQueryRows seen = (SubQueryRows) context.getCachedValue(key);
-    if (seen == null || seen.rows() != rightVal) {
-      context.setCachedValue(key, new SubQueryRows(rightVal, null));
-      return evaluateExpressionThreeValued(leftVal, rightVal, searched);
-    }
-
-    InListMembership membership = seen.membership();
-    if (membership == null) {
-      membership = InListMembership.build(rightVal, searched, InCondition::subQueryItemValue);
-      context.setCachedValue(key, new SubQueryRows(rightVal, membership));
-    }
-    return membership.evaluate(leftVal);
-  }
-
-  /** Whether the right-hand side is the alias {@link SubQueryCollector} put in place of an {@code IN (SELECT ...)}. */
-  private boolean rightIsSubQueryAlias() {
-    if (!(rightMathExpression instanceof BaseExpression base) || base.getModifier() != null || base.getIdentifier() == null)
-      return false;
-    final SuffixIdentifier suffix = base.getIdentifier().getSuffix();
-    return suffix != null && suffix.identifier != null && SubQueryCollector.isGeneratedAlias(suffix.identifier.getStringValue());
-  }
-
-  /** The value a sub-query row is keyed by: its only column, or {@link #NOT_A_SINGLE_VALUE_ROW}, which declines the hash probe. */
-  private static Object subQueryItemValue(final Object item) {
-    return item instanceof Result row ? singleRowValue(row) : item;
   }
 
   public Object evaluateRight(final Result currentRecord, final CommandContext context) {
@@ -305,9 +338,21 @@ public class InCondition extends BooleanExpression {
 
   // QueryOperatorEquals converts its 2nd argument to the class of the 1st, so try both directions
   private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand) {
+    return equalsEitherWay(left, item, convertOperand, null);
+  }
+
+  /** @param itemConversion the memo the item, a string the same on every record, is converted with, or null (issue #12713) */
+  private static boolean equalsEitherWay(final Object left, final Object item, final boolean convertOperand,
+      final ConstantOperandConversion itemConversion) {
     if (!convertOperand)
-      return QueryOperatorEquals.equals(left, subQueryRowScalar(item));
-    return QueryOperatorEquals.equals(left, item) || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+      return QueryOperatorEquals.equals(left, subQueryRowScalar(item), itemConversion);
+    return QueryOperatorEquals.equals(left, item, itemConversion)
+        || (mayMatchByConversion(left, item) && QueryOperatorEquals.equals(item, left));
+  }
+
+  /** The memo of the item at {@code index} of the right side, or null when it has none. */
+  private static ConstantOperandConversion itemConversion(final ConstantOperandConversion[] itemConversions, final int index) {
+    return itemConversions != null && index < itemConversions.length ? itemConversions[index] : null;
   }
 
   /**
@@ -330,7 +375,7 @@ public class InCondition extends BooleanExpression {
    * for every sub-query row of every outer row; a subclass may resolve its properties differently, so it takes the
    * general route.
    */
-  private static Object singleRowValue(final Result row) {
+  static Object singleRowValue(final Result row) {
     if (row.getClass() == ResultInternal.class)
       return ((ResultInternal) row).getSingleValue(NOT_A_SINGLE_VALUE_ROW);
     if (row.isElement())
@@ -375,6 +420,11 @@ public class InCondition extends BooleanExpression {
     return evaluateExpressionThreeValued(iLeft, iRight, true);
   }
 
+  /** @see #evaluateExpressionThreeValued(Object, Object, boolean, ConstantOperandConversion[]) */
+  protected static Boolean evaluateExpressionThreeValued(final Object iLeft, final Object iRight, final boolean convertOperand) {
+    return evaluateExpressionThreeValued(iLeft, iRight, convertOperand, null);
+  }
+
   /**
    * SQL three-valued membership test ({@code iLeft IN iRight}).
    *
@@ -383,8 +433,12 @@ public class InCondition extends BooleanExpression {
    * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
    * @param convertOperand false when {@code iLeft} is a record property: it is compared without converting the items, like {@code =}
    *                       (a sub-query row is the exception: it converts either way in QueryOperatorEquals)
+   * @param itemConversions the memo each item of the right side that is a string is converted with, by its position in the order
+   *                        the list or the array iterates, at 0 for a scalar right side; null when there is none. An item met at
+   *                        another position than its memo's is converted as it is (issue #12713)
    */
-  protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand) {
+  static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight, final boolean convertOperand,
+      final ConstantOperandConversion[] itemConversions) {
     if (iLeft instanceof Result r && !r.isElement()) {
       final Set<String> names = r.getPropertyNames();
       if (names.size() == 1)
@@ -408,13 +462,15 @@ public class InCondition extends BooleanExpression {
 
       boolean sawNull = false;
       boolean empty = true;
+      int index = 0;
       for (final Object o : MultiValue.getMultiValueIterable(iRight, false)) {
+        final ConstantOperandConversion conversion = itemConversion(itemConversions, index++);
         empty = false;
         if (iLeft == null || o == null) {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o, convertOperand))
+        if (equalsEitherWay(iLeft, o, convertOperand, conversion))
           return Boolean.TRUE;
         if (isNullSubQueryRow(o)) {
           sawNull = true;
@@ -439,13 +495,15 @@ public class InCondition extends BooleanExpression {
       // placeholder) failed the cast to Object[] this arm used to make (issue #10721)
       boolean sawNull = false;
       boolean empty = true;
+      int index = 0;
       for (final Object o : MultiValue.getMultiValueIterable(iRight)) {
+        final ConstantOperandConversion conversion = itemConversion(itemConversions, index++);
         empty = false;
         if (iLeft == null || o == null) {
           sawNull = true;
           continue;
         }
-        if (equalsEitherWay(iLeft, o, convertOperand))
+        if (equalsEitherWay(iLeft, o, convertOperand, conversion))
           return Boolean.TRUE;
         if (isNullSubQueryRow(o))
           sawNull = true;
@@ -480,7 +538,7 @@ public class InCondition extends BooleanExpression {
     // value), so a Long matches an Integer, two BigDecimals of different scale match, and a Date matches the stored DATETIME (#9030)
     if (iLeft == null)
       return null;
-    return equalsEitherWay(iLeft, iRight, convertOperand) ? Boolean.TRUE : Boolean.FALSE;
+    return equalsEitherWay(iLeft, iRight, convertOperand, itemConversion(itemConversions, 0)) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
