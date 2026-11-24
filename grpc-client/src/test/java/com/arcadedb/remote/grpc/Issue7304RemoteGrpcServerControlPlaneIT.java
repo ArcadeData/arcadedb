@@ -146,7 +146,7 @@ class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGrpcClientServerTest {
    * The probe methods build a request with no credentials field at all - the field the admin
    * interceptor authenticates from - so they exercise the server-side exemption from the client.
    * That the exemption holds for a caller with no credentials whatsoever is asserted on the server
-   * side, by {@code Issue7304GrpcControlPlaneAuthorizationIT}, with a raw stub.
+   * side, by {@code GrpcControlPlaneAuthorizationIT.ControlPlaneAuthorization}, with a raw stub.
    */
   @Test
   void probesAnswerWithNoCredentialsInTheRequest() {

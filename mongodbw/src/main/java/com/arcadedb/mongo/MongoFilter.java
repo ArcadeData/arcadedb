@@ -190,12 +190,45 @@ final class MongoFilter {
       return;
 
     sqlText.append(" WHERE ");
-    if (idPart != null)
-      MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    if (idPart != null) {
+      if (type != null && MongoKeys.hasIdKeyIndex(type)) {
+        // the unique index of the _id is on its derived key, exact for an equality (issue #12073): a superset of the candidates
+        // when the part has several conditions on the _id, the matcher tests them all
+        final List<String> keys = new ArrayList<>();
+        collectIdKeys(idPart, keys);
+        sqlText.append(Identifier.quote(MongoKeys.ID_KEY)).append(" IN (");
+        MongoDBToSqlTranslator.bindStored(sqlText, params, keys);
+        sqlText.append(')');
+      } else
+        MongoDBToSqlTranslator.buildExpression(sqlText, params, idPart);
+    }
     if (fields != null) {
       if (idPart != null)
         sqlText.append(" AND ");
       MongoDBToSqlTranslator.buildExpression(sqlText, params, fields);
+    }
+  }
+
+  /**
+   * The keys of the values the {@code _id} part of a filter compares the {@code _id} with: a plain value, {@code $eq} and the
+   * elements of {@code $in}, under {@code $and} and {@code $or} too (see {@link #narrows(Document)} for the shapes).
+   */
+  private static void collectIdKeys(final Document query, final List<String> keys) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      final Object value = entry.getValue();
+      if ("_id".equals(entry.getKey())) {
+        if (value instanceof Document operators && isOperatorDocument(operators)) {
+          if (operators.containsKey("$eq"))
+            keys.add(MongoKeys.key(operators.get("$eq")));
+          if (operators.get("$in") instanceof List<?> in)
+            for (final Object item : in)
+              keys.add(MongoKeys.key(item));
+        } else
+          keys.add(MongoKeys.key(value));
+      } else if (value instanceof List<?> items)
+        for (final Object item : items)
+          if (item instanceof Document document)
+            collectIdKeys(document, keys);
     }
   }
 

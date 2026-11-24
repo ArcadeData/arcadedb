@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -107,6 +108,11 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else
       checkRootUser(user);
 
+    // The database a `create database` or `drop database` names, resolved once. Null for every other command
+    final boolean createsDatabase = command_lc.startsWith(CREATE_DATABASE);
+    final String targetDatabase = createsDatabase ? extractTarget(command, CREATE_DATABASE)
+        : command_lc.startsWith(DROP_DATABASE) ? extractTarget(command, DROP_DATABASE) : null;
+
     // Commands that must run on the leader: forward if this node is a replica
     if (isForwardedToLeader(command_lc)) {
       final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user,
@@ -115,16 +121,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       // the wire, and null is how a handler says so to AbstractServerHttpHandler.
       if (forwarded == LeaderCommandForwarder.STREAMED)
         return null;
-      if (forwarded != null)
+      if (forwarded != null) {
+        if (forwarded.getCode() == 200 && targetDatabase != null)
+          awaitForwardedCommandApplied(targetDatabase, createsDatabase);
         return forwarded;
+      }
     }
 
     if (command_lc.startsWith(SHUTDOWN))
       shutdownServer(extractTarget(command, SHUTDOWN));
-    else if (command_lc.startsWith(CREATE_DATABASE))
-      createDatabase(extractTarget(command, CREATE_DATABASE));
-    else if (command_lc.startsWith(DROP_DATABASE))
-      dropDatabase(extractTarget(command, DROP_DATABASE));
+    else if (createsDatabase)
+      createDatabase(targetDatabase);
+    else if (targetDatabase != null)
+      dropDatabase(targetDatabase);
     else if (command_lc.startsWith(CLOSE_DATABASE))
       closeDatabase(extractTarget(command, CLOSE_DATABASE));
     else if (command_lc.startsWith(OPEN_DATABASE))
@@ -487,6 +496,31 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // The cluster-wide create lives in the control plane so gRPC's CreateDatabase runs the same
     // thing rather than a second implementation that forgot the replication half (issue #7389).
     controlPlane.createDatabase(databaseName);
+  }
+
+  /**
+   * Holds the leader's answer to a forwarded {@code create database} or {@code drop database} until this node has applied
+   * what the leader had committed, bounded by the quorum timeout (issue #11739). The leader answers once the entry is
+   * committed, but this node installs or drops the database only when it applies it, which can be after the answer: relaying it
+   * at once let the client's next request to this node be refused with {@code DatabaseNotFoundException} after a creation, and
+   * {@code GET /api/v1/exists} still answer {@code true} after a drop.
+   * <p>
+   * The wait is on the Raft log, not on the state of the database here. A database of that name can already be on this node
+   * when the creation is applied (the leader dropped it and it was created again while this node lagged), and one that was
+   * closed here with {@code close database} reads as gone although its files stay until the drop is applied. It asks the
+   * leader for its commit index instead of reading one from the forwarded answer, so it also holds for an answer the leader
+   * replayed for a retried {@code X-Request-Id} and for a leader that changed while the command ran.
+   * <p>
+   * The change is made on the leader either way, so a wait that could not finish still answers success. These commands are
+   * root-only and rare, which is what bounds the HTTP worker threads that can sit in the wait.
+   */
+  private void awaitForwardedCommandApplied(final String databaseName, final boolean created) {
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.awaitLeaderCommitApplied())
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s' was %s by the leader, but this server could not confirm that it has applied the change: a request for "
+              + "it here may see the previous state until this server catches up",
+          databaseName, created ? "created" : "dropped");
   }
 
   /**

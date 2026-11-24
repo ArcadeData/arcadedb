@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -37,6 +38,11 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
   @Override
   public String commandType() {
     return "create edge type";
+  }
+
+  @Override
+  protected byte newTypeRecordKind() {
+    return Edge.RECORD_TYPE;
   }
 
   @Override
@@ -77,11 +83,12 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
 
   @Override
   protected void checkSuperTypesBeforeCreate(final String typeName, final DocumentType[] superclasses) {
-    // The refusals of every type (a TIMESERIES super type, issue #10394) and the one only a LIGHTWEIGHT edge has: it has no record,
-    // so it cannot honour a MANDATORY or default-valued property of a super type (#9846)
+    // The refusals of every type (a TIMESERIES super type, issue #10394, a super type of another kind of record, issue #12029) and the
+    // one only a LIGHTWEIGHT edge has: it has no record, so it cannot honour a MANDATORY or default-valued property of a super type
+    // (#9846)
     for (final DocumentType superclass : superclasses)
       if (superclass instanceof LocalDocumentType local)
-        LocalDocumentType.checkSuperTypeOfNewType(typeName, local, lightweight);
+        LocalDocumentType.checkSuperTypeOfNewType(typeName, newTypeRecordKind(), local, lightweight);
   }
 
   private TypeBuilder<EdgeType> applyFlags(final TypeBuilder<EdgeType> builder) {

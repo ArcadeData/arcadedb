@@ -40,6 +40,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.GraphTraversalProviderRegistry.ViewsPassedOver;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
@@ -109,6 +110,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -594,6 +596,25 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet execute(final String queryString, final CypherStatement statement, final ContextConfiguration configuration,
       final Map<String, Object> parameters, final boolean explain, final boolean profile, final boolean timeExecution) {
+    // The resultSetLimit of the user's groups caps the rows the statement answers as a whole, a UNION included, and never the
+    // records it reads (issue #12888). Not a statement run as a part of one already capped: a subquery reads every row it matches.
+    // An EXPLAIN answers the plan and no row of data. The quota is read here once: the statement itself never asks for it
+    if (!explain) {
+      final long profiledLimit = database.getResultSetLimit();
+      if (profiledLimit > -1 && !ProfiledLimitResultSet.isRunning())
+        return ProfiledLimitResultSet.run(profiledLimit,
+            () -> executeStatement(queryString, statement, configuration, parameters, false, profile, timeExecution));
+    }
+    return executeStatement(queryString, statement, configuration, parameters, explain, profile, timeExecution);
+  }
+
+  /**
+   * {@link #execute} past the row cap of the user's quota: the statement as it runs, with every row it answers. The branch a
+   * conditional query picks runs through here too, under the cap its statement already carries.
+   */
+  private ResultSet executeStatement(final String queryString, final CypherStatement statement,
+      final ContextConfiguration configuration, final Map<String, Object> parameters, final boolean explain, final boolean profile,
+      final boolean timeExecution) {
     // A conditional query runs one of its branches, picked now that the parameters its conditions read are known. Each branch
     // is planned and cached under a key of its own, since the same text runs different branches for different parameters.
     // The key carries a NUL inside it ("\0WHEN#i\0<query>"), and the lexer refuses a NUL outside a string literal, so no
@@ -604,10 +625,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext conditionContext = conditionContext(parameters);
       for (int i = 0; i < branches.size(); i++)
         if (isConditionTrue(conditional.getConditions().get(i), conditionContext))
-          return execute(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters, explain,
-              profile, timeExecution);
+          return executeStatement(WHEN_BRANCH_KEY_PREFIX + i + "\u0000" + queryString, branches.get(i), configuration, parameters,
+              explain, profile, timeExecution);
       if (conditional.getElseBranch() != null)
-        return execute(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
+        return executeStatement(ELSE_BRANCH_KEY_PREFIX + queryString, conditional.getElseBranch(), configuration, parameters, explain,
             profile, timeExecution);
       return new InternalResultSet();
     }
@@ -666,10 +687,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // CALL { ... } IN TRANSACTIONS commits its batches on their own, so inside a transaction its CALLER owns (HTTP /begin,
       // Bolt BEGIN, an embedded begin() or transaction()) the caller's ROLLBACK could not undo them and the batches would not
       // see its writes (issue #11588). Refused there as Neo4j does; the implicit transaction a server opens around one
-      // request keeps running it.
+      // request keeps running it. A server transaction shared by several statements that already holds an earlier statement's
+      // writes is no longer implicit either (a Postgres pipeline, issue #13222), so the message names that cause and the cure.
       if (statement.hasSubqueryInTransactions() && !execDb.getTransaction().isImplicit())
         throw new ImplicitTransactionRequiredException(
-            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction");
+            "A query with 'CALL { ... } IN TRANSACTIONS' can only be executed in an implicit transaction, but tried to execute in an explicit transaction"
+                + " or in one already holding the writes of earlier statements (such as an earlier statement of the same Postgres pipeline):"
+                + " commit those first (COMMIT, or Sync for a pipeline)");
       return executeWrite(plan, execDb, profile, timeExecution);
     }
 
@@ -685,8 +709,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The statement is also one unit for memory: a write over millions of records is held until its commit, as over HTTP
     // and in Neo4j, and CALL { ... } IN TRANSACTIONS is the way to commit it in batches.
     final ResultSet[] result = new ResultSet[1];
-    execDb.transaction(() -> result[0] = executeWrite(plan, execDb, profile, timeExecution), false,
-        statement.hasSubqueryInTransactions() ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    final boolean inTransactions = statement.hasSubqueryInTransactions();
+    execDb.transaction(() -> {
+      // Opened here around this one statement, as its auto-commit: an implicit transaction, which a CALL { ... } IN TRANSACTIONS
+      // commits before each of its batches so the batch sees what the statement wrote before it (issue #13172)
+      if (inTransactions)
+        execDb.getTransaction().setImplicit(true);
+      result[0] = executeWrite(plan, execDb, profile, timeExecution);
+    }, false, inTransactions ? 1 : execDb.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES));
     return result[0];
   }
 
@@ -884,7 +914,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     type.dropProperty(propName);
     try {
-      final Property created = type.createProperty(propName, retyped);
+      // since #12040 the schema itself refuses a literal DEFAULT the new type cannot hold: that refusal is reported as the
+      // DEFAULT not carried over, as requireDefaultReadableAs reports a default that evaluates to no value of the new type
+      final Property created = type.createProperty(propName, retyped, (attribute, e) -> {
+        if ("default".equals(attribute))
+          throw refuseRetype(typeName, existing, newType, List.of(defaultNotCarried(existing.getDefaultValueDefinition(), newType)), e);
+        throw e;
+      });
       requireDefaultReadableAs(database, typeName, existing, created, newType);
       ExistingRecordsCheck.requireDeclaration(database, type, created);
     } catch (final Throwable e) {
@@ -892,7 +928,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       try {
         if (type.existsProperty(propName))
           type.dropProperty(propName);
-        type.createProperty(propName, previous);
+        // Every attribute that can be put back is. One the schema refuses now - a DEFAULT an earlier release accepted and the schema
+        // refuses at DDL time since #12040 (#6134 before it) - is left off: stopping at it would also drop every attribute applied
+        // after it (MANDATORY, READONLY, NOTNULL, the bounds, the pattern, the custom values), and the default was failing every
+        // record create of the type already.
+        type.createProperty(propName, previous, (attribute, refusal) -> LogManager.instance().log(this, Level.WARNING,
+            "The %s of property '%s.%s' was not put back after the refused change of its type, because the schema refuses it: %s",
+            attribute, typeName, propName, refusal.getMessage()));
       } catch (final Throwable restoreFailure) {
         e.addSuppressed(restoreFailure);
       }
@@ -984,7 +1026,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (definition == null)
       return;
 
-    final String notCarried = "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
+    final String notCarried = defaultNotCarried(definition, newType);
     Object value;
     try {
       value = created.getDefaultValue();
@@ -1005,6 +1047,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
         && new BigDecimal(original.toString()).compareTo(new BigDecimal(converted.toString())) != 0)
       throw refuseRetype(typeName, existing, newType,
           List.of("DEFAULT `" + definition + "` (" + original + " becomes " + converted + " as a " + newType + ")"), null);
+  }
+
+  private static String defaultNotCarried(final Object definition, final Type newType) {
+    return "DEFAULT `" + definition + "` (it does not evaluate to a " + newType + ")";
   }
 
   private static final String NUMERIC_MEASURE = DocumentValidator.boundMeasure(Type.LONG);
@@ -1701,7 +1747,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // The OPTIONS of a vector or full-text index are read before anything is created too, for the same reason (#10678)
     final JSONObject indexMetadata = switch (ddl.getIndexKind()) {
       case VECTOR -> CypherIndexOptions.vectorMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames,
-          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]));
+          () -> dimensionsOfExistingVectors(schema, typeName, propertyNames[0]), database.getConfiguration());
       case FULLTEXT -> CypherIndexOptions.fullTextMetadata(evaluateIndexOptions(ddl, parameters), typeName, propertyNames);
       case RANGE -> null;
     };
@@ -1747,7 +1793,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     for (final String label : labels)
       metadata.add(switch (kind) {
         case VECTOR -> CypherIndexOptions.vectorMetadata(options, label, propertyNames,
-            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]));
+            () -> dimensionsOfExistingVectors(schema, label, propertyNames[0]), database.getConfiguration());
         case FULLTEXT -> CypherIndexOptions.fullTextMetadata(options, label, propertyNames);
         case RANGE -> throw new CommandParsingException("Only a vector or a full-text index can span several labels");
       });

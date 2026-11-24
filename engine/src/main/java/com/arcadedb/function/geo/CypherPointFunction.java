@@ -21,6 +21,7 @@ package com.arcadedb.function.geo;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.query.opencypher.executor.CypherValues;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.LinkedHashMap;
@@ -43,6 +44,11 @@ import java.util.Map;
  * cartesian-3d 9157, wgs-84 4326 and wgs-84-3d 4979), known names are matched case-insensitively and stored in canonical
  * spelling, an unknown crs name is kept without an srid and an unknown srid gets the cartesian name (both unlike Neo4j,
  * which rejects them), and a disagreeing pair or a dimension that does not match the srid is rejected (issue #3993).</p>
+ * <p>A map with {@code x}/{@code y} is built from them even when it also holds {@code longitude}/{@code latitude}, as in
+ * Neo4j, and a geographic srid or crs (4326, 4979, {@code wgs-84}, {@code wgs-84-3d}) given with {@code x}/{@code y}
+ * builds the same point as {@code longitude}/{@code latitude}/{@code height} do: it carries both spellings of its
+ * coordinates. A coordinate must be finite, and a map with only one of the two coordinates of its style is not a point
+ * (issue #12276).</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system, spelled as Neo4j spells it: {@code cartesian}, {@code cartesian-3d}, {@code wgs-84},
  * {@code wgs-84-3d} (issue #11113). Points written before that fix carry {@code WGS-84}, {@code WGS-84-3D} or
@@ -91,16 +97,7 @@ public class CypherPointFunction implements StatelessFunction {
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      final double x = wrapLongitude(coerceCoordinate("x", args[0]));
-      final double y = checkLatitude(coerceCoordinate("y", args[1]));
-      final Map<String, Object> result = new LinkedHashMap<>();
-      result.put("longitude", x);
-      result.put("latitude", y);
-      result.put("x", x);
-      result.put("y", y);
-      result.put("crs", CRS_WGS84_2D);
-      result.put("srid", SRID_WGS84_2D);
-      return result;
+      return geographic(coerceCoordinate("x", args[0]), coerceCoordinate("y", args[1]), null);
     }
 
     if (args[0] == null)
@@ -111,86 +108,111 @@ public class CypherPointFunction implements StatelessFunction {
       throw new CommandSemanticException("point() argument must be a map with coordinate properties");
     final Map<?, ?> map = (Map<?, ?>) args[0];
 
-    final Map<String, Object> result = new LinkedHashMap<>();
-
+    // x/y take precedence over longitude/latitude, as in Neo4j: a map with both is built from x/y, and is a geographic point
+    // only when its crs or srid says so (issue #12276)
+    if (map.containsKey("x") || map.containsKey("y"))
+      return fromXY(map);
     if (map.containsKey("longitude") || map.containsKey("latitude")) {
-      // WGS-84 coordinate system
       final Object lon = map.get("longitude");
       final Object lat = map.get("latitude");
       if (lon == null || lat == null)
-        return null;
-      final double x = wrapLongitude(coerceCoordinate("longitude", lon));
-      final double y = checkLatitude(coerceCoordinate("latitude", lat));
-      result.put("longitude", x);
-      result.put("latitude", y);
-      result.put("x", x);
-      result.put("y", y);
-      addOptionalZ(result, map);
-      if (result.containsKey("z"))
-        result.put("height", result.get("z"));
-      result.put("crs", result.containsKey("z") ? CRS_WGS84_3D : CRS_WGS84_2D);
-      result.put("srid", result.containsKey("z") ? SRID_WGS84_3D : SRID_WGS84_2D);
-    } else if (map.containsKey("x") || map.containsKey("y")) {
-      // Cartesian coordinate system
-      final Object xv = map.get("x");
-      final Object yv = map.get("y");
-      if (xv == null || yv == null)
-        return null;
-      final double x = coerceCoordinate("x", xv);
-      final double y = coerceCoordinate("y", yv);
-      result.put("x", x);
-      result.put("y", y);
-      addOptionalZ(result, map);
-      final Object crsObj = map.get("crs");
-      if (crsObj != null && !(crsObj instanceof String))
-        throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
-      Integer srid = null;
-      if (map.containsKey("srid")) {
-        final Object sridObj = map.get("srid");
-        // Same rationale as the non-map argument above: a non-numeric srid is a client error (issue #5910).
-        if (!(sridObj instanceof Number))
-          throw new CommandSemanticException(
-              "point() 'srid' must be numeric, found " + describe(sridObj));
-        final double sridValue = ((Number) sridObj).doubleValue();
-        if (sridValue != Math.rint(sridValue) || sridValue < 0 || sridValue > Integer.MAX_VALUE)
-          throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + describe(sridObj));
-        srid = (int) sridValue;
-      }
-      String crs = (String) crsObj;
-      // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
-      final boolean has3d = result.containsKey("z");
-      final Integer crsSrid = crs != null ? sridOfCrs(crs) : null;
-      // An explicit crs and srid that disagree are a client error, as in Neo4j. A known srid also contradicts an
-      // unrecognised crs name, since the pair must travel together.
-      if (srid != null && crs != null && (crsSrid != null ? !crsSrid.equals(srid) : isKnownSrid(srid)))
-        throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
-      if (srid == null) {
-        if (crs == null)
-          srid = has3d ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
-        else
-          srid = crsSrid;
-      }
-      // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
-      if (srid != null && isKnownSrid(srid) && is3dSrid(srid) != has3d)
-        throw new CommandSemanticException(
-            "point() " + (has3d ? "3D" : "2D") + " coordinates do not match the dimension of srid " + srid);
-      // A known name is stored in canonical spelling so case-sensitive consumers (point.distance, withinBBox, Bolt) agree
-      // with the srid; an unknown name is kept as given, without an srid, as before.
-      if (crs == null || crsSrid != null)
-        crs = crsOfSrid(srid, has3d);
-      result.put("crs", crs);
-      if (crs != null && isGeographicCrs(crs)) {
-        checkLatitude(y);
-        result.put("x", wrapLongitude(x));
-      }
-      if (srid != null)
-        result.put("srid", srid);
-    } else {
-      // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
-      throw new CommandSemanticException("point() map must contain x/y or longitude/latitude properties");
+        return nullPointOrInvalid(map, "longitude", lon, "latitude", lat);
+      return geographic(coerceCoordinate("longitude", lon), coerceCoordinate("latitude", lat), optionalZ(map));
     }
+    // Missing recognized coordinate keys is a client error (issue #5910), same rationale as above.
+    throw new CommandSemanticException("point() map must contain x/y or longitude/latitude properties");
+  }
 
+  private static Map<String, Object> fromXY(final Map<?, ?> map) {
+    final Object xv = map.get("x");
+    final Object yv = map.get("y");
+    if (xv == null || yv == null)
+      return nullPointOrInvalid(map, "x", xv, "y", yv);
+    final double x = coerceCoordinate("x", xv);
+    final double y = coerceCoordinate("y", yv);
+    final Double z = optionalZ(map);
+    final Object crsObj = map.get("crs");
+    if (crsObj != null && !(crsObj instanceof String))
+      throw new CommandSemanticException("point() 'crs' must be a string, found " + describe(crsObj));
+    Integer srid = null;
+    if (map.containsKey("srid")) {
+      final Object sridObj = map.get("srid");
+      // Same rationale as the non-map argument above: a non-numeric srid is a client error (issue #5910).
+      if (!(sridObj instanceof Number))
+        throw new CommandSemanticException("point() 'srid' must be numeric, found " + describe(sridObj));
+      final double sridValue = ((Number) sridObj).doubleValue();
+      if (sridValue != Math.rint(sridValue) || sridValue < 0 || sridValue > Integer.MAX_VALUE)
+        throw new CommandSemanticException("point() 'srid' must be a non-negative integer, found " + describe(sridObj));
+      srid = (int) sridValue;
+    }
+    String crs = (String) crsObj;
+    // Mirror Neo4j (issue #3993): the srid and the crs name always travel together, each derived from the other.
+    final boolean has3d = z != null;
+    final Integer crsSrid = crs != null ? sridOfCrs(crs) : null;
+    // An explicit crs and srid that disagree are a client error, as in Neo4j. A known srid also contradicts an
+    // unrecognised crs name, since the pair must travel together.
+    if (srid != null && crs != null && (crsSrid != null ? !crsSrid.equals(srid) : isKnownSrid(srid)))
+      throw new CommandSemanticException("point() 'crs' " + crs + " and 'srid' " + srid + " do not match");
+    if (srid == null) {
+      if (crs == null)
+        srid = has3d ? SRID_CARTESIAN_3D : SRID_CARTESIAN_2D;
+      else
+        srid = crsSrid;
+    }
+    // The dimension of a known crs/srid must match the supplied coordinates, as in Neo4j.
+    if (srid != null && isKnownSrid(srid) && is3dSrid(srid) != has3d)
+      throw new CommandSemanticException(
+          "point() " + (has3d ? "3D" : "2D") + " coordinates do not match the dimension of srid " + srid);
+    // A geographic point built from x/y has its longitude/latitude (and height) too, as in Neo4j (issue #12276)
+    if (srid != null && (srid == SRID_WGS84_2D || srid == SRID_WGS84_3D))
+      return geographic(x, y, z);
+    final Map<String, Object> result = new LinkedHashMap<>();
+    result.put("x", x);
+    result.put("y", y);
+    if (has3d)
+      result.put("z", z);
+    // A known name is stored in canonical spelling so case-sensitive consumers (point.distance, withinBBox, Bolt) agree
+    // with the srid; an unknown name is kept as given, without an srid.
+    if (crs == null || crsSrid != null)
+      crs = crsOfSrid(srid, has3d);
+    result.put("crs", crs);
+    if (srid != null)
+      result.put("srid", srid);
     return result;
+  }
+
+  private static Map<String, Object> geographic(final double longitude, final double latitude, final Double height) {
+    final double x = wrapLongitude(longitude);
+    final double y = checkLatitude(latitude);
+    final Map<String, Object> result = new LinkedHashMap<>();
+    result.put("longitude", x);
+    result.put("latitude", y);
+    result.put("x", x);
+    result.put("y", y);
+    if (height != null) {
+      result.put("z", height);
+      result.put("height", height);
+    }
+    result.put("crs", height != null ? CRS_WGS84_3D : CRS_WGS84_2D);
+    result.put("srid", height != null ? SRID_WGS84_3D : SRID_WGS84_2D);
+    return result;
+  }
+
+  /**
+   * The answer for a coordinate pair with a null in it. A coordinate that is present with a null value gives a null point,
+   * whether or not the other key is there, as {@code point({x: null, y: 2})} always did. A coordinate the map does not have
+   * is a client error, as in Neo4j (issue #12276).
+   */
+  private static Map<String, Object> nullPointOrInvalid(final Map<?, ?> map, final String key1, final Object value1,
+      final String key2, final Object value2) {
+    if (value1 == null && map.containsKey(key1) || value2 == null && map.containsKey(key2))
+      return null;
+    throw invalidPoint(map);
+  }
+
+  /** Names the keys of the map, a capped and cleaned list of them: the message travels to the client and into the log. */
+  private static CommandSemanticException invalidPoint(final Map<?, ?> map) {
+    return new CommandSemanticException("A map with keys " + CypherValues.describeKeys(map) + " is not describing a valid point");
   }
 
   /**
@@ -210,7 +232,15 @@ public class CypherPointFunction implements StatelessFunction {
   static double wrapLongitude(final double longitude) {
     if (longitude <= 180 && longitude >= -180 || !Double.isFinite(longitude))
       return longitude;
-    return longitude > 180 ? longitude - 360 * Math.ceil((longitude - 180) / 360) : longitude + 360 * Math.ceil((-180 - longitude) / 360);
+    // The remainder of whole turns is exact for a double. Subtracting 360 times a rounded quotient is not: a longitude
+    // beyond 2^53 or so lost every digit of itself (1e20 became 0.0, it is -80.0)
+    final double remainder = longitude % 360;
+    if (remainder > 180)
+      return remainder - 360;
+    if (remainder < -180)
+      return remainder + 360;
+    // Never -0.0: a whole number of turns has always given 0.0
+    return remainder + 0.0;
   }
 
   /**
@@ -288,16 +318,13 @@ public class CypherPointFunction implements StatelessFunction {
     };
   }
 
-  private void addOptionalZ(final Map<String, Object> result, final Map<?, ?> map) {
+  private static Double optionalZ(final Map<?, ?> map) {
     if (map.containsKey("z")) {
       final Object zv = map.get("z");
-      if (zv != null)
-        result.put("z", coerceCoordinate("z", zv));
-    } else if (map.containsKey("height")) {
-      final Object hv = map.get("height");
-      if (hv != null)
-        result.put("z", coerceCoordinate("height", hv));
+      return zv != null ? coerceCoordinate("z", zv) : null;
     }
+    final Object hv = map.get("height");
+    return hv != null ? coerceCoordinate("height", hv) : null;
   }
 
   /**
@@ -310,18 +337,23 @@ public class CypherPointFunction implements StatelessFunction {
    * determined entirely by the supplied argument, so it is a client error either way.
    */
   private static double coerceCoordinate(final String key, final Object value) {
+    final double coordinate;
     if (value instanceof Number n)
-      return n.doubleValue();
-    if (value instanceof String s) {
+      coordinate = n.doubleValue();
+    else if (value instanceof String s) {
       try {
-        return Double.parseDouble(s.trim());
+        coordinate = Double.parseDouble(s.trim());
       } catch (final NumberFormatException ignored) {
         throw new CommandSemanticException(
             "point() '" + key + "' must be numeric, found String value '" + s + "'");
       }
-    }
-    throw new CommandSemanticException(
-        "point() '" + key + "' must be numeric, found " + describe(value));
+    } else
+      throw new CommandSemanticException(
+          "point() '" + key + "' must be numeric, found " + describe(value));
+    // As in Neo4j (issue #12276): an infinite or NaN coordinate made point.distance() answer Infinity or NaN
+    if (!Double.isFinite(coordinate))
+      throw new CommandSemanticException("Cannot create a point with non-finite coordinate values");
+    return coordinate;
   }
 
   private static String describe(final Object value) {
