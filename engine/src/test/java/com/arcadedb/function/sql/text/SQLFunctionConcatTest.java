@@ -65,6 +65,18 @@ class SQLFunctionConcatTest {
   }
 
   @Test
+  void itReportsTheValuesItHolds() {
+    assertThat(function.holdsEveryValue()).isTrue();
+    assertThat(function.getHeldValues()).isZero();
+
+    function.execute(null, null, null, new Object[] { "Hello", " " }, null);
+    function.execute(null, null, null, new Object[] { "World", " " }, null);
+    function.execute(null, null, null, new Object[] { null, " " }, null);
+    assertThat(function.getHeldValues()).isEqualTo(3L);
+    assertThat(function.getResult()).isEqualTo("Hello World null");
+  }
+
+  @Test
   void query() throws Exception {
     TestHelper.executeInNewDatabase("SQLFunctionConcat", db -> {
       setUpDatabase(db);
