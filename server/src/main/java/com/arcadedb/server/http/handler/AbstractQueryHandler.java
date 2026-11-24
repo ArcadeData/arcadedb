@@ -675,8 +675,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * <p>
    * That pending row comes from a different place on the two surfaces, and both are exact. The GET endpoint runs
    * the query as written, so a lazy result set still has rows of its own when the cap bites. The POST endpoints
-   * rewrite the command to push a LIMIT down, which would otherwise make the engine stop at exactly the cap and
-   * leave the truncation undetectable, so what they push down is one row above it (see
+   * hand the engine the cap as a bound on the rows the caller reads, which would otherwise make the engine stop at
+   * exactly the cap and leave the truncation undetectable, so what they hand over is one row above it (see
    * {@link PostCommandHandler#truncationProbeLimit(int)}).
    */
   private static boolean isTruncated(final ResultSet qResult, final int limit, final int serialized) {

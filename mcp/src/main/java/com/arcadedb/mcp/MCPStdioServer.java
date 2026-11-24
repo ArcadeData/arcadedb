@@ -145,7 +145,7 @@ public class MCPStdioServer {
 
       return new MCPStdioServer(server, config, user, in, out).run() ? 0 : 1;
 
-    } catch (final Exception e) {
+    } catch (final Exception | StackOverflowError e) {
       System.err.println("ERROR: " + e.getMessage());
       e.printStackTrace(System.err);
       return 1;
@@ -176,6 +176,11 @@ public class MCPStdioServer {
           // JSON parse error
           final String errorResponse = jsonRpcError(null, -32700, "Parse error: " + e.getMessage());
           output.println(errorResponse);
+          output.flush();
+        } catch (final StackOverflowError e) {
+          // The line cannot be processed: it is answered, and the loop goes on with the next line
+          LogManager.instance().log(this, Level.WARNING, "MCP stdio error: %s", MCPDispatcher.NESTING_TOO_DEEP_MESSAGE);
+          output.println(jsonRpcError(null, -32603, "Internal error: " + MCPDispatcher.NESTING_TOO_DEEP_MESSAGE));
           output.flush();
         }
       }

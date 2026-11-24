@@ -29,11 +29,18 @@ package com.arcadedb.query.sql.executor;
  *                  checks after the fetch, or null for none
  * @param order     the order the plan needs the rows in: the function's own, or RID order when the function
  *                  {@link IndexableSQLFunction#supportsRIDOrder() supports it} and the statement orders by {@code @rid}
+ * @param filtered  whether a filter after the fetch can reject rows the limit counted, so that the plan may pull past the limit
+ *                  ({@link IndexableSQLFunction#continuesPastLimit()}): a function that keeps work for that continuation has
+ *                  something to keep it for only then
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public record IndexedFunctionPushdown(int limit, RIDFilter ridFilter, Order order) {
+public record IndexedFunctionPushdown(int limit, RIDFilter ridFilter, Order order, boolean filtered) {
   public static final IndexedFunctionPushdown NONE = new IndexedFunctionPushdown(-1, null, Order.FUNCTION);
+
+  public IndexedFunctionPushdown(final int limit, final RIDFilter ridFilter, final Order order) {
+    this(limit, ridFilter, order, false);
+  }
 
   public enum Order {
     /** The function's own order: best first for a scoring function. */

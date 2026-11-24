@@ -207,12 +207,16 @@ class CypherAllShortestPathsParallelEdgesIssue8995Test extends TestHelper {
   }
 
   @Test
-  void expressionFormAnswersTheSelfPairWithTheZeroLengthPath() {
+  void expressionFormAnswersTheSelfPairByTheMinimum() {
     createIssueGraph();
-    try (final ResultSet rs = database.query("opencypher", "MATCH (a:N {id: 1}) RETURN allShortestPaths((a)-[*]-(a)) AS ps")) {
+    // The zero-length path answers only a minimum of zero; [*] declares at least one hop (issues #7017, #11913)
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:N {id: 1}) RETURN allShortestPaths((a)-[*0..]-(a)) AS ps")) {
       final List<?> paths = rs.next().getProperty("ps");
       assertThat(paths).hasSize(1);
       assertThat(((TraversalPath) paths.get(0)).getVertices()).hasSize(1);
+    }
+    try (final ResultSet rs = database.query("opencypher", "MATCH (a:N {id: 1}) RETURN allShortestPaths((a)-[*]-(a)) AS ps")) {
+      assertThat(rs.next().<List<?>>getProperty("ps")).isEmpty();
     }
   }
 

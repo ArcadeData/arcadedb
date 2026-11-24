@@ -23,10 +23,13 @@ import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.locationtech.spatial4j.context.SpatialContext;
 import org.locationtech.spatial4j.exception.InvalidShapeException;
-import org.locationtech.spatial4j.shape.Point;
 
 /**
- * Deprecated alias for {@code rectangle()}: returns a rectangle shape from two corner coordinates.
+ * Deprecated alias for {@code rectangle()}: returns a rectangle shape from two corner coordinates,
+ * {@code rectangle(<west-x>, <y1>, <east-x>, <y2>)}. The two latitudes are read in either order, so the
+ * {@code (left-x, top-y, right-x, bottom-y)} the documentation gives and the {@code (minX, minY, maxX, maxY)} the
+ * implementation read both make the same box; {@code (left, top, right, bottom)} used to fail with "maxY must be >= minY"
+ * (issue #12277). The longitudes keep their order: a west x greater than the east one crosses the antimeridian.
  *
  * <p><b>Deprecated</b>: Use {@code geo.geomFromText("POLYGON ((x1 y1, x2 y1, x2 y2, x1 y2, x1 y1))")} instead.</p>
  *
@@ -56,22 +59,19 @@ public class SQLFunctionRectangle extends SQLFunctionAbstract {
     checkArity(params);
 
     final SpatialContext spatialContext = GeoUtils.getSpatialContext();
-    final double topY = GeoUtils.getDoubleValue(params[1]);
-    final double bottomY = GeoUtils.getDoubleValue(params[3]);
+    final double y1 = GeoUtils.getDoubleValue(params[1]);
+    final double y2 = GeoUtils.getDoubleValue(params[3]);
     try {
-      // spatial4j wants the lower-left and the upper-right corner (minY <= maxY), while the arguments are named top and bottom: a
-      // top-left and a bottom-right corner, the natural order, has the larger Y first and was refused. Y is ordered here; X is not,
-      // as a minX past maxX is a rectangle across the antimeridian (issue #12744)
-      final Point lowerLeft = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[0]), Math.min(topY, bottomY));
-      final Point upperRight = spatialContext.getShapeFactory().pointXY(GeoUtils.getDoubleValue(params[2]), Math.max(topY, bottomY));
-      return spatialContext.getShapeFactory().rect(lowerLeft, upperRight);
+      return spatialContext.getShapeFactory()
+          .rect(GeoUtils.getDoubleValue(params[0]), GeoUtils.getDoubleValue(params[2]), Math.min(y1, y2), Math.max(y1, y2));
     } catch (final InvalidShapeException e) {
+      // an invalid rectangle (e.g. a latitude outside [-90, 90]) is a client error, not a raw spatial4j exception (issue #12744)
       throw new IllegalArgumentException(NAME + "() " + e.getMessage(), e);
     }
   }
 
   @Override
   public String getSyntax() {
-    return "rectangle(<top-x>,<top-y>,<bottom-x>,<bottom-y>) [deprecated: use geo.geomFromText with POLYGON WKT]";
+    return "rectangle(<west-x>,<y1>,<east-x>,<y2>) [deprecated: use geo.geomFromText with POLYGON WKT]";
   }
 }
