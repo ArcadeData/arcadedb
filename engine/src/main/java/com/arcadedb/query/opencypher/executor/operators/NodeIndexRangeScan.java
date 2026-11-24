@@ -926,19 +926,19 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   /**
    * Whether a fractional bound survives the conversion to a FLOAT, DOUBLE or DECIMAL key unchanged. One that does not is rounded
    * onto a neighbouring key, and the range then starts or ends one key off: {@code n.f > 0.1000000001} on a FLOAT key is sought
-   * as {@code > 0.1f} and misses the vertex that holds 0.1f, which the comparison of the values accepts.
+   * as {@code > 0.1f} and misses the vertex that holds 0.1f, which the comparison of the values accepts. A floating point bound
+   * the comparison of the values reads more loosely than the order of the keys does is not held exactly either.
    */
   private static boolean isHeldExactly(final Type keyType, final Object bound) {
-    if (bound instanceof Double d) {
-      if (d.isInfinite())
-        return true;
-      if (keyType == Type.FLOAT)
-        return (double) d.floatValue() == d;
-      // a DECIMAL key is built from the shortest text of the double, which is its value only when both say the same number
-      return keyType != Type.DECIMAL || new BigDecimal(d).compareTo(BigDecimal.valueOf(d)) == 0;
-    }
-    if (bound instanceof Float f)
-      return f.isInfinite() || keyType != Type.DECIMAL || new BigDecimal(f).compareTo(new BigDecimal(f.toString())) == 0;
+    // A DECIMAL key is ordered exactly, and the comparison of the values reads it against a double or a float in double
+    // precision: 0.50000000000000000001 <= 0.5d holds there and not in the index. An infinity is no DECIMAL key at all.
+    if (keyType == Type.DECIMAL && (bound instanceof Double || bound instanceof Float))
+      return false;
+    if (bound instanceof Double d)
+      return keyType != Type.FLOAT || (double) d.floatValue() == d;
+    // a DOUBLE value equals a float bound when it narrows to it, so the doubles on both sides of the float are in the range
+    if (bound instanceof Float)
+      return keyType != Type.DOUBLE;
     if (bound instanceof BigDecimal decimal) {
       // the exact binary expansion of the key is what is compared: its shortest text (BigDecimal.valueOf) would read 0.1 as held
       if (keyType == Type.DOUBLE) {

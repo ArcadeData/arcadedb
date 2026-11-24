@@ -312,6 +312,48 @@ class CypherMatchNodeRangeSeekIssue12664Test {
     assertThat(differences).as("property, operator and operand | with the index | without the index").isEmpty();
   }
 
+  /**
+   * The walk compares a floating point bound with a key of another floating point type in its own way: a DECIMAL against a double
+   * in double precision, a DOUBLE against a float as the float it narrows to, and an infinity against a DECIMAL that no key of the
+   * index can be built from. The index orders the keys exactly, so those bounds are left to the walk too.
+   */
+  @Test
+  void aFloatingPointBoundOfAnotherTypeThanTheKeyAnswersAsTheWalk() {
+    final Map<String, List<Object>> stored = new LinkedHashMap<>();
+    stored.put("FLOAT", List.of(0.1f, 0.5f, Math.nextUp(0.1f), Math.nextDown(0.5f)));
+    stored.put("DOUBLE", List.of(0.1d, 0.0999999999d, 0.1000000001d, (double) 0.1f, 0.5d, Math.nextUp(0.5d), Math.nextDown(0.5d)));
+    stored.put("DECIMAL", List.of(new BigDecimal("0.1"), new BigDecimal("1"), new BigDecimal("0.5"),
+        new BigDecimal("0.50000000000000000001"), new BigDecimal("0.49999999999999999999")));
+    for (final Map.Entry<String, List<Object>> entry : stored.entrySet())
+      for (final String prefix : new String[] { "I_", "N_" }) {
+        final String type = prefix + entry.getKey();
+        database.command("sql", "CREATE VERTEX TYPE " + type).close();
+        database.command("sql", "CREATE PROPERTY " + type + ".id INTEGER").close();
+        database.command("sql", "CREATE PROPERTY " + type + ".p " + entry.getKey()).close();
+        if (prefix.equals("I_"))
+          database.command("sql", "CREATE INDEX ON " + type + " (p) NOTUNIQUE").close();
+        database.transaction(() -> {
+          for (int i = 0; i < entry.getValue().size(); i++)
+            database.newVertex(type).set("id", i).set("p", entry.getValue().get(i)).save();
+        });
+      }
+
+    final List<Object> operands = List.of(0.1d, 0.1f, 0.5d, 0.5f, (double) 0.1f, 0.0999999999d, new BigDecimal("0.5"),
+        new BigDecimal("0.1"), Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY, Float.NEGATIVE_INFINITY, 1);
+    final List<String> differences = new ArrayList<>();
+    for (final String property : stored.keySet())
+      for (final Object operand : operands)
+        for (final String operator : new String[] { ">", ">=", "<", "<=" }) {
+          final String statement = "WITH $x AS x MATCH (n:%s) WHERE n.p " + operator + " x RETURN n.id AS id";
+          final String indexed = run(String.format(statement, "I_" + property), Map.of("x", operand));
+          final String scanned = run(String.format(statement, "N_" + property), Map.of("x", operand));
+          if (!indexed.equals(scanned))
+            differences.add(property + " " + operator + " " + operand.getClass().getSimpleName() + " " + operand + " | " + indexed
+                + " | " + scanned);
+        }
+    assertThat(differences).as("property, operator and operand | with the index | without the index").isEmpty();
+  }
+
   @Test
   void aStatementThatWritesWhatItReadsMeetsEveryVertexOnce() {
     createNumbered();
