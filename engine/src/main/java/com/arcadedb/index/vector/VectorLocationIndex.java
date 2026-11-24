@@ -214,7 +214,9 @@ public class VectorLocationIndex {
   private volatile int     nextId;
   // Times an id left the live set or came back into it (a tombstone, a forgotten allocation, a lifted tombstone, a
   // clear). Never decremented, so a tombstone that is put down and lifted again still moves it, which the deleted
-  // count cannot tell (issue #13343). Written under writeLock, volatile for the lock-free reader.
+  // count cannot tell (issue #13343). Written under writeLock, volatile for the lock-free reader, and always moved
+  // LAST in a mutation, after the tombstone set and the locations: the reader reads it before the deleted count and the
+  // locations, so a change it did not see in the generation moves the generation after the read.
   private volatile long    removalGeneration;
 
   /**
@@ -644,12 +646,15 @@ public class VectorLocationIndex {
         // entry this call is installing - it is where the call came from - so a reader that falls through in the
         // window resolves to the same answer it would get after it. Ordering it the other way would be worse: a
         // location that is resident while the id still reads as deleted makes the delta scan skip a live vector.
-        if (deletedIds.contains(id)) {
+        final boolean lifted = deletedIds.contains(id);
+        if (lifted)
           deletedIds.remove(id);
-          removalGeneration++;
-        }
 
         put(id, isCompacted, absoluteFileOffset, rid);
+        // After the location is back, like every other move of the generation: a lock-free reader that sees the new value
+        // sees the whole change, and one that reads the old value before a half-done change sees it move later (issue #13343)
+        if (lifted)
+          removalGeneration++;
       }
 
       if (id >= nextId)
