@@ -87,11 +87,19 @@ class Issue12781CsvEmptyHeaderNameTest {
   void aHeaderReadFromTheFileNamesOnlyTheSettingItsRouteReads() {
     assertThatThrownBy(() -> importDocuments("a,,b\n1,2,3\n")).satisfies(
         e -> assertThat(messagesOf(e)).contains("first line of the file").contains("-documentsHeader setting")
-            .doesNotContain("-verticesHeader").doesNotContain("-edgesHeader"));
+            // a supplied header turns the default one-row skip off, so the advice is only complete with the skip
+            .contains("-documentsSkipEntries 1").doesNotContain("-vertices").doesNotContain("-edges"));
 
     assertThatThrownBy(() -> importVertices("a,,b\n1,2,3\n")).satisfies(
         e -> assertThat(messagesOf(e)).contains("no name for column 2 of 3").contains("-verticesHeader setting")
-            .doesNotContain("-documentsHeader").doesNotContain("-edgesHeader"));
+            .contains("-verticesSkipEntries 1").doesNotContain("-documents").doesNotContain("-edges"));
+  }
+
+  @Test
+  void followingTheAdviceOfTheRefusalImportsTheDataRowsOnly() throws Exception {
+    final Map<String, Object> report = importDocuments("a,,b\n1,2,3\n4,5,6\n", "-documentsHeader", "a,x,b", "-documentsSkipEntries", "1");
+
+    assertThat(report).containsEntry("createdDocuments", 2L);
   }
 
   @Test

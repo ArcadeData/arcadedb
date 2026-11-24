@@ -430,7 +430,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         throw new ImportException(fromTheSetting ?
             "The header supplied with the -" + headerSetting + " setting has no name for " + column + ": give every column a name" :
             "The header on the first line of the file has no name for " + column
-                + ": name it in the file, or supply the column names with the -" + headerSetting + " setting");
+                + ": name it in the file, or supply the column names with the -" + headerSetting + " setting together with -"
+                // A SUPPLIED HEADER TURNS THE DEFAULT ONE-ROW SKIP OFF (ISSUE #7499), SO WITHOUT THIS THE FILE'S OWN HEADER
+                // LINE WOULD BE IMPORTED AS THE FIRST RECORD
+                + headerSetting.replace("Header", "SkipEntries") + " 1, so that the header line of the file is not read as data");
       }
     }
   }
