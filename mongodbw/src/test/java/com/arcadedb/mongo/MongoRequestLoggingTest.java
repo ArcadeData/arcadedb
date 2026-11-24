@@ -218,8 +218,33 @@ public class MongoRequestLoggingTest extends BaseMongoServerTest {
       assertThat(record.getLevel()).isEqualTo(Level.SEVERE);
       assertThat(record.getMessage()).contains("killCursors");
       assertThat(record.getThrown()).isNotNull();
+      assertThat(record.getThrown().getStackTrace()).isNotEmpty();
     });
     assertThat(captured.text()).doesNotContain(value);
+  }
+
+  /** What the library marks as silent is an answer to the client, not a fault: no stack trace, and not SEVERE for a logged in client. */
+  @Test
+  void aSilentErrorOfTheLibraryIsLoggedAtAFineLevelWithoutAStackTrace() {
+    final MongoCredential credential = MongoCredential.createPlainCredential("root", getDatabaseName(),
+        DEFAULT_PASSWORD_FOR_TESTS.toCharArray());
+
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), credential,
+        MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
+      final MongoCommandException failed = (MongoCommandException) catchThrowable(
+          () -> client.getDatabase("admin").runCommand(new Document("getLog", "missing\nsecond-line\u001b[31m")));
+
+      assertThat(failed.getErrorMessage()).startsWith("no RamLog named: missing");
+    }
+
+    assertThat(captured.records).noneMatch(record -> record.getLevel().intValue() >= Level.SEVERE.intValue());
+    assertThat(captured.records).anySatisfy(record -> {
+      assertThat(record.getMessage()).contains("getLog").contains("no RamLog named: missing?second-line?[31m");
+      assertThat(record.getThrown()).isNull();
+    });
+    for (final LogRecord record : captured.records)
+      assertThat(CapturedLog.lines(record)).as("the log record of %s", record.getMessage())
+          .noneMatch(line -> line.chars().anyMatch(Character::isISOControl));
   }
 
   /** A client that did not log in can raise a fault too (an empty request): it is answered, and not reported as SEVERE. */

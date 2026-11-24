@@ -240,12 +240,13 @@ public class MongoDBBackend extends AbstractMongoBackend {
   }
 
   /**
-   * Reports a failed request by its command name and the reason, never by its document. An error with a code is an answer to a
-   * client (a login that fails, a command that does not exist): a FINE line. What is not (an uncoded error is a fault of the
-   * server) is a SEVERE line with the stack trace for a client that has logged in, and FINE for one that has not.
+   * Reports a failed request by its command name and the reason, never by its document. An error with a code, and one the library
+   * marks as silent, is an answer to a client (a login that fails, a command that does not exist): a FINE line without a stack
+   * trace. What is not (an uncoded error is a fault of the server) is a SEVERE line with the stack trace for a client that has
+   * logged in, and FINE for one that has not. The stack trace is the one of a copy whose messages are shown as the reason is.
    */
   private void logFailure(final MongoMessage message, final MongoServerException error) {
-    final boolean fault = !(error instanceof MongoServerError);
+    final boolean fault = !(error instanceof MongoServerError) && error.isLogError();
     final Level level = fault && authenticatedUsers.containsKey(message.getChannel()) ? Level.SEVERE : Level.FINE;
     if (!LogManager.instance().isLoggable(this, level))
       return;
@@ -258,7 +259,9 @@ public class MongoDBBackend extends AbstractMongoBackend {
           .log(this, level, "MongoDB command '%s' failed with code %d (%s): %s", null, command, coded.getCode(), coded.getCodeName(),
               reason);
     else
-      LogManager.instance().log(this, level, "MongoDB command '%s' failed: %s", error, command, reason);
+      LogManager.instance()
+          .log(this, level, "MongoDB command '%s' failed: %s", level == Level.SEVERE ? MongoWireText.forLog(error) : null, command,
+              reason);
   }
 
   /**

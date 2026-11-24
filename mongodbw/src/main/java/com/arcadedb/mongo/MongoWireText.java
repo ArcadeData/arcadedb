@@ -34,6 +34,10 @@ final class MongoWireText {
 
   private static final String ELLIPSIS = "...";
 
+  /** The line and the paragraph separators of Unicode: not control characters, and they end a line all the same. */
+  private static final int LINE_SEPARATOR      = 0x2028;
+  private static final int PARAGRAPH_SEPARATOR = 0x2029;
+
   private MongoWireText() {
   }
 
@@ -57,16 +61,19 @@ final class MongoWireText {
       end--;
 
     StringBuilder cleaned = null;
-    for (int i = 0; i < end; i++) {
-      final char c = text.charAt(i);
-      if (isPrintable(c)) {
+    for (int i = 0; i < end; ) {
+      // a code point, not a char: a supplementary character is two chars, and the invisible ones are among them
+      final int codePoint = text.codePointAt(i);
+      final int next = i + Character.charCount(codePoint);
+      if (isPrintable(codePoint)) {
         if (cleaned != null)
-          cleaned.append(c);
+          cleaned.appendCodePoint(codePoint);
       } else {
         if (cleaned == null)
           cleaned = new StringBuilder(end + ELLIPSIS.length()).append(text, 0, i);
         cleaned.append('?');
       }
+      i = next;
     }
 
     if (end == length)
@@ -87,12 +94,44 @@ final class MongoWireText {
     return value instanceof String text ? clean(text) : value.getClass().getSimpleName();
   }
 
-  private static boolean isPrintable(final char c) {
-    if (c >= ' ' && c < 0x7F)
+  /**
+   * A copy of {@code throwable} for a log record: the same stack frames, with the message of each throwable of the chain shown as
+   * {@link #clean(String, int)} shows it. The log prints a throwable as it is, so the original would print the messages of the
+   * exceptions it wraps as they are.
+   */
+  static Throwable forLog(final Throwable throwable) {
+    return throwable == null ? null : new LoggedThrowable(throwable, 0);
+  }
+
+  private static boolean isPrintable(final int codePoint) {
+    if (codePoint >= ' ' && codePoint < 0x7F)
       return true;
-    if (Character.isISOControl(c) || c == ' ' || c == ' ')
+    if (Character.isISOControl(codePoint) || codePoint == LINE_SEPARATOR || codePoint == PARAGRAPH_SEPARATOR)
       return false;
-    // the invisible formatting characters (zero width, bidirectional controls) change what a line looks like
-    return Character.getType(c) != Character.FORMAT;
+    // the invisible formatting characters (zero width, bidirectional controls, tags) change what a line looks like
+    return Character.getType(codePoint) != Character.FORMAT;
+  }
+
+  private static final class LoggedThrowable extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+    /** The causes copied: a chain longer than this, or one that loops, is cut. */
+    private static final int  MAX_CAUSES       = 8;
+
+    LoggedThrowable(final Throwable original, final int depth) {
+      super(summaryOf(original),
+          depth < MAX_CAUSES && original.getCause() != null ? new LoggedThrowable(original.getCause(), depth + 1) : null, false, true);
+      setStackTrace(original.getStackTrace());
+    }
+
+    private static String summaryOf(final Throwable original) {
+      final String name = original.getClass().getName();
+      return original.getMessage() == null ? name : name + ": " + clean(original.getMessage(), MAX_MESSAGE_LENGTH);
+    }
+
+    /** The class and the message of the original: what the log prints ahead of the frames. */
+    @Override
+    public String toString() {
+      return getMessage();
+    }
   }
 }
