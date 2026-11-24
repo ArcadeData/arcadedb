@@ -273,7 +273,9 @@ public class BoltNetworkExecutor extends Thread {
           try {
             messageData = input.readMessage();
           } catch (final EOFException | SocketException | SocketTimeoutException e) {
-            throw e; // handled below
+            // The peer went away, or the bounded pre-authentication wait ran out: the clauses below already end the connection
+            // for these, without a reply
+            throw e;
           } catch (final IOException e) {
             // The read stopped part way through a message (a size limit, a malformed frame, a broken transport), so the next
             // byte on the stream is not the start of a request and there is no way to find where one starts: end the connection
