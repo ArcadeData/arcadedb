@@ -90,6 +90,9 @@ public final class InPlaceIndexRebuild {
       final InPlaceRebuildStrategy strategy = InPlaceRebuildStrategy.of(onBuckets[0]);
       if (strategy == null)
         return "the " + onBuckets[0].getType() + " index kind is not rebuilt in place";
+      if (!strategy.repairsMissingBucketIndexes() && !typeIndex.isComplete())
+        return "the index has no bucket index for the buckets " + typeIndex.getBucketsWithoutIndex() + " and a " + strategy.kindName()
+            + " index cannot be given one in place";
       for (final IndexInternal onBucket : onBuckets) {
         if (InPlaceRebuildStrategy.of(onBucket) != strategy)
           return "the bucket indexes are not all of the same kind";
