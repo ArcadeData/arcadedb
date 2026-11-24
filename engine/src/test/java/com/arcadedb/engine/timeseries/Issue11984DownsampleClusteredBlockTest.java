@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 /**
  * Regression test for issue #11984: a downsampling tier skipped every raw sealed block whose AVERAGE sample spacing was at least the
  * granularity, reading it as "already at the target resolution". Nine samples of one series inside one hour plus a tenth nine hours
