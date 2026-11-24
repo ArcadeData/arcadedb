@@ -29,11 +29,16 @@ import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Standard SQL cast: {@code CAST(x AS type)} and {@code x::type}, both of which build this node (issue #13384).
@@ -56,6 +61,8 @@ public class CastExpression extends MathExpression {
       Map.entry("CHAR", Type.STRING), Map.entry("STRING", Type.STRING), Map.entry("BOOLEAN", Type.BOOLEAN),
       Map.entry("BOOL", Type.BOOLEAN), Map.entry("DATE", Type.DATE), Map.entry("TIMESTAMP", Type.DATETIME),
       Map.entry("DATETIME", Type.DATETIME));
+
+  private static final Pattern ISO_DATE_TIME = Pattern.compile("^(\\d{4})-(\\d{2})-(\\d{2})(?:[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?)?");
 
   public Expression operand;
   public Type       type;
@@ -147,6 +154,8 @@ public class CastExpression extends MathExpression {
     if (value instanceof Boolean bool)
       return bool ? 1 : 0;
     final BigDecimal decimal = decimalOf(value);
+    if (decimal.signum() == 0)
+      return 0;
     // The digits left of the decimal point, from the precision and the scale alone. A text such as 1e1000000000 is a short input
     // whose rescaling to a whole number would build a billion-digit integer, so it is refused here, before setScale (Long.MAX_VALUE
     // has 19 digits). A value below 0.1 rounds to 0 and is not rescaled for the same reason (1e-1000000000).
@@ -178,6 +187,9 @@ public class CastExpression extends MathExpression {
   private static Boolean booleanOf(final Object value) {
     if (value instanceof Boolean bool)
       return bool;
+    // a decimal is compared as a decimal: 1e-400 is not zero, though it is zero as a double
+    if (value instanceof BigDecimal decimal)
+      return decimal.signum() != 0;
     if (value instanceof Number number)
       return number.doubleValue() != 0;
     final String text = value.toString().trim().toLowerCase(Locale.ENGLISH);
@@ -192,11 +204,29 @@ public class CastExpression extends MathExpression {
     final Object converted = Type.convert(context == null ? null : context.getDatabase(), value, target.getDefaultJavaType());
     if (converted == null)
       throw new CommandExecutionException("Cannot cast " + describe(value) + " to " + target.name());
+    // Type.convert reads a text with a lenient date format, which turns 2020-02-30 into 2020-03-01 and 25:00:00 into the next day: a
+    // cast is strict, so the calendar fields of a text in the usual yyyy-MM-dd[ HH:mm[:ss]] spelling are checked as written
+    if (value instanceof CharSequence text)
+      requireValidCalendarFields(text.toString().trim(), target);
     // both types are a java.util.Date and Type.convert hands one back unchanged, so a DATE drops its time of day here: the days
     // since the epoch, as a DATE property stores them
     if (target == Type.DATE && converted instanceof Date date)
       return new Date(Math.floorDiv(date.getTime(), DateUtils.MS_IN_A_DAY) * DateUtils.MS_IN_A_DAY);
     return converted;
+  }
+
+  private static void requireValidCalendarFields(final String text, final Type target) {
+    final Matcher matcher = ISO_DATE_TIME.matcher(text);
+    if (!matcher.find())
+      return;
+    try {
+      LocalDate.of(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)), Integer.parseInt(matcher.group(3)));
+      if (matcher.group(4) != null)
+        LocalTime.of(Integer.parseInt(matcher.group(4)), Integer.parseInt(matcher.group(5)),
+            matcher.group(6) == null ? 0 : Integer.parseInt(matcher.group(6)));
+    } catch (final DateTimeException e) {
+      throw new CommandExecutionException("Cannot cast " + describe(text) + " to " + target.name() + ": " + e.getMessage());
+    }
   }
 
   @Override

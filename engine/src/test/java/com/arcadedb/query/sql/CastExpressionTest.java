@@ -174,6 +174,27 @@ class CastExpressionTest extends TestHelper {
   }
 
   @Test
+  void aDecimalIsZeroOnlyWhenItIsExactlyZero() {
+    assertThat(value("CAST(CAST('1e-400' AS NUMERIC) AS BOOLEAN)")).isEqualTo(true);
+    assertThat(value("CAST('0.000' AS NUMERIC)::BOOLEAN")).isEqualTo(false);
+    assertThat(value("CAST('0e20' AS NUMERIC)::BOOLEAN")).isEqualTo(false);
+    assertThat(value("'0e20'::INTEGER")).isEqualTo(0);
+    assertThat(value("'0e-30'::INTEGER")).isEqualTo(0);
+    assertThat(value("'-0e100'::BIGINT")).isEqualTo(0L);
+  }
+
+  @Test
+  void aDateOrTimestampTextWithAnImpossibleFieldRaises() {
+    for (final String text : List.of("2020-02-30", "2021-02-29", "2020-13-01", "2020-00-10", "2020-04-31", "2020-01-02 25:00:00",
+        "2020-01-02 12:60:00", "2020-01-02 12:34:61"))
+      for (final String type : List.of("DATE", "TIMESTAMP"))
+        assertThatThrownBy(() -> value("'" + text + "'::" + type)).as(text + " as " + type).isInstanceOf(CommandExecutionException.class);
+    // valid ones, the leap day included, are accepted
+    assertThat(value("'2020-02-29'::DATE")).isInstanceOf(Date.class);
+    assertThat(value("'2020-02-29 23:59:59'::TIMESTAMP")).isInstanceOf(Date.class);
+  }
+
+  @Test
   void aDateHasNoTimeOfDayAndATimestampKeepsIt() {
     final Object timestamp = value("CAST('2020-01-02 12:34:56' AS TIMESTAMP)");
     final Object date = value("CAST(CAST('2020-01-02 12:34:56' AS TIMESTAMP) AS DATE)");
