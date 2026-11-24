@@ -1013,21 +1013,32 @@ public class DocumentValidator {
       }
     }
 
-    if (p.isReadonly() && !readonlyCheckDeferred(document, p)) {
-      if (document.isDirty() && document.getIdentity() != null) {
-        // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
-        // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before
-        // calling LocalDatabase-specific APIs. Issue #4144.
+    if (p.isReadonly() && document.getIdentity() != null) {
+      // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
+      // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before
+      // calling LocalDatabase-specific APIs. Issue #4144.
+      if (readonlyCheckDeferred(document, p)) {
+        // #12612: the value this write completes the record with stays allowed for the rest of the transaction, the commit included
+        final TransactionContext tx = ((LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded()).getTransactionIfExists();
+        if (tx != null && tx.isActive())
+          tx.setReadonlyValueOfDeferredWrite(document.getIdentity(), p.getName(), fieldValue);
+      } else if (document.isDirty()) {
         final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded();
         final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
-        if (!sameReadonlyValue(fieldValue, originalFieldValue))
+        if (!sameReadonlyValue(fieldValue, originalFieldValue) && !isReadonlyValueOfDeferredWrite(embedded, document, p, fieldValue))
           throwValidationException(document.getType(), p, ValidationException.Kind.READONLY,
               "is immutable and cannot be altered. Field value is: " + printableValue(fieldValue));
       }
     }
 
     return deferred;
+  }
+
+  private static boolean isReadonlyValueOfDeferredWrite(final LocalDatabase database, final MutableDocument document, final Property p,
+      final Object fieldValue) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isActive() && tx.isReadonlyValueOfDeferredWrite(document.getIdentity(), p.getName(), fieldValue);
   }
 
   /**
